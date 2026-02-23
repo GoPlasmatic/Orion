@@ -95,6 +95,7 @@ impl AsyncFunctionHandler for EnrichHandler {
     }
 }
 
+#[tracing::instrument(skip(client, http_config))]
 async fn execute_enrich(
     client: &reqwest::Client,
     method: &reqwest::Method,

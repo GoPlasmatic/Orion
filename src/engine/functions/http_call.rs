@@ -122,6 +122,7 @@ fn resolve_body(
     }
 }
 
+#[tracing::instrument(skip(client, task_headers, http_config, body))]
 async fn execute_with_retry(
     client: &reqwest::Client,
     method: &reqwest::Method,
@@ -171,6 +172,7 @@ async fn execute_with_retry(
     Err(last_error.unwrap_or_else(|| DataflowError::Unknown("Retry loop exhausted".into())))
 }
 
+#[tracing::instrument(skip(client, task_headers, http_config, body))]
 async fn execute_once(
     client: &reqwest::Client,
     method: &reqwest::Method,

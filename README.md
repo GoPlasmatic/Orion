@@ -312,11 +312,3 @@ The embedded SQLite storage means you're up and running immediately. For product
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE) for details.
-
----
-
-<div align="center">
-
-Built by [Orion](https://github.com/ArkMindAI) | Powered by [Orion](https://github.com/ArkMindAI/Orion)
-
-</div>
