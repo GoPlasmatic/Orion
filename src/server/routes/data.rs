@@ -45,6 +45,13 @@ async fn sync_process(
     Path(channel): Path<String>,
     Json(req): Json<ProcessRequest>,
 ) -> Result<Json<Value>, OrionError> {
+    let channel = channel.trim().to_string();
+    if channel.is_empty() {
+        return Err(OrionError::BadRequest(
+            "Channel name must not be empty".into(),
+        ));
+    }
+
     let start = Instant::now();
 
     let engine = state.engine.read().await;
@@ -85,6 +92,12 @@ async fn async_submit(
     Path(channel): Path<String>,
     Json(req): Json<ProcessRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
+    let channel = channel.trim().to_string();
+    if channel.is_empty() {
+        return Err(OrionError::BadRequest(
+            "Channel name must not be empty".into(),
+        ));
+    }
 
     let job = state.job_repo.create_data_job(&channel).await?;
     let job_id = job.id.clone();
@@ -92,14 +105,14 @@ async fn async_submit(
     state
         .job_queue
         .submit(crate::queue::QueueMessage {
-            job_id: job_id.clone(),
+            job_id,
             channel,
             payload: req.data,
             metadata: req.metadata,
         })
         .await?;
 
-    Ok((StatusCode::ACCEPTED, Json(json!({ "job_id": job_id }))))
+    Ok((StatusCode::ACCEPTED, Json(json!({ "job_id": job.id }))))
 }
 
 // ============================================================
@@ -164,6 +177,11 @@ async fn batch_process(
     State(state): State<AppState>,
     Json(req): Json<BatchRequest>,
 ) -> Result<Json<Value>, OrionError> {
+    if req.messages.is_empty() {
+        return Err(OrionError::BadRequest(
+            "Batch must contain at least one message".into(),
+        ));
+    }
     let max_batch = state.config.ingest.batch_size;
     if req.messages.len() > max_batch {
         return Err(OrionError::BadRequest(format!(
