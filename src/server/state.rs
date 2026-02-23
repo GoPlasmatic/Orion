@@ -3,6 +3,7 @@ use tokio::sync::RwLock;
 
 use crate::config::AppConfig;
 use crate::connector::ConnectorRegistry;
+use crate::queue::JobQueue;
 use crate::storage::repositories::connectors::ConnectorRepository;
 use crate::storage::repositories::jobs::JobRepository;
 use crate::storage::repositories::rules::RuleRepository;
@@ -15,6 +16,7 @@ pub struct AppState {
     pub connector_repo: Arc<dyn ConnectorRepository>,
     pub job_repo: Arc<dyn JobRepository>,
     pub connector_registry: Arc<ConnectorRegistry>,
+    pub job_queue: JobQueue,
     pub config: Arc<AppConfig>,
     pub start_time: chrono::DateTime<chrono::Utc>,
 }

@@ -1353,6 +1353,7 @@ dependencies = [
  "chrono",
  "clap",
  "dataflow-rs",
+ "datalogic-rs",
  "num_cpus",
  "reqwest",
  "serde",

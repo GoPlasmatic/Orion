@@ -19,14 +19,25 @@ pub async fn test_app() -> Router {
     let job_repo = Arc::new(SqliteJobRepository::new(pool.clone()));
     let connector_registry = Arc::new(ConnectorRegistry::new());
 
-    let engine = dataflow_rs::Engine::new(vec![], None);
+    let custom_functions = orion::engine::build_custom_functions(connector_registry.clone());
+    let engine = dataflow_rs::Engine::new(vec![], Some(custom_functions));
+    let engine = Arc::new(RwLock::new(Arc::new(engine)));
+
+    // Start a small worker pool for async job tests
+    let (job_queue, _worker_handle) = orion::queue::start_workers(
+        2,
+        100,
+        engine.clone(),
+        job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
+    );
 
     let state = AppState {
-        engine: Arc::new(RwLock::new(Arc::new(engine))),
+        engine,
         rule_repo,
         connector_repo,
         job_repo,
         connector_registry,
+        job_queue,
         config: Arc::new(AppConfig::default()),
         start_time: chrono::Utc::now(),
     };

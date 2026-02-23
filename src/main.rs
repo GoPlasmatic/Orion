@@ -63,7 +63,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     tracing::info!(count = connector_count, "Connectors loaded");
 
-    // Load active rules and build engine
+    // Build custom function handlers (http_call, enrich, publish_kafka)
+    let custom_functions = orion::engine::build_custom_functions(connector_registry.clone());
+
+    // Load active rules and build engine with custom functions
     let active_rules = rule_repo.list_active().await?;
     let mut workflows = Vec::new();
     for rule in &active_rules {
@@ -84,16 +87,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Rules loaded"
     );
 
-    let engine = dataflow_rs::Engine::new(workflows, None);
+    let engine = dataflow_rs::Engine::new(workflows, Some(custom_functions));
+    let engine = Arc::new(RwLock::new(Arc::new(engine)));
+
+    // Start job queue worker pool
+    let (job_queue, worker_handle) = orion::queue::start_workers(
+        config.queue.workers,
+        config.queue.buffer_size,
+        engine.clone(),
+        job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
+    );
+
+    tracing::info!(
+        workers = config.queue.workers,
+        buffer = config.queue.buffer_size,
+        "Job queue started"
+    );
 
     // Build state and router
     let state = AppState {
-        engine: Arc::new(RwLock::new(Arc::new(engine))),
+        engine,
         rule_repo: rule_repo as Arc<dyn orion::storage::repositories::rules::RuleRepository>,
         connector_repo: connector_repo
             as Arc<dyn orion::storage::repositories::connectors::ConnectorRepository>,
         job_repo: job_repo as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
         connector_registry,
+        job_queue,
         config: Arc::new(config.clone()),
         start_time: chrono::Utc::now(),
     };
@@ -112,6 +131,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, router)
         .with_graceful_shutdown(orion::server::shutdown_signal())
         .await?;
+
+    // Graceful shutdown: drain the job queue
+    tracing::info!("Shutting down job queue workers...");
+    worker_handle.shutdown().await;
 
     tracing::info!("Orion shut down cleanly");
     Ok(())
