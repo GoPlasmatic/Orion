@@ -58,9 +58,6 @@ pub fn register_kafka_publisher(
 ) {
     fns.insert(
         "publish_kafka".to_string(),
-        Box::new(functions::publish_kafka::PublishKafkaHandler {
-            registry,
-            producer,
-        }),
+        Box::new(functions::publish_kafka::PublishKafkaHandler { registry, producer }),
     );
 }

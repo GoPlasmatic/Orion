@@ -70,9 +70,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Kafka producer setup (when kafka feature is enabled)
     #[cfg(feature = "kafka")]
     let kafka_producer = if !config.kafka.brokers.is_empty() {
-        let producer = Arc::new(
-            orion::kafka::producer::KafkaProducer::new(&config.kafka.brokers.join(","))?,
-        );
+        let producer = Arc::new(orion::kafka::producer::KafkaProducer::new(
+            &config.kafka.brokers.join(","),
+        )?);
         orion::engine::register_kafka_publisher(
             &mut custom_functions,
             connector_registry.clone(),
