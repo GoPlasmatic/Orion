@@ -174,23 +174,29 @@ async fn test_data_async_processing() {
     let body = body_json(resp).await;
     let job_id = body["job_id"].as_str().unwrap().to_string();
 
-    // Give async task time to complete
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Poll job status with retry until completed or timeout
+    let mut final_status = String::new();
+    for _ in 0..20 {
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-    // Poll job status
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            &format!("/api/v1/data/jobs/{}", job_id),
-            None,
-        ))
-        .await
-        .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v1/data/jobs/{}", job_id),
+                None,
+            ))
+            .await
+            .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert!(["completed", "running"].contains(&body["status"].as_str().unwrap()));
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        final_status = body["status"].as_str().unwrap().to_string();
+        if final_status == "completed" || final_status == "failed" {
+            break;
+        }
+    }
+    assert_eq!(final_status, "completed");
 }
 
 #[tokio::test]
