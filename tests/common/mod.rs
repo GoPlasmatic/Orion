@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
-use axum::Router;
 use serde_json::Value;
 use tokio::sync::RwLock;
 

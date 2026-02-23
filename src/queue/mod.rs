@@ -121,7 +121,10 @@ async fn process_job(
     tracing::info!(job_id = %job_id, channel = %channel, "Processing job");
 
     // Mark as running
-    if let Err(e) = job_repo.update_status(&job_id, models::JOB_STATUS_RUNNING, None, None).await {
+    if let Err(e) = job_repo
+        .update_status(&job_id, models::JOB_STATUS_RUNNING, None, None)
+        .await
+    {
         tracing::error!(job_id = %job_id, error = %e, "Failed to update job status to running");
         return;
     }
@@ -165,7 +168,12 @@ async fn process_job(
             metrics::record_error("engine");
 
             if let Err(db_err) = job_repo
-                .update_status(&job_id, models::JOB_STATUS_FAILED, Some(&e.to_string()), None)
+                .update_status(
+                    &job_id,
+                    models::JOB_STATUS_FAILED,
+                    Some(&e.to_string()),
+                    None,
+                )
                 .await
             {
                 tracing::error!(job_id = %job_id, error = %db_err, "Failed to mark job as failed");

@@ -105,10 +105,7 @@ struct VersionData<'a> {
 }
 
 /// Insert a rule version record using the given executor (pool or transaction).
-async fn insert_version<'e, E>(
-    executor: E,
-    v: &VersionData<'_>,
-) -> Result<(), OrionError>
+async fn insert_version<'e, E>(executor: E, v: &VersionData<'_>) -> Result<(), OrionError>
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
@@ -161,13 +158,23 @@ impl RuleRepository for SqliteRuleRepository {
         .execute(&mut *tx)
         .await?;
 
-        insert_version(&mut *tx, &VersionData {
-            rule_id: &id, version: 1, name: &req.name,
-            description: req.description.as_deref(), channel: &req.channel,
-            priority: req.priority, status: models::RULE_STATUS_ACTIVE,
-            condition_json: &condition_json, tasks_json: &tasks_json,
-            tags_json: &tags_json, continue_on_error: req.continue_on_error,
-        }).await?;
+        insert_version(
+            &mut *tx,
+            &VersionData {
+                rule_id: &id,
+                version: 1,
+                name: &req.name,
+                description: req.description.as_deref(),
+                channel: &req.channel,
+                priority: req.priority,
+                status: models::RULE_STATUS_ACTIVE,
+                condition_json: &condition_json,
+                tasks_json: &tasks_json,
+                tags_json: &tags_json,
+                continue_on_error: req.continue_on_error,
+            },
+        )
+        .await?;
 
         tx.commit().await?;
 
@@ -260,11 +267,23 @@ impl RuleRepository for SqliteRuleRepository {
         .execute(&mut *tx)
         .await?;
 
-        insert_version(&mut *tx, &VersionData {
-            rule_id: id, version: new_version, name, description, channel,
-            priority, status, condition_json: &condition_json,
-            tasks_json: &tasks_json, tags_json: &tags_json, continue_on_error,
-        }).await?;
+        insert_version(
+            &mut *tx,
+            &VersionData {
+                rule_id: id,
+                version: new_version,
+                name,
+                description,
+                channel,
+                priority,
+                status,
+                condition_json: &condition_json,
+                tasks_json: &tasks_json,
+                tags_json: &tags_json,
+                continue_on_error,
+            },
+        )
+        .await?;
 
         tx.commit().await?;
 
@@ -315,13 +334,23 @@ impl RuleRepository for SqliteRuleRepository {
         .execute(&mut *tx)
         .await?;
 
-        insert_version(&mut *tx, &VersionData {
-            rule_id: id, version: new_version, name: &existing.name,
-            description: existing.description.as_deref(),
-            channel: &existing.channel, priority: existing.priority, status,
-            condition_json: &existing.condition_json, tasks_json: &existing.tasks_json,
-            tags_json: &existing.tags, continue_on_error: existing.continue_on_error,
-        }).await?;
+        insert_version(
+            &mut *tx,
+            &VersionData {
+                rule_id: id,
+                version: new_version,
+                name: &existing.name,
+                description: existing.description.as_deref(),
+                channel: &existing.channel,
+                priority: existing.priority,
+                status,
+                condition_json: &existing.condition_json,
+                tasks_json: &existing.tasks_json,
+                tags_json: &existing.tags,
+                continue_on_error: existing.continue_on_error,
+            },
+        )
+        .await?;
 
         tx.commit().await?;
 
