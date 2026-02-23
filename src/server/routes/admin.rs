@@ -222,6 +222,15 @@ async fn export_rules(
 // Connectors CRUD
 // ============================================================
 
+/// Reload the connector registry after a mutation.
+async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
+    state
+        .connector_registry
+        .reload(state.connector_repo.as_ref())
+        .await?;
+    Ok(())
+}
+
 #[tracing::instrument(skip(state))]
 async fn list_connectors(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
     let connectors = state.connector_repo.list().await?;
@@ -235,10 +244,7 @@ async fn create_connector(
     Json(req): Json<CreateConnectorRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let connector = state.connector_repo.create(&req).await?;
-    state
-        .connector_registry
-        .reload(state.connector_repo.as_ref())
-        .await?;
+    reload_connectors(&state).await?;
     let masked = mask_connector(&connector);
     Ok((StatusCode::CREATED, Json(json!({ "data": masked }))))
 }
@@ -260,10 +266,7 @@ async fn update_connector(
     Json(req): Json<UpdateConnectorRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let connector = state.connector_repo.update(&id, &req).await?;
-    state
-        .connector_registry
-        .reload(state.connector_repo.as_ref())
-        .await?;
+    reload_connectors(&state).await?;
     let masked = mask_connector(&connector);
     Ok(Json(json!({ "data": masked })))
 }
@@ -274,10 +277,7 @@ async fn delete_connector(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.connector_repo.delete(&id).await?;
-    state
-        .connector_registry
-        .reload(state.connector_repo.as_ref())
-        .await?;
+    reload_connectors(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
