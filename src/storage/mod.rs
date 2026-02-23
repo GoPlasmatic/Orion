@@ -1,9 +1,11 @@
 pub mod models;
 pub mod repositories;
 
+use std::str::FromStr;
+use std::time::Duration;
+
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::str::FromStr;
 
 use crate::errors::OrionError;
 
@@ -16,6 +18,7 @@ pub async fn init_pool(db_path: &str, max_connections: u32) -> Result<SqlitePool
 
     let pool = SqlitePoolOptions::new()
         .max_connections(max_connections)
+        .acquire_timeout(Duration::from_secs(5))
         .connect_with(options)
         .await
         .map_err(|e| OrionError::Internal(format!("Failed to connect to database: {}", e)))?;
