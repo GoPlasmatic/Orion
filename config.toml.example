@@ -1,0 +1,25 @@
+# Orion Configuration
+# All values shown are defaults. Uncomment and modify as needed.
+# Environment variables override file values using ORION_SECTION__KEY format.
+
+[server]
+# host = "0.0.0.0"
+# port = 8080
+# workers = <num_cpus>        # Defaults to number of CPU cores
+
+[storage]
+# path = "orion.db"           # SQLite database file path
+
+[ingest]
+# max_payload_size = 1048576  # Maximum payload size in bytes (1 MB)
+# batch_size = 100            # Batch processing size
+
+[engine]
+# max_concurrent_workflows = 100
+
+[logging]
+# level = "info"              # trace, debug, info, warn, error
+# format = "pretty"           # pretty or json
+
+[metrics]
+# enabled = false

@@ -1,0 +1,7 @@
+target/
+.git/
+docs/
+docs_old/
+.claude/
+*.md
+LICENSE
