@@ -57,4 +57,6 @@ pub struct Job {
     pub records_processed: i64,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
+    pub result_json: Option<String>,
+    pub channel: Option<String>,
 }

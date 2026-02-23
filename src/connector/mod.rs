@@ -124,3 +124,42 @@ impl ConnectorRegistry {
         self.load_from_repo(repo).await
     }
 }
+
+const MASK: &str = "******";
+
+/// Mask sensitive fields in a connector's config_json for API responses.
+pub fn mask_connector_secrets(config_json: &str) -> String {
+    let Ok(mut val) = serde_json::from_str::<serde_json::Value>(config_json) else {
+        return config_json.to_string();
+    };
+
+    if let Some(obj) = val.as_object_mut() {
+        // Mask auth fields
+        if let Some(auth) = obj.get_mut("auth")
+            && let Some(auth_obj) = auth.as_object_mut() {
+                for key in ["token", "password", "key", "secret"] {
+                    if auth_obj.contains_key(key) {
+                        auth_obj
+                            .insert(key.to_string(), serde_json::Value::String(MASK.to_string()));
+                    }
+                }
+            }
+        // Mask top-level secret-looking fields
+        for key in ["password", "secret", "api_key", "token"] {
+            if obj.contains_key(key) {
+                obj.insert(key.to_string(), serde_json::Value::String(MASK.to_string()));
+            }
+        }
+    }
+
+    serde_json::to_string(&val).unwrap_or_else(|_| config_json.to_string())
+}
+
+/// Return a connector model with secrets masked.
+pub fn mask_connector(
+    connector: &crate::storage::models::Connector,
+) -> crate::storage::models::Connector {
+    let mut masked = connector.clone();
+    masked.config_json = mask_connector_secrets(&masked.config_json);
+    masked
+}

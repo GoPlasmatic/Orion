@@ -47,6 +47,11 @@ pub struct UpdateRuleRequest {
     pub continue_on_error: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct StatusChangeRequest {
+    pub status: String,
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct RuleFilter {
     pub status: Option<String>,
@@ -64,6 +69,12 @@ pub trait RuleRepository: Send + Sync {
     async fn update(&self, id: &str, req: &UpdateRuleRequest) -> Result<Rule, OrionError>;
     async fn delete(&self, id: &str) -> Result<(), OrionError>;
     async fn list_active(&self) -> Result<Vec<Rule>, OrionError>;
+    async fn update_status(&self, id: &str, status: &str) -> Result<Rule, OrionError>;
+    async fn count_versions(&self, id: &str) -> Result<i64, OrionError>;
+    async fn bulk_create(
+        &self,
+        rules: &[CreateRuleRequest],
+    ) -> Result<Vec<Result<Rule, OrionError>>, OrionError>;
 }
 
 // -- SQLite implementation --
@@ -250,6 +261,68 @@ impl RuleRepository for SqliteRuleRepository {
         )
         .fetch_all(&self.pool)
         .await?)
+    }
+
+    async fn update_status(&self, id: &str, status: &str) -> Result<Rule, OrionError> {
+        let valid = ["active", "paused", "archived"];
+        if !valid.contains(&status) {
+            return Err(OrionError::BadRequest(format!(
+                "Invalid status '{}'. Must be one of: active, paused, archived",
+                status
+            )));
+        }
+
+        let existing = self.get_by_id(id).await?;
+        let new_version = existing.version + 1;
+
+        sqlx::query(
+            "UPDATE rules SET status = ?, version = ?, updated_at = datetime('now') WHERE id = ?",
+        )
+        .bind(status)
+        .bind(new_version)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        // Save version history
+        sqlx::query(
+            r#"INSERT INTO rule_versions (rule_id, version, name, description, channel, priority, status, condition_json, tasks_json, tags, continue_on_error)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(id)
+        .bind(new_version)
+        .bind(&existing.name)
+        .bind(&existing.description)
+        .bind(&existing.channel)
+        .bind(existing.priority)
+        .bind(status)
+        .bind(&existing.condition_json)
+        .bind(&existing.tasks_json)
+        .bind(&existing.tags)
+        .bind(existing.continue_on_error)
+        .execute(&self.pool)
+        .await?;
+
+        self.get_by_id(id).await
+    }
+
+    async fn count_versions(&self, id: &str) -> Result<i64, OrionError> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM rule_versions WHERE rule_id = ?")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.0)
+    }
+
+    async fn bulk_create(
+        &self,
+        rules: &[CreateRuleRequest],
+    ) -> Result<Vec<Result<Rule, OrionError>>, OrionError> {
+        let mut results = Vec::with_capacity(rules.len());
+        for req in rules {
+            results.push(self.create(req).await);
+        }
+        Ok(results)
     }
 }
 

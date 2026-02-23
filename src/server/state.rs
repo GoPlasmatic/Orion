@@ -16,4 +16,5 @@ pub struct AppState {
     pub job_repo: Arc<dyn JobRepository>,
     pub connector_registry: Arc<ConnectorRegistry>,
     pub config: Arc<AppConfig>,
+    pub start_time: chrono::DateTime<chrono::Utc>,
 }

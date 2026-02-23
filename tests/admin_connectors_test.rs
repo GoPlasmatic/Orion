@@ -1,0 +1,254 @@
+mod common;
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use serde_json::{Value, json};
+use tower::ServiceExt;
+
+fn json_request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if body.is_some() {
+        builder = builder.header("content-type", "application/json");
+    }
+    let body = match body {
+        Some(v) => Body::from(serde_json::to_string(&v).unwrap()),
+        None => Body::empty(),
+    };
+    builder.body(body).unwrap()
+}
+
+async fn body_json(response: axum::http::Response<Body>) -> Value {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn test_connectors_crud_lifecycle() {
+    let app = common::test_app().await;
+
+    // Create a connector
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "name": "test-http",
+                "connector_type": "http",
+                "config": {
+                    "url": "https://example.com/api",
+                    "method": "POST",
+                    "headers": { "Authorization": "Bearer secret-token-123" }
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    let connector_id = body["data"]["id"].as_str().unwrap().to_string();
+    assert_eq!(body["data"]["name"], "test-http");
+    assert_eq!(body["data"]["connector_type"], "http");
+
+    // Get the connector
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/connectors/{}", connector_id),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["name"], "test-http");
+
+    // List connectors (should include the internal __data_api__ + our new one)
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/connectors", None))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let connectors = body["data"].as_array().unwrap();
+    assert!(connectors.len() >= 1);
+
+    // Update the connector
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/admin/connectors/{}", connector_id),
+            Some(json!({
+                "config": {
+                    "url": "https://example.com/v2/api",
+                    "method": "PUT"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["name"], "test-http");
+
+    // Delete the connector
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/admin/connectors/{}", connector_id),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Verify 404
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/connectors/{}", connector_id),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn test_data_sync_processing() {
+    let app = common::test_app().await;
+
+    // Create a rule that matches the "orders" channel
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Order Logger",
+                "channel": "orders",
+                "condition": true,
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Log",
+                    "function": { "name": "log", "input": { "message": "order received" } }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Send data to the orders channel
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/orders",
+            Some(json!({
+                "data": { "order_id": "ORD-001", "amount": 150 },
+                "metadata": { "source": "test" }
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(body.get("id").is_some());
+    assert!(body.get("data").is_some());
+}
+
+#[tokio::test]
+async fn test_data_async_processing() {
+    let app = common::test_app().await;
+
+    // Submit async job
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/events/async",
+            Some(json!({
+                "data": { "event": "click", "user_id": "u1" }
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    let job_id = body["job_id"].as_str().unwrap().to_string();
+
+    // Give async task time to complete
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+    // Poll job status
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/data/jobs/{}", job_id),
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(["completed", "running"].contains(&body["status"].as_str().unwrap()));
+}
+
+#[tokio::test]
+async fn test_data_batch_processing() {
+    let app = common::test_app().await;
+
+    // Batch process
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/batch",
+            Some(json!({
+                "messages": [
+                    { "channel": "orders", "data": { "id": 1 } },
+                    { "channel": "events", "data": { "id": 2 } }
+                ]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+}
+
+#[tokio::test]
+async fn test_health_endpoint() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+}

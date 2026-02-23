@@ -95,6 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         job_repo: job_repo as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
         connector_registry,
         config: Arc::new(config.clone()),
+        start_time: chrono::Utc::now(),
     };
 
     let router = orion::server::build_router(state);
