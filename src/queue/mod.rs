@@ -166,14 +166,40 @@ async fn process_job(
             }))
             .unwrap_or_default();
 
-            if let Err(e) = job_repo.set_result(&job_id, &result_json).await {
-                tracing::error!(job_id = %job_id, error = %e, "Failed to save job result");
+            let mut result_saved = false;
+            for attempt in 0..3 {
+                match job_repo.set_result(&job_id, &result_json).await {
+                    Ok(_) => {
+                        result_saved = true;
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            job_id = %job_id, error = %e, attempt = attempt + 1,
+                            "Failed to save job result, retrying"
+                        );
+                        tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
+                    }
+                }
             }
-            if let Err(e) = job_repo
-                .update_status(&job_id, models::JOB_STATUS_COMPLETED, None, Some(1))
-                .await
-            {
-                tracing::error!(job_id = %job_id, error = %e, "Failed to mark job as completed");
+
+            if result_saved {
+                if let Err(e) = job_repo
+                    .update_status(&job_id, models::JOB_STATUS_COMPLETED, None, Some(1))
+                    .await
+                {
+                    tracing::error!(job_id = %job_id, error = %e, "Failed to mark job as completed");
+                }
+            } else {
+                tracing::error!(job_id = %job_id, "Failed to save job result after 3 attempts, marking as failed");
+                let _ = job_repo
+                    .update_status(
+                        &job_id,
+                        models::JOB_STATUS_FAILED,
+                        Some("Result persistence failed after retries"),
+                        None,
+                    )
+                    .await;
             }
         }
         Err(e) => {
