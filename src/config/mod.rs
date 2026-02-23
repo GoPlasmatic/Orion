@@ -318,6 +318,7 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
             VALID_LOG_LEVELS.join(", ")
         )));
     }
+    #[cfg(feature = "kafka")]
     if config.kafka.enabled {
         if config.kafka.brokers.is_empty() {
             return Err(OrionError::Internal(
@@ -402,6 +403,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "kafka")]
     fn test_validate_config_kafka_enabled_no_brokers() {
         let mut config = AppConfig::default();
         config.kafka.enabled = true;
