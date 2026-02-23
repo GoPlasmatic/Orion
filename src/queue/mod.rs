@@ -98,8 +98,8 @@ async fn dispatcher_loop(
         let job_repo = job_repo.clone();
 
         tokio::spawn(async move {
+            let _permit = permit; // guard: dropped on scope exit, even on panic
             process_job(msg, engine, job_repo).await;
-            drop(permit);
         });
     }
 
