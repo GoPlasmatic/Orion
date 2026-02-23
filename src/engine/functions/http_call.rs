@@ -49,21 +49,11 @@ impl AsyncFunctionHandler for HttpCallHandler {
         };
 
         // Build URL
-        let path = resolve_path(&input.path, &input.path_logic, message, &datalogic)?;
+        let path = super::resolve_path(&input.path, &input.path_logic, message, &datalogic)?;
         let url = build_url(&http_config.url, path.as_deref());
 
         // Build method
-        let method = match input.method {
-            dataflow_rs::engine::functions::integration::HttpMethod::Get => reqwest::Method::GET,
-            dataflow_rs::engine::functions::integration::HttpMethod::Post => reqwest::Method::POST,
-            dataflow_rs::engine::functions::integration::HttpMethod::Put => reqwest::Method::PUT,
-            dataflow_rs::engine::functions::integration::HttpMethod::Patch => {
-                reqwest::Method::PATCH
-            }
-            dataflow_rs::engine::functions::integration::HttpMethod::Delete => {
-                reqwest::Method::DELETE
-            }
-        };
+        let method = super::to_reqwest_method(&input.method);
 
         // Build body
         let body = resolve_body(&input.body, &input.body_logic, message, &datalogic)?;
@@ -101,30 +91,7 @@ impl AsyncFunctionHandler for HttpCallHandler {
     }
 }
 
-/// Build a full URL from a base URL and optional path.
-pub fn build_url_pub(base: &str, path: Option<&str>) -> String {
-    build_url(base, path)
-}
-
-/// Get a nested value from a JSON object using dot-notation path.
-pub fn get_nested_pub(value: &Value, path: &str) -> Value {
-    get_nested(value, path)
-}
-
-/// Set a nested value in a JSON object using dot-notation path.
-pub fn set_nested_pub(value: &mut Value, path: &str, new_val: Value) {
-    set_nested(value, path, new_val)
-}
-
-/// Apply authentication to a request builder.
-pub fn apply_auth_pub(
-    req: reqwest::RequestBuilder,
-    auth: &crate::connector::AuthConfig,
-) -> reqwest::RequestBuilder {
-    apply_auth(req, auth)
-}
-
-fn build_url(base: &str, path: Option<&str>) -> String {
+pub(crate) fn build_url(base: &str, path: Option<&str>) -> String {
     match path {
         Some(p) if !p.is_empty() => {
             let base = base.trim_end_matches('/');
@@ -132,28 +99,6 @@ fn build_url(base: &str, path: Option<&str>) -> String {
             format!("{}/{}", base, path)
         }
         _ => base.to_string(),
-    }
-}
-
-fn resolve_path(
-    static_path: &Option<String>,
-    path_logic: &Option<Value>,
-    message: &mut Message,
-    datalogic: &DataLogic,
-) -> dataflow_rs::Result<Option<String>> {
-    if let Some(logic) = path_logic {
-        let context = message.get_context_arc();
-        let compiled = datalogic
-            .compile(logic)
-            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-        let result = datalogic
-            .evaluate(&compiled, context)
-            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-        Ok(Some(result.as_str().map(|s| s.to_string()).unwrap_or_else(
-            || serde_json::to_string(&result).unwrap_or_default(),
-        )))
-    } else {
-        Ok(static_path.clone())
     }
 }
 
@@ -278,7 +223,7 @@ async fn execute_once(
     Ok(response_body)
 }
 
-fn apply_auth(
+pub(crate) fn apply_auth(
     req: reqwest::RequestBuilder,
     auth: &crate::connector::AuthConfig,
 ) -> reqwest::RequestBuilder {
@@ -294,7 +239,7 @@ fn apply_auth(
 }
 
 /// Get a nested value from a JSON object using dot-notation path.
-fn get_nested(value: &Value, path: &str) -> Value {
+pub(crate) fn get_nested(value: &Value, path: &str) -> Value {
     let parts: Vec<&str> = path.split('.').collect();
     let mut current = value;
     for part in &parts {
@@ -304,7 +249,7 @@ fn get_nested(value: &Value, path: &str) -> Value {
 }
 
 /// Set a nested value in a JSON object using dot-notation path.
-fn set_nested(value: &mut Value, path: &str, new_val: Value) {
+pub(crate) fn set_nested(value: &mut Value, path: &str, new_val: Value) {
     let parts: Vec<&str> = path.split('.').collect();
     let mut current = value;
     for (i, part) in parts.iter().enumerate() {

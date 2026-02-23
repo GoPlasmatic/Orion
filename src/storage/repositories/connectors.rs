@@ -34,7 +34,6 @@ pub struct UpdateConnectorRequest {
 pub trait ConnectorRepository: Send + Sync {
     async fn create(&self, req: &CreateConnectorRequest) -> Result<Connector, OrionError>;
     async fn get_by_id(&self, id: &str) -> Result<Connector, OrionError>;
-    async fn get_by_name(&self, name: &str) -> Result<Connector, OrionError>;
     async fn list(&self) -> Result<Vec<Connector>, OrionError>;
     async fn update(&self, id: &str, req: &UpdateConnectorRequest)
     -> Result<Connector, OrionError>;
@@ -89,14 +88,6 @@ impl ConnectorRepository for SqliteConnectorRepository {
             .fetch_optional(&self.pool)
             .await?
             .ok_or_else(|| OrionError::NotFound(format!("Connector '{}' not found", id)))
-    }
-
-    async fn get_by_name(&self, name: &str) -> Result<Connector, OrionError> {
-        sqlx::query_as::<_, Connector>("SELECT * FROM connectors WHERE name = ?")
-            .bind(name)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| OrionError::NotFound(format!("Connector '{}' not found", name)))
     }
 
     async fn list(&self) -> Result<Vec<Connector>, OrionError> {

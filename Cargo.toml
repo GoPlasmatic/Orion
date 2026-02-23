@@ -17,7 +17,6 @@ path = "src/lib.rs"
 dataflow-rs = "2.1.1"
 axum = "0.8"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "uuid"] }
-tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header"] }
 toml = "0.8"
 clap = { version = "4", features = ["derive"] }
@@ -31,11 +30,13 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 async-trait = "0.1"
-num_cpus = "1"
 datalogic-rs = "4"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
+
+[dev-dependencies]
+tower = "0.5"
 
 [features]
 default = []

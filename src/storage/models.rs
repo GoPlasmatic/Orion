@@ -1,6 +1,21 @@
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
+// -- Rule status constants --
+pub const RULE_STATUS_ACTIVE: &str = "active";
+pub const RULE_STATUS_PAUSED: &str = "paused";
+pub const RULE_STATUS_ARCHIVED: &str = "archived";
+pub const VALID_RULE_STATUSES: [&str; 3] = [RULE_STATUS_ACTIVE, RULE_STATUS_PAUSED, RULE_STATUS_ARCHIVED];
+
+// -- Job status constants --
+pub const JOB_STATUS_PENDING: &str = "pending";
+pub const JOB_STATUS_RUNNING: &str = "running";
+pub const JOB_STATUS_COMPLETED: &str = "completed";
+pub const JOB_STATUS_FAILED: &str = "failed";
+
+// -- Sentinel values --
+pub const DATA_API_CONNECTOR: &str = "__data_api__";
+
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Rule {
     pub id: String,

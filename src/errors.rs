@@ -38,10 +38,18 @@ impl IntoResponse for OrionError {
             OrionError::Serialization(_) => (StatusCode::BAD_REQUEST, "SERIALIZATION_ERROR"),
         };
 
+        let message = match &self {
+            OrionError::Storage(e) => {
+                tracing::error!(error = %e, "Storage error");
+                "An internal storage error occurred".to_string()
+            }
+            _ => self.to_string(),
+        };
+
         let body = json!({
             "error": {
                 "code": code,
-                "message": self.to_string(),
+                "message": message,
             }
         });
 

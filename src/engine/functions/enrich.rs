@@ -10,7 +10,7 @@ use datalogic_rs::DataLogic;
 use serde_json::Value;
 
 use crate::connector::{ConnectorConfig, ConnectorRegistry};
-use crate::engine::functions::http_call;
+use super::http_call;
 
 /// Fetches external data and merges it into the message context.
 pub struct EnrichHandler {
@@ -50,21 +50,11 @@ impl AsyncFunctionHandler for EnrichHandler {
         };
 
         // Build URL
-        let path = resolve_path(&input.path, &input.path_logic, message, &datalogic)?;
-        let url = http_call::build_url_pub(&http_config.url, path.as_deref());
+        let path = super::resolve_path(&input.path, &input.path_logic, message, &datalogic)?;
+        let url = http_call::build_url(&http_config.url, path.as_deref());
 
         // Build method
-        let method = match input.method {
-            dataflow_rs::engine::functions::integration::HttpMethod::Get => reqwest::Method::GET,
-            dataflow_rs::engine::functions::integration::HttpMethod::Post => reqwest::Method::POST,
-            dataflow_rs::engine::functions::integration::HttpMethod::Put => reqwest::Method::PUT,
-            dataflow_rs::engine::functions::integration::HttpMethod::Patch => {
-                reqwest::Method::PATCH
-            }
-            dataflow_rs::engine::functions::integration::HttpMethod::Delete => {
-                reqwest::Method::DELETE
-            }
-        };
+        let method = super::to_reqwest_method(&input.method);
 
         let timeout = Duration::from_millis(input.timeout_ms);
 
@@ -73,8 +63,8 @@ impl AsyncFunctionHandler for EnrichHandler {
 
         match result {
             Ok(response_body) => {
-                let old_value = http_call::get_nested_pub(&message.context, &input.merge_path);
-                http_call::set_nested_pub(
+                let old_value = http_call::get_nested(&message.context, &input.merge_path);
+                http_call::set_nested(
                     &mut message.context,
                     &input.merge_path,
                     response_body.clone(),
@@ -105,28 +95,6 @@ impl AsyncFunctionHandler for EnrichHandler {
     }
 }
 
-fn resolve_path(
-    static_path: &Option<String>,
-    path_logic: &Option<Value>,
-    message: &mut Message,
-    datalogic: &DataLogic,
-) -> dataflow_rs::Result<Option<String>> {
-    if let Some(logic) = path_logic {
-        let context = message.get_context_arc();
-        let compiled = datalogic
-            .compile(logic)
-            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-        let result = datalogic
-            .evaluate(&compiled, context)
-            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-        Ok(Some(result.as_str().map(|s| s.to_string()).unwrap_or_else(
-            || serde_json::to_string(&result).unwrap_or_default(),
-        )))
-    } else {
-        Ok(static_path.clone())
-    }
-}
-
 async fn execute_enrich(
     client: &reqwest::Client,
     method: &reqwest::Method,
@@ -150,7 +118,7 @@ async fn execute_enrich(
         }
 
         if let Some(ref auth) = http_config.auth {
-            req = http_call::apply_auth_pub(req, auth);
+            req = http_call::apply_auth(req, auth);
         }
 
         match req.send().await {

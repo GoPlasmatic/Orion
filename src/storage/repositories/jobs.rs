@@ -2,16 +2,14 @@ use async_trait::async_trait;
 use sqlx::SqlitePool;
 
 use crate::errors::OrionError;
-use crate::storage::models::Job;
+use crate::storage::models::{self, Job};
 
 // -- Repository trait --
 
 #[async_trait]
 pub trait JobRepository: Send + Sync {
-    async fn create(&self, connector_id: &str) -> Result<Job, OrionError>;
     async fn create_data_job(&self, channel: &str) -> Result<Job, OrionError>;
     async fn get_by_id(&self, id: &str) -> Result<Job, OrionError>;
-    async fn list_by_connector(&self, connector_id: &str) -> Result<Vec<Job>, OrionError>;
     async fn update_status(
         &self,
         id: &str,
@@ -36,25 +34,14 @@ impl SqliteJobRepository {
 
 #[async_trait]
 impl JobRepository for SqliteJobRepository {
-    async fn create(&self, connector_id: &str) -> Result<Job, OrionError> {
-        let id = uuid::Uuid::new_v4().to_string();
-
-        sqlx::query(r#"INSERT INTO jobs (id, connector_id, status) VALUES (?, ?, 'pending')"#)
-            .bind(&id)
-            .bind(connector_id)
-            .execute(&self.pool)
-            .await?;
-
-        self.get_by_id(&id).await
-    }
-
     async fn create_data_job(&self, channel: &str) -> Result<Job, OrionError> {
         let id = uuid::Uuid::new_v4().to_string();
 
         sqlx::query(
-            r#"INSERT INTO jobs (id, connector_id, status, channel) VALUES (?, '__data_api__', 'pending', ?)"#,
+            "INSERT INTO jobs (id, connector_id, status, channel) VALUES (?, ?, 'pending', ?)",
         )
         .bind(&id)
+        .bind(models::DATA_API_CONNECTOR)
         .bind(channel)
         .execute(&self.pool)
         .await?;
@@ -70,15 +57,6 @@ impl JobRepository for SqliteJobRepository {
             .ok_or_else(|| OrionError::NotFound(format!("Job '{}' not found", id)))
     }
 
-    async fn list_by_connector(&self, connector_id: &str) -> Result<Vec<Job>, OrionError> {
-        Ok(sqlx::query_as::<_, Job>(
-            "SELECT * FROM jobs WHERE connector_id = ? ORDER BY created_at DESC",
-        )
-        .bind(connector_id)
-        .fetch_all(&self.pool)
-        .await?)
-    }
-
     async fn update_status(
         &self,
         id: &str,
@@ -88,15 +66,13 @@ impl JobRepository for SqliteJobRepository {
     ) -> Result<Job, OrionError> {
         let now = chrono::Utc::now().naive_utc().to_string();
 
-        let started_at = if status == "running" {
-            Some(now.clone())
+        // started_at and completed_at are mutually exclusive — no need to clone
+        let (started_at, completed_at) = if status == models::JOB_STATUS_RUNNING {
+            (Some(now), None)
+        } else if status == models::JOB_STATUS_COMPLETED || status == models::JOB_STATUS_FAILED {
+            (None, Some(now))
         } else {
-            None
-        };
-        let completed_at = if status == "completed" || status == "failed" {
-            Some(now)
-        } else {
-            None
+            (None, None)
         };
 
         sqlx::query(

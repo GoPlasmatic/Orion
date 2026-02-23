@@ -126,8 +126,9 @@ async fn test_rule(
     let rule = state.rule_repo.get_by_id(&id).await?;
     let workflow = rule_to_workflow(&rule)?;
 
-    // Create an isolated engine with just this one rule
-    let test_engine = dataflow_rs::Engine::new(vec![workflow], None);
+    // Create an isolated engine with just this one rule, including custom functions
+    let custom_fns = crate::engine::build_custom_functions(state.connector_registry.clone());
+    let test_engine = dataflow_rs::Engine::new(vec![workflow], Some(custom_fns));
 
     let mut payload = json!({});
     if let Some(obj) = req.data.as_object() {
@@ -139,11 +140,7 @@ async fn test_rule(
     }
 
     let mut message = dataflow_rs::Message::from_value(&payload);
-    if let Some(meta_obj) = req.metadata.as_object() {
-        for (k, v) in meta_obj {
-            message.metadata_mut()[k] = v.clone();
-        }
-    }
+    super::data::merge_metadata(&mut message, &req.metadata);
 
     let trace = test_engine
         .process_message_with_trace(&mut message)
@@ -205,11 +202,10 @@ async fn import_rules(
 }
 
 async fn export_rules(
-    State(state): State<AppState>,
-    Query(filter): Query<RuleFilter>,
+    state: State<AppState>,
+    filter: Query<RuleFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let rules = state.rule_repo.list(&filter).await?;
-    Ok(Json(json!({ "data": rules })))
+    list_rules(state, filter).await
 }
 
 // ============================================================
@@ -278,12 +274,12 @@ async fn engine_status(State(state): State<AppState>) -> Result<Json<Value>, Ori
     let engine = state.engine.read().await;
     let workflows = engine.workflows();
 
-    let mut channels = std::collections::HashSet::new();
+    let mut channels: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut active_count = 0u64;
     let mut paused_count = 0u64;
 
     for w in workflows.iter() {
-        channels.insert(w.channel.clone());
+        channels.insert(&w.channel);
         match w.status {
             dataflow_rs::WorkflowStatus::Active => active_count += 1,
             dataflow_rs::WorkflowStatus::Paused => paused_count += 1,

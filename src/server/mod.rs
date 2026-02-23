@@ -2,6 +2,7 @@ pub mod routes;
 pub mod state;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use tower_http::cors::CorsLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
@@ -11,8 +12,10 @@ use crate::server::state::AppState;
 /// Build the Axum router with all middleware layers.
 pub fn build_router(state: AppState) -> Router {
     let x_request_id = axum::http::HeaderName::from_static("x-request-id");
+    let max_body_size = state.config.ingest.max_payload_size;
 
     routes::api_routes()
+        .layer(DefaultBodyLimit::max(max_body_size))
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
