@@ -15,7 +15,7 @@ use orion::storage::repositories::rules::SqliteRuleRepository;
 
 /// Create a test app with an in-memory SQLite database.
 pub async fn test_app() -> Router {
-    let pool = orion::storage::init_pool(":memory:").await.unwrap();
+    let pool = orion::storage::init_pool(":memory:", 5).await.unwrap();
 
     let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));

@@ -52,7 +52,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Prometheus metrics initialized");
 
     // Init database
-    let pool = orion::storage::init_pool(&config.storage.path).await?;
+    let pool =
+        orion::storage::init_pool(&config.storage.path, config.storage.max_connections).await?;
     tracing::info!(path = %config.storage.path, "Database initialized");
 
     // Create repositories

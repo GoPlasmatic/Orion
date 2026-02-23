@@ -42,12 +42,14 @@ impl Default for ServerConfig {
 #[serde(default)]
 pub struct StorageConfig {
     pub path: String,
+    pub max_connections: u32,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             path: "orion.db".to_string(),
+            max_connections: 5,
         }
     }
 }
@@ -279,9 +281,7 @@ const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 /// Validate configuration values.
 fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     if config.server.port == 0 {
-        return Err(OrionError::Internal(
-            "server.port must be > 0".to_string(),
-        ));
+        return Err(OrionError::Internal("server.port must be > 0".to_string()));
     }
     if config.server.workers == 0 {
         return Err(OrionError::Internal(
