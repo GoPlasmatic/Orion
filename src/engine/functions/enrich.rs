@@ -9,8 +9,8 @@ use dataflow_rs::engine::message::{Change, Message};
 use datalogic_rs::DataLogic;
 use serde_json::Value;
 
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
 use super::http_call;
+use crate::connector::{ConnectorConfig, ConnectorRegistry};
 
 /// Fetches external data and merges it into the message context.
 pub struct EnrichHandler {

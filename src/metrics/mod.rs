@@ -43,4 +43,3 @@ pub fn record_message_duration(channel: &str, duration_secs: f64) {
 pub fn set_active_rules(count: f64) {
     gauge!("active_rules").set(count);
 }
-

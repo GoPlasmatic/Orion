@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 pub const RULE_STATUS_ACTIVE: &str = "active";
 pub const RULE_STATUS_PAUSED: &str = "paused";
 pub const RULE_STATUS_ARCHIVED: &str = "archived";
-pub const VALID_RULE_STATUSES: [&str; 3] = [RULE_STATUS_ACTIVE, RULE_STATUS_PAUSED, RULE_STATUS_ARCHIVED];
+pub const VALID_RULE_STATUSES: [&str; 3] =
+    [RULE_STATUS_ACTIVE, RULE_STATUS_PAUSED, RULE_STATUS_ARCHIVED];
 
 // -- Job status constants --
 pub const JOB_STATUS_PENDING: &str = "pending";
