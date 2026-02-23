@@ -4,11 +4,14 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 /// Initialize the Prometheus metrics recorder and return a handle for rendering.
 ///
 /// Must be called once at startup before any metrics are recorded.
+/// Falls back to a local recorder handle if the global recorder is already installed.
 pub fn init_metrics() -> PrometheusHandle {
-    let builder = PrometheusBuilder::new();
-    builder
+    PrometheusBuilder::new()
         .install_recorder()
-        .expect("failed to install Prometheus recorder")
+        .unwrap_or_else(|_| {
+            // Recorder already installed (e.g., parallel tests) — create a standalone handle
+            PrometheusBuilder::new().build_recorder().handle()
+        })
 }
 
 // ---------------------------------------------------------------------------
