@@ -370,9 +370,91 @@ impl RuleRepository for SqliteRuleRepository {
         rules: &[CreateRuleRequest],
     ) -> Result<Vec<Result<Rule, OrionError>>, OrionError> {
         let mut results = Vec::with_capacity(rules.len());
+        let mut tx = self.pool.begin().await?;
+
         for req in rules {
-            results.push(self.create(req).await);
+            let id = req
+                .id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let condition_json = match serde_json::to_string(&req.condition) {
+                Ok(v) => v,
+                Err(e) => {
+                    results.push(Err(OrionError::from(e)));
+                    continue;
+                }
+            };
+            let tasks_json = match serde_json::to_string(&req.tasks) {
+                Ok(v) => v,
+                Err(e) => {
+                    results.push(Err(OrionError::from(e)));
+                    continue;
+                }
+            };
+            let tags_json = match serde_json::to_string(&req.tags) {
+                Ok(v) => v,
+                Err(e) => {
+                    results.push(Err(OrionError::from(e)));
+                    continue;
+                }
+            };
+
+            let insert_result = sqlx::query(
+                r#"INSERT INTO rules (id, name, description, channel, priority, condition_json, tasks_json, tags, continue_on_error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            )
+            .bind(&id)
+            .bind(&req.name)
+            .bind(&req.description)
+            .bind(&req.channel)
+            .bind(req.priority)
+            .bind(&condition_json)
+            .bind(&tasks_json)
+            .bind(&tags_json)
+            .bind(req.continue_on_error)
+            .execute(&mut *tx)
+            .await;
+
+            match insert_result {
+                Ok(_) => {
+                    let _ = insert_version(
+                        &mut *tx,
+                        &VersionData {
+                            rule_id: &id,
+                            version: 1,
+                            name: &req.name,
+                            description: req.description.as_deref(),
+                            channel: &req.channel,
+                            priority: req.priority,
+                            status: models::RULE_STATUS_ACTIVE,
+                            condition_json: &condition_json,
+                            tasks_json: &tasks_json,
+                            tags_json: &tags_json,
+                            continue_on_error: req.continue_on_error,
+                        },
+                    )
+                    .await;
+                    results.push(Ok(Rule {
+                        id,
+                        name: req.name.clone(),
+                        description: req.description.clone(),
+                        channel: req.channel.clone(),
+                        priority: req.priority,
+                        version: 1,
+                        status: models::RULE_STATUS_ACTIVE.to_string(),
+                        condition_json,
+                        tasks_json,
+                        tags: tags_json,
+                        continue_on_error: req.continue_on_error,
+                        created_at: chrono::Utc::now().naive_utc(),
+                        updated_at: chrono::Utc::now().naive_utc(),
+                    }));
+                }
+                Err(e) => results.push(Err(OrionError::Storage(e))),
+            }
         }
+
+        tx.commit().await?;
         Ok(results)
     }
 }
