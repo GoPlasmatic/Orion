@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tokio::sync::{RwLock, Semaphore, mpsc};
@@ -49,8 +49,15 @@ impl WorkerHandle {
     /// The returned future resolves when all in-flight jobs are complete.
     pub async fn shutdown(self) {
         drop(self._sender);
-        // Wait for the dispatcher to finish (all in-flight work will complete)
-        let _ = self.join_handle.await;
+        // Wait for the dispatcher with a timeout to prevent hanging on stuck jobs
+        if tokio::time::timeout(Duration::from_secs(30), self.join_handle)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                "Job queue workers did not shut down within 30s timeout, proceeding with exit"
+            );
+        }
     }
 }
 
@@ -103,8 +110,16 @@ async fn dispatcher_loop(
         });
     }
 
-    // Wait for all in-flight jobs to complete
-    let _ = semaphore.acquire_many(max_workers as u32).await;
+    // Wait for all in-flight jobs to complete, with a timeout
+    if tokio::time::timeout(
+        Duration::from_secs(30),
+        semaphore.acquire_many(max_workers as u32),
+    )
+    .await
+    .is_err()
+    {
+        tracing::warn!("Timed out waiting for in-flight jobs to complete");
+    }
     tracing::info!("Job queue workers shut down");
 }
 
