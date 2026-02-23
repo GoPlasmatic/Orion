@@ -132,12 +132,11 @@ async fn process_job(
     let mut message = dataflow_rs::Message::from_value(&msg.payload);
     crate::server::routes::data::merge_metadata(&mut message, &msg.metadata);
 
-    // Process through engine
-    let engine_guard = engine.read().await;
-    let result = engine_guard
+    // Clone the inner Arc<Engine> and release the lock immediately
+    let engine_ref = engine.read().await.clone();
+    let result = engine_ref
         .process_message_for_channel(&channel, &mut message)
         .await;
-    drop(engine_guard);
 
     let duration = start.elapsed().as_secs_f64();
 
