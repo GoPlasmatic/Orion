@@ -31,6 +31,16 @@ pub async fn test_app() -> Router {
         job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
     );
 
+    // Init metrics recorder (use try — may already be initialized by another test)
+    let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .install_recorder()
+        .unwrap_or_else(|_| {
+            // Recorder already installed by another test — create a no-op handle
+            metrics_exporter_prometheus::PrometheusBuilder::new()
+                .build_recorder()
+                .handle()
+        });
+
     let state = AppState {
         engine,
         rule_repo,
@@ -40,6 +50,8 @@ pub async fn test_app() -> Router {
         job_queue,
         config: Arc::new(AppConfig::default()),
         start_time: chrono::Utc::now(),
+        db_pool: pool,
+        metrics_handle,
     };
 
     orion::server::build_router(state)

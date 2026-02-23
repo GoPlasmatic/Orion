@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use rdkafka::ClientConfig;
 use rdkafka::Message as KafkaMessage;
@@ -9,6 +10,7 @@ use tokio::sync::{RwLock, watch};
 use crate::config::KafkaIngestConfig;
 use crate::errors::OrionError;
 use crate::kafka::producer::KafkaProducer;
+use crate::metrics;
 
 /// Handle for managing the Kafka consumer lifecycle.
 pub struct ConsumerHandle {
@@ -157,6 +159,7 @@ async fn consume_loop(
                         };
 
                         // Process through engine
+                        let start = Instant::now();
                         let mut message = dataflow_rs::Message::from_value(&data);
 
                         // Add Kafka metadata
@@ -177,6 +180,10 @@ async fn consume_loop(
                             .await
                         {
                             Ok(()) => {
+                                let duration = start.elapsed().as_secs_f64();
+                                metrics::record_message(&channel, "ok");
+                                metrics::record_message_duration(&channel, duration);
+
                                 tracing::debug!(
                                     topic = %topic,
                                     channel = %channel,
@@ -184,6 +191,9 @@ async fn consume_loop(
                                 );
                             }
                             Err(e) => {
+                                metrics::record_message(&channel, "error");
+                                metrics::record_error("kafka_processing");
+
                                 tracing::error!(
                                     topic = %topic,
                                     channel = %channel,
