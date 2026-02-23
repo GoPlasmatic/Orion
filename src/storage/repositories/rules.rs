@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 use crate::errors::OrionError;
-use crate::storage::models::Rule;
+use crate::storage::models::{self, Rule};
 
 // -- DTOs --
 
@@ -89,6 +89,49 @@ impl SqliteRuleRepository {
     }
 }
 
+/// Data needed to insert a rule version record.
+struct VersionData<'a> {
+    rule_id: &'a str,
+    version: i64,
+    name: &'a str,
+    description: Option<&'a str>,
+    channel: &'a str,
+    priority: i64,
+    status: &'a str,
+    condition_json: &'a str,
+    tasks_json: &'a str,
+    tags_json: &'a str,
+    continue_on_error: bool,
+}
+
+/// Insert a rule version record using the given executor (pool or transaction).
+async fn insert_version<'e, E>(
+    executor: E,
+    v: &VersionData<'_>,
+) -> Result<(), OrionError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    sqlx::query(
+        r#"INSERT INTO rule_versions (rule_id, version, name, description, channel, priority, status, condition_json, tasks_json, tags, continue_on_error)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+    )
+    .bind(v.rule_id)
+    .bind(v.version)
+    .bind(v.name)
+    .bind(v.description)
+    .bind(v.channel)
+    .bind(v.priority)
+    .bind(v.status)
+    .bind(v.condition_json)
+    .bind(v.tasks_json)
+    .bind(v.tags_json)
+    .bind(v.continue_on_error)
+    .execute(executor)
+    .await?;
+    Ok(())
+}
+
 #[async_trait]
 impl RuleRepository for SqliteRuleRepository {
     async fn create(&self, req: &CreateRuleRequest) -> Result<Rule, OrionError> {
@@ -99,6 +142,8 @@ impl RuleRepository for SqliteRuleRepository {
         let condition_json = serde_json::to_string(&req.condition)?;
         let tasks_json = serde_json::to_string(&req.tasks)?;
         let tags_json = serde_json::to_string(&req.tags)?;
+
+        let mut tx = self.pool.begin().await?;
 
         sqlx::query(
             r#"INSERT INTO rules (id, name, description, channel, priority, condition_json, tasks_json, tags, continue_on_error)
@@ -113,25 +158,18 @@ impl RuleRepository for SqliteRuleRepository {
         .bind(&tasks_json)
         .bind(&tags_json)
         .bind(req.continue_on_error)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
-        // Save initial version
-        sqlx::query(
-            r#"INSERT INTO rule_versions (rule_id, version, name, description, channel, priority, status, condition_json, tasks_json, tags, continue_on_error)
-               VALUES (?, 1, ?, ?, ?, ?, 'active', ?, ?, ?, ?)"#,
-        )
-        .bind(&id)
-        .bind(&req.name)
-        .bind(&req.description)
-        .bind(&req.channel)
-        .bind(req.priority)
-        .bind(&condition_json)
-        .bind(&tasks_json)
-        .bind(&tags_json)
-        .bind(req.continue_on_error)
-        .execute(&self.pool)
-        .await?;
+        insert_version(&mut *tx, &VersionData {
+            rule_id: &id, version: 1, name: &req.name,
+            description: req.description.as_deref(), channel: &req.channel,
+            priority: req.priority, status: models::RULE_STATUS_ACTIVE,
+            condition_json: &condition_json, tasks_json: &tasks_json,
+            tags_json: &tags_json, continue_on_error: req.continue_on_error,
+        }).await?;
+
+        tx.commit().await?;
 
         self.get_by_id(&id).await
     }
@@ -158,7 +196,7 @@ impl RuleRepository for SqliteRuleRepository {
         }
         if let Some(ref tag) = filter.tag {
             query.push_str(" AND tags LIKE ?");
-            binds.push(format!("%\"{}%", tag));
+            binds.push(format!("%\"{}\"%", tag));
         }
 
         query.push_str(" ORDER BY priority DESC, name ASC");
@@ -199,6 +237,8 @@ impl RuleRepository for SqliteRuleRepository {
 
         let new_version = existing.version + 1;
 
+        let mut tx = self.pool.begin().await?;
+
         sqlx::query(
             r#"UPDATE rules
                SET name = ?, description = ?, channel = ?, priority = ?,
@@ -217,27 +257,16 @@ impl RuleRepository for SqliteRuleRepository {
         .bind(&tags_json)
         .bind(continue_on_error)
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
-        // Save version history
-        sqlx::query(
-            r#"INSERT INTO rule_versions (rule_id, version, name, description, channel, priority, status, condition_json, tasks_json, tags, continue_on_error)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(id)
-        .bind(new_version)
-        .bind(name)
-        .bind(description)
-        .bind(channel)
-        .bind(priority)
-        .bind(status)
-        .bind(&condition_json)
-        .bind(&tasks_json)
-        .bind(&tags_json)
-        .bind(continue_on_error)
-        .execute(&self.pool)
-        .await?;
+        insert_version(&mut *tx, &VersionData {
+            rule_id: id, version: new_version, name, description, channel,
+            priority, status, condition_json: &condition_json,
+            tasks_json: &tasks_json, tags_json: &tags_json, continue_on_error,
+        }).await?;
+
+        tx.commit().await?;
 
         self.get_by_id(id).await
     }
@@ -264,16 +293,18 @@ impl RuleRepository for SqliteRuleRepository {
     }
 
     async fn update_status(&self, id: &str, status: &str) -> Result<Rule, OrionError> {
-        let valid = ["active", "paused", "archived"];
-        if !valid.contains(&status) {
+        if !models::VALID_RULE_STATUSES.contains(&status) {
             return Err(OrionError::BadRequest(format!(
-                "Invalid status '{}'. Must be one of: active, paused, archived",
-                status
+                "Invalid status '{}'. Must be one of: {}",
+                status,
+                models::VALID_RULE_STATUSES.join(", ")
             )));
         }
 
         let existing = self.get_by_id(id).await?;
         let new_version = existing.version + 1;
+
+        let mut tx = self.pool.begin().await?;
 
         sqlx::query(
             "UPDATE rules SET status = ?, version = ?, updated_at = datetime('now') WHERE id = ?",
@@ -281,27 +312,18 @@ impl RuleRepository for SqliteRuleRepository {
         .bind(status)
         .bind(new_version)
         .bind(id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
 
-        // Save version history
-        sqlx::query(
-            r#"INSERT INTO rule_versions (rule_id, version, name, description, channel, priority, status, condition_json, tasks_json, tags, continue_on_error)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(id)
-        .bind(new_version)
-        .bind(&existing.name)
-        .bind(&existing.description)
-        .bind(&existing.channel)
-        .bind(existing.priority)
-        .bind(status)
-        .bind(&existing.condition_json)
-        .bind(&existing.tasks_json)
-        .bind(&existing.tags)
-        .bind(existing.continue_on_error)
-        .execute(&self.pool)
-        .await?;
+        insert_version(&mut *tx, &VersionData {
+            rule_id: id, version: new_version, name: &existing.name,
+            description: existing.description.as_deref(),
+            channel: &existing.channel, priority: existing.priority, status,
+            condition_json: &existing.condition_json, tasks_json: &existing.tasks_json,
+            tags_json: &existing.tags, continue_on_error: existing.continue_on_error,
+        }).await?;
+
+        tx.commit().await?;
 
         self.get_by_id(id).await
     }

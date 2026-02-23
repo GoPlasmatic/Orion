@@ -33,7 +33,8 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let engine = state.engine.read().await;
     let workflows = engine.workflows();
     let rules_loaded = workflows.len();
-    let engine_healthy = true; // Engine is healthy if we can read it
+    // Engine is healthy if DB is accessible and we could read the engine
+    let engine_healthy = db_healthy;
     drop(engine);
 
     let overall_healthy = db_healthy && engine_healthy;
@@ -81,11 +82,8 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
         }
     }
 
-    let engine_guard = state.engine.read().await;
-    let new_engine = engine_guard.with_new_workflows(workflows);
-    drop(engine_guard);
-
     let mut engine_write = state.engine.write().await;
+    let new_engine = engine_write.with_new_workflows(workflows);
     *engine_write = Arc::new(new_engine);
 
     // Update active rules gauge

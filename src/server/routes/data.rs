@@ -11,6 +11,15 @@ use crate::errors::OrionError;
 use crate::metrics;
 use crate::server::state::AppState;
 
+/// Merge metadata key-value pairs into a message's metadata.
+pub(crate) fn merge_metadata(message: &mut dataflow_rs::Message, metadata: &Value) {
+    if let Some(meta_obj) = metadata.as_object() {
+        for (k, v) in meta_obj {
+            message.metadata_mut()[k] = v.clone();
+        }
+    }
+}
+
 pub fn data_routes() -> Router<AppState> {
     Router::new()
         .route("/batch", post(batch_process))
@@ -41,11 +50,7 @@ async fn sync_process(
     let engine = state.engine.read().await;
 
     let mut message = dataflow_rs::Message::from_value(&req.data);
-    if let Some(meta_obj) = req.metadata.as_object() {
-        for (k, v) in meta_obj {
-            message.metadata_mut()[k] = v.clone();
-        }
-    }
+    merge_metadata(&mut message, &req.metadata);
 
     match engine
         .process_message_for_channel(&channel, &mut message)
@@ -94,8 +99,6 @@ async fn async_submit(
         })
         .await?;
 
-    metrics::set_pending_jobs(1.0); // Signal a job was enqueued
-
     Ok((StatusCode::ACCEPTED, Json(json!({ "job_id": job_id }))))
 }
 
@@ -115,13 +118,14 @@ async fn get_job(
         "created_at": job.created_at.to_string(),
     });
 
-    if job.status == "completed" {
+    use crate::storage::models;
+    if job.status == models::JOB_STATUS_COMPLETED {
         if let Some(ref result_str) = job.result_json
             && let Ok(result_val) = serde_json::from_str::<Value>(result_str)
         {
             response["result"] = result_val;
         }
-    } else if job.status == "failed"
+    } else if job.status == models::JOB_STATUS_FAILED
         && let Some(ref err) = job.error_message
     {
         response["error"] = json!(err);
@@ -158,6 +162,14 @@ async fn batch_process(
     State(state): State<AppState>,
     Json(req): Json<BatchRequest>,
 ) -> Result<Json<Value>, OrionError> {
+    let max_batch = state.config.ingest.batch_size;
+    if req.messages.len() > max_batch {
+        return Err(OrionError::BadRequest(format!(
+            "Batch size {} exceeds maximum of {}",
+            req.messages.len(),
+            max_batch
+        )));
+    }
     tracing::debug!(count = req.messages.len(), "Processing batch");
 
     let engine = state.engine.read().await;
@@ -166,11 +178,7 @@ async fn batch_process(
     for msg in &req.messages {
         let start = Instant::now();
         let mut message = dataflow_rs::Message::from_value(&msg.data);
-        if let Some(meta_obj) = msg.metadata.as_object() {
-            for (k, v) in meta_obj {
-                message.metadata_mut()[k] = v.clone();
-            }
-        }
+        merge_metadata(&mut message, &msg.metadata);
 
         match engine
             .process_message_for_channel(&msg.channel, &mut message)

@@ -7,13 +7,6 @@ use crate::errors::OrionError;
 use crate::storage::repositories::connectors::ConnectorRepository;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ConnectorType {
-    Http,
-    Kafka,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ConnectorConfig {
     Http(HttpConnectorConfig),
@@ -122,16 +115,6 @@ impl ConnectorRegistry {
     /// Reload all connectors from the repository.
     pub async fn reload(&self, repo: &dyn ConnectorRepository) -> Result<usize, OrionError> {
         self.load_from_repo(repo).await
-    }
-
-    /// Add or update a single connector config by name.
-    pub async fn add(&self, name: String, config: ConnectorConfig) {
-        self.configs.write().await.insert(name, Arc::new(config));
-    }
-
-    /// Remove a connector config by name.
-    pub async fn remove(&self, name: &str) -> bool {
-        self.configs.write().await.remove(name).is_some()
     }
 }
 

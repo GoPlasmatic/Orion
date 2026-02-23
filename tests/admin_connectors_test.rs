@@ -1,28 +1,9 @@
 mod common;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use serde_json::{Value, json};
+use axum::http::StatusCode;
+use common::{body_json, json_request};
+use serde_json::json;
 use tower::ServiceExt;
-
-fn json_request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {
-    let mut builder = Request::builder().method(method).uri(uri);
-    if body.is_some() {
-        builder = builder.header("content-type", "application/json");
-    }
-    let body = match body {
-        Some(v) => Body::from(serde_json::to_string(&v).unwrap()),
-        None => Body::empty(),
-    };
-    builder.body(body).unwrap()
-}
-
-async fn body_json(response: axum::http::Response<Body>) -> Value {
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    serde_json::from_slice(&bytes).unwrap()
-}
 
 #[tokio::test]
 async fn test_connectors_crud_lifecycle() {

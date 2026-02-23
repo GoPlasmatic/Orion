@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
+use axum::body::Body;
+use axum::http::Request;
 use axum::Router;
+use serde_json::Value;
 use tokio::sync::RwLock;
 
 use orion::config::AppConfig;
@@ -55,4 +58,23 @@ pub async fn test_app() -> Router {
     };
 
     orion::server::build_router(state)
+}
+
+pub fn json_request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if body.is_some() {
+        builder = builder.header("content-type", "application/json");
+    }
+    let body = match body {
+        Some(v) => Body::from(serde_json::to_string(&v).unwrap()),
+        None => Body::empty(),
+    };
+    builder.body(body).unwrap()
+}
+
+pub async fn body_json(response: axum::http::Response<Body>) -> Value {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
 }

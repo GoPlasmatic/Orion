@@ -5,6 +5,7 @@ use serde_json::Value;
 use tokio::sync::{RwLock, Semaphore, mpsc};
 
 use crate::metrics;
+use crate::storage::models;
 use crate::storage::repositories::jobs::JobRepository;
 
 /// A message submitted to the job queue for async processing.
@@ -120,18 +121,14 @@ async fn process_job(
     tracing::info!(job_id = %job_id, channel = %channel, "Processing job");
 
     // Mark as running
-    if let Err(e) = job_repo.update_status(&job_id, "running", None, None).await {
+    if let Err(e) = job_repo.update_status(&job_id, models::JOB_STATUS_RUNNING, None, None).await {
         tracing::error!(job_id = %job_id, error = %e, "Failed to update job status to running");
         return;
     }
 
     // Build message
     let mut message = dataflow_rs::Message::from_value(&msg.payload);
-    if let Some(meta_obj) = msg.metadata.as_object() {
-        for (k, v) in meta_obj {
-            message.metadata_mut()[k] = v.clone();
-        }
-    }
+    crate::server::routes::data::merge_metadata(&mut message, &msg.metadata);
 
     // Process through engine
     let engine_guard = engine.read().await;
@@ -153,18 +150,26 @@ async fn process_job(
             }))
             .unwrap_or_default();
 
-            let _ = job_repo.set_result(&job_id, &result_json).await;
-            let _ = job_repo
-                .update_status(&job_id, "completed", None, Some(1))
-                .await;
+            if let Err(e) = job_repo.set_result(&job_id, &result_json).await {
+                tracing::error!(job_id = %job_id, error = %e, "Failed to save job result");
+            }
+            if let Err(e) = job_repo
+                .update_status(&job_id, models::JOB_STATUS_COMPLETED, None, Some(1))
+                .await
+            {
+                tracing::error!(job_id = %job_id, error = %e, "Failed to mark job as completed");
+            }
         }
         Err(e) => {
             metrics::record_message(&channel, "error");
             metrics::record_error("engine");
 
-            let _ = job_repo
-                .update_status(&job_id, "failed", Some(&e.to_string()), None)
-                .await;
+            if let Err(db_err) = job_repo
+                .update_status(&job_id, models::JOB_STATUS_FAILED, Some(&e.to_string()), None)
+                .await
+            {
+                tracing::error!(job_id = %job_id, error = %db_err, "Failed to mark job as failed");
+            }
         }
     }
 }

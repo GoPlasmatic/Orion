@@ -31,7 +31,7 @@ impl Default for ServerConfig {
         Self {
             host: "0.0.0.0".to_string(),
             port: 8080,
-            workers: num_cpus::get(),
+            workers: std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
         }
     }
 }
