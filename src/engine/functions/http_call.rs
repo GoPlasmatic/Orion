@@ -133,43 +133,24 @@ async fn execute_with_retry(
     timeout: Duration,
 ) -> dataflow_rs::Result<Value> {
     let retry_config = &http_config.retry;
-    let mut last_error = None;
 
-    for attempt in 0..=retry_config.max_retries {
-        if attempt > 0 {
-            let delay = retry_config.retry_delay_ms * 2u64.pow(attempt - 1);
-            tokio::time::sleep(Duration::from_millis(delay)).await;
-        }
-
-        match execute_once(
-            client,
-            method,
-            url,
-            task_headers,
-            http_config,
-            body,
-            timeout,
-        )
-        .await
-        {
-            Ok(val) => return Ok(val),
-            Err(e) => {
-                if e.retryable() && attempt < retry_config.max_retries {
-                    tracing::warn!(
-                        attempt = attempt + 1,
-                        max = retry_config.max_retries,
-                        error = %e,
-                        "HTTP call failed, retrying"
-                    );
-                    last_error = Some(e);
-                    continue;
-                }
-                return Err(e);
-            }
-        }
-    }
-
-    Err(last_error.unwrap_or_else(|| DataflowError::Unknown("Retry loop exhausted".into())))
+    super::retry_with_backoff(
+        retry_config.max_retries,
+        retry_config.retry_delay_ms,
+        "HTTP call",
+        || {
+            execute_once(
+                client,
+                method,
+                url,
+                task_headers,
+                http_config,
+                body,
+                timeout,
+            )
+        },
+    )
+    .await
 }
 
 #[tracing::instrument(skip(client, task_headers, http_config, body))]

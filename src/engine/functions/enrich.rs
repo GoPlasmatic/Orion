@@ -104,56 +104,48 @@ async fn execute_enrich(
     timeout: Duration,
 ) -> dataflow_rs::Result<Value> {
     let retry = &http_config.retry;
-    let mut last_error = None;
 
-    for attempt in 0..=retry.max_retries {
-        if attempt > 0 {
-            let delay = retry.retry_delay_ms * 2u64.pow(attempt - 1);
-            tokio::time::sleep(Duration::from_millis(delay)).await;
-        }
+    super::retry_with_backoff(retry.max_retries, retry.retry_delay_ms, "Enrich", || {
+        execute_enrich_once(client, method, url, http_config, timeout)
+    })
+    .await
+}
 
-        let mut req = client.request(method.clone(), url).timeout(timeout);
+async fn execute_enrich_once(
+    client: &reqwest::Client,
+    method: &reqwest::Method,
+    url: &str,
+    http_config: &crate::connector::HttpConnectorConfig,
+    timeout: Duration,
+) -> dataflow_rs::Result<Value> {
+    let mut req = client.request(method.clone(), url).timeout(timeout);
 
-        for (k, v) in &http_config.headers {
-            req = req.header(k, v);
-        }
-
-        if let Some(ref auth) = http_config.auth {
-            req = http_call::apply_auth(req, auth);
-        }
-
-        match req.send().await {
-            Ok(response) => {
-                let status = response.status();
-                if !status.is_success() {
-                    let err = DataflowError::http(
-                        status.as_u16(),
-                        format!("Enrich HTTP {} from {}", status, url),
-                    );
-                    if err.retryable() && attempt < retry.max_retries {
-                        last_error = Some(err);
-                        continue;
-                    }
-                    return Err(err);
-                }
-                return response.json::<Value>().await.map_err(|e| {
-                    DataflowError::Io(format!("Failed to parse enrich response: {}", e))
-                });
-            }
-            Err(e) => {
-                let err = if e.is_timeout() {
-                    DataflowError::Timeout(format!("Enrich request to {} timed out", url))
-                } else {
-                    DataflowError::Io(format!("Enrich request to {} failed: {}", url, e))
-                };
-                if err.retryable() && attempt < retry.max_retries {
-                    last_error = Some(err);
-                    continue;
-                }
-                return Err(err);
-            }
-        }
+    for (k, v) in &http_config.headers {
+        req = req.header(k, v);
     }
 
-    Err(last_error.unwrap_or_else(|| DataflowError::Unknown("Retry loop exhausted".into())))
+    if let Some(ref auth) = http_config.auth {
+        req = http_call::apply_auth(req, auth);
+    }
+
+    let response = req.send().await.map_err(|e| {
+        if e.is_timeout() {
+            DataflowError::Timeout(format!("Enrich request to {} timed out", url))
+        } else {
+            DataflowError::Io(format!("Enrich request to {} failed: {}", url, e))
+        }
+    })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(DataflowError::http(
+            status.as_u16(),
+            format!("Enrich HTTP {} from {}", status, url),
+        ));
+    }
+
+    response
+        .json::<Value>()
+        .await
+        .map_err(|e| DataflowError::Io(format!("Failed to parse enrich response: {}", e)))
 }
