@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub ingest: IngestConfig,
     pub engine: EngineConfig,
     pub queue: QueueConfig,
+    pub kafka: KafkaIngestConfig,
     pub logging: LoggingConfig,
     pub metrics: MetricsConfig,
 }
@@ -93,6 +94,58 @@ impl Default for QueueConfig {
         Self {
             workers: 4,
             buffer_size: 1000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KafkaIngestConfig {
+    /// Enable Kafka consumer ingestion.
+    pub enabled: bool,
+    /// Kafka broker addresses.
+    pub brokers: Vec<String>,
+    /// Consumer group ID.
+    pub group_id: String,
+    /// Topic-to-channel mappings.
+    #[serde(default)]
+    pub topics: Vec<TopicMapping>,
+    /// Dead-letter queue configuration.
+    pub dlq: DlqConfig,
+}
+
+impl Default for KafkaIngestConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            brokers: vec!["localhost:9092".to_string()],
+            group_id: "orion".to_string(),
+            topics: vec![],
+            dlq: DlqConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopicMapping {
+    pub topic: String,
+    pub channel: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DlqConfig {
+    /// Enable dead-letter queue for failed messages.
+    pub enabled: bool,
+    /// DLQ topic name.
+    pub topic: String,
+}
+
+impl Default for DlqConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            topic: "orion-dlq".to_string(),
         }
     }
 }

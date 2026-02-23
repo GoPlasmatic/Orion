@@ -64,7 +64,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(count = connector_count, "Connectors loaded");
 
     // Build custom function handlers (http_call, enrich, publish_kafka)
-    let custom_functions = orion::engine::build_custom_functions(connector_registry.clone());
+    #[allow(unused_mut)]
+    let mut custom_functions = orion::engine::build_custom_functions(connector_registry.clone());
+
+    // Kafka producer setup (when kafka feature is enabled)
+    #[cfg(feature = "kafka")]
+    let kafka_producer = if !config.kafka.brokers.is_empty() {
+        let producer = Arc::new(
+            orion::kafka::producer::KafkaProducer::new(&config.kafka.brokers.join(","))?,
+        );
+        orion::engine::register_kafka_publisher(
+            &mut custom_functions,
+            connector_registry.clone(),
+            producer.clone(),
+        );
+        tracing::info!("Kafka producer initialized");
+        Some(producer)
+    } else {
+        None
+    };
 
     // Load active rules and build engine with custom functions
     let active_rules = rule_repo.list_active().await?;
@@ -89,6 +107,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let engine = dataflow_rs::Engine::new(workflows, Some(custom_functions));
     let engine = Arc::new(RwLock::new(Arc::new(engine)));
+
+    // Start Kafka consumer (when kafka feature is enabled and configured)
+    #[cfg(feature = "kafka")]
+    let kafka_consumer_handle = if config.kafka.enabled && !config.kafka.topics.is_empty() {
+        let dlq_producer = if config.kafka.dlq.enabled {
+            kafka_producer.clone()
+        } else {
+            None
+        };
+        let dlq_topic = if config.kafka.dlq.enabled {
+            Some(config.kafka.dlq.topic.clone())
+        } else {
+            None
+        };
+
+        let handle = orion::kafka::consumer::start_consumer(
+            &config.kafka,
+            engine.clone(),
+            dlq_producer,
+            dlq_topic,
+        )?;
+
+        tracing::info!(
+            topics = config.kafka.topics.len(),
+            group_id = %config.kafka.group_id,
+            "Kafka consumer started"
+        );
+
+        Some(handle)
+    } else {
+        None
+    };
 
     // Start job queue worker pool
     let (job_queue, worker_handle) = orion::queue::start_workers(
@@ -132,7 +182,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(orion::server::shutdown_signal())
         .await?;
 
-    // Graceful shutdown: drain the job queue
+    // Graceful shutdown
+    #[cfg(feature = "kafka")]
+    if let Some(handle) = kafka_consumer_handle {
+        tracing::info!("Shutting down Kafka consumer...");
+        handle.shutdown().await;
+    }
+
     tracing::info!("Shutting down job queue workers...");
     worker_handle.shutdown().await;
 

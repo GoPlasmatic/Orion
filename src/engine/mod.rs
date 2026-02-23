@@ -9,8 +9,9 @@ use crate::connector::ConnectorRegistry;
 
 /// Build the custom function handlers for the dataflow-rs engine.
 ///
-/// These handlers implement the integration functions (http_call, enrich,
-/// publish_kafka) that the engine dispatches to by name.
+/// Registers http_call, enrich, and (when kafka feature is disabled) a stub
+/// publish_kafka handler. Use [`upgrade_publish_kafka`] to register the real
+/// Kafka-backed handler when the feature is enabled.
 pub fn build_custom_functions(
     registry: Arc<ConnectorRegistry>,
 ) -> HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> {
@@ -34,6 +35,8 @@ pub fn build_custom_functions(
         }),
     );
 
+    // Register stub publish_kafka when kafka feature is not available
+    #[cfg(not(feature = "kafka"))]
     fns.insert(
         "publish_kafka".to_string(),
         Box::new(functions::publish_kafka::PublishKafkaHandler {
@@ -42,4 +45,22 @@ pub fn build_custom_functions(
     );
 
     fns
+}
+
+/// Register the real Kafka-backed publish_kafka handler.
+///
+/// Replaces the stub handler (or adds the handler if not yet registered).
+#[cfg(feature = "kafka")]
+pub fn register_kafka_publisher(
+    fns: &mut HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>>,
+    registry: Arc<ConnectorRegistry>,
+    producer: Arc<crate::kafka::producer::KafkaProducer>,
+) {
+    fns.insert(
+        "publish_kafka".to_string(),
+        Box::new(functions::publish_kafka::PublishKafkaHandler {
+            registry,
+            producer,
+        }),
+    );
 }
