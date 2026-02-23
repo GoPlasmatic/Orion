@@ -59,9 +59,13 @@ where
 {
     let mut last_error = None;
 
+    const MAX_BACKOFF_MS: u64 = 60_000; // cap at 60 seconds
+
     for attempt in 0..=max_retries {
         if attempt > 0 {
-            let delay = retry_delay_ms * 2u64.pow(attempt - 1);
+            let delay = retry_delay_ms
+                .saturating_mul(1u64.checked_shl(attempt - 1).unwrap_or(u64::MAX))
+                .min(MAX_BACKOFF_MS);
             tokio::time::sleep(Duration::from_millis(delay)).await;
         }
 
