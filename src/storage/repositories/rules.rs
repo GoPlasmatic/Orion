@@ -417,7 +417,7 @@ impl RuleRepository for SqliteRuleRepository {
 
             match insert_result {
                 Ok(_) => {
-                    let _ = insert_version(
+                    if let Err(e) = insert_version(
                         &mut *tx,
                         &VersionData {
                             rule_id: &id,
@@ -433,7 +433,11 @@ impl RuleRepository for SqliteRuleRepository {
                             continue_on_error: req.continue_on_error,
                         },
                     )
-                    .await;
+                    .await
+                    {
+                        results.push(Err(e));
+                        continue;
+                    }
                     results.push(Ok(Rule {
                         id,
                         name: req.name.clone(),
