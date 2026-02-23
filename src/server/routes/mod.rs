@@ -87,9 +87,20 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
         }
     }
 
-    let mut engine_write = state.engine.write().await;
-    let new_engine = engine_write.with_new_workflows(workflows);
-    *engine_write = Arc::new(new_engine);
+    // Build the new engine outside the write lock to minimize lock hold time.
+    // Clone the current engine Arc, build new workflows, then swap atomically.
+    let current_engine = state.engine.read().await.clone();
+    let new_engine = Arc::new(current_engine.with_new_workflows(workflows));
+
+    let mut engine_write =
+        tokio::time::timeout(std::time::Duration::from_secs(10), state.engine.write())
+            .await
+            .map_err(|_| {
+                crate::errors::OrionError::Internal(
+                    "Engine reload timed out waiting for write lock".into(),
+                )
+            })?;
+    *engine_write = new_engine;
 
     // Update active rules gauge
     crate::metrics::set_active_rules(rules.len() as f64);
