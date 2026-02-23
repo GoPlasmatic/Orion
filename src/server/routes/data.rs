@@ -130,7 +130,7 @@ async fn get_job(
     let mut response = json!({
         "id": job.id,
         "status": job.status,
-        "created_at": job.created_at.to_string(),
+        "created_at": job.created_at,
     });
 
     use crate::storage::models;
@@ -147,10 +147,10 @@ async fn get_job(
     }
 
     if let Some(ref started) = job.started_at {
-        response["started_at"] = json!(started.to_string());
+        response["started_at"] = json!(started);
     }
     if let Some(ref completed) = job.completed_at {
-        response["completed_at"] = json!(completed.to_string());
+        response["completed_at"] = json!(completed);
     }
 
     Ok(Json(response))
