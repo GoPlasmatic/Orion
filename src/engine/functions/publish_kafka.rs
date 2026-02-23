@@ -31,7 +31,7 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
             _ => {
                 return Err(DataflowError::Validation(
                     "Expected PublishKafka config".into(),
-                ))
+                ));
             }
         };
 
@@ -76,7 +76,7 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
             _ => {
                 return Err(DataflowError::Validation(
                     "Expected PublishKafka config".into(),
-                ))
+                ));
             }
         };
 
