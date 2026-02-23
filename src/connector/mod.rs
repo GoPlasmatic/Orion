@@ -89,13 +89,13 @@ impl ConnectorRegistry {
         repo: &dyn ConnectorRepository,
     ) -> Result<usize, OrionError> {
         let connectors = repo.list_enabled().await?;
-        let mut configs = self.configs.write().await;
-        configs.clear();
 
+        // Build new map outside the lock to avoid holding it during deserialization
+        let mut new_configs = HashMap::new();
         for connector in &connectors {
             match serde_json::from_str::<ConnectorConfig>(&connector.config_json) {
                 Ok(config) => {
-                    configs.insert(connector.name.clone(), Arc::new(config));
+                    new_configs.insert(connector.name.clone(), Arc::new(config));
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -108,7 +108,10 @@ impl ConnectorRegistry {
             }
         }
 
-        Ok(configs.len())
+        // Minimal write lock — just swap
+        let count = new_configs.len();
+        *self.configs.write().await = new_configs;
+        Ok(count)
     }
 
     /// Get a connector config by name.
