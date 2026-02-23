@@ -242,10 +242,12 @@ pub(crate) fn apply_auth(
 
 /// Get a nested value from a JSON object using dot-notation path.
 pub(crate) fn get_nested(value: &Value, path: &str) -> Value {
-    let parts: Vec<&str> = path.split('.').collect();
     let mut current = value;
-    for part in &parts {
-        current = &current[*part];
+    for part in path.split('.') {
+        match current.get(part) {
+            Some(v) => current = v,
+            None => return Value::Null,
+        }
     }
     current.clone()
 }
@@ -259,7 +261,7 @@ pub(crate) fn set_nested(value: &mut Value, path: &str, new_val: Value) {
             current[*part] = new_val;
             return;
         }
-        if !current[*part].is_object() {
+        if !current.get(*part).is_some_and(|v| v.is_object()) {
             current[*part] = Value::Object(serde_json::Map::new());
         }
         current = &mut current[*part];
