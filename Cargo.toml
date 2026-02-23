@@ -33,6 +33,8 @@ thiserror = "2"
 async-trait = "0.1"
 num_cpus = "1"
 datalogic-rs = "4"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
 rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
 
 [features]

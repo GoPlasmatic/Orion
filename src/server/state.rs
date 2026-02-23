@@ -1,4 +1,6 @@
 use std::sync::Arc;
+
+use metrics_exporter_prometheus::PrometheusHandle;
 use tokio::sync::RwLock;
 
 use crate::config::AppConfig;
@@ -19,4 +21,6 @@ pub struct AppState {
     pub job_queue: JobQueue,
     pub config: Arc<AppConfig>,
     pub start_time: chrono::DateTime<chrono::Utc>,
+    pub db_pool: sqlx::SqlitePool,
+    pub metrics_handle: PrometheusHandle,
 }

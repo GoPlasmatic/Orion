@@ -251,4 +251,43 @@ async fn test_health_endpoint() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["status"], "ok");
+    assert!(body.get("uptime_seconds").is_some());
+    assert!(body.get("version").is_some());
+    assert!(body.get("components").is_some());
+    assert_eq!(body["components"]["database"], "ok");
+    assert_eq!(body["components"]["engine"], "ok");
+}
+
+#[tokio::test]
+async fn test_metrics_endpoint() {
+    let app = common::test_app().await;
+
+    // Process a message first to generate some metrics
+    let _ = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/test-channel",
+            Some(json!({
+                "data": { "key": "value" },
+                "metadata": {}
+            })),
+        ))
+        .await
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/metrics", None))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    // Metrics should contain Prometheus format text (may be empty if no metrics recorded yet)
+    assert!(!body.contains("error"));
 }

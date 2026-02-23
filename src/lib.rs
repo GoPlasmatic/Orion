@@ -4,6 +4,7 @@ pub mod engine;
 pub mod errors;
 #[cfg(feature = "kafka")]
 pub mod kafka;
+pub mod metrics;
 pub mod queue;
 pub mod server;
 pub mod storage;

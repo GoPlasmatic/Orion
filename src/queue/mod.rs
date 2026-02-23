@@ -1,8 +1,10 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use serde_json::Value;
 use tokio::sync::{RwLock, Semaphore, mpsc};
 
+use crate::metrics;
 use crate::storage::repositories::jobs::JobRepository;
 
 /// A message submitted to the job queue for async processing.
@@ -113,6 +115,9 @@ async fn process_job(
 ) {
     let job_id = msg.job_id;
     let channel = msg.channel;
+    let start = Instant::now();
+
+    tracing::info!(job_id = %job_id, channel = %channel, "Processing job");
 
     // Mark as running
     if let Err(e) = job_repo.update_status(&job_id, "running", None, None).await {
@@ -135,8 +140,13 @@ async fn process_job(
         .await;
     drop(engine_guard);
 
+    let duration = start.elapsed().as_secs_f64();
+
     match result {
         Ok(()) => {
+            metrics::record_message(&channel, "ok");
+            metrics::record_message_duration(&channel, duration);
+
             let result_json = serde_json::to_string(&serde_json::json!({
                 "id": message.id,
                 "data": message.data(),
@@ -149,6 +159,9 @@ async fn process_job(
                 .await;
         }
         Err(e) => {
+            metrics::record_message(&channel, "error");
+            metrics::record_error("engine");
+
             let _ = job_repo
                 .update_status(&job_id, "failed", Some(&e.to_string()), None)
                 .await;
