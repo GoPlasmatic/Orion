@@ -174,18 +174,9 @@ impl RulesCmd {
                 metadata,
                 trace,
             } => {
-                test_rule(
-                    client,
-                    format,
-                    quiet,
-                    id,
-                    file.as_deref(),
-                    data.as_deref(),
-                    *stdin,
-                    metadata.as_deref(),
-                    *trace,
-                )
-                .await
+                let payload = read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
+                let meta = metadata.as_deref().map(serde_json::from_str).transpose()?;
+                test_rule(client, format, quiet, id, &payload, meta.as_ref(), *trace).await
             }
             RulesSubcommand::Export {
                 status,
@@ -430,24 +421,18 @@ async fn change_status(client: &OrionClient, quiet: bool, id: &str, status: &str
     Ok(0)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn test_rule(
     client: &OrionClient,
     format: &OutputFormat,
     quiet: bool,
     id: &str,
-    file: Option<&str>,
-    data: Option<&str>,
-    stdin: bool,
-    metadata: Option<&str>,
+    payload: &Value,
+    metadata: Option<&Value>,
     trace: bool,
 ) -> Result<i32> {
-    let payload = read_json_input(file, data, stdin)?;
-
     let mut body = serde_json::json!({ "data": payload });
     if let Some(meta) = metadata {
-        let meta_val: Value = serde_json::from_str(meta)?;
-        body["metadata"] = meta_val;
+        body["metadata"] = meta.clone();
     }
 
     let resp: Value = client
