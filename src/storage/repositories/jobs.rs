@@ -9,6 +9,7 @@ use crate::storage::models::Job;
 #[async_trait]
 pub trait JobRepository: Send + Sync {
     async fn create(&self, connector_id: &str) -> Result<Job, OrionError>;
+    async fn create_data_job(&self, channel: &str) -> Result<Job, OrionError>;
     async fn get_by_id(&self, id: &str) -> Result<Job, OrionError>;
     async fn list_by_connector(&self, connector_id: &str) -> Result<Vec<Job>, OrionError>;
     async fn update_status(
@@ -18,6 +19,7 @@ pub trait JobRepository: Send + Sync {
         error_message: Option<&str>,
         records_processed: Option<i64>,
     ) -> Result<Job, OrionError>;
+    async fn set_result(&self, id: &str, result_json: &str) -> Result<(), OrionError>;
 }
 
 // -- SQLite implementation --
@@ -42,6 +44,20 @@ impl JobRepository for SqliteJobRepository {
             .bind(connector_id)
             .execute(&self.pool)
             .await?;
+
+        self.get_by_id(&id).await
+    }
+
+    async fn create_data_job(&self, channel: &str) -> Result<Job, OrionError> {
+        let id = uuid::Uuid::new_v4().to_string();
+
+        sqlx::query(
+            r#"INSERT INTO jobs (id, connector_id, status, channel) VALUES (?, '__data_api__', 'pending', ?)"#,
+        )
+        .bind(&id)
+        .bind(channel)
+        .execute(&self.pool)
+        .await?;
 
         self.get_by_id(&id).await
     }
@@ -102,5 +118,14 @@ impl JobRepository for SqliteJobRepository {
         .await?;
 
         self.get_by_id(id).await
+    }
+
+    async fn set_result(&self, id: &str, result_json: &str) -> Result<(), OrionError> {
+        sqlx::query("UPDATE jobs SET result_json = ?, updated_at = datetime('now') WHERE id = ?")
+            .bind(result_json)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
