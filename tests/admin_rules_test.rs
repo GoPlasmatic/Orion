@@ -278,3 +278,149 @@ async fn test_engine_status_and_reload() {
     let body = body_json(resp).await;
     assert_eq!(body["reloaded"], true);
 }
+
+#[tokio::test]
+async fn test_error_malformed_json_body() {
+    let app = common::test_app().await;
+
+    // Send non-JSON body to a JSON endpoint
+    let resp = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/v1/admin/rules")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from("not json"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Axum returns 422 for JSON parse failures
+    assert!(resp.status().is_client_error());
+}
+
+#[tokio::test]
+async fn test_error_nonexistent_rule() {
+    let app = common::test_app().await;
+
+    // Get non-existent rule
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/rules/nonexistent-id",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp).await;
+    assert!(body["error"]["code"].as_str().is_some());
+    assert!(body["error"]["message"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn test_error_empty_channel_rejected() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/%20",
+            Some(json!({ "data": { "key": "value" } })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_error_empty_batch_rejected() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/batch",
+            Some(json!({ "messages": [] })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_end_to_end_rule_execution() {
+    let app = common::test_app().await;
+
+    // Create a rule with a map transform
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Transform Rule",
+                "channel": "orders",
+                "condition": { ">": [{ "var": "data.total" }, 100] },
+                "tasks": [{
+                    "id": "transform",
+                    "name": "Add label",
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [{
+                                "path": "data.label",
+                                "logic": { "cat": ["Order: $", { "var": "data.total" }] }
+                            }]
+                        }
+                    }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Send data that matches the condition
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/orders",
+            Some(json!({ "data": { "total": 250 } })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+    // The map transform adds label inside the data namespace
+    assert!(
+        body.get("data").is_some(),
+        "Response should have data field"
+    );
+
+    // Send data that does NOT match the condition (total <= 100)
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/orders",
+            Some(json!({ "data": { "total": 50 } })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+}
