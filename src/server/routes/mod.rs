@@ -30,13 +30,16 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
         .await
         .is_ok();
 
-    // Check engine state
-    let engine = state.engine.read().await;
-    let workflows = engine.workflows();
-    let rules_loaded = workflows.len();
-    // Engine is healthy if DB is accessible and we could read the engine
-    let engine_healthy = db_healthy;
-    drop(engine);
+    // Check engine state — independently verify the engine lock is acquirable
+    let mut rules_loaded = 0;
+    let engine_healthy =
+        match tokio::time::timeout(std::time::Duration::from_secs(2), state.engine.read()).await {
+            Ok(guard) => {
+                rules_loaded = guard.workflows().len();
+                true
+            }
+            Err(_) => false,
+        };
 
     let overall_healthy = db_healthy && engine_healthy;
     let status_str = if overall_healthy { "ok" } else { "degraded" };
