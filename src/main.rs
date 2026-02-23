@@ -163,6 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     orion::metrics::set_active_rules(active_rules.len() as f64);
 
     // Build state and router
+    let config = Arc::new(config);
     let state = AppState {
         engine,
         rule_repo: rule_repo as Arc<dyn orion::storage::repositories::rules::RuleRepository>,
@@ -171,7 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         job_repo: job_repo as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
         connector_registry,
         job_queue,
-        config: Arc::new(config.clone()),
+        config: config.clone(),
         start_time: chrono::Utc::now(),
         db_pool: pool,
         metrics_handle,
