@@ -17,6 +17,15 @@
 [engine]
 # max_concurrent_workflows = 100
 
+[queue]
+# workers = 4                  # Concurrent async job workers
+# buffer_size = 1000           # Channel buffer for pending jobs
+
+[kafka]                         # Requires the `kafka` feature flag
+# enabled = false
+# brokers = ["localhost:9092"]
+# group_id = "orion"
+
 [logging]
 # level = "info"              # trace, debug, info, warn, error
 # format = "pretty"           # pretty or json
