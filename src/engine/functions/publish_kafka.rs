@@ -9,14 +9,15 @@ use datalogic_rs::DataLogic;
 
 use crate::connector::ConnectorRegistry;
 
-/// Publishes messages to Kafka topics.
+/// Stub handler used when the `kafka` feature is not enabled.
 ///
-/// Requires the `kafka` feature to be enabled. When disabled, returns an error
-/// explaining that Kafka support is not compiled in.
+/// Returns an error explaining that Kafka support is not compiled in.
+#[cfg(not(feature = "kafka"))]
 pub struct PublishKafkaHandler {
     pub registry: Arc<ConnectorRegistry>,
 }
 
+#[cfg(not(feature = "kafka"))]
 #[async_trait]
 impl AsyncFunctionHandler for PublishKafkaHandler {
     async fn execute(
@@ -30,7 +31,52 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
             _ => {
                 return Err(DataflowError::Validation(
                     "Expected PublishKafka config".into(),
-                ));
+                ))
+            }
+        };
+
+        let _connector = self.registry.get(&input.connector).await.ok_or_else(|| {
+            DataflowError::function_execution(
+                format!("Connector '{}' not found", input.connector),
+                None,
+            )
+        })?;
+
+        Err(DataflowError::FunctionExecution {
+            context: format!(
+                "Kafka publishing to topic '{}' is not available. \
+                 Enable the 'kafka' feature to use publish_kafka.",
+                input.topic
+            ),
+            source: None,
+        })
+    }
+}
+
+/// Real handler used when the `kafka` feature is enabled.
+///
+/// Publishes messages to Kafka topics using the shared producer.
+#[cfg(feature = "kafka")]
+pub struct PublishKafkaHandler {
+    pub registry: Arc<ConnectorRegistry>,
+    pub producer: Arc<crate::kafka::producer::KafkaProducer>,
+}
+
+#[cfg(feature = "kafka")]
+#[async_trait]
+impl AsyncFunctionHandler for PublishKafkaHandler {
+    async fn execute(
+        &self,
+        message: &mut Message,
+        config: &FunctionConfig,
+        datalogic: Arc<DataLogic>,
+    ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
+        let input = match config {
+            FunctionConfig::PublishKafka { input, .. } => input,
+            _ => {
+                return Err(DataflowError::Validation(
+                    "Expected PublishKafka config".into(),
+                ))
             }
         };
 
@@ -42,15 +88,55 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
             )
         })?;
 
-        // Kafka publishing is not yet implemented — requires rdkafka dependency
-        // and will be fully implemented when the kafka feature is added.
-        Err(DataflowError::FunctionExecution {
-            context: format!(
-                "Kafka publishing to topic '{}' is not available. \
-                 Enable the 'kafka' feature to use publish_kafka.",
-                input.topic
-            ),
-            source: None,
-        })
+        // Evaluate key from JSONLogic if provided
+        let key = if let Some(key_logic) = &input.key_logic {
+            let context = message.get_context_arc();
+            let compiled = datalogic
+                .compile(key_logic)
+                .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
+            let result = datalogic
+                .evaluate(&compiled, context)
+                .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
+            Some(
+                result
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| serde_json::to_string(&result).unwrap_or_default()),
+            )
+        } else {
+            None
+        };
+
+        // Evaluate value from JSONLogic or default to message data
+        let value = if let Some(value_logic) = &input.value_logic {
+            let context = message.get_context_arc();
+            let compiled = datalogic
+                .compile(value_logic)
+                .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
+            let result = datalogic
+                .evaluate(&compiled, context)
+                .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
+            serde_json::to_string(&result).unwrap_or_default()
+        } else {
+            serde_json::to_string(message.data()).unwrap_or_default()
+        };
+
+        // Publish to Kafka
+        self.producer
+            .send(&input.topic, key.as_deref(), value.as_bytes())
+            .await
+            .map_err(|e| {
+                DataflowError::function_execution(
+                    format!("Kafka publish to '{}' failed: {}", input.topic, e),
+                    None,
+                )
+            })?;
+
+        tracing::debug!(
+            topic = %input.topic,
+            "Published message to Kafka"
+        );
+
+        Ok((200, vec![]))
     }
 }
