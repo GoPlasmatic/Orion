@@ -10,6 +10,10 @@ license = "Apache-2.0"
 name = "orion"
 path = "src/main.rs"
 
+[[bin]]
+name = "orion-cli"
+path = "src/cli/main.rs"
+
 [lib]
 name = "orion"
 path = "src/lib.rs"
@@ -20,7 +24,7 @@ axum = "0.8"
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "migrate", "chrono", "uuid"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header"] }
 toml = "0.8"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 reqwest = { version = "0.12", features = ["json"] }
@@ -35,6 +39,12 @@ datalogic-rs = "4"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
+colored = "3"
+tabled = "0.18"
+dirs = "6"
+serde_yaml = "0.9"
+clap_complete = "4"
+anyhow = "1"
 
 [dev-dependencies]
 tower = "0.5"
