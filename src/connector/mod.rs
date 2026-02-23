@@ -93,14 +93,18 @@ impl ConnectorRegistry {
         configs.clear();
 
         for connector in &connectors {
-            if let Ok(config) = serde_json::from_str::<ConnectorConfig>(&connector.config_json) {
-                configs.insert(connector.name.clone(), Arc::new(config));
-            } else {
-                tracing::warn!(
-                    connector_id = %connector.id,
-                    connector_name = %connector.name,
-                    "Failed to parse connector config, skipping"
-                );
+            match serde_json::from_str::<ConnectorConfig>(&connector.config_json) {
+                Ok(config) => {
+                    configs.insert(connector.name.clone(), Arc::new(config));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        connector_id = %connector.id,
+                        connector_name = %connector.name,
+                        error = %e,
+                        "Failed to parse connector config, skipping"
+                    );
+                }
             }
         }
 
