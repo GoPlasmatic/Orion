@@ -70,6 +70,7 @@ async fn sync_process(
 
             Ok(Json(json!({
                 "id": message.id,
+                "status": "ok",
                 "data": message.data(),
                 "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
             })))
