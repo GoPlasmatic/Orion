@@ -259,19 +259,83 @@ fn apply_env_overrides(config: &mut AppConfig) {
     {
         config.metrics.enabled = enabled;
     }
+    // Kafka overrides
+    if let Ok(v) = std::env::var("ORION_KAFKA__ENABLED")
+        && let Ok(enabled) = v.parse::<bool>()
+    {
+        config.kafka.enabled = enabled;
+    }
+    if let Ok(v) = std::env::var("ORION_KAFKA__BROKERS") {
+        config.kafka.brokers = v.split(',').map(|s| s.trim().to_string()).collect();
+    }
+    if let Ok(v) = std::env::var("ORION_KAFKA__GROUP_ID") {
+        config.kafka.group_id = v;
+    }
 }
+
+/// Valid tracing log levels.
+const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 
 /// Validate configuration values.
 fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     if config.server.port == 0 {
-        return Err(OrionError::BadRequest(
+        return Err(OrionError::Internal(
             "server.port must be > 0".to_string(),
         ));
     }
     if config.server.workers == 0 {
-        return Err(OrionError::BadRequest(
+        return Err(OrionError::Internal(
             "server.workers must be > 0".to_string(),
         ));
+    }
+    if config.ingest.max_payload_size == 0 {
+        return Err(OrionError::Internal(
+            "ingest.max_payload_size must be > 0".to_string(),
+        ));
+    }
+    if config.ingest.batch_size == 0 {
+        return Err(OrionError::Internal(
+            "ingest.batch_size must be > 0".to_string(),
+        ));
+    }
+    if config.queue.workers == 0 {
+        return Err(OrionError::Internal(
+            "queue.workers must be > 0".to_string(),
+        ));
+    }
+    if config.queue.buffer_size == 0 {
+        return Err(OrionError::Internal(
+            "queue.buffer_size must be > 0".to_string(),
+        ));
+    }
+    if config.storage.path.is_empty() {
+        return Err(OrionError::Internal(
+            "storage.path must not be empty".to_string(),
+        ));
+    }
+    if !VALID_LOG_LEVELS.contains(&config.logging.level.to_lowercase().as_str()) {
+        return Err(OrionError::Internal(format!(
+            "logging.level '{}' is invalid. Must be one of: {}",
+            config.logging.level,
+            VALID_LOG_LEVELS.join(", ")
+        )));
+    }
+    if config.kafka.enabled {
+        if config.kafka.brokers.is_empty() {
+            return Err(OrionError::Internal(
+                "kafka.brokers must not be empty when Kafka is enabled".to_string(),
+            ));
+        }
+        if config.kafka.group_id.is_empty() {
+            return Err(OrionError::Internal(
+                "kafka.group_id must not be empty when Kafka is enabled".to_string(),
+            ));
+        }
+        if config.kafka.topics.is_empty() {
+            return Err(OrionError::Internal(
+                "kafka.topics must not be empty when Kafka is enabled".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -308,6 +372,42 @@ mod tests {
     fn test_validate_config_invalid_workers() {
         let mut config = AppConfig::default();
         config.server.workers = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_invalid_queue_workers() {
+        let mut config = AppConfig::default();
+        config.queue.workers = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_invalid_queue_buffer() {
+        let mut config = AppConfig::default();
+        config.queue.buffer_size = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_empty_storage_path() {
+        let mut config = AppConfig::default();
+        config.storage.path = String::new();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_invalid_log_level() {
+        let mut config = AppConfig::default();
+        config.logging.level = "invalid".to_string();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_kafka_enabled_no_brokers() {
+        let mut config = AppConfig::default();
+        config.kafka.enabled = true;
+        config.kafka.brokers = vec![];
         assert!(validate_config(&config).is_err());
     }
 

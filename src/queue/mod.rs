@@ -109,6 +109,7 @@ async fn dispatcher_loop(
 }
 
 /// Process a single queued job.
+#[tracing::instrument(skip(msg, engine, job_repo), fields(job_id = %msg.job_id, channel = %msg.channel))]
 async fn process_job(
     msg: QueueMessage,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
@@ -117,8 +118,6 @@ async fn process_job(
     let job_id = msg.job_id;
     let channel = msg.channel;
     let start = Instant::now();
-
-    tracing::info!(job_id = %job_id, channel = %channel, "Processing job");
 
     // Mark as running
     if let Err(e) = job_repo

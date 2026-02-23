@@ -39,13 +39,13 @@ struct ProcessRequest {
     metadata: Value,
 }
 
+#[tracing::instrument(skip(state, req), fields(channel = %channel))]
 async fn sync_process(
     State(state): State<AppState>,
     Path(channel): Path<String>,
     Json(req): Json<ProcessRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let start = Instant::now();
-    tracing::debug!(channel = %channel, "Processing sync message");
 
     let engine = state.engine.read().await;
 
@@ -64,7 +64,7 @@ async fn sync_process(
             Ok(Json(json!({
                 "id": message.id,
                 "data": message.data(),
-                "errors": message.errors.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>(),
+                "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
             })))
         }
         Err(e) => {
@@ -79,12 +79,12 @@ async fn sync_process(
 // Asynchronous Processing
 // ============================================================
 
+#[tracing::instrument(skip(state, req), fields(channel = %channel))]
 async fn async_submit(
     State(state): State<AppState>,
     Path(channel): Path<String>,
     Json(req): Json<ProcessRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
-    tracing::debug!(channel = %channel, "Submitting async job");
 
     let job = state.job_repo.create_data_job(&channel).await?;
     let job_id = job.id.clone();
@@ -106,6 +106,7 @@ async fn async_submit(
 // Job Polling
 // ============================================================
 
+#[tracing::instrument(skip(state))]
 async fn get_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -158,6 +159,7 @@ struct BatchMessage {
     metadata: Value,
 }
 
+#[tracing::instrument(skip(state, req), fields(count))]
 async fn batch_process(
     State(state): State<AppState>,
     Json(req): Json<BatchRequest>,
@@ -170,7 +172,7 @@ async fn batch_process(
             max_batch
         )));
     }
-    tracing::debug!(count = req.messages.len(), "Processing batch");
+    tracing::Span::current().record("count", req.messages.len());
 
     let engine = state.engine.read().await;
     let mut results = Vec::with_capacity(req.messages.len());
@@ -192,7 +194,7 @@ async fn batch_process(
                 results.push(json!({
                     "id": message.id,
                     "data": message.data(),
-                    "errors": message.errors.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>(),
+                    "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
                     "status": "ok",
                 }));
             }

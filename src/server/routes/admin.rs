@@ -43,6 +43,7 @@ pub fn admin_routes() -> Router<AppState> {
 // Rules CRUD
 // ============================================================
 
+#[tracing::instrument(skip(state))]
 async fn list_rules(
     State(state): State<AppState>,
     Query(filter): Query<RuleFilter>,
@@ -51,6 +52,7 @@ async fn list_rules(
     Ok(Json(json!({ "data": rules })))
 }
 
+#[tracing::instrument(skip(state, req))]
 async fn create_rule(
     State(state): State<AppState>,
     Json(req): Json<CreateRuleRequest>,
@@ -60,6 +62,7 @@ async fn create_rule(
     Ok((StatusCode::CREATED, Json(json!({ "data": rule }))))
 }
 
+#[tracing::instrument(skip(state))]
 async fn get_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -72,6 +75,7 @@ async fn get_rule(
     })))
 }
 
+#[tracing::instrument(skip(state, req))]
 async fn update_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -82,6 +86,7 @@ async fn update_rule(
     Ok(Json(json!({ "data": rule })))
 }
 
+#[tracing::instrument(skip(state))]
 async fn delete_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -95,6 +100,7 @@ async fn delete_rule(
 // Rule Status Management
 // ============================================================
 
+#[tracing::instrument(skip(state, req))]
 async fn change_rule_status(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -116,6 +122,7 @@ struct TestRuleRequest {
     metadata: Value,
 }
 
+#[tracing::instrument(skip(state, req))]
 async fn test_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -157,9 +164,9 @@ async fn test_rule(
 
     Ok(Json(json!({
         "matched": matched,
-        "trace": format!("{:?}", trace),
+        "trace": serde_json::to_value(&trace).unwrap_or_default(),
         "output": message.data(),
-        "errors": message.errors.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>(),
+        "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
     })))
 }
 
@@ -167,6 +174,7 @@ async fn test_rule(
 // Rule Import / Export
 // ============================================================
 
+#[tracing::instrument(skip(state, rules), fields(count = rules.len()))]
 async fn import_rules(
     State(state): State<AppState>,
     Json(rules): Json<Vec<CreateRuleRequest>>,
@@ -212,12 +220,14 @@ async fn export_rules(
 // Connectors CRUD
 // ============================================================
 
+#[tracing::instrument(skip(state))]
 async fn list_connectors(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
     let connectors = state.connector_repo.list().await?;
     let masked: Vec<_> = connectors.iter().map(mask_connector).collect();
     Ok(Json(json!({ "data": masked })))
 }
 
+#[tracing::instrument(skip(state, req))]
 async fn create_connector(
     State(state): State<AppState>,
     Json(req): Json<CreateConnectorRequest>,
@@ -231,6 +241,7 @@ async fn create_connector(
     Ok((StatusCode::CREATED, Json(json!({ "data": masked }))))
 }
 
+#[tracing::instrument(skip(state))]
 async fn get_connector(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -240,6 +251,7 @@ async fn get_connector(
     Ok(Json(json!({ "data": masked })))
 }
 
+#[tracing::instrument(skip(state, req))]
 async fn update_connector(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -254,6 +266,7 @@ async fn update_connector(
     Ok(Json(json!({ "data": masked })))
 }
 
+#[tracing::instrument(skip(state))]
 async fn delete_connector(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -270,6 +283,7 @@ async fn delete_connector(
 // Engine Control
 // ============================================================
 
+#[tracing::instrument(skip(state))]
 async fn engine_status(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
     let engine = state.engine.read().await;
     let workflows = engine.workflows();
@@ -299,6 +313,7 @@ async fn engine_status(State(state): State<AppState>) -> Result<Json<Value>, Ori
     })))
 }
 
+#[tracing::instrument(skip(state))]
 async fn engine_reload(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
     reload_engine(&state).await?;
 

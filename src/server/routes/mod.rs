@@ -20,6 +20,7 @@ pub fn api_routes() -> Router<AppState> {
         .nest("/api/v1/data", data::data_routes())
 }
 
+#[tracing::instrument(skip(state))]
 async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let uptime = chrono::Utc::now() - state.start_time;
 
@@ -69,6 +70,7 @@ async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// Reload the engine with all active rules from the database.
+#[tracing::instrument(skip(state))]
 pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionError> {
     let rules = state.rule_repo.list_active().await?;
     let mut workflows = Vec::new();
