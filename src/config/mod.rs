@@ -4,9 +4,8 @@ use std::path::Path;
 use crate::errors::OrionError;
 
 /// Top-level application configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-#[derive(Default)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub storage: StorageConfig,
@@ -177,9 +176,8 @@ pub enum LogFormat {
     Json,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-#[derive(Default)]
 pub struct MetricsConfig {
     pub enabled: bool,
 }
