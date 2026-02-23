@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use rdkafka::ClientConfig;
-use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::Message as KafkaMessage;
+use rdkafka::consumer::{Consumer, StreamConsumer};
 use tokio::sync::{RwLock, watch};
 
 use crate::config::KafkaIngestConfig;
@@ -36,7 +36,7 @@ pub fn start_consumer(
     dlq_topic: Option<String>,
 ) -> Result<ConsumerHandle, OrionError> {
     let consumer: StreamConsumer = ClientConfig::new()
-        .set("bootstrap.servers", &config.brokers.join(","))
+        .set("bootstrap.servers", config.brokers.join(","))
         .set("group.id", &config.group_id)
         .set("enable.auto.commit", "false")
         .set("auto.offset.reset", "earliest")
@@ -51,9 +51,9 @@ pub fn start_consumer(
         .collect();
 
     let topics: Vec<&str> = config.topics.iter().map(|t| t.topic.as_str()).collect();
-    consumer.subscribe(&topics).map_err(|e| {
-        OrionError::Internal(format!("Failed to subscribe to Kafka topics: {}", e))
-    })?;
+    consumer
+        .subscribe(&topics)
+        .map_err(|e| OrionError::Internal(format!("Failed to subscribe to Kafka topics: {}", e)))?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
@@ -235,7 +235,10 @@ async fn send_to_dlq(
         });
 
         let dlq_payload = serde_json::to_string(&dlq_message).unwrap_or_default();
-        if let Err(e) = producer.send(topic, Some(source_topic), dlq_payload.as_bytes()).await {
+        if let Err(e) = producer
+            .send(topic, Some(source_topic), dlq_payload.as_bytes())
+            .await
+        {
             tracing::error!(
                 dlq_topic = %topic,
                 error = %e,

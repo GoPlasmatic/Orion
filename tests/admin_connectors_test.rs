@@ -78,7 +78,7 @@ async fn test_connectors_crud_lifecycle() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     let connectors = body["data"].as_array().unwrap();
-    assert!(connectors.len() >= 1);
+    assert!(!connectors.is_empty());
 
     // Update the connector
     let resp = app

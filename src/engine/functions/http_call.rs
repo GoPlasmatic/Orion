@@ -9,7 +9,7 @@ use dataflow_rs::engine::message::{Change, Message};
 use datalogic_rs::DataLogic;
 use serde_json::Value;
 
-use crate::connector::{ConnectorConfig, ConnectorRegistry, HttpConnectorConfig, RetryConfig};
+use crate::connector::{ConnectorConfig, ConnectorRegistry, HttpConnectorConfig};
 
 /// Executes HTTP requests against named connectors with retry support.
 pub struct HttpCallHandler {
@@ -80,7 +80,6 @@ impl AsyncFunctionHandler for HttpCallHandler {
             http_config,
             body.as_ref(),
             timeout,
-            &http_config.retry,
         )
         .await?;
 
@@ -186,8 +185,8 @@ async fn execute_with_retry(
     http_config: &HttpConnectorConfig,
     body: Option<&Value>,
     timeout: Duration,
-    retry_config: &RetryConfig,
 ) -> dataflow_rs::Result<Value> {
+    let retry_config = &http_config.retry;
     let mut last_error = None;
 
     for attempt in 0..=retry_config.max_retries {
