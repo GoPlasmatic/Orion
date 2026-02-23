@@ -209,11 +209,13 @@ async fn import_rules(
     })))
 }
 
+#[tracing::instrument(skip(state))]
 async fn export_rules(
-    state: State<AppState>,
-    filter: Query<RuleFilter>,
+    State(state): State<AppState>,
+    Query(filter): Query<RuleFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    list_rules(state, filter).await
+    let rules = state.rule_repo.list(&filter).await?;
+    Ok(Json(json!({ "data": rules })))
 }
 
 // ============================================================
