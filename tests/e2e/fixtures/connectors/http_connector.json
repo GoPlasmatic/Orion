@@ -1,0 +1,13 @@
+{
+    "name": "e2e-test-http",
+    "connector_type": "http",
+    "config": {
+        "type": "http",
+        "url": "https://httpbin.org/post",
+        "method": "POST",
+        "headers": {
+            "X-Test": "e2e",
+            "Authorization": "Bearer test-secret-token"
+        }
+    }
+}
