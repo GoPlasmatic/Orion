@@ -54,7 +54,9 @@ async fn sync_process(
 
     let start = Instant::now();
 
-    let engine = state.engine.read().await;
+    // Clone the inner Arc<Engine> and release the lock immediately to avoid
+    // holding the read lock across async processing (which blocks engine reloads).
+    let engine = state.engine.read().await.clone();
 
     let mut message = dataflow_rs::Message::from_value(&req.data);
     merge_metadata(&mut message, &req.metadata);
@@ -193,7 +195,7 @@ async fn batch_process(
     }
     tracing::Span::current().record("count", req.messages.len());
 
-    let engine = state.engine.read().await;
+    let engine = state.engine.read().await.clone();
     let mut results = Vec::with_capacity(req.messages.len());
 
     for msg in &req.messages {

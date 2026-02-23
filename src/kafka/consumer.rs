@@ -174,8 +174,9 @@ async fn consume_loop(
                         message.metadata_mut()["kafka_offset"] =
                             serde_json::json!(msg.offset());
 
-                        let engine_guard = engine.read().await;
-                        match engine_guard
+                        // Clone the inner Arc<Engine> and release the lock immediately
+                        let engine_ref = engine.read().await.clone();
+                        match engine_ref
                             .process_message_for_channel(&channel, &mut message)
                             .await
                         {
@@ -209,7 +210,6 @@ async fn consume_loop(
                                 ).await;
                             }
                         }
-                        drop(engine_guard);
 
                         // Commit offset after processing
                         if let Err(e) = consumer.commit_message(&msg, CommitMode::Async) {
