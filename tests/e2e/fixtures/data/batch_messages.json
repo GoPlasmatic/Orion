@@ -1,0 +1,7 @@
+{
+    "messages": [
+        { "channel": "orders", "data": { "amount": 100, "product": "A" } },
+        { "channel": "orders", "data": { "amount": 200, "product": "B" } },
+        { "channel": "events", "data": { "type": "click", "user": "u1" } }
+    ]
+}

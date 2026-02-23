@@ -1,0 +1,18 @@
+{
+    "name": "E2E Simple Log",
+    "channel": "orders",
+    "priority": 10,
+    "condition": true,
+    "tasks": [
+        {
+            "id": "t1",
+            "name": "Log Order",
+            "function": {
+                "name": "log",
+                "input": {
+                    "message": "order received"
+                }
+            }
+        }
+    ]
+}

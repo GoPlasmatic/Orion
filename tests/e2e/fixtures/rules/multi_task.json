@@ -1,0 +1,34 @@
+{
+    "name": "E2E Multi Task",
+    "channel": "orders",
+    "priority": 15,
+    "condition": true,
+    "tasks": [
+        {
+            "id": "t1",
+            "name": "Log",
+            "function": {
+                "name": "log",
+                "input": {
+                    "message": "processing order"
+                }
+            }
+        },
+        {
+            "id": "t2",
+            "name": "Add Tag",
+            "function": {
+                "name": "map",
+                "input": {
+                    "mappings": [
+                        {
+                            "path": "data.processed",
+                            "logic": true
+                        }
+                    ]
+                }
+            }
+        }
+    ],
+    "tags": ["multi", "pipeline"]
+}

@@ -1,0 +1,27 @@
+{
+    "name": "E2E High Value Order",
+    "channel": "orders",
+    "priority": 20,
+    "condition": {
+        ">": [{ "var": "data.amount" }, 100]
+    },
+    "tasks": [
+        {
+            "id": "transform",
+            "name": "Add Label",
+            "function": {
+                "name": "map",
+                "input": {
+                    "mappings": [
+                        {
+                            "path": "data.label",
+                            "logic": {
+                                "cat": ["High value: $", { "var": "data.amount" }]
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    ]
+}
