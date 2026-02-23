@@ -62,55 +62,19 @@ async fn async_submit(
     Path(channel): Path<String>,
     Json(req): Json<ProcessRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
-    // We don't have a full job queue yet (Phase 3), so we use a simple
-    // spawn-and-track approach: create a job, spawn processing, update on completion.
     let job = state.job_repo.create_data_job(&channel).await?;
     let job_id = job.id.clone();
 
-    // Mark as running
+    // Submit to the job queue for background processing
     state
-        .job_repo
-        .update_status(&job_id, "running", None, None)
+        .job_queue
+        .submit(crate::queue::QueueMessage {
+            job_id: job_id.clone(),
+            channel,
+            payload: req.data,
+            metadata: req.metadata,
+        })
         .await?;
-
-    // Spawn background processing
-    let engine = state.engine.read().await.clone();
-    let job_repo = state.job_repo.clone();
-    let payload = req.data.clone();
-    let metadata = req.metadata.clone();
-    let jid = job_id.clone();
-
-    tokio::spawn(async move {
-        let mut message = dataflow_rs::Message::from_value(&payload);
-        if let Some(meta_obj) = metadata.as_object() {
-            for (k, v) in meta_obj {
-                message.metadata_mut()[k] = v.clone();
-            }
-        }
-
-        match engine
-            .process_message_for_channel(&channel, &mut message)
-            .await
-        {
-            Ok(()) => {
-                let result = serde_json::to_string(&json!({
-                    "id": message.id,
-                    "data": message.data(),
-                }))
-                .unwrap_or_default();
-
-                let _ = job_repo.set_result(&jid, &result).await;
-                let _ = job_repo
-                    .update_status(&jid, "completed", None, Some(1))
-                    .await;
-            }
-            Err(e) => {
-                let _ = job_repo
-                    .update_status(&jid, "failed", Some(&e.to_string()), None)
-                    .await;
-            }
-        }
-    });
 
     Ok((StatusCode::ACCEPTED, Json(json!({ "job_id": job_id }))))
 }
@@ -133,13 +97,15 @@ async fn get_job(
 
     if job.status == "completed" {
         if let Some(ref result_str) = job.result_json
-            && let Ok(result_val) = serde_json::from_str::<Value>(result_str) {
-                response["result"] = result_val;
-            }
-    } else if job.status == "failed"
-        && let Some(ref err) = job.error_message {
-            response["error"] = json!(err);
+            && let Ok(result_val) = serde_json::from_str::<Value>(result_str)
+        {
+            response["result"] = result_val;
         }
+    } else if job.status == "failed"
+        && let Some(ref err) = job.error_message
+    {
+        response["error"] = json!(err);
+    }
 
     if let Some(ref started) = job.started_at {
         response["started_at"] = json!(started.to_string());

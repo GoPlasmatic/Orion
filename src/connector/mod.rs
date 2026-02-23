@@ -123,6 +123,16 @@ impl ConnectorRegistry {
     pub async fn reload(&self, repo: &dyn ConnectorRepository) -> Result<usize, OrionError> {
         self.load_from_repo(repo).await
     }
+
+    /// Add or update a single connector config by name.
+    pub async fn add(&self, name: String, config: ConnectorConfig) {
+        self.configs.write().await.insert(name, Arc::new(config));
+    }
+
+    /// Remove a connector config by name.
+    pub async fn remove(&self, name: &str) -> bool {
+        self.configs.write().await.remove(name).is_some()
+    }
 }
 
 const MASK: &str = "******";
@@ -136,14 +146,14 @@ pub fn mask_connector_secrets(config_json: &str) -> String {
     if let Some(obj) = val.as_object_mut() {
         // Mask auth fields
         if let Some(auth) = obj.get_mut("auth")
-            && let Some(auth_obj) = auth.as_object_mut() {
-                for key in ["token", "password", "key", "secret"] {
-                    if auth_obj.contains_key(key) {
-                        auth_obj
-                            .insert(key.to_string(), serde_json::Value::String(MASK.to_string()));
-                    }
+            && let Some(auth_obj) = auth.as_object_mut()
+        {
+            for key in ["token", "password", "key", "secret"] {
+                if auth_obj.contains_key(key) {
+                    auth_obj.insert(key.to_string(), serde_json::Value::String(MASK.to_string()));
                 }
             }
+        }
         // Mask top-level secret-looking fields
         for key in ["password", "secret", "api_key", "token"] {
             if obj.contains_key(key) {

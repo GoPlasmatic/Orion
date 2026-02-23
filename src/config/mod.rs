@@ -12,6 +12,7 @@ pub struct AppConfig {
     pub storage: StorageConfig,
     pub ingest: IngestConfig,
     pub engine: EngineConfig,
+    pub queue: QueueConfig,
     pub logging: LoggingConfig,
     pub metrics: MetricsConfig,
 }
@@ -74,6 +75,24 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             max_concurrent_workflows: 100,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QueueConfig {
+    /// Maximum number of concurrent async job workers.
+    pub workers: usize,
+    /// Channel buffer size for pending jobs.
+    pub buffer_size: usize,
+}
+
+impl Default for QueueConfig {
+    fn default() -> Self {
+        Self {
+            workers: 4,
+            buffer_size: 1000,
         }
     }
 }
@@ -169,6 +188,16 @@ fn apply_env_overrides(config: &mut AppConfig) {
         && let Ok(max) = v.parse::<usize>()
     {
         config.engine.max_concurrent_workflows = max;
+    }
+    if let Ok(v) = std::env::var("ORION_QUEUE__WORKERS")
+        && let Ok(w) = v.parse::<usize>()
+    {
+        config.queue.workers = w;
+    }
+    if let Ok(v) = std::env::var("ORION_QUEUE__BUFFER_SIZE")
+        && let Ok(s) = v.parse::<usize>()
+    {
+        config.queue.buffer_size = s;
     }
     if let Ok(v) = std::env::var("ORION_METRICS__ENABLED")
         && let Ok(enabled) = v.parse::<bool>()

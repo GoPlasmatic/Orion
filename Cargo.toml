@@ -32,3 +32,4 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 async-trait = "0.1"
 num_cpus = "1"
+datalogic-rs = "4"
