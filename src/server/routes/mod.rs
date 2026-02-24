@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod data;
+pub mod openapi;
 
 use std::sync::Arc;
 
@@ -9,6 +10,8 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::json;
+use utoipa::OpenApi;
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::server::state::AppState;
 
@@ -16,12 +19,22 @@ pub fn api_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(health_check))
         .route("/metrics", get(metrics_endpoint))
+        .merge(SwaggerUi::new("/docs").url("/api/v1/openapi.json", openapi::ApiDoc::openapi()))
         .nest("/api/v1/admin", admin::admin_routes())
         .nest("/api/v1/data", data::data_routes())
 }
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "Operational",
+    responses(
+        (status = 200, description = "Service healthy"),
+        (status = 503, description = "Service degraded"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
+pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     let uptime = chrono::Utc::now() - state.start_time;
 
     // Check database connectivity
@@ -63,7 +76,15 @@ async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
     (http_status, Json(body))
 }
 
-async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
+#[utoipa::path(
+    get,
+    path = "/metrics",
+    tag = "Operational",
+    responses(
+        (status = 200, description = "Prometheus metrics", content_type = "text/plain"),
+    )
+)]
+pub(crate) async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
     let metrics = state.metrics_handle.render();
     (
         StatusCode::OK,

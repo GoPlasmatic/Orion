@@ -32,15 +32,26 @@ pub fn data_routes() -> Router<AppState> {
 // Synchronous Processing
 // ============================================================
 
-#[derive(Deserialize)]
-struct ProcessRequest {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct ProcessRequest {
     data: Value,
     #[serde(default)]
     metadata: Value,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/data/{channel}",
+    tag = "Data",
+    params(("channel" = String, Path, description = "Channel name")),
+    request_body = ProcessRequest,
+    responses(
+        (status = 200, description = "Processing result"),
+        (status = 400, description = "Invalid input"),
+    )
+)]
 #[tracing::instrument(skip(state, req), fields(channel = %channel))]
-async fn sync_process(
+pub(crate) async fn sync_process(
     State(state): State<AppState>,
     Path(channel): Path<String>,
     Json(req): Json<ProcessRequest>,
@@ -89,8 +100,19 @@ async fn sync_process(
 // Asynchronous Processing
 // ============================================================
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/data/{channel}/async",
+    tag = "Data",
+    params(("channel" = String, Path, description = "Channel name")),
+    request_body = ProcessRequest,
+    responses(
+        (status = 202, description = "Job accepted"),
+        (status = 400, description = "Invalid input"),
+    )
+)]
 #[tracing::instrument(skip(state, req), fields(channel = %channel))]
-async fn async_submit(
+pub(crate) async fn async_submit(
     State(state): State<AppState>,
     Path(channel): Path<String>,
     Json(req): Json<ProcessRequest>,
@@ -122,8 +144,18 @@ async fn async_submit(
 // Job Polling
 // ============================================================
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/data/jobs/{id}",
+    tag = "Data",
+    params(("id" = String, Path, description = "Job ID")),
+    responses(
+        (status = 200, description = "Job status and result"),
+        (status = 404, description = "Job not found"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn get_job(
+pub(crate) async fn get_job(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
@@ -162,21 +194,31 @@ async fn get_job(
 // Batch Processing
 // ============================================================
 
-#[derive(Deserialize)]
-struct BatchRequest {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct BatchRequest {
     messages: Vec<BatchMessage>,
 }
 
-#[derive(Deserialize)]
-struct BatchMessage {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct BatchMessage {
     channel: String,
     data: Value,
     #[serde(default)]
     metadata: Value,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/data/batch",
+    tag = "Data",
+    request_body = BatchRequest,
+    responses(
+        (status = 200, description = "Batch processing results"),
+        (status = 400, description = "Invalid batch input"),
+    )
+)]
 #[tracing::instrument(skip(state, req), fields(count))]
-async fn batch_process(
+pub(crate) async fn batch_process(
     State(state): State<AppState>,
     Json(req): Json<BatchRequest>,
 ) -> Result<Json<Value>, OrionError> {

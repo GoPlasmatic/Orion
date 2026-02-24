@@ -41,6 +41,8 @@ datalogic-rs = "4"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
+utoipa = { version = "5", features = ["axum_extras", "chrono"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 colored = "3"
 tabled = "0.18"
 dirs = "6"

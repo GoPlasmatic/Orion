@@ -47,8 +47,17 @@ pub fn admin_routes() -> Router<AppState> {
 // Rules CRUD
 // ============================================================
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/rules",
+    params(RuleFilter),
+    tag = "Rules",
+    responses(
+        (status = 200, description = "Paginated list of rules"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn list_rules(
+pub(crate) async fn list_rules(
     State(state): State<AppState>,
     Query(filter): Query<RuleFilter>,
 ) -> Result<Json<Value>, OrionError> {
@@ -61,8 +70,18 @@ async fn list_rules(
     })))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/rules",
+    tag = "Rules",
+    request_body = CreateRuleRequest,
+    responses(
+        (status = 201, description = "Rule created"),
+        (status = 400, description = "Invalid input"),
+    )
+)]
 #[tracing::instrument(skip(state, req))]
-async fn create_rule(
+pub(crate) async fn create_rule(
     State(state): State<AppState>,
     Json(req): Json<CreateRuleRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
@@ -71,8 +90,18 @@ async fn create_rule(
     Ok((StatusCode::CREATED, Json(json!({ "data": rule }))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/rules/{id}",
+    tag = "Rules",
+    params(("id" = String, Path, description = "Rule ID")),
+    responses(
+        (status = 200, description = "Rule details"),
+        (status = 404, description = "Rule not found"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn get_rule(
+pub(crate) async fn get_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
@@ -84,8 +113,19 @@ async fn get_rule(
     })))
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/admin/rules/{id}",
+    tag = "Rules",
+    params(("id" = String, Path, description = "Rule ID")),
+    request_body = UpdateRuleRequest,
+    responses(
+        (status = 200, description = "Rule updated"),
+        (status = 404, description = "Rule not found"),
+    )
+)]
 #[tracing::instrument(skip(state, req))]
-async fn update_rule(
+pub(crate) async fn update_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<UpdateRuleRequest>,
@@ -95,8 +135,18 @@ async fn update_rule(
     Ok(Json(json!({ "data": rule })))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/rules/{id}",
+    tag = "Rules",
+    params(("id" = String, Path, description = "Rule ID")),
+    responses(
+        (status = 204, description = "Rule deleted"),
+        (status = 404, description = "Rule not found"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn delete_rule(
+pub(crate) async fn delete_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
@@ -109,8 +159,20 @@ async fn delete_rule(
 // Rule Status Management
 // ============================================================
 
+#[utoipa::path(
+    patch,
+    path = "/api/v1/admin/rules/{id}/status",
+    tag = "Rules",
+    params(("id" = String, Path, description = "Rule ID")),
+    request_body = StatusChangeRequest,
+    responses(
+        (status = 200, description = "Status updated"),
+        (status = 400, description = "Invalid status"),
+        (status = 404, description = "Rule not found"),
+    )
+)]
 #[tracing::instrument(skip(state, req))]
-async fn change_rule_status(
+pub(crate) async fn change_rule_status(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<StatusChangeRequest>,
@@ -124,15 +186,26 @@ async fn change_rule_status(
 // Rule Dry-Run / Testing
 // ============================================================
 
-#[derive(Deserialize)]
-struct TestRuleRequest {
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct TestRuleRequest {
     data: Value,
     #[serde(default)]
     metadata: Value,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/rules/{id}/test",
+    tag = "Rules",
+    params(("id" = String, Path, description = "Rule ID")),
+    request_body = TestRuleRequest,
+    responses(
+        (status = 200, description = "Test result with trace"),
+        (status = 404, description = "Rule not found"),
+    )
+)]
 #[tracing::instrument(skip(state, req))]
-async fn test_rule(
+pub(crate) async fn test_rule(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<TestRuleRequest>,
@@ -183,8 +256,17 @@ async fn test_rule(
 // Rule Import / Export
 // ============================================================
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/rules/import",
+    tag = "Rules",
+    request_body = Vec<CreateRuleRequest>,
+    responses(
+        (status = 200, description = "Import results with counts"),
+    )
+)]
 #[tracing::instrument(skip(state, rules), fields(count = rules.len()))]
-async fn import_rules(
+pub(crate) async fn import_rules(
     State(state): State<AppState>,
     Json(rules): Json<Vec<CreateRuleRequest>>,
 ) -> Result<Json<Value>, OrionError> {
@@ -218,8 +300,17 @@ async fn import_rules(
     })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/rules/export",
+    tag = "Rules",
+    params(RuleFilter),
+    responses(
+        (status = 200, description = "Exported rules"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn export_rules(
+pub(crate) async fn export_rules(
     State(state): State<AppState>,
     Query(filter): Query<RuleFilter>,
 ) -> Result<Json<Value>, OrionError> {
@@ -231,14 +322,14 @@ async fn export_rules(
 // Rule Validation
 // ============================================================
 
-#[derive(Serialize)]
-struct ValidationIssue {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ValidationIssue {
     field: String,
     message: String,
 }
 
-#[derive(Serialize)]
-struct ValidationResponse {
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ValidationResponse {
     valid: bool,
     errors: Vec<ValidationIssue>,
     warnings: Vec<ValidationIssue>,
@@ -261,8 +352,17 @@ const KNOWN_FUNCTIONS: &[&str] = &[
 
 const CONNECTOR_FUNCTIONS: &[&str] = &["http_call", "enrich", "publish_kafka"];
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/rules/validate",
+    tag = "Rules",
+    request_body = CreateRuleRequest,
+    responses(
+        (status = 200, description = "Validation result", body = ValidationResponse),
+    )
+)]
 #[tracing::instrument(skip(state, req))]
-async fn validate_rule(
+pub(crate) async fn validate_rule(
     State(state): State<AppState>,
     Json(req): Json<CreateRuleRequest>,
 ) -> Json<Value> {
@@ -444,8 +544,17 @@ async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
     Ok(())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/connectors",
+    tag = "Connectors",
+    params(ConnectorFilter),
+    responses(
+        (status = 200, description = "Paginated list of connectors"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn list_connectors(
+pub(crate) async fn list_connectors(
     State(state): State<AppState>,
     Query(filter): Query<ConnectorFilter>,
 ) -> Result<Json<Value>, OrionError> {
@@ -459,8 +568,18 @@ async fn list_connectors(
     })))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/connectors",
+    tag = "Connectors",
+    request_body = CreateConnectorRequest,
+    responses(
+        (status = 201, description = "Connector created"),
+        (status = 409, description = "Connector name conflict"),
+    )
+)]
 #[tracing::instrument(skip(state, req))]
-async fn create_connector(
+pub(crate) async fn create_connector(
     State(state): State<AppState>,
     Json(req): Json<CreateConnectorRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
@@ -470,8 +589,18 @@ async fn create_connector(
     Ok((StatusCode::CREATED, Json(json!({ "data": masked }))))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/connectors/{id}",
+    tag = "Connectors",
+    params(("id" = String, Path, description = "Connector ID")),
+    responses(
+        (status = 200, description = "Connector details"),
+        (status = 404, description = "Connector not found"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn get_connector(
+pub(crate) async fn get_connector(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
@@ -480,8 +609,19 @@ async fn get_connector(
     Ok(Json(json!({ "data": masked })))
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/admin/connectors/{id}",
+    tag = "Connectors",
+    params(("id" = String, Path, description = "Connector ID")),
+    request_body = UpdateConnectorRequest,
+    responses(
+        (status = 200, description = "Connector updated"),
+        (status = 404, description = "Connector not found"),
+    )
+)]
 #[tracing::instrument(skip(state, req))]
-async fn update_connector(
+pub(crate) async fn update_connector(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<UpdateConnectorRequest>,
@@ -492,8 +632,18 @@ async fn update_connector(
     Ok(Json(json!({ "data": masked })))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/connectors/{id}",
+    tag = "Connectors",
+    params(("id" = String, Path, description = "Connector ID")),
+    responses(
+        (status = 204, description = "Connector deleted"),
+        (status = 404, description = "Connector not found"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn delete_connector(
+pub(crate) async fn delete_connector(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
@@ -506,8 +656,18 @@ async fn delete_connector(
 // Engine Control
 // ============================================================
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/engine/status",
+    tag = "Engine",
+    responses(
+        (status = 200, description = "Engine status"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn engine_status(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
+pub(crate) async fn engine_status(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, OrionError> {
     let engine = state.engine.read().await;
     let workflows = engine.workflows();
 
@@ -536,8 +696,18 @@ async fn engine_status(State(state): State<AppState>) -> Result<Json<Value>, Ori
     })))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/engine/reload",
+    tag = "Engine",
+    responses(
+        (status = 200, description = "Engine reloaded"),
+    )
+)]
 #[tracing::instrument(skip(state))]
-async fn engine_reload(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
+pub(crate) async fn engine_reload(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, OrionError> {
     reload_engine(&state).await?;
 
     let engine = state.engine.read().await;

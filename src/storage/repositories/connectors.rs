@@ -8,7 +8,7 @@ use crate::storage::repositories::rules::PaginatedResult;
 
 // -- DTOs --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateConnectorRequest {
     pub id: Option<String>,
     pub name: String,
@@ -21,7 +21,7 @@ fn default_config() -> serde_json::Value {
     serde_json::json!({})
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateConnectorRequest {
     pub name: Option<String>,
     pub connector_type: Option<String>,
@@ -29,7 +29,7 @@ pub struct UpdateConnectorRequest {
     pub enabled: Option<bool>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 pub struct ConnectorFilter {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
