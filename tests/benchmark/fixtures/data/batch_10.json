@@ -1,0 +1,14 @@
+{
+    "messages": [
+        { "channel": "bench", "data": { "amount": 50, "type": "basic", "region": "US", "active": true, "source": "api" } },
+        { "channel": "bench", "data": { "amount": 150, "type": "premium", "region": "UK", "active": true, "source": "web" } },
+        { "channel": "bench", "data": { "amount": 350, "type": "premium", "region": "DE", "active": false, "source": "api" } },
+        { "channel": "bench", "data": { "amount": 25, "type": "basic", "region": "JP", "active": true, "source": "mobile" } },
+        { "channel": "bench", "data": { "amount": 600, "type": "enterprise", "region": "US", "active": true, "source": "vip" } },
+        { "channel": "bench", "data": { "amount": 100, "type": "premium", "region": "FR", "active": true, "source": "api" } },
+        { "channel": "bench", "data": { "amount": 450, "type": "premium", "region": "US", "active": true, "source": "web" } },
+        { "channel": "bench", "data": { "amount": 75, "type": "basic", "region": "UK", "active": false, "source": "api" } },
+        { "channel": "bench", "data": { "amount": 900, "type": "enterprise", "region": "DE", "active": true, "source": "vip" } },
+        { "channel": "bench", "data": { "amount": 200, "type": "premium", "region": "US", "active": true, "source": "api" } }
+    ]
+}
