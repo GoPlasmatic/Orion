@@ -1,0 +1,15 @@
+{
+    "data": {
+        "amount": 750,
+        "product": "Diamond Ring",
+        "country": "US",
+        "customer_id": "cust-99001",
+        "currency": "USD",
+        "payment_method": "credit_card",
+        "shipping_address": {
+            "city": "New York",
+            "state": "NY",
+            "zip": "10001"
+        }
+    }
+}

@@ -294,6 +294,16 @@ Both `orion` (the server) and `orion-cli` (the management tool) are included. Ve
 
 ## Performance
 
+**100K+ requests/sec** on a single instance (Apple M2 Pro, release build, 50 concurrent connections):
+
+| Scenario | Req/sec | Avg Latency | P99 Latency |
+|----------|--------:|------------:|------------:|
+| Simple rule (1 task) | 100,882 | 1.50 ms | 1.30 ms |
+| Complex rule (5 tasks) | 85,768 | 1.50 ms | 1.60 ms |
+| 12 rules on one channel | 90,023 | 1.50 ms | 1.60 ms |
+
+Zero errors across all scenarios, including concurrent engine reloads. Run `./tests/benchmark/bench.sh` to reproduce.
+
 - **Pre-compiled JSONLogic** — conditions compiled once at load time, not interpreted per request
 - **Zero-downtime reloads** — in-flight requests complete on the old engine while the new one swaps in
 - **Lock-free reads** — engine cloned behind an Arc, read lock released immediately

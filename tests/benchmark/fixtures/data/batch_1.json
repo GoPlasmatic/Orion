@@ -1,0 +1,14 @@
+{
+    "messages": [
+        {
+            "channel": "bench",
+            "data": {
+                "amount": 250,
+                "type": "premium",
+                "region": "US",
+                "active": true,
+                "source": "api"
+            }
+        }
+    ]
+}

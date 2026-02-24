@@ -1,0 +1,279 @@
+[
+    {
+        "name": "Multi Rule 01 - Always Match",
+        "channel": "bench",
+        "priority": 0,
+        "condition": true,
+        "tasks": [
+            {
+                "id": "t1",
+                "name": "Tag source",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.tagged", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 02 - Amount GT 200",
+        "channel": "bench",
+        "priority": 1,
+        "condition": { ">": [{ "var": "data.amount" }, 200] },
+        "tasks": [
+            {
+                "id": "t2",
+                "name": "High amount flag",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.high_amount", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 03 - Amount LT 50",
+        "channel": "bench",
+        "priority": 2,
+        "condition": { "<": [{ "var": "data.amount" }, 50] },
+        "tasks": [
+            {
+                "id": "t3",
+                "name": "Low amount flag",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.low_amount", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 04 - Type Equals Premium",
+        "channel": "bench",
+        "priority": 3,
+        "condition": { "==": [{ "var": "data.type" }, "premium"] },
+        "tasks": [
+            {
+                "id": "t4",
+                "name": "Premium tag",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.is_premium", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 05 - Region In List",
+        "channel": "bench",
+        "priority": 4,
+        "condition": { "in": [{ "var": "data.region" }, ["US", "UK", "DE", "FR"]] },
+        "tasks": [
+            {
+                "id": "t5",
+                "name": "Supported region",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.supported_region", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 06 - Active AND Premium",
+        "channel": "bench",
+        "priority": 5,
+        "condition": {
+            "and": [
+                { "==": [{ "var": "data.active" }, true] },
+                { "==": [{ "var": "data.type" }, "premium"] }
+            ]
+        },
+        "tasks": [
+            {
+                "id": "t6",
+                "name": "Active premium",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.active_premium", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 07 - High Amount OR VIP Source",
+        "channel": "bench",
+        "priority": 6,
+        "condition": {
+            "or": [
+                { ">": [{ "var": "data.amount" }, 500] },
+                { "==": [{ "var": "data.source" }, "vip"] }
+            ]
+        },
+        "tasks": [
+            {
+                "id": "t7",
+                "name": "Priority flag",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.priority_flag", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 08 - Conditional Tier",
+        "channel": "bench",
+        "priority": 7,
+        "condition": true,
+        "tasks": [
+            {
+                "id": "t8",
+                "name": "Compute tier",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            {
+                                "path": "data.computed_tier",
+                                "logic": {
+                                    "if": [
+                                        { ">=": [{ "var": "data.amount" }, 500] }, "gold",
+                                        { ">=": [{ "var": "data.amount" }, 100] }, "silver",
+                                        "bronze"
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 09 - Amount Range 100-300",
+        "channel": "bench",
+        "priority": 8,
+        "condition": {
+            "and": [
+                { ">=": [{ "var": "data.amount" }, 100] },
+                { "<=": [{ "var": "data.amount" }, 300] }
+            ]
+        },
+        "tasks": [
+            {
+                "id": "t9",
+                "name": "Mid range flag",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.mid_range", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 10 - Source API",
+        "channel": "bench",
+        "priority": 9,
+        "condition": { "==": [{ "var": "data.source" }, "api"] },
+        "tasks": [
+            {
+                "id": "t10",
+                "name": "API source tag",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.from_api", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 11 - Not Active",
+        "channel": "bench",
+        "priority": 10,
+        "condition": { "!": [{ "var": "data.active" }] },
+        "tasks": [
+            {
+                "id": "t11",
+                "name": "Inactive flag",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.inactive", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "name": "Multi Rule 12 - Enrichment",
+        "channel": "bench",
+        "priority": 100,
+        "condition": true,
+        "tasks": [
+            {
+                "id": "t12",
+                "name": "Final enrichment",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            {
+                                "path": "data.rules_applied",
+                                "logic": true
+                            },
+                            {
+                                "path": "data.label",
+                                "logic": {
+                                    "cat": [
+                                        { "var": "data.type" },
+                                        "-",
+                                        { "var": "data.region" }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        ]
+    }
+]

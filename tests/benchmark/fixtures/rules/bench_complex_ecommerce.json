@@ -1,0 +1,101 @@
+{
+    "name": "Bench Complex Ecommerce",
+    "channel": "orders",
+    "priority": 0,
+    "condition": true,
+    "tasks": [
+        {
+            "id": "parse",
+            "name": "Parse Payload",
+            "function": {
+                "name": "parse_json",
+                "input": { "source": "payload", "target": "order" }
+            }
+        },
+        {
+            "id": "vip_tier",
+            "name": "VIP Classification",
+            "condition": { ">=": [{ "var": "data.order.amount" }, 500] },
+            "function": {
+                "name": "map",
+                "input": {
+                    "mappings": [
+                        { "path": "data.order.tier", "logic": "vip" },
+                        { "path": "data.order.discount_pct", "logic": 20 },
+                        { "path": "data.order.free_shipping", "logic": true }
+                    ]
+                }
+            }
+        },
+        {
+            "id": "premium_tier",
+            "name": "Premium Classification",
+            "condition": {
+                "and": [
+                    { ">=": [{ "var": "data.order.amount" }, 100] },
+                    { "<": [{ "var": "data.order.amount" }, 500] }
+                ]
+            },
+            "function": {
+                "name": "map",
+                "input": {
+                    "mappings": [
+                        { "path": "data.order.tier", "logic": "premium" },
+                        { "path": "data.order.discount_pct", "logic": 10 },
+                        { "path": "data.order.free_shipping", "logic": false }
+                    ]
+                }
+            }
+        },
+        {
+            "id": "standard_tier",
+            "name": "Standard Classification",
+            "condition": { "<": [{ "var": "data.order.amount" }, 100] },
+            "function": {
+                "name": "map",
+                "input": {
+                    "mappings": [
+                        { "path": "data.order.tier", "logic": "standard" },
+                        { "path": "data.order.discount_pct", "logic": 0 },
+                        { "path": "data.order.free_shipping", "logic": false }
+                    ]
+                }
+            }
+        },
+        {
+            "id": "enrich",
+            "name": "Enrich Order",
+            "function": {
+                "name": "map",
+                "input": {
+                    "mappings": [
+                        {
+                            "path": "data.order.processed_at",
+                            "logic": { "now": [] }
+                        },
+                        {
+                            "path": "data.order.label",
+                            "logic": {
+                                "cat": [
+                                    { "var": "data.order.tier" },
+                                    "-",
+                                    { "var": "data.order.country" }
+                                ]
+                            }
+                        },
+                        {
+                            "path": "data.order.priority",
+                            "logic": {
+                                "if": [
+                                    { "in": [{ "var": "data.order.country" }, ["US", "UK", "DE"]] },
+                                    "high",
+                                    "normal"
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+    ]
+}
