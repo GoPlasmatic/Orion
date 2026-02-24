@@ -14,7 +14,11 @@ pub async fn init_pool(db_path: &str, max_connections: u32) -> Result<SqlitePool
     let options = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path))
         .map_err(|e| OrionError::Internal(format!("Invalid DB path: {}", e)))?
         .create_if_missing(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        .pragma("foreign_keys", "ON")
+        .pragma("busy_timeout", "5000")
+        .pragma("synchronous", "NORMAL")
+        .pragma("cache_size", "-20000");
 
     let pool = SqlitePoolOptions::new()
         .max_connections(max_connections)

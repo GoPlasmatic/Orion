@@ -15,6 +15,7 @@ pub struct AppConfig {
     pub kafka: KafkaIngestConfig,
     pub logging: LoggingConfig,
     pub metrics: MetricsConfig,
+    pub cors: CorsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,7 +23,6 @@ pub struct AppConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
-    pub workers: usize,
 }
 
 impl Default for ServerConfig {
@@ -30,9 +30,6 @@ impl Default for ServerConfig {
         Self {
             host: "0.0.0.0".to_string(),
             port: 8080,
-            workers: std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1),
         }
     }
 }
@@ -48,7 +45,7 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             path: "orion.db".to_string(),
-            max_connections: 5,
+            max_connections: 10,
         }
     }
 }
@@ -69,19 +66,10 @@ impl Default for IngestConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Engine configuration. Reserved for future settings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct EngineConfig {
-    pub max_concurrent_workflows: usize,
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self {
-            max_concurrent_workflows: 100,
-        }
-    }
-}
+pub struct EngineConfig {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -176,6 +164,21 @@ pub enum LogFormat {
     Json,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CorsConfig {
+    /// Allowed origins. Use `["*"]` (default) for permissive CORS.
+    pub allowed_origins: Vec<String>,
+}
+
+impl Default for CorsConfig {
+    fn default() -> Self {
+        Self {
+            allowed_origins: vec!["*".to_string()],
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MetricsConfig {
@@ -203,72 +206,70 @@ pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
 
 /// Apply ORION_* environment variable overrides.
 fn apply_env_overrides(config: &mut AppConfig) {
-    if let Ok(v) = std::env::var("ORION_SERVER__HOST") {
+    apply_env_overrides_with(config, |key| std::env::var(key));
+}
+
+/// Testable version that accepts a custom env reader.
+fn apply_env_overrides_with<F>(config: &mut AppConfig, env_var: F)
+where
+    F: Fn(&str) -> Result<String, std::env::VarError>,
+{
+    if let Ok(v) = env_var("ORION_SERVER__HOST") {
         config.server.host = v;
     }
-    if let Ok(v) = std::env::var("ORION_SERVER__PORT")
+    if let Ok(v) = env_var("ORION_SERVER__PORT")
         && let Ok(port) = v.parse::<u16>()
     {
         config.server.port = port;
     }
-    if let Ok(v) = std::env::var("ORION_SERVER__WORKERS")
-        && let Ok(workers) = v.parse::<usize>()
-    {
-        config.server.workers = workers;
-    }
-    if let Ok(v) = std::env::var("ORION_STORAGE__PATH") {
+    if let Ok(v) = env_var("ORION_STORAGE__PATH") {
         config.storage.path = v;
     }
-    if let Ok(v) = std::env::var("ORION_LOGGING__LEVEL") {
+    if let Ok(v) = env_var("ORION_LOGGING__LEVEL") {
         config.logging.level = v;
     }
-    if let Ok(v) = std::env::var("ORION_LOGGING__FORMAT") {
+    if let Ok(v) = env_var("ORION_LOGGING__FORMAT") {
         match v.to_lowercase().as_str() {
             "json" => config.logging.format = LogFormat::Json,
             "pretty" => config.logging.format = LogFormat::Pretty,
             _ => {}
         }
     }
-    if let Ok(v) = std::env::var("ORION_INGEST__MAX_PAYLOAD_SIZE")
+    if let Ok(v) = env_var("ORION_INGEST__MAX_PAYLOAD_SIZE")
         && let Ok(size) = v.parse::<usize>()
     {
         config.ingest.max_payload_size = size;
     }
-    if let Ok(v) = std::env::var("ORION_INGEST__BATCH_SIZE")
+    if let Ok(v) = env_var("ORION_INGEST__BATCH_SIZE")
         && let Ok(size) = v.parse::<usize>()
     {
         config.ingest.batch_size = size;
     }
-    if let Ok(v) = std::env::var("ORION_ENGINE__MAX_CONCURRENT_WORKFLOWS")
-        && let Ok(max) = v.parse::<usize>()
-    {
-        config.engine.max_concurrent_workflows = max;
-    }
-    if let Ok(v) = std::env::var("ORION_QUEUE__WORKERS")
+    if let Ok(v) = env_var("ORION_QUEUE__WORKERS")
         && let Ok(w) = v.parse::<usize>()
     {
         config.queue.workers = w;
     }
-    if let Ok(v) = std::env::var("ORION_QUEUE__BUFFER_SIZE")
+    if let Ok(v) = env_var("ORION_QUEUE__BUFFER_SIZE")
         && let Ok(s) = v.parse::<usize>()
     {
         config.queue.buffer_size = s;
     }
-    if let Ok(v) = std::env::var("ORION_METRICS__ENABLED")
+    if let Ok(v) = env_var("ORION_METRICS__ENABLED")
         && let Ok(enabled) = v.parse::<bool>()
     {
         config.metrics.enabled = enabled;
     }
     // Kafka overrides
-    if let Ok(v) = std::env::var("ORION_KAFKA__ENABLED")
+    if let Ok(v) = env_var("ORION_KAFKA__ENABLED")
         && let Ok(enabled) = v.parse::<bool>()
     {
         config.kafka.enabled = enabled;
     }
-    if let Ok(v) = std::env::var("ORION_KAFKA__BROKERS") {
+    if let Ok(v) = env_var("ORION_KAFKA__BROKERS") {
         config.kafka.brokers = v.split(',').map(|s| s.trim().to_string()).collect();
     }
-    if let Ok(v) = std::env::var("ORION_KAFKA__GROUP_ID") {
+    if let Ok(v) = env_var("ORION_KAFKA__GROUP_ID") {
         config.kafka.group_id = v;
     }
 }
@@ -280,11 +281,6 @@ const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     if config.server.port == 0 {
         return Err(OrionError::Internal("server.port must be > 0".to_string()));
-    }
-    if config.server.workers == 0 {
-        return Err(OrionError::Internal(
-            "server.workers must be > 0".to_string(),
-        ));
     }
     if config.ingest.max_payload_size == 0 {
         return Err(OrionError::Internal(
@@ -348,8 +344,8 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.host, "0.0.0.0");
-        assert!(config.server.workers > 0);
         assert_eq!(config.storage.path, "orion.db");
+        assert_eq!(config.storage.max_connections, 10);
     }
 
     #[test]
@@ -364,13 +360,6 @@ mod tests {
     fn test_validate_config_invalid_port() {
         let mut config = AppConfig::default();
         config.server.port = 0;
-        assert!(validate_config(&config).is_err());
-    }
-
-    #[test]
-    fn test_validate_config_invalid_workers() {
-        let mut config = AppConfig::default();
-        config.server.workers = 0;
         assert!(validate_config(&config).is_err());
     }
 
@@ -413,16 +402,24 @@ mod tests {
 
     #[test]
     fn test_env_override() {
-        // SAFETY: Test is single-threaded and we restore the var immediately after.
-        unsafe {
-            std::env::set_var("ORION_SERVER__PORT", "9090");
-        }
+        use std::collections::HashMap;
+
+        let mut env = HashMap::new();
+        env.insert("ORION_SERVER__PORT", "9090");
+        env.insert("ORION_STORAGE__PATH", "custom.db");
+        env.insert("ORION_LOGGING__LEVEL", "debug");
+        env.insert("ORION_METRICS__ENABLED", "true");
+
         let mut config = AppConfig::default();
-        apply_env_overrides(&mut config);
+        apply_env_overrides_with(&mut config, |key| {
+            env.get(key)
+                .map(|v| v.to_string())
+                .ok_or(std::env::VarError::NotPresent)
+        });
         assert_eq!(config.server.port, 9090);
-        unsafe {
-            std::env::remove_var("ORION_SERVER__PORT");
-        }
+        assert_eq!(config.storage.path, "custom.db");
+        assert_eq!(config.logging.level, "debug");
+        assert!(config.metrics.enabled);
     }
 
     #[test]
@@ -431,7 +428,6 @@ mod tests {
 [server]
 host = "127.0.0.1"
 port = 3000
-workers = 4
 
 [storage]
 path = "test.db"
@@ -443,7 +439,6 @@ format = "json"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 3000);
-        assert_eq!(config.server.workers, 4);
         assert_eq!(config.storage.path, "test.db");
         assert_eq!(config.logging.level, "debug");
     }

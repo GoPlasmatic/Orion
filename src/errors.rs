@@ -28,22 +28,32 @@ pub enum OrionError {
 
 impl IntoResponse for OrionError {
     fn into_response(self) -> Response {
-        let (status, code) = match &self {
-            OrionError::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
-            OrionError::BadRequest(_) => (StatusCode::BAD_REQUEST, "BAD_REQUEST"),
-            OrionError::Conflict(_) => (StatusCode::CONFLICT, "CONFLICT"),
-            OrionError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
-            OrionError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "STORAGE_ERROR"),
-            OrionError::Engine(_) => (StatusCode::INTERNAL_SERVER_ERROR, "ENGINE_ERROR"),
-            OrionError::Serialization(_) => (StatusCode::BAD_REQUEST, "SERIALIZATION_ERROR"),
-        };
-
-        let message = match &self {
+        let (status, code, message) = match &self {
+            OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
+            OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
+            OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
+            OrionError::Internal(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                msg.clone(),
+            ),
             OrionError::Storage(e) => {
                 tracing::error!(error = %e, "Storage error");
-                "An internal storage error occurred".to_string()
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "STORAGE_ERROR",
+                    "An internal storage error occurred".to_string(),
+                )
             }
-            _ => self.to_string(),
+            OrionError::Engine(e) => {
+                tracing::error!(error = %e, "Engine error");
+                engine_error_response(e)
+            }
+            OrionError::Serialization(_) => (
+                StatusCode::BAD_REQUEST,
+                "SERIALIZATION_ERROR",
+                self.to_string(),
+            ),
         };
 
         let body = json!({
@@ -54,6 +64,22 @@ impl IntoResponse for OrionError {
         });
 
         (status, axum::Json(body)).into_response()
+    }
+}
+
+/// Map DataflowError variants to appropriate HTTP status codes and sanitized messages.
+fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'static str, String) {
+    use dataflow_rs::DataflowError;
+    match e {
+        DataflowError::Validation(msg) => {
+            (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone())
+        }
+        DataflowError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, "TIMEOUT_ERROR", msg.clone()),
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "ENGINE_ERROR",
+            "An internal engine error occurred".to_string(),
+        ),
     }
 }
 
@@ -87,5 +113,21 @@ mod tests {
         let err = OrionError::Internal("something broke".to_string());
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_engine_validation_returns_400() {
+        let err = OrionError::Engine(dataflow_rs::DataflowError::Validation(
+            "bad input".to_string(),
+        ));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_engine_timeout_returns_504() {
+        let err = OrionError::Engine(dataflow_rs::DataflowError::Timeout("timed out".to_string()));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     }
 }

@@ -22,7 +22,9 @@ pub async fn test_app() -> Router {
     let job_repo = Arc::new(SqliteJobRepository::new(pool.clone()));
     let connector_registry = Arc::new(ConnectorRegistry::new());
 
-    let custom_functions = orion::engine::build_custom_functions(connector_registry.clone());
+    let http_client = reqwest::Client::new();
+    let custom_functions =
+        orion::engine::build_custom_functions(connector_registry.clone(), http_client.clone());
     let engine = dataflow_rs::Engine::new(vec![], Some(custom_functions));
     let engine = Arc::new(RwLock::new(Arc::new(engine)));
 
@@ -53,8 +55,8 @@ pub async fn test_app() -> Router {
         job_queue,
         config: Arc::new(AppConfig::default()),
         start_time: chrono::Utc::now(),
-        db_pool: pool,
         metrics_handle,
+        http_client,
     };
 
     orion::server::build_router(state)

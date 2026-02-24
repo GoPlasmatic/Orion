@@ -38,10 +38,7 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     let uptime = chrono::Utc::now() - state.start_time;
 
     // Check database connectivity
-    let db_healthy = sqlx::query_scalar::<_, i32>("SELECT 1")
-        .fetch_one(&state.db_pool)
-        .await
-        .is_ok();
+    let db_healthy = state.rule_repo.ping().await.is_ok();
 
     // Check engine state — independently verify the engine lock is acquirable
     let mut rules_loaded = 0;
@@ -97,16 +94,7 @@ pub(crate) async fn metrics_endpoint(State(state): State<AppState>) -> impl Into
 #[tracing::instrument(skip(state))]
 pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionError> {
     let rules = state.rule_repo.list_active().await?;
-    let mut workflows = Vec::new();
-
-    for rule in &rules {
-        match crate::storage::repositories::rules::rule_to_workflow(rule) {
-            Ok(w) => workflows.push(w),
-            Err(e) => {
-                tracing::warn!(rule_id = %rule.id, error = %e, "Failed to convert rule to workflow, skipping");
-            }
-        }
-    }
+    let workflows = crate::engine::build_engine_workflows(&rules);
 
     // Build the new engine outside the write lock to minimize lock hold time.
     // Clone the current engine Arc, build new workflows, then swap atomically.

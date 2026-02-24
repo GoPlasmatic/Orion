@@ -15,6 +15,7 @@ path = "src/main.rs"
 [[bin]]
 name = "orion-cli"
 path = "src/cli/main.rs"
+required-features = ["cli"]
 
 [lib]
 name = "orion"
@@ -43,18 +44,21 @@ metrics-exporter-prometheus = "0.16"
 rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
-colored = "3"
-tabled = "0.18"
-dirs = "6"
-serde_yaml = "0.9"
-clap_complete = "4"
-anyhow = "1"
+
+# CLI-only dependencies (gated behind `cli` feature)
+colored = { version = "3", optional = true }
+tabled = { version = "0.18", optional = true }
+dirs = { version = "6", optional = true }
+serde_yaml = { version = "0.9", optional = true }
+clap_complete = { version = "4", optional = true }
+anyhow = { version = "1", optional = true }
 
 [dev-dependencies]
 tower = "0.5"
 
 [features]
 default = []
+cli = ["colored", "tabled", "dirs", "serde_yaml", "clap_complete", "anyhow"]
 kafka = ["rdkafka"]
 
 # The profile that 'dist' will build with

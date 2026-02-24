@@ -1,8 +1,18 @@
 use async_trait::async_trait;
+use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use crate::errors::OrionError;
 use crate::storage::models::{self, Job};
+use crate::storage::repositories::rules::PaginatedResult;
+
+#[derive(Debug, Default, Deserialize)]
+pub struct JobFilter {
+    pub status: Option<String>,
+    pub channel: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
 
 // -- Repository trait --
 
@@ -18,6 +28,7 @@ pub trait JobRepository: Send + Sync {
         records_processed: Option<i64>,
     ) -> Result<Job, OrionError>;
     async fn set_result(&self, id: &str, result_json: &str) -> Result<(), OrionError>;
+    async fn list_paginated(&self, filter: &JobFilter) -> Result<PaginatedResult<Job>, OrionError>;
 }
 
 // -- SQLite implementation --
@@ -103,5 +114,45 @@ impl JobRepository for SqliteJobRepository {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn list_paginated(&self, filter: &JobFilter) -> Result<PaginatedResult<Job>, OrionError> {
+        let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
+        let offset = filter.offset.unwrap_or(0).max(0);
+
+        let mut where_clause = String::from("WHERE 1=1");
+        let mut binds: Vec<String> = Vec::new();
+
+        if let Some(ref status) = filter.status {
+            where_clause.push_str(" AND status = ?");
+            binds.push(status.clone());
+        }
+        if let Some(ref channel) = filter.channel {
+            where_clause.push_str(" AND channel = ?");
+            binds.push(channel.clone());
+        }
+
+        let count_query = format!("SELECT COUNT(*) FROM jobs {where_clause}");
+        let mut cq = sqlx::query_as::<_, (i64,)>(&count_query);
+        for b in &binds {
+            cq = cq.bind(b);
+        }
+        let (total,) = cq.fetch_one(&self.pool).await?;
+
+        let data_query =
+            format!("SELECT * FROM jobs {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?");
+        let mut dq = sqlx::query_as::<_, Job>(&data_query);
+        for b in &binds {
+            dq = dq.bind(b);
+        }
+        dq = dq.bind(limit).bind(offset);
+        let data = dq.fetch_all(&self.pool).await?;
+
+        Ok(PaginatedResult {
+            data,
+            total,
+            limit,
+            offset,
+        })
     }
 }

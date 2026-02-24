@@ -145,7 +145,7 @@ async fn process_job(
 
     // Build message
     let mut message = dataflow_rs::Message::from_value(&msg.payload);
-    crate::server::routes::data::merge_metadata(&mut message, &msg.metadata);
+    crate::engine::utils::merge_metadata(&mut message, &msg.metadata);
 
     // Clone the inner Arc<Engine> and release the lock immediately
     let engine_ref = engine.read().await.clone();
@@ -160,11 +160,24 @@ async fn process_job(
             metrics::record_message(&channel, "ok");
             metrics::record_message_duration(&channel, duration);
 
-            let result_json = serde_json::to_string(&serde_json::json!({
+            let result_json = match serde_json::to_string(&serde_json::json!({
                 "id": message.id,
                 "data": message.data(),
-            }))
-            .unwrap_or_default();
+            })) {
+                Ok(json) => json,
+                Err(e) => {
+                    tracing::error!(job_id = %job_id, error = %e, "Failed to serialize job result");
+                    let _ = job_repo
+                        .update_status(
+                            &job_id,
+                            models::JOB_STATUS_FAILED,
+                            Some(&format!("Result serialization failed: {e}")),
+                            None,
+                        )
+                        .await;
+                    return;
+                }
+            };
 
             let mut result_saved = false;
             for attempt in 0..3 {
