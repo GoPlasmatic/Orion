@@ -16,7 +16,7 @@ pub struct PaginatedResult<T: Serialize> {
 
 // -- DTOs --
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateRuleRequest {
     pub id: Option<String>,
     pub name: String,
@@ -42,7 +42,7 @@ fn default_condition() -> serde_json::Value {
     serde_json::Value::Bool(true)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateRuleRequest {
     pub name: Option<String>,
     pub description: Option<String>,
@@ -55,12 +55,12 @@ pub struct UpdateRuleRequest {
     pub continue_on_error: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct StatusChangeRequest {
     pub status: String,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize, utoipa::IntoParams)]
 pub struct RuleFilter {
     pub status: Option<String>,
     pub channel: Option<String>,

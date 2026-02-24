@@ -17,7 +17,7 @@ pub const JOB_STATUS_FAILED: &str = "failed";
 // -- Sentinel values --
 pub const DATA_API_CONNECTOR: &str = "__data_api__";
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Rule {
     pub id: String,
     pub name: String,
@@ -51,7 +51,7 @@ pub struct RuleVersion {
     pub created_at: NaiveDateTime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Connector {
     pub id: String,
     pub name: String,
@@ -62,7 +62,7 @@ pub struct Connector {
     pub updated_at: NaiveDateTime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Job {
     pub id: String,
     pub connector_id: String,
