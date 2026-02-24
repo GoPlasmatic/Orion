@@ -4,6 +4,7 @@ use sqlx::SqlitePool;
 
 use crate::errors::OrionError;
 use crate::storage::models::Connector;
+use crate::storage::repositories::rules::PaginatedResult;
 
 // -- DTOs --
 
@@ -28,6 +29,12 @@ pub struct UpdateConnectorRequest {
     pub enabled: Option<bool>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct ConnectorFilter {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 // -- Repository trait --
 
 #[async_trait]
@@ -35,6 +42,10 @@ pub trait ConnectorRepository: Send + Sync {
     async fn create(&self, req: &CreateConnectorRequest) -> Result<Connector, OrionError>;
     async fn get_by_id(&self, id: &str) -> Result<Connector, OrionError>;
     async fn list(&self) -> Result<Vec<Connector>, OrionError>;
+    async fn list_paginated(
+        &self,
+        filter: &ConnectorFilter,
+    ) -> Result<PaginatedResult<Connector>, OrionError>;
     async fn update(&self, id: &str, req: &UpdateConnectorRequest)
     -> Result<Connector, OrionError>;
     async fn delete(&self, id: &str) -> Result<(), OrionError>;
@@ -96,6 +107,33 @@ impl ConnectorRepository for SqliteConnectorRepository {
                 .fetch_all(&self.pool)
                 .await?,
         )
+    }
+
+    async fn list_paginated(
+        &self,
+        filter: &ConnectorFilter,
+    ) -> Result<PaginatedResult<Connector>, OrionError> {
+        let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
+        let offset = filter.offset.unwrap_or(0).max(0);
+
+        let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM connectors")
+            .fetch_one(&self.pool)
+            .await?;
+
+        let data = sqlx::query_as::<_, Connector>(
+            "SELECT * FROM connectors ORDER BY name ASC LIMIT ? OFFSET ?",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(PaginatedResult {
+            data,
+            total,
+            limit,
+            offset,
+        })
     }
 
     async fn update(

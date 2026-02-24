@@ -135,7 +135,8 @@ async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Resul
         .collect();
 
     output::print_table(rows);
-    println!("{}", format!("{} connector(s)", connectors.len()).dimmed());
+    let total = resp["total"].as_i64().unwrap_or(connectors.len() as i64);
+    println!("{}", format!("{} connector(s)", total).dimmed());
     Ok(0)
 }
 

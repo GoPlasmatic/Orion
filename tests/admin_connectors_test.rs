@@ -60,6 +60,9 @@ async fn test_connectors_crud_lifecycle() {
     let body = body_json(resp).await;
     let connectors = body["data"].as_array().unwrap();
     assert!(!connectors.is_empty());
+    assert_eq!(body["total"].as_i64().unwrap(), connectors.len() as i64);
+    assert_eq!(body["limit"], 50);
+    assert_eq!(body["offset"], 0);
 
     // Update the connector
     let resp = app

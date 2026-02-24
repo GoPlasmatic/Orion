@@ -9,7 +9,9 @@ use crate::connector::mask_connector;
 use crate::errors::OrionError;
 use crate::server::routes::reload_engine;
 use crate::server::state::AppState;
-use crate::storage::repositories::connectors::{CreateConnectorRequest, UpdateConnectorRequest};
+use crate::storage::repositories::connectors::{
+    ConnectorFilter, CreateConnectorRequest, UpdateConnectorRequest,
+};
 use crate::storage::repositories::rules::{
     CreateRuleRequest, RuleFilter, StatusChangeRequest, UpdateRuleRequest,
 };
@@ -48,8 +50,13 @@ async fn list_rules(
     State(state): State<AppState>,
     Query(filter): Query<RuleFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let rules = state.rule_repo.list(&filter).await?;
-    Ok(Json(json!({ "data": rules })))
+    let result = state.rule_repo.list_paginated(&filter).await?;
+    Ok(Json(json!({
+        "data": result.data,
+        "total": result.total,
+        "limit": result.limit,
+        "offset": result.offset,
+    })))
 }
 
 #[tracing::instrument(skip(state, req))]
@@ -232,10 +239,18 @@ async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
 }
 
 #[tracing::instrument(skip(state))]
-async fn list_connectors(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
-    let connectors = state.connector_repo.list().await?;
-    let masked: Vec<_> = connectors.iter().map(mask_connector).collect();
-    Ok(Json(json!({ "data": masked })))
+async fn list_connectors(
+    State(state): State<AppState>,
+    Query(filter): Query<ConnectorFilter>,
+) -> Result<Json<Value>, OrionError> {
+    let result = state.connector_repo.list_paginated(&filter).await?;
+    let masked: Vec<_> = result.data.iter().map(mask_connector).collect();
+    Ok(Json(json!({
+        "data": masked,
+        "total": result.total,
+        "limit": result.limit,
+        "offset": result.offset,
+    })))
 }
 
 #[tracing::instrument(skip(state, req))]

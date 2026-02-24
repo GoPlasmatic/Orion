@@ -250,7 +250,8 @@ async fn list(
         .collect();
 
     output::print_table(rows);
-    println!("{}", format!("{} rule(s)", rules.len()).dimmed());
+    let total = resp["total"].as_i64().unwrap_or(rules.len() as i64);
+    println!("{}", format!("{} rule(s)", total).dimmed());
     Ok(0)
 }
 
@@ -612,7 +613,7 @@ async fn diff(client: &OrionClient, file: &str) -> Result<i32> {
     let content = std::fs::read_to_string(file)?;
     let local_rules: Vec<Value> = serde_json::from_str(&content)?;
 
-    let resp: Value = client.get("/api/v1/admin/rules").await?;
+    let resp: Value = client.get("/api/v1/admin/rules/export").await?;
     let server_rules = resp["data"].as_array().cloned().unwrap_or_default();
 
     let mut new_count = 0;
