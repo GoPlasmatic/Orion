@@ -1,0 +1,92 @@
+name: Docker Release
+
+permissions:
+  contents: read
+
+on:
+  # Trigger on version tags (same pattern as release.yml)
+  push:
+    tags:
+      - "**[0-9]+.[0-9]+.[0-9]+*"
+  # Allow manual trigger with options
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (build but don't push)"
+        type: boolean
+        default: false
+      tag_override:
+        description: "Version tag override (e.g. 0.1.0)"
+        type: string
+        required: false
+
+jobs:
+  docker:
+    name: Build & Push Docker Image
+    runs-on: ubuntu-22.04
+    env:
+      IMAGE_NAME: orion
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ inputs.tag_override }}" ]; then
+            VERSION="${{ inputs.tag_override }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            # Strip leading 'v' if present
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="dev-${GITHUB_SHA::8}"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}"
+
+          # Detect prerelease
+          if echo "${VERSION}" | grep -qE '(alpha|beta|rc|pre)'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Azure Container Registry
+        if: ${{ !inputs.dry_run }}
+        run: |
+          echo "Logging in to Azure Container Registry: ${{ secrets.ACR_URL }}"
+          echo "${{ secrets.ACR_PASSWORD }}" | docker login "${{ secrets.ACR_URL }}" \
+            --username "${{ secrets.ACR_USERNAME }}" \
+            --password-stdin
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: |
+            ${{ secrets.ACR_URL }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Push Docker image
+        if: ${{ !inputs.dry_run }}
+        run: |
+          FULL_IMAGE="${{ secrets.ACR_URL }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
+          LATEST_IMAGE="${{ secrets.ACR_URL }}/${{ env.IMAGE_NAME }}:latest"
+
+          # Tag and push versioned image
+          docker push "${FULL_IMAGE}"
+          echo "Pushed: ${FULL_IMAGE}"
+
+          # Only tag as latest for non-prerelease versions
+          if [ "${{ steps.version.outputs.prerelease }}" = "false" ]; then
+            docker tag "${FULL_IMAGE}" "${LATEST_IMAGE}"
+            docker push "${LATEST_IMAGE}"
+            echo "Pushed: ${LATEST_IMAGE}"
+          fi
