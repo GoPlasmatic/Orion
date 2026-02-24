@@ -2,7 +2,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{body_json, json_request};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -674,9 +674,11 @@ async fn test_validate_rule_duplicate_task_ids() {
     let body = body_json(resp).await;
     assert_eq!(body["valid"], false);
     let errors = body["errors"].as_array().unwrap();
-    assert!(errors
-        .iter()
-        .any(|e| e["field"] == "tasks" && e["message"].as_str().unwrap().contains("Duplicate")));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e["field"] == "tasks" && e["message"].as_str().unwrap().contains("Duplicate"))
+    );
 }
 
 #[tokio::test]
@@ -702,9 +704,11 @@ async fn test_validate_rule_missing_task_fields() {
     assert_eq!(body["valid"], false);
     let errors = body["errors"].as_array().unwrap();
     assert!(errors.iter().any(|e| e["field"] == "tasks[0].id"));
-    assert!(errors
-        .iter()
-        .any(|e| e["field"] == "tasks[0].function.name"));
+    assert!(
+        errors
+            .iter()
+            .any(|e| e["field"] == "tasks[0].function.name")
+    );
 }
 
 #[tokio::test]
@@ -729,10 +733,12 @@ async fn test_validate_rule_unknown_function() {
     let body = body_json(resp).await;
     assert_eq!(body["valid"], true);
     let warnings = body["warnings"].as_array().unwrap();
-    assert!(warnings
-        .iter()
-        .any(|w| w["field"] == "tasks[0].function.name"
-            && w["message"].as_str().unwrap().contains("foobar")));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w["field"] == "tasks[0].function.name"
+                && w["message"].as_str().unwrap().contains("foobar"))
+    );
 }
 
 #[tokio::test]
@@ -764,12 +770,12 @@ async fn test_validate_rule_missing_connector() {
     let body = body_json(resp).await;
     assert_eq!(body["valid"], true);
     let warnings = body["warnings"].as_array().unwrap();
-    assert!(warnings.iter().any(|w| w["field"]
-        == "tasks[0].function.input.connector"
-        && w["message"]
-            .as_str()
-            .unwrap()
-            .contains("nonexistent_api")));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w["field"] == "tasks[0].function.input.connector"
+                && w["message"].as_str().unwrap().contains("nonexistent_api"))
+    );
 }
 
 #[tokio::test]
