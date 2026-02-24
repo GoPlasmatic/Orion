@@ -2,8 +2,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, patch, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
 use crate::connector::mask_connector;
 use crate::errors::OrionError;
@@ -22,6 +23,7 @@ pub fn admin_routes() -> Router<AppState> {
         .route("/rules", get(list_rules).post(create_rule))
         .route("/rules/import", post(import_rules))
         .route("/rules/export", get(export_rules))
+        .route("/rules/validate", post(validate_rule))
         .route(
             "/rules/{id}",
             get(get_rule).put(update_rule).delete(delete_rule),
@@ -223,6 +225,210 @@ async fn export_rules(
 ) -> Result<Json<Value>, OrionError> {
     let rules = state.rule_repo.list(&filter).await?;
     Ok(Json(json!({ "data": rules })))
+}
+
+// ============================================================
+// Rule Validation
+// ============================================================
+
+#[derive(Serialize)]
+struct ValidationIssue {
+    field: String,
+    message: String,
+}
+
+#[derive(Serialize)]
+struct ValidationResponse {
+    valid: bool,
+    errors: Vec<ValidationIssue>,
+    warnings: Vec<ValidationIssue>,
+}
+
+const KNOWN_FUNCTIONS: &[&str] = &[
+    "map",
+    "validation",
+    "validate",
+    "parse_json",
+    "parse_xml",
+    "publish_json",
+    "publish_xml",
+    "filter",
+    "log",
+    "http_call",
+    "enrich",
+    "publish_kafka",
+];
+
+const CONNECTOR_FUNCTIONS: &[&str] = &["http_call", "enrich", "publish_kafka"];
+
+#[tracing::instrument(skip(state, req))]
+async fn validate_rule(
+    State(state): State<AppState>,
+    Json(req): Json<CreateRuleRequest>,
+) -> Json<Value> {
+    let result = run_validation(&req, &state).await;
+    Json(json!({
+        "valid": result.valid,
+        "errors": result.errors,
+        "warnings": result.warnings,
+    }))
+}
+
+async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> ValidationResponse {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    // 1. Name non-empty
+    if req.name.trim().is_empty() {
+        errors.push(ValidationIssue {
+            field: "name".to_string(),
+            message: "Name cannot be empty".to_string(),
+        });
+    }
+
+    // 2. Channel non-empty
+    if req.channel.trim().is_empty() {
+        errors.push(ValidationIssue {
+            field: "channel".to_string(),
+            message: "Channel cannot be empty".to_string(),
+        });
+    }
+
+    // 3. Tasks is non-empty array
+    let tasks = req.tasks.as_array();
+    if tasks.is_none() || tasks.is_some_and(|t| t.is_empty()) {
+        errors.push(ValidationIssue {
+            field: "tasks".to_string(),
+            message: "Tasks must be a non-empty array".to_string(),
+        });
+    }
+
+    // Task-level checks (4-5, 7-9)
+    if let Some(tasks) = tasks {
+        let mut seen_ids = HashSet::new();
+
+        for (i, task) in tasks.iter().enumerate() {
+            // 4. Each task has id, name, function.name
+            let task_id = task.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            if task_id.is_empty() {
+                errors.push(ValidationIssue {
+                    field: format!("tasks[{i}].id"),
+                    message: format!("Task at index {i} is missing 'id'"),
+                });
+            }
+
+            if task
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .is_empty()
+            {
+                errors.push(ValidationIssue {
+                    field: format!("tasks[{i}].name"),
+                    message: format!("Task at index {i} is missing 'name'"),
+                });
+            }
+
+            let function = task.get("function");
+            let fn_name = function
+                .and_then(|f| f.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+
+            if fn_name.is_empty() {
+                errors.push(ValidationIssue {
+                    field: format!("tasks[{i}].function.name"),
+                    message: format!("Task at index {i} is missing 'function.name'"),
+                });
+            }
+
+            // 5. Task IDs unique
+            if !task_id.is_empty() && !seen_ids.insert(task_id) {
+                errors.push(ValidationIssue {
+                    field: "tasks".to_string(),
+                    message: format!("Duplicate task id '{task_id}'"),
+                });
+            }
+
+            // 7. Task conditions valid JSONLogic
+            if let Some(condition) = task.get("condition") {
+                let dl = datalogic_rs::DataLogic::new();
+                if let Err(e) = dl.compile(condition) {
+                    errors.push(ValidationIssue {
+                        field: format!("tasks[{i}].condition"),
+                        message: format!("Invalid JSONLogic in task condition: {e}"),
+                    });
+                }
+            }
+
+            // 8. Function name known
+            if !fn_name.is_empty() && !KNOWN_FUNCTIONS.contains(&fn_name) {
+                warnings.push(ValidationIssue {
+                    field: format!("tasks[{i}].function.name"),
+                    message: format!("Unknown function '{fn_name}'"),
+                });
+            }
+
+            // 9. Connector ref exists
+            if !fn_name.is_empty() && CONNECTOR_FUNCTIONS.contains(&fn_name) {
+                if let Some(connector_name) = function
+                    .and_then(|f| f.get("input"))
+                    .and_then(|input| input.get("connector"))
+                    .and_then(|c| c.as_str())
+                {
+                    if state.connector_registry.get(connector_name).await.is_none() {
+                        warnings.push(ValidationIssue {
+                            field: format!("tasks[{i}].function.input.connector"),
+                            message: format!("Connector '{connector_name}' not found in registry"),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Rule condition valid JSONLogic
+    let dl = datalogic_rs::DataLogic::new();
+    if let Err(e) = dl.compile(&req.condition) {
+        errors.push(ValidationIssue {
+            field: "condition".to_string(),
+            message: format!("Invalid JSONLogic in rule condition: {e}"),
+        });
+    }
+
+    // 10. Workflow conversion
+    {
+        use crate::storage::repositories::rules::rule_to_workflow;
+
+        let temp_rule = crate::storage::models::Rule {
+            id: "temp-validate".to_string(),
+            name: req.name.clone(),
+            description: req.description.clone(),
+            channel: req.channel.clone(),
+            priority: req.priority,
+            version: 1,
+            status: "active".to_string(),
+            condition_json: serde_json::to_string(&req.condition).unwrap_or_default(),
+            tasks_json: serde_json::to_string(&req.tasks).unwrap_or_default(),
+            tags: serde_json::to_string(&req.tags).unwrap_or_default(),
+            continue_on_error: req.continue_on_error,
+            created_at: chrono::Utc::now().naive_utc(),
+            updated_at: chrono::Utc::now().naive_utc(),
+        };
+
+        if let Err(e) = rule_to_workflow(&temp_rule) {
+            errors.push(ValidationIssue {
+                field: "(root)".to_string(),
+                message: format!("Failed to convert to workflow: {e}"),
+            });
+        }
+    }
+
+    ValidationResponse {
+        valid: errors.is_empty(),
+        errors,
+        warnings,
+    }
 }
 
 // ============================================================

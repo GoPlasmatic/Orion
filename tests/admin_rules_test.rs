@@ -2,7 +2,7 @@ mod common;
 
 use axum::http::StatusCode;
 use common::{body_json, json_request};
-use serde_json::json;
+use serde_json::{json, Value};
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -536,4 +536,270 @@ async fn test_rules_pagination_with_filters() {
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
     assert_eq!(body["total"], 2);
     assert_eq!(body["limit"], 1);
+}
+
+// ============================================================
+// Rule Validation Tests
+// ============================================================
+
+fn valid_rule_body() -> Value {
+    json!({
+        "name": "Test Rule",
+        "channel": "orders",
+        "priority": 10,
+        "condition": true,
+        "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+    })
+}
+
+#[tokio::test]
+async fn test_validate_rule_valid() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(valid_rule_body()),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], true);
+    assert!(body["errors"].as_array().unwrap().is_empty());
+    assert!(body["warnings"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_validate_rule_empty_name() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(json!({
+                "name": "",
+                "channel": "orders",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], false);
+    let errors = body["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| e["field"] == "name"));
+}
+
+#[tokio::test]
+async fn test_validate_rule_empty_tasks() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(json!({
+                "name": "Test",
+                "channel": "orders",
+                "tasks": []
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], false);
+    let errors = body["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| e["field"] == "tasks"));
+}
+
+#[tokio::test]
+async fn test_validate_rule_tasks_not_array() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(json!({
+                "name": "Test",
+                "channel": "orders",
+                "condition": true,
+                "tasks": "not_an_array"
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], false);
+    let errors = body["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| e["field"] == "tasks"));
+}
+
+#[tokio::test]
+async fn test_validate_rule_duplicate_task_ids() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(json!({
+                "name": "Test",
+                "channel": "orders",
+                "tasks": [
+                    {"id":"t1","name":"Log","function":{"name":"log","input":{"message":"a"}}},
+                    {"id":"t1","name":"Log2","function":{"name":"log","input":{"message":"b"}}}
+                ]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], false);
+    let errors = body["errors"].as_array().unwrap();
+    assert!(errors
+        .iter()
+        .any(|e| e["field"] == "tasks" && e["message"].as_str().unwrap().contains("Duplicate")));
+}
+
+#[tokio::test]
+async fn test_validate_rule_missing_task_fields() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(json!({
+                "name": "Test",
+                "channel": "orders",
+                "tasks": [{"some_field": "value"}]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], false);
+    let errors = body["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| e["field"] == "tasks[0].id"));
+    assert!(errors
+        .iter()
+        .any(|e| e["field"] == "tasks[0].function.name"));
+}
+
+#[tokio::test]
+async fn test_validate_rule_unknown_function() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(json!({
+                "name": "Test",
+                "channel": "orders",
+                "tasks": [{"id":"t1","name":"DoStuff","function":{"name":"foobar","input":{}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], true);
+    let warnings = body["warnings"].as_array().unwrap();
+    assert!(warnings
+        .iter()
+        .any(|w| w["field"] == "tasks[0].function.name"
+            && w["message"].as_str().unwrap().contains("foobar")));
+}
+
+#[tokio::test]
+async fn test_validate_rule_missing_connector() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(json!({
+                "name": "Test",
+                "channel": "orders",
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Call API",
+                    "function": {
+                        "name": "http_call",
+                        "input": { "connector": "nonexistent_api" }
+                    }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], true);
+    let warnings = body["warnings"].as_array().unwrap();
+    assert!(warnings.iter().any(|w| w["field"]
+        == "tasks[0].function.input.connector"
+        && w["message"]
+            .as_str()
+            .unwrap()
+            .contains("nonexistent_api")));
+}
+
+#[tokio::test]
+async fn test_validate_no_persistence() {
+    let app = common::test_app().await;
+
+    // Validate a rule
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(valid_rule_body()),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], true);
+
+    // List rules — should be empty
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/rules", None))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["total"], 0);
+    assert!(body["data"].as_array().unwrap().is_empty());
 }
