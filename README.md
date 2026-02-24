@@ -336,7 +336,7 @@ See [Use Cases & Patterns](docs/use-cases.md) for complete, tested examples of e
 
 ## Built With
 
-Built on battle-tested Rust libraries: [Axum](https://github.com/tokio-rs/axum) (HTTP), [Tokio](https://tokio.rs) (async runtime), [SQLx](https://github.com/launchbadge/sqlx) (database), and SQLite (storage). The rule engine is powered by [datalogic-rs](https://github.com/codetiger/datalogic-rs) (JSONLogic) and [dataflow-rs](https://github.com/codetiger/dataflow-rs) (workflow orchestration).
+Built on battle-tested Rust libraries: [Axum](https://github.com/tokio-rs/axum) (HTTP), [Tokio](https://tokio.rs) (async runtime), [SQLx](https://github.com/launchbadge/sqlx) (database), and SQLite (storage). The rule engine is powered by [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) (JSONLogic) and [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) (workflow orchestration).
 
 ## Contributing
 
