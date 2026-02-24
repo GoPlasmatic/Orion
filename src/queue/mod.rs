@@ -14,6 +14,10 @@ pub struct QueueMessage {
     pub channel: String,
     pub payload: Value,
     pub metadata: Value,
+    /// Serialized W3C trace context headers captured at submission time.
+    /// Used to link async job processing spans back to the originating request.
+    #[cfg(feature = "otel")]
+    pub trace_headers: std::collections::HashMap<String, String>,
 }
 
 /// In-memory job queue backed by a tokio mpsc channel.
@@ -130,6 +134,29 @@ async fn process_job(
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     job_repo: Arc<dyn JobRepository>,
 ) {
+    // Restore W3C trace context from the originating request so this span
+    // appears as a child in the caller's distributed trace.
+    #[cfg(feature = "otel")]
+    {
+        use opentelemetry::propagation::TextMapPropagator;
+        use opentelemetry_sdk::propagation::TraceContextPropagator;
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+        struct MapExtractor<'a>(&'a std::collections::HashMap<String, String>);
+        impl opentelemetry::propagation::Extractor for MapExtractor<'_> {
+            fn get(&self, key: &str) -> Option<&str> {
+                self.0.get(key).map(|v| v.as_str())
+            }
+            fn keys(&self) -> Vec<&str> {
+                self.0.keys().map(|k| k.as_str()).collect()
+            }
+        }
+
+        let propagator = TraceContextPropagator::new();
+        let cx = propagator.extract(&MapExtractor(&msg.trace_headers));
+        tracing::Span::current().set_parent(cx);
+    }
+
     let job_id = msg.job_id;
     let channel = msg.channel;
     let start = Instant::now();

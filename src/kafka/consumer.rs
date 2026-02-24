@@ -12,6 +12,9 @@ use crate::errors::OrionError;
 use crate::kafka::producer::KafkaProducer;
 use crate::metrics;
 
+#[cfg(feature = "otel")]
+use rdkafka::message::Headers;
+
 /// Handle for managing the Kafka consumer lifecycle.
 pub struct ConsumerHandle {
     shutdown_tx: watch::Sender<bool>,
@@ -156,6 +159,42 @@ async fn consume_loop(
                                 }
                                 continue;
                             }
+                        };
+
+                        // Extract W3C trace context from Kafka message headers
+                        #[cfg(feature = "otel")]
+                        let _parent_cx = {
+                            use opentelemetry::propagation::TextMapPropagator;
+                            use opentelemetry_sdk::propagation::TraceContextPropagator;
+
+                            struct KafkaHeaderExtractor(HashMap<String, String>);
+                            impl opentelemetry::propagation::Extractor for KafkaHeaderExtractor {
+                                fn get(&self, key: &str) -> Option<&str> {
+                                    self.0.get(key).map(|v| v.as_str())
+                                }
+                                fn keys(&self) -> Vec<&str> {
+                                    self.0.keys().map(|k| k.as_str()).collect()
+                                }
+                            }
+
+                            let mut header_map = HashMap::new();
+                            if let Some(headers) = msg.headers() {
+                                for idx in 0..headers.count() {
+                                    if let Ok(header) = headers.get_as::<str>(idx) {
+                                        if let Some(value) = header.value {
+                                            header_map.insert(header.key.to_string(), value.to_string());
+                                        }
+                                    }
+                                }
+                            }
+
+                            let propagator = TraceContextPropagator::new();
+                            let cx = propagator.extract(&KafkaHeaderExtractor(header_map));
+
+                            // Set extracted context as parent of the current span
+                            use tracing_opentelemetry::OpenTelemetrySpanExt;
+                            tracing::Span::current().set_parent(cx.clone());
+                            cx
                         };
 
                         // Process through engine
