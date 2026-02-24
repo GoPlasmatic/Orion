@@ -5,6 +5,8 @@ edition = "2024"
 rust-version = "1.85"
 description = "Standalone rules engine service wrapping dataflow-rs"
 license = "Apache-2.0"
+repository = "https://github.com/GoPlasmatic/Orion"
+homepage = "https://github.com/GoPlasmatic/Orion"
 
 [[bin]]
 name = "orion"
@@ -52,3 +54,8 @@ tower = "0.5"
 [features]
 default = []
 kafka = ["rdkafka"]
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
