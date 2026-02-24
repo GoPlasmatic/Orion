@@ -89,6 +89,15 @@ pub trait RuleRepository: Send + Sync {
         &self,
         rules: &[CreateRuleRequest],
     ) -> Result<Vec<Result<Rule, OrionError>>, OrionError>;
+    /// List version history for a rule.
+    async fn list_versions(
+        &self,
+        rule_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<PaginatedResult<models::RuleVersion>, OrionError>;
+    /// Database connectivity check.
+    async fn ping(&self) -> Result<(), OrionError>;
 }
 
 // -- SQLite implementation --
@@ -156,8 +165,12 @@ fn build_where_clause(filter: &RuleFilter) -> (String, Vec<String>) {
         binds.push(channel.clone());
     }
     if let Some(ref tag) = filter.tag {
-        clause.push_str(" AND tags LIKE ?");
-        binds.push(format!("%\"{}\"%", tag));
+        clause.push_str(" AND tags LIKE ? ESCAPE '\\'");
+        let escaped = tag
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        binds.push(format!("%\"{}\"%", escaped));
     }
 
     (clause, binds)
@@ -422,96 +435,53 @@ impl RuleRepository for SqliteRuleRepository {
         rules: &[CreateRuleRequest],
     ) -> Result<Vec<Result<Rule, OrionError>>, OrionError> {
         let mut results = Vec::with_capacity(rules.len());
-        let mut tx = self.pool.begin().await?;
 
         for req in rules {
-            let id = req
-                .id
-                .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let condition_json = match serde_json::to_string(&req.condition) {
-                Ok(v) => v,
-                Err(e) => {
-                    results.push(Err(OrionError::from(e)));
-                    continue;
-                }
-            };
-            let tasks_json = match serde_json::to_string(&req.tasks) {
-                Ok(v) => v,
-                Err(e) => {
-                    results.push(Err(OrionError::from(e)));
-                    continue;
-                }
-            };
-            let tags_json = match serde_json::to_string(&req.tags) {
-                Ok(v) => v,
-                Err(e) => {
-                    results.push(Err(OrionError::from(e)));
-                    continue;
-                }
-            };
-
-            let insert_result = sqlx::query(
-                r#"INSERT INTO rules (id, name, description, channel, priority, condition_json, tasks_json, tags, continue_on_error)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-            )
-            .bind(&id)
-            .bind(&req.name)
-            .bind(&req.description)
-            .bind(&req.channel)
-            .bind(req.priority)
-            .bind(&condition_json)
-            .bind(&tasks_json)
-            .bind(&tags_json)
-            .bind(req.continue_on_error)
-            .execute(&mut *tx)
-            .await;
-
-            match insert_result {
-                Ok(_) => {
-                    if let Err(e) = insert_version(
-                        &mut *tx,
-                        &VersionData {
-                            rule_id: &id,
-                            version: 1,
-                            name: &req.name,
-                            description: req.description.as_deref(),
-                            channel: &req.channel,
-                            priority: req.priority,
-                            status: models::RULE_STATUS_ACTIVE,
-                            condition_json: &condition_json,
-                            tasks_json: &tasks_json,
-                            tags_json: &tags_json,
-                            continue_on_error: req.continue_on_error,
-                        },
-                    )
-                    .await
-                    {
-                        results.push(Err(e));
-                        continue;
-                    }
-                    results.push(Ok(Rule {
-                        id,
-                        name: req.name.clone(),
-                        description: req.description.clone(),
-                        channel: req.channel.clone(),
-                        priority: req.priority,
-                        version: 1,
-                        status: models::RULE_STATUS_ACTIVE.to_string(),
-                        condition_json,
-                        tasks_json,
-                        tags: tags_json,
-                        continue_on_error: req.continue_on_error,
-                        created_at: chrono::Utc::now().naive_utc(),
-                        updated_at: chrono::Utc::now().naive_utc(),
-                    }));
-                }
-                Err(e) => results.push(Err(OrionError::Storage(e))),
-            }
+            // Each rule gets its own transaction so partial success is possible
+            let result = self.create(req).await;
+            results.push(result);
         }
 
-        tx.commit().await?;
         Ok(results)
+    }
+
+    async fn list_versions(
+        &self,
+        rule_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<PaginatedResult<models::RuleVersion>, OrionError> {
+        let limit = limit.clamp(1, 1000);
+        let offset = offset.max(0);
+
+        let (total,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM rule_versions WHERE rule_id = ?")
+                .bind(rule_id)
+                .fetch_one(&self.pool)
+                .await?;
+
+        let data = sqlx::query_as::<_, models::RuleVersion>(
+            "SELECT * FROM rule_versions WHERE rule_id = ? ORDER BY version DESC LIMIT ? OFFSET ?",
+        )
+        .bind(rule_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(PaginatedResult {
+            data,
+            total,
+            limit,
+            offset,
+        })
+    }
+
+    async fn ping(&self) -> Result<(), OrionError> {
+        sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 
@@ -535,7 +505,8 @@ pub fn rule_to_workflow(rule: &Rule) -> Result<Workflow, OrionError> {
         "continue_on_error": rule.continue_on_error,
     });
 
-    let workflow = Workflow::from_json(&serde_json::to_string(&workflow_json)?)?;
+    // Use from_value to avoid to_string + from_json round-trip
+    let workflow: Workflow = serde_json::from_value(workflow_json)?;
     Ok(workflow)
 }
 

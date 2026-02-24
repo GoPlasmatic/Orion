@@ -1,4 +1,5 @@
 pub mod functions;
+pub mod utils;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -7,6 +8,25 @@ use dataflow_rs::engine::functions::AsyncFunctionHandler;
 
 use crate::connector::ConnectorRegistry;
 
+/// Known function names supported by the engine.
+pub const KNOWN_FUNCTIONS: &[&str] = &[
+    "map",
+    "validation",
+    "validate",
+    "parse_json",
+    "parse_xml",
+    "publish_json",
+    "publish_xml",
+    "filter",
+    "log",
+    "http_call",
+    "enrich",
+    "publish_kafka",
+];
+
+/// Function names that require a connector reference.
+pub const CONNECTOR_FUNCTIONS: &[&str] = &["http_call", "enrich", "publish_kafka"];
+
 /// Build the custom function handlers for the dataflow-rs engine.
 ///
 /// Registers http_call, enrich, and (when kafka feature is disabled) a stub
@@ -14,9 +34,8 @@ use crate::connector::ConnectorRegistry;
 /// Kafka-backed handler when the feature is enabled.
 pub fn build_custom_functions(
     registry: Arc<ConnectorRegistry>,
+    client: reqwest::Client,
 ) -> HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> {
-    let client = reqwest::Client::new();
-
     let mut fns: HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> = HashMap::new();
 
     fns.insert(
@@ -60,4 +79,20 @@ pub fn register_kafka_publisher(
         "publish_kafka".to_string(),
         Box::new(functions::publish_kafka::PublishKafkaHandler { registry, producer }),
     );
+}
+
+/// Convert a list of rules to workflows, logging warnings for failures.
+pub fn build_engine_workflows(
+    rules: &[crate::storage::models::Rule],
+) -> Vec<dataflow_rs::Workflow> {
+    let mut workflows = Vec::new();
+    for rule in rules {
+        match crate::storage::repositories::rules::rule_to_workflow(rule) {
+            Ok(w) => workflows.push(w),
+            Err(e) => {
+                tracing::warn!(rule_id = %rule.id, error = %e, "Failed to convert rule to workflow, skipping");
+            }
+        }
+    }
+    workflows
 }

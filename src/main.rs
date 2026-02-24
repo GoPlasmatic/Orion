@@ -9,7 +9,7 @@ use orion::connector::ConnectorRegistry;
 use orion::server::state::AppState;
 use orion::storage::repositories::connectors::SqliteConnectorRepository;
 use orion::storage::repositories::jobs::SqliteJobRepository;
-use orion::storage::repositories::rules::{RuleRepository, SqliteRuleRepository, rule_to_workflow};
+use orion::storage::repositories::rules::{RuleRepository, SqliteRuleRepository};
 
 #[derive(Parser)]
 #[command(name = "orion", version, about = "Orion Rules Engine Service")]
@@ -47,9 +47,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Starting Orion Rules Engine"
     );
 
-    // Init metrics
-    let metrics_handle = orion::metrics::init_metrics();
-    tracing::info!("Prometheus metrics initialized");
+    // Init metrics (gated by config)
+    let metrics_handle = if config.metrics.enabled {
+        let handle = orion::metrics::init_metrics();
+        tracing::info!("Prometheus metrics initialized");
+        handle
+    } else {
+        // Create a no-op handle that still works but doesn't install a global recorder
+        metrics_exporter_prometheus::PrometheusBuilder::new()
+            .build_recorder()
+            .handle()
+    };
 
     // Init database
     let pool =
@@ -68,9 +76,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     tracing::info!(count = connector_count, "Connectors loaded");
 
+    // Create a shared HTTP client
+    let http_client = reqwest::Client::new();
+
     // Build custom function handlers (http_call, enrich, publish_kafka)
     #[allow(unused_mut)]
-    let mut custom_functions = orion::engine::build_custom_functions(connector_registry.clone());
+    let mut custom_functions =
+        orion::engine::build_custom_functions(connector_registry.clone(), http_client.clone());
 
     // Kafka producer setup (when kafka feature is enabled)
     #[cfg(feature = "kafka")]
@@ -91,15 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load active rules and build engine with custom functions
     let active_rules = rule_repo.list_active().await?;
-    let mut workflows = Vec::new();
-    for rule in &active_rules {
-        match rule_to_workflow(rule) {
-            Ok(w) => workflows.push(w),
-            Err(e) => {
-                tracing::warn!(rule_id = %rule.id, error = %e, "Failed to convert rule, skipping");
-            }
-        }
-    }
+    let workflows = orion::engine::build_engine_workflows(&active_rules);
 
     let channels: std::collections::HashSet<&str> =
         workflows.iter().map(|w| w.channel.as_str()).collect();
@@ -174,8 +178,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         job_queue,
         config: config.clone(),
         start_time: chrono::Utc::now(),
-        db_pool: pool,
         metrics_handle,
+        http_client,
     };
 
     let router = orion::server::build_router(state);

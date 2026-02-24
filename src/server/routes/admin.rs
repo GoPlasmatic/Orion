@@ -10,6 +10,7 @@ use crate::connector::mask_connector;
 use crate::errors::OrionError;
 use crate::server::routes::reload_engine;
 use crate::server::state::AppState;
+use crate::storage::models::{RuleResponse, RuleVersionResponse};
 use crate::storage::repositories::connectors::{
     ConnectorFilter, CreateConnectorRequest, UpdateConnectorRequest,
 };
@@ -29,6 +30,7 @@ pub fn admin_routes() -> Router<AppState> {
             get(get_rule).put(update_rule).delete(delete_rule),
         )
         .route("/rules/{id}/status", patch(change_rule_status))
+        .route("/rules/{id}/versions", get(list_rule_versions))
         .route("/rules/{id}/test", post(test_rule))
         // Connectors
         .route("/connectors", get(list_connectors).post(create_connector))
@@ -62,8 +64,9 @@ pub(crate) async fn list_rules(
     Query(filter): Query<RuleFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state.rule_repo.list_paginated(&filter).await?;
+    let data: Vec<RuleResponse> = result.data.iter().map(RuleResponse::from).collect();
     Ok(Json(json!({
-        "data": result.data,
+        "data": data,
         "total": result.total,
         "limit": result.limit,
         "offset": result.offset,
@@ -87,7 +90,10 @@ pub(crate) async fn create_rule(
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let rule = state.rule_repo.create(&req).await?;
     reload_engine(&state).await?;
-    Ok((StatusCode::CREATED, Json(json!({ "data": rule }))))
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "data": RuleResponse::from(&rule) })),
+    ))
 }
 
 #[utoipa::path(
@@ -108,7 +114,7 @@ pub(crate) async fn get_rule(
     let rule = state.rule_repo.get_by_id(&id).await?;
     let version_count = state.rule_repo.count_versions(&id).await?;
     Ok(Json(json!({
-        "data": rule,
+        "data": RuleResponse::from(&rule),
         "version_count": version_count,
     })))
 }
@@ -132,7 +138,7 @@ pub(crate) async fn update_rule(
 ) -> Result<Json<Value>, OrionError> {
     let rule = state.rule_repo.update(&id, &req).await?;
     reload_engine(&state).await?;
-    Ok(Json(json!({ "data": rule })))
+    Ok(Json(json!({ "data": RuleResponse::from(&rule) })))
 }
 
 #[utoipa::path(
@@ -179,7 +185,52 @@ pub(crate) async fn change_rule_status(
 ) -> Result<Json<Value>, OrionError> {
     let rule = state.rule_repo.update_status(&id, &req.status).await?;
     reload_engine(&state).await?;
-    Ok(Json(json!({ "data": rule })))
+    Ok(Json(json!({ "data": RuleResponse::from(&rule) })))
+}
+
+// ============================================================
+// Rule Version History
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct VersionFilter {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/rules/{id}/versions",
+    tag = "Rules",
+    params(
+        ("id" = String, Path, description = "Rule ID"),
+    ),
+    responses(
+        (status = 200, description = "Paginated version history"),
+        (status = 404, description = "Rule not found"),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn list_rule_versions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(filter): Query<VersionFilter>,
+) -> Result<Json<Value>, OrionError> {
+    // Verify rule exists
+    let _ = state.rule_repo.get_by_id(&id).await?;
+
+    let limit = filter.limit.unwrap_or(50);
+    let offset = filter.offset.unwrap_or(0);
+    let result = state.rule_repo.list_versions(&id, limit, offset).await?;
+    let data: Vec<RuleVersionResponse> =
+        result.data.iter().map(RuleVersionResponse::from).collect();
+
+    Ok(Json(json!({
+        "data": data,
+        "total": result.total,
+        "limit": result.limit,
+        "offset": result.offset,
+    })))
 }
 
 // ============================================================
@@ -215,8 +266,11 @@ pub(crate) async fn test_rule(
     let rule = state.rule_repo.get_by_id(&id).await?;
     let workflow = rule_to_workflow(&rule)?;
 
-    // Create an isolated engine with just this one rule, including custom functions
-    let custom_fns = crate::engine::build_custom_functions(state.connector_registry.clone());
+    // Create an isolated engine with just this one rule, reusing the shared HTTP client
+    let custom_fns = crate::engine::build_custom_functions(
+        state.connector_registry.clone(),
+        state.http_client.clone(),
+    );
     let test_engine = dataflow_rs::Engine::new(vec![workflow], Some(custom_fns));
 
     let mut payload = json!({});
@@ -244,9 +298,11 @@ pub(crate) async fn test_rule(
             )
         });
 
+    let trace_value = serde_json::to_value(&trace)?;
+
     Ok(Json(json!({
         "matched": matched,
-        "trace": serde_json::to_value(&trace).unwrap_or_default(),
+        "trace": trace_value,
         "output": message.data(),
         "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
     })))
@@ -315,7 +371,8 @@ pub(crate) async fn export_rules(
     Query(filter): Query<RuleFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let rules = state.rule_repo.list(&filter).await?;
-    Ok(Json(json!({ "data": rules })))
+    let data: Vec<RuleResponse> = rules.iter().map(RuleResponse::from).collect();
+    Ok(Json(json!({ "data": data })))
 }
 
 // ============================================================
@@ -335,23 +392,6 @@ pub(crate) struct ValidationResponse {
     warnings: Vec<ValidationIssue>,
 }
 
-const KNOWN_FUNCTIONS: &[&str] = &[
-    "map",
-    "validation",
-    "validate",
-    "parse_json",
-    "parse_xml",
-    "publish_json",
-    "publish_xml",
-    "filter",
-    "log",
-    "http_call",
-    "enrich",
-    "publish_kafka",
-];
-
-const CONNECTOR_FUNCTIONS: &[&str] = &["http_call", "enrich", "publish_kafka"];
-
 #[utoipa::path(
     post,
     path = "/api/v1/admin/rules/validate",
@@ -365,13 +405,13 @@ const CONNECTOR_FUNCTIONS: &[&str] = &["http_call", "enrich", "publish_kafka"];
 pub(crate) async fn validate_rule(
     State(state): State<AppState>,
     Json(req): Json<CreateRuleRequest>,
-) -> Json<Value> {
+) -> Result<Json<Value>, OrionError> {
     let result = run_validation(&req, &state).await;
-    Json(json!({
+    Ok(Json(json!({
         "valid": result.valid,
         "errors": result.errors,
         "warnings": result.warnings,
-    }))
+    })))
 }
 
 async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> ValidationResponse {
@@ -402,6 +442,9 @@ async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> Validation
             message: "Tasks must be a non-empty array".to_string(),
         });
     }
+
+    // Reuse a single DataLogic instance for all condition compilations
+    let dl = datalogic_rs::DataLogic::new();
 
     // Task-level checks (4-5, 7-9)
     if let Some(tasks) = tasks {
@@ -452,7 +495,6 @@ async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> Validation
 
             // 7. Task conditions valid JSONLogic
             if let Some(condition) = task.get("condition") {
-                let dl = datalogic_rs::DataLogic::new();
                 if let Err(e) = dl.compile(condition) {
                     errors.push(ValidationIssue {
                         field: format!("tasks[{i}].condition"),
@@ -462,7 +504,7 @@ async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> Validation
             }
 
             // 8. Function name known
-            if !fn_name.is_empty() && !KNOWN_FUNCTIONS.contains(&fn_name) {
+            if !fn_name.is_empty() && !crate::engine::KNOWN_FUNCTIONS.contains(&fn_name) {
                 warnings.push(ValidationIssue {
                     field: format!("tasks[{i}].function.name"),
                     message: format!("Unknown function '{fn_name}'"),
@@ -470,7 +512,7 @@ async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> Validation
             }
 
             // 9. Connector ref exists
-            if !fn_name.is_empty() && CONNECTOR_FUNCTIONS.contains(&fn_name) {
+            if !fn_name.is_empty() && crate::engine::CONNECTOR_FUNCTIONS.contains(&fn_name) {
                 if let Some(connector_name) = function
                     .and_then(|f| f.get("input"))
                     .and_then(|input| input.get("connector"))
@@ -488,7 +530,6 @@ async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> Validation
     }
 
     // 6. Rule condition valid JSONLogic
-    let dl = datalogic_rs::DataLogic::new();
     if let Err(e) = dl.compile(&req.condition) {
         errors.push(ValidationIssue {
             field: "condition".to_string(),

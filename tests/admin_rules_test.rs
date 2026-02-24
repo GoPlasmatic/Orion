@@ -809,3 +809,423 @@ async fn test_validate_no_persistence() {
     assert_eq!(body["total"], 0);
     assert!(body["data"].as_array().unwrap().is_empty());
 }
+
+// ============================================================
+// Tag Filter Wildcard Escaping Tests
+// ============================================================
+
+#[tokio::test]
+async fn test_tag_filter_with_percent_character() {
+    let app = common::test_app().await;
+
+    // Create a rule with tag containing %
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Percent Tag Rule",
+                "channel": "test",
+                "tags": ["100%"],
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Create another rule with different tag
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Other Rule",
+                "channel": "test",
+                "tags": ["other"],
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Filter by tag "100%" should only return the first rule
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/rules?tag=100%25", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["data"][0]["name"], "Percent Tag Rule");
+}
+
+#[tokio::test]
+async fn test_tag_filter_with_underscore_character() {
+    let app = common::test_app().await;
+
+    // Create a rule with tag containing _
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Underscore Tag Rule",
+                "channel": "test",
+                "tags": ["my_tag"],
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Create a rule with tag "myXtag" — should NOT match "my_tag" filter
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Similar Tag Rule",
+                "channel": "test",
+                "tags": ["myXtag"],
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Filter by tag "my_tag" should only match the underscore one
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/rules?tag=my_tag", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["data"][0]["name"], "Underscore Tag Rule");
+}
+
+// ============================================================
+// Bulk Import Partial Failure Tests
+// ============================================================
+
+#[tokio::test]
+async fn test_import_partial_failure_with_duplicate_ids() {
+    let app = common::test_app().await;
+
+    // Import rules with a duplicate ID
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/import",
+            Some(json!([
+                {
+                    "id": "dup-id",
+                    "name": "First",
+                    "channel": "ch1",
+                    "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"1"}}}]
+                },
+                {
+                    "id": "dup-id",
+                    "name": "Duplicate",
+                    "channel": "ch1",
+                    "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"2"}}}]
+                },
+                {
+                    "name": "Third",
+                    "channel": "ch1",
+                    "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"3"}}}]
+                }
+            ])),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["imported"], 2);
+    assert_eq!(body["failed"], 1);
+    assert_eq!(body["errors"].as_array().unwrap().len(), 1);
+}
+
+// ============================================================
+// Rule Version History Tests
+// ============================================================
+
+#[tokio::test]
+async fn test_rule_version_history() {
+    let app = common::test_app().await;
+
+    // Create
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Versioned Rule",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"v1"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let rule_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Update
+    let _resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/admin/rules/{}", rule_id),
+            Some(json!({ "name": "Versioned Rule v2" })),
+        ))
+        .await
+        .unwrap();
+
+    // Change status
+    let _resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/rules/{}/status", rule_id),
+            Some(json!({ "status": "paused" })),
+        ))
+        .await
+        .unwrap();
+
+    // Get version count
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/rules/{}", rule_id),
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["version_count"], 3);
+
+    // Get version history
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/rules/{}/versions", rule_id),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["total"], 3);
+    let versions = body["data"].as_array().unwrap();
+    // Ordered by version DESC
+    assert_eq!(versions[0]["version"], 3);
+    assert_eq!(versions[1]["version"], 2);
+    assert_eq!(versions[2]["version"], 1);
+}
+
+// ============================================================
+// Batch Processing Tests
+// ============================================================
+
+#[tokio::test]
+async fn test_batch_mixed_success_failure() {
+    let app = common::test_app().await;
+
+    // Create a rule for "orders" channel
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Order Rule",
+                "channel": "orders",
+                "condition": true,
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"order"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Batch with mixed channels (orders exists, nonexistent does not have rules)
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/batch",
+            Some(json!({
+                "messages": [
+                    { "channel": "orders", "data": { "amount": 100 } },
+                    { "channel": "orders", "data": { "amount": 200 } },
+                    { "channel": "nonexistent", "data": { "value": 1 } }
+                ]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let results = body["results"].as_array().unwrap();
+    assert_eq!(results.len(), 3);
+    // All should succeed — channels without rules just pass through
+    for r in results {
+        assert_eq!(r["status"], "ok");
+    }
+}
+
+// ============================================================
+// Validate Rule with Invalid Inputs
+// ============================================================
+
+#[tokio::test]
+async fn test_validate_rule_workflow_conversion_failure() {
+    let app = common::test_app().await;
+
+    // tasks as a non-array causes validation failure
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(json!({
+                "name": "Test",
+                "channel": "orders",
+                "condition": true,
+                "tasks": "not_valid_tasks_array"
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], false);
+    let errors = body["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|e| e["field"] == "tasks"));
+}
+
+#[tokio::test]
+async fn test_validate_rule_all_checks_combined() {
+    let app = common::test_app().await;
+
+    // Multiple validation errors at once
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/validate",
+            Some(json!({
+                "name": "",
+                "channel": "",
+                "tasks": [
+                    { "id": "", "name": "", "function": {} }
+                ]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["valid"], false);
+    let errors = body["errors"].as_array().unwrap();
+    // Should have errors for name, channel, task id, task name, function.name
+    assert!(errors.len() >= 4);
+}
+
+// ============================================================
+// JSON Response Format Tests
+// ============================================================
+
+#[tokio::test]
+async fn test_rule_response_has_parsed_json_fields() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Parsed JSON Test",
+                "channel": "test",
+                "condition": { ">": [{ "var": "amount" }, 100] },
+                "tags": ["tag1", "tag2"],
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+
+    // condition should be a parsed JSON object, not a string
+    assert!(body["data"]["condition"].is_object());
+    assert_eq!(body["data"]["condition"][">"][1], 100);
+
+    // tags should be a parsed JSON array, not a string
+    assert!(body["data"]["tags"].is_array());
+    assert_eq!(body["data"]["tags"][0], "tag1");
+
+    // tasks should be a parsed JSON array, not a string
+    assert!(body["data"]["tasks"].is_array());
+    assert_eq!(body["data"]["tasks"][0]["id"], "t1");
+}
+
+// ============================================================
+// Job Listing Tests
+// ============================================================
+
+#[tokio::test]
+async fn test_list_jobs_empty() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/data/jobs", None))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["total"], 0);
+    assert!(body["data"].as_array().unwrap().is_empty());
+}
+
+// ============================================================
+// Rule Version History 404 Test
+// ============================================================
+
+#[tokio::test]
+async fn test_list_versions_nonexistent_rule() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/rules/nonexistent/versions",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}

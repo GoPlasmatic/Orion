@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -10,19 +10,15 @@ use serde_json::{Value, json};
 use crate::errors::OrionError;
 use crate::metrics;
 use crate::server::state::AppState;
+use crate::storage::repositories::jobs::JobFilter;
 
-/// Merge metadata key-value pairs into a message's metadata.
-pub(crate) fn merge_metadata(message: &mut dataflow_rs::Message, metadata: &Value) {
-    if let Some(meta_obj) = metadata.as_object() {
-        for (k, v) in meta_obj {
-            message.metadata_mut()[k] = v.clone();
-        }
-    }
-}
+// Re-export merge_metadata from engine utils for backward compatibility
+pub(crate) use crate::engine::utils::merge_metadata;
 
 pub fn data_routes() -> Router<AppState> {
     Router::new()
         .route("/batch", post(batch_process))
+        .route("/jobs", get(list_jobs))
         .route("/jobs/{id}", get(get_job))
         .route("/{channel}", post(sync_process))
         .route("/{channel}/async", post(async_submit))
@@ -141,8 +137,36 @@ pub(crate) async fn async_submit(
 }
 
 // ============================================================
-// Job Polling
+// Job Listing & Polling
 // ============================================================
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/data/jobs",
+    tag = "Data",
+    params(
+        ("status" = Option<String>, Query, description = "Filter by job status"),
+        ("channel" = Option<String>, Query, description = "Filter by channel"),
+        ("limit" = Option<i64>, Query, description = "Page size"),
+        ("offset" = Option<i64>, Query, description = "Page offset"),
+    ),
+    responses(
+        (status = 200, description = "Paginated list of jobs"),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn list_jobs(
+    State(state): State<AppState>,
+    Query(filter): Query<JobFilter>,
+) -> Result<Json<Value>, OrionError> {
+    let result = state.job_repo.list_paginated(&filter).await?;
+    Ok(Json(json!({
+        "data": result.data,
+        "total": result.total,
+        "limit": result.limit,
+        "offset": result.offset,
+    })))
+}
 
 #[utoipa::path(
     get,
@@ -238,39 +262,53 @@ pub(crate) async fn batch_process(
     tracing::Span::current().record("count", req.messages.len());
 
     let engine = state.engine.read().await.clone();
-    let mut results = Vec::with_capacity(req.messages.len());
 
-    for msg in &req.messages {
-        let start = Instant::now();
-        let mut message = dataflow_rs::Message::from_value(&msg.data);
-        merge_metadata(&mut message, &msg.metadata);
+    let mut handles = Vec::with_capacity(req.messages.len());
+    for msg in req.messages {
+        let engine = engine.clone();
+        handles.push(tokio::spawn(async move {
+            let start = Instant::now();
+            let mut message = dataflow_rs::Message::from_value(&msg.data);
+            merge_metadata(&mut message, &msg.metadata);
 
-        match engine
-            .process_message_for_channel(&msg.channel, &mut message)
-            .await
-        {
-            Ok(()) => {
-                let duration = start.elapsed().as_secs_f64();
-                metrics::record_message(&msg.channel, "ok");
-                metrics::record_message_duration(&msg.channel, duration);
+            match engine
+                .process_message_for_channel(&msg.channel, &mut message)
+                .await
+            {
+                Ok(()) => {
+                    let duration = start.elapsed().as_secs_f64();
+                    metrics::record_message(&msg.channel, "ok");
+                    metrics::record_message_duration(&msg.channel, duration);
 
-                results.push(json!({
-                    "id": message.id,
-                    "data": message.data(),
-                    "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
-                    "status": "ok",
-                }));
+                    json!({
+                        "id": message.id,
+                        "data": message.data(),
+                        "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
+                        "status": "ok",
+                    })
+                }
+                Err(e) => {
+                    metrics::record_message(&msg.channel, "error");
+                    metrics::record_error("engine");
+
+                    json!({
+                        "id": message.id,
+                        "status": "error",
+                        "error": e.to_string(),
+                    })
+                }
             }
-            Err(e) => {
-                metrics::record_message(&msg.channel, "error");
-                metrics::record_error("engine");
+        }));
+    }
 
-                results.push(json!({
-                    "id": message.id,
-                    "status": "error",
-                    "error": e.to_string(),
-                }));
-            }
+    let mut results = Vec::with_capacity(handles.len());
+    for handle in handles {
+        match handle.await {
+            Ok(result) => results.push(result),
+            Err(e) => results.push(json!({
+                "status": "error",
+                "error": format!("Task join error: {e}"),
+            })),
         }
     }
 

@@ -21,6 +21,6 @@ pub struct AppState {
     pub job_queue: JobQueue,
     pub config: Arc<AppConfig>,
     pub start_time: chrono::DateTime<chrono::Utc>,
-    pub db_pool: sqlx::SqlitePool,
     pub metrics_handle: PrometheusHandle,
+    pub http_client: reqwest::Client,
 }
