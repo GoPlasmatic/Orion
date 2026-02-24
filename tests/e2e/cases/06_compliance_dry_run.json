@@ -1,0 +1,91 @@
+{
+    "name": "Compliance Risk Classification",
+    "description": "Classify transactions by risk level with dry-run trace verification",
+    "rules": [
+        {
+            "name": "Risk Classifier",
+            "channel": "compliance",
+            "priority": 10,
+            "condition": true,
+            "tasks": [
+                {
+                    "id": "parse",
+                    "name": "Parse Payload",
+                    "function": {
+                        "name": "parse_json",
+                        "input": { "source": "payload", "target": "txn" }
+                    }
+                },
+                {
+                    "id": "high_risk",
+                    "name": "Flag High Risk",
+                    "condition": { ">": [{ "var": "data.txn.amount" }, 10000] },
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [
+                                { "path": "data.txn.risk_level", "logic": "high" },
+                                { "path": "data.txn.requires_review", "logic": true }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "id": "normal_risk",
+                    "name": "Normal Risk",
+                    "condition": { "<=": [{ "var": "data.txn.amount" }, 10000] },
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [
+                                { "path": "data.txn.risk_level", "logic": "normal" },
+                                { "path": "data.txn.requires_review", "logic": false }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ],
+    "tests": [
+        {
+            "name": "Dry-run high risk transaction",
+            "dry_run_rule": 0,
+            "input": { "amount": 50000, "currency": "USD" },
+            "expect": {
+                ".matched": "true",
+                ".output.txn.risk_level": "high",
+                ".output.txn.requires_review": "true"
+            }
+        },
+        {
+            "name": "Dry-run normal risk transaction",
+            "dry_run_rule": 0,
+            "input": { "amount": 500, "currency": "EUR" },
+            "expect": {
+                ".matched": "true",
+                ".output.txn.risk_level": "normal",
+                ".output.txn.requires_review": "false"
+            }
+        },
+        {
+            "name": "Dry-run shows correct step count",
+            "dry_run_rule": 0,
+            "input": { "amount": 50000 },
+            "expect": {
+                ".matched": "true",
+                ".trace.steps | length": "3"
+            }
+        },
+        {
+            "name": "Sync send produces same classification",
+            "channel": "compliance",
+            "input": { "amount": 50000, "currency": "USD" },
+            "expect": {
+                ".status": "ok",
+                ".data.txn.risk_level": "high",
+                ".data.txn.requires_review": "true"
+            }
+        }
+    ]
+}

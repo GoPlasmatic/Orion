@@ -5,6 +5,14 @@
     "condition": true,
     "tasks": [
         {
+            "id": "parse",
+            "name": "Parse Payload",
+            "function": {
+                "name": "parse_json",
+                "input": { "source": "payload", "target": "order" }
+            }
+        },
+        {
             "id": "t1",
             "name": "Log",
             "function": {
@@ -22,7 +30,7 @@
                 "input": {
                     "mappings": [
                         {
-                            "path": "data.processed",
+                            "path": "data.order.processed",
                             "logic": true
                         }
                     ]

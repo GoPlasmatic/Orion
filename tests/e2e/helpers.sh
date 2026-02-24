@@ -457,3 +457,202 @@ reset_server_state() {
     clean_all_connectors
     "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color engine reload 2>/dev/null || true
 }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DATA-DRIVEN TEST CASES
+# ═══════════════════════════════════════════════════════════════════
+
+# assert_json_not_has_key <json> <jq_path> [message]
+assert_json_not_has_key() {
+    local json="$1" jq_expr="$2"
+    local msg="${3:-Expected JSON to NOT have path $jq_expr}"
+    local result
+    result=$(echo "$json" | jq -e "$jq_expr" >/dev/null 2>&1 && echo "yes" || echo "no")
+    if [[ "$result" == "yes" ]]; then
+        echo "ASSERTION FAILED: $msg" >&2
+        return 1
+    fi
+}
+
+# _run_before_actions <case_file> <test_index> <rule_ids...>
+# Execute "before" actions for a test (pause/activate rules, reload engine)
+_run_before_actions() {
+    local case_file="$1"
+    local test_idx="$2"
+    shift 2
+    local rule_ids=()
+    [[ $# -gt 0 ]] && rule_ids=("$@")
+
+    local action_count
+    action_count=$(jq ".tests[$test_idx].before // [] | length" "$case_file")
+
+    for ((a=0; a<action_count; a++)); do
+        local action
+        action=$(jq -r ".tests[$test_idx].before[$a].action" "$case_file")
+
+        case "$action" in
+            pause_rule)
+                local ri
+                ri=$(jq -r ".tests[$test_idx].before[$a].rule_index" "$case_file")
+                cli_quiet rules pause "${rule_ids[$ri]}"
+                ;;
+            activate_rule)
+                local ri
+                ri=$(jq -r ".tests[$test_idx].before[$a].rule_index" "$case_file")
+                cli_quiet rules activate "${rule_ids[$ri]}"
+                ;;
+            reload)
+                cli_quiet engine reload
+                ;;
+        esac
+    done
+}
+
+# _run_case_test <case_file> <test_index> <rule_ids...>
+# Execute a single test from a case file and assert expectations
+_run_case_test() {
+    local case_file="$1"
+    local test_idx="$2"
+    shift 2
+    local rule_ids=()
+    [[ $# -gt 0 ]] && rule_ids=("$@")
+
+    # Run before actions if any
+    if [[ ${#rule_ids[@]} -gt 0 ]]; then
+        _run_before_actions "$case_file" "$test_idx" "${rule_ids[@]}"
+    else
+        _run_before_actions "$case_file" "$test_idx"
+    fi
+
+    local response=""
+
+    # Determine test mode
+    local has_read_connector
+    has_read_connector=$(jq ".tests[$test_idx] | has(\"read_connector\")" "$case_file")
+    local has_dry_run
+    has_dry_run=$(jq ".tests[$test_idx] | has(\"dry_run_rule\")" "$case_file")
+    local has_batch
+    has_batch=$(jq -r ".tests[$test_idx].batch // false" "$case_file")
+
+    if [[ "$has_read_connector" == "true" ]]; then
+        # Read connector test
+        local conn_idx
+        conn_idx=$(jq -r ".tests[$test_idx].read_connector" "$case_file")
+        local conn_id="${CASE_CONNECTOR_IDS[$conn_idx]}"
+        cli connectors get "$conn_id"
+        response="$CLI_OUTPUT"
+    elif [[ "$has_dry_run" == "true" ]]; then
+        # Dry-run test
+        local rule_idx
+        rule_idx=$(jq -r ".tests[$test_idx].dry_run_rule" "$case_file")
+        local rule_id="${rule_ids[$rule_idx]}"
+        local input
+        input=$(jq -c ".tests[$test_idx].input" "$case_file")
+        cli rules test "$rule_id" -d "$input"
+        response="$CLI_OUTPUT"
+    elif [[ "$has_batch" == "true" ]]; then
+        # Batch test
+        local input
+        input=$(jq -c ".tests[$test_idx].input" "$case_file")
+        cli send --batch -d "$input"
+        response="$CLI_OUTPUT"
+    else
+        # Default: sync send
+        local channel
+        channel=$(jq -r ".tests[$test_idx].channel" "$case_file")
+        local input
+        input=$(jq -c ".tests[$test_idx].input" "$case_file")
+        cli send "$channel" -d "$input"
+        response="$CLI_OUTPUT"
+    fi
+
+    # Assert expectations
+    local expect_keys
+    expect_keys=$(jq -r ".tests[$test_idx].expect | keys[]" "$case_file")
+
+    while IFS= read -r jq_expr; do
+        [[ -z "$jq_expr" ]] && continue
+        local expected
+        expected=$(jq -r ".tests[$test_idx].expect[$(jq -aR <<< "$jq_expr")]" "$case_file")
+        local actual
+        actual=$(echo "$response" | jq -r "$jq_expr" 2>/dev/null) || {
+            echo "ASSERTION FAILED: jq parse error on '$jq_expr'" >&2
+            echo "  response: $response" >&2
+            return 1
+        }
+        if [[ "$actual" != "$expected" ]]; then
+            echo "ASSERTION FAILED: $jq_expr" >&2
+            echo "  expected: $expected" >&2
+            echo "  actual:   $actual" >&2
+            echo "  response: $response" >&2
+            return 1
+        fi
+    done <<< "$expect_keys"
+}
+
+# Global state for data-driven test runner (used to pass context through run_test)
+_CASE_FILE=""
+_CASE_TEST_IDX=0
+_CASE_RULE_IDS=()
+CASE_CONNECTOR_IDS=()
+
+# Wrapper called by run_test — reads globals set by run_case_file
+_case_test_wrapper() {
+    if [[ ${#_CASE_RULE_IDS[@]} -gt 0 ]]; then
+        _run_case_test "$_CASE_FILE" "$_CASE_TEST_IDX" "${_CASE_RULE_IDS[@]}"
+    else
+        _run_case_test "$_CASE_FILE" "$_CASE_TEST_IDX"
+    fi
+}
+
+# run_case_file <case_file>
+# Run all tests defined in a JSON case file
+run_case_file() {
+    local case_file="$1"
+    local case_name
+    case_name=$(jq -r '.name' "$case_file")
+
+    begin_suite "$case_name"
+    reset_server_state
+
+    # Create connectors
+    CASE_CONNECTOR_IDS=()
+    local conn_count
+    conn_count=$(jq '.connectors // [] | length' "$case_file")
+    for ((i=0; i<conn_count; i++)); do
+        local conn_data
+        conn_data=$(jq -c ".connectors[$i]" "$case_file")
+        cli_quiet connectors create -d "$conn_data"
+        CASE_CONNECTOR_IDS+=("$CLI_OUTPUT")
+    done
+
+    # Create rules, store IDs
+    _CASE_RULE_IDS=()
+    local rule_count
+    rule_count=$(jq '.rules // [] | length' "$case_file")
+    for ((i=0; i<rule_count; i++)); do
+        local rule_data
+        rule_data=$(jq -c ".rules[$i]" "$case_file")
+        cli_quiet rules create -d "$rule_data"
+        _CASE_RULE_IDS+=("$CLI_OUTPUT")
+    done
+
+    # Reload engine if we created rules or connectors
+    if [[ $rule_count -gt 0 ]] || [[ $conn_count -gt 0 ]]; then
+        cli_quiet engine reload
+    fi
+
+    # Run each test
+    _CASE_FILE="$case_file"
+    local test_count
+    test_count=$(jq '.tests | length' "$case_file")
+    for ((i=0; i<test_count; i++)); do
+        _CASE_TEST_IDX=$i
+        local test_name
+        test_name=$(jq -r ".tests[$i].name" "$case_file")
+        run_test "$test_name" _case_test_wrapper
+    done
+
+    end_suite
+}

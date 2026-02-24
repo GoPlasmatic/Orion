@@ -1,0 +1,132 @@
+{
+    "name": "IoT Sensor Alert Classification",
+    "description": "Classify sensor readings by severity with validation and filtering",
+    "rules": [
+        {
+            "name": "Sensor Alert Pipeline",
+            "channel": "sensors",
+            "priority": 10,
+            "condition": true,
+            "tasks": [
+                {
+                    "id": "parse",
+                    "name": "Parse Payload",
+                    "function": {
+                        "name": "parse_json",
+                        "input": { "source": "payload", "target": "reading" }
+                    }
+                },
+                {
+                    "id": "critical",
+                    "name": "Mark Critical",
+                    "condition": {
+                        "or": [
+                            { ">": [{ "var": "data.reading.temperature" }, 90] },
+                            { "<": [{ "var": "data.reading.temperature" }, 0] }
+                        ]
+                    },
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [
+                                { "path": "data.reading.severity", "logic": "critical" },
+                                { "path": "data.reading.alert", "logic": true }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "id": "warning",
+                    "name": "Mark Warning",
+                    "condition": {
+                        "and": [
+                            { ">": [{ "var": "data.reading.temperature" }, 70] },
+                            { "<=": [{ "var": "data.reading.temperature" }, 90] }
+                        ]
+                    },
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [
+                                { "path": "data.reading.severity", "logic": "warning" },
+                                { "path": "data.reading.alert", "logic": true }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "id": "normal",
+                    "name": "Mark Normal",
+                    "condition": {
+                        "and": [
+                            { ">=": [{ "var": "data.reading.temperature" }, 0] },
+                            { "<=": [{ "var": "data.reading.temperature" }, 70] }
+                        ]
+                    },
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [
+                                { "path": "data.reading.severity", "logic": "normal" },
+                                { "path": "data.reading.alert", "logic": false }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ],
+    "tests": [
+        {
+            "name": "Normal temperature classified correctly",
+            "channel": "sensors",
+            "input": { "sensor_id": "S001", "temperature": 45 },
+            "expect": {
+                ".status": "ok",
+                ".data.reading.severity": "normal",
+                ".data.reading.alert": "false",
+                ".data.reading.sensor_id": "S001"
+            }
+        },
+        {
+            "name": "Warning temperature triggers alert",
+            "channel": "sensors",
+            "input": { "sensor_id": "S002", "temperature": 80 },
+            "expect": {
+                ".status": "ok",
+                ".data.reading.severity": "warning",
+                ".data.reading.alert": "true"
+            }
+        },
+        {
+            "name": "Critical high temperature",
+            "channel": "sensors",
+            "input": { "sensor_id": "S003", "temperature": 95 },
+            "expect": {
+                ".status": "ok",
+                ".data.reading.severity": "critical",
+                ".data.reading.alert": "true"
+            }
+        },
+        {
+            "name": "Sub-zero temperature is critical",
+            "channel": "sensors",
+            "input": { "sensor_id": "S004", "temperature": -5 },
+            "expect": {
+                ".status": "ok",
+                ".data.reading.severity": "critical",
+                ".data.reading.alert": "true"
+            }
+        },
+        {
+            "name": "Boundary at 70 is normal",
+            "channel": "sensors",
+            "input": { "sensor_id": "S005", "temperature": 70 },
+            "expect": {
+                ".status": "ok",
+                ".data.reading.severity": "normal",
+                ".data.reading.alert": "false"
+            }
+        }
+    ]
+}

@@ -12,6 +12,7 @@ test_rule_match() {
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.matched' 'true'
     assert_json_has_key "$CLI_OUTPUT" '.output'
+    assert_json_eq "$CLI_OUTPUT" '.output.order.label' 'High value: $250'
 }
 
 test_rule_no_match() {
@@ -19,12 +20,13 @@ test_rule_no_match() {
     cli_quiet rules create -f "$FIXTURES_DIR/rules/conditional.json"
     local rule_id="$CLI_OUTPUT"
 
-    # Condition is amount > 100; sending 50 should cause tasks to be skipped
+    # Condition is amount > 100 (task-level); sending 50 should skip the transform task
     cli rules test "$rule_id" -d '{"amount": 50}'
     assert_exit_code 0 "$CLI_EXIT"
-    assert_json_eq "$CLI_OUTPUT" '.trace.steps[0].result' 'skipped'
-    # Output should be empty since tasks were skipped
-    assert_json_eq "$CLI_OUTPUT" '.output' '{}'
+    assert_json_eq "$CLI_OUTPUT" '.matched' 'true'
+    # Parse still runs, but transform is skipped — no label added
+    assert_json_eq "$CLI_OUTPUT" '.output.order.amount' '50'
+    assert_json_eq "$CLI_OUTPUT" '.output.order.label' 'null'
 }
 
 test_rule_test_with_file() {
