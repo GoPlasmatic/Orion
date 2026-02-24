@@ -24,6 +24,8 @@ test_sync_process_with_transform() {
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.status' 'ok'
     assert_json_has_key "$CLI_OUTPUT" '.data'
+    assert_json_eq "$CLI_OUTPUT" '.data.order.label' 'High value: $250'
+    assert_json_eq "$CLI_OUTPUT" '.data.order.product' 'Widget Pro'
 }
 
 test_sync_no_matching_rules() {

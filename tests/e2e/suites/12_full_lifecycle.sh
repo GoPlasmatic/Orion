@@ -26,6 +26,7 @@ test_complete_workflow() {
     # 5. Dry-run test the conditional rule
     cli rules test "$cond_rule_id" -d '{"amount": 500}'
     assert_json_eq "$CLI_OUTPUT" '.matched' 'true'
+    assert_json_eq "$CLI_OUTPUT" '.output.order.label' 'High value: $500'
 
     # 6. Pause one of the imported rules, verify it's paused
     cli rules list --channel alpha
@@ -40,6 +41,7 @@ test_complete_workflow() {
     cli_quiet engine reload
     cli send orders -d '{"amount":300,"product":"Lifecycle Test"}'
     assert_json_eq "$CLI_OUTPUT" '.status' 'ok'
+    assert_json_eq "$CLI_OUTPUT" '.data.order.label' 'High value: $300'
 
     # 8. Send async data and wait
     cli send orders --async-mode --wait --timeout 15 -d '{"amount":150}'

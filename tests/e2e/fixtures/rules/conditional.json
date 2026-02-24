@@ -2,21 +2,28 @@
     "name": "E2E High Value Order",
     "channel": "orders",
     "priority": 20,
-    "condition": {
-        ">": [{ "var": "data.amount" }, 100]
-    },
+    "condition": true,
     "tasks": [
+        {
+            "id": "parse",
+            "name": "Parse Payload",
+            "function": {
+                "name": "parse_json",
+                "input": { "source": "payload", "target": "order" }
+            }
+        },
         {
             "id": "transform",
             "name": "Add Label",
+            "condition": { ">": [{ "var": "data.order.amount" }, 100] },
             "function": {
                 "name": "map",
                 "input": {
                     "mappings": [
                         {
-                            "path": "data.label",
+                            "path": "data.order.label",
                             "logic": {
-                                "cat": ["High value: $", { "var": "data.amount" }]
+                                "cat": ["High value: $", { "var": "data.order.amount" }]
                             }
                         }
                     ]
