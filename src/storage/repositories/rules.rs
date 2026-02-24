@@ -6,6 +6,14 @@ use sqlx::SqlitePool;
 use crate::errors::OrionError;
 use crate::storage::models::{self, Rule};
 
+#[derive(Debug, Serialize)]
+pub struct PaginatedResult<T: Serialize> {
+    pub data: Vec<T>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
+
 // -- DTOs --
 
 #[derive(Debug, Deserialize)]
@@ -57,6 +65,8 @@ pub struct RuleFilter {
     pub status: Option<String>,
     pub channel: Option<String>,
     pub tag: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 // -- Repository trait --
@@ -66,6 +76,10 @@ pub trait RuleRepository: Send + Sync {
     async fn create(&self, req: &CreateRuleRequest) -> Result<Rule, OrionError>;
     async fn get_by_id(&self, id: &str) -> Result<Rule, OrionError>;
     async fn list(&self, filter: &RuleFilter) -> Result<Vec<Rule>, OrionError>;
+    async fn list_paginated(
+        &self,
+        filter: &RuleFilter,
+    ) -> Result<PaginatedResult<Rule>, OrionError>;
     async fn update(&self, id: &str, req: &UpdateRuleRequest) -> Result<Rule, OrionError>;
     async fn delete(&self, id: &str) -> Result<(), OrionError>;
     async fn list_active(&self) -> Result<Vec<Rule>, OrionError>;
@@ -129,6 +143,26 @@ where
     Ok(())
 }
 
+fn build_where_clause(filter: &RuleFilter) -> (String, Vec<String>) {
+    let mut clause = String::from("WHERE 1=1");
+    let mut binds: Vec<String> = Vec::new();
+
+    if let Some(ref status) = filter.status {
+        clause.push_str(" AND status = ?");
+        binds.push(status.clone());
+    }
+    if let Some(ref channel) = filter.channel {
+        clause.push_str(" AND channel = ?");
+        binds.push(channel.clone());
+    }
+    if let Some(ref tag) = filter.tag {
+        clause.push_str(" AND tags LIKE ?");
+        binds.push(format!("%\"{}\"%", tag));
+    }
+
+    (clause, binds)
+}
+
 #[async_trait]
 impl RuleRepository for SqliteRuleRepository {
     async fn create(&self, req: &CreateRuleRequest) -> Result<Rule, OrionError> {
@@ -190,23 +224,8 @@ impl RuleRepository for SqliteRuleRepository {
     }
 
     async fn list(&self, filter: &RuleFilter) -> Result<Vec<Rule>, OrionError> {
-        let mut query = String::from("SELECT * FROM rules WHERE 1=1");
-        let mut binds: Vec<String> = Vec::new();
-
-        if let Some(ref status) = filter.status {
-            query.push_str(" AND status = ?");
-            binds.push(status.clone());
-        }
-        if let Some(ref channel) = filter.channel {
-            query.push_str(" AND channel = ?");
-            binds.push(channel.clone());
-        }
-        if let Some(ref tag) = filter.tag {
-            query.push_str(" AND tags LIKE ?");
-            binds.push(format!("%\"{}\"%", tag));
-        }
-
-        query.push_str(" ORDER BY priority DESC, name ASC");
+        let (where_clause, binds) = build_where_clause(filter);
+        let query = format!("SELECT * FROM rules {where_clause} ORDER BY priority DESC, name ASC");
 
         let mut q = sqlx::query_as::<_, Rule>(&query);
         for b in &binds {
@@ -214,6 +233,39 @@ impl RuleRepository for SqliteRuleRepository {
         }
 
         Ok(q.fetch_all(&self.pool).await?)
+    }
+
+    async fn list_paginated(
+        &self,
+        filter: &RuleFilter,
+    ) -> Result<PaginatedResult<Rule>, OrionError> {
+        let (where_clause, binds) = build_where_clause(filter);
+        let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
+        let offset = filter.offset.unwrap_or(0).max(0);
+
+        let count_query = format!("SELECT COUNT(*) FROM rules {where_clause}");
+        let mut cq = sqlx::query_as::<_, (i64,)>(&count_query);
+        for b in &binds {
+            cq = cq.bind(b);
+        }
+        let (total,) = cq.fetch_one(&self.pool).await?;
+
+        let data_query = format!(
+            "SELECT * FROM rules {where_clause} ORDER BY priority DESC, name ASC LIMIT ? OFFSET ?"
+        );
+        let mut dq = sqlx::query_as::<_, Rule>(&data_query);
+        for b in &binds {
+            dq = dq.bind(b);
+        }
+        dq = dq.bind(limit).bind(offset);
+        let data = dq.fetch_all(&self.pool).await?;
+
+        Ok(PaginatedResult {
+            data,
+            total,
+            limit,
+            offset,
+        })
     }
 
     async fn update(&self, id: &str, req: &UpdateRuleRequest) -> Result<Rule, OrionError> {

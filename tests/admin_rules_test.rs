@@ -60,6 +60,9 @@ async fn test_rules_crud_lifecycle() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["limit"], 50);
+    assert_eq!(body["offset"], 0);
 
     // Update the rule
     let resp = app
@@ -423,4 +426,114 @@ async fn test_end_to_end_rule_execution() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["status"], "ok");
+}
+
+#[tokio::test]
+async fn test_rules_pagination() {
+    let app = common::test_app().await;
+
+    // Create 3 rules
+    for i in 1..=3 {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/rules",
+                Some(json!({
+                    "name": format!("Rule {i}"),
+                    "channel": "orders",
+                    "priority": i,
+                    "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    // Page 1: limit=2, offset=0 -> 2 results, total=3
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/rules?limit=2&offset=0",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 2);
+    assert_eq!(body["total"], 3);
+    assert_eq!(body["limit"], 2);
+    assert_eq!(body["offset"], 0);
+
+    // Page 2: limit=2, offset=2 -> 1 result, total=3
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/rules?limit=2&offset=2",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(body["total"], 3);
+
+    // Limit clamped to 1000
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/rules?limit=5000", None))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["limit"], 1000);
+}
+
+#[tokio::test]
+async fn test_rules_pagination_with_filters() {
+    let app = common::test_app().await;
+
+    // Create 2 rules in "orders" and 1 in "events"
+    for (i, ch) in [(1, "orders"), (2, "orders"), (3, "events")] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/rules",
+                Some(json!({
+                    "name": format!("Rule {i}"),
+                    "channel": ch,
+                    "priority": i,
+                    "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    // Filter by channel=orders with limit=1 -> total should be 2 (filtered count)
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/rules?channel=orders&limit=1",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["limit"], 1);
 }
