@@ -255,11 +255,11 @@ Custom rule IDs (e.g., `high-value-order-alert` instead of UUIDs) make rules tra
 
 ```
 ┌────────────────┐   ┌────────────────────┐   ┌────────────────┐
-│   Standalone    │   │      Sidecar       │   │     Docker      │
-│                 │   │                    │   │                 │
-│   ./orion       │   │  ┌─────┐ ┌──────┐ │   │  docker run \   │
-│                 │   │  │ App │─│Orion │ │   │   orion:latest  │
-│   That's it.    │   │  └─────┘ └──────┘ │   │                 │
+│   Standalone   │   │      Sidecar       │   │     Docker     │
+│                │   │                    │   │                │
+│   ./orion      │   │  ┌─────┐ ┌──────┐  │   │  docker run \  │
+│                │   │  │ App │─│Orion │  │   │   orion:latest │
+│   That's it.   │   │  └─────┘ └──────┘  │   │                │
 └────────────────┘   └────────────────────┘   └────────────────┘
 ```
 
@@ -309,6 +309,8 @@ Both `orion` (the server) and `orion-cli` (the management tool) are included. Ve
 - **AI-managed business rules** — LLMs create and update rules via the REST API
 - **Multi-agent orchestration** — route agent outputs to channels with coordinating rules
 
+See [Use Cases & Patterns](docs/use-cases.md) for complete, tested examples of each pattern.
+
 ## Documentation
 
 | Guide | Description |
@@ -319,6 +321,7 @@ Both `orion` (the server) and `orion-cli` (the management tool) are included. Ve
 | [Connectors](docs/connectors.md) | Auth schemes, retry policies, and secret masking |
 | [Kafka Integration](docs/kafka.md) | Topic mapping, metadata injection, DLQ, and publishing |
 | [Production Features](docs/production-features.md) | Custom IDs, fault tolerance, tags, dynamic paths, versioning |
+| [Use Cases & Patterns](docs/use-cases.md) | Tested examples: order classification, IoT alerts, webhooks, routing |
 | [Observability](docs/observability.md) | Prometheus metrics, health checks, engine status, and logging |
 
 ## Built With
