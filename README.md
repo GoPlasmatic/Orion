@@ -25,7 +25,7 @@ brew install GoPlasmatic/tap/orion   # or: curl installer, cargo install (see In
 orion
 ```
 
-**2. Create a rule** — parse payload, filter by condition, transform the result:
+**2. Create a rule** — parse payload, then conditionally transform:
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/admin/rules \
@@ -39,11 +39,9 @@ curl -s -X POST http://localhost:8080/api/v1/admin/rules \
           "name": "parse_json",
           "input": { "source": "payload", "target": "order" }
       }},
-      { "id": "check", "name": "Check value", "function": {
-          "name": "filter",
-          "input": { "condition": { ">": [{ "var": "data.order.total" }, 10000] } }
-      }},
-      { "id": "flag", "name": "Flag order", "function": {
+      { "id": "flag", "name": "Flag order",
+        "condition": { ">": [{ "var": "data.order.total" }, 10000] },
+        "function": {
           "name": "map",
           "input": {
             "mappings": [
@@ -64,7 +62,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders \
   -d '{ "data": { "order_id": "ORD-9182", "total": 25000 } }'
 ```
 
-**Response** — data is parsed, filtered, and transformed:
+**Response** — data is parsed and transformed:
 
 ```json
 {
@@ -129,15 +127,12 @@ Every change requires a code review, a deploy, and a prayer.
     { "id": "parse", "name": "Load data", "function": {
         "name": "parse_json", "input": { "source": "payload", "target": "order" }
     }},
-    { "id": "check", "name": "Filter", "function": {
-        "name": "filter", "input": {
-          "condition": { "and": [
-            { ">": [{ "var": "data.order.total" }, 10000] },
-            { "<": [{ "var": "data.order.account_age_days" }, 30] }
-          ]}
-        }
-    }},
-    { "id": "notify", "name": "Alert", "function": {
+    { "id": "notify", "name": "Alert",
+      "condition": { "and": [
+        { ">": [{ "var": "data.order.total" }, 10000] },
+        { "<": [{ "var": "data.order.account_age_days" }, 30] }
+      ]},
+      "function": {
         "name": "http_call", "input": { "connector": "slack", "method": "POST" }
     }}
   ]
@@ -172,7 +167,6 @@ curl -s -X POST http://localhost:8080/api/v1/admin/rules/{id}/test \
   "trace": {
     "steps": [
       { "task_id": "parse", "result": "executed" },
-      { "task_id": "check", "result": "executed" },
       { "task_id": "flag",  "result": "executed" }
     ]
   },
