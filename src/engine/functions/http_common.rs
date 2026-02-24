@@ -70,6 +70,16 @@ pub async fn execute_request(
 ) -> dataflow_rs::Result<Value> {
     let mut req = client.request(method.clone(), url).timeout(timeout);
 
+    // Inject W3C trace context headers (traceparent/tracestate) for distributed tracing
+    #[cfg(feature = "otel")]
+    {
+        let mut trace_headers = std::collections::HashMap::new();
+        crate::server::trace_context::inject_trace_context(&mut trace_headers);
+        for (k, v) in &trace_headers {
+            req = req.header(k, v);
+        }
+    }
+
     // Apply connector default headers
     for (k, v) in &http_config.headers {
         req = req.header(k, v);

@@ -16,6 +16,7 @@ pub struct AppConfig {
     pub logging: LoggingConfig,
     pub metrics: MetricsConfig,
     pub cors: CorsConfig,
+    pub tracing: TracingConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +186,30 @@ pub struct MetricsConfig {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TracingConfig {
+    /// Enable OpenTelemetry trace export. Requires the `otel` feature flag at compile time.
+    pub enabled: bool,
+    /// OTLP gRPC endpoint (e.g. Jaeger, Grafana Tempo, OTel Collector).
+    pub otlp_endpoint: String,
+    /// Service name reported in traces.
+    pub service_name: String,
+    /// Sampling rate from 0.0 (none) to 1.0 (all).
+    pub sample_rate: f64,
+}
+
+impl Default for TracingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            otlp_endpoint: "http://localhost:4317".to_string(),
+            service_name: "orion".to_string(),
+            sample_rate: 1.0,
+        }
+    }
+}
+
 /// Load configuration from an optional TOML file path, then apply env overrides.
 pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
     let mut config = if let Some(p) = path {
@@ -260,6 +285,23 @@ where
     {
         config.metrics.enabled = enabled;
     }
+    // Tracing overrides
+    if let Ok(v) = env_var("ORION_TRACING__ENABLED")
+        && let Ok(enabled) = v.parse::<bool>()
+    {
+        config.tracing.enabled = enabled;
+    }
+    if let Ok(v) = env_var("ORION_TRACING__OTLP_ENDPOINT") {
+        config.tracing.otlp_endpoint = v;
+    }
+    if let Ok(v) = env_var("ORION_TRACING__SERVICE_NAME") {
+        config.tracing.service_name = v;
+    }
+    if let Ok(v) = env_var("ORION_TRACING__SAMPLE_RATE")
+        && let Ok(rate) = v.parse::<f64>()
+    {
+        config.tracing.sample_rate = rate;
+    }
     // Kafka overrides
     if let Ok(v) = env_var("ORION_KAFKA__ENABLED")
         && let Ok(enabled) = v.parse::<bool>()
@@ -313,6 +355,18 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
             config.logging.level,
             VALID_LOG_LEVELS.join(", ")
         )));
+    }
+    if config.tracing.enabled {
+        if config.tracing.otlp_endpoint.is_empty() {
+            return Err(OrionError::Internal(
+                "tracing.otlp_endpoint must not be empty when tracing is enabled".to_string(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&config.tracing.sample_rate) {
+            return Err(OrionError::Internal(
+                "tracing.sample_rate must be between 0.0 and 1.0".to_string(),
+            ));
+        }
     }
     #[cfg(feature = "kafka")]
     if config.kafka.enabled {

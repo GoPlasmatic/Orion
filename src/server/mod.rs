@@ -1,3 +1,5 @@
+#[cfg(feature = "otel")]
+pub mod otel;
 pub mod routes;
 pub mod state;
 
@@ -10,19 +12,36 @@ use tower_http::trace::TraceLayer;
 use crate::config::CorsConfig;
 use crate::server::state::AppState;
 
+#[cfg(feature = "otel")]
+pub mod trace_context;
+
 /// Build the Axum router with all middleware layers.
 pub fn build_router(state: AppState) -> Router {
     let x_request_id = axum::http::HeaderName::from_static("x-request-id");
     let max_body_size = state.config.ingest.max_payload_size;
     let cors = build_cors(&state.config.cors);
 
-    routes::api_routes()
+    #[cfg(feature = "otel")]
+    let otel_enabled = state.config.tracing.enabled;
+
+    let router = routes::api_routes()
         .layer(DefaultBodyLimit::max(max_body_size))
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
-        .layer(cors)
-        .with_state(state)
+        .layer(cors);
+
+    // When OTel is compiled in and enabled, add trace context extraction middleware
+    #[cfg(feature = "otel")]
+    let router = if otel_enabled {
+        router.layer(axum::middleware::from_fn(
+            trace_context::extract_trace_context,
+        ))
+    } else {
+        router
+    };
+
+    router.with_state(state)
 }
 
 /// Build a CORS layer from configuration.

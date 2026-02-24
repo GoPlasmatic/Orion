@@ -123,6 +123,14 @@ pub(crate) async fn async_submit(
     let job = state.job_repo.create_data_job(&channel).await?;
     let job_id = job.id.clone();
 
+    // Capture current trace context so the background job inherits it
+    #[cfg(feature = "otel")]
+    let trace_headers = {
+        let mut headers = std::collections::HashMap::new();
+        crate::server::trace_context::inject_trace_context(&mut headers);
+        headers
+    };
+
     state
         .job_queue
         .submit(crate::queue::QueueMessage {
@@ -130,6 +138,8 @@ pub(crate) async fn async_submit(
             channel,
             payload: req.data,
             metadata: req.metadata,
+            #[cfg(feature = "otel")]
+            trace_headers,
         })
         .await?;
 

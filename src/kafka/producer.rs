@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use rdkafka::ClientConfig;
+use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use crate::errors::OrionError;
@@ -25,6 +26,7 @@ impl KafkaProducer {
     /// Send a message to a Kafka topic with optional key.
     ///
     /// Waits for delivery confirmation with a 30-second timeout.
+    /// Automatically injects W3C trace context headers when the `otel` feature is enabled.
     pub async fn send(
         &self,
         topic: &str,
@@ -36,6 +38,23 @@ impl KafkaProducer {
         if let Some(k) = key {
             record = record.key(k);
         }
+
+        // Inject trace context as Kafka message headers
+        #[cfg(feature = "otel")]
+        let headers = {
+            let mut trace_headers = std::collections::HashMap::new();
+            crate::server::trace_context::inject_trace_context(&mut trace_headers);
+            let mut kafka_headers = OwnedHeaders::new();
+            for (k, v) in &trace_headers {
+                kafka_headers = kafka_headers.insert(Header {
+                    key: k,
+                    value: Some(v.as_bytes()),
+                });
+            }
+            kafka_headers
+        };
+        #[cfg(feature = "otel")]
+        let record = record.headers(headers);
 
         self.producer
             .send(record, Duration::from_secs(30))

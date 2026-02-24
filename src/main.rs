@@ -3,6 +3,10 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
+#[cfg(feature = "otel")]
+use tracing_subscriber::layer::SubscriberExt;
+#[cfg(feature = "otel")]
+use tracing_subscriber::util::SubscriberInitExt;
 
 use orion::config::{self, LogFormat};
 use orion::connector::ConnectorRegistry;
@@ -26,19 +30,71 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let config = config::load_config(cli.config.as_deref())?;
 
-    // Init tracing
-    let env_filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
-
-    match config.logging.format {
-        LogFormat::Json => {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .json()
-                .init();
+    // Init tracing subscriber with optional OpenTelemetry layer.
+    //
+    // When the `otel` feature is compiled in and `tracing.enabled = true`,
+    // an additional OpenTelemetry layer is added that exports all spans via
+    // OTLP. Existing `#[instrument]` annotations automatically become
+    // distributed-trace-compatible with zero changes.
+    #[cfg(feature = "otel")]
+    let _otel_provider = {
+        let env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
+        if config.tracing.enabled {
+            let (provider, tracer) = orion::server::otel::init_otel_pipeline(&config.tracing)?;
+            match config.logging.format {
+                LogFormat::Json => {
+                    tracing_subscriber::registry()
+                        .with(env_filter)
+                        .with(tracing_subscriber::fmt::layer().json())
+                        .with(tracing_opentelemetry::layer().with_tracer(tracer))
+                        .init();
+                }
+                LogFormat::Pretty => {
+                    tracing_subscriber::registry()
+                        .with(env_filter)
+                        .with(tracing_subscriber::fmt::layer())
+                        .with(tracing_opentelemetry::layer().with_tracer(tracer))
+                        .init();
+                }
+            }
+            Some(provider)
+        } else {
+            match config.logging.format {
+                LogFormat::Json => {
+                    tracing_subscriber::fmt()
+                        .with_env_filter(env_filter)
+                        .json()
+                        .init();
+                }
+                LogFormat::Pretty => {
+                    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+                }
+            }
+            None
         }
-        LogFormat::Pretty => {
-            tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    };
+
+    #[cfg(not(feature = "otel"))]
+    {
+        let env_filter = EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
+        match config.logging.format {
+            LogFormat::Json => {
+                tracing_subscriber::fmt()
+                    .with_env_filter(env_filter)
+                    .json()
+                    .init();
+            }
+            LogFormat::Pretty => {
+                tracing_subscriber::fmt().with_env_filter(env_filter).init();
+            }
+        }
+        if config.tracing.enabled {
+            eprintln!(
+                "WARNING: tracing.enabled=true but Orion was compiled without the `otel` feature. \
+                 Rebuild with `--features otel` to enable OpenTelemetry trace export."
+            );
         }
     }
 
@@ -206,6 +262,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Shutting down job queue workers...");
     worker_handle.shutdown().await;
+
+    // Flush pending OTel spans before exit
+    #[cfg(feature = "otel")]
+    if let Some(provider) = _otel_provider {
+        tracing::info!("Flushing OpenTelemetry spans...");
+        if let Err(e) = provider.shutdown() {
+            tracing::warn!(error = %e, "Error shutting down OTel tracer provider");
+        }
+    }
 
     tracing::info!("Orion shut down cleanly");
     Ok(())
