@@ -6,8 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Orion is a standalone JSONLogic-based rules engine service written in Rust. It wraps the `dataflow-rs` library and exposes business rule management and data processing through a REST API. Ships as a single binary with an embedded SQLite database.
 
-- **Rust Edition:** 2024 (requires Rust 1.85+ for let-chains)
+- **Rust Edition:** 2024 (requires Rust 1.85+). The codebase uses let-chains (`if let Some(x) = a && let Some(y) = b`).
 - **Core dependencies:** `dataflow-rs` (workflow engine), `datalogic-rs` (JSONLogic), `axum` 0.8 (HTTP), `sqlx` 0.8 (SQLite)
+- **Two binaries:** `orion` (server, `src/main.rs`) and `orion-cli` (management CLI, `src/cli/main.rs`)
 
 ## Build & Development Commands
 
@@ -40,12 +41,13 @@ CLI args -> config (TOML + `ORION_SECTION__KEY` env overrides) -> tracing -> met
 
 ### Key Architectural Patterns
 
-- **Repository pattern:** Trait-based (`RuleRepository`, `ConnectorRepository`, `JobRepository`) with SQLite implementations. Traits use `async_trait`.
-- **Engine hot-reload:** Engine is `Arc<RwLock<Arc<Engine>>>`. Double-Arc allows swapping the inner engine while readers hold the old one. Reload triggers on any rule CRUD operation or via `POST /api/v1/admin/engine/reload`.
-- **Custom async functions:** `HttpCallHandler`, `EnrichHandler`, `PublishKafkaHandler` implement `dataflow_rs::engine::functions::AsyncFunctionHandler`.
-- **Connector registry:** In-memory `RwLock<HashMap<String, Arc<ConnectorConfig>>>` with secret masking on API reads.
-- **Job queue:** `tokio::sync::mpsc` channel with semaphore-limited concurrency for async job processing.
-- **Error handling:** `OrionError` enum implements `axum::response::IntoResponse`, mapping variants to HTTP status codes.
+- **Repository pattern:** Trait-based (`RuleRepository`, `ConnectorRepository`, `JobRepository`) with SQLite implementations. Traits use `async_trait`. All repos are stored as `Arc<dyn Trait>` in `AppState`.
+- **Engine hot-reload:** Engine is `Arc<RwLock<Arc<Engine>>>`. Double-Arc allows swapping the inner engine while readers hold the old one. Reload triggers automatically on any rule CRUD operation and manually via `POST /api/v1/admin/engine/reload`. The reload is in `server/routes/mod.rs::reload_engine()` — it builds the new engine outside the write lock to minimize lock hold time.
+- **Custom async functions:** `HttpCallHandler`, `EnrichHandler`, `PublishKafkaHandler` implement `dataflow_rs::engine::functions::AsyncFunctionHandler`. Registered in `engine/mod.rs::build_custom_functions()`.
+- **Connector registry:** In-memory `RwLock<HashMap<String, Arc<ConnectorConfig>>>` with secret masking on API reads (`connector/mod.rs::mask_connector_secrets()`).
+- **Job queue:** `tokio::sync::mpsc` channel with semaphore-limited concurrency for async job processing (`queue/mod.rs`).
+- **Error handling:** `OrionError` enum in `errors.rs` implements `axum::response::IntoResponse`, mapping variants to HTTP status codes. Returns JSON `{"error": {"code": "...", "message": "..."}}`.
+- **AppState** (`server/state.rs`): Central shared state struct holding engine, all repos, connector registry, job queue, config, metrics handle, and DB pool. Passed to all route handlers via Axum's `State` extractor.
 
 ### Request Processing Flow
 
@@ -66,11 +68,16 @@ HTTP Request -> Axum Router -> Route Handler
 
 ### Database
 
-SQLite with WAL mode. Migrations embedded at compile time via `sqlx::migrate!("./migrations")`. Tables: `rules`, `rule_versions` (audit history), `connectors`, `jobs`.
+SQLite with WAL mode. Migrations embedded at compile time via `sqlx::migrate!("./migrations")`. Tables: `rules`, `rule_versions` (audit history), `connectors`, `jobs`. New migrations go in the `migrations/` directory with sequential numbering (e.g., `004_*.sql`).
 
 ## Testing
 
-- **Integration tests** in `tests/`: Use `common::test_app()` which creates an in-memory SQLite DB and full Axum router. Tests use `tower::ServiceExt::oneshot()` (no HTTP server).
+- **Integration tests** in `tests/`: Use `common::test_app()` which creates an in-memory SQLite DB, full `AppState`, and Axum router. Tests use `tower::ServiceExt::oneshot()` (no HTTP server needed).
+- **Test helpers** in `tests/common/mod.rs`:
+  - `test_app()` — returns a ready-to-use `Router` with in-memory DB
+  - `json_request(method, uri, body)` — builds an HTTP `Request<Body>` with JSON content-type
+  - `body_json(response)` — extracts and parses the response body as `serde_json::Value`
+- **Pattern for new integration tests:** Clone the app, call `.oneshot(json_request(...))`, assert status, parse body with `body_json()`. See `tests/admin_rules_test.rs` for examples.
 - **Unit tests** inline in: `config/mod.rs`, `errors.rs`, `engine/functions/http_call.rs`, `storage/repositories/rules.rs`.
 
 ## Configuration
