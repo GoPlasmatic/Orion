@@ -11,17 +11,23 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::json;
 use utoipa::OpenApi;
-use utoipa_swagger_ui::SwaggerUi;
 
 use crate::server::state::AppState;
 
 pub fn api_routes() -> Router<AppState> {
-    Router::new()
+    let router = Router::new()
         .route("/health", get(health_check))
         .route("/metrics", get(metrics_endpoint))
-        .merge(SwaggerUi::new("/docs").url("/api/v1/openapi.json", openapi::ApiDoc::openapi()))
         .nest("/api/v1/admin", admin::admin_routes())
-        .nest("/api/v1/data", data::data_routes())
+        .nest("/api/v1/data", data::data_routes());
+
+    #[cfg(feature = "swagger-ui")]
+    let router = router.merge(
+        utoipa_swagger_ui::SwaggerUi::new("/docs")
+            .url("/api/v1/openapi.json", openapi::ApiDoc::openapi()),
+    );
+
+    router
 }
 
 #[utoipa::path(
