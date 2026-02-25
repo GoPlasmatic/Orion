@@ -186,6 +186,7 @@ async fn process_job(
         Ok(()) => {
             metrics::record_message(&channel, "ok");
             metrics::record_message_duration(&channel, duration);
+            metrics::record_channel_execution(&channel);
 
             let result_json = match serde_json::to_string(&serde_json::json!({
                 "id": message.id,

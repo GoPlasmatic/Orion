@@ -224,6 +224,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Set initial active rules gauge
     orion::metrics::set_active_rules(active_rules.len() as f64);
 
+    // Build rate limiter (if enabled)
+    let rate_limit_state = if config.rate_limit.enabled {
+        let rls = orion::server::rate_limit::RateLimitState::from_config(&config.rate_limit);
+        tracing::info!(
+            default_rps = config.rate_limit.default_rps,
+            default_burst = config.rate_limit.default_burst,
+            "Rate limiting enabled"
+        );
+        Some(Arc::new(rls))
+    } else {
+        None
+    };
+
     // Build state and router
     let config = Arc::new(config);
     let state = AppState {
@@ -238,6 +251,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         start_time: chrono::Utc::now(),
         metrics_handle,
         http_client,
+        rate_limit_state,
     };
 
     let router = orion::server::build_router(state);

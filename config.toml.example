@@ -26,6 +26,19 @@
 # brokers = ["localhost:9092"]
 # group_id = "orion"
 
+[rate_limit]
+# enabled = false               # Enable request rate limiting
+# default_rps = 100             # Default requests per second
+# default_burst = 50            # Default burst allowance
+
+# [rate_limit.endpoints]
+# admin_rps = 50                # Rate limit for admin routes
+# data_rps = 200                # Rate limit for data routes
+
+# [rate_limit.channels.orders]  # Per-channel rate limits
+# rps = 500
+# burst = 100
+
 [logging]
 # level = "info"              # trace, debug, info, warn, error
 # format = "pretty"           # pretty or json

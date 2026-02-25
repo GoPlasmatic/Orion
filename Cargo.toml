@@ -23,7 +23,7 @@ path = "src/lib.rs"
 
 [dependencies]
 dataflow-rs = "2.1.1"
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "chrono", "uuid"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header"] }
 toml = "0.8"
@@ -42,6 +42,8 @@ datalogic-rs = "4"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
 url = "2"
+governor = "0.8"
+tower = "0.5"
 rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"], optional = true }
@@ -61,7 +63,6 @@ clap_complete = { version = "4", optional = true }
 anyhow = { version = "1", optional = true }
 
 [dev-dependencies]
-tower = "0.5"
 
 [features]
 default = ["swagger-ui"]

@@ -110,19 +110,52 @@ pub async fn execute_request(
         }
     })?;
 
+    let max_size = http_config.max_response_size;
     let status = response.status();
+
+    // Check Content-Length hint before reading body
+    if let Some(content_length) = response.content_length() {
+        if content_length as usize > max_size {
+            return Err(DataflowError::function_execution(
+                format!(
+                    "Response from {} declared Content-Length {} exceeds limit of {} bytes",
+                    url, content_length, max_size
+                ),
+                None,
+            ));
+        }
+    }
+
     if !status.is_success() {
-        let body_text = response
-            .text()
-            .await
-            .unwrap_or_else(|e| format!("<failed to read response body: {}>", e));
+        let body_bytes = response.bytes().await.unwrap_or_default();
+        // Truncate error body to max_size
+        let body_text = String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(max_size)]);
         return Err(DataflowError::http(
             status.as_u16(),
             format!("HTTP {} from {}: {}", status, url, body_text),
         ));
     }
 
-    let response_body: Value = response.json().await.map_err(|e| {
+    let body_bytes = response.bytes().await.map_err(|e| {
+        DataflowError::function_execution(
+            format!("Failed to read response body from {}: {}", url, e),
+            None,
+        )
+    })?;
+
+    if body_bytes.len() > max_size {
+        return Err(DataflowError::function_execution(
+            format!(
+                "Response body from {} is {} bytes, exceeding limit of {} bytes",
+                url,
+                body_bytes.len(),
+                max_size
+            ),
+            None,
+        ));
+    }
+
+    let response_body: Value = serde_json::from_slice(&body_bytes).map_err(|e| {
         DataflowError::function_execution(
             format!("Failed to parse response from {} as JSON: {}", url, e),
             None,

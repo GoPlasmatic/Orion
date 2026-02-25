@@ -105,27 +105,42 @@ pub(crate) async fn metrics_endpoint(State(state): State<AppState>) -> impl Into
 /// Reload the engine with all active rules from the database.
 #[tracing::instrument(skip(state))]
 pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionError> {
-    let rules = state.rule_repo.list_active().await?;
-    let workflows = crate::engine::build_engine_workflows(&rules);
+    let start = std::time::Instant::now();
 
-    // Build the new engine outside the write lock to minimize lock hold time.
-    // Clone the current engine Arc, build new workflows, then swap atomically.
-    let current_engine = state.engine.read().await.clone();
-    let new_engine = Arc::new(current_engine.with_new_workflows(workflows));
+    let result = async {
+        let rules = state.rule_repo.list_active().await?;
+        let workflows = crate::engine::build_engine_workflows(&rules);
 
-    let mut engine_write =
-        tokio::time::timeout(std::time::Duration::from_secs(10), state.engine.write())
-            .await
-            .map_err(|_| {
-                crate::errors::OrionError::Internal(
-                    "Engine reload timed out waiting for write lock".into(),
-                )
-            })?;
-    *engine_write = new_engine;
+        // Build the new engine outside the write lock to minimize lock hold time.
+        // Clone the current engine Arc, build new workflows, then swap atomically.
+        let current_engine = state.engine.read().await.clone();
+        let new_engine = Arc::new(current_engine.with_new_workflows(workflows));
 
-    // Update active rules gauge
-    crate::metrics::set_active_rules(rules.len() as f64);
+        let mut engine_write =
+            tokio::time::timeout(std::time::Duration::from_secs(10), state.engine.write())
+                .await
+                .map_err(|_| {
+                    crate::errors::OrionError::Internal(
+                        "Engine reload timed out waiting for write lock".into(),
+                    )
+                })?;
+        *engine_write = new_engine;
 
-    tracing::info!(rules_count = rules.len(), "Engine reloaded");
-    Ok(())
+        // Update active rules gauge
+        crate::metrics::set_active_rules(rules.len() as f64);
+
+        tracing::info!(rules_count = rules.len(), "Engine reloaded");
+        Ok(())
+    }
+    .await;
+
+    let duration = start.elapsed().as_secs_f64();
+    crate::metrics::record_engine_reload_duration(duration);
+
+    match &result {
+        Ok(()) => crate::metrics::record_engine_reload("success"),
+        Err(_) => crate::metrics::record_engine_reload("failure"),
+    }
+
+    result
 }

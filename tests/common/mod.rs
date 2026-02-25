@@ -57,6 +57,7 @@ pub async fn test_app() -> Router {
         start_time: chrono::Utc::now(),
         metrics_handle,
         http_client,
+        rate_limit_state: None,
     };
 
     orion::server::build_router(state)
