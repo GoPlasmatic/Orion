@@ -80,6 +80,51 @@ fn build_cors(config: &CorsConfig) -> CorsLayer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_cors_permissive() {
+        let config = CorsConfig {
+            allowed_origins: vec!["*".to_string()],
+        };
+        // Should not panic
+        let _layer = build_cors(&config);
+    }
+
+    #[test]
+    fn test_build_cors_specific_origins() {
+        let config = CorsConfig {
+            allowed_origins: vec![
+                "https://example.com".to_string(),
+                "https://app.example.com".to_string(),
+            ],
+        };
+        let _layer = build_cors(&config);
+    }
+
+    #[test]
+    fn test_build_cors_single_specific_origin() {
+        let config = CorsConfig {
+            allowed_origins: vec!["https://myapp.com".to_string()],
+        };
+        let _layer = build_cors(&config);
+    }
+
+    #[test]
+    fn test_build_cors_invalid_origin_filtered() {
+        let config = CorsConfig {
+            allowed_origins: vec![
+                "https://valid.com".to_string(),
+                "not a valid origin \x00".to_string(),
+            ],
+        };
+        // Should not panic - invalid origins are filtered out
+        let _layer = build_cors(&config);
+    }
+}
+
 /// Wait for SIGTERM or SIGINT for graceful shutdown.
 pub async fn shutdown_signal() {
     let ctrl_c = async {

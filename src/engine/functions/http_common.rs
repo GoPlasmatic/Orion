@@ -282,6 +282,273 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_execute_request_success() {
+        // Start a mock server using axum
+        let mock_app = axum::Router::new().route(
+            "/test",
+            axum::routing::get(|| async { axum::Json(serde_json::json!({"result": "success"})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let http_config = HttpConnectorConfig {
+            url: format!("http://{}", addr),
+            method: String::new(),
+            headers: std::collections::HashMap::new(),
+            auth: None,
+            retry: crate::connector::RetryConfig::default(),
+            max_response_size: 10 * 1024 * 1024,
+        };
+
+        let result = execute_request(
+            &client,
+            &reqwest::Method::GET,
+            &format!("http://{}/test", addr),
+            None,
+            &http_config,
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(result.is_ok());
+        let val = result.unwrap();
+        assert_eq!(val["result"], "success");
+    }
+
+    #[tokio::test]
+    async fn test_execute_request_with_headers_auth_and_body() {
+        let mock_app = axum::Router::new().route(
+            "/post-test",
+            axum::routing::post(|| async { axum::Json(serde_json::json!({"received": true})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("x-custom".to_string(), "custom-value".to_string());
+
+        let http_config = HttpConnectorConfig {
+            url: format!("http://{}", addr),
+            method: String::new(),
+            headers: std::collections::HashMap::from([(
+                "x-connector-header".to_string(),
+                "conn-val".to_string(),
+            )]),
+            auth: Some(AuthConfig::Bearer {
+                token: "test-token".to_string(),
+            }),
+            retry: crate::connector::RetryConfig::default(),
+            max_response_size: 10 * 1024 * 1024,
+        };
+
+        let body = serde_json::json!({"data": "payload"});
+
+        let result = execute_request(
+            &client,
+            &reqwest::Method::POST,
+            &format!("http://{}/post-test", addr),
+            Some(&headers),
+            &http_config,
+            Some(&body),
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_execute_request_non_success_status() {
+        let mock_app = axum::Router::new().route(
+            "/error",
+            axum::routing::get(|| async { (axum::http::StatusCode::BAD_REQUEST, "Bad Request") }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let http_config = HttpConnectorConfig {
+            url: format!("http://{}", addr),
+            method: String::new(),
+            headers: std::collections::HashMap::new(),
+            auth: None,
+            retry: crate::connector::RetryConfig::default(),
+            max_response_size: 10 * 1024 * 1024,
+        };
+
+        let result = execute_request(
+            &client,
+            &reqwest::Method::GET,
+            &format!("http://{}/error", addr),
+            None,
+            &http_config,
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("400"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_request_non_json_response() {
+        let mock_app = axum::Router::new().route(
+            "/text",
+            axum::routing::get(|| async { "plain text response" }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let http_config = HttpConnectorConfig {
+            url: format!("http://{}", addr),
+            method: String::new(),
+            headers: std::collections::HashMap::new(),
+            auth: None,
+            retry: crate::connector::RetryConfig::default(),
+            max_response_size: 10 * 1024 * 1024,
+        };
+
+        let result = execute_request(
+            &client,
+            &reqwest::Method::GET,
+            &format!("http://{}/text", addr),
+            None,
+            &http_config,
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        // Should fail to parse as JSON
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("parse"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_request_response_too_large() {
+        let mock_app = axum::Router::new().route(
+            "/large",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({"data": "x".repeat(200)}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let http_config = HttpConnectorConfig {
+            url: format!("http://{}", addr),
+            method: String::new(),
+            headers: std::collections::HashMap::new(),
+            auth: None,
+            retry: crate::connector::RetryConfig::default(),
+            max_response_size: 10, // Very small limit
+        };
+
+        let result = execute_request(
+            &client,
+            &reqwest::Method::GET,
+            &format!("http://{}/large", addr),
+            None,
+            &http_config,
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("exceed"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_request_timeout() {
+        let mock_app = axum::Router::new().route(
+            "/slow",
+            axum::routing::get(|| async {
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                axum::Json(serde_json::json!({"slow": true}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_app).await.unwrap();
+        });
+
+        let client = reqwest::Client::new();
+        let http_config = HttpConnectorConfig {
+            url: format!("http://{}", addr),
+            method: String::new(),
+            headers: std::collections::HashMap::new(),
+            auth: None,
+            retry: crate::connector::RetryConfig::default(),
+            max_response_size: 10 * 1024 * 1024,
+        };
+
+        let result = execute_request(
+            &client,
+            &reqwest::Method::GET,
+            &format!("http://{}/slow", addr),
+            None,
+            &http_config,
+            None,
+            std::time::Duration::from_millis(100), // Very short timeout
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_request_connection_refused() {
+        let client = reqwest::Client::new();
+        let http_config = HttpConnectorConfig {
+            url: "http://127.0.0.1:1".to_string(),
+            method: String::new(),
+            headers: std::collections::HashMap::new(),
+            auth: None,
+            retry: crate::connector::RetryConfig::default(),
+            max_response_size: 10 * 1024 * 1024,
+        };
+
+        let result = execute_request(
+            &client,
+            &reqwest::Method::GET,
+            "http://127.0.0.1:1/test",
+            None,
+            &http_config,
+            None,
+            std::time::Duration::from_secs(1),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed"));
+    }
+
     #[test]
     fn test_apply_auth_basic() {
         let client = reqwest::Client::new();
