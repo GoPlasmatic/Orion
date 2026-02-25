@@ -56,7 +56,7 @@ ORION_KAFKA__ENABLED=true
 ORION_LOGGING__FORMAT=json
 ```
 
-All settings have sensible defaults. You can run Orion with no config file at all — `orion` just works.
+All settings have sensible defaults. You can run Orion with no config file at all — `orion-server` just works.
 
 ## Deployment
 

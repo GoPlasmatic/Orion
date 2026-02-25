@@ -26,7 +26,7 @@
 
 ```bash
 brew install GoPlasmatic/tap/orion   # or: curl installer, cargo install (see Install)
-orion
+orion-server
 ```
 
 **2. Tell AI what you need:**
@@ -293,7 +293,7 @@ Custom rule IDs (e.g., `high-value-order-alert` instead of UUIDs) make rules tra
 ┌────────────────┐   ┌────────────────────┐   ┌────────────────┐
 │   Standalone   │   │      Sidecar       │   │     Docker     │
 │                │   │                    │   │                │
-│   ./orion      │   │  ┌─────┐ ┌──────┐  │   │  docker run \  │
+│ ./orion-server │   │  ┌─────┐ ┌──────┐  │   │  docker run \  │
 │                │   │  │ App │─│Orion │  │   │   orion:latest │
 │   That's it.   │   │  └─────┘ └──────┘  │   │                │
 └────────────────┘   └────────────────────┘   └────────────────┘
@@ -326,7 +326,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/
 cargo install --git https://github.com/GoPlasmatic/Orion.git
 ```
 
-Both `orion` (the server) and `orion-cli` (the management tool) are included. Verify with `orion --version`. See [Configuration](docs/configuration.md#deployment) for Docker and deployment options.
+Both `orion-server` (the server) and `orion-cli` (the management tool) are included. Verify with `orion-server --version`. See [Configuration](docs/configuration.md#deployment) for Docker and deployment options.
 
 ## Performance
 
