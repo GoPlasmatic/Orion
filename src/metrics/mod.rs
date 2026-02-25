@@ -129,3 +129,111 @@ pub fn record_channel_execution(channel: &str) {
 pub fn record_rate_limit_rejected(client: &str) {
     counter!("rate_limit_rejections_total", "client" => client.to_string()).increment(1);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ensure_recorder() {
+        let _ = PrometheusBuilder::new().install_recorder();
+    }
+
+    #[test]
+    fn test_record_message() {
+        ensure_recorder();
+        // Should not panic
+        record_message("test-channel", "ok");
+        record_message("test-channel", "error");
+    }
+
+    #[test]
+    fn test_record_error() {
+        ensure_recorder();
+        record_error("engine");
+        record_error("storage");
+    }
+
+    #[test]
+    fn test_record_message_duration() {
+        ensure_recorder();
+        record_message_duration("orders", 0.123);
+    }
+
+    #[test]
+    fn test_record_circuit_breaker_trip() {
+        ensure_recorder();
+        record_circuit_breaker_trip("my-connector", "orders");
+    }
+
+    #[test]
+    fn test_record_circuit_breaker_rejection() {
+        ensure_recorder();
+        record_circuit_breaker_rejection("my-connector", "orders");
+    }
+
+    #[test]
+    fn test_set_active_rules() {
+        ensure_recorder();
+        set_active_rules(5.0);
+        set_active_rules(0.0);
+    }
+
+    #[test]
+    fn test_record_http_request() {
+        ensure_recorder();
+        record_http_request("GET", "/health", 200);
+        record_http_request("POST", "/api/v1/data/orders", 201);
+    }
+
+    #[test]
+    fn test_record_http_request_duration() {
+        ensure_recorder();
+        record_http_request_duration("GET", "/health", 200, 0.005);
+    }
+
+    #[test]
+    fn test_record_db_query_duration() {
+        ensure_recorder();
+        record_db_query_duration("list_rules", 0.010);
+    }
+
+    #[tokio::test]
+    async fn test_timed_db_op() {
+        ensure_recorder();
+        let result = timed_db_op("test_op", async { 42 }).await;
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_record_engine_reload_duration() {
+        ensure_recorder();
+        record_engine_reload_duration(0.250);
+    }
+
+    #[test]
+    fn test_record_engine_reload() {
+        ensure_recorder();
+        record_engine_reload("success");
+        record_engine_reload("failure");
+    }
+
+    #[test]
+    fn test_record_channel_execution() {
+        ensure_recorder();
+        record_channel_execution("orders");
+    }
+
+    #[test]
+    fn test_record_rate_limit_rejected() {
+        ensure_recorder();
+        record_rate_limit_rejected("192.168.1.1");
+    }
+
+    #[test]
+    fn test_init_metrics() {
+        // Should return a handle even if already installed
+        let handle = init_metrics();
+        let output = handle.render();
+        assert!(output.is_ascii());
+    }
+}

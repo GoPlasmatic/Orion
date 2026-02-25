@@ -159,3 +159,245 @@ where
 
     Err(last_error.unwrap_or_else(|| DataflowError::Unknown("Retry loop exhausted".into())))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connector::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn test_to_reqwest_method_get() {
+        use dataflow_rs::engine::functions::integration::HttpMethod;
+        assert_eq!(to_reqwest_method(&HttpMethod::Get), reqwest::Method::GET);
+    }
+
+    #[test]
+    fn test_to_reqwest_method_post() {
+        use dataflow_rs::engine::functions::integration::HttpMethod;
+        assert_eq!(to_reqwest_method(&HttpMethod::Post), reqwest::Method::POST);
+    }
+
+    #[test]
+    fn test_to_reqwest_method_put() {
+        use dataflow_rs::engine::functions::integration::HttpMethod;
+        assert_eq!(to_reqwest_method(&HttpMethod::Put), reqwest::Method::PUT);
+    }
+
+    #[test]
+    fn test_to_reqwest_method_patch() {
+        use dataflow_rs::engine::functions::integration::HttpMethod;
+        assert_eq!(
+            to_reqwest_method(&HttpMethod::Patch),
+            reqwest::Method::PATCH
+        );
+    }
+
+    #[test]
+    fn test_to_reqwest_method_delete() {
+        use dataflow_rs::engine::functions::integration::HttpMethod;
+        assert_eq!(
+            to_reqwest_method(&HttpMethod::Delete),
+            reqwest::Method::DELETE
+        );
+    }
+
+    #[test]
+    fn test_extract_channel_with_channel() {
+        let mut message = Message::from_value(&serde_json::json!({"key": "val"}));
+        if let Some(meta) = message.metadata_mut().as_object_mut() {
+            meta.insert("channel".to_string(), Value::String("orders".to_string()));
+        }
+        assert_eq!(extract_channel(&message), "orders");
+    }
+
+    #[test]
+    fn test_extract_channel_without_channel() {
+        let message = Message::from_value(&serde_json::json!({}));
+        assert_eq!(extract_channel(&message), "unknown");
+    }
+
+    #[test]
+    fn test_resolve_path_static() {
+        let datalogic = DataLogic::default();
+        let mut message = Message::from_value(&serde_json::json!({}));
+        let result =
+            resolve_path(&Some("/users".to_string()), &None, &mut message, &datalogic).unwrap();
+        assert_eq!(result, Some("/users".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_path_none() {
+        let datalogic = DataLogic::default();
+        let mut message = Message::from_value(&serde_json::json!({}));
+        let result = resolve_path(&None, &None, &mut message, &datalogic).unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_path_logic_expression() {
+        let datalogic = DataLogic::default();
+        let mut message = Message::from_value(&serde_json::json!({}));
+        // Set data in context so JSONLogic can find it
+        *message.data_mut() = serde_json::json!({"path": "/dynamic"});
+        message.invalidate_context_cache();
+        let logic = serde_json::json!({"var": "data.path"});
+        let result = resolve_path(&None, &Some(logic), &mut message, &datalogic).unwrap();
+        assert_eq!(result, Some("/dynamic".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_path_logic_non_string_result() {
+        let datalogic = DataLogic::default();
+        let mut message = Message::from_value(&serde_json::json!({}));
+        *message.data_mut() = serde_json::json!({"id": 42});
+        message.invalidate_context_cache();
+        let logic = serde_json::json!({"var": "data.id"});
+        let result = resolve_path(&None, &Some(logic), &mut message, &datalogic).unwrap();
+        assert_eq!(result, Some("42".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_retry_with_backoff_succeeds_first_try() {
+        let result = retry_with_backoff(3, 1, "test", || async {
+            Ok(serde_json::json!({"ok": true}))
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), serde_json::json!({"ok": true}));
+    }
+
+    #[tokio::test]
+    async fn test_retry_with_backoff_fails_then_succeeds() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        let result = retry_with_backoff(3, 1, "test", move || {
+            let c = counter_clone.clone();
+            async move {
+                let attempt = c.fetch_add(1, Ordering::SeqCst);
+                if attempt < 2 {
+                    Err(DataflowError::Io("transient".to_string()))
+                } else {
+                    Ok(serde_json::json!({"attempt": attempt}))
+                }
+            }
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_retry_with_backoff_non_retryable_fails_immediately() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        let result = retry_with_backoff(3, 1, "test", move || {
+            let c = counter_clone.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(DataflowError::Validation("bad input".to_string()))
+            }
+        })
+        .await;
+        assert!(result.is_err());
+        // Non-retryable errors should not retry
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_retry_with_backoff_exhausts_retries() {
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        let result = retry_with_backoff(2, 1, "test", move || {
+            let c = counter_clone.clone();
+            async move {
+                c.fetch_add(1, Ordering::SeqCst);
+                Err(DataflowError::Io("always fails".to_string()))
+            }
+        })
+        .await;
+        assert!(result.is_err());
+        // 1 initial + 2 retries = 3 total attempts
+        assert_eq!(counter.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_circuit_breaker_success() {
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 5,
+            recovery_timeout_secs: 30,
+        };
+        let breaker = Arc::new(CircuitBreaker::new(config));
+
+        let result = execute_with_circuit_breaker(
+            &breaker,
+            "test-connector",
+            "test-channel",
+            0,
+            1,
+            "test",
+            || async { Ok(serde_json::json!({"result": "ok"})) },
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_circuit_breaker_open_rejects() {
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 1,
+            recovery_timeout_secs: 300,
+        };
+        let breaker = Arc::new(CircuitBreaker::new(config));
+
+        // Trip the circuit breaker
+        breaker.record_failure();
+
+        let result = execute_with_circuit_breaker(
+            &breaker,
+            "test-connector",
+            "test-channel",
+            0,
+            1,
+            "test",
+            || async { Ok(serde_json::json!({"should": "not reach"})) },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Circuit breaker open")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_circuit_breaker_records_failure() {
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 5,
+            recovery_timeout_secs: 300,
+        };
+        let breaker = Arc::new(CircuitBreaker::new(config));
+
+        let result: Result<Value, _> = execute_with_circuit_breaker(
+            &breaker,
+            "test-connector",
+            "test-channel",
+            0,
+            1,
+            "test",
+            || async { Err(DataflowError::Io("network error".to_string())) },
+        )
+        .await;
+
+        assert!(result.is_err());
+        // Breaker should still be closed (threshold is 5)
+        assert!(breaker.check());
+    }
+}
