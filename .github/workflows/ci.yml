@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Format, Lint & Test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy (default features)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests (all features)
+        run: cargo test --all-features
+
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Run audit
+        run: cargo audit
+
+  coverage:
+    name: Test Coverage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage report
+        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-report
+          path: lcov.info
