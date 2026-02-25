@@ -9,17 +9,21 @@
 
 [storage]
 # path = "orion.db"           # SQLite database file path
+# busy_timeout_ms = 5000      # SQLite busy timeout in milliseconds
+# acquire_timeout_secs = 5    # Connection pool acquire timeout in seconds
 
 [ingest]
 # max_payload_size = 1048576  # Maximum payload size in bytes (1 MB)
 # batch_size = 100            # Batch processing size
 
 [engine]
-# max_concurrent_workflows = 100
+# health_check_timeout_secs = 2   # Timeout for engine read lock in health checks
+# reload_timeout_secs = 10        # Timeout for engine write lock during reload
 
 [queue]
 # workers = 4                  # Concurrent async job workers
 # buffer_size = 1000           # Channel buffer for pending jobs
+# shutdown_timeout_secs = 30   # Timeout for in-flight jobs during shutdown
 
 [kafka]                         # Requires the `kafka` feature flag
 # enabled = false

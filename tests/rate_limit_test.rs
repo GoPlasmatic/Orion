@@ -17,7 +17,12 @@ use orion::storage::repositories::rules::SqliteRuleRepository;
 
 /// Create a test app with rate limiting enabled (very low limits for testing).
 async fn rate_limited_app(rps: u32, burst: u32) -> Router {
-    let pool = orion::storage::init_pool(":memory:", 5).await.unwrap();
+    let storage_config = orion::config::StorageConfig {
+        path: ":memory:".to_string(),
+        max_connections: 5,
+        ..Default::default()
+    };
+    let pool = orion::storage::init_pool(&storage_config).await.unwrap();
 
     let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
@@ -33,6 +38,7 @@ async fn rate_limited_app(rps: u32, burst: u32) -> Router {
     let (job_queue, _worker_handle) = orion::queue::start_workers(
         2,
         100,
+        30,
         engine.clone(),
         job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
     );
@@ -76,7 +82,12 @@ async fn rate_limited_app(rps: u32, burst: u32) -> Router {
 
 /// Create a rate-limited app with channel-specific limits.
 async fn rate_limited_app_with_channels() -> Router {
-    let pool = orion::storage::init_pool(":memory:", 5).await.unwrap();
+    let storage_config = orion::config::StorageConfig {
+        path: ":memory:".to_string(),
+        max_connections: 5,
+        ..Default::default()
+    };
+    let pool = orion::storage::init_pool(&storage_config).await.unwrap();
 
     let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
@@ -92,6 +103,7 @@ async fn rate_limited_app_with_channels() -> Router {
     let (job_queue, _worker_handle) = orion::queue::start_workers(
         2,
         100,
+        30,
         engine.clone(),
         job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
     );

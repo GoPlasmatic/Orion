@@ -15,7 +15,12 @@ use orion::storage::repositories::rules::SqliteRuleRepository;
 
 /// Create a test app with an in-memory SQLite database.
 pub async fn test_app() -> Router {
-    let pool = orion::storage::init_pool(":memory:", 5).await.unwrap();
+    let storage_config = orion::config::StorageConfig {
+        path: ":memory:".to_string(),
+        max_connections: 5,
+        ..Default::default()
+    };
+    let pool = orion::storage::init_pool(&storage_config).await.unwrap();
 
     let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
@@ -32,6 +37,7 @@ pub async fn test_app() -> Router {
     let (job_queue, _worker_handle) = orion::queue::start_workers(
         2,
         100,
+        30,
         engine.clone(),
         job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
     );
