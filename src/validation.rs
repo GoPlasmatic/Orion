@@ -274,4 +274,262 @@ mod tests {
         let config = json!("not an object");
         assert!(validate_connector_config("http", &config).is_err());
     }
+
+    #[test]
+    fn test_channel_too_long() {
+        let long_channel = "a".repeat(MAX_CHANNEL_LEN + 1);
+        assert!(validate_channel(&long_channel).is_err());
+    }
+
+    #[test]
+    fn test_description_valid() {
+        assert!(validate_description("A short description").is_ok());
+        assert!(validate_description("").is_ok());
+    }
+
+    #[test]
+    fn test_validate_create_rule_full() {
+        let req = CreateRuleRequest {
+            id: Some("my-rule-1".to_string()),
+            name: "Test Rule".to_string(),
+            description: Some("A test rule".to_string()),
+            channel: "orders".to_string(),
+            priority: 10,
+            condition: json!(true),
+            tasks: json!([]),
+            tags: vec!["tag1".to_string()],
+            continue_on_error: false,
+        };
+        assert!(validate_create_rule(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_create_rule_invalid_id() {
+        let req = CreateRuleRequest {
+            id: Some("bad id with spaces".to_string()),
+            name: "Test Rule".to_string(),
+            description: None,
+            channel: "orders".to_string(),
+            priority: 0,
+            condition: json!(true),
+            tasks: json!([]),
+            tags: vec![],
+            continue_on_error: false,
+        };
+        assert!(validate_create_rule(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_create_rule_long_description() {
+        let req = CreateRuleRequest {
+            id: None,
+            name: "Test Rule".to_string(),
+            description: Some("d".repeat(MAX_DESCRIPTION_LEN + 1)),
+            channel: "orders".to_string(),
+            priority: 0,
+            condition: json!(true),
+            tasks: json!([]),
+            tags: vec![],
+            continue_on_error: false,
+        };
+        assert!(validate_create_rule(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_update_rule_all_fields() {
+        let req = UpdateRuleRequest {
+            name: Some("Updated Name".to_string()),
+            description: Some("Updated desc".to_string()),
+            channel: Some("updated-ch".to_string()),
+            priority: Some(5),
+            condition: None,
+            tasks: None,
+            status: None,
+            tags: None,
+            continue_on_error: None,
+        };
+        assert!(validate_update_rule(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_update_rule_invalid_name() {
+        let req = UpdateRuleRequest {
+            name: Some("".to_string()),
+            description: None,
+            channel: None,
+            priority: None,
+            condition: None,
+            tasks: None,
+            status: None,
+            tags: None,
+            continue_on_error: None,
+        };
+        assert!(validate_update_rule(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_update_rule_invalid_description() {
+        let req = UpdateRuleRequest {
+            name: None,
+            description: Some("x".repeat(MAX_DESCRIPTION_LEN + 1)),
+            channel: None,
+            priority: None,
+            condition: None,
+            tasks: None,
+            status: None,
+            tags: None,
+            continue_on_error: None,
+        };
+        assert!(validate_update_rule(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_update_rule_invalid_channel() {
+        let req = UpdateRuleRequest {
+            name: None,
+            description: None,
+            channel: Some("bad channel!".to_string()),
+            priority: None,
+            condition: None,
+            tasks: None,
+            status: None,
+            tags: None,
+            continue_on_error: None,
+        };
+        assert!(validate_update_rule(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_create_connector_with_id() {
+        let req = CreateConnectorRequest {
+            id: Some("my-conn-1".to_string()),
+            name: "My Connector".to_string(),
+            connector_type: "http".to_string(),
+            config: json!({"url": "https://example.com"}),
+        };
+        assert!(validate_create_connector(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_create_connector_invalid_id() {
+        let req = CreateConnectorRequest {
+            id: Some("bad id!".to_string()),
+            name: "My Connector".to_string(),
+            connector_type: "http".to_string(),
+            config: json!({"url": "https://example.com"}),
+        };
+        assert!(validate_create_connector(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_create_connector_empty_name() {
+        let req = CreateConnectorRequest {
+            id: None,
+            name: "".to_string(),
+            connector_type: "http".to_string(),
+            config: json!({"url": "https://example.com"}),
+        };
+        assert!(validate_create_connector(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_create_connector_invalid_type() {
+        let req = CreateConnectorRequest {
+            id: None,
+            name: "Test".to_string(),
+            connector_type: "grpc".to_string(),
+            config: json!({"url": "https://example.com"}),
+        };
+        assert!(validate_create_connector(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_update_connector_with_name() {
+        let req = UpdateConnectorRequest {
+            name: Some("Updated Name".to_string()),
+            connector_type: None,
+            config: None,
+            enabled: None,
+        };
+        assert!(validate_update_connector(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_update_connector_invalid_name() {
+        let req = UpdateConnectorRequest {
+            name: Some("   ".to_string()),
+            connector_type: None,
+            config: None,
+            enabled: None,
+        };
+        assert!(validate_update_connector(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_update_connector_type_only() {
+        let req = UpdateConnectorRequest {
+            name: None,
+            connector_type: Some("http".to_string()),
+            config: None,
+            enabled: None,
+        };
+        assert!(validate_update_connector(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_update_connector_invalid_type() {
+        let req = UpdateConnectorRequest {
+            name: None,
+            connector_type: Some("invalid".to_string()),
+            config: None,
+            enabled: None,
+        };
+        assert!(validate_update_connector(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_update_connector_type_and_config() {
+        let req = UpdateConnectorRequest {
+            name: None,
+            connector_type: Some("http".to_string()),
+            config: Some(json!({"url": "https://example.com"})),
+            enabled: None,
+        };
+        assert!(validate_update_connector(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_update_connector_type_and_invalid_config() {
+        let req = UpdateConnectorRequest {
+            name: None,
+            connector_type: Some("http".to_string()),
+            config: Some(json!("not an object")),
+            enabled: None,
+        };
+        assert!(validate_update_connector(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_update_connector_no_fields() {
+        let req = UpdateConnectorRequest {
+            name: None,
+            connector_type: None,
+            config: None,
+            enabled: None,
+        };
+        assert!(validate_update_connector(&req).is_ok());
+    }
+
+    #[test]
+    fn test_connector_config_http_empty_url() {
+        let config = json!({"url": ""});
+        // Empty URL should be fine (passes URL validation skip)
+        assert!(validate_connector_config("http", &config).is_ok());
+    }
+
+    #[test]
+    fn test_connector_config_http_invalid_url() {
+        let config = json!({"url": "not a valid url"});
+        assert!(validate_connector_config("http", &config).is_err());
+    }
 }
