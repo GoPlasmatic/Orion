@@ -116,8 +116,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Init database
-    let pool =
-        orion::storage::init_pool(&config.storage.path, config.storage.max_connections).await?;
+    let pool = orion::storage::init_pool(&config.storage).await?;
     tracing::info!(path = %config.storage.path, "Database initialized");
 
     // Create repositories
@@ -211,6 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (job_queue, worker_handle) = orion::queue::start_workers(
         config.queue.workers,
         config.queue.buffer_size,
+        config.queue.shutdown_timeout_secs,
         engine.clone(),
         job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
     );

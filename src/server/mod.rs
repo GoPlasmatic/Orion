@@ -71,7 +71,12 @@ fn build_cors(config: &CorsConfig) -> CorsLayer {
         let origins: Vec<axum::http::HeaderValue> = config
             .allowed_origins
             .iter()
-            .filter_map(|o| o.parse().ok())
+            .filter_map(|o| {
+                o.parse().ok().or_else(|| {
+                    tracing::warn!(origin = %o, "Invalid CORS origin ignored");
+                    None
+                })
+            })
             .collect();
         CorsLayer::new()
             .allow_origin(origins)

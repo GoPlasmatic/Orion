@@ -48,14 +48,18 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
 
     // Check engine state — independently verify the engine lock is acquirable
     let mut rules_loaded = 0;
-    let engine_healthy =
-        match tokio::time::timeout(std::time::Duration::from_secs(2), state.engine.read()).await {
-            Ok(guard) => {
-                rules_loaded = guard.workflows().len();
-                true
-            }
-            Err(_) => false,
-        };
+    let engine_healthy = match tokio::time::timeout(
+        std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
+        state.engine.read(),
+    )
+    .await
+    {
+        Ok(guard) => {
+            rules_loaded = guard.workflows().len();
+            true
+        }
+        Err(_) => false,
+    };
 
     // Collect circuit breaker states
     let cb_states = state.connector_registry.circuit_breaker_states().await;
@@ -116,14 +120,16 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
         let current_engine = state.engine.read().await.clone();
         let new_engine = Arc::new(current_engine.with_new_workflows(workflows));
 
-        let mut engine_write =
-            tokio::time::timeout(std::time::Duration::from_secs(10), state.engine.write())
-                .await
-                .map_err(|_| {
-                    crate::errors::OrionError::Internal(
-                        "Engine reload timed out waiting for write lock".into(),
-                    )
-                })?;
+        let mut engine_write = tokio::time::timeout(
+            std::time::Duration::from_secs(state.config.engine.reload_timeout_secs),
+            state.engine.write(),
+        )
+        .await
+        .map_err(|_| {
+            crate::errors::OrionError::Internal(
+                "Engine reload timed out waiting for write lock".into(),
+            )
+        })?;
         *engine_write = new_engine;
 
         // Update active rules gauge

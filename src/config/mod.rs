@@ -41,6 +41,10 @@ impl Default for ServerConfig {
 pub struct StorageConfig {
     pub path: String,
     pub max_connections: u32,
+    /// SQLite busy timeout in milliseconds.
+    pub busy_timeout_ms: u64,
+    /// Connection pool acquire timeout in seconds.
+    pub acquire_timeout_secs: u64,
 }
 
 impl Default for StorageConfig {
@@ -48,6 +52,8 @@ impl Default for StorageConfig {
         Self {
             path: "orion.db".to_string(),
             max_connections: 10,
+            busy_timeout_ms: 5000,
+            acquire_timeout_secs: 5,
         }
     }
 }
@@ -69,10 +75,24 @@ impl Default for IngestConfig {
 }
 
 /// Engine configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EngineConfig {
     pub circuit_breaker: crate::connector::circuit_breaker::CircuitBreakerConfig,
+    /// Timeout in seconds for acquiring engine read lock in health checks.
+    pub health_check_timeout_secs: u64,
+    /// Timeout in seconds for acquiring engine write lock during reload.
+    pub reload_timeout_secs: u64,
+}
+
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            circuit_breaker: Default::default(),
+            health_check_timeout_secs: 2,
+            reload_timeout_secs: 10,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +102,8 @@ pub struct QueueConfig {
     pub workers: usize,
     /// Channel buffer size for pending jobs.
     pub buffer_size: usize,
+    /// Timeout in seconds to wait for in-flight jobs during shutdown.
+    pub shutdown_timeout_secs: u64,
 }
 
 impl Default for QueueConfig {
@@ -89,6 +111,7 @@ impl Default for QueueConfig {
         Self {
             workers: 4,
             buffer_size: 1000,
+            shutdown_timeout_secs: 30,
         }
     }
 }
@@ -265,32 +288,49 @@ pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
         AppConfig::default()
     };
 
-    apply_env_overrides(&mut config);
+    apply_env_overrides(&mut config)?;
     validate_config(&config)?;
 
     Ok(config)
 }
 
+/// Helper to parse an env var value, returning a clear error on failure.
+fn parse_env<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, OrionError> {
+    value.parse::<T>().map_err(|_| OrionError::Config {
+        message: format!(
+            "{}: invalid value '{}', expected {}",
+            key,
+            value,
+            std::any::type_name::<T>()
+        ),
+    })
+}
+
 /// Apply ORION_* environment variable overrides.
-fn apply_env_overrides(config: &mut AppConfig) {
-    apply_env_overrides_with(config, |key| std::env::var(key));
+fn apply_env_overrides(config: &mut AppConfig) -> Result<(), OrionError> {
+    apply_env_overrides_with(config, |key| std::env::var(key))
 }
 
 /// Testable version that accepts a custom env reader.
-fn apply_env_overrides_with<F>(config: &mut AppConfig, env_var: F)
+fn apply_env_overrides_with<F>(config: &mut AppConfig, env_var: F) -> Result<(), OrionError>
 where
     F: Fn(&str) -> Result<String, std::env::VarError>,
 {
     if let Ok(v) = env_var("ORION_SERVER__HOST") {
         config.server.host = v;
     }
-    if let Ok(v) = env_var("ORION_SERVER__PORT")
-        && let Ok(port) = v.parse::<u16>()
-    {
-        config.server.port = port;
+    if let Ok(v) = env_var("ORION_SERVER__PORT") {
+        config.server.port = parse_env::<u16>("ORION_SERVER__PORT", &v)?;
     }
     if let Ok(v) = env_var("ORION_STORAGE__PATH") {
         config.storage.path = v;
+    }
+    if let Ok(v) = env_var("ORION_STORAGE__BUSY_TIMEOUT_MS") {
+        config.storage.busy_timeout_ms = parse_env::<u64>("ORION_STORAGE__BUSY_TIMEOUT_MS", &v)?;
+    }
+    if let Ok(v) = env_var("ORION_STORAGE__ACQUIRE_TIMEOUT_SECS") {
+        config.storage.acquire_timeout_secs =
+            parse_env::<u64>("ORION_STORAGE__ACQUIRE_TIMEOUT_SECS", &v)?;
     }
     if let Ok(v) = env_var("ORION_LOGGING__LEVEL") {
         config.logging.level = v;
@@ -299,39 +339,38 @@ where
         match v.to_lowercase().as_str() {
             "json" => config.logging.format = LogFormat::Json,
             "pretty" => config.logging.format = LogFormat::Pretty,
-            _ => {}
+            _ => {
+                return Err(OrionError::Config {
+                    message: format!(
+                        "ORION_LOGGING__FORMAT: invalid value '{}', expected 'json' or 'pretty'",
+                        v
+                    ),
+                });
+            }
         }
     }
-    if let Ok(v) = env_var("ORION_INGEST__MAX_PAYLOAD_SIZE")
-        && let Ok(size) = v.parse::<usize>()
-    {
-        config.ingest.max_payload_size = size;
+    if let Ok(v) = env_var("ORION_INGEST__MAX_PAYLOAD_SIZE") {
+        config.ingest.max_payload_size = parse_env::<usize>("ORION_INGEST__MAX_PAYLOAD_SIZE", &v)?;
     }
-    if let Ok(v) = env_var("ORION_INGEST__BATCH_SIZE")
-        && let Ok(size) = v.parse::<usize>()
-    {
-        config.ingest.batch_size = size;
+    if let Ok(v) = env_var("ORION_INGEST__BATCH_SIZE") {
+        config.ingest.batch_size = parse_env::<usize>("ORION_INGEST__BATCH_SIZE", &v)?;
     }
-    if let Ok(v) = env_var("ORION_QUEUE__WORKERS")
-        && let Ok(w) = v.parse::<usize>()
-    {
-        config.queue.workers = w;
+    if let Ok(v) = env_var("ORION_QUEUE__WORKERS") {
+        config.queue.workers = parse_env::<usize>("ORION_QUEUE__WORKERS", &v)?;
     }
-    if let Ok(v) = env_var("ORION_QUEUE__BUFFER_SIZE")
-        && let Ok(s) = v.parse::<usize>()
-    {
-        config.queue.buffer_size = s;
+    if let Ok(v) = env_var("ORION_QUEUE__BUFFER_SIZE") {
+        config.queue.buffer_size = parse_env::<usize>("ORION_QUEUE__BUFFER_SIZE", &v)?;
     }
-    if let Ok(v) = env_var("ORION_METRICS__ENABLED")
-        && let Ok(enabled) = v.parse::<bool>()
-    {
-        config.metrics.enabled = enabled;
+    if let Ok(v) = env_var("ORION_QUEUE__SHUTDOWN_TIMEOUT_SECS") {
+        config.queue.shutdown_timeout_secs =
+            parse_env::<u64>("ORION_QUEUE__SHUTDOWN_TIMEOUT_SECS", &v)?;
+    }
+    if let Ok(v) = env_var("ORION_METRICS__ENABLED") {
+        config.metrics.enabled = parse_env::<bool>("ORION_METRICS__ENABLED", &v)?;
     }
     // Tracing overrides
-    if let Ok(v) = env_var("ORION_TRACING__ENABLED")
-        && let Ok(enabled) = v.parse::<bool>()
-    {
-        config.tracing.enabled = enabled;
+    if let Ok(v) = env_var("ORION_TRACING__ENABLED") {
+        config.tracing.enabled = parse_env::<bool>("ORION_TRACING__ENABLED", &v)?;
     }
     if let Ok(v) = env_var("ORION_TRACING__OTLP_ENDPOINT") {
         config.tracing.otlp_endpoint = v;
@@ -339,48 +378,44 @@ where
     if let Ok(v) = env_var("ORION_TRACING__SERVICE_NAME") {
         config.tracing.service_name = v;
     }
-    if let Ok(v) = env_var("ORION_TRACING__SAMPLE_RATE")
-        && let Ok(rate) = v.parse::<f64>()
-    {
-        config.tracing.sample_rate = rate;
+    if let Ok(v) = env_var("ORION_TRACING__SAMPLE_RATE") {
+        config.tracing.sample_rate = parse_env::<f64>("ORION_TRACING__SAMPLE_RATE", &v)?;
+    }
+    // Engine overrides
+    if let Ok(v) = env_var("ORION_ENGINE__HEALTH_CHECK_TIMEOUT_SECS") {
+        config.engine.health_check_timeout_secs =
+            parse_env::<u64>("ORION_ENGINE__HEALTH_CHECK_TIMEOUT_SECS", &v)?;
+    }
+    if let Ok(v) = env_var("ORION_ENGINE__RELOAD_TIMEOUT_SECS") {
+        config.engine.reload_timeout_secs =
+            parse_env::<u64>("ORION_ENGINE__RELOAD_TIMEOUT_SECS", &v)?;
     }
     // Circuit breaker overrides
-    if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__ENABLED")
-        && let Ok(enabled) = v.parse::<bool>()
-    {
-        config.engine.circuit_breaker.enabled = enabled;
+    if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__ENABLED") {
+        config.engine.circuit_breaker.enabled =
+            parse_env::<bool>("ORION_ENGINE__CIRCUIT_BREAKER__ENABLED", &v)?;
     }
-    if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD")
-        && let Ok(t) = v.parse::<u32>()
-    {
-        config.engine.circuit_breaker.failure_threshold = t;
+    if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD") {
+        config.engine.circuit_breaker.failure_threshold =
+            parse_env::<u32>("ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD", &v)?;
     }
-    if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS")
-        && let Ok(t) = v.parse::<u64>()
-    {
-        config.engine.circuit_breaker.recovery_timeout_secs = t;
+    if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS") {
+        config.engine.circuit_breaker.recovery_timeout_secs =
+            parse_env::<u64>("ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS", &v)?;
     }
     // Rate limit overrides
-    if let Ok(v) = env_var("ORION_RATE_LIMIT__ENABLED")
-        && let Ok(enabled) = v.parse::<bool>()
-    {
-        config.rate_limit.enabled = enabled;
+    if let Ok(v) = env_var("ORION_RATE_LIMIT__ENABLED") {
+        config.rate_limit.enabled = parse_env::<bool>("ORION_RATE_LIMIT__ENABLED", &v)?;
     }
-    if let Ok(v) = env_var("ORION_RATE_LIMIT__DEFAULT_RPS")
-        && let Ok(rps) = v.parse::<u32>()
-    {
-        config.rate_limit.default_rps = rps;
+    if let Ok(v) = env_var("ORION_RATE_LIMIT__DEFAULT_RPS") {
+        config.rate_limit.default_rps = parse_env::<u32>("ORION_RATE_LIMIT__DEFAULT_RPS", &v)?;
     }
-    if let Ok(v) = env_var("ORION_RATE_LIMIT__DEFAULT_BURST")
-        && let Ok(burst) = v.parse::<u32>()
-    {
-        config.rate_limit.default_burst = burst;
+    if let Ok(v) = env_var("ORION_RATE_LIMIT__DEFAULT_BURST") {
+        config.rate_limit.default_burst = parse_env::<u32>("ORION_RATE_LIMIT__DEFAULT_BURST", &v)?;
     }
     // Kafka overrides
-    if let Ok(v) = env_var("ORION_KAFKA__ENABLED")
-        && let Ok(enabled) = v.parse::<bool>()
-    {
-        config.kafka.enabled = enabled;
+    if let Ok(v) = env_var("ORION_KAFKA__ENABLED") {
+        config.kafka.enabled = parse_env::<bool>("ORION_KAFKA__ENABLED", &v)?;
     }
     if let Ok(v) = env_var("ORION_KAFKA__BROKERS") {
         config.kafka.brokers = v.split(',').map(|s| s.trim().to_string()).collect();
@@ -388,6 +423,7 @@ where
     if let Ok(v) = env_var("ORION_KAFKA__GROUP_ID") {
         config.kafka.group_id = v;
     }
+    Ok(())
 }
 
 /// Valid tracing log levels.
@@ -447,6 +483,32 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
             });
         }
     }
+    // Timeout validations
+    if config.engine.health_check_timeout_secs == 0 {
+        return Err(OrionError::Config {
+            message: "engine.health_check_timeout_secs must be > 0".to_string(),
+        });
+    }
+    if config.engine.reload_timeout_secs == 0 {
+        return Err(OrionError::Config {
+            message: "engine.reload_timeout_secs must be > 0".to_string(),
+        });
+    }
+    if config.queue.shutdown_timeout_secs == 0 {
+        return Err(OrionError::Config {
+            message: "queue.shutdown_timeout_secs must be > 0".to_string(),
+        });
+    }
+    if config.storage.busy_timeout_ms == 0 {
+        return Err(OrionError::Config {
+            message: "storage.busy_timeout_ms must be > 0".to_string(),
+        });
+    }
+    if config.storage.acquire_timeout_secs == 0 {
+        return Err(OrionError::Config {
+            message: "storage.acquire_timeout_secs must be > 0".to_string(),
+        });
+    }
     if config.rate_limit.enabled {
         if config.rate_limit.default_rps == 0 {
             return Err(OrionError::Config {
@@ -460,6 +522,12 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
                     .to_string(),
             });
         }
+    }
+    // CORS warning
+    if config.cors.allowed_origins.len() == 1 && config.cors.allowed_origins[0] == "*" {
+        tracing::warn!(
+            "CORS is set to permissive ('*'). For production, configure specific origins in [cors] allowed_origins"
+        );
     }
     #[cfg(feature = "kafka")]
     if config.kafka.enabled {
@@ -478,6 +546,30 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
                 message: "kafka.topics must not be empty when Kafka is enabled".to_string(),
             });
         }
+        let mut seen_topics = std::collections::HashSet::new();
+        let mut seen_channels = std::collections::HashSet::new();
+        for (i, mapping) in config.kafka.topics.iter().enumerate() {
+            if mapping.topic.trim().is_empty() {
+                return Err(OrionError::Config {
+                    message: format!("kafka.topics[{}].topic must not be empty", i),
+                });
+            }
+            if mapping.channel.trim().is_empty() {
+                return Err(OrionError::Config {
+                    message: format!("kafka.topics[{}].channel must not be empty", i),
+                });
+            }
+            if !seen_topics.insert(&mapping.topic) {
+                return Err(OrionError::Config {
+                    message: format!("kafka.topics: duplicate topic '{}'", mapping.topic),
+                });
+            }
+            if !seen_channels.insert(&mapping.channel) {
+                return Err(OrionError::Config {
+                    message: format!("kafka.topics: duplicate channel '{}'", mapping.channel),
+                });
+            }
+        }
     }
     Ok(())
 }
@@ -494,6 +586,11 @@ mod tests {
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.storage.path, "orion.db");
         assert_eq!(config.storage.max_connections, 10);
+        assert_eq!(config.storage.busy_timeout_ms, 5000);
+        assert_eq!(config.storage.acquire_timeout_secs, 5);
+        assert_eq!(config.engine.health_check_timeout_secs, 2);
+        assert_eq!(config.engine.reload_timeout_secs, 10);
+        assert_eq!(config.queue.shutdown_timeout_secs, 30);
     }
 
     #[test]
@@ -563,7 +660,8 @@ mod tests {
             env.get(key)
                 .map(|v| v.to_string())
                 .ok_or(std::env::VarError::NotPresent)
-        });
+        })
+        .unwrap();
         assert_eq!(config.server.port, 9090);
         assert_eq!(config.storage.path, "custom.db");
         assert_eq!(config.logging.level, "debug");
@@ -678,17 +776,22 @@ format = "json"
         env.insert("ORION_SERVER__HOST", "localhost");
         env.insert("ORION_SERVER__PORT", "3000");
         env.insert("ORION_STORAGE__PATH", "test.db");
+        env.insert("ORION_STORAGE__BUSY_TIMEOUT_MS", "10000");
+        env.insert("ORION_STORAGE__ACQUIRE_TIMEOUT_SECS", "10");
         env.insert("ORION_LOGGING__LEVEL", "warn");
         env.insert("ORION_LOGGING__FORMAT", "json");
         env.insert("ORION_INGEST__MAX_PAYLOAD_SIZE", "2000000");
         env.insert("ORION_INGEST__BATCH_SIZE", "50");
         env.insert("ORION_QUEUE__WORKERS", "8");
         env.insert("ORION_QUEUE__BUFFER_SIZE", "2000");
+        env.insert("ORION_QUEUE__SHUTDOWN_TIMEOUT_SECS", "60");
         env.insert("ORION_METRICS__ENABLED", "true");
         env.insert("ORION_TRACING__ENABLED", "true");
         env.insert("ORION_TRACING__OTLP_ENDPOINT", "http://jaeger:4317");
         env.insert("ORION_TRACING__SERVICE_NAME", "my-orion");
         env.insert("ORION_TRACING__SAMPLE_RATE", "0.5");
+        env.insert("ORION_ENGINE__HEALTH_CHECK_TIMEOUT_SECS", "5");
+        env.insert("ORION_ENGINE__RELOAD_TIMEOUT_SECS", "20");
         env.insert("ORION_ENGINE__CIRCUIT_BREAKER__ENABLED", "true");
         env.insert("ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD", "10");
         env.insert("ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS", "60");
@@ -700,22 +803,27 @@ format = "json"
         env.insert("ORION_KAFKA__GROUP_ID", "my-group");
 
         let mut config = AppConfig::default();
-        apply_env_overrides_with(&mut config, make_env_reader(&env));
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).unwrap();
 
         assert_eq!(config.server.host, "localhost");
         assert_eq!(config.server.port, 3000);
         assert_eq!(config.storage.path, "test.db");
+        assert_eq!(config.storage.busy_timeout_ms, 10000);
+        assert_eq!(config.storage.acquire_timeout_secs, 10);
         assert_eq!(config.logging.level, "warn");
         assert!(matches!(config.logging.format, LogFormat::Json));
         assert_eq!(config.ingest.max_payload_size, 2000000);
         assert_eq!(config.ingest.batch_size, 50);
         assert_eq!(config.queue.workers, 8);
         assert_eq!(config.queue.buffer_size, 2000);
+        assert_eq!(config.queue.shutdown_timeout_secs, 60);
         assert!(config.metrics.enabled);
         assert!(config.tracing.enabled);
         assert_eq!(config.tracing.otlp_endpoint, "http://jaeger:4317");
         assert_eq!(config.tracing.service_name, "my-orion");
         assert!((config.tracing.sample_rate - 0.5).abs() < f64::EPSILON);
+        assert_eq!(config.engine.health_check_timeout_secs, 5);
+        assert_eq!(config.engine.reload_timeout_secs, 20);
         assert!(config.engine.circuit_breaker.enabled);
         assert_eq!(config.engine.circuit_breaker.failure_threshold, 10);
         assert_eq!(config.engine.circuit_breaker.recovery_timeout_secs, 60);
@@ -734,33 +842,92 @@ format = "json"
 
         let mut config = AppConfig::default();
         config.logging.format = LogFormat::Json;
-        apply_env_overrides_with(&mut config, make_env_reader(&env));
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).unwrap();
 
         assert!(matches!(config.logging.format, LogFormat::Pretty));
     }
 
     #[test]
-    fn test_env_override_invalid_format_ignored() {
+    fn test_env_override_invalid_format_errors() {
         let mut env = HashMap::new();
         env.insert("ORION_LOGGING__FORMAT", "xml");
 
         let mut config = AppConfig::default();
-        apply_env_overrides_with(&mut config, make_env_reader(&env));
-
-        // Should remain default (Pretty)
-        assert!(matches!(config.logging.format, LogFormat::Pretty));
+        let result = apply_env_overrides_with(&mut config, make_env_reader(&env));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("ORION_LOGGING__FORMAT")
+        );
     }
 
     #[test]
-    fn test_env_override_invalid_port_ignored() {
+    fn test_env_override_invalid_port_errors() {
         let mut env = HashMap::new();
         env.insert("ORION_SERVER__PORT", "not-a-number");
 
         let mut config = AppConfig::default();
-        apply_env_overrides_with(&mut config, make_env_reader(&env));
+        let result = apply_env_overrides_with(&mut config, make_env_reader(&env));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("ORION_SERVER__PORT")
+        );
+    }
 
-        // Should remain default
-        assert_eq!(config.server.port, 8080);
+    #[test]
+    fn test_env_override_invalid_bool_errors() {
+        let mut env = HashMap::new();
+        env.insert("ORION_METRICS__ENABLED", "yes");
+
+        let mut config = AppConfig::default();
+        let result = apply_env_overrides_with(&mut config, make_env_reader(&env));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("ORION_METRICS__ENABLED")
+        );
+    }
+
+    #[test]
+    fn test_validate_config_zero_health_check_timeout() {
+        let mut config = AppConfig::default();
+        config.engine.health_check_timeout_secs = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_zero_reload_timeout() {
+        let mut config = AppConfig::default();
+        config.engine.reload_timeout_secs = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_zero_shutdown_timeout() {
+        let mut config = AppConfig::default();
+        config.queue.shutdown_timeout_secs = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_zero_busy_timeout() {
+        let mut config = AppConfig::default();
+        config.storage.busy_timeout_ms = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_zero_acquire_timeout() {
+        let mut config = AppConfig::default();
+        config.storage.acquire_timeout_secs = 0;
+        assert!(validate_config(&config).is_err());
     }
 
     #[test]

@@ -43,6 +43,7 @@ impl JobQueue {
 pub struct WorkerHandle {
     _sender: mpsc::Sender<QueueMessage>,
     join_handle: tokio::task::JoinHandle<()>,
+    shutdown_timeout_secs: u64,
 }
 
 impl WorkerHandle {
@@ -54,12 +55,14 @@ impl WorkerHandle {
     pub async fn shutdown(self) {
         drop(self._sender);
         // Wait for the dispatcher with a timeout to prevent hanging on stuck jobs
-        if tokio::time::timeout(Duration::from_secs(30), self.join_handle)
+        let timeout = Duration::from_secs(self.shutdown_timeout_secs);
+        if tokio::time::timeout(timeout, self.join_handle)
             .await
             .is_err()
         {
             tracing::warn!(
-                "Job queue workers did not shut down within 30s timeout, proceeding with exit"
+                timeout_secs = self.shutdown_timeout_secs,
+                "Job queue workers did not shut down within timeout, proceeding with exit"
             );
         }
     }
@@ -69,20 +72,29 @@ impl WorkerHandle {
 ///
 /// `max_workers` controls the maximum number of concurrent jobs.
 /// `buffer_size` controls the channel buffer (pending jobs waiting to be picked up).
+/// `shutdown_timeout_secs` controls how long to wait for in-flight jobs during shutdown.
 pub fn start_workers(
     max_workers: usize,
     buffer_size: usize,
+    shutdown_timeout_secs: u64,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     job_repo: Arc<dyn JobRepository>,
 ) -> (JobQueue, WorkerHandle) {
     let (tx, rx) = mpsc::channel::<QueueMessage>(buffer_size);
 
-    let handle = tokio::spawn(dispatcher_loop(rx, max_workers, engine, job_repo));
+    let handle = tokio::spawn(dispatcher_loop(
+        rx,
+        max_workers,
+        shutdown_timeout_secs,
+        engine,
+        job_repo,
+    ));
 
     let queue = JobQueue { sender: tx.clone() };
     let worker_handle = WorkerHandle {
         _sender: tx,
         join_handle: handle,
+        shutdown_timeout_secs,
     };
 
     (queue, worker_handle)
@@ -93,6 +105,7 @@ pub fn start_workers(
 async fn dispatcher_loop(
     mut rx: mpsc::Receiver<QueueMessage>,
     max_workers: usize,
+    shutdown_timeout_secs: u64,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     job_repo: Arc<dyn JobRepository>,
 ) {
@@ -116,7 +129,7 @@ async fn dispatcher_loop(
 
     // Wait for all in-flight jobs to complete, with a timeout
     if tokio::time::timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(shutdown_timeout_secs),
         semaphore.acquire_many(max_workers as u32),
     )
     .await
