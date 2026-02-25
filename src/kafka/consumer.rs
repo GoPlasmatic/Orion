@@ -24,8 +24,12 @@ pub struct ConsumerHandle {
 impl ConsumerHandle {
     /// Signal the consumer to shut down and wait for it to finish.
     pub async fn shutdown(self) {
-        let _ = self.shutdown_tx.send(true);
-        let _ = self.join_handle.await;
+        if let Err(e) = self.shutdown_tx.send(true) {
+            tracing::error!(error = %e, "Failed to send Kafka consumer shutdown signal");
+        }
+        if let Err(e) = self.join_handle.await {
+            tracing::error!(error = %e, "Kafka consumer task panicked during shutdown");
+        }
     }
 }
 
@@ -283,7 +287,14 @@ async fn send_to_dlq(
             "timestamp": chrono::Utc::now().to_rfc3339(),
         });
 
-        let dlq_payload = serde_json::to_string(&dlq_message).unwrap_or_default();
+        let dlq_payload = serde_json::to_string(&dlq_message).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "Failed to serialize DLQ message");
+            format!(
+                r#"{{"source_topic":"{}","error":"serialization failed","timestamp":"{}"}}"#,
+                source_topic,
+                chrono::Utc::now().to_rfc3339()
+            )
+        });
         if let Err(e) = producer
             .send(topic, Some(source_topic), dlq_payload.as_bytes())
             .await

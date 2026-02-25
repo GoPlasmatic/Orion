@@ -97,12 +97,17 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
             let result = datalogic
                 .evaluate(&compiled, context)
                 .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-            Some(
-                result
-                    .as_str()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| serde_json::to_string(&result).unwrap_or_default()),
-            )
+            let key_str = if let Some(s) = result.as_str() {
+                s.to_string()
+            } else {
+                serde_json::to_string(&result).map_err(|e| {
+                    DataflowError::function_execution(
+                        format!("Failed to serialize Kafka message key: {}", e),
+                        None,
+                    )
+                })?
+            };
+            Some(key_str)
         } else {
             None
         };
@@ -116,9 +121,19 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
             let result = datalogic
                 .evaluate(&compiled, context)
                 .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-            serde_json::to_string(&result).unwrap_or_default()
+            serde_json::to_string(&result).map_err(|e| {
+                DataflowError::function_execution(
+                    format!("Failed to serialize Kafka message value: {}", e),
+                    None,
+                )
+            })?
         } else {
-            serde_json::to_string(message.data()).unwrap_or_default()
+            serde_json::to_string(message.data()).map_err(|e| {
+                DataflowError::function_execution(
+                    format!("Failed to serialize Kafka message value: {}", e),
+                    None,
+                )
+            })?
         };
 
         // Publish to Kafka

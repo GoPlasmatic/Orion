@@ -194,14 +194,17 @@ async fn process_job(
                 Ok(json) => json,
                 Err(e) => {
                     tracing::error!(job_id = %job_id, error = %e, "Failed to serialize job result");
-                    let _ = job_repo
+                    if let Err(db_err) = job_repo
                         .update_status(
                             &job_id,
                             models::JOB_STATUS_FAILED,
                             Some(&format!("Result serialization failed: {e}")),
                             None,
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::error!(job_id = %job_id, error = %db_err, "Failed to update job status to failed after serialization error");
+                    }
                     return;
                 }
             };
@@ -232,14 +235,17 @@ async fn process_job(
                 }
             } else {
                 tracing::error!(job_id = %job_id, "Failed to save job result after 3 attempts, marking as failed");
-                let _ = job_repo
+                if let Err(db_err) = job_repo
                     .update_status(
                         &job_id,
                         models::JOB_STATUS_FAILED,
                         Some("Result persistence failed after retries"),
                         None,
                     )
-                    .await;
+                    .await
+                {
+                    tracing::error!(job_id = %job_id, error = %db_err, "Failed to update job status to failed after persistence failure");
+                }
             }
         }
         Err(e) => {

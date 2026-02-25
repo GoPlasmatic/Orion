@@ -26,9 +26,17 @@ pub fn resolve_path(
         let result = datalogic
             .evaluate(&compiled, context)
             .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-        Ok(Some(result.as_str().map(|s| s.to_string()).unwrap_or_else(
-            || serde_json::to_string(&result).unwrap_or_default(),
-        )))
+        let path_str = if let Some(s) = result.as_str() {
+            s.to_string()
+        } else {
+            serde_json::to_string(&result).map_err(|e| {
+                DataflowError::function_execution(
+                    format!("Failed to serialize resolved path: {}", e),
+                    None,
+                )
+            })?
+        };
+        Ok(Some(path_str))
     } else {
         Ok(static_path.clone())
     }

@@ -112,14 +112,22 @@ pub async fn execute_request(
 
     let status = response.status();
     if !status.is_success() {
-        let body_text = response.text().await.unwrap_or_default();
+        let body_text = response
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<failed to read response body: {}>", e));
         return Err(DataflowError::http(
             status.as_u16(),
             format!("HTTP {} from {}: {}", status, url, body_text),
         ));
     }
 
-    let response_body: Value = response.json().await.unwrap_or(Value::Null);
+    let response_body: Value = response.json().await.map_err(|e| {
+        DataflowError::function_execution(
+            format!("Failed to parse response from {} as JSON: {}", url, e),
+            None,
+        )
+    })?;
     Ok(response_body)
 }
 
