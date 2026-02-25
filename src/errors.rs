@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_internal_source_status() {
-        let source = std::io::Error::new(std::io::ErrorKind::Other, "disk full");
+        let source = std::io::Error::other("disk full");
         let err = OrionError::InternalSource {
             context: "Failed to write file".to_string(),
             source: Box::new(source),
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn test_internal_source_preserves_chain() {
-        let source = std::io::Error::new(std::io::ErrorKind::Other, "connection reset");
+        let source = std::io::Error::other("connection reset");
         let err = OrionError::InternalSource {
             context: "Failed to connect to database".to_string(),
             source: Box::new(source),

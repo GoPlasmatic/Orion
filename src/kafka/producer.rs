@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use rdkafka::ClientConfig;
-use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use crate::errors::OrionError;
