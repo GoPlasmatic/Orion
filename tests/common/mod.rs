@@ -20,7 +20,7 @@ pub async fn test_app() -> Router {
     let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
     let job_repo = Arc::new(SqliteJobRepository::new(pool.clone()));
-    let connector_registry = Arc::new(ConnectorRegistry::new());
+    let connector_registry = Arc::new(ConnectorRegistry::new(Default::default()));
 
     let http_client = reqwest::Client::new();
     let custom_functions =

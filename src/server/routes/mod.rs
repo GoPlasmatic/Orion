@@ -57,6 +57,9 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
             Err(_) => false,
         };
 
+    // Collect circuit breaker states
+    let cb_states = state.connector_registry.circuit_breaker_states().await;
+
     let overall_healthy = db_healthy && engine_healthy;
     let status_str = if overall_healthy { "ok" } else { "degraded" };
     let http_status = if overall_healthy {
@@ -73,6 +76,9 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "components": {
             "database": if db_healthy { "ok" } else { "error" },
             "engine": if engine_healthy { "ok" } else { "error" },
+        },
+        "connectors": {
+            "circuit_breakers": cb_states,
         }
     });
 

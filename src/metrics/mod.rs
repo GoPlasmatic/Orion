@@ -42,6 +42,26 @@ pub fn record_message_duration(channel: &str, duration_secs: f64) {
 // Gauge helpers
 // ---------------------------------------------------------------------------
 
+/// Record a circuit breaker trip event.
+pub fn record_circuit_breaker_trip(connector: &str, channel: &str) {
+    counter!(
+        "circuit_breaker_trips_total",
+        "connector" => connector.to_string(),
+        "channel" => channel.to_string()
+    )
+    .increment(1);
+}
+
+/// Record a request rejected by an open circuit breaker.
+pub fn record_circuit_breaker_rejection(connector: &str, channel: &str) {
+    counter!(
+        "circuit_breaker_rejections_total",
+        "connector" => connector.to_string(),
+        "channel" => channel.to_string()
+    )
+    .increment(1);
+}
+
 /// Set the active_rules gauge.
 pub fn set_active_rules(count: f64) {
     gauge!("active_rules").set(count);

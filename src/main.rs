@@ -126,7 +126,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let job_repo = Arc::new(SqliteJobRepository::new(pool.clone()));
 
     // Load connectors
-    let connector_registry = Arc::new(ConnectorRegistry::new());
+    let connector_registry = Arc::new(ConnectorRegistry::new(
+        config.engine.circuit_breaker.clone(),
+    ));
     let connector_count = connector_registry
         .load_from_repo(connector_repo.as_ref())
         .await?;

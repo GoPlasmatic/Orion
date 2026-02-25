@@ -62,25 +62,51 @@ impl AsyncFunctionHandler for HttpCallHandler {
         // Timeout
         let timeout = Duration::from_millis(input.timeout_ms);
 
-        // Execute with retry
+        // Execute with retry (+ circuit breaker if enabled)
         let retry_config = &http_config.retry;
-        let response_body = super::retry_with_backoff(
-            retry_config.max_retries,
-            retry_config.retry_delay_ms,
-            "HTTP call",
-            || {
-                http_common::execute_request(
-                    &self.client,
-                    &method,
-                    &url,
-                    Some(&input.headers),
-                    http_config,
-                    body.as_ref(),
-                    timeout,
-                )
-            },
-        )
-        .await?;
+        let response_body = if self.registry.circuit_breaker_enabled() {
+            let channel = super::extract_channel(message);
+            let key = format!("{}:{}", channel, input.connector);
+            let breaker = self.registry.get_or_create_breaker(&key).await;
+            super::execute_with_circuit_breaker(
+                &breaker,
+                &input.connector,
+                channel,
+                retry_config.max_retries,
+                retry_config.retry_delay_ms,
+                "HTTP call",
+                || {
+                    http_common::execute_request(
+                        &self.client,
+                        &method,
+                        &url,
+                        Some(&input.headers),
+                        http_config,
+                        body.as_ref(),
+                        timeout,
+                    )
+                },
+            )
+            .await?
+        } else {
+            super::retry_with_backoff(
+                retry_config.max_retries,
+                retry_config.retry_delay_ms,
+                "HTTP call",
+                || {
+                    http_common::execute_request(
+                        &self.client,
+                        &method,
+                        &url,
+                        Some(&input.headers),
+                        http_config,
+                        body.as_ref(),
+                        timeout,
+                    )
+                },
+            )
+            .await?
+        };
 
         // Store response at response_path
         let mut changes = Vec::new();
