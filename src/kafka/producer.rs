@@ -18,7 +18,10 @@ impl KafkaProducer {
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "30000")
             .create()
-            .map_err(|e| OrionError::Internal(format!("Failed to create Kafka producer: {}", e)))?;
+            .map_err(|e| OrionError::InternalSource {
+                context: "Failed to create Kafka producer".to_string(),
+                source: Box::new(e),
+            })?;
 
         Ok(Self { producer })
     }
@@ -59,8 +62,9 @@ impl KafkaProducer {
         self.producer
             .send(record, Duration::from_secs(30))
             .await
-            .map_err(|(e, _)| {
-                OrionError::Internal(format!("Kafka send to '{}' failed: {}", topic, e))
+            .map_err(|(e, _)| OrionError::InternalSource {
+                context: format!("Kafka send to '{}' failed", topic),
+                source: Box::new(e),
             })?;
 
         Ok(())

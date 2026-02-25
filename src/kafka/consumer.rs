@@ -50,7 +50,10 @@ pub fn start_consumer(
         .set("enable.auto.commit", "false")
         .set("auto.offset.reset", "earliest")
         .create()
-        .map_err(|e| OrionError::Internal(format!("Failed to create Kafka consumer: {}", e)))?;
+        .map_err(|e| OrionError::InternalSource {
+            context: "Failed to create Kafka consumer".to_string(),
+            source: Box::new(e),
+        })?;
 
     // Build topic-to-channel map
     let topic_map: HashMap<String, String> = config
@@ -62,7 +65,10 @@ pub fn start_consumer(
     let topics: Vec<&str> = config.topics.iter().map(|t| t.topic.as_str()).collect();
     consumer
         .subscribe(&topics)
-        .map_err(|e| OrionError::Internal(format!("Failed to subscribe to Kafka topics: {}", e)))?;
+        .map_err(|e| OrionError::InternalSource {
+            context: "Failed to subscribe to Kafka topics".to_string(),
+            source: Box::new(e),
+        })?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 

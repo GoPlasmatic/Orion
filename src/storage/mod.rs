@@ -12,7 +12,10 @@ use crate::errors::OrionError;
 /// Initialize SQLite connection pool with WAL mode and run embedded migrations.
 pub async fn init_pool(db_path: &str, max_connections: u32) -> Result<SqlitePool, OrionError> {
     let options = SqliteConnectOptions::from_str(&format!("sqlite:{}", db_path))
-        .map_err(|e| OrionError::Internal(format!("Invalid DB path: {}", e)))?
+        .map_err(|e| OrionError::InternalSource {
+            context: "Invalid DB path".to_string(),
+            source: Box::new(e),
+        })?
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
         .pragma("foreign_keys", "ON")
@@ -25,12 +28,18 @@ pub async fn init_pool(db_path: &str, max_connections: u32) -> Result<SqlitePool
         .acquire_timeout(Duration::from_secs(5))
         .connect_with(options)
         .await
-        .map_err(|e| OrionError::Internal(format!("Failed to connect to database: {}", e)))?;
+        .map_err(|e| OrionError::InternalSource {
+            context: "Failed to connect to database".to_string(),
+            source: Box::new(e),
+        })?;
 
     sqlx::migrate!("./migrations")
         .run(&pool)
         .await
-        .map_err(|e| OrionError::Internal(format!("Failed to run migrations: {}", e)))?;
+        .map_err(|e| OrionError::InternalSource {
+            context: "Failed to run migrations".to_string(),
+            source: Box::new(e),
+        })?;
 
     Ok(pool)
 }

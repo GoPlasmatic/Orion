@@ -35,7 +35,7 @@ impl JobQueue {
         self.sender
             .send(msg)
             .await
-            .map_err(|_| crate::errors::OrionError::Internal("Job queue is closed".to_string()))
+            .map_err(|_| crate::errors::OrionError::Queue("Job queue is closed".to_string()))
     }
 }
 
