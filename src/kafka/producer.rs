@@ -1,6 +1,8 @@
 use std::time::Duration;
 
 use rdkafka::ClientConfig;
+#[cfg(feature = "otel")]
+use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use crate::errors::OrionError;
