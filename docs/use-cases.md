@@ -2,11 +2,24 @@
 
 [← Back to README](../README.md)
 
-Real-world examples showing common Orion patterns. Every example on this page is continuously tested — the rule definitions come directly from the [e2e test cases](../tests/e2e/cases/).
+Real-world examples showing how AI generates Orion rules from natural language. Every example follows the same workflow: **describe what you need → AI generates the rule → send data → get results**. The rule definitions come directly from the [e2e test cases](../tests/e2e/cases/).
 
 ## E-Commerce Order Classification
 
-Classify orders into tiers and compute discounts using multiple rules on the same channel. The parse rule runs first (priority 0), then the classification rule (priority 10) uses task-level conditions to assign the correct tier.
+Classify orders into tiers and compute discounts using multiple rules on the same channel.
+
+**AI prompt:**
+
+```
+Create two rules on the "orders" channel:
+1. A parse rule at priority 0 that parses the payload into "order"
+2. A classification rule at priority 10 that assigns tiers based on amount:
+   - VIP: amount >= 500, discount 15%
+   - Premium: amount 100-500, discount 5%
+   - Standard: amount < 100, no discount
+```
+
+**Generated rules:**
 
 ```json
 {
@@ -57,17 +70,43 @@ Classify orders into tiers and compute discounts using multiple rules on the sam
 }
 ```
 
-Send `{"amount": 750, "product": "Diamond Ring"}` to the `orders` channel and the response contains:
+**Send data:**
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/data/orders \
+  -H "Content-Type: application/json" \
+  -d '{ "data": { "amount": 750, "product": "Diamond Ring" } }'
+```
+
+**Response:**
 
 ```json
-{ "data": { "order": { "amount": 750, "product": "Diamond Ring", "tier": "vip", "discount_pct": 15 } } }
+{
+  "status": "ok",
+  "data": {
+    "order": { "amount": 750, "product": "Diamond Ring", "tier": "vip", "discount_pct": 15 }
+  },
+  "errors": []
+}
 ```
 
 **Key patterns:** Multi-rule priority ordering, task-level conditions, computed output fields.
 
 ## IoT Sensor Alert Classification
 
-Classify sensor readings into severity levels using range-based conditions. A single rule with mutually exclusive task conditions handles all thresholds.
+Classify sensor readings into severity levels using range-based conditions.
+
+**AI prompt:**
+
+```
+Create a rule on the "sensors" channel that classifies temperature readings:
+- Critical: temperature > 90 or below 0, set alert flag
+- Warning: temperature 70-90, set alert flag
+- Normal: temperature 0-70, no alert
+Parse the payload into "reading" and set severity and alert fields.
+```
+
+**Generated rule:**
 
 ```json
 {
@@ -113,6 +152,26 @@ Classify sensor readings into severity levels using range-based conditions. A si
 }
 ```
 
+**Send data:**
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/data/sensors \
+  -H "Content-Type: application/json" \
+  -d '{ "data": { "temperature": 80, "sensor_id": "SENSOR-42" } }'
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "reading": { "temperature": 80, "sensor_id": "SENSOR-42", "severity": "warning", "alert": true }
+  },
+  "errors": []
+}
+```
+
 | Input | Severity | Alert |
 |-------|----------|-------|
 | `temperature: 45` | normal | false |
@@ -125,6 +184,19 @@ Classify sensor readings into severity levels using range-based conditions. A si
 ## Webhook Payload Transformation
 
 Normalize incoming webhook payloads from different providers into a consistent internal schema.
+
+**AI prompt:**
+
+```
+Create a rule on the "webhooks" channel that normalizes webhook payloads from any provider:
+- Map "origin" to "source"
+- Map "type" to "event_type"
+- Map "body" to "payload"
+- Add a "processed" flag set to true
+Output should be under data.normalized.
+```
+
+**Generated rule:**
 
 ```json
 {
@@ -148,13 +220,23 @@ Normalize incoming webhook payloads from different providers into a consistent i
 }
 ```
 
-Send `{"origin": "github", "type": "push", "body": {"ref": "refs/heads/main"}}` and get:
+**Send data:**
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/data/webhooks \
+  -H "Content-Type: application/json" \
+  -d '{ "data": { "origin": "github", "type": "push", "body": {"ref": "refs/heads/main"} } }'
+```
+
+**Response:**
 
 ```json
 {
+  "status": "ok",
   "data": {
     "normalized": { "source": "github", "event_type": "push", "payload": {"ref": "refs/heads/main"}, "processed": true }
-  }
+  },
+  "errors": []
 }
 ```
 
@@ -164,7 +246,19 @@ Missing optional fields produce `null` — no errors. This makes the pipeline sa
 
 ## Notification Routing
 
-Route notifications to different delivery channels based on severity. Task-level conditions control which tasks execute — low severity is logged but skipped for email/SMS, high severity gets the full pipeline.
+Route notifications to different delivery channels based on severity.
+
+**AI prompt:**
+
+```
+Create a rule on the "notifications" channel that routes by severity:
+- Log all notifications
+- Send email for anything except "low" severity
+- Send SMS only for "high" and "critical" severity
+Parse the payload into "notification".
+```
+
+**Generated rule:**
 
 ```json
 {
@@ -196,6 +290,26 @@ Route notifications to different delivery channels based on severity. Task-level
 }
 ```
 
+**Send data:**
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/data/notifications \
+  -H "Content-Type: application/json" \
+  -d '{ "data": { "message": "Disk usage at 92%", "severity": "high" } }'
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "notification": { "message": "Disk usage at 92%", "severity": "high", "logged": true, "email_sent": true, "sms_sent": true }
+  },
+  "errors": []
+}
+```
+
 | Severity | Logged | Email | SMS |
 |----------|--------|-------|-----|
 | low | yes | no | no |
@@ -210,6 +324,17 @@ In production, replace the `map` tasks with `http_call` tasks pointing to your e
 ## Compliance Risk Classification
 
 Classify transactions by risk level and use [dry-run testing](api-reference.md) to verify rules before activating them.
+
+**AI prompt:**
+
+```
+Create a rule on the "compliance" channel that classifies transaction risk:
+- High risk: amount > 10000, requires manual review
+- Normal risk: amount <= 10000, no review needed
+Parse the payload into "txn".
+```
+
+**Generated rule:**
 
 ```json
 {
@@ -238,7 +363,7 @@ Classify transactions by risk level and use [dry-run testing](api-reference.md) 
 }
 ```
 
-Dry-run before going live:
+**Dry-run before going live:**
 
 ```bash
 orion-cli rules test <rule-id> -d '{"amount": 50000, "currency": "USD"}'
@@ -256,13 +381,33 @@ orion-cli rules test <rule-id> -d '{"amount": 50000, "currency": "USD"}'
 }
 ```
 
+**Send data:**
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/data/compliance \
+  -H "Content-Type: application/json" \
+  -d '{ "data": { "amount": 50000, "currency": "USD", "account": "ACC-1234" } }'
+```
+
+**Response:**
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "txn": { "amount": 50000, "currency": "USD", "account": "ACC-1234", "risk_level": "high", "requires_review": true }
+  },
+  "errors": []
+}
+```
+
 The trace shows exactly which tasks ran and which were skipped — verify the logic is correct before a single real transaction flows through.
 
 **Key patterns:** Dry-run verification, execution trace inspection, regulatory workflow.
 
 ## Paused Rule Lifecycle
 
-Pause rules to temporarily disable processing without deleting them. Useful for maintenance windows or incident response.
+Pause rules to temporarily disable processing without deleting them. This is critical for AI-generated rules — create them as `paused`, validate with dry-run, then activate only when verified.
 
 ```bash
 # Rule is active — data gets transformed
@@ -289,7 +434,17 @@ Paused rules remain in the database and retain their configuration. See [API Ref
 
 ## HTTP Error Handling
 
-Use `continue_on_error` to keep the pipeline running when external calls fail. Errors are collected in the response rather than halting the entire pipeline.
+Use `continue_on_error` to keep the pipeline running when external calls fail.
+
+**AI prompt:**
+
+```
+Create a rule on the "http-test" channel that parses the payload and calls an external
+API via the "my-api" connector. Enable continue_on_error so the pipeline doesn't halt
+if the API call fails. Use a 2-second timeout.
+```
+
+**Generated rule:**
 
 ```json
 {
@@ -312,7 +467,15 @@ Use `continue_on_error` to keep the pipeline running when external calls fail. E
 }
 ```
 
-If the connector target is unreachable, the response includes the parsed data and an errors array:
+**Send data:**
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/data/http-test \
+  -H "Content-Type: application/json" \
+  -d '{ "data": { "action": "test-call" } }'
+```
+
+**Response** (when the connector target is unreachable — errors are collected, not fatal):
 
 ```json
 {
@@ -330,7 +493,16 @@ Without `continue_on_error`, the same failure would return a hard error and exit
 
 ## Connector Secret Masking
 
-Connector secrets are automatically masked in API responses. Store credentials in connectors — they never leak through the API.
+Connector secrets are automatically masked in API responses — AI generates rules that reference connector names, never credentials.
+
+**AI prompt:**
+
+```
+Create an HTTP connector called "bearer-auth-api" pointing to https://api.example.com/v1
+with bearer token authentication.
+```
+
+**Generated connector:**
 
 ```json
 {
@@ -344,7 +516,7 @@ Connector secrets are automatically masked in API responses. Store credentials i
 }
 ```
 
-When you read the connector back via the API, sensitive fields are masked:
+**Read it back — secrets are masked:**
 
 ```bash
 orion-cli connectors get <id>
@@ -353,9 +525,94 @@ orion-cli connectors get <id>
 # auth.key → "******"
 ```
 
-Usernames and non-sensitive fields are returned as-is. See [Connectors](connectors.md) for all auth schemes.
+Usernames and non-sensitive fields are returned as-is. AI-generated rules reference `"connector": "bearer-auth-api"` — they never see or embed the actual credentials. See [Connectors](connectors.md) for all auth schemes.
 
 **Key patterns:** Secret management, safe API responses, credential isolation.
+
+## AI-Assisted Rule Generation
+
+Use an LLM to generate Orion rules from natural language, then validate them with dry-run before activating. The constrained JSON format makes LLM output reliable — no open-ended code generation.
+
+**Prompt:**
+
+```
+Generate an Orion rule for the "orders" channel that detects potential fraud:
+- Parse the payload into "order"
+- Flag as suspicious if amount > 5000 AND shipping country differs from billing country
+- Flag as high_risk if amount > 10000
+- Otherwise mark as clear
+```
+
+**Generated rule:**
+
+```json
+{
+  "name": "Order Fraud Detection",
+  "channel": "orders",
+  "priority": 10,
+  "condition": true,
+  "tasks": [
+    { "id": "parse", "name": "Parse Payload", "function": {
+        "name": "parse_json", "input": { "source": "payload", "target": "order" }
+    }},
+    { "id": "high_risk", "name": "Flag High Risk",
+      "condition": { ">": [{ "var": "data.order.amount" }, 10000] },
+      "function": { "name": "map", "input": { "mappings": [
+        { "path": "data.order.risk", "logic": "high_risk" },
+        { "path": "data.order.requires_review", "logic": true }
+      ]}}
+    },
+    { "id": "suspicious", "name": "Flag Suspicious",
+      "condition": { "and": [
+        { ">": [{ "var": "data.order.amount" }, 5000] },
+        { "<=": [{ "var": "data.order.amount" }, 10000] },
+        { "!=": [{ "var": "data.order.shipping_country" }, { "var": "data.order.billing_country" }] }
+      ]},
+      "function": { "name": "map", "input": { "mappings": [
+        { "path": "data.order.risk", "logic": "suspicious" },
+        { "path": "data.order.requires_review", "logic": true }
+      ]}}
+    },
+    { "id": "clear", "name": "Mark Clear",
+      "condition": { "<=": [{ "var": "data.order.amount" }, 5000] },
+      "function": { "name": "map", "input": { "mappings": [
+        { "path": "data.order.risk", "logic": "clear" },
+        { "path": "data.order.requires_review", "logic": false }
+      ]}}
+    }
+  ]
+}
+```
+
+**Validate with dry-run before activating:**
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/admin/rules/{id}/test \
+  -H "Content-Type: application/json" \
+  -d '{ "data": { "amount": 7500, "shipping_country": "CA", "billing_country": "US" } }'
+```
+
+```json
+{
+  "matched": true,
+  "trace": {
+    "steps": [
+      { "task_id": "parse", "result": "executed" },
+      { "task_id": "high_risk", "result": "skipped" },
+      { "task_id": "suspicious", "result": "executed" },
+      { "task_id": "clear", "result": "skipped" }
+    ]
+  },
+  "output": {
+    "order": { "amount": 7500, "shipping_country": "CA", "billing_country": "US", "risk": "suspicious", "requires_review": true }
+  },
+  "errors": []
+}
+```
+
+The workflow: **generate** → **dry-run** → **activate** → **monitor**. AI generates the rule, dry-run validates the logic, and the platform handles governance from there. See [AI Integration](ai-integration.md) for prompt templates and CI/CD patterns.
+
+**Key patterns:** LLM-constrained JSON output, dry-run validation loop, API-driven lifecycle.
 
 ## Common Rule Patterns
 
