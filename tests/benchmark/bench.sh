@@ -28,10 +28,10 @@ BENCH_OUTPUT_DIR="${BENCH_OUTPUT_DIR:-}"
 
 # Binary selection
 if [[ -n "${BENCH_RELEASE:-}" ]]; then
-    ORION_BIN="$PROJECT_ROOT/target/release/orion"
+    ORION_BIN="$PROJECT_ROOT/target/release/orion-server"
     BUILD_PROFILE="release"
 else
-    ORION_BIN="$PROJECT_ROOT/target/debug/orion"
+    ORION_BIN="$PROJECT_ROOT/target/debug/orion-server"
     BUILD_PROFILE="debug"
 fi
 

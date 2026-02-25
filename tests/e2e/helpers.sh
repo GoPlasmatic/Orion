@@ -35,7 +35,7 @@ E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$E2E_DIR/../.." && pwd)"
 FIXTURES_DIR="$E2E_DIR/fixtures"
 
-ORION_BIN="${ORION_BIN:-$PROJECT_ROOT/target/debug/orion}"
+ORION_BIN="${ORION_BIN:-$PROJECT_ROOT/target/debug/orion-server}"
 ORION_CLI="${ORION_CLI:-$PROJECT_ROOT/target/debug/orion-cli}"
 
 # ── Test Port & Server URL ──────────────────────────────────────
