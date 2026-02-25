@@ -11,8 +11,9 @@ Three auth schemes are supported:
 ```json
 {
   "name": "my_api",
-  "type": "http",
+  "connector_type": "http",
   "config": {
+    "type": "http",
     "url": "https://api.example.com",
     "auth": {
       "type": "bearer",
