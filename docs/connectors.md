@@ -50,3 +50,28 @@ Delay doubles on each retry: 500ms → 1s → 2s → 4s → ... → capped at 60
 ## Secret Masking
 
 Sensitive fields (`token`, `password`, `key`, `secret`, `api_key`) are automatically masked as `"******"` in all API responses. Secrets are stored but never exposed through the API.
+
+Create a connector with real credentials:
+
+```json
+{
+  "name": "bearer-auth-api",
+  "connector_type": "http",
+  "config": {
+    "type": "http",
+    "url": "https://api.example.com/v1",
+    "auth": { "type": "bearer", "token": "super-secret-bearer-token-123" }
+  }
+}
+```
+
+Read it back — secrets are masked:
+
+```bash
+orion-cli connectors get <id>
+# auth.token → "******"
+# auth.password → "******"
+# auth.key → "******"
+```
+
+Usernames and non-sensitive fields are returned as-is. Rules reference connectors by name (`"connector": "bearer-auth-api"`) — they never see or embed actual credentials.

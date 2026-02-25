@@ -31,20 +31,67 @@ If `id` is omitted, a UUID is generated automatically.
 
 ## Fault-Tolerant Pipelines
 
-Set `continue_on_error: true` on a rule to keep the task pipeline running even if individual tasks fail:
+Set `continue_on_error: true` on a rule to keep the task pipeline running even if individual tasks fail. Errors are collected in the response rather than halting execution:
 
 ```json
 {
-  "name": "Multi-step pipeline",
+  "name": "HTTP Call Error Test",
+  "channel": "http-test",
   "continue_on_error": true,
   "tasks": [
-    { "id": "step1", "function": "http_call", ... },
-    { "id": "step2", "function": "http_call", ... }
+    { "id": "parse", "name": "Parse Payload", "function": {
+        "name": "parse_json", "input": { "source": "payload", "target": "req" }
+    }},
+    { "id": "call", "name": "Call External API", "function": {
+        "name": "http_call", "input": {
+          "connector": "my-api",
+          "method": "POST",
+          "body": { "test": true },
+          "timeout_ms": 2000
+        }
+    }}
   ]
 }
 ```
 
-If `step1` fails, `step2` still executes. Without this flag, the pipeline stops at the first error.
+When the external call fails, the response still returns `"status": "ok"` with errors collected:
+
+```json
+{
+  "status": "ok",
+  "data": { "req": { "action": "test-call" } },
+  "errors": [
+    { "code": "TASK_ERROR", "task_id": "call", "message": "IO error: HTTP request failed..." }
+  ]
+}
+```
+
+Without `continue_on_error`, the same failure would return a hard error and stop the pipeline.
+
+## Paused Rule Lifecycle
+
+Pause rules to temporarily disable processing without deleting them. Paused rules remain in the database and retain their configuration — useful for validating AI-generated rules before activating them.
+
+```bash
+# Rule is active — data gets transformed
+orion-cli send content -d '{"text": "Hello"}'
+# → { "data": { "post": { "text": "Hello", "moderated": true, "status": "reviewed" } } }
+
+# Pause the rule
+orion-cli rules pause <rule-id>
+orion-cli engine reload
+
+# Rule is paused — data passes through unmodified
+orion-cli send content -d '{"text": "Hello"}'
+# → { "data": {} }
+
+# Reactivate
+orion-cli rules activate <rule-id>
+orion-cli engine reload
+# Rule is active again
+```
+
+See [API Reference](api-reference.md) for status management endpoints.
 
 ## Tag-Based Organization
 

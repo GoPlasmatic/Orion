@@ -138,26 +138,7 @@ One Orion instance:
 Governance? Already there. Metrics? Built in. Deploy? Already running.
 ```
 
-Tell AI: *"Alert Slack when orders exceed $10K from accounts under 30 days old"* — it generates:
-
-```json
-{
-  "condition": true,
-  "tasks": [
-    { "id": "parse", "name": "Load data", "function": {
-        "name": "parse_json", "input": { "source": "payload", "target": "order" }
-    }},
-    { "id": "notify", "name": "Alert",
-      "condition": { "and": [
-        { ">": [{ "var": "data.order.total" }, 10000] },
-        { "<": [{ "var": "data.order.account_age_days" }, 30] }
-      ]},
-      "function": {
-        "name": "http_call", "input": { "connector": "slack", "method": "POST" }
-    }}
-  ]
-}
-```
+Tell AI: *"Alert Slack when orders exceed $10K from accounts under 30 days old"* — it generates a rule like the Quick Start example above: parse, condition, action. One JSON object, one API call to deploy.
 
 Change the threshold from 10000 to 5000? Tell AI. One API call. No restarts, no redeployments, no coordination.
 
@@ -184,15 +165,11 @@ curl -s -X POST http://localhost:8080/api/v1/admin/rules/{id}/test \
 ```json
 {
   "matched": true,
-  "trace": {
-    "steps": [
-      { "task_id": "parse", "result": "executed" },
-      { "task_id": "flag",  "result": "executed" }
-    ]
-  },
-  "output": {
-    "order": { "order_id": "ORD-9182", "total": 25000, "flagged": true, "alert": "High-value order: $25000" }
-  },
+  "trace": { "steps": [
+    { "task_id": "parse", "result": "executed" },
+    { "task_id": "flag",  "result": "executed" }
+  ]},
+  "output": { "order": { "order_id": "ORD-9182", "total": 25000, "flagged": true, "alert": "High-value order: $25000" } },
   "errors": []
 }
 ```
@@ -250,25 +227,9 @@ Notify the fraud team via the slack-fraud connector."
 }
 ```
 
-**Send data → get results:**
+Send data the same way as the Quick Start — `POST /api/v1/data/orders` — and the pipeline flags, enriches, and notifies in one pass.
 
-```bash
-curl -s -X POST http://localhost:8080/api/v1/data/orders \
-  -H "Content-Type: application/json" \
-  -d '{ "data": { "total": 15000, "account_age_days": 5, "customer": "NEW-1234" } }'
-```
-
-```json
-{
-  "status": "ok",
-  "data": {
-    "order": { "total": 15000, "account_age_days": 5, "customer": "NEW-1234", "flagged": true, "review_reason": "high_value_new_account" }
-  },
-  "errors": []
-}
-```
-
-The full lifecycle — create, dry-run test, activate, update, delete — is available through the REST API. Every endpoint accepts and returns well-structured JSON, making Orion a natural fit for AI tool calling, MCP tools, or multi-agent orchestration. See [AI Integration](docs/ai-integration.md) for prompt templates, validation workflows, and CI/CD patterns.
+The full lifecycle — create, dry-run test, activate, update, delete — is available through the REST API. Every endpoint accepts and returns well-structured JSON, making Orion a natural fit for AI tool calling, MCP tools, or multi-agent orchestration. See [Use Cases & Patterns](docs/use-cases.md#ai-workflow--cicd) for prompt templates, validation workflows, and CI/CD patterns.
 
 ## How It Works
 
@@ -406,8 +367,7 @@ See [Use Cases & Patterns](docs/use-cases.md) for complete, tested examples of e
 | [Connectors](docs/connectors.md) | Auth schemes, retry policies, and secret masking |
 | [Kafka Integration](docs/kafka.md) | Topic mapping, metadata injection, DLQ, and publishing |
 | [Production Features](docs/production-features.md) | Custom IDs, fault tolerance, tags, dynamic paths, versioning |
-| [Use Cases & Patterns](docs/use-cases.md) | Tested examples: order classification, IoT alerts, webhooks, routing |
-| [AI Integration](docs/ai-integration.md) | Prompt templates, validation workflows, and CI/CD for AI-generated rules |
+| [Use Cases & Patterns](docs/use-cases.md) | Tested examples, AI prompt templates, validation workflows, and CI/CD |
 | [Observability](docs/observability.md) | Prometheus metrics, health checks, engine status, and logging |
 
 ## Built With

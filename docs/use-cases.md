@@ -405,214 +405,126 @@ The trace shows exactly which tasks ran and which were skipped — verify the lo
 
 **Key patterns:** Dry-run verification, execution trace inspection, regulatory workflow.
 
-## Paused Rule Lifecycle
+## AI Workflow & CI/CD
 
-Pause rules to temporarily disable processing without deleting them. This is critical for AI-generated rules — create them as `paused`, validate with dry-run, then activate only when verified.
+AI writes rules, not services. Instead of generating microservices that need their own governance, LLMs generate Orion rules — constrained JSON that the platform validates, versions, and monitors automatically.
 
-```bash
-# Rule is active — data gets transformed
-orion-cli send content -d '{"text": "Hello"}'
-# → { "data": { "post": { "text": "Hello", "moderated": true, "status": "reviewed" } } }
+### Prompt Templates
 
-# Pause the rule
-orion-cli rules pause <rule-id>
-orion-cli engine reload
-
-# Rule is paused — data passes through unmodified
-orion-cli send content -d '{"text": "Hello"}'
-# → { "data": {} }
-
-# Reactivate
-orion-cli rules activate <rule-id>
-orion-cli engine reload
-# Rule is active again
-```
-
-Paused rules remain in the database and retain their configuration. See [API Reference](api-reference.md) for status management endpoints.
-
-**Key patterns:** Runtime rule toggling, engine reload after status changes.
-
-## HTTP Error Handling
-
-Use `continue_on_error` to keep the pipeline running when external calls fail.
-
-**AI prompt:**
+Structure your LLM prompts to produce valid Orion rules. Here's a reusable system prompt:
 
 ```
-Create a rule on the "http-test" channel that parses the payload and calls an external
-API via the "my-api" connector. Enable continue_on_error so the pipeline doesn't halt
-if the API call fails. Use a 2-second timeout.
+You generate Orion rules in JSON format. Rules have:
+- name, channel, priority (integer, lower runs first), condition (JSONLogic or true)
+- tasks: array of { id, name, condition (optional, JSONLogic), function: { name, input } }
+- Every rule starts with a parse_json task: { "name": "parse_json", "input": { "source": "payload", "target": "<entity>" } }
+- Use "map" function with "mappings" array for transforms. Each mapping has "path" (dot notation) and "logic" (value or JSONLogic).
+- Use "http_call" with "connector" (by name) for external API calls. Do not embed URLs or credentials in rules.
+- Task conditions use { "var": "data.<entity>.<field>" } to reference parsed data.
+
+Output ONLY the JSON rule. No explanation.
 ```
 
-**Generated rule:**
+### Validation Workflow
+
+Every AI-generated rule should go through this workflow before reaching production:
+
+1. **Generate** — use your LLM with the prompt template above
+2. **Create as paused** — `POST /api/v1/admin/rules` with `"status": "paused"` so it won't process live traffic
+3. **Dry-run** — `POST /api/v1/admin/rules/{id}/test` with representative test data
+4. **Check the trace** — verify the right tasks ran, the right ones were skipped, and output matches expectations
+5. **Activate** — `PATCH /api/v1/admin/rules/{id}/status` with `"status": "active"`
+
+### CI/CD Pipeline
+
+Integrate AI rule generation into your deployment pipeline. Rules are JSON files — they version, diff, and review like any other config.
+
+```
+AI generates rule → commit as JSON → CI runs dry-run → review → import
+```
+
+**GitHub Actions example:**
+
+```yaml
+name: Validate AI Rules
+on:
+  pull_request:
+    paths: ['rules/**/*.json']
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    services:
+      orion:
+        image: ghcr.io/goplasmatic/orion:latest
+        ports: ['8080:8080']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Import rules (paused)
+        run: |
+          for file in rules/**/*.json; do
+            curl -s -X POST http://localhost:8080/api/v1/admin/rules \
+              -H "Content-Type: application/json" \
+              -d @"$file"
+          done
+
+      - name: Dry-run test cases
+        run: |
+          for test in rules/tests/**/*.json; do
+            RULE_ID=$(jq -r '.rule_id' "$test")
+            DATA=$(jq -c '.data' "$test")
+            EXPECTED=$(jq -c '.expected_output' "$test")
+
+            RESULT=$(curl -s -X POST \
+              "http://localhost:8080/api/v1/admin/rules/${RULE_ID}/test" \
+              -H "Content-Type: application/json" \
+              -d "$DATA")
+
+            OUTPUT=$(echo "$RESULT" | jq -c '.output')
+            if [ "$OUTPUT" != "$EXPECTED" ]; then
+              echo "FAIL: $test"
+              echo "Expected: $EXPECTED"
+              echo "Got: $OUTPUT"
+              exit 1
+            fi
+          done
+
+      - name: Deploy to production
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          orion-cli rules import -f rules/ --server ${{ secrets.ORION_URL }}
+```
+
+**Test case format** — store test cases alongside rules:
+
+```
+rules/
+  fraud-detection.json       # The rule
+  tests/
+    fraud-high-risk.json     # Test case
+    fraud-clear.json         # Test case
+```
+
+Each test case:
 
 ```json
 {
-  "name": "HTTP Call Error Test",
-  "channel": "http-test",
-  "continue_on_error": true,
-  "tasks": [
-    { "id": "parse", "name": "Parse Payload", "function": {
-        "name": "parse_json", "input": { "source": "payload", "target": "req" }
-    }},
-    { "id": "call", "name": "Call External API", "function": {
-        "name": "http_call", "input": {
-          "connector": "my-api",
-          "method": "POST",
-          "body": { "test": true },
-          "timeout_ms": 2000
-        }
-    }}
-  ]
+  "rule_id": "fraud-detection",
+  "data": { "data": { "amount": 15000, "country": "US" } },
+  "expected_output": { "order": { "amount": 15000, "risk": "high", "requires_review": true } }
 }
 ```
 
-**Send data:**
+### Safety Guardrails
 
-```bash
-curl -s -X POST http://localhost:8080/api/v1/data/http-test \
-  -H "Content-Type: application/json" \
-  -d '{ "data": { "action": "test-call" } }'
-```
+AI-generated rules get the same governance as hand-written ones:
 
-**Response** (when the connector target is unreachable — errors are collected, not fatal):
-
-```json
-{
-  "status": "ok",
-  "data": { "req": { "action": "test-call" } },
-  "errors": [
-    { "code": "TASK_ERROR", "task_id": "call", "message": "IO error: HTTP request failed..." }
-  ]
-}
-```
-
-Without `continue_on_error`, the same failure would return a hard error and exit code 1. See [Production Features](production-features.md#fault-tolerant-pipelines) for details.
-
-**Key patterns:** Fault-tolerant pipelines, error collection, graceful degradation.
-
-## Connector Secret Masking
-
-Connector secrets are automatically masked in API responses — AI generates rules that reference connector names, never credentials.
-
-**AI prompt:**
-
-```
-Create an HTTP connector called "bearer-auth-api" pointing to https://api.example.com/v1
-with bearer token authentication.
-```
-
-**Generated connector:**
-
-```json
-{
-  "name": "bearer-auth-api",
-  "connector_type": "http",
-  "config": {
-    "type": "http",
-    "url": "https://api.example.com/v1",
-    "auth": { "type": "bearer", "token": "super-secret-bearer-token-123" }
-  }
-}
-```
-
-**Read it back — secrets are masked:**
-
-```bash
-orion-cli connectors get <id>
-# auth.token → "******"
-# auth.password → "******"
-# auth.key → "******"
-```
-
-Usernames and non-sensitive fields are returned as-is. AI-generated rules reference `"connector": "bearer-auth-api"` — they never see or embed the actual credentials. See [Connectors](connectors.md) for all auth schemes.
-
-**Key patterns:** Secret management, safe API responses, credential isolation.
-
-## AI-Assisted Rule Generation
-
-Use an LLM to generate Orion rules from natural language, then validate them with dry-run before activating. The constrained JSON format makes LLM output reliable — no open-ended code generation.
-
-**Prompt:**
-
-```
-Generate an Orion rule for the "orders" channel that detects potential fraud:
-- Parse the payload into "order"
-- Flag as suspicious if amount > 5000 AND shipping country differs from billing country
-- Flag as high_risk if amount > 10000
-- Otherwise mark as clear
-```
-
-**Generated rule:**
-
-```json
-{
-  "name": "Order Fraud Detection",
-  "channel": "orders",
-  "priority": 10,
-  "condition": true,
-  "tasks": [
-    { "id": "parse", "name": "Parse Payload", "function": {
-        "name": "parse_json", "input": { "source": "payload", "target": "order" }
-    }},
-    { "id": "high_risk", "name": "Flag High Risk",
-      "condition": { ">": [{ "var": "data.order.amount" }, 10000] },
-      "function": { "name": "map", "input": { "mappings": [
-        { "path": "data.order.risk", "logic": "high_risk" },
-        { "path": "data.order.requires_review", "logic": true }
-      ]}}
-    },
-    { "id": "suspicious", "name": "Flag Suspicious",
-      "condition": { "and": [
-        { ">": [{ "var": "data.order.amount" }, 5000] },
-        { "<=": [{ "var": "data.order.amount" }, 10000] },
-        { "!=": [{ "var": "data.order.shipping_country" }, { "var": "data.order.billing_country" }] }
-      ]},
-      "function": { "name": "map", "input": { "mappings": [
-        { "path": "data.order.risk", "logic": "suspicious" },
-        { "path": "data.order.requires_review", "logic": true }
-      ]}}
-    },
-    { "id": "clear", "name": "Mark Clear",
-      "condition": { "<=": [{ "var": "data.order.amount" }, 5000] },
-      "function": { "name": "map", "input": { "mappings": [
-        { "path": "data.order.risk", "logic": "clear" },
-        { "path": "data.order.requires_review", "logic": false }
-      ]}}
-    }
-  ]
-}
-```
-
-**Validate with dry-run before activating:**
-
-```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/rules/{id}/test \
-  -H "Content-Type: application/json" \
-  -d '{ "data": { "amount": 7500, "shipping_country": "CA", "billing_country": "US" } }'
-```
-
-```json
-{
-  "matched": true,
-  "trace": {
-    "steps": [
-      { "task_id": "parse", "result": "executed" },
-      { "task_id": "high_risk", "result": "skipped" },
-      { "task_id": "suspicious", "result": "executed" },
-      { "task_id": "clear", "result": "skipped" }
-    ]
-  },
-  "output": {
-    "order": { "amount": 7500, "shipping_country": "CA", "billing_country": "US", "risk": "suspicious", "requires_review": true }
-  },
-  "errors": []
-}
-```
-
-The workflow: **generate** → **dry-run** → **activate** → **monitor**. AI generates the rule, dry-run validates the logic, and the platform handles governance from there. See [AI Integration](ai-integration.md) for prompt templates and CI/CD patterns.
-
-**Key patterns:** LLM-constrained JSON output, dry-run validation loop, API-driven lifecycle.
+- **Version history** — every rule change is recorded. Roll back if an AI-generated rule misbehaves.
+- **Paused status** — create AI rules as `paused` by default and activate only after dry-run validation.
+- **Dry-run before activate** — test with representative data and inspect the full execution trace.
+- **Audit trail** — the `rule_versions` table records who changed what and when.
+- **Connectors isolate secrets** — AI generates rules that reference connector names, never credentials.
 
 ## Common Rule Patterns
 
