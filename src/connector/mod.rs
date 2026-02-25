@@ -222,3 +222,219 @@ pub fn mask_connector(
     masked.config_json = mask_connector_secrets(&masked.config_json);
     masked
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mask_connector_secrets_bearer_token() {
+        let config = r#"{"type":"http","url":"https://api.example.com","auth":{"type":"bearer","token":"secret123"}}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        assert_eq!(val["auth"]["token"], "******");
+    }
+
+    #[test]
+    fn test_mask_connector_secrets_basic_password() {
+        let config = r#"{"type":"http","url":"https://api.example.com","auth":{"type":"basic","username":"user","password":"secret"}}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        assert_eq!(val["auth"]["password"], "******");
+        // Username should NOT be masked
+        assert_eq!(val["auth"]["username"], "user");
+    }
+
+    #[test]
+    fn test_mask_connector_secrets_api_key() {
+        let config = r#"{"type":"http","url":"https://api.example.com","auth":{"type":"apikey","key":"mysecretkey"}}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        assert_eq!(val["auth"]["key"], "******");
+    }
+
+    #[test]
+    fn test_mask_connector_secrets_top_level_fields() {
+        let config = r#"{"type":"http","url":"https://api.example.com","password":"top_secret","api_key":"ak123","token":"tk456","secret":"shhh"}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        assert_eq!(val["password"], "******");
+        assert_eq!(val["api_key"], "******");
+        assert_eq!(val["token"], "******");
+        assert_eq!(val["secret"], "******");
+        // URL should not be masked
+        assert_eq!(val["url"], "https://api.example.com");
+    }
+
+    #[test]
+    fn test_mask_connector_secrets_no_auth() {
+        let config = r#"{"type":"http","url":"https://api.example.com"}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        assert_eq!(val["url"], "https://api.example.com");
+    }
+
+    #[test]
+    fn test_mask_connector_secrets_invalid_json() {
+        let config = "not valid json";
+        let masked = mask_connector_secrets(config);
+        assert_eq!(masked, config);
+    }
+
+    #[test]
+    fn test_mask_connector_model() {
+        use chrono::NaiveDate;
+        let connector = crate::storage::models::Connector {
+            id: "c1".to_string(),
+            name: "test".to_string(),
+            connector_type: "http".to_string(),
+            config_json: r#"{"type":"http","url":"https://api.example.com","auth":{"type":"bearer","token":"secret"}}"#.to_string(),
+            enabled: true,
+            created_at: NaiveDate::from_ymd_opt(2025, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+            updated_at: NaiveDate::from_ymd_opt(2025, 1, 1)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap(),
+        };
+        let masked = mask_connector(&connector);
+        assert_eq!(masked.id, "c1");
+        let val: serde_json::Value = serde_json::from_str(&masked.config_json).unwrap();
+        assert_eq!(val["auth"]["token"], "******");
+    }
+
+    #[test]
+    fn test_valid_connector_types() {
+        assert!(VALID_CONNECTOR_TYPES.contains(&"http"));
+        assert!(VALID_CONNECTOR_TYPES.contains(&"kafka"));
+        assert!(!VALID_CONNECTOR_TYPES.contains(&"grpc"));
+    }
+
+    #[test]
+    fn test_retry_config_default() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_retries, 3);
+        assert_eq!(config.retry_delay_ms, 1000);
+    }
+
+    #[test]
+    fn test_connector_config_deserialization_http() {
+        let json = r#"{"type":"http","url":"https://api.example.com","headers":{},"retry":{"max_retries":2,"retry_delay_ms":500}}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        match config {
+            ConnectorConfig::Http(http) => {
+                assert_eq!(http.url, "https://api.example.com");
+                assert_eq!(http.retry.max_retries, 2);
+                assert_eq!(http.retry.retry_delay_ms, 500);
+                assert_eq!(http.max_response_size, 10 * 1024 * 1024);
+            }
+            _ => panic!("Expected Http config"),
+        }
+    }
+
+    #[test]
+    fn test_connector_config_deserialization_kafka() {
+        let json = r#"{"type":"kafka","brokers":["localhost:9092"],"topic":"test-topic","group_id":"test-group"}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        match config {
+            ConnectorConfig::Kafka(kafka) => {
+                assert_eq!(kafka.brokers, vec!["localhost:9092"]);
+                assert_eq!(kafka.topic, "test-topic");
+                assert_eq!(kafka.group_id, Some("test-group".to_string()));
+            }
+            _ => panic!("Expected Kafka config"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connector_registry_get_and_set() {
+        let registry = ConnectorRegistry::default();
+        assert!(registry.get("nonexistent").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_connector_registry_circuit_breaker_disabled_by_default() {
+        let registry = ConnectorRegistry::default();
+        assert!(!registry.circuit_breaker_enabled());
+    }
+
+    #[tokio::test]
+    async fn test_connector_registry_circuit_breaker_enabled() {
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 5,
+            recovery_timeout_secs: 30,
+        };
+        let registry = ConnectorRegistry::new(config);
+        assert!(registry.circuit_breaker_enabled());
+    }
+
+    #[tokio::test]
+    async fn test_connector_registry_get_or_create_breaker() {
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 5,
+            recovery_timeout_secs: 30,
+        };
+        let registry = ConnectorRegistry::new(config);
+        let b1 = registry.get_or_create_breaker("key1").await;
+        let b2 = registry.get_or_create_breaker("key1").await;
+        // Should return the same breaker
+        assert!(Arc::ptr_eq(&b1, &b2));
+    }
+
+    #[tokio::test]
+    async fn test_connector_registry_circuit_breaker_states() {
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 5,
+            recovery_timeout_secs: 30,
+        };
+        let registry = ConnectorRegistry::new(config);
+        let _ = registry.get_or_create_breaker("key1").await;
+        let states = registry.circuit_breaker_states().await;
+        assert_eq!(states.len(), 1);
+        assert_eq!(states.get("key1").unwrap(), "closed");
+    }
+
+    #[tokio::test]
+    async fn test_connector_registry_reset_circuit_breaker() {
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 1,
+            recovery_timeout_secs: 300,
+        };
+        let registry = ConnectorRegistry::new(config);
+        let breaker = registry.get_or_create_breaker("key1").await;
+        breaker.record_failure(); // trips it
+        assert!(!breaker.check()); // open
+
+        let found = registry.reset_circuit_breaker("key1").await;
+        assert!(found);
+        assert!(breaker.check()); // closed again
+    }
+
+    #[tokio::test]
+    async fn test_connector_registry_reset_nonexistent_breaker() {
+        let registry = ConnectorRegistry::default();
+        assert!(!registry.reset_circuit_breaker("nope").await);
+    }
+
+    #[test]
+    fn test_http_connector_config_defaults() {
+        let json = r#"{"type":"http","url":"https://example.com"}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        match config {
+            ConnectorConfig::Http(http) => {
+                assert!(http.headers.is_empty());
+                assert!(http.auth.is_none());
+                assert_eq!(http.retry.max_retries, 3);
+                assert_eq!(http.retry.retry_delay_ms, 1000);
+                assert_eq!(http.max_response_size, 10 * 1024 * 1024);
+            }
+            _ => panic!("Expected Http config"),
+        }
+    }
+}

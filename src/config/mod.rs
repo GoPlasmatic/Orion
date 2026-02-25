@@ -485,6 +485,7 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_default_config() {
@@ -588,5 +589,239 @@ format = "json"
         assert_eq!(config.server.port, 3000);
         assert_eq!(config.storage.path, "test.db");
         assert_eq!(config.logging.level, "debug");
+    }
+
+    #[test]
+    fn test_validate_config_valid_default() {
+        let config = AppConfig::default();
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_invalid_max_payload_size() {
+        let mut config = AppConfig::default();
+        config.ingest.max_payload_size = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_invalid_batch_size() {
+        let mut config = AppConfig::default();
+        config.ingest.batch_size = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_tracing_enabled_empty_endpoint() {
+        let mut config = AppConfig::default();
+        config.tracing.enabled = true;
+        config.tracing.otlp_endpoint = "".to_string();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_tracing_invalid_sample_rate() {
+        let mut config = AppConfig::default();
+        config.tracing.enabled = true;
+        config.tracing.sample_rate = 1.5;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_tracing_negative_sample_rate() {
+        let mut config = AppConfig::default();
+        config.tracing.enabled = true;
+        config.tracing.sample_rate = -0.1;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_rate_limit_zero_rps() {
+        let mut config = AppConfig::default();
+        config.rate_limit.enabled = true;
+        config.rate_limit.default_rps = 0;
+        config.rate_limit.default_burst = 10;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_rate_limit_zero_burst() {
+        let mut config = AppConfig::default();
+        config.rate_limit.enabled = true;
+        config.rate_limit.default_rps = 100;
+        config.rate_limit.default_burst = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_rate_limit_valid() {
+        let mut config = AppConfig::default();
+        config.rate_limit.enabled = true;
+        config.rate_limit.default_rps = 100;
+        config.rate_limit.default_burst = 50;
+        assert!(validate_config(&config).is_ok());
+    }
+
+    fn make_env_reader<'a>(
+        env: &'a HashMap<&'a str, &'a str>,
+    ) -> impl Fn(&str) -> Result<String, std::env::VarError> + 'a {
+        move |key| {
+            env.get(key)
+                .map(|v: &&str| v.to_string())
+                .ok_or(std::env::VarError::NotPresent)
+        }
+    }
+
+    #[test]
+    fn test_env_override_all_fields() {
+        let mut env = HashMap::new();
+        env.insert("ORION_SERVER__HOST", "localhost");
+        env.insert("ORION_SERVER__PORT", "3000");
+        env.insert("ORION_STORAGE__PATH", "test.db");
+        env.insert("ORION_LOGGING__LEVEL", "warn");
+        env.insert("ORION_LOGGING__FORMAT", "json");
+        env.insert("ORION_INGEST__MAX_PAYLOAD_SIZE", "2000000");
+        env.insert("ORION_INGEST__BATCH_SIZE", "50");
+        env.insert("ORION_QUEUE__WORKERS", "8");
+        env.insert("ORION_QUEUE__BUFFER_SIZE", "2000");
+        env.insert("ORION_METRICS__ENABLED", "true");
+        env.insert("ORION_TRACING__ENABLED", "true");
+        env.insert("ORION_TRACING__OTLP_ENDPOINT", "http://jaeger:4317");
+        env.insert("ORION_TRACING__SERVICE_NAME", "my-orion");
+        env.insert("ORION_TRACING__SAMPLE_RATE", "0.5");
+        env.insert("ORION_ENGINE__CIRCUIT_BREAKER__ENABLED", "true");
+        env.insert("ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD", "10");
+        env.insert("ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS", "60");
+        env.insert("ORION_RATE_LIMIT__ENABLED", "true");
+        env.insert("ORION_RATE_LIMIT__DEFAULT_RPS", "200");
+        env.insert("ORION_RATE_LIMIT__DEFAULT_BURST", "100");
+        env.insert("ORION_KAFKA__ENABLED", "true");
+        env.insert("ORION_KAFKA__BROKERS", "broker1:9092,broker2:9092");
+        env.insert("ORION_KAFKA__GROUP_ID", "my-group");
+
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, make_env_reader(&env));
+
+        assert_eq!(config.server.host, "localhost");
+        assert_eq!(config.server.port, 3000);
+        assert_eq!(config.storage.path, "test.db");
+        assert_eq!(config.logging.level, "warn");
+        assert!(matches!(config.logging.format, LogFormat::Json));
+        assert_eq!(config.ingest.max_payload_size, 2000000);
+        assert_eq!(config.ingest.batch_size, 50);
+        assert_eq!(config.queue.workers, 8);
+        assert_eq!(config.queue.buffer_size, 2000);
+        assert!(config.metrics.enabled);
+        assert!(config.tracing.enabled);
+        assert_eq!(config.tracing.otlp_endpoint, "http://jaeger:4317");
+        assert_eq!(config.tracing.service_name, "my-orion");
+        assert!((config.tracing.sample_rate - 0.5).abs() < f64::EPSILON);
+        assert!(config.engine.circuit_breaker.enabled);
+        assert_eq!(config.engine.circuit_breaker.failure_threshold, 10);
+        assert_eq!(config.engine.circuit_breaker.recovery_timeout_secs, 60);
+        assert!(config.rate_limit.enabled);
+        assert_eq!(config.rate_limit.default_rps, 200);
+        assert_eq!(config.rate_limit.default_burst, 100);
+        assert!(config.kafka.enabled);
+        assert_eq!(config.kafka.brokers, vec!["broker1:9092", "broker2:9092"]);
+        assert_eq!(config.kafka.group_id, "my-group");
+    }
+
+    #[test]
+    fn test_env_override_format_pretty() {
+        let mut env = HashMap::new();
+        env.insert("ORION_LOGGING__FORMAT", "pretty");
+
+        let mut config = AppConfig::default();
+        config.logging.format = LogFormat::Json;
+        apply_env_overrides_with(&mut config, make_env_reader(&env));
+
+        assert!(matches!(config.logging.format, LogFormat::Pretty));
+    }
+
+    #[test]
+    fn test_env_override_invalid_format_ignored() {
+        let mut env = HashMap::new();
+        env.insert("ORION_LOGGING__FORMAT", "xml");
+
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, make_env_reader(&env));
+
+        // Should remain default (Pretty)
+        assert!(matches!(config.logging.format, LogFormat::Pretty));
+    }
+
+    #[test]
+    fn test_env_override_invalid_port_ignored() {
+        let mut env = HashMap::new();
+        env.insert("ORION_SERVER__PORT", "not-a-number");
+
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, make_env_reader(&env));
+
+        // Should remain default
+        assert_eq!(config.server.port, 8080);
+    }
+
+    #[test]
+    fn test_load_config_nonexistent_file() {
+        let result = load_config(Some("/nonexistent/path/config.toml"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_toml_parsing_with_rate_limit() {
+        let toml_str = r#"
+[server]
+port = 8080
+
+[rate_limit]
+enabled = true
+default_rps = 200
+default_burst = 100
+
+[rate_limit.endpoints]
+admin_rps = 50
+data_rps = 500
+
+[rate_limit.channels.orders]
+rps = 100
+burst = 50
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.rate_limit.enabled);
+        assert_eq!(config.rate_limit.default_rps, 200);
+        assert_eq!(config.rate_limit.default_burst, 100);
+        assert_eq!(config.rate_limit.endpoints.admin_rps, Some(50));
+        assert_eq!(config.rate_limit.endpoints.data_rps, Some(500));
+        let orders = config.rate_limit.channels.get("orders").unwrap();
+        assert_eq!(orders.rps, 100);
+        assert_eq!(orders.burst, Some(50));
+    }
+
+    #[test]
+    fn test_cors_config_default() {
+        let config = CorsConfig::default();
+        assert_eq!(config.allowed_origins, vec!["*"]);
+    }
+
+    #[test]
+    fn test_kafka_ingest_config_default() {
+        let config = KafkaIngestConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.brokers, vec!["localhost:9092"]);
+        assert_eq!(config.group_id, "orion");
+        assert!(config.topics.is_empty());
+        assert!(!config.dlq.enabled);
+        assert_eq!(config.dlq.topic, "orion-dlq");
+    }
+
+    #[test]
+    fn test_tracing_config_default() {
+        let config = TracingConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.otlp_endpoint, "http://localhost:4317");
+        assert_eq!(config.service_name, "orion");
+        assert!((config.sample_rate - 1.0).abs() < f64::EPSILON);
     }
 }

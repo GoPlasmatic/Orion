@@ -191,4 +191,112 @@ mod tests {
         assert_eq!(get_nested(&val, "data.result"), serde_json::json!("hello"));
         assert_eq!(get_nested(&val, "data.x"), serde_json::json!(1));
     }
+
+    #[test]
+    fn test_get_nested_missing_key() {
+        let val = serde_json::json!({"data": {"x": 1}});
+        assert_eq!(get_nested(&val, "data.y"), Value::Null);
+    }
+
+    #[test]
+    fn test_get_nested_deeply_missing() {
+        let val = serde_json::json!({"a": 1});
+        assert_eq!(get_nested(&val, "a.b.c"), Value::Null);
+    }
+
+    #[test]
+    fn test_get_nested_single_key() {
+        let val = serde_json::json!({"key": "value"});
+        assert_eq!(get_nested(&val, "key"), serde_json::json!("value"));
+    }
+
+    #[test]
+    fn test_set_nested_creates_intermediate_objects() {
+        let mut val = serde_json::json!({});
+        set_nested(&mut val, "a.b.c", serde_json::json!(42));
+        assert_eq!(get_nested(&val, "a.b.c"), serde_json::json!(42));
+    }
+
+    #[test]
+    fn test_set_nested_overwrites_existing() {
+        let mut val = serde_json::json!({"a": {"b": "old"}});
+        set_nested(&mut val, "a.b", serde_json::json!("new"));
+        assert_eq!(get_nested(&val, "a.b"), serde_json::json!("new"));
+    }
+
+    #[test]
+    fn test_build_url_no_path() {
+        assert_eq!(
+            build_url("https://api.example.com", None),
+            "https://api.example.com"
+        );
+    }
+
+    #[test]
+    fn test_build_url_empty_path() {
+        assert_eq!(
+            build_url("https://api.example.com", Some("")),
+            "https://api.example.com"
+        );
+    }
+
+    #[test]
+    fn test_build_url_trims_slashes() {
+        assert_eq!(
+            build_url("https://api.example.com///", Some("///path")),
+            "https://api.example.com/path"
+        );
+    }
+
+    #[test]
+    fn test_apply_auth_bearer() {
+        let client = reqwest::Client::new();
+        let auth = AuthConfig::Bearer {
+            token: "tok123".to_string(),
+        };
+        let req = apply_auth(client.get("http://localhost"), &auth);
+        let built = req.build().unwrap();
+        assert_eq!(
+            built
+                .headers()
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Bearer tok123"
+        );
+    }
+
+    #[test]
+    fn test_apply_auth_api_key() {
+        let client = reqwest::Client::new();
+        let auth = AuthConfig::ApiKey {
+            header: "x-api-key".to_string(),
+            key: "secret123".to_string(),
+        };
+        let req = apply_auth(client.get("http://localhost"), &auth);
+        let built = req.build().unwrap();
+        assert_eq!(
+            built.headers().get("x-api-key").unwrap().to_str().unwrap(),
+            "secret123"
+        );
+    }
+
+    #[test]
+    fn test_apply_auth_basic() {
+        let client = reqwest::Client::new();
+        let auth = AuthConfig::Basic {
+            username: "user".to_string(),
+            password: "pass".to_string(),
+        };
+        let req = apply_auth(client.get("http://localhost"), &auth);
+        let built = req.build().unwrap();
+        let auth_header = built
+            .headers()
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(auth_header.starts_with("Basic "));
+    }
 }

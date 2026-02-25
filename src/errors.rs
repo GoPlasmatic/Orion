@@ -273,4 +273,137 @@ mod tests {
         };
         assert!(!err.is_retryable());
     }
+
+    #[test]
+    fn test_circuit_open_status() {
+        let err = OrionError::CircuitOpen {
+            connector: "api".to_string(),
+            channel: "orders".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn test_circuit_open_retryable() {
+        let err = OrionError::CircuitOpen {
+            connector: "api".to_string(),
+            channel: "orders".to_string(),
+        };
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_rate_limited_status() {
+        let err = OrionError::RateLimited("too many".to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn test_rate_limited_retryable() {
+        assert!(OrionError::RateLimited("too many".to_string()).is_retryable());
+    }
+
+    #[test]
+    fn test_response_too_large_status() {
+        let err = OrionError::ResponseTooLarge("10MB exceeded".to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn test_response_too_large_not_retryable() {
+        assert!(!OrionError::ResponseTooLarge("too big".to_string()).is_retryable());
+    }
+
+    #[test]
+    fn test_serialization_error_status() {
+        let serde_err: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        let err = OrionError::Serialization(serde_err);
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_serialization_not_retryable() {
+        let serde_err: serde_json::Error =
+            serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+        assert!(!OrionError::Serialization(serde_err).is_retryable());
+    }
+
+    #[test]
+    fn test_not_found_not_retryable() {
+        assert!(!OrionError::NotFound("x".to_string()).is_retryable());
+    }
+
+    #[test]
+    fn test_conflict_not_retryable() {
+        assert!(!OrionError::Conflict("dup".to_string()).is_retryable());
+    }
+
+    #[test]
+    fn test_internal_not_retryable() {
+        assert!(!OrionError::Internal("err".to_string()).is_retryable());
+    }
+
+    #[test]
+    fn test_internal_source_not_retryable() {
+        let err = OrionError::InternalSource {
+            context: "ctx".to_string(),
+            source: Box::new(std::io::Error::other("err")),
+        };
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn test_storage_error_status() {
+        let err = OrionError::Storage(sqlx::Error::PoolTimedOut);
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_engine_generic_error_status() {
+        let err = OrionError::Engine(dataflow_rs::DataflowError::Unknown(
+            "unknown issue".to_string(),
+        ));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_error_display_messages() {
+        assert!(
+            OrionError::NotFound("rule".to_string())
+                .to_string()
+                .contains("rule")
+        );
+        assert!(
+            OrionError::BadRequest("bad".to_string())
+                .to_string()
+                .contains("bad")
+        );
+        assert!(
+            OrionError::Conflict("dup".to_string())
+                .to_string()
+                .contains("dup")
+        );
+        assert!(
+            OrionError::Queue("closed".to_string())
+                .to_string()
+                .contains("closed")
+        );
+        assert!(
+            OrionError::RateLimited("limit".to_string())
+                .to_string()
+                .contains("limit")
+        );
+        assert!(
+            OrionError::ResponseTooLarge("big".to_string())
+                .to_string()
+                .contains("big")
+        );
+    }
 }

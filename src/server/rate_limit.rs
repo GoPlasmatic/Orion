@@ -189,3 +189,208 @@ fn rate_limited_response() -> Response {
     )
         .into_response()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+
+    #[test]
+    fn test_extract_client_ip_from_xff() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "192.168.1.1, 10.0.0.1")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&req), "192.168.1.1");
+    }
+
+    #[test]
+    fn test_extract_client_ip_from_xff_single() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "203.0.113.5")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&req), "203.0.113.5");
+    }
+
+    #[test]
+    fn test_extract_client_ip_from_x_real_ip() {
+        let req = Request::builder()
+            .header("x-real-ip", "10.0.0.5")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&req), "10.0.0.5");
+    }
+
+    #[test]
+    fn test_extract_client_ip_xff_takes_priority_over_x_real_ip() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "1.2.3.4")
+            .header("x-real-ip", "5.6.7.8")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&req), "1.2.3.4");
+    }
+
+    #[test]
+    fn test_extract_client_ip_no_headers() {
+        let req = Request::builder().body(Body::empty()).unwrap();
+        assert_eq!(extract_client_ip(&req), "unknown");
+    }
+
+    #[test]
+    fn test_extract_client_ip_empty_xff() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&req), "unknown");
+    }
+
+    #[test]
+    fn test_extract_client_ip_empty_x_real_ip() {
+        let req = Request::builder()
+            .header("x-real-ip", "  ")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(extract_client_ip(&req), "unknown");
+    }
+
+    #[test]
+    fn test_extract_channel_from_path_valid() {
+        assert_eq!(
+            extract_channel_from_path("/api/v1/data/orders"),
+            Some("orders")
+        );
+    }
+
+    #[test]
+    fn test_extract_channel_from_path_with_subpath() {
+        assert_eq!(
+            extract_channel_from_path("/api/v1/data/orders/async"),
+            Some("orders")
+        );
+    }
+
+    #[test]
+    fn test_extract_channel_from_path_batch_excluded() {
+        assert_eq!(extract_channel_from_path("/api/v1/data/batch"), None);
+    }
+
+    #[test]
+    fn test_extract_channel_from_path_jobs_excluded() {
+        assert_eq!(extract_channel_from_path("/api/v1/data/jobs"), None);
+    }
+
+    #[test]
+    fn test_extract_channel_from_path_wrong_prefix() {
+        assert_eq!(extract_channel_from_path("/api/v1/admin/rules"), None);
+    }
+
+    #[test]
+    fn test_extract_channel_from_path_empty_channel() {
+        assert_eq!(extract_channel_from_path("/api/v1/data/"), None);
+    }
+
+    #[test]
+    fn test_classify_route_admin() {
+        assert!(matches!(
+            classify_route("/api/v1/admin/rules"),
+            RouteGroup::Admin
+        ));
+    }
+
+    #[test]
+    fn test_classify_route_data() {
+        assert!(matches!(
+            classify_route("/api/v1/data/orders"),
+            RouteGroup::Data
+        ));
+    }
+
+    #[test]
+    fn test_classify_route_operational() {
+        assert!(matches!(classify_route("/health"), RouteGroup::Operational));
+        assert!(matches!(
+            classify_route("/metrics"),
+            RouteGroup::Operational
+        ));
+    }
+
+    #[test]
+    fn test_from_config_default() {
+        let config = RateLimitConfig {
+            enabled: true,
+            default_rps: 100,
+            default_burst: 50,
+            ..Default::default()
+        };
+        let state = RateLimitState::from_config(&config);
+        assert!(state.admin_limiter.is_none());
+        assert!(state.data_limiter.is_none());
+        assert!(state.channel_limiters.is_empty());
+    }
+
+    #[test]
+    fn test_from_config_with_endpoint_limiters() {
+        let config = RateLimitConfig {
+            enabled: true,
+            default_rps: 100,
+            default_burst: 50,
+            endpoints: crate::config::EndpointRateLimits {
+                admin_rps: Some(20),
+                data_rps: Some(200),
+            },
+            ..Default::default()
+        };
+        let state = RateLimitState::from_config(&config);
+        assert!(state.admin_limiter.is_some());
+        assert!(state.data_limiter.is_some());
+    }
+
+    #[test]
+    fn test_from_config_with_channel_limiters() {
+        let mut channels = HashMap::new();
+        channels.insert(
+            "orders".to_string(),
+            crate::config::ChannelRateLimit {
+                rps: 50,
+                burst: Some(25),
+            },
+        );
+        channels.insert(
+            "events".to_string(),
+            crate::config::ChannelRateLimit {
+                rps: 10,
+                burst: None,
+            },
+        );
+        let config = RateLimitConfig {
+            enabled: true,
+            default_rps: 100,
+            default_burst: 50,
+            channels,
+            ..Default::default()
+        };
+        let state = RateLimitState::from_config(&config);
+        assert_eq!(state.channel_limiters.len(), 2);
+        assert!(state.channel_limiters.contains_key("orders"));
+        assert!(state.channel_limiters.contains_key("events"));
+    }
+
+    #[test]
+    fn test_rate_limited_response_status() {
+        let response = rate_limited_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get("retry-after")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "1"
+        );
+    }
+}
