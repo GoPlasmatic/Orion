@@ -41,6 +41,12 @@ pub fn admin_routes() -> Router<AppState> {
                 .put(update_connector)
                 .delete(delete_connector),
         )
+        // Circuit breakers
+        .route("/connectors/circuit-breakers", get(list_circuit_breakers))
+        .route(
+            "/connectors/circuit-breakers/{key}",
+            post(reset_circuit_breaker),
+        )
         // Engine
         .route("/engine/status", get(engine_status))
         .route("/engine/reload", post(engine_reload))
@@ -724,6 +730,37 @@ pub(crate) async fn delete_connector(
     state.connector_repo.delete(&id).await?;
     reload_connectors(&state).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ============================================================
+// Circuit Breakers
+// ============================================================
+
+#[tracing::instrument(skip(state))]
+pub(crate) async fn list_circuit_breakers(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, OrionError> {
+    let states = state.connector_registry.circuit_breaker_states().await;
+    Ok(Json(json!({
+        "enabled": state.connector_registry.circuit_breaker_enabled(),
+        "breakers": states,
+    })))
+}
+
+#[tracing::instrument(skip(state))]
+pub(crate) async fn reset_circuit_breaker(
+    State(state): State<AppState>,
+    Path(key): Path<String>,
+) -> Result<Json<Value>, OrionError> {
+    let found = state.connector_registry.reset_circuit_breaker(&key).await;
+    if found {
+        Ok(Json(json!({ "reset": true, "key": key })))
+    } else {
+        Err(OrionError::NotFound(format!(
+            "Circuit breaker '{}' not found",
+            key
+        )))
+    }
 }
 
 // ============================================================

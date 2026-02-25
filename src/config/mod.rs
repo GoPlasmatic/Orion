@@ -67,10 +67,12 @@ impl Default for IngestConfig {
     }
 }
 
-/// Engine configuration. Reserved for future settings.
+/// Engine configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct EngineConfig {}
+pub struct EngineConfig {
+    pub circuit_breaker: crate::connector::circuit_breaker::CircuitBreakerConfig,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -304,6 +306,22 @@ where
         && let Ok(rate) = v.parse::<f64>()
     {
         config.tracing.sample_rate = rate;
+    }
+    // Circuit breaker overrides
+    if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__ENABLED")
+        && let Ok(enabled) = v.parse::<bool>()
+    {
+        config.engine.circuit_breaker.enabled = enabled;
+    }
+    if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD")
+        && let Ok(t) = v.parse::<u32>()
+    {
+        config.engine.circuit_breaker.failure_threshold = t;
+    }
+    if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS")
+        && let Ok(t) = v.parse::<u64>()
+    {
+        config.engine.circuit_breaker.recovery_timeout_secs = t;
     }
     // Kafka overrides
     if let Ok(v) = env_var("ORION_KAFKA__ENABLED")

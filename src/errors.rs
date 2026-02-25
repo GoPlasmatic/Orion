@@ -19,6 +19,9 @@ pub enum OrionError {
     #[error("Configuration error: {message}")]
     Config { message: String },
 
+    #[error("Circuit breaker open for connector '{connector}' on channel '{channel}'")]
+    CircuitOpen { connector: String, channel: String },
+
     #[error("Queue error: {0}")]
     Queue(String),
 
@@ -45,6 +48,7 @@ impl OrionError {
         match self {
             OrionError::Storage(_) => true,
             OrionError::Engine(e) => e.retryable(),
+            OrionError::CircuitOpen { .. } => true,
             OrionError::Queue(_) => true,
             _ => false,
         }
@@ -57,6 +61,14 @@ impl IntoResponse for OrionError {
             OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
             OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
+            OrionError::CircuitOpen { connector, channel } => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "CIRCUIT_OPEN",
+                format!(
+                    "Circuit breaker open for connector '{}' on channel '{}'",
+                    connector, channel
+                ),
+            ),
             OrionError::Internal(msg) => {
                 tracing::error!(error.category = "internal", error.message = %msg, "Internal error");
                 (

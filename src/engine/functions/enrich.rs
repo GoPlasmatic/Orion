@@ -57,9 +57,33 @@ impl AsyncFunctionHandler for EnrichHandler {
 
         let timeout = Duration::from_millis(input.timeout_ms);
 
-        // Execute HTTP request with retry
+        // Execute HTTP request with retry (+ circuit breaker if enabled)
         let retry = &http_config.retry;
-        let result =
+        let result = if self.registry.circuit_breaker_enabled() {
+            let channel = super::extract_channel(message);
+            let key = format!("{}:{}", channel, input.connector);
+            let breaker = self.registry.get_or_create_breaker(&key).await;
+            super::execute_with_circuit_breaker(
+                &breaker,
+                &input.connector,
+                channel,
+                retry.max_retries,
+                retry.retry_delay_ms,
+                "Enrich",
+                || {
+                    http_common::execute_request(
+                        &self.client,
+                        &method,
+                        &url,
+                        None,
+                        http_config,
+                        None,
+                        timeout,
+                    )
+                },
+            )
+            .await
+        } else {
             super::retry_with_backoff(retry.max_retries, retry.retry_delay_ms, "Enrich", || {
                 http_common::execute_request(
                     &self.client,
@@ -71,7 +95,8 @@ impl AsyncFunctionHandler for EnrichHandler {
                     timeout,
                 )
             })
-            .await;
+            .await
+        };
 
         match result {
             Ok(response_body) => {

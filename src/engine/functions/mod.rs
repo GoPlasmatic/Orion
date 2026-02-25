@@ -4,12 +4,15 @@ pub mod http_common;
 pub mod publish_kafka;
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::message::Message;
 use datalogic_rs::DataLogic;
 use serde_json::Value;
+
+use crate::connector::circuit_breaker::CircuitBreaker;
 
 /// Resolve a URL path from a static string or a JSONLogic expression.
 pub fn resolve_path(
@@ -53,6 +56,63 @@ pub fn to_reqwest_method(
         dataflow_rs::engine::functions::integration::HttpMethod::Patch => reqwest::Method::PATCH,
         dataflow_rs::engine::functions::integration::HttpMethod::Delete => reqwest::Method::DELETE,
     }
+}
+
+/// Extract the channel name from a message's metadata.
+pub fn extract_channel(message: &Message) -> &str {
+    message
+        .metadata()
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+}
+
+/// Execute an operation wrapped with circuit breaker + retry.
+///
+/// 1. Check breaker — reject early if open
+/// 2. Run retry_with_backoff
+/// 3. Record success/failure on the breaker
+pub async fn execute_with_circuit_breaker<F, Fut>(
+    breaker: &Arc<CircuitBreaker>,
+    connector: &str,
+    channel: &str,
+    max_retries: u32,
+    retry_delay_ms: u64,
+    label: &str,
+    operation: F,
+) -> dataflow_rs::Result<Value>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = dataflow_rs::Result<Value>>,
+{
+    if !breaker.check() {
+        crate::metrics::record_circuit_breaker_rejection(connector, channel);
+        return Err(DataflowError::function_execution(
+            format!(
+                "Circuit breaker open for connector '{}' on channel '{}'",
+                connector, channel
+            ),
+            None,
+        ));
+    }
+
+    let result = retry_with_backoff(max_retries, retry_delay_ms, label, operation).await;
+
+    match &result {
+        Ok(_) => breaker.record_success(),
+        Err(_) => {
+            if breaker.record_failure() {
+                tracing::warn!(
+                    connector = connector,
+                    channel = channel,
+                    "Circuit breaker tripped"
+                );
+                crate::metrics::record_circuit_breaker_trip(connector, channel);
+            }
+        }
+    }
+
+    result
 }
 
 /// Execute an async operation with exponential backoff retry.

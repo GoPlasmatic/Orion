@@ -1,3 +1,5 @@
+pub mod circuit_breaker;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -5,6 +7,7 @@ use tokio::sync::RwLock;
 
 use crate::errors::OrionError;
 use crate::storage::repositories::connectors::ConnectorRepository;
+use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -71,19 +74,65 @@ pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka"];
 /// In-memory registry for active connector configurations.
 pub struct ConnectorRegistry {
     configs: RwLock<HashMap<String, Arc<ConnectorConfig>>>,
+    circuit_breakers: RwLock<HashMap<String, Arc<CircuitBreaker>>>,
+    cb_config: CircuitBreakerConfig,
 }
 
 impl Default for ConnectorRegistry {
     fn default() -> Self {
-        Self::new()
+        Self::new(CircuitBreakerConfig::default())
     }
 }
 
 impl ConnectorRegistry {
-    pub fn new() -> Self {
+    pub fn new(cb_config: CircuitBreakerConfig) -> Self {
         Self {
             configs: RwLock::new(HashMap::new()),
+            circuit_breakers: RwLock::new(HashMap::new()),
+            cb_config,
         }
+    }
+
+    /// Get or create a circuit breaker for the given key (e.g. "channel:connector").
+    pub async fn get_or_create_breaker(&self, key: &str) -> Arc<CircuitBreaker> {
+        // Fast path: read lock
+        {
+            let breakers = self.circuit_breakers.read().await;
+            if let Some(cb) = breakers.get(key) {
+                return cb.clone();
+            }
+        }
+        // Slow path: write lock on miss
+        let mut breakers = self.circuit_breakers.write().await;
+        breakers
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(CircuitBreaker::new(self.cb_config.clone())))
+            .clone()
+    }
+
+    /// Return all circuit breaker states for admin/health introspection.
+    pub async fn circuit_breaker_states(&self) -> HashMap<String, String> {
+        let breakers = self.circuit_breakers.read().await;
+        breakers
+            .iter()
+            .map(|(k, v)| (k.clone(), v.state_name().to_string()))
+            .collect()
+    }
+
+    /// Force-reset a circuit breaker by key. Returns `true` if the key existed.
+    pub async fn reset_circuit_breaker(&self, key: &str) -> bool {
+        let breakers = self.circuit_breakers.read().await;
+        if let Some(cb) = breakers.get(key) {
+            cb.reset();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Whether circuit breakers are enabled.
+    pub fn circuit_breaker_enabled(&self) -> bool {
+        self.cb_config.enabled
     }
 
     /// Load all enabled connectors from the repository into the registry.
