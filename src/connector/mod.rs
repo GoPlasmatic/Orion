@@ -26,6 +26,13 @@ pub struct HttpConnectorConfig {
     pub auth: Option<AuthConfig>,
     #[serde(default)]
     pub retry: RetryConfig,
+    /// Maximum response body size in bytes (default 10 MB). Prevents OOM from large responses.
+    #[serde(default = "default_max_response_size")]
+    pub max_response_size: usize,
+}
+
+fn default_max_response_size() -> usize {
+    10 * 1024 * 1024 // 10 MB
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

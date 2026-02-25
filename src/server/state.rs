@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 use crate::config::AppConfig;
 use crate::connector::ConnectorRegistry;
 use crate::queue::JobQueue;
+use crate::server::rate_limit::RateLimitState;
 use crate::storage::repositories::connectors::ConnectorRepository;
 use crate::storage::repositories::jobs::JobRepository;
 use crate::storage::repositories::rules::RuleRepository;
@@ -23,4 +24,5 @@ pub struct AppState {
     pub start_time: chrono::DateTime<chrono::Utc>,
     pub metrics_handle: PrometheusHandle,
     pub http_client: reqwest::Client,
+    pub rate_limit_state: Option<Arc<RateLimitState>>,
 }

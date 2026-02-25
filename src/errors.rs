@@ -22,6 +22,12 @@ pub enum OrionError {
     #[error("Circuit breaker open for connector '{connector}' on channel '{channel}'")]
     CircuitOpen { connector: String, channel: String },
 
+    #[error("Rate limited: {0}")]
+    RateLimited(String),
+
+    #[error("Response too large: {0}")]
+    ResponseTooLarge(String),
+
     #[error("Queue error: {0}")]
     Queue(String),
 
@@ -49,6 +55,7 @@ impl OrionError {
             OrionError::Storage(_) => true,
             OrionError::Engine(e) => e.retryable(),
             OrionError::CircuitOpen { .. } => true,
+            OrionError::RateLimited(_) => true,
             OrionError::Queue(_) => true,
             _ => false,
         }
@@ -69,6 +76,12 @@ impl IntoResponse for OrionError {
                     connector, channel
                 ),
             ),
+            OrionError::RateLimited(msg) => {
+                (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", msg.clone())
+            }
+            OrionError::ResponseTooLarge(msg) => {
+                (StatusCode::BAD_GATEWAY, "RESPONSE_TOO_LARGE", msg.clone())
+            }
             OrionError::Internal(msg) => {
                 tracing::error!(error.category = "internal", error.message = %msg, "Internal error");
                 (

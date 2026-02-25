@@ -179,61 +179,67 @@ fn build_where_clause(filter: &RuleFilter) -> (String, Vec<String>) {
 #[async_trait]
 impl RuleRepository for SqliteRuleRepository {
     async fn create(&self, req: &CreateRuleRequest) -> Result<Rule, OrionError> {
-        let id = req
-            .id
-            .clone()
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let condition_json = serde_json::to_string(&req.condition)?;
-        let tasks_json = serde_json::to_string(&req.tasks)?;
-        let tags_json = serde_json::to_string(&req.tags)?;
+        crate::metrics::timed_db_op("rules.create", async {
+            let id = req
+                .id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            let condition_json = serde_json::to_string(&req.condition)?;
+            let tasks_json = serde_json::to_string(&req.tasks)?;
+            let tags_json = serde_json::to_string(&req.tags)?;
 
-        let mut tx = self.pool.begin().await?;
+            let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            r#"INSERT INTO rules (id, name, description, channel, priority, condition_json, tasks_json, tags, continue_on_error)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-        )
-        .bind(&id)
-        .bind(&req.name)
-        .bind(&req.description)
-        .bind(&req.channel)
-        .bind(req.priority)
-        .bind(&condition_json)
-        .bind(&tasks_json)
-        .bind(&tags_json)
-        .bind(req.continue_on_error)
-        .execute(&mut *tx)
-        .await?;
+            sqlx::query(
+                r#"INSERT INTO rules (id, name, description, channel, priority, condition_json, tasks_json, tags, continue_on_error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            )
+            .bind(&id)
+            .bind(&req.name)
+            .bind(&req.description)
+            .bind(&req.channel)
+            .bind(req.priority)
+            .bind(&condition_json)
+            .bind(&tasks_json)
+            .bind(&tags_json)
+            .bind(req.continue_on_error)
+            .execute(&mut *tx)
+            .await?;
 
-        insert_version(
-            &mut *tx,
-            &VersionData {
-                rule_id: &id,
-                version: 1,
-                name: &req.name,
-                description: req.description.as_deref(),
-                channel: &req.channel,
-                priority: req.priority,
-                status: models::RULE_STATUS_ACTIVE,
-                condition_json: &condition_json,
-                tasks_json: &tasks_json,
-                tags_json: &tags_json,
-                continue_on_error: req.continue_on_error,
-            },
-        )
-        .await?;
+            insert_version(
+                &mut *tx,
+                &VersionData {
+                    rule_id: &id,
+                    version: 1,
+                    name: &req.name,
+                    description: req.description.as_deref(),
+                    channel: &req.channel,
+                    priority: req.priority,
+                    status: models::RULE_STATUS_ACTIVE,
+                    condition_json: &condition_json,
+                    tasks_json: &tasks_json,
+                    tags_json: &tags_json,
+                    continue_on_error: req.continue_on_error,
+                },
+            )
+            .await?;
 
-        tx.commit().await?;
+            tx.commit().await?;
 
-        self.get_by_id(&id).await
+            self.get_by_id(&id).await
+        })
+        .await
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Rule, OrionError> {
-        sqlx::query_as::<_, Rule>("SELECT * FROM rules WHERE id = ?")
-            .bind(id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| OrionError::NotFound(format!("Rule '{}' not found", id)))
+        crate::metrics::timed_db_op("rules.get_by_id", async {
+            sqlx::query_as::<_, Rule>("SELECT * FROM rules WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| OrionError::NotFound(format!("Rule '{}' not found", id)))
+        })
+        .await
     }
 
     async fn list(&self, filter: &RuleFilter) -> Result<Vec<Rule>, OrionError> {
@@ -252,128 +258,140 @@ impl RuleRepository for SqliteRuleRepository {
         &self,
         filter: &RuleFilter,
     ) -> Result<PaginatedResult<Rule>, OrionError> {
-        let (where_clause, binds) = build_where_clause(filter);
-        let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
-        let offset = filter.offset.unwrap_or(0).max(0);
+        crate::metrics::timed_db_op("rules.list_paginated", async {
+            let (where_clause, binds) = build_where_clause(filter);
+            let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
+            let offset = filter.offset.unwrap_or(0).max(0);
 
-        let count_query = format!("SELECT COUNT(*) FROM rules {where_clause}");
-        let mut cq = sqlx::query_as::<_, (i64,)>(&count_query);
-        for b in &binds {
-            cq = cq.bind(b);
-        }
-        let (total,) = cq.fetch_one(&self.pool).await?;
+            let count_query = format!("SELECT COUNT(*) FROM rules {where_clause}");
+            let mut cq = sqlx::query_as::<_, (i64,)>(&count_query);
+            for b in &binds {
+                cq = cq.bind(b);
+            }
+            let (total,) = cq.fetch_one(&self.pool).await?;
 
-        let data_query = format!(
-            "SELECT * FROM rules {where_clause} ORDER BY priority DESC, name ASC LIMIT ? OFFSET ?"
-        );
-        let mut dq = sqlx::query_as::<_, Rule>(&data_query);
-        for b in &binds {
-            dq = dq.bind(b);
-        }
-        dq = dq.bind(limit).bind(offset);
-        let data = dq.fetch_all(&self.pool).await?;
+            let data_query = format!(
+                "SELECT * FROM rules {where_clause} ORDER BY priority DESC, name ASC LIMIT ? OFFSET ?"
+            );
+            let mut dq = sqlx::query_as::<_, Rule>(&data_query);
+            for b in &binds {
+                dq = dq.bind(b);
+            }
+            dq = dq.bind(limit).bind(offset);
+            let data = dq.fetch_all(&self.pool).await?;
 
-        Ok(PaginatedResult {
-            data,
-            total,
-            limit,
-            offset,
+            Ok(PaginatedResult {
+                data,
+                total,
+                limit,
+                offset,
+            })
         })
+        .await
     }
 
     async fn update(&self, id: &str, req: &UpdateRuleRequest) -> Result<Rule, OrionError> {
-        let existing = self.get_by_id(id).await?;
+        crate::metrics::timed_db_op("rules.update", async {
+            let existing = self.get_by_id(id).await?;
 
-        let name = req.name.as_deref().unwrap_or(&existing.name);
-        let description = req
-            .description
-            .as_deref()
-            .or(existing.description.as_deref());
-        let channel = req.channel.as_deref().unwrap_or(&existing.channel);
-        let priority = req.priority.unwrap_or(existing.priority);
-        let status = req.status.as_deref().unwrap_or(&existing.status);
-        let continue_on_error = req.continue_on_error.unwrap_or(existing.continue_on_error);
+            let name = req.name.as_deref().unwrap_or(&existing.name);
+            let description = req
+                .description
+                .as_deref()
+                .or(existing.description.as_deref());
+            let channel = req.channel.as_deref().unwrap_or(&existing.channel);
+            let priority = req.priority.unwrap_or(existing.priority);
+            let status = req.status.as_deref().unwrap_or(&existing.status);
+            let continue_on_error = req.continue_on_error.unwrap_or(existing.continue_on_error);
 
-        let condition_json = match &req.condition {
-            Some(c) => serde_json::to_string(c)?,
-            None => existing.condition_json.clone(),
-        };
-        let tasks_json = match &req.tasks {
-            Some(t) => serde_json::to_string(t)?,
-            None => existing.tasks_json.clone(),
-        };
-        let tags_json = match &req.tags {
-            Some(t) => serde_json::to_string(t)?,
-            None => existing.tags.clone(),
-        };
+            let condition_json = match &req.condition {
+                Some(c) => serde_json::to_string(c)?,
+                None => existing.condition_json.clone(),
+            };
+            let tasks_json = match &req.tasks {
+                Some(t) => serde_json::to_string(t)?,
+                None => existing.tasks_json.clone(),
+            };
+            let tags_json = match &req.tags {
+                Some(t) => serde_json::to_string(t)?,
+                None => existing.tags.clone(),
+            };
 
-        let new_version = existing.version + 1;
+            let new_version = existing.version + 1;
 
-        let mut tx = self.pool.begin().await?;
+            let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            r#"UPDATE rules
-               SET name = ?, description = ?, channel = ?, priority = ?,
-                   version = ?, status = ?, condition_json = ?, tasks_json = ?,
-                   tags = ?, continue_on_error = ?, updated_at = datetime('now')
-               WHERE id = ?"#,
-        )
-        .bind(name)
-        .bind(description)
-        .bind(channel)
-        .bind(priority)
-        .bind(new_version)
-        .bind(status)
-        .bind(&condition_json)
-        .bind(&tasks_json)
-        .bind(&tags_json)
-        .bind(continue_on_error)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+            sqlx::query(
+                r#"UPDATE rules
+                   SET name = ?, description = ?, channel = ?, priority = ?,
+                       version = ?, status = ?, condition_json = ?, tasks_json = ?,
+                       tags = ?, continue_on_error = ?, updated_at = datetime('now')
+                   WHERE id = ?"#,
+            )
+            .bind(name)
+            .bind(description)
+            .bind(channel)
+            .bind(priority)
+            .bind(new_version)
+            .bind(status)
+            .bind(&condition_json)
+            .bind(&tasks_json)
+            .bind(&tags_json)
+            .bind(continue_on_error)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
 
-        insert_version(
-            &mut *tx,
-            &VersionData {
-                rule_id: id,
-                version: new_version,
-                name,
-                description,
-                channel,
-                priority,
-                status,
-                condition_json: &condition_json,
-                tasks_json: &tasks_json,
-                tags_json: &tags_json,
-                continue_on_error,
-            },
-        )
-        .await?;
+            insert_version(
+                &mut *tx,
+                &VersionData {
+                    rule_id: id,
+                    version: new_version,
+                    name,
+                    description,
+                    channel,
+                    priority,
+                    status,
+                    condition_json: &condition_json,
+                    tasks_json: &tasks_json,
+                    tags_json: &tags_json,
+                    continue_on_error,
+                },
+            )
+            .await?;
 
-        tx.commit().await?;
+            tx.commit().await?;
 
-        self.get_by_id(id).await
+            self.get_by_id(id).await
+        })
+        .await
     }
 
     async fn delete(&self, id: &str) -> Result<(), OrionError> {
-        let result = sqlx::query("DELETE FROM rules WHERE id = ?")
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+        crate::metrics::timed_db_op("rules.delete", async {
+            let result = sqlx::query("DELETE FROM rules WHERE id = ?")
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
 
-        if result.rows_affected() == 0 {
-            return Err(OrionError::NotFound(format!("Rule '{}' not found", id)));
-        }
+            if result.rows_affected() == 0 {
+                return Err(OrionError::NotFound(format!("Rule '{}' not found", id)));
+            }
 
-        Ok(())
+            Ok(())
+        })
+        .await
     }
 
     async fn list_active(&self) -> Result<Vec<Rule>, OrionError> {
-        Ok(sqlx::query_as::<_, Rule>(
-            "SELECT * FROM rules WHERE status = 'active' ORDER BY priority DESC",
-        )
-        .fetch_all(&self.pool)
-        .await?)
+        crate::metrics::timed_db_op("rules.list_active", async {
+            Ok(sqlx::query_as::<_, Rule>(
+                "SELECT * FROM rules WHERE status = 'active' ORDER BY priority DESC",
+            )
+            .fetch_all(&self.pool)
+            .await?)
+        })
+        .await
     }
 
     async fn update_status(&self, id: &str, status: &str) -> Result<Rule, OrionError> {
@@ -385,41 +403,44 @@ impl RuleRepository for SqliteRuleRepository {
             )));
         }
 
-        let existing = self.get_by_id(id).await?;
-        let new_version = existing.version + 1;
+        crate::metrics::timed_db_op("rules.update_status", async {
+            let existing = self.get_by_id(id).await?;
+            let new_version = existing.version + 1;
 
-        let mut tx = self.pool.begin().await?;
+            let mut tx = self.pool.begin().await?;
 
-        sqlx::query(
-            "UPDATE rules SET status = ?, version = ?, updated_at = datetime('now') WHERE id = ?",
-        )
-        .bind(status)
-        .bind(new_version)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
+            sqlx::query(
+                "UPDATE rules SET status = ?, version = ?, updated_at = datetime('now') WHERE id = ?",
+            )
+            .bind(status)
+            .bind(new_version)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
 
-        insert_version(
-            &mut *tx,
-            &VersionData {
-                rule_id: id,
-                version: new_version,
-                name: &existing.name,
-                description: existing.description.as_deref(),
-                channel: &existing.channel,
-                priority: existing.priority,
-                status,
-                condition_json: &existing.condition_json,
-                tasks_json: &existing.tasks_json,
-                tags_json: &existing.tags,
-                continue_on_error: existing.continue_on_error,
-            },
-        )
-        .await?;
+            insert_version(
+                &mut *tx,
+                &VersionData {
+                    rule_id: id,
+                    version: new_version,
+                    name: &existing.name,
+                    description: existing.description.as_deref(),
+                    channel: &existing.channel,
+                    priority: existing.priority,
+                    status,
+                    condition_json: &existing.condition_json,
+                    tasks_json: &existing.tasks_json,
+                    tags_json: &existing.tags,
+                    continue_on_error: existing.continue_on_error,
+                },
+            )
+            .await?;
 
-        tx.commit().await?;
+            tx.commit().await?;
 
-        self.get_by_id(id).await
+            self.get_by_id(id).await
+        })
+        .await
     }
 
     async fn count_versions(&self, id: &str) -> Result<i64, OrionError> {

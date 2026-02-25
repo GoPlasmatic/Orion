@@ -76,6 +76,7 @@ pub(crate) async fn sync_process(
             let duration = start.elapsed().as_secs_f64();
             metrics::record_message(&channel, "ok");
             metrics::record_message_duration(&channel, duration);
+            metrics::record_channel_execution(&channel);
 
             Ok(Json(json!({
                 "id": message.id,
@@ -289,6 +290,7 @@ pub(crate) async fn batch_process(
                     let duration = start.elapsed().as_secs_f64();
                     metrics::record_message(&msg.channel, "ok");
                     metrics::record_message_duration(&msg.channel, duration);
+                    metrics::record_channel_execution(&msg.channel);
 
                     json!({
                         "id": message.id,

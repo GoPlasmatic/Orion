@@ -17,6 +17,7 @@ pub struct AppConfig {
     pub metrics: MetricsConfig,
     pub cors: CorsConfig,
     pub tracing: TracingConfig,
+    pub rate_limit: RateLimitConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,6 +213,42 @@ impl Default for TracingConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RateLimitConfig {
+    pub enabled: bool,
+    #[serde(default = "default_rps")]
+    pub default_rps: u32,
+    #[serde(default = "default_burst")]
+    pub default_burst: u32,
+    #[serde(default)]
+    pub endpoints: EndpointRateLimits,
+    #[serde(default)]
+    pub channels: std::collections::HashMap<String, ChannelRateLimit>,
+}
+
+fn default_rps() -> u32 {
+    100
+}
+
+fn default_burst() -> u32 {
+    50
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EndpointRateLimits {
+    pub admin_rps: Option<u32>,
+    pub data_rps: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelRateLimit {
+    pub rps: u32,
+    #[serde(default)]
+    pub burst: Option<u32>,
+}
+
 /// Load configuration from an optional TOML file path, then apply env overrides.
 pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
     let mut config = if let Some(p) = path {
@@ -323,6 +360,22 @@ where
     {
         config.engine.circuit_breaker.recovery_timeout_secs = t;
     }
+    // Rate limit overrides
+    if let Ok(v) = env_var("ORION_RATE_LIMIT__ENABLED")
+        && let Ok(enabled) = v.parse::<bool>()
+    {
+        config.rate_limit.enabled = enabled;
+    }
+    if let Ok(v) = env_var("ORION_RATE_LIMIT__DEFAULT_RPS")
+        && let Ok(rps) = v.parse::<u32>()
+    {
+        config.rate_limit.default_rps = rps;
+    }
+    if let Ok(v) = env_var("ORION_RATE_LIMIT__DEFAULT_BURST")
+        && let Ok(burst) = v.parse::<u32>()
+    {
+        config.rate_limit.default_burst = burst;
+    }
     // Kafka overrides
     if let Ok(v) = env_var("ORION_KAFKA__ENABLED")
         && let Ok(enabled) = v.parse::<bool>()
@@ -391,6 +444,20 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
         if !(0.0..=1.0).contains(&config.tracing.sample_rate) {
             return Err(OrionError::Config {
                 message: "tracing.sample_rate must be between 0.0 and 1.0".to_string(),
+            });
+        }
+    }
+    if config.rate_limit.enabled {
+        if config.rate_limit.default_rps == 0 {
+            return Err(OrionError::Config {
+                message: "rate_limit.default_rps must be > 0 when rate limiting is enabled"
+                    .to_string(),
+            });
+        }
+        if config.rate_limit.default_burst == 0 {
+            return Err(OrionError::Config {
+                message: "rate_limit.default_burst must be > 0 when rate limiting is enabled"
+                    .to_string(),
             });
         }
     }

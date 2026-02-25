@@ -1,5 +1,7 @@
+pub mod observability;
 #[cfg(feature = "otel")]
 pub mod otel;
+pub mod rate_limit;
 pub mod routes;
 pub mod state;
 
@@ -24,12 +26,29 @@ pub fn build_router(state: AppState) -> Router {
     #[cfg(feature = "otel")]
     let otel_enabled = state.config.tracing.enabled;
 
+    let rate_limit_enabled = state.rate_limit_state.is_some();
+
     let router = routes::api_routes()
         .layer(DefaultBodyLimit::max(max_body_size))
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
+
+    // Rate limiting layer (conditional)
+    let router = if rate_limit_enabled {
+        router.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::rate_limit_middleware,
+        ))
+    } else {
+        router
+    };
+
+    // HTTP metrics layer (unconditional, outermost to capture 429s)
+    let router = router.layer(axum::middleware::from_fn(
+        observability::http_metrics_middleware,
+    ));
 
     // When OTel is compiled in and enabled, add trace context extraction middleware
     #[cfg(feature = "otel")]
