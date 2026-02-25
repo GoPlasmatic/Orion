@@ -1229,3 +1229,186 @@ async fn test_list_versions_nonexistent_rule() {
 
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+// ============================================================
+// Input Validation Tests
+// ============================================================
+
+#[tokio::test]
+async fn test_create_rule_oversized_id() {
+    let app = common::test_app().await;
+    let long_id = "a".repeat(129);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "id": long_id,
+                "name": "Test",
+                "channel": "orders",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_rule_invalid_id_chars() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "id": "has spaces!",
+                "name": "Test",
+                "channel": "orders",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_rule_empty_name_rejected() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "",
+                "channel": "orders",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_rule_oversized_name() {
+    let app = common::test_app().await;
+    let long_name = "a".repeat(256);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": long_name,
+                "channel": "orders",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_rule_invalid_channel_chars() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Test",
+                "channel": "has spaces!",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_update_rule_empty_name_rejected() {
+    let app = common::test_app().await;
+
+    // Create a valid rule first
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Valid Rule",
+                "channel": "orders",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let rule_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Try to update with empty name
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/admin/rules/{}", rule_id),
+            Some(json!({ "name": "   " })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_update_rule_invalid_channel_rejected() {
+    let app = common::test_app().await;
+
+    // Create a valid rule first
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "name": "Valid Rule",
+                "channel": "orders",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let rule_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Try to update with invalid channel
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/admin/rules/{}", rule_id),
+            Some(json!({ "channel": "bad channel!" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

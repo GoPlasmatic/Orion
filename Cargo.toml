@@ -41,6 +41,7 @@ async-trait = "0.1"
 datalogic-rs = "4"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
+url = "2"
 rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"], optional = true }

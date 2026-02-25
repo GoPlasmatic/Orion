@@ -281,3 +281,112 @@ async fn test_metrics_endpoint() {
     // Metrics should contain Prometheus format text (may be empty if no metrics recorded yet)
     assert!(!body.contains("error"));
 }
+
+// ============================================================
+// Connector Input Validation Tests
+// ============================================================
+
+#[tokio::test]
+async fn test_create_connector_invalid_type() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "name": "bad-connector",
+                "connector_type": "grpc",
+                "config": {}
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_connector_invalid_config_structure() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "name": "bad-config",
+                "connector_type": "http",
+                "config": "not an object"
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_connector_non_http_url_scheme() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "name": "ftp-connector",
+                "connector_type": "http",
+                "config": {
+                    "url": "ftp://example.com/files",
+                    "method": "GET"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_update_connector_invalid_type() {
+    let app = common::test_app().await;
+
+    // Create a valid connector first
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "name": "valid-http",
+                "connector_type": "http",
+                "config": {
+                    "url": "https://example.com/api",
+                    "method": "POST"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    let connector_id = body["data"]["id"].as_str().unwrap().to_string();
+
+    // Try to update with invalid type
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/admin/connectors/{}", connector_id),
+            Some(json!({ "connector_type": "grpc" })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
