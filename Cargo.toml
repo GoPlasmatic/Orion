@@ -1,5 +1,5 @@
 [package]
-name = "orion"
+name = "orion-server"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -9,7 +9,7 @@ repository = "https://github.com/GoPlasmatic/Orion"
 homepage = "https://github.com/GoPlasmatic/Orion"
 
 [[bin]]
-name = "orion"
+name = "orion-server"
 path = "src/main.rs"
 
 [[bin]]
@@ -65,7 +65,7 @@ anyhow = { version = "1", optional = true }
 [dev-dependencies]
 
 [features]
-default = ["swagger-ui"]
+default = ["swagger-ui", "otel"]
 swagger-ui = ["utoipa-swagger-ui"]
 cli = ["colored", "tabled", "dirs", "serde_yaml", "clap_complete", "anyhow"]
 kafka = ["rdkafka"]
