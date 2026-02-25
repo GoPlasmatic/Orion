@@ -213,11 +213,14 @@ impl Default for TracingConfig {
 /// Load configuration from an optional TOML file path, then apply env overrides.
 pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
     let mut config = if let Some(p) = path {
-        let content = std::fs::read_to_string(Path::new(p)).map_err(|e| {
-            OrionError::Internal(format!("Failed to read config file '{}': {}", p, e))
-        })?;
-        toml::from_str::<AppConfig>(&content).map_err(|e| {
-            OrionError::Internal(format!("Failed to parse config file '{}': {}", p, e))
+        let content =
+            std::fs::read_to_string(Path::new(p)).map_err(|e| OrionError::InternalSource {
+                context: format!("Failed to read config file '{}'", p),
+                source: Box::new(e),
+            })?;
+        toml::from_str::<AppConfig>(&content).map_err(|e| OrionError::InternalSource {
+            context: format!("Failed to parse config file '{}'", p),
+            source: Box::new(e),
         })?
     } else {
         AppConfig::default()
@@ -322,68 +325,73 @@ const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 /// Validate configuration values.
 fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     if config.server.port == 0 {
-        return Err(OrionError::Internal("server.port must be > 0".to_string()));
+        return Err(OrionError::Config {
+            message: "server.port must be > 0".to_string(),
+        });
     }
     if config.ingest.max_payload_size == 0 {
-        return Err(OrionError::Internal(
-            "ingest.max_payload_size must be > 0".to_string(),
-        ));
+        return Err(OrionError::Config {
+            message: "ingest.max_payload_size must be > 0".to_string(),
+        });
     }
     if config.ingest.batch_size == 0 {
-        return Err(OrionError::Internal(
-            "ingest.batch_size must be > 0".to_string(),
-        ));
+        return Err(OrionError::Config {
+            message: "ingest.batch_size must be > 0".to_string(),
+        });
     }
     if config.queue.workers == 0 {
-        return Err(OrionError::Internal(
-            "queue.workers must be > 0".to_string(),
-        ));
+        return Err(OrionError::Config {
+            message: "queue.workers must be > 0".to_string(),
+        });
     }
     if config.queue.buffer_size == 0 {
-        return Err(OrionError::Internal(
-            "queue.buffer_size must be > 0".to_string(),
-        ));
+        return Err(OrionError::Config {
+            message: "queue.buffer_size must be > 0".to_string(),
+        });
     }
     if config.storage.path.is_empty() {
-        return Err(OrionError::Internal(
-            "storage.path must not be empty".to_string(),
-        ));
+        return Err(OrionError::Config {
+            message: "storage.path must not be empty".to_string(),
+        });
     }
     if !VALID_LOG_LEVELS.contains(&config.logging.level.to_lowercase().as_str()) {
-        return Err(OrionError::Internal(format!(
-            "logging.level '{}' is invalid. Must be one of: {}",
-            config.logging.level,
-            VALID_LOG_LEVELS.join(", ")
-        )));
+        return Err(OrionError::Config {
+            message: format!(
+                "logging.level '{}' is invalid. Must be one of: {}",
+                config.logging.level,
+                VALID_LOG_LEVELS.join(", ")
+            ),
+        });
     }
     if config.tracing.enabled {
         if config.tracing.otlp_endpoint.is_empty() {
-            return Err(OrionError::Internal(
-                "tracing.otlp_endpoint must not be empty when tracing is enabled".to_string(),
-            ));
+            return Err(OrionError::Config {
+                message: "tracing.otlp_endpoint must not be empty when tracing is enabled"
+                    .to_string(),
+            });
         }
         if !(0.0..=1.0).contains(&config.tracing.sample_rate) {
-            return Err(OrionError::Internal(
-                "tracing.sample_rate must be between 0.0 and 1.0".to_string(),
-            ));
+            return Err(OrionError::Config {
+                message: "tracing.sample_rate must be between 0.0 and 1.0".to_string(),
+            });
         }
     }
     #[cfg(feature = "kafka")]
     if config.kafka.enabled {
         if config.kafka.brokers.is_empty() {
-            return Err(OrionError::Internal(
-                "kafka.brokers must not be empty when Kafka is enabled".to_string(),
-            ));
+            return Err(OrionError::Config {
+                message: "kafka.brokers must not be empty when Kafka is enabled".to_string(),
+            });
         }
         if config.kafka.group_id.is_empty() {
-            return Err(OrionError::Internal(
-                "kafka.group_id must not be empty when Kafka is enabled".to_string(),
-            ));
+            return Err(OrionError::Config {
+                message: "kafka.group_id must not be empty when Kafka is enabled".to_string(),
+            });
         }
         if config.kafka.topics.is_empty() {
-            return Err(OrionError::Internal(
-                "kafka.topics must not be empty when Kafka is enabled".to_string(),
-            ));
+            return Err(OrionError::Config {
+                message: "kafka.topics must not be empty when Kafka is enabled".to_string(),
+            });
         }
     }
     Ok(())

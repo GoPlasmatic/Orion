@@ -68,19 +68,20 @@ impl TryFrom<&Rule> for RuleResponse {
             version: rule.version,
             status: rule.status.clone(),
             condition: serde_json::from_str(&rule.condition_json).map_err(|e| {
-                OrionError::Internal(format!(
-                    "Corrupt JSON in rule {} condition_json: {}",
-                    rule.id, e
-                ))
+                OrionError::InternalSource {
+                    context: format!("Corrupt JSON in rule {} condition_json", rule.id),
+                    source: Box::new(e),
+                }
             })?,
             tasks: serde_json::from_str(&rule.tasks_json).map_err(|e| {
-                OrionError::Internal(format!(
-                    "Corrupt JSON in rule {} tasks_json: {}",
-                    rule.id, e
-                ))
+                OrionError::InternalSource {
+                    context: format!("Corrupt JSON in rule {} tasks_json", rule.id),
+                    source: Box::new(e),
+                }
             })?,
-            tags: serde_json::from_str(&rule.tags).map_err(|e| {
-                OrionError::Internal(format!("Corrupt JSON in rule {} tags: {}", rule.id, e))
+            tags: serde_json::from_str(&rule.tags).map_err(|e| OrionError::InternalSource {
+                context: format!("Corrupt JSON in rule {} tags", rule.id),
+                source: Box::new(e),
             })?,
             continue_on_error: rule.continue_on_error,
             created_at: rule.created_at,
@@ -121,19 +122,18 @@ impl TryFrom<&RuleVersion> for RuleVersionResponse {
             priority: v.priority,
             status: v.status.clone(),
             condition: serde_json::from_str(&v.condition_json).map_err(|e| {
-                OrionError::Internal(format!(
-                    "Corrupt JSON in rule version {} condition_json: {}",
-                    v.id, e
-                ))
+                OrionError::InternalSource {
+                    context: format!("Corrupt JSON in rule version {} condition_json", v.id),
+                    source: Box::new(e),
+                }
             })?,
-            tasks: serde_json::from_str(&v.tasks_json).map_err(|e| {
-                OrionError::Internal(format!(
-                    "Corrupt JSON in rule version {} tasks_json: {}",
-                    v.id, e
-                ))
+            tasks: serde_json::from_str(&v.tasks_json).map_err(|e| OrionError::InternalSource {
+                context: format!("Corrupt JSON in rule version {} tasks_json", v.id),
+                source: Box::new(e),
             })?,
-            tags: serde_json::from_str(&v.tags).map_err(|e| {
-                OrionError::Internal(format!("Corrupt JSON in rule version {} tags: {}", v.id, e))
+            tags: serde_json::from_str(&v.tags).map_err(|e| OrionError::InternalSource {
+                context: format!("Corrupt JSON in rule version {} tags", v.id),
+                source: Box::new(e),
             })?,
             continue_on_error: v.continue_on_error,
             created_at: v.created_at,

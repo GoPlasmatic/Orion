@@ -16,6 +16,19 @@ pub enum OrionError {
     #[error("Internal error: {0}")]
     Internal(String),
 
+    #[error("Configuration error: {message}")]
+    Config { message: String },
+
+    #[error("Queue error: {0}")]
+    Queue(String),
+
+    #[error("{context}")]
+    InternalSource {
+        context: String,
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     #[error("Storage error: {0}")]
     Storage(#[from] sqlx::Error),
 
@@ -26,19 +39,63 @@ pub enum OrionError {
     Serialization(#[from] serde_json::Error),
 }
 
+impl OrionError {
+    /// Whether this error is likely transient and the operation could succeed on retry.
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            OrionError::Storage(_) => true,
+            OrionError::Engine(e) => e.retryable(),
+            OrionError::Queue(_) => true,
+            _ => false,
+        }
+    }
+}
+
 impl IntoResponse for OrionError {
     fn into_response(self) -> Response {
         let (status, code, message) = match &self {
             OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
             OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
-            OrionError::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                msg.clone(),
-            ),
+            OrionError::Internal(msg) => {
+                tracing::error!(error.category = "internal", error.message = %msg, "Internal error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    msg.clone(),
+                )
+            }
+            OrionError::Config { message } => {
+                tracing::error!(error.category = "config", error.message = %message, "Config error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "CONFIG_ERROR",
+                    message.clone(),
+                )
+            }
+            OrionError::Queue(msg) => {
+                tracing::error!(error.category = "queue", error.message = %msg, "Queue error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "QUEUE_ERROR",
+                    "An internal queue error occurred".to_string(),
+                )
+            }
+            OrionError::InternalSource { context, source } => {
+                tracing::error!(
+                    error.category = "internal",
+                    error.context = %context,
+                    error.source = %source,
+                    "Internal error"
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "INTERNAL_ERROR",
+                    "An internal error occurred".to_string(),
+                )
+            }
             OrionError::Storage(e) => {
-                tracing::error!(error = %e, "Storage error");
+                tracing::error!(error.category = "storage", error = %e, "Storage error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "STORAGE_ERROR",
@@ -46,7 +103,7 @@ impl IntoResponse for OrionError {
                 )
             }
             OrionError::Engine(e) => {
-                tracing::error!(error = %e, "Engine error");
+                tracing::error!(error.category = "engine", error = %e, "Engine error");
                 engine_error_response(e)
             }
             OrionError::Serialization(_) => (
@@ -129,5 +186,66 @@ mod tests {
         let err = OrionError::Engine(dataflow_rs::DataflowError::Timeout("timed out".to_string()));
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    }
+
+    #[test]
+    fn test_config_error_status() {
+        let err = OrionError::Config {
+            message: "port must be > 0".to_string(),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_queue_error_status() {
+        let err = OrionError::Queue("queue is closed".to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_internal_source_status() {
+        let source = std::io::Error::new(std::io::ErrorKind::Other, "disk full");
+        let err = OrionError::InternalSource {
+            context: "Failed to write file".to_string(),
+            source: Box::new(source),
+        };
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    #[test]
+    fn test_internal_source_preserves_chain() {
+        let source = std::io::Error::new(std::io::ErrorKind::Other, "connection reset");
+        let err = OrionError::InternalSource {
+            context: "Failed to connect to database".to_string(),
+            source: Box::new(source),
+        };
+        assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn test_retryable_storage() {
+        let err = OrionError::Storage(sqlx::Error::PoolTimedOut);
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_retryable_queue() {
+        assert!(OrionError::Queue("closed".to_string()).is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_bad_request() {
+        assert!(!OrionError::BadRequest("bad".to_string()).is_retryable());
+    }
+
+    #[test]
+    fn test_not_retryable_config() {
+        let err = OrionError::Config {
+            message: "invalid".to_string(),
+        };
+        assert!(!err.is_retryable());
     }
 }
