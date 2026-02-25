@@ -65,6 +65,9 @@ pub struct KafkaConnectorConfig {
     pub group_id: Option<String>,
 }
 
+/// Allowed connector type values.
+pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka"];
+
 /// In-memory registry for active connector configurations.
 pub struct ConnectorRegistry {
     configs: RwLock<HashMap<String, Arc<ConnectorConfig>>>,

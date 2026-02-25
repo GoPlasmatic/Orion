@@ -8,3 +8,4 @@ pub mod metrics;
 pub mod queue;
 pub mod server;
 pub mod storage;
+pub mod validation;

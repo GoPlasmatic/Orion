@@ -17,6 +17,7 @@ use crate::storage::repositories::connectors::{
 use crate::storage::repositories::rules::{
     CreateRuleRequest, RuleFilter, StatusChangeRequest, UpdateRuleRequest,
 };
+use crate::validation;
 
 pub fn admin_routes() -> Router<AppState> {
     Router::new()
@@ -92,6 +93,7 @@ pub(crate) async fn create_rule(
     State(state): State<AppState>,
     Json(req): Json<CreateRuleRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
+    validation::validate_create_rule(&req)?;
     let rule = state.rule_repo.create(&req).await?;
     reload_engine(&state).await?;
     Ok((
@@ -140,6 +142,7 @@ pub(crate) async fn update_rule(
     Path(id): Path<String>,
     Json(req): Json<UpdateRuleRequest>,
 ) -> Result<Json<Value>, OrionError> {
+    validation::validate_update_rule(&req)?;
     let rule = state.rule_repo.update(&id, &req).await?;
     reload_engine(&state).await?;
     Ok(Json(json!({ "data": RuleResponse::try_from(&rule)? })))
@@ -652,6 +655,7 @@ pub(crate) async fn create_connector(
     State(state): State<AppState>,
     Json(req): Json<CreateConnectorRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
+    validation::validate_create_connector(&req)?;
     let connector = state.connector_repo.create(&req).await?;
     reload_connectors(&state).await?;
     let masked = mask_connector(&connector);
@@ -695,6 +699,7 @@ pub(crate) async fn update_connector(
     Path(id): Path<String>,
     Json(req): Json<UpdateConnectorRequest>,
 ) -> Result<Json<Value>, OrionError> {
+    validation::validate_update_connector(&req)?;
     let connector = state.connector_repo.update(&id, &req).await?;
     reload_connectors(&state).await?;
     let masked = mask_connector(&connector);
