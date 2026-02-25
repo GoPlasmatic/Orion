@@ -2,6 +2,8 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::errors::OrionError;
+
 // -- Rule status constants --
 pub const RULE_STATUS_ACTIVE: &str = "active";
 pub const RULE_STATUS_PAUSED: &str = "paused";
@@ -53,9 +55,11 @@ pub struct RuleResponse {
     pub updated_at: NaiveDateTime,
 }
 
-impl From<&Rule> for RuleResponse {
-    fn from(rule: &Rule) -> Self {
-        Self {
+impl TryFrom<&Rule> for RuleResponse {
+    type Error = OrionError;
+
+    fn try_from(rule: &Rule) -> Result<Self, Self::Error> {
+        Ok(Self {
             id: rule.id.clone(),
             name: rule.name.clone(),
             description: rule.description.clone(),
@@ -63,13 +67,25 @@ impl From<&Rule> for RuleResponse {
             priority: rule.priority,
             version: rule.version,
             status: rule.status.clone(),
-            condition: serde_json::from_str(&rule.condition_json).unwrap_or(Value::Null),
-            tasks: serde_json::from_str(&rule.tasks_json).unwrap_or(Value::Null),
-            tags: serde_json::from_str(&rule.tags).unwrap_or(Value::Null),
+            condition: serde_json::from_str(&rule.condition_json).map_err(|e| {
+                OrionError::Internal(format!(
+                    "Corrupt JSON in rule {} condition_json: {}",
+                    rule.id, e
+                ))
+            })?,
+            tasks: serde_json::from_str(&rule.tasks_json).map_err(|e| {
+                OrionError::Internal(format!(
+                    "Corrupt JSON in rule {} tasks_json: {}",
+                    rule.id, e
+                ))
+            })?,
+            tags: serde_json::from_str(&rule.tags).map_err(|e| {
+                OrionError::Internal(format!("Corrupt JSON in rule {} tags: {}", rule.id, e))
+            })?,
             continue_on_error: rule.continue_on_error,
             created_at: rule.created_at,
             updated_at: rule.updated_at,
-        }
+        })
     }
 }
 
@@ -91,9 +107,11 @@ pub struct RuleVersionResponse {
     pub created_at: NaiveDateTime,
 }
 
-impl From<&RuleVersion> for RuleVersionResponse {
-    fn from(v: &RuleVersion) -> Self {
-        Self {
+impl TryFrom<&RuleVersion> for RuleVersionResponse {
+    type Error = OrionError;
+
+    fn try_from(v: &RuleVersion) -> Result<Self, Self::Error> {
+        Ok(Self {
             id: v.id,
             rule_id: v.rule_id.clone(),
             version: v.version,
@@ -102,12 +120,24 @@ impl From<&RuleVersion> for RuleVersionResponse {
             channel: v.channel.clone(),
             priority: v.priority,
             status: v.status.clone(),
-            condition: serde_json::from_str(&v.condition_json).unwrap_or(Value::Null),
-            tasks: serde_json::from_str(&v.tasks_json).unwrap_or(Value::Null),
-            tags: serde_json::from_str(&v.tags).unwrap_or(Value::Null),
+            condition: serde_json::from_str(&v.condition_json).map_err(|e| {
+                OrionError::Internal(format!(
+                    "Corrupt JSON in rule version {} condition_json: {}",
+                    v.id, e
+                ))
+            })?,
+            tasks: serde_json::from_str(&v.tasks_json).map_err(|e| {
+                OrionError::Internal(format!(
+                    "Corrupt JSON in rule version {} tasks_json: {}",
+                    v.id, e
+                ))
+            })?,
+            tags: serde_json::from_str(&v.tags).map_err(|e| {
+                OrionError::Internal(format!("Corrupt JSON in rule version {} tags: {}", v.id, e))
+            })?,
             continue_on_error: v.continue_on_error,
             created_at: v.created_at,
-        }
+        })
     }
 }
 

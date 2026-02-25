@@ -64,7 +64,11 @@ pub(crate) async fn list_rules(
     Query(filter): Query<RuleFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state.rule_repo.list_paginated(&filter).await?;
-    let data: Vec<RuleResponse> = result.data.iter().map(RuleResponse::from).collect();
+    let data: Vec<RuleResponse> = result
+        .data
+        .iter()
+        .map(RuleResponse::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(json!({
         "data": data,
         "total": result.total,
@@ -92,7 +96,7 @@ pub(crate) async fn create_rule(
     reload_engine(&state).await?;
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "data": RuleResponse::from(&rule) })),
+        Json(json!({ "data": RuleResponse::try_from(&rule)? })),
     ))
 }
 
@@ -114,7 +118,7 @@ pub(crate) async fn get_rule(
     let rule = state.rule_repo.get_by_id(&id).await?;
     let version_count = state.rule_repo.count_versions(&id).await?;
     Ok(Json(json!({
-        "data": RuleResponse::from(&rule),
+        "data": RuleResponse::try_from(&rule)?,
         "version_count": version_count,
     })))
 }
@@ -138,7 +142,7 @@ pub(crate) async fn update_rule(
 ) -> Result<Json<Value>, OrionError> {
     let rule = state.rule_repo.update(&id, &req).await?;
     reload_engine(&state).await?;
-    Ok(Json(json!({ "data": RuleResponse::from(&rule) })))
+    Ok(Json(json!({ "data": RuleResponse::try_from(&rule)? })))
 }
 
 #[utoipa::path(
@@ -185,7 +189,7 @@ pub(crate) async fn change_rule_status(
 ) -> Result<Json<Value>, OrionError> {
     let rule = state.rule_repo.update_status(&id, &req.status).await?;
     reload_engine(&state).await?;
-    Ok(Json(json!({ "data": RuleResponse::from(&rule) })))
+    Ok(Json(json!({ "data": RuleResponse::try_from(&rule)? })))
 }
 
 // ============================================================
@@ -222,8 +226,11 @@ pub(crate) async fn list_rule_versions(
     let limit = filter.limit.unwrap_or(50);
     let offset = filter.offset.unwrap_or(0);
     let result = state.rule_repo.list_versions(&id, limit, offset).await?;
-    let data: Vec<RuleVersionResponse> =
-        result.data.iter().map(RuleVersionResponse::from).collect();
+    let data: Vec<RuleVersionResponse> = result
+        .data
+        .iter()
+        .map(RuleVersionResponse::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Json(json!({
         "data": data,
@@ -371,7 +378,10 @@ pub(crate) async fn export_rules(
     Query(filter): Query<RuleFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let rules = state.rule_repo.list(&filter).await?;
-    let data: Vec<RuleResponse> = rules.iter().map(RuleResponse::from).collect();
+    let data: Vec<RuleResponse> = rules
+        .iter()
+        .map(RuleResponse::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(json!({ "data": data })))
 }
 
@@ -549,9 +559,27 @@ async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> Validation
             priority: req.priority,
             version: 1,
             status: "active".to_string(),
-            condition_json: serde_json::to_string(&req.condition).unwrap_or_default(),
-            tasks_json: serde_json::to_string(&req.tasks).unwrap_or_default(),
-            tags: serde_json::to_string(&req.tags).unwrap_or_default(),
+            condition_json: serde_json::to_string(&req.condition).unwrap_or_else(|e| {
+                errors.push(ValidationIssue {
+                    field: "condition".to_string(),
+                    message: format!("Failed to serialize condition: {e}"),
+                });
+                String::new()
+            }),
+            tasks_json: serde_json::to_string(&req.tasks).unwrap_or_else(|e| {
+                errors.push(ValidationIssue {
+                    field: "tasks".to_string(),
+                    message: format!("Failed to serialize tasks: {e}"),
+                });
+                String::new()
+            }),
+            tags: serde_json::to_string(&req.tags).unwrap_or_else(|e| {
+                errors.push(ValidationIssue {
+                    field: "tags".to_string(),
+                    message: format!("Failed to serialize tags: {e}"),
+                });
+                String::new()
+            }),
             continue_on_error: req.continue_on_error,
             created_at: chrono::Utc::now().naive_utc(),
             updated_at: chrono::Utc::now().naive_utc(),
