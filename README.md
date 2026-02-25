@@ -29,7 +29,13 @@ brew install GoPlasmatic/tap/orion   # or: curl installer, cargo install (see In
 orion
 ```
 
-**2. Create a rule** — parse payload, then conditionally transform:
+**2. Tell AI what you need:**
+
+```
+"Flag orders over $10,000 for manual review with an alert message"
+```
+
+**3. AI generates the rule — create it via API:**
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/admin/rules \
@@ -58,7 +64,7 @@ curl -s -X POST http://localhost:8080/api/v1/admin/rules \
   }'
 ```
 
-**3. Push data** — the pipeline fires automatically:
+**4. Push data** — the pipeline fires automatically:
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/data/orders \
@@ -84,7 +90,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders \
 }
 ```
 
-Your app just pushed JSON — the engine handled the rest. Change the threshold from 10000 to 5000? One API call. No redeployment.
+You described what you needed. AI generated the rule. Your app pushed JSON — the engine handled the rest. Change the threshold from 10000 to 5000? Tell AI, one API call. No redeployment.
 
 ---
 
@@ -122,7 +128,7 @@ notification-service/ → 500 lines + Dockerfile + CI + health checks + metrics
 
 Every service needs its own health checks, metrics, error handling, and deployment pipeline. Every change requires a code review, a deploy, and a prayer.
 
-**After** — all logic in one governed platform:
+**After** — tell AI what you need, logic lives in one governed platform:
 
 ```
 One Orion instance:
@@ -132,7 +138,7 @@ One Orion instance:
 Governance? Already there. Metrics? Built in. Deploy? Already running.
 ```
 
-Rules live outside your code:
+Tell AI: *"Alert Slack when orders exceed $10K from accounts under 30 days old"* — it generates:
 
 ```json
 {
@@ -153,7 +159,7 @@ Rules live outside your code:
 }
 ```
 
-Change the threshold from 10000 to 5000? One API call. Add a new rule? Another API call. No restarts, no redeployments, no coordination.
+Change the threshold from 10000 to 5000? Tell AI. One API call. No restarts, no redeployments, no coordination.
 
 ## Three Processing Modes
 
@@ -204,17 +210,65 @@ Rule engines are the obvious choice for AI-driven development:
 - **Platform-level governance** — AI can't skip observability, circuit breakers, or versioning
 - **Safe rollback** — version history for every AI-generated rule change
 
-```
-Prompt: "Flag orders over $10,000 from new customers for manual review"
+**AI prompt:**
 
-Generated JSONLogic filter condition:
-{ "and": [
-  { ">": [{ "var": "data.order.total" }, 10000] },
-  { "<": [{ "var": "data.order.account_age_days" }, 30] }
-]}
+```
+"Flag orders over $10,000 from accounts less than 30 days old for manual review.
+Notify the fraud team via the slack-fraud connector."
 ```
 
-The full lifecycle — create, dry-run test, activate, update, delete — is available through the REST API. Every endpoint accepts and returns well-structured JSON, making Orion a natural fit for AI tool calling, MCP tools, or multi-agent orchestration.
+**AI generates the complete rule:**
+
+```json
+{
+  "name": "New Account Fraud Alert",
+  "channel": "orders",
+  "condition": true,
+  "tasks": [
+    { "id": "parse", "name": "Parse Payload", "function": {
+        "name": "parse_json", "input": { "source": "payload", "target": "order" }
+    }},
+    { "id": "flag", "name": "Flag Suspicious",
+      "condition": { "and": [
+        { ">": [{ "var": "data.order.total" }, 10000] },
+        { "<": [{ "var": "data.order.account_age_days" }, 30] }
+      ]},
+      "function": { "name": "map", "input": { "mappings": [
+        { "path": "data.order.flagged", "logic": true },
+        { "path": "data.order.review_reason", "logic": "high_value_new_account" }
+      ]}}
+    },
+    { "id": "notify", "name": "Notify Fraud Team",
+      "condition": { "==": [{ "var": "data.order.flagged" }, true] },
+      "function": { "name": "http_call", "input": {
+          "connector": "slack-fraud",
+          "method": "POST",
+          "body_logic": { "var": "data.order" }
+      }}
+    }
+  ]
+}
+```
+
+**Send data → get results:**
+
+```bash
+curl -s -X POST http://localhost:8080/api/v1/data/orders \
+  -H "Content-Type: application/json" \
+  -d '{ "data": { "total": 15000, "account_age_days": 5, "customer": "NEW-1234" } }'
+```
+
+```json
+{
+  "status": "ok",
+  "data": {
+    "order": { "total": 15000, "account_age_days": 5, "customer": "NEW-1234", "flagged": true, "review_reason": "high_value_new_account" }
+  },
+  "errors": []
+}
+```
+
+The full lifecycle — create, dry-run test, activate, update, delete — is available through the REST API. Every endpoint accepts and returns well-structured JSON, making Orion a natural fit for AI tool calling, MCP tools, or multi-agent orchestration. See [AI Integration](docs/ai-integration.md) for prompt templates, validation workflows, and CI/CD patterns.
 
 ## How It Works
 
@@ -353,6 +407,7 @@ See [Use Cases & Patterns](docs/use-cases.md) for complete, tested examples of e
 | [Kafka Integration](docs/kafka.md) | Topic mapping, metadata injection, DLQ, and publishing |
 | [Production Features](docs/production-features.md) | Custom IDs, fault tolerance, tags, dynamic paths, versioning |
 | [Use Cases & Patterns](docs/use-cases.md) | Tested examples: order classification, IoT alerts, webhooks, routing |
+| [AI Integration](docs/ai-integration.md) | Prompt templates, validation workflows, and CI/CD for AI-generated rules |
 | [Observability](docs/observability.md) | Prometheus metrics, health checks, engine status, and logging |
 
 ## Built With
