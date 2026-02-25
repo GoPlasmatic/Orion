@@ -1,12 +1,16 @@
 <div align="center">
   <img src="https://avatars.githubusercontent.com/u/207296579?s=200&v=4" alt="Orion Logo" width="120" height="120">
 
-  # Orion Rule Engine
+  # Orion
 
-  **Externalize your business logic in 5 minutes. Single binary. Zero dependencies. Just JSON.**
+  **Stop building microservices for business logic.**
 
-  Deploy as a standalone service or sidecar. Define rules as JSON. Push data via REST or Kafka.
-  Change rules at runtime — no restarts, no redeployments, no downtime.
+  New business logic shouldn't need a new service. Orion consolidates your business logic into a
+  single platform with governance built in — observability, circuit breakers, hot-reload,
+  and audit trails out of the box. Add logic as JSON rules, not as services.
+
+  AI makes this even faster: LLMs generate rules, not infrastructure. Dry-run validates
+  them before deploy. Orion handles the rest.
 
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)
@@ -88,6 +92,8 @@ Your app just pushed JSON — the engine handled the rest. Change the threshold 
 
 | Feature | Why it matters |
 |---------|----------------|
+| **One Platform, Not N Services** | Consolidate business logic into a single governed instance instead of building separate microservices |
+| **Governance Built In** | Every rule gets observability, circuit breakers, retries, rate limiting, and versioning automatically |
 | **AI-Ready** | JSON rules that LLMs can generate, validate, and deploy via API |
 | **Single Binary** | No runtime dependencies — embedded SQLite with WAL mode |
 | **Hot-Reload** | Update rules at runtime — zero downtime, in-flight requests complete on the old engine |
@@ -103,22 +109,30 @@ Your app just pushed JSON — the engine handled the rest. Change the threshold 
 
 ## Before & After
 
-**Before** — business logic scattered across your codebase:
+**Before** — business logic sprawled across microservices:
 
-```python
-# pricing.py
-if order.total > 10000 and customer.age_days < 30:
-    send_slack("New high-value customer!")
-    flag_for_review(order)
-elif order.total > 50000:
-    send_slack("Whale alert!")
-    notify_sales_team(order)
-# ... 200 more lines across 12 files
+```
+pricing-service/      → 800 lines + Dockerfile + CI + health checks + metrics
+fraud-service/        → 600 lines + Dockerfile + CI + health checks + metrics
+routing-service/      → 400 lines + Dockerfile + CI + health checks + metrics
+notification-service/ → 500 lines + Dockerfile + CI + health checks + metrics
+
+4 services × (governance + deployment + monitoring) = operational burden
 ```
 
-Every change requires a code review, a deploy, and a prayer.
+Every service needs its own health checks, metrics, error handling, and deployment pipeline. Every change requires a code review, a deploy, and a prayer.
 
-**After** — rules live outside your code:
+**After** — all logic in one governed platform:
+
+```
+One Orion instance:
+  Channel "orders"   → pricing rules + fraud rules
+  Channel "events"   → routing rules + notification rules
+
+Governance? Already there. Metrics? Built in. Deploy? Already running.
+```
+
+Rules live outside your code:
 
 ```json
 {
@@ -181,7 +195,14 @@ See exactly which tasks ran, which were skipped, and what the output looks like 
 
 ## AI-Ready by Design
 
-JSONLogic is a [well-known standard](https://jsonlogic.com) that LLMs already understand. AI agents can generate valid rules from natural language:
+**AI writes rules, not services.** That's the key insight. When AI generates a microservice, you still need to add governance — health checks, metrics, retries, error handling. When AI generates an Orion rule, governance is already there. The platform guarantees it.
+
+Rule engines are the obvious choice for AI-driven development:
+
+- **Constrained output format** — JSON rules that LLMs generate reliably, not open-ended code
+- **Built-in validation** — dry-run tests catch errors before deploy
+- **Platform-level governance** — AI can't skip observability, circuit breakers, or versioning
+- **Safe rollback** — version history for every AI-generated rule change
 
 ```
 Prompt: "Flag orders over $10,000 from new customers for manual review"
