@@ -177,7 +177,7 @@ async fn test_version_list_with_pagination_params() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(body["offset"], 1);
-    assert!(body["data"].as_array().unwrap().len() >= 1);
+    assert!(!body["data"].as_array().unwrap().is_empty());
 }
 
 // ============================================================
