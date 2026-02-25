@@ -60,7 +60,10 @@ async fn rate_limited_app(rps: u32, burst: u32) -> Router {
 
     let rate_limit_state = Some(Arc::new(RateLimitState::from_config(&rate_limit_config)));
 
-    let config = AppConfig { rate_limit: rate_limit_config, ..Default::default() };
+    let config = AppConfig {
+        rate_limit: rate_limit_config,
+        ..Default::default()
+    };
 
     let state = AppState {
         engine,
@@ -137,7 +140,10 @@ async fn rate_limited_app_with_channels() -> Router {
 
     let rate_limit_state = Some(Arc::new(RateLimitState::from_config(&rate_limit_config)));
 
-    let config = AppConfig { rate_limit: rate_limit_config, ..Default::default() };
+    let config = AppConfig {
+        rate_limit: rate_limit_config,
+        ..Default::default()
+    };
 
     let state = AppState {
         engine,
