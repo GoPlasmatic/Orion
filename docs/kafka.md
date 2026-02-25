@@ -52,11 +52,13 @@ Use the `publish_kafka` task function with optional JSONLogic for dynamic keys a
 
 ```json
 {
-  "function": "publish_kafka",
-  "config": {
-    "connector": "my_kafka",
-    "topic": "processed-orders",
-    "key_logic": { "var": "data.order_id" }
+  "function": {
+    "name": "publish_kafka",
+    "input": {
+      "connector": "my_kafka",
+      "topic": "processed-orders",
+      "key_logic": { "var": "data.order_id" }
+    }
   }
 }
 ```

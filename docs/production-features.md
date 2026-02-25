@@ -109,16 +109,18 @@ Use `path_logic` and `body_logic` in `http_call` tasks to compute URLs and reque
 
 ```json
 {
-  "function": "http_call",
-  "config": {
-    "connector": "my_api",
-    "method": "POST",
-    "path_logic": { "cat": ["/users/", { "var": "data.user_id" }, "/notify"] },
-    "body_logic": {
-      "map": [
-        ["message", { "var": "data.alert_message" }],
-        ["priority", { "var": "data.priority" }]
-      ]
+  "function": {
+    "name": "http_call",
+    "input": {
+      "connector": "my_api",
+      "method": "POST",
+      "path_logic": { "cat": ["/users/", { "var": "data.user_id" }, "/notify"] },
+      "body_logic": {
+        "map": [
+          ["message", { "var": "data.alert_message" }],
+          ["priority", { "var": "data.priority" }]
+        ]
+      }
     }
   }
 }
