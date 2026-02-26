@@ -69,7 +69,7 @@ Create a connector with real credentials:
 Read it back — secrets are masked:
 
 ```bash
-orion-cli connectors get <id>
+curl -s http://localhost:8080/api/v1/admin/connectors/<id>
 # auth.token → "******"
 # auth.password → "******"
 # auth.key → "******"

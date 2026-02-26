@@ -40,8 +40,7 @@ Run `cargo clippy` and `cargo fmt` before committing — both must pass cleanly.
 ```
 src/
   main.rs              # Server binary entry point
-  lib.rs               # Library root (shared between server and CLI)
-  cli/main.rs          # CLI binary entry point
+  lib.rs               # Library root
   config/              # Configuration loading (TOML + env vars)
   engine/              # Rule engine, custom functions (http_call, enrich, publish_kafka)
   server/              # Axum routes, middleware, AppState

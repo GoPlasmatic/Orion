@@ -8,7 +8,7 @@ Orion is a standalone JSONLogic-based rules engine service written in Rust. It w
 
 - **Rust Edition:** 2024 (requires Rust 1.85+). The codebase uses let-chains (`if let Some(x) = a && let Some(y) = b`).
 - **Core dependencies:** `dataflow-rs` (workflow engine), `datalogic-rs` (JSONLogic), `axum` 0.8 (HTTP), `sqlx` 0.8 (SQLite)
-- **Two binaries:** `orion` (server, `src/main.rs`) and `orion-cli` (management CLI, `src/cli/main.rs`)
+- **Single binary:** `orion-server` (server, `src/main.rs`)
 
 ## Build & Development Commands
 

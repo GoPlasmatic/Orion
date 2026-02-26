@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md)
 
-Real-world examples showing how AI generates Orion rules from natural language. Every example follows the same workflow: **describe what you need → AI generates the rule → send data → get results**. The rule definitions come directly from the [e2e test cases](../tests/e2e/cases/).
+Real-world examples showing how AI generates Orion rules from natural language. Every example follows the same workflow: **describe what you need → AI generates the rule → send data → get results**.
 
 ## E-Commerce Order Classification
 
@@ -366,7 +366,9 @@ Parse the payload into "txn".
 **Dry-run before going live:**
 
 ```bash
-orion-cli rules test <rule-id> -d '{"amount": 50000, "currency": "USD"}'
+curl -s -X POST http://localhost:8080/api/v1/admin/rules/<rule-id>/test \
+  -H "Content-Type: application/json" \
+  -d '{"data": {"amount": 50000, "currency": "USD"}}'
 ```
 
 ```json
@@ -493,7 +495,11 @@ jobs:
       - name: Deploy to production
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          orion-cli rules import -f rules/ --server ${{ secrets.ORION_URL }}
+          for file in rules/**/*.json; do
+            curl -s -X POST "${{ secrets.ORION_URL }}/api/v1/admin/rules" \
+              -H "Content-Type: application/json" \
+              -d @"$file"
+          done
 ```
 
 **Test case format** — store test cases alongside rules:
