@@ -78,6 +78,17 @@ pub(crate) async fn sync_process(
             metrics::record_message_duration(&channel, duration);
             metrics::record_channel_execution(&channel);
 
+            // Store full message in DB
+            if let Ok(result_json) = serde_json::to_string(&message) {
+                if let Err(e) = state
+                    .job_repo
+                    .store_completed_result(&channel, &result_json)
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to store sync processing result");
+                }
+            }
+
             Ok(Json(json!({
                 "id": message.id,
                 "status": "ok",
@@ -207,7 +218,7 @@ pub(crate) async fn get_job(
         if let Some(ref result_str) = job.result_json
             && let Ok(result_val) = serde_json::from_str::<Value>(result_str)
         {
-            response["result"] = result_val;
+            response["message"] = result_val;
         }
     } else if job.status == models::JOB_STATUS_FAILED
         && let Some(ref err) = job.error_message
@@ -273,10 +284,12 @@ pub(crate) async fn batch_process(
     tracing::Span::current().record("count", req.messages.len());
 
     let engine = state.engine.read().await.clone();
+    let job_repo = state.job_repo.clone();
 
     let mut handles = Vec::with_capacity(req.messages.len());
     for msg in req.messages {
         let engine = engine.clone();
+        let job_repo = job_repo.clone();
         handles.push(tokio::spawn(async move {
             let start = Instant::now();
             let mut message = dataflow_rs::Message::from_value(&msg.data);
@@ -291,6 +304,13 @@ pub(crate) async fn batch_process(
                     metrics::record_message(&msg.channel, "ok");
                     metrics::record_message_duration(&msg.channel, duration);
                     metrics::record_channel_execution(&msg.channel);
+
+                    // Store full message in DB
+                    if let Ok(result_json) = serde_json::to_string(&message) {
+                        if let Err(e) = job_repo.store_completed_result(&msg.channel, &result_json).await {
+                            tracing::warn!(error = %e, "Failed to store batch processing result");
+                        }
+                    }
 
                     json!({
                         "id": message.id,

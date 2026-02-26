@@ -201,10 +201,7 @@ async fn process_job(
             metrics::record_message_duration(&channel, duration);
             metrics::record_channel_execution(&channel);
 
-            let result_json = match serde_json::to_string(&serde_json::json!({
-                "id": message.id,
-                "data": message.data(),
-            })) {
+            let result_json = match serde_json::to_string(&message) {
                 Ok(json) => json,
                 Err(e) => {
                     tracing::error!(job_id = %job_id, error = %e, "Failed to serialize job result");

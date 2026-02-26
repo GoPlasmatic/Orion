@@ -360,7 +360,7 @@ async fn test_get_completed_job_with_result() {
             .unwrap();
         let body = body_json(resp).await;
         if body["status"] == "completed" {
-            assert!(body.get("result").is_some());
+            assert!(body.get("message").is_some());
             assert!(body.get("started_at").is_some());
             assert!(body.get("completed_at").is_some());
             return;

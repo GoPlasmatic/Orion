@@ -78,7 +78,7 @@ async fn test_async_job_completes_successfully() {
     // Poll until completion
     let job = poll_job_until_done(&app, &job_id, 30).await;
     assert_eq!(job["status"], "completed");
-    assert!(job.get("result").is_some());
+    assert!(job.get("message").is_some());
 }
 
 #[tokio::test]
