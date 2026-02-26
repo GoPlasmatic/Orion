@@ -347,6 +347,7 @@ mod tests {
             status: None,
             tags: None,
             continue_on_error: None,
+            version: None,
         };
         assert!(validate_update_rule(&req).is_ok());
     }
@@ -363,6 +364,7 @@ mod tests {
             status: None,
             tags: None,
             continue_on_error: None,
+            version: None,
         };
         assert!(validate_update_rule(&req).is_err());
     }
@@ -379,6 +381,7 @@ mod tests {
             status: None,
             tags: None,
             continue_on_error: None,
+            version: None,
         };
         assert!(validate_update_rule(&req).is_err());
     }
@@ -395,6 +398,7 @@ mod tests {
             status: None,
             tags: None,
             continue_on_error: None,
+            version: None,
         };
         assert!(validate_update_rule(&req).is_err());
     }

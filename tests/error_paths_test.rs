@@ -369,3 +369,120 @@ async fn test_concurrent_rule_updates() {
     // Version should be at least 2 (1 create + at least 1 successful update)
     assert!(body["data"]["version"].as_i64().unwrap() >= 2);
 }
+
+// ============================================================
+// Optimistic locking
+// ============================================================
+
+#[tokio::test]
+async fn test_update_rule_with_stale_version_returns_409() {
+    let app = common::test_app().await;
+
+    // Create a rule (version 1)
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "id": "optimistic-lock-rule",
+                "name": "Original",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["version"], 1);
+
+    // Update successfully (version 1 -> 2)
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/rules/optimistic-lock-rule",
+            Some(json!({"name": "Updated Once", "version": 1})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["version"], 2);
+
+    // Try to update with stale version 1 (DB is at version 2) -> 409
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/rules/optimistic-lock-rule",
+            Some(json!({"name": "Stale Update", "version": 1})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_json(resp).await;
+    assert!(body["error"]["code"].as_str().unwrap() == "CONFLICT");
+
+    // Update with correct version 2 -> succeeds
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/rules/optimistic-lock-rule",
+            Some(json!({"name": "Correct Update", "version": 2})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["version"], 3);
+    assert_eq!(body["data"]["name"], "Correct Update");
+}
+
+#[tokio::test]
+async fn test_status_change_with_stale_version_returns_409() {
+    let app = common::test_app().await;
+
+    // Create a rule (version 1)
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules",
+            Some(json!({
+                "id": "status-lock-rule",
+                "name": "Status Lock Rule",
+                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Pause with correct version -> succeeds (version 1 -> 2)
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            "/api/v1/admin/rules/status-lock-rule/status",
+            Some(json!({"status": "paused", "version": 1})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["version"], 2);
+
+    // Try to activate with stale version 1 -> 409
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            "/api/v1/admin/rules/status-lock-rule/status",
+            Some(json!({"status": "active", "version": 1})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}

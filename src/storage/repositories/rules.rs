@@ -53,11 +53,17 @@ pub struct UpdateRuleRequest {
     pub status: Option<String>,
     pub tags: Option<Vec<String>>,
     pub continue_on_error: Option<bool>,
+    /// Expected current version for optimistic locking. If provided and the
+    /// rule has been modified since this version, the update returns 409 Conflict.
+    pub version: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct StatusChangeRequest {
     pub status: String,
+    /// Expected current version for optimistic locking. If provided and the
+    /// rule has been modified since this version, the update returns 409 Conflict.
+    pub version: Option<i64>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, utoipa::IntoParams)]
@@ -83,7 +89,12 @@ pub trait RuleRepository: Send + Sync {
     async fn update(&self, id: &str, req: &UpdateRuleRequest) -> Result<Rule, OrionError>;
     async fn delete(&self, id: &str) -> Result<(), OrionError>;
     async fn list_active(&self) -> Result<Vec<Rule>, OrionError>;
-    async fn update_status(&self, id: &str, status: &str) -> Result<Rule, OrionError>;
+    async fn update_status(
+        &self,
+        id: &str,
+        status: &str,
+        expected_version: Option<i64>,
+    ) -> Result<Rule, OrionError>;
     async fn count_versions(&self, id: &str) -> Result<i64, OrionError>;
     async fn bulk_create(
         &self,
@@ -294,6 +305,11 @@ impl RuleRepository for SqliteRuleRepository {
         crate::metrics::timed_db_op("rules.update", async {
             let existing = self.get_by_id(id).await?;
 
+            // Use client-provided version if available, otherwise use the
+            // version we just read (still guards against TOCTOU within the
+            // same request).
+            let expected_version = req.version.unwrap_or(existing.version);
+
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let description = req
                 .description
@@ -317,16 +333,16 @@ impl RuleRepository for SqliteRuleRepository {
                 None => existing.tags.clone(),
             };
 
-            let new_version = existing.version + 1;
+            let new_version = expected_version + 1;
 
             let mut tx = self.pool.begin().await?;
 
-            sqlx::query(
+            let result = sqlx::query(
                 r#"UPDATE rules
                    SET name = ?, description = ?, channel = ?, priority = ?,
                        version = ?, status = ?, condition_json = ?, tasks_json = ?,
                        tags = ?, continue_on_error = ?, updated_at = datetime('now')
-                   WHERE id = ?"#,
+                   WHERE id = ? AND version = ?"#,
             )
             .bind(name)
             .bind(description)
@@ -339,8 +355,16 @@ impl RuleRepository for SqliteRuleRepository {
             .bind(&tags_json)
             .bind(continue_on_error)
             .bind(id)
+            .bind(expected_version)
             .execute(&mut *tx)
             .await?;
+
+            if result.rows_affected() == 0 {
+                return Err(OrionError::Conflict(format!(
+                    "Rule '{}' has been modified by another request (expected version {})",
+                    id, expected_version
+                )));
+            }
 
             insert_version(
                 &mut *tx,
@@ -394,7 +418,12 @@ impl RuleRepository for SqliteRuleRepository {
         .await
     }
 
-    async fn update_status(&self, id: &str, status: &str) -> Result<Rule, OrionError> {
+    async fn update_status(
+        &self,
+        id: &str,
+        status: &str,
+        expected_version: Option<i64>,
+    ) -> Result<Rule, OrionError> {
         if !models::VALID_RULE_STATUSES.contains(&status) {
             return Err(OrionError::BadRequest(format!(
                 "Invalid status '{}'. Must be one of: {}",
@@ -405,18 +434,27 @@ impl RuleRepository for SqliteRuleRepository {
 
         crate::metrics::timed_db_op("rules.update_status", async {
             let existing = self.get_by_id(id).await?;
-            let new_version = existing.version + 1;
+            let expected_version = expected_version.unwrap_or(existing.version);
+            let new_version = expected_version + 1;
 
             let mut tx = self.pool.begin().await?;
 
-            sqlx::query(
-                "UPDATE rules SET status = ?, version = ?, updated_at = datetime('now') WHERE id = ?",
+            let result = sqlx::query(
+                "UPDATE rules SET status = ?, version = ?, updated_at = datetime('now') WHERE id = ? AND version = ?",
             )
             .bind(status)
             .bind(new_version)
             .bind(id)
+            .bind(expected_version)
             .execute(&mut *tx)
             .await?;
+
+            if result.rows_affected() == 0 {
+                return Err(OrionError::Conflict(format!(
+                    "Rule '{}' has been modified by another request (expected version {})",
+                    id, expected_version
+                )));
+            }
 
             insert_version(
                 &mut *tx,

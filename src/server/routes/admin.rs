@@ -196,7 +196,10 @@ pub(crate) async fn change_rule_status(
     Path(id): Path<String>,
     Json(req): Json<StatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    let rule = state.rule_repo.update_status(&id, &req.status).await?;
+    let rule = state
+        .rule_repo
+        .update_status(&id, &req.status, req.version)
+        .await?;
     reload_engine(&state).await?;
     Ok(Json(json!({ "data": RuleResponse::try_from(&rule)? })))
 }
