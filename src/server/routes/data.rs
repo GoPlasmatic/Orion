@@ -169,8 +169,10 @@ pub(crate) async fn async_submit(
     params(
         ("status" = Option<String>, Query, description = "Filter by job status"),
         ("channel" = Option<String>, Query, description = "Filter by channel"),
-        ("limit" = Option<i64>, Query, description = "Page size"),
+        ("limit" = Option<i64>, Query, description = "Page size (default 50, max 1000)"),
         ("offset" = Option<i64>, Query, description = "Page offset"),
+        ("sort_by" = Option<String>, Query, description = "Sort column: created_at (default), updated_at, status, channel"),
+        ("sort_order" = Option<String>, Query, description = "Sort direction: asc or desc (default)"),
     ),
     responses(
         (status = 200, description = "Paginated list of jobs"),

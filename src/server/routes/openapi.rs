@@ -49,9 +49,10 @@ pub(crate) struct ErrorDetail {
         // Engine (2)
         super::admin::engine_status,
         super::admin::engine_reload,
-        // Data (4)
+        // Data (5)
         super::data::sync_process,
         super::data::async_submit,
+        super::data::list_jobs,
         super::data::get_job,
         super::data::batch_process,
         // Operational (2)

@@ -12,7 +12,14 @@ pub struct JobFilter {
     pub channel: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// Column to sort by: created_at (default), updated_at, status, channel.
+    pub sort_by: Option<String>,
+    /// Sort direction: asc or desc (default).
+    pub sort_order: Option<String>,
 }
+
+/// Allowed columns for the `sort_by` query parameter.
+const ALLOWED_SORT_COLUMNS: &[&str] = &["created_at", "updated_at", "status", "channel"];
 
 // -- Repository trait --
 
@@ -187,8 +194,18 @@ impl JobRepository for SqliteJobRepository {
             }
             let (total,) = cq.fetch_one(&self.pool).await?;
 
+            let sort_col = filter
+                .sort_by
+                .as_deref()
+                .filter(|c| ALLOWED_SORT_COLUMNS.contains(c))
+                .unwrap_or("created_at");
+            let sort_dir = match filter.sort_order.as_deref() {
+                Some("asc") => "ASC",
+                _ => "DESC",
+            };
+
             let data_query = format!(
-                "SELECT * FROM jobs {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+                "SELECT * FROM jobs {where_clause} ORDER BY {sort_col} {sort_dir} LIMIT ? OFFSET ?"
             );
             let mut dq = sqlx::query_as::<_, Job>(&data_query);
             for b in &binds {
