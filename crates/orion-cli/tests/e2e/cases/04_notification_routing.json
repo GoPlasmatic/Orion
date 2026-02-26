@@ -1,0 +1,121 @@
+{
+    "name": "Notification Routing Pipeline",
+    "description": "Route notifications by severity: filter low, email for medium+, SMS for high+",
+    "rules": [
+        {
+            "name": "Notification Router",
+            "channel": "notifications",
+            "priority": 10,
+            "condition": true,
+            "tasks": [
+                {
+                    "id": "parse",
+                    "name": "Parse Payload",
+                    "function": {
+                        "name": "parse_json",
+                        "input": { "source": "payload", "target": "notification" }
+                    }
+                },
+                {
+                    "id": "log_all",
+                    "name": "Log All Notifications",
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [
+                                { "path": "data.notification.logged", "logic": true }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "id": "filter_low",
+                    "name": "Filter Low Severity",
+                    "condition": { "!=": [{ "var": "data.notification.severity" }, "low"] },
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [
+                                { "path": "data.notification.passed_filter", "logic": true }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "id": "email",
+                    "name": "Send Email",
+                    "condition": { "!=": [{ "var": "data.notification.severity" }, "low"] },
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [
+                                { "path": "data.notification.email_sent", "logic": true }
+                            ]
+                        }
+                    }
+                },
+                {
+                    "id": "sms",
+                    "name": "Send SMS for High/Critical",
+                    "condition": {
+                        "in": [{ "var": "data.notification.severity" }, ["high", "critical"]]
+                    },
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [
+                                { "path": "data.notification.sms_sent", "logic": true }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ],
+    "tests": [
+        {
+            "name": "Low severity is logged but no email/SMS",
+            "channel": "notifications",
+            "input": { "severity": "low", "message": "Info event" },
+            "expect": {
+                ".status": "ok",
+                ".data.notification.logged": "true",
+                ".data.notification.email_sent": "null",
+                ".data.notification.sms_sent": "null"
+            }
+        },
+        {
+            "name": "Medium severity gets email only",
+            "channel": "notifications",
+            "input": { "severity": "medium", "message": "Warning event" },
+            "expect": {
+                ".status": "ok",
+                ".data.notification.logged": "true",
+                ".data.notification.email_sent": "true",
+                ".data.notification.sms_sent": "null"
+            }
+        },
+        {
+            "name": "High severity gets email and SMS",
+            "channel": "notifications",
+            "input": { "severity": "high", "message": "Alert event" },
+            "expect": {
+                ".status": "ok",
+                ".data.notification.logged": "true",
+                ".data.notification.email_sent": "true",
+                ".data.notification.sms_sent": "true"
+            }
+        },
+        {
+            "name": "Critical severity gets full routing",
+            "channel": "notifications",
+            "input": { "severity": "critical", "message": "Critical failure" },
+            "expect": {
+                ".status": "ok",
+                ".data.notification.logged": "true",
+                ".data.notification.email_sent": "true",
+                ".data.notification.sms_sent": "true"
+            }
+        }
+    ]
+}

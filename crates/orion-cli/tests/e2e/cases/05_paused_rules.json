@@ -1,0 +1,74 @@
+{
+    "name": "Paused Rule Behavior",
+    "description": "Verify that paused rules skip processing and reactivated rules resume",
+    "rules": [
+        {
+            "name": "Content Moderator",
+            "channel": "content",
+            "priority": 10,
+            "condition": true,
+            "tasks": [
+                {
+                    "id": "parse",
+                    "name": "Parse Payload",
+                    "function": {
+                        "name": "parse_json",
+                        "input": { "source": "payload", "target": "post" }
+                    }
+                },
+                {
+                    "id": "moderate",
+                    "name": "Add Moderation Flag",
+                    "function": {
+                        "name": "map",
+                        "input": {
+                            "mappings": [
+                                { "path": "data.post.moderated", "logic": true },
+                                { "path": "data.post.status", "logic": "reviewed" }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }
+    ],
+    "tests": [
+        {
+            "name": "Active rule transforms data",
+            "channel": "content",
+            "input": { "text": "Hello world", "author": "user1" },
+            "expect": {
+                ".status": "ok",
+                ".data.post.moderated": "true",
+                ".data.post.status": "reviewed",
+                ".data.post.text": "Hello world"
+            }
+        },
+        {
+            "name": "Paused rule skips processing",
+            "before": [
+                { "action": "pause_rule", "rule_index": 0 },
+                { "action": "reload" }
+            ],
+            "channel": "content",
+            "input": { "text": "Should not be moderated" },
+            "expect": {
+                ".status": "ok"
+            }
+        },
+        {
+            "name": "Reactivated rule resumes processing",
+            "before": [
+                { "action": "activate_rule", "rule_index": 0 },
+                { "action": "reload" }
+            ],
+            "channel": "content",
+            "input": { "text": "Back online" },
+            "expect": {
+                ".status": "ok",
+                ".data.post.moderated": "true",
+                ".data.post.status": "reviewed"
+            }
+        }
+    ]
+}

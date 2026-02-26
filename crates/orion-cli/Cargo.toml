@@ -1,0 +1,27 @@
+[package]
+name = "orion-cli"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "CLI tool for interacting with an Orion rules engine server"
+license = "Apache-2.0"
+repository = "https://github.com/GoPlasmatic/Orion-cli"
+homepage = "https://github.com/GoPlasmatic/Orion-cli"
+
+[[bin]]
+name = "orion-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+colored = "3"
+tabled = "0.18"
+dirs = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+anyhow = "1"
