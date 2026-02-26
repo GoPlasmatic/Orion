@@ -106,11 +106,10 @@ You described what you needed. AI generated the rule. Your app pushed JSON — t
 | **Dry-Run Testing** | [Test any rule](docs/api-reference.md#admin-api) with sample data and get a full execution trace |
 | **JSONLogic Standard** | Portable, safe, language-agnostic rule conditions |
 | **Task Pipelines** | Chain parsing, filtering, transforms, API calls, and publishing |
-| **GitOps-Ready** | Custom rule IDs + [import/export](docs/production-features.md) + CLI diff for CI/CD workflows |
+| **GitOps-Ready** | Custom rule IDs + [import/export](docs/production-features.md) for CI/CD workflows |
 | **Rule Versioning** | Automatic [audit trail](docs/production-features.md#rule-versioning) for every rule change |
 | **Connectors** | Named external service configs with [auth and retry](docs/connectors.md) — secrets stay out of rules |
 | **Sync, Async & Batch** | Three [processing modes](docs/api-reference.md#data-api) for any workload |
-| **CLI Tool** | Full-featured [`orion-cli`](docs/cli.md) for managing rules, connectors, and data |
 | **Prometheus Metrics** | Built-in [counters, histograms, and health checks](docs/observability.md) |
 
 ## Before & After
@@ -264,29 +263,6 @@ Inbound (REST or Kafka)
 | `publish_kafka` | Publish messages to [Kafka topics](docs/kafka.md) |
 | `log` | Emit structured log entries for auditing and debugging |
 
-## GitOps & CLI
-
-Manage everything from the terminal with `orion-cli` — like `kubectl` for your rules engine:
-
-```bash
-orion-cli rules list --output table        # List all rules
-orion-cli rules diff -f rules.json         # Diff local vs live
-orion-cli rules import -f rules.json       # Import rules from file
-orion-cli rules test <id> -d '{"data": {"total": 25000}}' --trace  # Test with trace
-orion-cli send orders -d '{"data": {...}}' # Send data
-orion-cli engine status                    # Check engine health
-orion-cli completions zsh                  # Shell completions
-```
-
-**GitOps workflow:** Store rules as JSON in your repo. Diff against live state. Deploy from CI/CD:
-
-```bash
-orion-cli rules diff -f rules.json         # Preview changes: + new, ~ modified, - deleted
-orion-cli rules import -f rules.json       # Apply — partial failures don't roll back successful imports
-```
-
-Custom rule IDs (e.g., `high-value-order-alert` instead of UUIDs) make rules trackable across environments. See [CLI Reference](docs/cli.md) for the full command list.
-
 ## Deploy Anywhere
 
 ```
@@ -326,7 +302,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/
 cargo install --git https://github.com/GoPlasmatic/Orion.git
 ```
 
-Both `orion-server` (the server) and `orion-cli` (the management tool) are included. Verify with `orion-server --version`. See [Configuration](docs/configuration.md#deployment) for Docker and deployment options.
+Verify with `orion-server --version`. See [Configuration](docs/configuration.md#deployment) for Docker and deployment options.
 
 ## Performance
 
@@ -362,13 +338,13 @@ See [Use Cases & Patterns](docs/use-cases.md) for complete, tested examples of e
 | Guide | Description |
 |-------|-------------|
 | [API Reference](docs/api-reference.md) | All endpoints, query parameters, and error format |
-| [CLI Reference](docs/cli.md) | Full command reference for `orion-cli` |
 | [Configuration](docs/configuration.md) | Config file, env vars, deployment, and production checklist |
 | [Connectors](docs/connectors.md) | Auth schemes, retry policies, and secret masking |
 | [Kafka Integration](docs/kafka.md) | Topic mapping, metadata injection, DLQ, and publishing |
 | [Production Features](docs/production-features.md) | Custom IDs, fault tolerance, tags, dynamic paths, versioning |
 | [Use Cases & Patterns](docs/use-cases.md) | Tested examples, AI prompt templates, validation workflows, and CI/CD |
 | [Observability](docs/observability.md) | Prometheus metrics, health checks, engine status, and logging |
+| [CLI Tool](https://github.com/GoPlasmatic/Orion-cli) | Command-line tool for managing rules, connectors, and data |
 
 ## Built With
 

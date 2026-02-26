@@ -74,20 +74,26 @@ Pause rules to temporarily disable processing without deleting them. Paused rule
 
 ```bash
 # Rule is active — data gets transformed
-orion-cli send content -d '{"text": "Hello"}'
+curl -s -X POST http://localhost:8080/api/v1/data/content \
+  -H "Content-Type: application/json" \
+  -d '{"data": {"text": "Hello"}}'
 # → { "data": { "post": { "text": "Hello", "moderated": true, "status": "reviewed" } } }
 
 # Pause the rule
-orion-cli rules pause <rule-id>
-orion-cli engine reload
+curl -s -X PATCH http://localhost:8080/api/v1/admin/rules/<rule-id>/status \
+  -H "Content-Type: application/json" -d '{"status": "paused"}'
+curl -s -X POST http://localhost:8080/api/v1/admin/engine/reload
 
 # Rule is paused — data passes through unmodified
-orion-cli send content -d '{"text": "Hello"}'
+curl -s -X POST http://localhost:8080/api/v1/data/content \
+  -H "Content-Type: application/json" \
+  -d '{"data": {"text": "Hello"}}'
 # → { "data": {} }
 
 # Reactivate
-orion-cli rules activate <rule-id>
-orion-cli engine reload
+curl -s -X PATCH http://localhost:8080/api/v1/admin/rules/<rule-id>/status \
+  -H "Content-Type: application/json" -d '{"status": "active"}'
+curl -s -X POST http://localhost:8080/api/v1/admin/engine/reload
 # Rule is active again
 ```
 
