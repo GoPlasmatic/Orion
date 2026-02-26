@@ -28,6 +28,11 @@ pub trait JobRepository: Send + Sync {
         records_processed: Option<i64>,
     ) -> Result<Job, OrionError>;
     async fn set_result(&self, id: &str, result_json: &str) -> Result<(), OrionError>;
+    async fn store_completed_result(
+        &self,
+        channel: &str,
+        result_json: &str,
+    ) -> Result<String, OrionError>;
     async fn list_paginated(&self, filter: &JobFilter) -> Result<PaginatedResult<Job>, OrionError>;
 }
 
@@ -127,6 +132,33 @@ impl JobRepository for SqliteJobRepository {
             .execute(&self.pool)
             .await?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn store_completed_result(
+        &self,
+        channel: &str,
+        result_json: &str,
+    ) -> Result<String, OrionError> {
+        crate::metrics::timed_db_op("jobs.store_completed_result", async {
+            let id = uuid::Uuid::new_v4().to_string();
+            let now = chrono::Utc::now().naive_utc().to_string();
+
+            sqlx::query(
+                r#"INSERT INTO jobs (id, connector_id, status, channel, result_json, started_at, completed_at, records_processed)
+                   VALUES (?, ?, 'completed', ?, ?, ?, ?, 1)"#,
+            )
+            .bind(&id)
+            .bind(models::DATA_API_CONNECTOR)
+            .bind(channel)
+            .bind(result_json)
+            .bind(&now)
+            .bind(&now)
+            .execute(&self.pool)
+            .await?;
+
+            Ok(id)
         })
         .await
     }
