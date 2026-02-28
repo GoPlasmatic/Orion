@@ -15,8 +15,8 @@ use orion::storage::repositories::connectors::SqliteConnectorRepository;
 use orion::storage::repositories::rules::SqliteRuleRepository;
 use orion::storage::repositories::traces::SqliteTraceRepository;
 
-/// Create a test app with rate limiting enabled (very low limits for testing).
-async fn rate_limited_app(rps: u32, burst: u32) -> Router {
+/// Create a test app with rate limiting configured via the given config.
+async fn rate_limited_app_with_config(rate_limit_config: RateLimitConfig) -> Router {
     let storage_config = orion::config::StorageConfig {
         path: ":memory:".to_string(),
         max_connections: 5,
@@ -50,13 +50,6 @@ async fn rate_limited_app(rps: u32, burst: u32) -> Router {
                 .build_recorder()
                 .handle()
         });
-
-    let rate_limit_config = RateLimitConfig {
-        enabled: true,
-        default_rps: rps,
-        default_burst: burst,
-        ..Default::default()
-    };
 
     let rate_limit_state = Some(Arc::new(RateLimitState::from_config(&rate_limit_config)));
 
@@ -82,42 +75,19 @@ async fn rate_limited_app(rps: u32, burst: u32) -> Router {
     orion::server::build_router(state)
 }
 
+/// Create a test app with rate limiting enabled (very low limits for testing).
+async fn rate_limited_app(rps: u32, burst: u32) -> Router {
+    rate_limited_app_with_config(RateLimitConfig {
+        enabled: true,
+        default_rps: rps,
+        default_burst: burst,
+        ..Default::default()
+    })
+    .await
+}
+
 /// Create a rate-limited app with channel-specific limits.
 async fn rate_limited_app_with_channels() -> Router {
-    let storage_config = orion::config::StorageConfig {
-        path: ":memory:".to_string(),
-        max_connections: 5,
-        ..Default::default()
-    };
-    let pool = orion::storage::init_pool(&storage_config).await.unwrap();
-
-    let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
-    let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
-    let trace_repo = Arc::new(SqliteTraceRepository::new(pool.clone()));
-    let connector_registry = Arc::new(ConnectorRegistry::new(Default::default()));
-
-    let http_client = reqwest::Client::new();
-    let custom_functions =
-        orion::engine::build_custom_functions(connector_registry.clone(), http_client.clone());
-    let engine = dataflow_rs::Engine::new(vec![], Some(custom_functions));
-    let engine = Arc::new(RwLock::new(Arc::new(engine)));
-
-    let (trace_queue, _worker_handle) = orion::queue::start_workers(
-        2,
-        100,
-        30,
-        engine.clone(),
-        trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
-    );
-
-    let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
-        .install_recorder()
-        .unwrap_or_else(|_| {
-            metrics_exporter_prometheus::PrometheusBuilder::new()
-                .build_recorder()
-                .handle()
-        });
-
     let mut channels = std::collections::HashMap::new();
     channels.insert(
         "orders".to_string(),
@@ -127,7 +97,7 @@ async fn rate_limited_app_with_channels() -> Router {
         },
     );
 
-    let rate_limit_config = RateLimitConfig {
+    rate_limited_app_with_config(RateLimitConfig {
         enabled: true,
         default_rps: 100,
         default_burst: 50,
@@ -136,30 +106,8 @@ async fn rate_limited_app_with_channels() -> Router {
             data_rps: Some(100),
         },
         channels,
-    };
-
-    let rate_limit_state = Some(Arc::new(RateLimitState::from_config(&rate_limit_config)));
-
-    let config = AppConfig {
-        rate_limit: rate_limit_config,
-        ..Default::default()
-    };
-
-    let state = AppState {
-        engine,
-        rule_repo,
-        connector_repo,
-        trace_repo,
-        connector_registry,
-        trace_queue,
-        config: Arc::new(config),
-        start_time: chrono::Utc::now(),
-        metrics_handle,
-        http_client,
-        rate_limit_state,
-    };
-
-    orion::server::build_router(state)
+    })
+    .await
 }
 
 #[tokio::test]

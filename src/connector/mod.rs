@@ -186,6 +186,12 @@ impl ConnectorRegistry {
 
 const MASK: &str = "******";
 
+/// Keys to mask inside an `auth` sub-object.
+const AUTH_SECRET_KEYS: &[&str] = &["token", "password", "key", "secret"];
+
+/// Keys to mask at the top level of a connector config.
+const TOP_LEVEL_SECRET_KEYS: &[&str] = &["password", "secret", "api_key", "token"];
+
 /// Mask sensitive fields in a connector's config_json for API responses.
 pub fn mask_connector_secrets(config_json: &str) -> String {
     let Ok(mut val) = serde_json::from_str::<serde_json::Value>(config_json) else {
@@ -197,16 +203,22 @@ pub fn mask_connector_secrets(config_json: &str) -> String {
         if let Some(auth) = obj.get_mut("auth")
             && let Some(auth_obj) = auth.as_object_mut()
         {
-            for key in ["token", "password", "key", "secret"] {
-                if auth_obj.contains_key(key) {
-                    auth_obj.insert(key.to_string(), serde_json::Value::String(MASK.to_string()));
+            for key in AUTH_SECRET_KEYS {
+                if auth_obj.contains_key(*key) {
+                    auth_obj.insert(
+                        (*key).to_string(),
+                        serde_json::Value::String(MASK.to_string()),
+                    );
                 }
             }
         }
         // Mask top-level secret-looking fields
-        for key in ["password", "secret", "api_key", "token"] {
-            if obj.contains_key(key) {
-                obj.insert(key.to_string(), serde_json::Value::String(MASK.to_string()));
+        for key in TOP_LEVEL_SECRET_KEYS {
+            if obj.contains_key(*key) {
+                obj.insert(
+                    (*key).to_string(),
+                    serde_json::Value::String(MASK.to_string()),
+                );
             }
         }
     }

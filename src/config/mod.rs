@@ -424,6 +424,16 @@ where
 /// Valid tracing log levels.
 const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 
+/// Return a config error if `value` is zero.
+fn require_nonzero(value: u64, field: &str) -> Result<(), OrionError> {
+    if value == 0 {
+        return Err(OrionError::Config {
+            message: format!("{field} must be > 0"),
+        });
+    }
+    Ok(())
+}
+
 /// Validate configuration values.
 fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     if config.server.port == 0 {
@@ -474,31 +484,23 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
         }
     }
     // Timeout validations
-    if config.engine.health_check_timeout_secs == 0 {
-        return Err(OrionError::Config {
-            message: "engine.health_check_timeout_secs must be > 0".to_string(),
-        });
-    }
-    if config.engine.reload_timeout_secs == 0 {
-        return Err(OrionError::Config {
-            message: "engine.reload_timeout_secs must be > 0".to_string(),
-        });
-    }
-    if config.queue.shutdown_timeout_secs == 0 {
-        return Err(OrionError::Config {
-            message: "queue.shutdown_timeout_secs must be > 0".to_string(),
-        });
-    }
-    if config.storage.busy_timeout_ms == 0 {
-        return Err(OrionError::Config {
-            message: "storage.busy_timeout_ms must be > 0".to_string(),
-        });
-    }
-    if config.storage.acquire_timeout_secs == 0 {
-        return Err(OrionError::Config {
-            message: "storage.acquire_timeout_secs must be > 0".to_string(),
-        });
-    }
+    require_nonzero(
+        config.engine.health_check_timeout_secs,
+        "engine.health_check_timeout_secs",
+    )?;
+    require_nonzero(
+        config.engine.reload_timeout_secs,
+        "engine.reload_timeout_secs",
+    )?;
+    require_nonzero(
+        config.queue.shutdown_timeout_secs,
+        "queue.shutdown_timeout_secs",
+    )?;
+    require_nonzero(config.storage.busy_timeout_ms, "storage.busy_timeout_ms")?;
+    require_nonzero(
+        config.storage.acquire_timeout_secs,
+        "storage.acquire_timeout_secs",
+    )?;
     if config.rate_limit.enabled {
         if config.rate_limit.default_rps == 0 {
             return Err(OrionError::Config {
