@@ -169,7 +169,7 @@ impl ConnectorRepository for SqliteConnectorRepository {
 
             sqlx::query(
                 r#"UPDATE connectors
-                   SET name = ?, connector_type = ?, config_json = ?, enabled = ?, updated_at = datetime('now')
+                   SET name = ?, connector_type = ?, config_json = ?, enabled = ?
                    WHERE id = ?"#,
             )
             .bind(name)

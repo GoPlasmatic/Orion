@@ -5,13 +5,14 @@ use axum::body::Body;
 use axum::http::Request;
 use serde_json::Value;
 use tokio::sync::RwLock;
+use tower::ServiceExt;
 
 use orion::config::AppConfig;
 use orion::connector::ConnectorRegistry;
 use orion::server::state::AppState;
 use orion::storage::repositories::connectors::SqliteConnectorRepository;
-use orion::storage::repositories::jobs::SqliteJobRepository;
 use orion::storage::repositories::rules::SqliteRuleRepository;
+use orion::storage::repositories::traces::SqliteTraceRepository;
 
 /// Create a test app with an in-memory SQLite database.
 pub async fn test_app() -> Router {
@@ -24,7 +25,7 @@ pub async fn test_app() -> Router {
 
     let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
-    let job_repo = Arc::new(SqliteJobRepository::new(pool.clone()));
+    let trace_repo = Arc::new(SqliteTraceRepository::new(pool.clone()));
     let connector_registry = Arc::new(ConnectorRegistry::new(Default::default()));
 
     let http_client = reqwest::Client::new();
@@ -33,13 +34,13 @@ pub async fn test_app() -> Router {
     let engine = dataflow_rs::Engine::new(vec![], Some(custom_functions));
     let engine = Arc::new(RwLock::new(Arc::new(engine)));
 
-    // Start a small worker pool for async job tests
-    let (job_queue, _worker_handle) = orion::queue::start_workers(
+    // Start a small worker pool for async trace tests
+    let (trace_queue, _worker_handle) = orion::queue::start_workers(
         2,
         100,
         30,
         engine.clone(),
-        job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
+        trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
     );
 
     // Init metrics recorder (use try — may already be initialized by another test)
@@ -56,9 +57,9 @@ pub async fn test_app() -> Router {
         engine,
         rule_repo,
         connector_repo,
-        job_repo,
+        trace_repo,
         connector_registry,
-        job_queue,
+        trace_queue,
         config: Arc::new(AppConfig::default()),
         start_time: chrono::Utc::now(),
         metrics_handle,
@@ -86,4 +87,32 @@ pub async fn body_json(response: axum::http::Response<Body>) -> Value {
         .await
         .unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+/// Create a rule and activate it in one go. Returns the rule_id.
+/// Use this helper in tests that need an active rule for data processing.
+#[allow(dead_code)]
+pub async fn create_and_activate_rule(app: &axum::Router, rule_json: serde_json::Value) -> String {
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/admin/rules", Some(rule_json)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    let body = body_json(resp).await;
+    let rule_id = body["data"]["rule_id"].as_str().unwrap().to_string();
+
+    // Activate the draft
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/rules/{}/status", rule_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+    rule_id
 }

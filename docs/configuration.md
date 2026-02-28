@@ -16,7 +16,6 @@ path = "orion.db"              # SQLite database file path
 
 [ingest]
 max_payload_size = 1048576     # Maximum payload size in bytes (1 MB)
-batch_size = 100               # Batch processing size
 
 [engine]
 max_concurrent_workflows = 100

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 use crate::errors::OrionError;
-use crate::storage::models::{self, Rule};
+use crate::storage::models::Rule;
 
 #[derive(Debug, Serialize)]
 pub struct PaginatedResult<T: Serialize> {
@@ -18,7 +18,7 @@ pub struct PaginatedResult<T: Serialize> {
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateRuleRequest {
-    pub id: Option<String>,
+    pub rule_id: Option<String>,
     pub name: String,
     pub description: Option<String>,
     #[serde(default = "default_channel")]
@@ -50,20 +50,19 @@ pub struct UpdateRuleRequest {
     pub priority: Option<i64>,
     pub condition: Option<serde_json::Value>,
     pub tasks: Option<serde_json::Value>,
-    pub status: Option<String>,
     pub tags: Option<Vec<String>>,
     pub continue_on_error: Option<bool>,
-    /// Expected current version for optimistic locking. If provided and the
-    /// rule has been modified since this version, the update returns 409 Conflict.
-    pub version: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct StatusChangeRequest {
     pub status: String,
-    /// Expected current version for optimistic locking. If provided and the
-    /// rule has been modified since this version, the update returns 409 Conflict.
-    pub version: Option<i64>,
+    pub rollout_percentage: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct RolloutUpdateRequest {
+    pub rollout_percentage: i64,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, utoipa::IntoParams)]
@@ -79,34 +78,49 @@ pub struct RuleFilter {
 
 #[async_trait]
 pub trait RuleRepository: Send + Sync {
+    /// Create a new rule as draft v1.
     async fn create(&self, req: &CreateRuleRequest) -> Result<Rule, OrionError>;
-    async fn get_by_id(&self, id: &str) -> Result<Rule, OrionError>;
+    /// Get the latest version of a rule.
+    async fn get_by_id(&self, rule_id: &str) -> Result<Rule, OrionError>;
+    /// Get a specific version of a rule.
+    async fn get_version(&self, rule_id: &str, version: i64) -> Result<Rule, OrionError>;
+    /// List rules using the current_rules view (latest version per rule_id).
     async fn list(&self, filter: &RuleFilter) -> Result<Vec<Rule>, OrionError>;
+    /// List rules with pagination using the current_rules view.
     async fn list_paginated(
         &self,
         filter: &RuleFilter,
     ) -> Result<PaginatedResult<Rule>, OrionError>;
-    async fn update(&self, id: &str, req: &UpdateRuleRequest) -> Result<Rule, OrionError>;
-    async fn delete(&self, id: &str) -> Result<(), OrionError>;
-    async fn list_active(&self) -> Result<Vec<Rule>, OrionError>;
-    async fn update_status(
+    /// Update the draft version of a rule. Errors if no draft exists.
+    async fn update_draft(
         &self,
-        id: &str,
-        status: &str,
-        expected_version: Option<i64>,
+        rule_id: &str,
+        req: &UpdateRuleRequest,
     ) -> Result<Rule, OrionError>;
-    async fn count_versions(&self, id: &str) -> Result<i64, OrionError>;
+    /// Delete all versions of a rule.
+    async fn delete(&self, rule_id: &str) -> Result<(), OrionError>;
+    /// List all active rules for engine loading.
+    async fn list_active(&self) -> Result<Vec<Rule>, OrionError>;
+    /// Activate the draft version of a rule with a rollout percentage.
+    async fn activate(&self, rule_id: &str, rollout_pct: i64) -> Result<Rule, OrionError>;
+    /// Archive the latest active version of a rule.
+    async fn archive(&self, rule_id: &str) -> Result<Rule, OrionError>;
+    /// Update rollout percentage of an active pair.
+    async fn update_rollout(&self, rule_id: &str, pct: i64) -> Result<Rule, OrionError>;
+    /// Create a new draft version by copying the latest active version.
+    async fn create_new_version(&self, rule_id: &str) -> Result<Rule, OrionError>;
+    /// Bulk create rules as draft v1.
     async fn bulk_create(
         &self,
         rules: &[CreateRuleRequest],
     ) -> Result<Vec<Result<Rule, OrionError>>, OrionError>;
-    /// List version history for a rule.
+    /// List all versions of a rule.
     async fn list_versions(
         &self,
         rule_id: &str,
         limit: i64,
         offset: i64,
-    ) -> Result<PaginatedResult<models::RuleVersion>, OrionError>;
+    ) -> Result<PaginatedResult<Rule>, OrionError>;
     /// Database connectivity check.
     async fn ping(&self) -> Result<(), OrionError>;
 }
@@ -121,46 +135,6 @@ impl SqliteRuleRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
-}
-
-/// Data needed to insert a rule version record.
-struct VersionData<'a> {
-    rule_id: &'a str,
-    version: i64,
-    name: &'a str,
-    description: Option<&'a str>,
-    channel: &'a str,
-    priority: i64,
-    status: &'a str,
-    condition_json: &'a str,
-    tasks_json: &'a str,
-    tags_json: &'a str,
-    continue_on_error: bool,
-}
-
-/// Insert a rule version record using the given executor (pool or transaction).
-async fn insert_version<'e, E>(executor: E, v: &VersionData<'_>) -> Result<(), OrionError>
-where
-    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
-{
-    sqlx::query(
-        r#"INSERT INTO rule_versions (rule_id, version, name, description, channel, priority, status, condition_json, tasks_json, tags, continue_on_error)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
-    )
-    .bind(v.rule_id)
-    .bind(v.version)
-    .bind(v.name)
-    .bind(v.description)
-    .bind(v.channel)
-    .bind(v.priority)
-    .bind(v.status)
-    .bind(v.condition_json)
-    .bind(v.tasks_json)
-    .bind(v.tags_json)
-    .bind(v.continue_on_error)
-    .execute(executor)
-    .await?;
-    Ok(())
 }
 
 fn build_where_clause(filter: &RuleFilter) -> (String, Vec<String>) {
@@ -191,21 +165,19 @@ fn build_where_clause(filter: &RuleFilter) -> (String, Vec<String>) {
 impl RuleRepository for SqliteRuleRepository {
     async fn create(&self, req: &CreateRuleRequest) -> Result<Rule, OrionError> {
         crate::metrics::timed_db_op("rules.create", async {
-            let id = req
-                .id
+            let rule_id = req
+                .rule_id
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let condition_json = serde_json::to_string(&req.condition)?;
             let tasks_json = serde_json::to_string(&req.tasks)?;
             let tags_json = serde_json::to_string(&req.tags)?;
 
-            let mut tx = self.pool.begin().await?;
-
             sqlx::query(
-                r#"INSERT INTO rules (id, name, description, channel, priority, condition_json, tasks_json, tags, continue_on_error)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+                r#"INSERT INTO rules (rule_id, version, name, description, channel, priority, status, rollout_percentage, condition_json, tasks_json, tags, continue_on_error)
+                   VALUES (?, 1, ?, ?, ?, ?, 'draft', 100, ?, ?, ?, ?)"#,
             )
-            .bind(&id)
+            .bind(&rule_id)
             .bind(&req.name)
             .bind(&req.description)
             .bind(&req.channel)
@@ -214,48 +186,42 @@ impl RuleRepository for SqliteRuleRepository {
             .bind(&tasks_json)
             .bind(&tags_json)
             .bind(req.continue_on_error)
-            .execute(&mut *tx)
+            .execute(&self.pool)
             .await?;
 
-            insert_version(
-                &mut *tx,
-                &VersionData {
-                    rule_id: &id,
-                    version: 1,
-                    name: &req.name,
-                    description: req.description.as_deref(),
-                    channel: &req.channel,
-                    priority: req.priority,
-                    status: models::RULE_STATUS_ACTIVE,
-                    condition_json: &condition_json,
-                    tasks_json: &tasks_json,
-                    tags_json: &tags_json,
-                    continue_on_error: req.continue_on_error,
-                },
-            )
-            .await?;
-
-            tx.commit().await?;
-
-            self.get_by_id(&id).await
+            self.get_version(&rule_id, 1).await
         })
         .await
     }
 
-    async fn get_by_id(&self, id: &str) -> Result<Rule, OrionError> {
+    async fn get_by_id(&self, rule_id: &str) -> Result<Rule, OrionError> {
         crate::metrics::timed_db_op("rules.get_by_id", async {
-            sqlx::query_as::<_, Rule>("SELECT * FROM rules WHERE id = ?")
-                .bind(id)
-                .fetch_optional(&self.pool)
-                .await?
-                .ok_or_else(|| OrionError::NotFound(format!("Rule '{}' not found", id)))
+            sqlx::query_as::<_, Rule>(
+                "SELECT * FROM rules WHERE rule_id = ? ORDER BY version DESC LIMIT 1",
+            )
+            .bind(rule_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| OrionError::NotFound(format!("Rule '{}' not found", rule_id)))
         })
         .await
+    }
+
+    async fn get_version(&self, rule_id: &str, version: i64) -> Result<Rule, OrionError> {
+        sqlx::query_as::<_, Rule>("SELECT * FROM rules WHERE rule_id = ? AND version = ?")
+            .bind(rule_id)
+            .bind(version)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                OrionError::NotFound(format!("Rule '{}' version {} not found", rule_id, version))
+            })
     }
 
     async fn list(&self, filter: &RuleFilter) -> Result<Vec<Rule>, OrionError> {
         let (where_clause, binds) = build_where_clause(filter);
-        let query = format!("SELECT * FROM rules {where_clause} ORDER BY priority DESC, name ASC");
+        let query =
+            format!("SELECT * FROM current_rules {where_clause} ORDER BY priority DESC, name ASC");
 
         let mut q = sqlx::query_as::<_, Rule>(&query);
         for b in &binds {
@@ -274,7 +240,7 @@ impl RuleRepository for SqliteRuleRepository {
             let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
             let offset = filter.offset.unwrap_or(0).max(0);
 
-            let count_query = format!("SELECT COUNT(*) FROM rules {where_clause}");
+            let count_query = format!("SELECT COUNT(*) FROM current_rules {where_clause}");
             let mut cq = sqlx::query_as::<_, (i64,)>(&count_query);
             for b in &binds {
                 cq = cq.bind(b);
@@ -282,7 +248,7 @@ impl RuleRepository for SqliteRuleRepository {
             let (total,) = cq.fetch_one(&self.pool).await?;
 
             let data_query = format!(
-                "SELECT * FROM rules {where_clause} ORDER BY priority DESC, name ASC LIMIT ? OFFSET ?"
+                "SELECT * FROM current_rules {where_clause} ORDER BY priority DESC, name ASC LIMIT ? OFFSET ?"
             );
             let mut dq = sqlx::query_as::<_, Rule>(&data_query);
             for b in &binds {
@@ -301,14 +267,21 @@ impl RuleRepository for SqliteRuleRepository {
         .await
     }
 
-    async fn update(&self, id: &str, req: &UpdateRuleRequest) -> Result<Rule, OrionError> {
-        crate::metrics::timed_db_op("rules.update", async {
-            let existing = self.get_by_id(id).await?;
-
-            // Use client-provided version if available, otherwise use the
-            // version we just read (still guards against TOCTOU within the
-            // same request).
-            let expected_version = req.version.unwrap_or(existing.version);
+    async fn update_draft(
+        &self,
+        rule_id: &str,
+        req: &UpdateRuleRequest,
+    ) -> Result<Rule, OrionError> {
+        crate::metrics::timed_db_op("rules.update_draft", async {
+            let existing = sqlx::query_as::<_, Rule>(
+                "SELECT * FROM rules WHERE rule_id = ? AND status = 'draft'",
+            )
+            .bind(rule_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                OrionError::BadRequest(format!("No draft version found for rule '{}'", rule_id))
+            })?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let description = req
@@ -317,7 +290,6 @@ impl RuleRepository for SqliteRuleRepository {
                 .or(existing.description.as_deref());
             let channel = req.channel.as_deref().unwrap_or(&existing.channel);
             let priority = req.priority.unwrap_or(existing.priority);
-            let status = req.status.as_deref().unwrap_or(&existing.status);
             let continue_on_error = req.continue_on_error.unwrap_or(existing.continue_on_error);
 
             let condition_json = match &req.condition {
@@ -333,73 +305,41 @@ impl RuleRepository for SqliteRuleRepository {
                 None => existing.tags.clone(),
             };
 
-            let new_version = expected_version + 1;
-
-            let mut tx = self.pool.begin().await?;
-
-            let result = sqlx::query(
+            sqlx::query(
                 r#"UPDATE rules
                    SET name = ?, description = ?, channel = ?, priority = ?,
-                       version = ?, status = ?, condition_json = ?, tasks_json = ?,
-                       tags = ?, continue_on_error = ?, updated_at = datetime('now')
-                   WHERE id = ? AND version = ?"#,
+                       condition_json = ?, tasks_json = ?, tags = ?, continue_on_error = ?
+                   WHERE rule_id = ? AND status = 'draft'"#,
             )
             .bind(name)
             .bind(description)
             .bind(channel)
             .bind(priority)
-            .bind(new_version)
-            .bind(status)
             .bind(&condition_json)
             .bind(&tasks_json)
             .bind(&tags_json)
             .bind(continue_on_error)
-            .bind(id)
-            .bind(expected_version)
-            .execute(&mut *tx)
+            .bind(rule_id)
+            .execute(&self.pool)
             .await?;
 
-            if result.rows_affected() == 0 {
-                return Err(OrionError::Conflict(format!(
-                    "Rule '{}' has been modified by another request (expected version {})",
-                    id, expected_version
-                )));
-            }
-
-            insert_version(
-                &mut *tx,
-                &VersionData {
-                    rule_id: id,
-                    version: new_version,
-                    name,
-                    description,
-                    channel,
-                    priority,
-                    status,
-                    condition_json: &condition_json,
-                    tasks_json: &tasks_json,
-                    tags_json: &tags_json,
-                    continue_on_error,
-                },
-            )
-            .await?;
-
-            tx.commit().await?;
-
-            self.get_by_id(id).await
+            self.get_version(rule_id, existing.version).await
         })
         .await
     }
 
-    async fn delete(&self, id: &str) -> Result<(), OrionError> {
+    async fn delete(&self, rule_id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("rules.delete", async {
-            let result = sqlx::query("DELETE FROM rules WHERE id = ?")
-                .bind(id)
+            let result = sqlx::query("DELETE FROM rules WHERE rule_id = ?")
+                .bind(rule_id)
                 .execute(&self.pool)
                 .await?;
 
             if result.rows_affected() == 0 {
-                return Err(OrionError::NotFound(format!("Rule '{}' not found", id)));
+                return Err(OrionError::NotFound(format!(
+                    "Rule '{}' not found",
+                    rule_id
+                )));
             }
 
             Ok(())
@@ -418,75 +358,251 @@ impl RuleRepository for SqliteRuleRepository {
         .await
     }
 
-    async fn update_status(
-        &self,
-        id: &str,
-        status: &str,
-        expected_version: Option<i64>,
-    ) -> Result<Rule, OrionError> {
-        if !models::VALID_RULE_STATUSES.contains(&status) {
-            return Err(OrionError::BadRequest(format!(
-                "Invalid status '{}'. Must be one of: {}",
-                status,
-                models::VALID_RULE_STATUSES.join(", ")
-            )));
+    async fn activate(&self, rule_id: &str, rollout_pct: i64) -> Result<Rule, OrionError> {
+        if !(0..=100).contains(&rollout_pct) {
+            return Err(OrionError::BadRequest(
+                "rollout_percentage must be between 0 and 100".to_string(),
+            ));
         }
 
-        crate::metrics::timed_db_op("rules.update_status", async {
-            let existing = self.get_by_id(id).await?;
-            let expected_version = expected_version.unwrap_or(existing.version);
-            let new_version = expected_version + 1;
-
+        crate::metrics::timed_db_op("rules.activate", async {
             let mut tx = self.pool.begin().await?;
 
-            let result = sqlx::query(
-                "UPDATE rules SET status = ?, version = ?, updated_at = datetime('now') WHERE id = ? AND version = ?",
+            // Find the draft
+            let draft = sqlx::query_as::<_, Rule>(
+                "SELECT * FROM rules WHERE rule_id = ? AND status = 'draft'",
             )
-            .bind(status)
-            .bind(new_version)
-            .bind(id)
-            .bind(expected_version)
-            .execute(&mut *tx)
+            .bind(rule_id)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or_else(|| {
+                OrionError::BadRequest(format!("No draft version found for rule '{}'", rule_id))
+            })?;
+
+            // Find current active version(s)
+            let active_versions: Vec<Rule> = sqlx::query_as::<_, Rule>(
+                "SELECT * FROM rules WHERE rule_id = ? AND status = 'active' ORDER BY version DESC",
+            )
+            .bind(rule_id)
+            .fetch_all(&mut *tx)
             .await?;
 
-            if result.rows_affected() == 0 {
-                return Err(OrionError::Conflict(format!(
-                    "Rule '{}' has been modified by another request (expected version {})",
-                    id, expected_version
-                )));
+            if rollout_pct == 100 {
+                // Archive all current active versions
+                for active in &active_versions {
+                    sqlx::query(
+                        "UPDATE rules SET status = 'archived' WHERE rule_id = ? AND version = ?",
+                    )
+                    .bind(rule_id)
+                    .bind(active.version)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+
+                // Activate the draft at 100%
+                sqlx::query(
+                    "UPDATE rules SET status = 'active', rollout_percentage = 100 WHERE rule_id = ? AND version = ?",
+                )
+                .bind(rule_id)
+                .bind(draft.version)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                // Partial rollout: keep the latest active, archive any others
+                if active_versions.len() > 1 {
+                    for active in &active_versions[1..] {
+                        sqlx::query(
+                            "UPDATE rules SET status = 'archived' WHERE rule_id = ? AND version = ?",
+                        )
+                        .bind(rule_id)
+                        .bind(active.version)
+                        .execute(&mut *tx)
+                        .await?;
+                    }
+                }
+
+                if let Some(primary_active) = active_versions.first() {
+                    // Adjust existing active to complement percentage
+                    sqlx::query(
+                        "UPDATE rules SET rollout_percentage = ? WHERE rule_id = ? AND version = ?",
+                    )
+                    .bind(100 - rollout_pct)
+                    .bind(rule_id)
+                    .bind(primary_active.version)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+
+                // Activate the draft with the specified rollout
+                sqlx::query(
+                    "UPDATE rules SET status = 'active', rollout_percentage = ? WHERE rule_id = ? AND version = ?",
+                )
+                .bind(rollout_pct)
+                .bind(rule_id)
+                .bind(draft.version)
+                .execute(&mut *tx)
+                .await?;
             }
-
-            insert_version(
-                &mut *tx,
-                &VersionData {
-                    rule_id: id,
-                    version: new_version,
-                    name: &existing.name,
-                    description: existing.description.as_deref(),
-                    channel: &existing.channel,
-                    priority: existing.priority,
-                    status,
-                    condition_json: &existing.condition_json,
-                    tasks_json: &existing.tasks_json,
-                    tags_json: &existing.tags,
-                    continue_on_error: existing.continue_on_error,
-                },
-            )
-            .await?;
 
             tx.commit().await?;
 
-            self.get_by_id(id).await
+            self.get_version(rule_id, draft.version).await
         })
         .await
     }
 
-    async fn count_versions(&self, id: &str) -> Result<i64, OrionError> {
-        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM rule_versions WHERE rule_id = ?")
-            .bind(id)
-            .fetch_one(&self.pool)
+    async fn archive(&self, rule_id: &str) -> Result<Rule, OrionError> {
+        crate::metrics::timed_db_op("rules.archive", async {
+            // Find the latest active version
+            let active = sqlx::query_as::<_, Rule>(
+                "SELECT * FROM rules WHERE rule_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1",
+            )
+            .bind(rule_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                OrionError::BadRequest(format!("No active version found for rule '{}'", rule_id))
+            })?;
+
+            // Archive all active versions
+            sqlx::query(
+                "UPDATE rules SET status = 'archived' WHERE rule_id = ? AND status = 'active'",
+            )
+            .bind(rule_id)
+            .execute(&self.pool)
             .await?;
-        Ok(row.0)
+
+            self.get_version(rule_id, active.version).await
+        })
+        .await
+    }
+
+    async fn update_rollout(&self, rule_id: &str, pct: i64) -> Result<Rule, OrionError> {
+        if !(1..=100).contains(&pct) {
+            return Err(OrionError::BadRequest(
+                "rollout_percentage must be between 1 and 100".to_string(),
+            ));
+        }
+
+        crate::metrics::timed_db_op("rules.update_rollout", async {
+            let mut tx = self.pool.begin().await?;
+
+            // Get active versions ordered by version DESC (newest first)
+            let active_versions: Vec<Rule> = sqlx::query_as::<_, Rule>(
+                "SELECT * FROM rules WHERE rule_id = ? AND status = 'active' ORDER BY version DESC",
+            )
+            .bind(rule_id)
+            .fetch_all(&mut *tx)
+            .await?;
+
+            if active_versions.is_empty() {
+                return Err(OrionError::BadRequest(format!(
+                    "No active versions found for rule '{}'",
+                    rule_id
+                )));
+            }
+
+            if active_versions.len() == 1 {
+                if pct == 100 {
+                    // Already at 100% with one version, just confirm
+                    return self.get_version(rule_id, active_versions[0].version).await;
+                }
+                return Err(OrionError::BadRequest(
+                    "Cannot set partial rollout with only one active version".to_string(),
+                ));
+            }
+
+            let newer = &active_versions[0];
+            let older = &active_versions[1];
+
+            if pct == 100 {
+                // Archive the older version
+                sqlx::query(
+                    "UPDATE rules SET status = 'archived' WHERE rule_id = ? AND version = ?",
+                )
+                .bind(rule_id)
+                .bind(older.version)
+                .execute(&mut *tx)
+                .await?;
+
+                // Set newer to 100%
+                sqlx::query(
+                    "UPDATE rules SET rollout_percentage = 100 WHERE rule_id = ? AND version = ?",
+                )
+                .bind(rule_id)
+                .bind(newer.version)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                // Update both percentages
+                sqlx::query(
+                    "UPDATE rules SET rollout_percentage = ? WHERE rule_id = ? AND version = ?",
+                )
+                .bind(pct)
+                .bind(rule_id)
+                .bind(newer.version)
+                .execute(&mut *tx)
+                .await?;
+
+                sqlx::query(
+                    "UPDATE rules SET rollout_percentage = ? WHERE rule_id = ? AND version = ?",
+                )
+                .bind(100 - pct)
+                .bind(rule_id)
+                .bind(older.version)
+                .execute(&mut *tx)
+                .await?;
+            }
+
+            tx.commit().await?;
+
+            self.get_version(rule_id, newer.version).await
+        })
+        .await
+    }
+
+    async fn create_new_version(&self, rule_id: &str) -> Result<Rule, OrionError> {
+        crate::metrics::timed_db_op("rules.create_new_version", async {
+            // Check no draft already exists
+            let existing_draft = sqlx::query_as::<_, Rule>(
+                "SELECT * FROM rules WHERE rule_id = ? AND status = 'draft'",
+            )
+            .bind(rule_id)
+            .fetch_optional(&self.pool)
+            .await?;
+
+            if existing_draft.is_some() {
+                return Err(OrionError::Conflict(format!(
+                    "Rule '{}' already has a draft version",
+                    rule_id
+                )));
+            }
+
+            // Find the latest version to copy from
+            let latest = self.get_by_id(rule_id).await?;
+
+            let new_version = latest.version + 1;
+
+            sqlx::query(
+                r#"INSERT INTO rules (rule_id, version, name, description, channel, priority, status, rollout_percentage, condition_json, tasks_json, tags, continue_on_error)
+                   VALUES (?, ?, ?, ?, ?, ?, 'draft', 100, ?, ?, ?, ?)"#,
+            )
+            .bind(rule_id)
+            .bind(new_version)
+            .bind(&latest.name)
+            .bind(&latest.description)
+            .bind(&latest.channel)
+            .bind(latest.priority)
+            .bind(&latest.condition_json)
+            .bind(&latest.tasks_json)
+            .bind(&latest.tags)
+            .bind(latest.continue_on_error)
+            .execute(&self.pool)
+            .await?;
+
+            self.get_version(rule_id, new_version).await
+        })
+        .await
     }
 
     async fn bulk_create(
@@ -496,7 +612,6 @@ impl RuleRepository for SqliteRuleRepository {
         let mut results = Vec::with_capacity(rules.len());
 
         for req in rules {
-            // Each rule gets its own transaction so partial success is possible
             let result = self.create(req).await;
             results.push(result);
         }
@@ -509,18 +624,17 @@ impl RuleRepository for SqliteRuleRepository {
         rule_id: &str,
         limit: i64,
         offset: i64,
-    ) -> Result<PaginatedResult<models::RuleVersion>, OrionError> {
+    ) -> Result<PaginatedResult<Rule>, OrionError> {
         let limit = limit.clamp(1, 1000);
         let offset = offset.max(0);
 
-        let (total,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM rule_versions WHERE rule_id = ?")
-                .bind(rule_id)
-                .fetch_one(&self.pool)
-                .await?;
+        let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM rules WHERE rule_id = ?")
+            .bind(rule_id)
+            .fetch_one(&self.pool)
+            .await?;
 
-        let data = sqlx::query_as::<_, models::RuleVersion>(
-            "SELECT * FROM rule_versions WHERE rule_id = ? ORDER BY version DESC LIMIT ? OFFSET ?",
+        let data = sqlx::query_as::<_, Rule>(
+            "SELECT * FROM rules WHERE rule_id = ? ORDER BY version DESC LIMIT ? OFFSET ?",
         )
         .bind(rule_id)
         .bind(limit)
@@ -551,20 +665,56 @@ pub fn rule_to_workflow(rule: &Rule) -> Result<Workflow, OrionError> {
     let tags: Vec<String> = serde_json::from_str(&rule.tags)?;
 
     let workflow_json = serde_json::json!({
-        "id": rule.id,
+        "id": rule.rule_id,
         "name": rule.name,
         "description": rule.description,
         "channel": rule.channel,
         "priority": rule.priority,
         "version": rule.version,
-        "status": rule.status,
+        "status": "active",
         "condition": condition,
         "tasks": tasks,
         "tags": tags,
         "continue_on_error": rule.continue_on_error,
     });
 
-    // Use from_value to avoid to_string + from_json round-trip
+    let workflow: Workflow = serde_json::from_value(workflow_json)?;
+    Ok(workflow)
+}
+
+/// Convert a Rule to a Workflow with rollout-aware condition wrapping and unique ID.
+pub fn rule_to_workflow_with_rollout(
+    rule: &Rule,
+    bucket_min: i64,
+    bucket_max: i64,
+) -> Result<Workflow, OrionError> {
+    let tasks: serde_json::Value = serde_json::from_str(&rule.tasks_json)?;
+    let condition: serde_json::Value = serde_json::from_str(&rule.condition_json)?;
+    let tags: Vec<String> = serde_json::from_str(&rule.tags)?;
+
+    // Wrap condition with bucket range check
+    let wrapped_condition = serde_json::json!({
+        "and": [
+            condition,
+            {">=": [{"var": "_rollout_bucket"}, bucket_min]},
+            {"<": [{"var": "_rollout_bucket"}, bucket_max]}
+        ]
+    });
+
+    let workflow_json = serde_json::json!({
+        "id": format!("{}:v{}", rule.rule_id, rule.version),
+        "name": rule.name,
+        "description": rule.description,
+        "channel": rule.channel,
+        "priority": rule.priority,
+        "version": rule.version,
+        "status": rule.status,
+        "condition": wrapped_condition,
+        "tasks": tasks,
+        "tags": tags,
+        "continue_on_error": rule.continue_on_error,
+    });
+
     let workflow: Workflow = serde_json::from_value(workflow_json)?;
     Ok(workflow)
 }
@@ -576,13 +726,14 @@ mod tests {
     #[test]
     fn test_rule_to_workflow_basic() {
         let rule = Rule {
-            id: "test-rule".to_string(),
+            rule_id: "test-rule".to_string(),
             name: "Test Rule".to_string(),
             description: Some("A test rule".to_string()),
             channel: "default".to_string(),
             priority: 10,
             version: 1,
             status: "active".to_string(),
+            rollout_percentage: 100,
             condition_json: "true".to_string(),
             tasks_json: r#"[{"id":"log_task","name":"Log","function":{"name":"log","input":{"message":"hello"}}}]"#.to_string(),
             tags: "[]".to_string(),

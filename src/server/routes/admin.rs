@@ -10,12 +10,12 @@ use crate::connector::mask_connector;
 use crate::errors::OrionError;
 use crate::server::routes::reload_engine;
 use crate::server::state::AppState;
-use crate::storage::models::{RuleResponse, RuleVersionResponse};
+use crate::storage::models::RuleResponse;
 use crate::storage::repositories::connectors::{
     ConnectorFilter, CreateConnectorRequest, UpdateConnectorRequest,
 };
 use crate::storage::repositories::rules::{
-    CreateRuleRequest, RuleFilter, StatusChangeRequest, UpdateRuleRequest,
+    CreateRuleRequest, RolloutUpdateRequest, RuleFilter, StatusChangeRequest, UpdateRuleRequest,
 };
 use crate::validation;
 
@@ -31,7 +31,11 @@ pub fn admin_routes() -> Router<AppState> {
             get(get_rule).put(update_rule).delete(delete_rule),
         )
         .route("/rules/{id}/status", patch(change_rule_status))
-        .route("/rules/{id}/versions", get(list_rule_versions))
+        .route(
+            "/rules/{id}/versions",
+            get(list_rule_versions).post(create_new_version),
+        )
+        .route("/rules/{id}/rollout", patch(update_rollout))
         .route("/rules/{id}/test", post(test_rule))
         // Connectors
         .route("/connectors", get(list_connectors).post(create_connector))
@@ -90,7 +94,7 @@ pub(crate) async fn list_rules(
     tag = "Rules",
     request_body = CreateRuleRequest,
     responses(
-        (status = 201, description = "Rule created"),
+        (status = 201, description = "Rule created as draft"),
         (status = 400, description = "Invalid input"),
     )
 )]
@@ -101,7 +105,7 @@ pub(crate) async fn create_rule(
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     validation::validate_create_rule(&req)?;
     let rule = state.rule_repo.create(&req).await?;
-    reload_engine(&state).await?;
+    // No engine reload — drafts are not in the engine
     Ok((
         StatusCode::CREATED,
         Json(json!({ "data": RuleResponse::try_from(&rule)? })),
@@ -124,10 +128,8 @@ pub(crate) async fn get_rule(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
     let rule = state.rule_repo.get_by_id(&id).await?;
-    let version_count = state.rule_repo.count_versions(&id).await?;
     Ok(Json(json!({
         "data": RuleResponse::try_from(&rule)?,
-        "version_count": version_count,
     })))
 }
 
@@ -138,7 +140,8 @@ pub(crate) async fn get_rule(
     params(("id" = String, Path, description = "Rule ID")),
     request_body = UpdateRuleRequest,
     responses(
-        (status = 200, description = "Rule updated"),
+        (status = 200, description = "Draft rule updated"),
+        (status = 400, description = "No draft version or invalid input"),
         (status = 404, description = "Rule not found"),
     )
 )]
@@ -149,8 +152,8 @@ pub(crate) async fn update_rule(
     Json(req): Json<UpdateRuleRequest>,
 ) -> Result<Json<Value>, OrionError> {
     validation::validate_update_rule(&req)?;
-    let rule = state.rule_repo.update(&id, &req).await?;
-    reload_engine(&state).await?;
+    let rule = state.rule_repo.update_draft(&id, &req).await?;
+    // No engine reload — drafts are not in the engine
     Ok(Json(json!({ "data": RuleResponse::try_from(&rule)? })))
 }
 
@@ -186,7 +189,7 @@ pub(crate) async fn delete_rule(
     request_body = StatusChangeRequest,
     responses(
         (status = 200, description = "Status updated"),
-        (status = 400, description = "Invalid status"),
+        (status = 400, description = "Invalid status transition"),
         (status = 404, description = "Rule not found"),
     )
 )]
@@ -196,16 +199,54 @@ pub(crate) async fn change_rule_status(
     Path(id): Path<String>,
     Json(req): Json<StatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
+    let rule = match req.status.as_str() {
+        "active" => {
+            let rollout_pct = req.rollout_percentage.unwrap_or(100);
+            state.rule_repo.activate(&id, rollout_pct).await?
+        }
+        "archived" => state.rule_repo.archive(&id).await?,
+        other => {
+            return Err(OrionError::BadRequest(format!(
+                "Invalid status transition to '{}'. Use 'active' or 'archived'",
+                other
+            )));
+        }
+    };
+    reload_engine(&state).await?;
+    Ok(Json(json!({ "data": RuleResponse::try_from(&rule)? })))
+}
+
+// ============================================================
+// Rule Rollout Management
+// ============================================================
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/admin/rules/{id}/rollout",
+    tag = "Rules",
+    params(("id" = String, Path, description = "Rule ID")),
+    request_body = RolloutUpdateRequest,
+    responses(
+        (status = 200, description = "Rollout percentage updated"),
+        (status = 400, description = "Invalid rollout configuration"),
+    )
+)]
+#[tracing::instrument(skip(state, req))]
+pub(crate) async fn update_rollout(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<RolloutUpdateRequest>,
+) -> Result<Json<Value>, OrionError> {
     let rule = state
         .rule_repo
-        .update_status(&id, &req.status, req.version)
+        .update_rollout(&id, req.rollout_percentage)
         .await?;
     reload_engine(&state).await?;
     Ok(Json(json!({ "data": RuleResponse::try_from(&rule)? })))
 }
 
 // ============================================================
-// Rule Version History
+// Rule Version Management
 // ============================================================
 
 #[derive(Debug, Deserialize)]
@@ -238,10 +279,10 @@ pub(crate) async fn list_rule_versions(
     let limit = filter.limit.unwrap_or(50);
     let offset = filter.offset.unwrap_or(0);
     let result = state.rule_repo.list_versions(&id, limit, offset).await?;
-    let data: Vec<RuleVersionResponse> = result
+    let data: Vec<RuleResponse> = result
         .data
         .iter()
-        .map(RuleVersionResponse::try_from)
+        .map(RuleResponse::try_from)
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Json(json!({
@@ -250,6 +291,28 @@ pub(crate) async fn list_rule_versions(
         "limit": result.limit,
         "offset": result.offset,
     })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/rules/{id}/versions",
+    tag = "Rules",
+    params(("id" = String, Path, description = "Rule ID")),
+    responses(
+        (status = 201, description = "New draft version created"),
+        (status = 409, description = "Draft already exists"),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn create_new_version(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<Value>), OrionError> {
+    let rule = state.rule_repo.create_new_version(&id).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "data": RuleResponse::try_from(&rule)? })),
+    ))
 }
 
 // ============================================================
@@ -364,9 +427,7 @@ pub(crate) async fn import_rules(
         }
     }
 
-    if imported > 0 {
-        reload_engine(&state).await?;
-    }
+    // No engine reload — imported rules are drafts
 
     Ok(Json(json!({
         "imported": imported,
@@ -564,13 +625,14 @@ async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> Validation
         use crate::storage::repositories::rules::rule_to_workflow;
 
         let temp_rule = crate::storage::models::Rule {
-            id: "temp-validate".to_string(),
+            rule_id: "temp-validate".to_string(),
             name: req.name.clone(),
             description: req.description.clone(),
             channel: req.channel.clone(),
             priority: req.priority,
             version: 1,
             status: "active".to_string(),
+            rollout_percentage: 100,
             condition_json: serde_json::to_string(&req.condition).unwrap_or_else(|e| {
                 errors.push(ValidationIssue {
                     field: "condition".to_string(),
@@ -787,14 +849,11 @@ pub(crate) async fn engine_status(
 
     let mut channels: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut active_count = 0u64;
-    let mut paused_count = 0u64;
 
     for w in workflows.iter() {
         channels.insert(&w.channel);
-        match w.status {
-            dataflow_rs::WorkflowStatus::Active => active_count += 1,
-            dataflow_rs::WorkflowStatus::Paused => paused_count += 1,
-            _ => {}
+        if matches!(w.status, dataflow_rs::WorkflowStatus::Active) {
+            active_count += 1;
         }
     }
 
@@ -805,7 +864,6 @@ pub(crate) async fn engine_status(
         "uptime_seconds": uptime.num_seconds(),
         "rules_count": workflows.len(),
         "active_rules": active_count,
-        "paused_rules": paused_count,
         "channels": channels.into_iter().collect::<Vec<_>>(),
     })))
 }

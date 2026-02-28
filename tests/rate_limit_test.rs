@@ -12,8 +12,8 @@ use orion::connector::ConnectorRegistry;
 use orion::server::rate_limit::RateLimitState;
 use orion::server::state::AppState;
 use orion::storage::repositories::connectors::SqliteConnectorRepository;
-use orion::storage::repositories::jobs::SqliteJobRepository;
 use orion::storage::repositories::rules::SqliteRuleRepository;
+use orion::storage::repositories::traces::SqliteTraceRepository;
 
 /// Create a test app with rate limiting enabled (very low limits for testing).
 async fn rate_limited_app(rps: u32, burst: u32) -> Router {
@@ -26,7 +26,7 @@ async fn rate_limited_app(rps: u32, burst: u32) -> Router {
 
     let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
-    let job_repo = Arc::new(SqliteJobRepository::new(pool.clone()));
+    let trace_repo = Arc::new(SqliteTraceRepository::new(pool.clone()));
     let connector_registry = Arc::new(ConnectorRegistry::new(Default::default()));
 
     let http_client = reqwest::Client::new();
@@ -35,12 +35,12 @@ async fn rate_limited_app(rps: u32, burst: u32) -> Router {
     let engine = dataflow_rs::Engine::new(vec![], Some(custom_functions));
     let engine = Arc::new(RwLock::new(Arc::new(engine)));
 
-    let (job_queue, _worker_handle) = orion::queue::start_workers(
+    let (trace_queue, _worker_handle) = orion::queue::start_workers(
         2,
         100,
         30,
         engine.clone(),
-        job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
+        trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
     );
 
     let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
@@ -69,9 +69,9 @@ async fn rate_limited_app(rps: u32, burst: u32) -> Router {
         engine,
         rule_repo,
         connector_repo,
-        job_repo,
+        trace_repo,
         connector_registry,
-        job_queue,
+        trace_queue,
         config: Arc::new(config),
         start_time: chrono::Utc::now(),
         metrics_handle,
@@ -93,7 +93,7 @@ async fn rate_limited_app_with_channels() -> Router {
 
     let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
-    let job_repo = Arc::new(SqliteJobRepository::new(pool.clone()));
+    let trace_repo = Arc::new(SqliteTraceRepository::new(pool.clone()));
     let connector_registry = Arc::new(ConnectorRegistry::new(Default::default()));
 
     let http_client = reqwest::Client::new();
@@ -102,12 +102,12 @@ async fn rate_limited_app_with_channels() -> Router {
     let engine = dataflow_rs::Engine::new(vec![], Some(custom_functions));
     let engine = Arc::new(RwLock::new(Arc::new(engine)));
 
-    let (job_queue, _worker_handle) = orion::queue::start_workers(
+    let (trace_queue, _worker_handle) = orion::queue::start_workers(
         2,
         100,
         30,
         engine.clone(),
-        job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
+        trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
     );
 
     let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
@@ -149,9 +149,9 @@ async fn rate_limited_app_with_channels() -> Router {
         engine,
         rule_repo,
         connector_repo,
-        job_repo,
+        trace_repo,
         connector_registry,
-        job_queue,
+        trace_queue,
         config: Arc::new(config),
         start_time: chrono::Utc::now(),
         metrics_handle,

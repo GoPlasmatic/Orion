@@ -63,7 +63,7 @@ HTTP Request -> Axum Router -> Route Handler
 ### API Structure
 
 - **Admin** (`/api/v1/admin/`): Rules CRUD, status management (active/paused/archived), dry-run, import/export, connectors CRUD, engine status/reload
-- **Data** (`/api/v1/data/`): `POST /{channel}` (sync), `POST /{channel}/async` + `GET /jobs/{id}` (async), `POST /batch` (batch)
+- **Data** (`/api/v1/data/`): `POST /{channel}` (sync), `POST /{channel}/async` + `GET /traces/{id}` (async)
 - **Operational:** `GET /health`, `GET /metrics`
 
 ### Database

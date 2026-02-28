@@ -109,7 +109,7 @@ You described what you needed. AI generated the rule. Your app pushed JSON — t
 | **GitOps-Ready** | Custom rule IDs + [import/export](docs/production-features.md) for CI/CD workflows |
 | **Rule Versioning** | Automatic [audit trail](docs/production-features.md#rule-versioning) for every rule change |
 | **Connectors** | Named external service configs with [auth and retry](docs/connectors.md) — secrets stay out of rules |
-| **Sync, Async & Batch** | Three [processing modes](docs/api-reference.md#data-api) for any workload |
+| **Sync & Async** | Two [processing modes](docs/api-reference.md#data-api) for any workload |
 | **Prometheus Metrics** | Built-in [counters, histograms, and health checks](docs/observability.md) |
 
 ## Before & After
@@ -141,15 +141,14 @@ Tell AI: *"Alert Slack when orders exceed $10K from accounts under 30 days old"*
 
 Change the threshold from 10000 to 5000? Tell AI. One API call. No restarts, no redeployments, no coordination.
 
-## Three Processing Modes
+## Two Processing Modes
 
 ```
 Sync     POST /api/v1/data/{channel}         → Immediate response with transformed data
-Async    POST /api/v1/data/{channel}/async   → Returns job_id, poll with GET /api/v1/data/jobs/{id}
-Batch    POST /api/v1/data/batch             → Multiple messages in one request, per-message results
+Async    POST /api/v1/data/{channel}/async   → Returns trace_id, poll with GET /api/v1/data/traces/{id}
 ```
 
-Choose the right mode for your workload. Sync for request-response flows, async for fire-and-forget, batch for bulk processing.
+Choose the right mode for your workload. Sync for request-response flows, async for fire-and-forget.
 
 ## Dry-Run Testing
 

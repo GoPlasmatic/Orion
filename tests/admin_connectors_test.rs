@@ -49,7 +49,7 @@ async fn test_connectors_crud_lifecycle() {
     let body = body_json(resp).await;
     assert_eq!(body["data"]["name"], "test-http");
 
-    // List connectors (should include the internal __data_api__ + our new one)
+    // List connectors (should include our new one)
     let resp = app
         .clone()
         .oneshot(json_request("GET", "/api/v1/admin/connectors", None))
@@ -115,26 +115,21 @@ async fn test_connectors_crud_lifecycle() {
 async fn test_data_sync_processing() {
     let app = common::test_app().await;
 
-    // Create a rule that matches the "orders" channel
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v1/admin/rules",
-            Some(json!({
-                "name": "Order Logger",
-                "channel": "orders",
-                "condition": true,
-                "tasks": [{
-                    "id": "t1",
-                    "name": "Log",
-                    "function": { "name": "log", "input": { "message": "order received" } }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    // Create and activate a rule
+    common::create_and_activate_rule(
+        &app,
+        json!({
+            "name": "Order Logger",
+            "channel": "orders",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "Log",
+                "function": { "name": "log", "input": { "message": "order received" } }
+            }]
+        }),
+    )
+    .await;
 
     // Send data to the orders channel
     let resp = app
@@ -175,9 +170,9 @@ async fn test_data_async_processing() {
 
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
-    let job_id = body["job_id"].as_str().unwrap().to_string();
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
 
-    // Poll job status with retry until completed or timeout
+    // Poll trace status with retry until completed or timeout
     let mut final_status = String::new();
     for _ in 0..20 {
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
@@ -186,7 +181,7 @@ async fn test_data_async_processing() {
             .clone()
             .oneshot(json_request(
                 "GET",
-                &format!("/api/v1/data/jobs/{}", job_id),
+                &format!("/api/v1/data/traces/{}", trace_id),
                 None,
             ))
             .await
@@ -200,32 +195,6 @@ async fn test_data_async_processing() {
         }
     }
     assert_eq!(final_status, "completed");
-}
-
-#[tokio::test]
-async fn test_data_batch_processing() {
-    let app = common::test_app().await;
-
-    // Batch process
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v1/data/batch",
-            Some(json!({
-                "messages": [
-                    { "channel": "orders", "data": { "id": 1 } },
-                    { "channel": "events", "data": { "id": 2 } }
-                ]
-            })),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    let results = body["results"].as_array().unwrap();
-    assert_eq!(results.len(), 2);
 }
 
 #[tokio::test]
@@ -278,7 +247,6 @@ async fn test_metrics_endpoint() {
         .await
         .unwrap();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
-    // Metrics should contain Prometheus format text (may be empty if no metrics recorded yet)
     assert!(!body.contains("error"));
 }
 

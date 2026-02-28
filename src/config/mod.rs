@@ -62,14 +62,12 @@ impl Default for StorageConfig {
 #[serde(default)]
 pub struct IngestConfig {
     pub max_payload_size: usize,
-    pub batch_size: usize,
 }
 
 impl Default for IngestConfig {
     fn default() -> Self {
         Self {
             max_payload_size: 1_048_576, // 1 MB
-            batch_size: 100,
         }
     }
 }
@@ -352,9 +350,6 @@ where
     if let Ok(v) = env_var("ORION_INGEST__MAX_PAYLOAD_SIZE") {
         config.ingest.max_payload_size = parse_env::<usize>("ORION_INGEST__MAX_PAYLOAD_SIZE", &v)?;
     }
-    if let Ok(v) = env_var("ORION_INGEST__BATCH_SIZE") {
-        config.ingest.batch_size = parse_env::<usize>("ORION_INGEST__BATCH_SIZE", &v)?;
-    }
     if let Ok(v) = env_var("ORION_QUEUE__WORKERS") {
         config.queue.workers = parse_env::<usize>("ORION_QUEUE__WORKERS", &v)?;
     }
@@ -439,11 +434,6 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     if config.ingest.max_payload_size == 0 {
         return Err(OrionError::Config {
             message: "ingest.max_payload_size must be > 0".to_string(),
-        });
-    }
-    if config.ingest.batch_size == 0 {
-        return Err(OrionError::Config {
-            message: "ingest.batch_size must be > 0".to_string(),
         });
     }
     if config.queue.workers == 0 {
@@ -703,13 +693,6 @@ format = "json"
     }
 
     #[test]
-    fn test_validate_config_invalid_batch_size() {
-        let mut config = AppConfig::default();
-        config.ingest.batch_size = 0;
-        assert!(validate_config(&config).is_err());
-    }
-
-    #[test]
     fn test_validate_config_tracing_enabled_empty_endpoint() {
         let mut config = AppConfig::default();
         config.tracing.enabled = true;
@@ -781,7 +764,6 @@ format = "json"
         env.insert("ORION_LOGGING__LEVEL", "warn");
         env.insert("ORION_LOGGING__FORMAT", "json");
         env.insert("ORION_INGEST__MAX_PAYLOAD_SIZE", "2000000");
-        env.insert("ORION_INGEST__BATCH_SIZE", "50");
         env.insert("ORION_QUEUE__WORKERS", "8");
         env.insert("ORION_QUEUE__BUFFER_SIZE", "2000");
         env.insert("ORION_QUEUE__SHUTDOWN_TIMEOUT_SECS", "60");
@@ -813,7 +795,6 @@ format = "json"
         assert_eq!(config.logging.level, "warn");
         assert!(matches!(config.logging.format, LogFormat::Json));
         assert_eq!(config.ingest.max_payload_size, 2000000);
-        assert_eq!(config.ingest.batch_size, 50);
         assert_eq!(config.queue.workers, 8);
         assert_eq!(config.queue.buffer_size, 2000);
         assert_eq!(config.queue.shutdown_timeout_secs, 60);

@@ -96,7 +96,7 @@ fn extract_channel_from_path(uri_path: &str) -> Option<&str> {
     let path = uri_path.strip_prefix("/api/v1/data/")?;
     // Take the first segment after /api/v1/data/
     let channel = path.split('/').next()?;
-    if channel.is_empty() || channel == "batch" || channel == "jobs" {
+    if channel.is_empty() || channel == "traces" {
         return None;
     }
     Some(channel)
@@ -274,13 +274,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_channel_from_path_batch_excluded() {
-        assert_eq!(extract_channel_from_path("/api/v1/data/batch"), None);
-    }
-
-    #[test]
-    fn test_extract_channel_from_path_jobs_excluded() {
-        assert_eq!(extract_channel_from_path("/api/v1/data/jobs"), None);
+    fn test_extract_channel_from_path_traces_excluded() {
+        assert_eq!(extract_channel_from_path("/api/v1/data/traces"), None);
     }
 
     #[test]

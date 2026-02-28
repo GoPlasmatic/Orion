@@ -8,3 +8,16 @@ pub fn merge_metadata(message: &mut dataflow_rs::Message, metadata: &Value) {
         }
     }
 }
+
+/// Inject a random `_rollout_bucket` (0–99) into the message data for rollout routing.
+pub fn inject_rollout_bucket(message: &mut dataflow_rs::Message) {
+    let bucket = rand::random::<u32>() % 100;
+    message.data_mut()["_rollout_bucket"] = Value::from(bucket);
+}
+
+/// Remove the `_rollout_bucket` field from message data after processing.
+pub fn remove_rollout_bucket(message: &mut dataflow_rs::Message) {
+    if let Some(obj) = message.data_mut().as_object_mut() {
+        obj.remove("_rollout_bucket");
+    }
+}

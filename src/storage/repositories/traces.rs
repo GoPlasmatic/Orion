@@ -3,70 +3,92 @@ use serde::Deserialize;
 use sqlx::SqlitePool;
 
 use crate::errors::OrionError;
-use crate::storage::models::{self, Job};
+use crate::storage::models::{self, Trace};
 use crate::storage::repositories::rules::PaginatedResult;
 
 #[derive(Debug, Default, Deserialize)]
-pub struct JobFilter {
+pub struct TraceFilter {
     pub status: Option<String>,
     pub channel: Option<String>,
+    pub mode: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
-    /// Column to sort by: created_at (default), updated_at, status, channel.
+    /// Column to sort by: created_at (default), updated_at, status, channel, mode.
     pub sort_by: Option<String>,
     /// Sort direction: asc or desc (default).
     pub sort_order: Option<String>,
 }
 
 /// Allowed columns for the `sort_by` query parameter.
-const ALLOWED_SORT_COLUMNS: &[&str] = &["created_at", "updated_at", "status", "channel"];
+const ALLOWED_SORT_COLUMNS: &[&str] = &["created_at", "updated_at", "status", "channel", "mode"];
 
 // -- Repository trait --
 
 #[async_trait]
-pub trait JobRepository: Send + Sync {
-    async fn create_data_job(&self, channel: &str) -> Result<Job, OrionError>;
-    async fn get_by_id(&self, id: &str) -> Result<Job, OrionError>;
+pub trait TraceRepository: Send + Sync {
+    async fn create_pending(
+        &self,
+        channel: &str,
+        mode: &str,
+        input_json: Option<&str>,
+    ) -> Result<Trace, OrionError>;
+    async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError>;
     async fn update_status(
         &self,
         id: &str,
         status: &str,
         error_message: Option<&str>,
-        records_processed: Option<i64>,
-    ) -> Result<Job, OrionError>;
-    async fn set_result(&self, id: &str, result_json: &str) -> Result<(), OrionError>;
-    async fn store_completed_result(
+    ) -> Result<Trace, OrionError>;
+    async fn set_result(
+        &self,
+        id: &str,
+        result_json: &str,
+        duration_ms: f64,
+    ) -> Result<(), OrionError>;
+    async fn store_completed(
         &self,
         channel: &str,
+        mode: &str,
+        input_json: Option<&str>,
         result_json: &str,
+        duration_ms: f64,
     ) -> Result<String, OrionError>;
-    async fn list_paginated(&self, filter: &JobFilter) -> Result<PaginatedResult<Job>, OrionError>;
+    async fn list_paginated(
+        &self,
+        filter: &TraceFilter,
+    ) -> Result<PaginatedResult<Trace>, OrionError>;
 }
 
 // -- SQLite implementation --
 
-pub struct SqliteJobRepository {
+pub struct SqliteTraceRepository {
     pool: SqlitePool,
 }
 
-impl SqliteJobRepository {
+impl SqliteTraceRepository {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 }
 
 #[async_trait]
-impl JobRepository for SqliteJobRepository {
-    async fn create_data_job(&self, channel: &str) -> Result<Job, OrionError> {
-        crate::metrics::timed_db_op("jobs.create_data_job", async {
+impl TraceRepository for SqliteTraceRepository {
+    async fn create_pending(
+        &self,
+        channel: &str,
+        mode: &str,
+        input_json: Option<&str>,
+    ) -> Result<Trace, OrionError> {
+        crate::metrics::timed_db_op("traces.create_pending", async {
             let id = uuid::Uuid::new_v4().to_string();
 
             sqlx::query(
-                "INSERT INTO jobs (id, connector_id, status, channel) VALUES (?, ?, 'pending', ?)",
+                "INSERT INTO traces (id, status, channel, mode, input_json) VALUES (?, 'pending', ?, ?, ?)",
             )
             .bind(&id)
-            .bind(models::DATA_API_CONNECTOR)
             .bind(channel)
+            .bind(mode)
+            .bind(input_json)
             .execute(&self.pool)
             .await?;
 
@@ -75,13 +97,13 @@ impl JobRepository for SqliteJobRepository {
         .await
     }
 
-    async fn get_by_id(&self, id: &str) -> Result<Job, OrionError> {
-        crate::metrics::timed_db_op("jobs.get_by_id", async {
-            sqlx::query_as::<_, Job>("SELECT * FROM jobs WHERE id = ?")
+    async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError> {
+        crate::metrics::timed_db_op("traces.get_by_id", async {
+            sqlx::query_as::<_, Trace>("SELECT * FROM traces WHERE id = ?")
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await?
-                .ok_or_else(|| OrionError::NotFound(format!("Job '{}' not found", id)))
+                .ok_or_else(|| OrionError::NotFound(format!("Trace '{}' not found", id)))
         })
         .await
     }
@@ -91,15 +113,14 @@ impl JobRepository for SqliteJobRepository {
         id: &str,
         status: &str,
         error_message: Option<&str>,
-        records_processed: Option<i64>,
-    ) -> Result<Job, OrionError> {
-        crate::metrics::timed_db_op("jobs.update_status", async {
+    ) -> Result<Trace, OrionError> {
+        crate::metrics::timed_db_op("traces.update_status", async {
             let now = chrono::Utc::now().naive_utc().to_string();
 
-            // started_at and completed_at are mutually exclusive — no need to clone
-            let (started_at, completed_at) = if status == models::JOB_STATUS_RUNNING {
+            let (started_at, completed_at) = if status == models::TRACE_STATUS_RUNNING {
                 (Some(now), None)
-            } else if status == models::JOB_STATUS_COMPLETED || status == models::JOB_STATUS_FAILED
+            } else if status == models::TRACE_STATUS_COMPLETED
+                || status == models::TRACE_STATUS_FAILED
             {
                 (None, Some(now))
             } else {
@@ -107,17 +128,14 @@ impl JobRepository for SqliteJobRepository {
             };
 
             sqlx::query(
-                r#"UPDATE jobs
+                r#"UPDATE traces
                    SET status = ?, error_message = COALESCE(?, error_message),
-                       records_processed = COALESCE(?, records_processed),
                        started_at = COALESCE(?, started_at),
-                       completed_at = COALESCE(?, completed_at),
-                       updated_at = datetime('now')
+                       completed_at = COALESCE(?, completed_at)
                    WHERE id = ?"#,
             )
             .bind(status)
             .bind(error_message)
-            .bind(records_processed)
             .bind(&started_at)
             .bind(&completed_at)
             .bind(id)
@@ -129,37 +147,46 @@ impl JobRepository for SqliteJobRepository {
         .await
     }
 
-    async fn set_result(&self, id: &str, result_json: &str) -> Result<(), OrionError> {
-        crate::metrics::timed_db_op("jobs.set_result", async {
-            sqlx::query(
-                "UPDATE jobs SET result_json = ?, updated_at = datetime('now') WHERE id = ?",
-            )
-            .bind(result_json)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+    async fn set_result(
+        &self,
+        id: &str,
+        result_json: &str,
+        duration_ms: f64,
+    ) -> Result<(), OrionError> {
+        crate::metrics::timed_db_op("traces.set_result", async {
+            sqlx::query("UPDATE traces SET result_json = ?, duration_ms = ? WHERE id = ?")
+                .bind(result_json)
+                .bind(duration_ms)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
             Ok(())
         })
         .await
     }
 
-    async fn store_completed_result(
+    async fn store_completed(
         &self,
         channel: &str,
+        mode: &str,
+        input_json: Option<&str>,
         result_json: &str,
+        duration_ms: f64,
     ) -> Result<String, OrionError> {
-        crate::metrics::timed_db_op("jobs.store_completed_result", async {
+        crate::metrics::timed_db_op("traces.store_completed", async {
             let id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now().naive_utc().to_string();
 
             sqlx::query(
-                r#"INSERT INTO jobs (id, connector_id, status, channel, result_json, started_at, completed_at, records_processed)
-                   VALUES (?, ?, 'completed', ?, ?, ?, ?, 1)"#,
+                r#"INSERT INTO traces (id, status, channel, mode, input_json, result_json, duration_ms, started_at, completed_at)
+                   VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, ?)"#,
             )
             .bind(&id)
-            .bind(models::DATA_API_CONNECTOR)
             .bind(channel)
+            .bind(mode)
+            .bind(input_json)
             .bind(result_json)
+            .bind(duration_ms)
             .bind(&now)
             .bind(&now)
             .execute(&self.pool)
@@ -170,8 +197,11 @@ impl JobRepository for SqliteJobRepository {
         .await
     }
 
-    async fn list_paginated(&self, filter: &JobFilter) -> Result<PaginatedResult<Job>, OrionError> {
-        crate::metrics::timed_db_op("jobs.list_paginated", async {
+    async fn list_paginated(
+        &self,
+        filter: &TraceFilter,
+    ) -> Result<PaginatedResult<Trace>, OrionError> {
+        crate::metrics::timed_db_op("traces.list_paginated", async {
             let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
             let offset = filter.offset.unwrap_or(0).max(0);
 
@@ -186,8 +216,12 @@ impl JobRepository for SqliteJobRepository {
                 where_clause.push_str(" AND channel = ?");
                 binds.push(channel.clone());
             }
+            if let Some(ref mode) = filter.mode {
+                where_clause.push_str(" AND mode = ?");
+                binds.push(mode.clone());
+            }
 
-            let count_query = format!("SELECT COUNT(*) FROM jobs {where_clause}");
+            let count_query = format!("SELECT COUNT(*) FROM traces {where_clause}");
             let mut cq = sqlx::query_as::<_, (i64,)>(&count_query);
             for b in &binds {
                 cq = cq.bind(b);
@@ -205,9 +239,9 @@ impl JobRepository for SqliteJobRepository {
             };
 
             let data_query = format!(
-                "SELECT * FROM jobs {where_clause} ORDER BY {sort_col} {sort_dir} LIMIT ? OFFSET ?"
+                "SELECT * FROM traces {where_clause} ORDER BY {sort_col} {sort_dir} LIMIT ? OFFSET ?"
             );
-            let mut dq = sqlx::query_as::<_, Job>(&data_query);
+            let mut dq = sqlx::query_as::<_, Trace>(&data_query);
             for b in &binds {
                 dq = dq.bind(b);
             }

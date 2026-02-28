@@ -126,7 +126,7 @@ fn validate_connector_config(
 }
 
 pub fn validate_create_rule(req: &CreateRuleRequest) -> Result<(), OrionError> {
-    if let Some(ref id) = req.id {
+    if let Some(ref id) = req.rule_id {
         validate_id(id)?;
     }
     validate_name(&req.name, "Name")?;
@@ -290,7 +290,7 @@ mod tests {
     #[test]
     fn test_validate_create_rule_full() {
         let req = CreateRuleRequest {
-            id: Some("my-rule-1".to_string()),
+            rule_id: Some("my-rule-1".to_string()),
             name: "Test Rule".to_string(),
             description: Some("A test rule".to_string()),
             channel: "orders".to_string(),
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn test_validate_create_rule_invalid_id() {
         let req = CreateRuleRequest {
-            id: Some("bad id with spaces".to_string()),
+            rule_id: Some("bad id with spaces".to_string()),
             name: "Test Rule".to_string(),
             description: None,
             channel: "orders".to_string(),
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn test_validate_create_rule_long_description() {
         let req = CreateRuleRequest {
-            id: None,
+            rule_id: None,
             name: "Test Rule".to_string(),
             description: Some("d".repeat(MAX_DESCRIPTION_LEN + 1)),
             channel: "orders".to_string(),
@@ -344,10 +344,8 @@ mod tests {
             priority: Some(5),
             condition: None,
             tasks: None,
-            status: None,
             tags: None,
             continue_on_error: None,
-            version: None,
         };
         assert!(validate_update_rule(&req).is_ok());
     }
@@ -361,10 +359,8 @@ mod tests {
             priority: None,
             condition: None,
             tasks: None,
-            status: None,
             tags: None,
             continue_on_error: None,
-            version: None,
         };
         assert!(validate_update_rule(&req).is_err());
     }
@@ -378,10 +374,8 @@ mod tests {
             priority: None,
             condition: None,
             tasks: None,
-            status: None,
             tags: None,
             continue_on_error: None,
-            version: None,
         };
         assert!(validate_update_rule(&req).is_err());
     }
@@ -395,10 +389,8 @@ mod tests {
             priority: None,
             condition: None,
             tasks: None,
-            status: None,
             tags: None,
             continue_on_error: None,
-            version: None,
         };
         assert!(validate_update_rule(&req).is_err());
     }

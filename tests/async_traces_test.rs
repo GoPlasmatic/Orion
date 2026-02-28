@@ -6,10 +6,10 @@ use serde_json::json;
 use std::time::Duration;
 use tower::ServiceExt;
 
-/// Helper: poll a job until it reaches a terminal status or max iterations.
-async fn poll_job_until_done(
+/// Helper: poll a trace until it reaches a terminal status or max iterations.
+async fn poll_trace_until_done(
     app: &axum::Router,
-    job_id: &str,
+    trace_id: &str,
     max_polls: usize,
 ) -> serde_json::Value {
     let mut body = json!(null);
@@ -19,7 +19,7 @@ async fn poll_job_until_done(
             .clone()
             .oneshot(json_request(
                 "GET",
-                &format!("/api/v1/data/jobs/{}", job_id),
+                &format!("/api/v1/data/traces/{}", trace_id),
                 None,
             ))
             .await
@@ -39,7 +39,7 @@ async fn poll_job_until_done(
 // ============================================================
 
 #[tokio::test]
-async fn test_async_submit_returns_202_with_job_id() {
+async fn test_async_submit_returns_202_with_trace_id() {
     let app = common::test_app().await;
 
     let resp = app
@@ -53,15 +53,15 @@ async fn test_async_submit_returns_202_with_job_id() {
 
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
-    assert!(body["job_id"].is_string());
-    assert!(!body["job_id"].as_str().unwrap().is_empty());
+    assert!(body["trace_id"].is_string());
+    assert!(!body["trace_id"].as_str().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn test_async_job_completes_successfully() {
+async fn test_async_trace_completes_successfully() {
     let app = common::test_app().await;
 
-    // Submit async job
+    // Submit async trace
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -73,16 +73,16 @@ async fn test_async_job_completes_successfully() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
-    let job_id = body["job_id"].as_str().unwrap().to_string();
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
 
     // Poll until completion
-    let job = poll_job_until_done(&app, &job_id, 30).await;
-    assert_eq!(job["status"], "completed");
-    assert!(job.get("message").is_some());
+    let trace = poll_trace_until_done(&app, &trace_id, 30).await;
+    assert_eq!(trace["status"], "completed");
+    assert!(trace.get("message").is_some());
 }
 
 #[tokio::test]
-async fn test_async_job_with_no_matching_rules() {
+async fn test_async_trace_with_no_matching_rules() {
     let app = common::test_app().await;
 
     // Submit to a channel with no rules configured
@@ -97,15 +97,15 @@ async fn test_async_job_with_no_matching_rules() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
-    let job_id = body["job_id"].as_str().unwrap().to_string();
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
 
-    // Job should still complete (no-op)
-    let job = poll_job_until_done(&app, &job_id, 30).await;
-    assert_eq!(job["status"], "completed");
+    // Trace should still complete (no-op)
+    let trace = poll_trace_until_done(&app, &trace_id, 30).await;
+    assert_eq!(trace["status"], "completed");
 }
 
 #[tokio::test]
-async fn test_async_job_empty_channel_rejected() {
+async fn test_async_trace_empty_channel_rejected() {
     let app = common::test_app().await;
 
     // Use percent-encoded space as channel, which trims to empty
@@ -122,15 +122,15 @@ async fn test_async_job_empty_channel_rejected() {
 }
 
 // ============================================================
-// Multiple concurrent async jobs
+// Multiple concurrent async traces
 // ============================================================
 
 #[tokio::test]
-async fn test_multiple_concurrent_async_jobs() {
+async fn test_multiple_concurrent_async_traces() {
     let app = common::test_app().await;
 
-    // Submit 10 jobs concurrently
-    let mut job_ids = Vec::new();
+    // Submit 10 traces concurrently
+    let mut trace_ids = Vec::new();
     for i in 0..10 {
         let resp = app
             .clone()
@@ -143,31 +143,31 @@ async fn test_multiple_concurrent_async_jobs() {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
         let body = body_json(resp).await;
-        job_ids.push(body["job_id"].as_str().unwrap().to_string());
+        trace_ids.push(body["trace_id"].as_str().unwrap().to_string());
     }
 
-    // Wait for all jobs to complete
-    for job_id in &job_ids {
-        let job = poll_job_until_done(&app, job_id, 40).await;
-        let status = job["status"].as_str().unwrap();
+    // Wait for all traces to complete
+    for trace_id in &trace_ids {
+        let trace = poll_trace_until_done(&app, trace_id, 40).await;
+        let status = trace["status"].as_str().unwrap();
         assert!(
             status == "completed" || status == "failed",
-            "Job {} should reach terminal status, got: {}",
-            job_id,
+            "Trace {} should reach terminal status, got: {}",
+            trace_id,
             status,
         );
     }
 }
 
 // ============================================================
-// Job listing, pagination, and filtering
+// Trace listing, pagination, and filtering
 // ============================================================
 
 #[tokio::test]
-async fn test_job_list_pagination() {
+async fn test_trace_list_pagination() {
     let app = common::test_app().await;
 
-    // Submit 5 async jobs
+    // Submit 5 async traces
     for i in 0..5 {
         let resp = app
             .clone()
@@ -181,7 +181,7 @@ async fn test_job_list_pagination() {
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
     }
 
-    // Brief pause so jobs are visible
+    // Brief pause so traces are visible
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Page 1: limit=2, offset=0
@@ -189,7 +189,7 @@ async fn test_job_list_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/data/jobs?limit=2&offset=0",
+            "/api/v1/data/traces?limit=2&offset=0",
             None,
         ))
         .await
@@ -206,7 +206,7 @@ async fn test_job_list_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/data/jobs?limit=2&offset=2",
+            "/api/v1/data/traces?limit=2&offset=2",
             None,
         ))
         .await
@@ -218,10 +218,10 @@ async fn test_job_list_pagination() {
 }
 
 #[tokio::test]
-async fn test_job_list_filter_by_status() {
+async fn test_trace_list_filter_by_status() {
     let app = common::test_app().await;
 
-    // Submit a job and wait for it to complete
+    // Submit a trace and wait for it to complete
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -233,35 +233,35 @@ async fn test_job_list_filter_by_status() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
-    let job_id = body["job_id"].as_str().unwrap().to_string();
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
 
     // Wait for completion
-    poll_job_until_done(&app, &job_id, 30).await;
+    poll_trace_until_done(&app, &trace_id, 30).await;
 
     // Filter by completed status
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/data/jobs?status=completed",
+            "/api/v1/data/traces?status=completed",
             None,
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let jobs = body["data"].as_array().unwrap();
-    assert!(!jobs.is_empty());
-    for job in jobs {
-        assert_eq!(job["status"], "completed");
+    let traces = body["data"].as_array().unwrap();
+    assert!(!traces.is_empty());
+    for trace in traces {
+        assert_eq!(trace["status"], "completed");
     }
 }
 
 #[tokio::test]
-async fn test_job_list_filter_by_channel() {
+async fn test_trace_list_filter_by_channel() {
     let app = common::test_app().await;
 
-    // Submit jobs on two different channels
+    // Submit traces on two different channels
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -292,14 +292,14 @@ async fn test_job_list_filter_by_channel() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/data/jobs?channel=channel-a",
+            "/api/v1/data/traces?channel=channel-a",
             None,
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let jobs = body["data"].as_array().unwrap();
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0]["channel"], "channel-a");
+    let traces = body["data"].as_array().unwrap();
+    assert_eq!(traces.len(), 1);
+    assert_eq!(traces[0]["channel"], "channel-a");
 }
