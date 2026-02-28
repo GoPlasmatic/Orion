@@ -140,6 +140,18 @@ async fn dispatcher_loop(
     tracing::info!("Trace queue workers shut down");
 }
 
+/// Update trace status, logging an error if the DB call fails.
+async fn set_trace_status(
+    trace_repo: &dyn TraceRepository,
+    trace_id: &str,
+    status: &str,
+    message: Option<&str>,
+) {
+    if let Err(e) = trace_repo.update_status(trace_id, status, message).await {
+        tracing::error!(trace_id = %trace_id, error = %e, "Failed to update trace status to {}", status);
+    }
+}
+
 /// Process a single queued trace.
 #[tracing::instrument(skip(msg, engine, trace_repo), fields(trace_id = %msg.trace_id, channel = %msg.channel))]
 async fn process_trace(
@@ -210,16 +222,13 @@ async fn process_trace(
                 Ok(json) => json,
                 Err(e) => {
                     tracing::error!(trace_id = %trace_id, error = %e, "Failed to serialize trace result");
-                    if let Err(db_err) = trace_repo
-                        .update_status(
-                            &trace_id,
-                            models::TRACE_STATUS_FAILED,
-                            Some(&format!("Result serialization failed: {e}")),
-                        )
-                        .await
-                    {
-                        tracing::error!(trace_id = %trace_id, error = %db_err, "Failed to update trace status to failed after serialization error");
-                    }
+                    set_trace_status(
+                        trace_repo.as_ref(),
+                        &trace_id,
+                        models::TRACE_STATUS_FAILED,
+                        Some(&format!("Result serialization failed: {e}")),
+                    )
+                    .await;
                     return;
                 }
             };
@@ -245,36 +254,35 @@ async fn process_trace(
             }
 
             if result_saved {
-                if let Err(e) = trace_repo
-                    .update_status(&trace_id, models::TRACE_STATUS_COMPLETED, None)
-                    .await
-                {
-                    tracing::error!(trace_id = %trace_id, error = %e, "Failed to mark trace as completed");
-                }
+                set_trace_status(
+                    trace_repo.as_ref(),
+                    &trace_id,
+                    models::TRACE_STATUS_COMPLETED,
+                    None,
+                )
+                .await;
             } else {
                 tracing::error!(trace_id = %trace_id, "Failed to save trace result after 3 attempts, marking as failed");
-                if let Err(db_err) = trace_repo
-                    .update_status(
-                        &trace_id,
-                        models::TRACE_STATUS_FAILED,
-                        Some("Result persistence failed after retries"),
-                    )
-                    .await
-                {
-                    tracing::error!(trace_id = %trace_id, error = %db_err, "Failed to update trace status to failed after persistence failure");
-                }
+                set_trace_status(
+                    trace_repo.as_ref(),
+                    &trace_id,
+                    models::TRACE_STATUS_FAILED,
+                    Some("Result persistence failed after retries"),
+                )
+                .await;
             }
         }
         Err(e) => {
             metrics::record_message(&channel, "error");
             metrics::record_error("engine");
 
-            if let Err(db_err) = trace_repo
-                .update_status(&trace_id, models::TRACE_STATUS_FAILED, Some(&e.to_string()))
-                .await
-            {
-                tracing::error!(trace_id = %trace_id, error = %db_err, "Failed to mark trace as failed");
-            }
+            set_trace_status(
+                trace_repo.as_ref(),
+                &trace_id,
+                models::TRACE_STATUS_FAILED,
+                Some(&e.to_string()),
+            )
+            .await;
         }
     }
 }
