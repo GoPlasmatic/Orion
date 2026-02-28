@@ -40,7 +40,6 @@ The health check tests the database with `SELECT 1` and verifies engine availabi
   "uptime_seconds": 3600,
   "rules_count": 42,
   "active_rules": 38,
-  "paused_rules": 4,
   "channels": ["orders", "events", "alerts"]
 }
 ```

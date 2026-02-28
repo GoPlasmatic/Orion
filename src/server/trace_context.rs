@@ -63,7 +63,7 @@ pub async fn extract_trace_context(req: Request<Body>, next: Next) -> Response {
 
 /// Inject the current span's trace context into a header map.
 ///
-/// Call this from any code that makes outbound requests (HTTP, Kafka, job queue)
+/// Call this from any code that makes outbound requests (HTTP, Kafka, trace queue)
 /// to propagate the trace to downstream services or background processing.
 pub fn inject_trace_context(headers: &mut HashMap<String, String>) {
     struct MapInjector<'a> {
