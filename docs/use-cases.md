@@ -432,7 +432,7 @@ Output ONLY the JSON rule. No explanation.
 Every AI-generated rule should go through this workflow before reaching production:
 
 1. **Generate** — use your LLM with the prompt template above
-2. **Create as paused** — `POST /api/v1/admin/rules` with `"status": "paused"` so it won't process live traffic
+2. **Create as draft** — `POST /api/v1/admin/rules` (rules are created as drafts by default, not loaded into the engine)
 3. **Dry-run** — `POST /api/v1/admin/rules/{id}/test` with representative test data
 4. **Check the trace** — verify the right tasks ran, the right ones were skipped, and output matches expectations
 5. **Activate** — `PATCH /api/v1/admin/rules/{id}/status` with `"status": "active"`
@@ -463,7 +463,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Import rules (paused)
+      - name: Import rules (as drafts)
         run: |
           for file in rules/**/*.json; do
             curl -s -X POST http://localhost:8080/api/v1/admin/rules \
@@ -527,9 +527,9 @@ Each test case:
 AI-generated rules get the same governance as hand-written ones:
 
 - **Version history** — every rule change is recorded. Roll back if an AI-generated rule misbehaves.
-- **Paused status** — create AI rules as `paused` by default and activate only after dry-run validation.
+- **Draft status** — rules are created as `draft` by default and are not loaded into the engine until explicitly activated.
 - **Dry-run before activate** — test with representative data and inspect the full execution trace.
-- **Audit trail** — the `rule_versions` table records who changed what and when.
+- **Audit trail** — every rule version is recorded in the `rules` table with incrementing version numbers.
 - **Connectors isolate secrets** — AI generates rules that reference connector names, never credentials.
 
 ## Common Rule Patterns

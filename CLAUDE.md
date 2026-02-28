@@ -37,17 +37,17 @@ Docker: `docker build -t orion .` (multi-stage: rust:1.85-slim -> debian:bookwor
 
 ### Startup Sequence (main.rs)
 
-CLI args -> config (TOML + `ORION_SECTION__KEY` env overrides) -> tracing -> metrics -> SQLite pool (WAL mode) + migrations -> repositories -> ConnectorRegistry -> custom functions -> engine build -> optional Kafka -> job queue workers -> Axum HTTP server -> graceful shutdown on SIGTERM/SIGINT.
+CLI args -> config (TOML + `ORION_SECTION__KEY` env overrides) -> tracing -> metrics -> SQLite pool (WAL mode) + migrations -> repositories -> ConnectorRegistry -> custom functions -> engine build -> optional Kafka -> trace queue workers -> Axum HTTP server -> graceful shutdown on SIGTERM/SIGINT.
 
 ### Key Architectural Patterns
 
-- **Repository pattern:** Trait-based (`RuleRepository`, `ConnectorRepository`, `JobRepository`) with SQLite implementations. Traits use `async_trait`. All repos are stored as `Arc<dyn Trait>` in `AppState`.
-- **Engine hot-reload:** Engine is `Arc<RwLock<Arc<Engine>>>`. Double-Arc allows swapping the inner engine while readers hold the old one. Reload triggers automatically on any rule CRUD operation and manually via `POST /api/v1/admin/engine/reload`. The reload is in `server/routes/mod.rs::reload_engine()` — it builds the new engine outside the write lock to minimize lock hold time.
+- **Repository pattern:** Trait-based (`RuleRepository`, `ConnectorRepository`, `TraceRepository`) with SQLite implementations. Traits use `async_trait`. All repos are stored as `Arc<dyn Trait>` in `AppState`.
+- **Engine hot-reload:** Engine is `Arc<RwLock<Arc<Engine>>>`. Double-Arc allows swapping the inner engine while readers hold the old one. Reload triggers on status changes (activate/archive), delete, and manually via `POST /api/v1/admin/engine/reload`. Draft rule creates/updates do not trigger reload. The reload is in `server/routes/mod.rs::reload_engine()` — it builds the new engine outside the write lock to minimize lock hold time.
 - **Custom async functions:** `HttpCallHandler`, `EnrichHandler`, `PublishKafkaHandler` implement `dataflow_rs::engine::functions::AsyncFunctionHandler`. Registered in `engine/mod.rs::build_custom_functions()`.
 - **Connector registry:** In-memory `RwLock<HashMap<String, Arc<ConnectorConfig>>>` with secret masking on API reads (`connector/mod.rs::mask_connector_secrets()`).
-- **Job queue:** `tokio::sync::mpsc` channel with semaphore-limited concurrency for async job processing (`queue/mod.rs`).
+- **Trace queue:** `tokio::sync::mpsc` channel with semaphore-limited concurrency for async trace processing (`queue/mod.rs`).
 - **Error handling:** `OrionError` enum in `errors.rs` implements `axum::response::IntoResponse`, mapping variants to HTTP status codes. Returns JSON `{"error": {"code": "...", "message": "..."}}`.
-- **AppState** (`server/state.rs`): Central shared state struct holding engine, all repos, connector registry, job queue, config, metrics handle, and DB pool. Passed to all route handlers via Axum's `State` extractor.
+- **AppState** (`server/state.rs`): Central shared state struct holding engine, all repos, connector registry, trace queue, config, metrics handle, and DB pool. Passed to all route handlers via Axum's `State` extractor.
 
 ### Request Processing Flow
 
@@ -62,13 +62,13 @@ HTTP Request -> Axum Router -> Route Handler
 
 ### API Structure
 
-- **Admin** (`/api/v1/admin/`): Rules CRUD, status management (active/paused/archived), dry-run, import/export, connectors CRUD, engine status/reload
-- **Data** (`/api/v1/data/`): `POST /{channel}` (sync), `POST /{channel}/async` + `GET /traces/{id}` (async)
+- **Admin** (`/api/v1/admin/`): Rules CRUD, status management (draft/active/archived), versioning, rollout, dry-run, import/export, validate, connectors CRUD, circuit breakers, engine status/reload
+- **Data** (`/api/v1/data/`): `POST /{channel}` (sync), `POST /{channel}/async` (async), `GET /traces` (list), `GET /traces/{id}` (poll)
 - **Operational:** `GET /health`, `GET /metrics`
 
 ### Database
 
-SQLite with WAL mode. Migrations embedded at compile time via `sqlx::migrate!("./migrations")`. Tables: `rules`, `rule_versions` (audit history), `connectors`, `jobs`. New migrations go in the `migrations/` directory with sequential numbering (e.g., `004_*.sql`).
+SQLite with WAL mode. Migrations embedded at compile time via `sqlx::migrate!("./migrations")`. Tables: `rules` (with version tracking), `connectors`, `traces`. New migrations go in the `migrations/` directory with sequential numbering (e.g., `004_*.sql`).
 
 ## Testing
 

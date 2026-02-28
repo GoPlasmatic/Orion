@@ -96,11 +96,11 @@ impl Default for EngineConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueueConfig {
-    /// Maximum number of concurrent async job workers.
+    /// Maximum number of concurrent async trace workers.
     pub workers: usize,
-    /// Channel buffer size for pending jobs.
+    /// Channel buffer size for pending traces.
     pub buffer_size: usize,
-    /// Timeout in seconds to wait for in-flight jobs during shutdown.
+    /// Timeout in seconds to wait for in-flight traces during shutdown.
     pub shutdown_timeout_secs: u64,
 }
 

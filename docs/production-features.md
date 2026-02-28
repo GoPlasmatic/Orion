@@ -4,15 +4,33 @@
 
 ## Rule Versioning
 
-Every rule change is automatically versioned in a transactional audit trail:
+Rules follow a **draft → active → archived** lifecycle with automatic version tracking:
 
-- **Create** — version 1 is recorded
-- **Update** — version increments, full snapshot saved
-- **Status change** (active/paused/archived) — new version created
+- **Create** — version 1 is recorded as `draft`
+- **Activate** — status changes to `active`, rule is loaded into the engine
+- **New version** — `POST /api/v1/admin/rules/{id}/versions` creates a new draft version from the active rule
+- **Update** — only draft versions can be updated via `PUT`
+- **Archive** — removes the rule from the engine
 
-All versions are stored in a `rule_versions` table with the complete rule state at that point in time. Versions cascade-delete when the parent rule is removed.
+All versions are stored in the `rules` table with incrementing version numbers. Use `GET /api/v1/admin/rules/{id}/versions` to list the version history.
 
-The `GET /api/v1/admin/rules/{id}` response includes `version_count` showing the total number of versions for that rule.
+## Rollout Management
+
+Control traffic exposure for active rules with rollout percentages:
+
+```bash
+# Activate a rule at 10% rollout
+curl -s -X PATCH http://localhost:8080/api/v1/admin/rules/<rule-id>/status \
+  -H "Content-Type: application/json" -d '{"status": "active", "rollout_percentage": 10}'
+
+# Increase rollout to 50%
+curl -s -X PATCH http://localhost:8080/api/v1/admin/rules/<rule-id>/rollout \
+  -H "Content-Type: application/json" -d '{"rollout_percentage": 50}'
+
+# Full rollout
+curl -s -X PATCH http://localhost:8080/api/v1/admin/rules/<rule-id>/rollout \
+  -H "Content-Type: application/json" -d '{"rollout_percentage": 100}'
+```
 
 ## Custom Rule IDs
 
@@ -68,33 +86,30 @@ When the external call fails, the response still returns `"status": "ok"` with e
 
 Without `continue_on_error`, the same failure would return a hard error and stop the pipeline.
 
-## Paused Rule Lifecycle
+## Draft Rule Lifecycle
 
-Pause rules to temporarily disable processing without deleting them. Paused rules remain in the database and retain their configuration — useful for validating AI-generated rules before activating them.
+Rules are created as drafts, allowing validation before activation. Draft rules remain in the database but are not loaded into the engine — useful for validating AI-generated rules before activating them.
 
 ```bash
-# Rule is active — data gets transformed
-curl -s -X POST http://localhost:8080/api/v1/data/content \
+# Create a rule (starts as draft)
+curl -s -X POST http://localhost:8080/api/v1/admin/rules \
+  -H "Content-Type: application/json" \
+  -d '{ "name": "Content Moderation", "channel": "content", ... }'
+
+# Dry-run test the rule
+curl -s -X POST http://localhost:8080/api/v1/admin/rules/<rule-id>/test \
   -H "Content-Type: application/json" \
   -d '{"data": {"text": "Hello"}}'
-# → { "data": { "post": { "text": "Hello", "moderated": true, "status": "reviewed" } } }
 
-# Pause the rule
-curl -s -X PATCH http://localhost:8080/api/v1/admin/rules/<rule-id>/status \
-  -H "Content-Type: application/json" -d '{"status": "paused"}'
-curl -s -X POST http://localhost:8080/api/v1/admin/engine/reload
-
-# Rule is paused — data passes through unmodified
-curl -s -X POST http://localhost:8080/api/v1/data/content \
-  -H "Content-Type: application/json" \
-  -d '{"data": {"text": "Hello"}}'
-# → { "data": {} }
-
-# Reactivate
+# Activate once satisfied
 curl -s -X PATCH http://localhost:8080/api/v1/admin/rules/<rule-id>/status \
   -H "Content-Type: application/json" -d '{"status": "active"}'
-curl -s -X POST http://localhost:8080/api/v1/admin/engine/reload
-# Rule is active again
+# Rule is now active — data gets transformed
+
+# Archive to disable
+curl -s -X PATCH http://localhost:8080/api/v1/admin/rules/<rule-id>/status \
+  -H "Content-Type: application/json" -d '{"status": "archived"}'
+# Rule is archived — no longer processes data
 ```
 
 See [API Reference](api-reference.md) for status management endpoints.

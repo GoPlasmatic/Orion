@@ -155,7 +155,7 @@ async fn test_data_sync_processing() {
 async fn test_data_async_processing() {
     let app = common::test_app().await;
 
-    // Submit async job
+    // Submit async trace
     let resp = app
         .clone()
         .oneshot(json_request(

@@ -12,17 +12,14 @@ port = 8080
 
 [storage]
 path = "orion.db"              # SQLite database file path
-# max_connections = 5           # SQLite connection pool size
+# max_connections = 10          # SQLite connection pool size
 
 [ingest]
 max_payload_size = 1048576     # Maximum payload size in bytes (1 MB)
 
-[engine]
-max_concurrent_workflows = 100
-
 [queue]
-workers = 4                    # Concurrent async job workers
-buffer_size = 1000             # Channel buffer for pending jobs
+workers = 4                    # Concurrent async trace workers
+buffer_size = 1000             # Channel buffer for pending traces
 
 [kafka]                        # Requires the `kafka` feature flag
 enabled = false
@@ -75,7 +72,7 @@ Orion handles `SIGTERM` and `SIGINT` with a controlled shutdown sequence:
 1. HTTP server stops accepting new connections
 2. In-flight requests complete
 3. Kafka consumer (if enabled) is signaled to stop
-4. Async job queue drains with a **30-second timeout**
+4. Async trace queue drains with a **30-second timeout**
 5. Process exits
 
 ## Production Checklist
@@ -83,5 +80,5 @@ Orion handles `SIGTERM` and `SIGINT` with a controlled shutdown sequence:
 - Mount a persistent volume for `orion.db`
 - Set `ORION_LOGGING__FORMAT=json` for structured log ingestion
 - Enable Prometheus metrics with `ORION_METRICS__ENABLED=true`
-- Tune `storage.max_connections` for your concurrency needs (default: 5)
+- Tune `storage.max_connections` for your concurrency needs (default: 10)
 - Use `RUST_LOG=orion=info` for per-crate log filtering
