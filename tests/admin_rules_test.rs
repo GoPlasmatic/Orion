@@ -60,7 +60,7 @@ async fn test_rules_crud_lifecycle() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert!(body["total"].as_i64().unwrap() >= 1);
-    assert!(body["data"].as_array().unwrap().len() >= 1);
+    assert!(!body["data"].as_array().unwrap().is_empty());
 
     // Update the draft rule
     let resp = app
