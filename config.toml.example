@@ -14,7 +14,6 @@
 
 [ingest]
 # max_payload_size = 1048576  # Maximum payload size in bytes (1 MB)
-# batch_size = 100            # Batch processing size
 
 [engine]
 # health_check_timeout_secs = 2   # Timeout for engine read lock in health checks

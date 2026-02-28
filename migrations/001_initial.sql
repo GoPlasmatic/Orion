@@ -1,44 +1,78 @@
--- Rules table
+-- ============================================================
+-- Rules table (versioned, composite PK)
+-- ============================================================
 CREATE TABLE IF NOT EXISTS rules (
-    id TEXT PRIMARY KEY NOT NULL,
+    rule_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
     name TEXT NOT NULL,
     description TEXT,
     channel TEXT NOT NULL DEFAULT 'default',
     priority INTEGER NOT NULL DEFAULT 0,
-    version INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'active',
+    status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'active', 'archived')),
+    rollout_percentage INTEGER NOT NULL DEFAULT 100 CHECK (rollout_percentage BETWEEN 0 AND 100),
     condition_json TEXT NOT NULL DEFAULT 'true',
     tasks_json TEXT NOT NULL DEFAULT '[]',
     tags TEXT NOT NULL DEFAULT '[]',
     continue_on_error INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (rule_id, version)
 );
 
-CREATE INDEX IF NOT EXISTS idx_rules_status ON rules(status);
-CREATE INDEX IF NOT EXISTS idx_rules_channel ON rules(channel);
+CREATE INDEX idx_rules_status ON rules(status);
+CREATE INDEX idx_rules_channel_status ON rules(channel, status);
+CREATE INDEX idx_rules_priority_name ON rules(priority DESC, name ASC);
+CREATE INDEX idx_rules_rule_id ON rules(rule_id);
 
--- Rule versions table (history)
-CREATE TABLE IF NOT EXISTS rule_versions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    rule_id TEXT NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
-    version INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    channel TEXT NOT NULL,
-    priority INTEGER NOT NULL,
-    status TEXT NOT NULL,
-    condition_json TEXT NOT NULL,
-    tasks_json TEXT NOT NULL,
-    tags TEXT NOT NULL DEFAULT '[]',
-    continue_on_error INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(rule_id, version)
-);
+-- updated_at trigger
+CREATE TRIGGER trg_rules_updated_at AFTER UPDATE ON rules
+BEGIN
+  UPDATE rules SET updated_at = datetime('now')
+  WHERE rule_id = NEW.rule_id AND version = NEW.version;
+END;
 
-CREATE INDEX IF NOT EXISTS idx_rule_versions_rule_id ON rule_versions(rule_id);
+-- Only one draft per rule_id
+CREATE TRIGGER trg_rules_single_draft
+BEFORE INSERT ON rules
+WHEN NEW.status = 'draft'
+BEGIN
+  SELECT RAISE(ABORT, 'Only one draft version allowed per rule')
+  WHERE EXISTS (
+    SELECT 1 FROM rules
+    WHERE rule_id = NEW.rule_id AND status = 'draft'
+  );
+END;
 
+-- Prevent content changes on active rules
+CREATE TRIGGER trg_rules_active_immutable
+BEFORE UPDATE ON rules
+WHEN OLD.status = 'active'
+  AND NEW.status = 'active'
+  AND (OLD.name != NEW.name
+    OR OLD.description IS NOT NEW.description
+    OR OLD.channel != NEW.channel
+    OR OLD.priority != NEW.priority
+    OR OLD.condition_json != NEW.condition_json
+    OR OLD.tasks_json != NEW.tasks_json
+    OR OLD.tags != NEW.tags
+    OR OLD.continue_on_error != NEW.continue_on_error)
+BEGIN
+  SELECT RAISE(ABORT, 'Cannot modify content of active rules');
+END;
+
+-- Latest version per rule_id
+CREATE VIEW current_rules AS
+SELECT r.*
+FROM rules r
+INNER JOIN (
+  SELECT rule_id, MAX(version) AS max_version
+  FROM rules
+  GROUP BY rule_id
+) latest ON r.rule_id = latest.rule_id AND r.version = latest.max_version;
+
+-- ============================================================
 -- Connectors table
+-- ============================================================
 CREATE TABLE IF NOT EXISTS connectors (
     id TEXT PRIMARY KEY NOT NULL,
     name TEXT NOT NULL UNIQUE,
@@ -49,20 +83,35 @@ CREATE TABLE IF NOT EXISTS connectors (
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_connectors_name ON connectors(name);
+CREATE TRIGGER trg_connectors_updated_at AFTER UPDATE ON connectors
+BEGIN
+  UPDATE connectors SET updated_at = datetime('now') WHERE id = NEW.id;
+END;
 
--- Jobs table
-CREATE TABLE IF NOT EXISTS jobs (
+-- ============================================================
+-- Traces table
+-- ============================================================
+CREATE TABLE IF NOT EXISTS traces (
     id TEXT PRIMARY KEY NOT NULL,
-    connector_id TEXT NOT NULL REFERENCES connectors(id) ON DELETE CASCADE,
-    status TEXT NOT NULL DEFAULT 'pending',
+    channel TEXT NOT NULL DEFAULT 'default',
+    mode TEXT NOT NULL DEFAULT 'sync' CHECK (mode IN ('sync', 'async')),
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+    input_json TEXT,
+    result_json TEXT,
+    error_message TEXT,
+    duration_ms REAL,
     started_at TEXT,
     completed_at TEXT,
-    error_message TEXT,
-    records_processed INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_jobs_connector_id ON jobs(connector_id);
-CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX idx_traces_status ON traces(status);
+CREATE INDEX idx_traces_status_channel ON traces(status, channel);
+CREATE INDEX idx_traces_channel ON traces(channel);
+CREATE INDEX idx_traces_mode ON traces(mode);
+
+CREATE TRIGGER trg_traces_updated_at AFTER UPDATE ON traces
+BEGIN
+  UPDATE traces SET updated_at = datetime('now') WHERE id = NEW.id;
+END;

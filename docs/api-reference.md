@@ -29,8 +29,7 @@
 |--------|------|-------------|
 | POST | `/api/v1/data/{channel}` | Process message synchronously |
 | POST | `/api/v1/data/{channel}/async` | Submit for async processing (returns job ID) |
-| GET | `/api/v1/data/jobs/{id}` | Poll async job result |
-| POST | `/api/v1/data/batch` | Process a batch of messages |
+| GET | `/api/v1/data/traces/{id}` | Poll async trace result |
 
 ## Operational Endpoints
 

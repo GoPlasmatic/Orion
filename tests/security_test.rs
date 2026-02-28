@@ -30,7 +30,7 @@ async fn test_sql_injection_in_rule_name() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
-    let rule_id = body["data"]["id"].as_str().unwrap().to_string();
+    let rule_id = body["data"]["rule_id"].as_str().unwrap().to_string();
 
     // Verify the rule is stored safely and retrievable
     let resp = app
@@ -155,7 +155,7 @@ async fn test_xss_in_rule_description() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
-    let rule_id = body["data"]["id"].as_str().unwrap().to_string();
+    let rule_id = body["data"]["rule_id"].as_str().unwrap().to_string();
 
     // Verify the description is stored and returned as-is (JSON-escaped, not interpreted)
     let resp = app
@@ -198,29 +198,6 @@ async fn test_deeply_nested_json_payload() {
     assert!(resp.status().as_u16() < 600);
 }
 
-#[tokio::test]
-async fn test_large_batch_at_limit() {
-    let app = common::test_app().await;
-
-    // Create exactly batch_size (100) messages — should succeed
-    let messages: Vec<_> = (0..100)
-        .map(|i| json!({"channel": "orders", "data": {"id": i}}))
-        .collect();
-
-    let resp = app
-        .oneshot(json_request(
-            "POST",
-            "/api/v1/data/batch",
-            Some(json!({"messages": messages})),
-        ))
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["results"].as_array().unwrap().len(), 100);
-}
-
 // ============================================================
 // Unicode handling
 // ============================================================
@@ -250,7 +227,7 @@ async fn test_unicode_in_rule_fields() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
-    let rule_id = body["data"]["id"].as_str().unwrap().to_string();
+    let rule_id = body["data"]["rule_id"].as_str().unwrap().to_string();
 
     // Verify roundtrip
     let resp = app
@@ -297,7 +274,7 @@ async fn test_null_bytes_in_string_fields() {
     // System should either accept safely or reject — must not panic
     if resp.status().is_success() {
         let body = body_json(resp).await;
-        let rule_id = body["data"]["id"].as_str().unwrap().to_string();
+        let rule_id = body["data"]["rule_id"].as_str().unwrap().to_string();
 
         // Verify retrieval is consistent
         let resp = app

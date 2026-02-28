@@ -12,8 +12,8 @@ use orion::config::{self, LogFormat};
 use orion::connector::ConnectorRegistry;
 use orion::server::state::AppState;
 use orion::storage::repositories::connectors::SqliteConnectorRepository;
-use orion::storage::repositories::jobs::SqliteJobRepository;
 use orion::storage::repositories::rules::{RuleRepository, SqliteRuleRepository};
+use orion::storage::repositories::traces::SqliteTraceRepository;
 
 #[derive(Parser)]
 #[command(name = "orion", version, about = "Orion Rules Engine Service")]
@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create repositories
     let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
-    let job_repo = Arc::new(SqliteJobRepository::new(pool.clone()));
+    let trace_repo = Arc::new(SqliteTraceRepository::new(pool.clone()));
 
     // Load connectors
     let connector_registry = Arc::new(ConnectorRegistry::new(
@@ -206,19 +206,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // Start job queue worker pool
-    let (job_queue, worker_handle) = orion::queue::start_workers(
+    // Start trace queue worker pool
+    let (trace_queue, worker_handle) = orion::queue::start_workers(
         config.queue.workers,
         config.queue.buffer_size,
         config.queue.shutdown_timeout_secs,
         engine.clone(),
-        job_repo.clone() as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
+        trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
     );
 
     tracing::info!(
         workers = config.queue.workers,
         buffer = config.queue.buffer_size,
-        "Job queue started"
+        "Trace queue started"
     );
 
     // Set initial active rules gauge
@@ -244,9 +244,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rule_repo: rule_repo as Arc<dyn orion::storage::repositories::rules::RuleRepository>,
         connector_repo: connector_repo
             as Arc<dyn orion::storage::repositories::connectors::ConnectorRepository>,
-        job_repo: job_repo as Arc<dyn orion::storage::repositories::jobs::JobRepository>,
+        trace_repo: trace_repo as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
         connector_registry,
-        job_queue,
+        trace_queue,
         config: config.clone(),
         start_time: chrono::Utc::now(),
         metrics_handle,
@@ -276,7 +276,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         handle.shutdown().await;
     }
 
-    tracing::info!("Shutting down job queue workers...");
+    tracing::info!("Shutting down trace queue workers...");
     worker_handle.shutdown().await;
 
     // Flush pending OTel spans before exit

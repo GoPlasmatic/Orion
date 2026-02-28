@@ -61,22 +61,17 @@ async fn test_circuit_breaker_reset_not_found() {
 async fn test_engine_status_with_loaded_rules() {
     let app = common::test_app().await;
 
-    // Create an active rule
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v1/admin/rules",
-            Some(json!({
-                "name": "Status Check Rule",
-                "channel": "status-ch",
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    // Create and activate a rule
+    common::create_and_activate_rule(
+        &app,
+        json!({
+            "name": "Status Check Rule",
+            "channel": "status-ch",
+            "condition": true,
+            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
+        }),
+    )
+    .await;
 
     // Check engine status
     let resp = app
@@ -89,7 +84,6 @@ async fn test_engine_status_with_loaded_rules() {
     let body = body_json(resp).await;
     assert!(body["rules_count"].as_i64().unwrap() >= 1);
     assert!(body["active_rules"].as_i64().unwrap() >= 1);
-    assert_eq!(body["paused_rules"], 0);
     assert!(body.get("channels").is_some());
     assert!(body.get("version").is_some());
     assert!(body.get("uptime_seconds").is_some());
@@ -105,14 +99,14 @@ async fn test_engine_status_with_loaded_rules() {
 async fn test_version_list_with_pagination_params() {
     let app = common::test_app().await;
 
-    // Create a rule
+    // Create a rule (draft v1)
     let resp = app
         .clone()
         .oneshot(json_request(
             "POST",
             "/api/v1/admin/rules",
             Some(json!({
-                "id": "ver-page-test",
+                "rule_id": "ver-page-test",
                 "name": "Version Pagination",
                 "channel": "test",
                 "condition": true,
@@ -123,29 +117,53 @@ async fn test_version_list_with_pagination_params() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Update the rule to create version 2
+    // Activate v1
     let resp = app
         .clone()
         .oneshot(json_request(
-            "PUT",
-            "/api/v1/admin/rules/ver-page-test",
-            Some(json!({"name": "Version Pagination v2"})),
+            "PATCH",
+            "/api/v1/admin/rules/ver-page-test/status",
+            Some(json!({"status": "active"})),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Update again for version 3
+    // Create v2 draft
     let resp = app
         .clone()
         .oneshot(json_request(
-            "PUT",
-            "/api/v1/admin/rules/ver-page-test",
-            Some(json!({"name": "Version Pagination v3"})),
+            "POST",
+            "/api/v1/admin/rules/ver-page-test/versions",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Activate v2
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            "/api/v1/admin/rules/ver-page-test/status",
+            Some(json!({"status": "active"})),
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+
+    // Create v3 draft
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/rules/ver-page-test/versions",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
 
     // List versions with limit=1 offset=0
     let resp = app
@@ -188,7 +206,7 @@ async fn test_version_list_with_pagination_params() {
 async fn test_export_rules_with_channel_filter() {
     let app = common::test_app().await;
 
-    // Create rules in different channels
+    // Create rules in different channels (as drafts, export should still work)
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -325,14 +343,14 @@ async fn test_update_connector_name_only() {
 }
 
 // ============================================================
-// Get Job - completed with result
+// Get Trace - completed with result
 // ============================================================
 
 #[tokio::test]
-async fn test_get_completed_job_with_result() {
+async fn test_get_completed_trace_with_result() {
     let app = common::test_app().await;
 
-    // Submit async job
+    // Submit async trace
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -344,7 +362,7 @@ async fn test_get_completed_job_with_result() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
-    let job_id = body["job_id"].as_str().unwrap().to_string();
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
 
     // Wait for completion
     for _ in 0..40 {
@@ -353,7 +371,7 @@ async fn test_get_completed_job_with_result() {
             .clone()
             .oneshot(json_request(
                 "GET",
-                &format!("/api/v1/data/jobs/{}", job_id),
+                &format!("/api/v1/data/traces/{}", trace_id),
                 None,
             ))
             .await
@@ -366,7 +384,7 @@ async fn test_get_completed_job_with_result() {
             return;
         }
     }
-    panic!("Job did not complete in time");
+    panic!("Trace did not complete in time");
 }
 
 // ============================================================
@@ -377,7 +395,6 @@ async fn test_get_completed_job_with_result() {
 async fn test_validate_rule_with_task_condition() {
     let app = common::test_app().await;
 
-    // A task with a valid JSONLogic condition should pass validation
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -434,7 +451,6 @@ async fn test_validate_rule_with_connector_warning() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    // Should have a warning about missing connector
     let warnings = body["warnings"].as_array().unwrap();
     let has_connector_warning = warnings
         .iter()
@@ -495,7 +511,7 @@ async fn test_http_call_end_to_end() {
 
     let app = common::test_app().await;
 
-    // Create connector pointing to mock server (include "type" for registry deserialization)
+    // Create connector pointing to mock server
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -516,36 +532,31 @@ async fn test_http_call_end_to_end() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Create rule with http_call task
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v1/admin/rules",
-            Some(json!({
-                "name": "HTTP Call Integration",
-                "channel": "http-call-ch",
-                "condition": true,
-                "tasks": [{
-                    "id": "call-api",
-                    "name": "Call Mock API",
-                    "function": {
-                        "name": "http_call",
-                        "input": {
-                            "connector": "mock-http-api",
-                            "method": "POST",
-                            "path": "/api/users",
-                            "body": {"test": true},
-                            "response_path": "api_response",
-                            "timeout_ms": 5000
-                        }
+    // Create and activate rule with http_call task
+    common::create_and_activate_rule(
+        &app,
+        json!({
+            "name": "HTTP Call Integration",
+            "channel": "http-call-ch",
+            "condition": true,
+            "tasks": [{
+                "id": "call-api",
+                "name": "Call Mock API",
+                "function": {
+                    "name": "http_call",
+                    "input": {
+                        "connector": "mock-http-api",
+                        "method": "POST",
+                        "path": "/api/users",
+                        "body": {"test": true},
+                        "response_path": "api_response",
+                        "timeout_ms": 5000
                     }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+                }
+            }]
+        }),
+    )
+    .await;
 
     // Process data through the channel
     let resp = app
@@ -604,36 +615,31 @@ async fn test_enrich_end_to_end() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Create rule with enrich task
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v1/admin/rules",
-            Some(json!({
-                "name": "Enrich Integration",
-                "channel": "enrich-ch",
-                "condition": true,
-                "tasks": [{
-                    "id": "enrich-data",
-                    "name": "Enrich from API",
-                    "function": {
-                        "name": "enrich",
-                        "input": {
-                            "connector": "mock-enrich-api",
-                            "method": "GET",
-                            "path": "/api/details",
-                            "merge_path": "enrichment",
-                            "on_error": "skip",
-                            "timeout_ms": 5000
-                        }
+    // Create and activate rule with enrich task
+    common::create_and_activate_rule(
+        &app,
+        json!({
+            "name": "Enrich Integration",
+            "channel": "enrich-ch",
+            "condition": true,
+            "tasks": [{
+                "id": "enrich-data",
+                "name": "Enrich from API",
+                "function": {
+                    "name": "enrich",
+                    "input": {
+                        "connector": "mock-enrich-api",
+                        "method": "GET",
+                        "path": "/api/details",
+                        "merge_path": "enrichment",
+                        "on_error": "skip",
+                        "timeout_ms": 5000
                     }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+                }
+            }]
+        }),
+    )
+    .await;
 
     // Process data
     let resp = app
@@ -658,14 +664,14 @@ async fn test_enrich_end_to_end() {
 async fn test_rule_test_with_metadata() {
     let app = common::test_app().await;
 
-    // Create a rule
+    // Create a rule (draft is fine for test endpoint)
     let resp = app
         .clone()
         .oneshot(json_request(
             "POST",
             "/api/v1/admin/rules",
             Some(json!({
-                "id": "test-dry-run",
+                "rule_id": "test-dry-run-meta",
                 "name": "Dry Run Rule",
                 "channel": "dry-run",
                 "condition": true,
@@ -681,7 +687,7 @@ async fn test_rule_test_with_metadata() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/rules/test-dry-run/test",
+            "/api/v1/admin/rules/test-dry-run-meta/test",
             Some(json!({
                 "data": {"key": "value"},
                 "metadata": {"source": "test-suite"}
@@ -708,7 +714,7 @@ async fn test_rule_test_with_non_object_data() {
             "POST",
             "/api/v1/admin/rules",
             Some(json!({
-                "id": "test-non-obj",
+                "rule_id": "test-non-obj",
                 "name": "Non Object Data",
                 "channel": "test",
                 "condition": true,
@@ -749,14 +755,14 @@ async fn test_import_all_success() {
             "/api/v1/admin/rules/import",
             Some(json!([
                 {
-                    "id": "import-1",
+                    "rule_id": "import-1",
                     "name": "Import Rule 1",
                     "channel": "import-ch",
                     "condition": true,
                     "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "imported"}}}]
                 },
                 {
-                    "id": "import-2",
+                    "rule_id": "import-2",
                     "name": "Import Rule 2",
                     "channel": "import-ch",
                     "condition": true,
@@ -781,22 +787,17 @@ async fn test_import_all_success() {
 async fn test_sync_processing_with_metadata() {
     let app = common::test_app().await;
 
-    // Create a rule
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v1/admin/rules",
-            Some(json!({
-                "name": "Metadata Rule",
-                "channel": "meta-ch",
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "meta test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    // Create and activate a rule
+    common::create_and_activate_rule(
+        &app,
+        json!({
+            "name": "Metadata Rule",
+            "channel": "meta-ch",
+            "condition": true,
+            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "meta test"}}}]
+        }),
+    )
+    .await;
 
     // Process with metadata
     let resp = app
@@ -878,7 +879,7 @@ async fn test_create_rule_with_description_and_tags() {
             "POST",
             "/api/v1/admin/rules",
             Some(json!({
-                "id": "desc-rule",
+                "rule_id": "desc-rule",
                 "name": "Described Rule",
                 "description": "This is a test rule with a description",
                 "channel": "desc-ch",
@@ -893,23 +894,13 @@ async fn test_create_rule_with_description_and_tags() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
-    assert_eq!(body["data"]["id"], "desc-rule");
+    assert_eq!(body["data"]["rule_id"], "desc-rule");
     assert_eq!(
         body["data"]["description"],
         "This is a test rule with a description"
     );
     assert_eq!(body["data"]["priority"], 5);
     assert!(body["data"]["continue_on_error"].as_bool().unwrap());
-
-    // Get with version_count
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/rules/desc-rule", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert!(body.get("version_count").is_some());
 }
 
 // ============================================================
@@ -926,7 +917,7 @@ async fn test_update_rule_with_description() {
             "POST",
             "/api/v1/admin/rules",
             Some(json!({
-                "id": "upd-desc-rule",
+                "rule_id": "upd-desc-rule",
                 "name": "Update Desc Rule",
                 "channel": "test",
                 "condition": true,
@@ -937,7 +928,7 @@ async fn test_update_rule_with_description() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Update with description and channel
+    // Update the draft with description and channel
     let resp = app
         .clone()
         .oneshot(json_request(

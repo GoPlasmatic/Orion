@@ -37,6 +37,7 @@ datalogic-rs = "4"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
 url = "2"
+rand = "0.8"
 governor = { version = "0.8", default-features = false, features = ["dashmap", "std"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }

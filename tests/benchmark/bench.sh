@@ -145,9 +145,6 @@ format = "pretty"
 
 [metrics]
 enabled = false
-
-[ingest]
-batch_size = 200
 TOMLEOF
 
     log_info "Starting Orion on port $BENCH_PORT ($BUILD_PROFILE mode)"
@@ -442,42 +439,26 @@ scenario_multi() {
     record_result "D: Multi-rule channel (12 rules)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
-# E: Batch sizing — batch sizes 1, 10, 50, 100
-scenario_batch() {
-    log_info "E: Batch sizing"
-
-    clear_rules
-    create_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
-
-    for size in 1 10 50 100; do
-        CURRENT_SCENARIO="E_batch_${size}"
-        log_info "  Batch size: $size"
-
-        run_hey POST "${BENCH_URL}/api/v1/data/batch" "$FIXTURES_DIR/data/batch_${size}.json"
-        record_result "E: Batch (${size} messages)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
-    done
-}
-
-# F: Concurrency scaling — c=1, 10, 50, 100
+# E: Concurrency scaling — c=1, 10, 50, 100
 scenario_concurrency() {
-    log_info "F: Concurrency scaling"
+    log_info "E: Concurrency scaling"
 
     clear_rules
     create_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
 
     for c in 1 10 50 100; do
-        CURRENT_SCENARIO="F_concurrency_${c}"
+        CURRENT_SCENARIO="E_concurrency_${c}"
         log_info "  Concurrency: $c"
 
         run_hey POST "${BENCH_URL}/api/v1/data/bench" "$FIXTURES_DIR/data/simple_payload.json" "$c"
-        record_result "F: Concurrency c=${c}" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+        record_result "E: Concurrency c=${c}" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
     done
 }
 
-# G: Reload under load — hey in background + engine reload every 500ms
+# F: Reload under load — hey in background + engine reload every 500ms
 scenario_reload() {
-    log_info "G: Reload under load"
-    CURRENT_SCENARIO="G_reload_under_load"
+    log_info "F: Reload under load"
+    CURRENT_SCENARIO="F_reload_under_load"
 
     clear_rules
     create_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
@@ -507,7 +488,7 @@ scenario_reload() {
     rm -f "$hey_output_file"
 
     parse_hey_output "$hey_output"
-    record_result "G: Reload under load (${reload_count}x)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+    record_result "F: Reload under load (${reload_count}x)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 
     # Save raw output if requested
     if [[ -n "$BENCH_OUTPUT_DIR" ]]; then
@@ -520,7 +501,7 @@ scenario_reload() {
 # SCENARIO REGISTRY
 # ═══════════════════════════════════════════════════════════════════
 
-ALL_SCENARIOS=(baseline simple complex multi batch concurrency reload)
+ALL_SCENARIOS=(baseline simple complex multi concurrency reload)
 
 run_scenario() {
     local name="$1"
@@ -529,7 +510,6 @@ run_scenario() {
         simple)      scenario_simple ;;
         complex)     scenario_complex ;;
         multi)       scenario_multi ;;
-        batch)       scenario_batch ;;
         concurrency) scenario_concurrency ;;
         reload)      scenario_reload ;;
         *)

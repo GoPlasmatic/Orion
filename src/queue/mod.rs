@@ -6,36 +6,36 @@ use tokio::sync::{RwLock, Semaphore, mpsc};
 
 use crate::metrics;
 use crate::storage::models;
-use crate::storage::repositories::jobs::JobRepository;
+use crate::storage::repositories::traces::TraceRepository;
 
-/// A message submitted to the job queue for async processing.
+/// A message submitted to the trace queue for async processing.
 pub struct QueueMessage {
-    pub job_id: String,
+    pub trace_id: String,
     pub channel: String,
     pub payload: Value,
     pub metadata: Value,
     /// Serialized W3C trace context headers captured at submission time.
-    /// Used to link async job processing spans back to the originating request.
+    /// Used to link async processing spans back to the originating request.
     #[cfg(feature = "otel")]
     pub trace_headers: std::collections::HashMap<String, String>,
 }
 
-/// In-memory job queue backed by a tokio mpsc channel.
+/// In-memory trace queue backed by a tokio mpsc channel.
 ///
-/// Jobs are submitted via `submit()` and processed by a semaphore-limited
+/// Traces are submitted via `submit()` and processed by a semaphore-limited
 /// worker pool that runs in the background.
 #[derive(Clone)]
-pub struct JobQueue {
+pub struct TraceQueue {
     sender: mpsc::Sender<QueueMessage>,
 }
 
-impl JobQueue {
-    /// Submit a job to the queue for background processing.
+impl TraceQueue {
+    /// Submit a trace to the queue for background processing.
     pub async fn submit(&self, msg: QueueMessage) -> Result<(), crate::errors::OrionError> {
         self.sender
             .send(msg)
             .await
-            .map_err(|_| crate::errors::OrionError::Queue("Job queue is closed".to_string()))
+            .map_err(|_| crate::errors::OrionError::Queue("Trace queue is closed".to_string()))
     }
 }
 
@@ -49,12 +49,12 @@ pub struct WorkerHandle {
 impl WorkerHandle {
     /// Gracefully shut down the worker pool.
     ///
-    /// Drops the sender (the JobQueue clone also holds one), so call this
+    /// Drops the sender (the TraceQueue clone also holds one), so call this
     /// only after the HTTP server has stopped accepting new requests.
-    /// The returned future resolves when all in-flight jobs are complete.
+    /// The returned future resolves when all in-flight traces are complete.
     pub async fn shutdown(self) {
         drop(self._sender);
-        // Wait for the dispatcher with a timeout to prevent hanging on stuck jobs
+        // Wait for the dispatcher with a timeout to prevent hanging on stuck traces
         let timeout = Duration::from_secs(self.shutdown_timeout_secs);
         if tokio::time::timeout(timeout, self.join_handle)
             .await
@@ -62,24 +62,24 @@ impl WorkerHandle {
         {
             tracing::warn!(
                 timeout_secs = self.shutdown_timeout_secs,
-                "Job queue workers did not shut down within timeout, proceeding with exit"
+                "Trace queue workers did not shut down within timeout, proceeding with exit"
             );
         }
     }
 }
 
-/// Start the background worker pool and return a (JobQueue, WorkerHandle) pair.
+/// Start the background worker pool and return a (TraceQueue, WorkerHandle) pair.
 ///
-/// `max_workers` controls the maximum number of concurrent jobs.
-/// `buffer_size` controls the channel buffer (pending jobs waiting to be picked up).
-/// `shutdown_timeout_secs` controls how long to wait for in-flight jobs during shutdown.
+/// `max_workers` controls the maximum number of concurrent traces.
+/// `buffer_size` controls the channel buffer (pending traces waiting to be picked up).
+/// `shutdown_timeout_secs` controls how long to wait for in-flight traces during shutdown.
 pub fn start_workers(
     max_workers: usize,
     buffer_size: usize,
     shutdown_timeout_secs: u64,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
-    job_repo: Arc<dyn JobRepository>,
-) -> (JobQueue, WorkerHandle) {
+    trace_repo: Arc<dyn TraceRepository>,
+) -> (TraceQueue, WorkerHandle) {
     let (tx, rx) = mpsc::channel::<QueueMessage>(buffer_size);
 
     let handle = tokio::spawn(dispatcher_loop(
@@ -87,10 +87,10 @@ pub fn start_workers(
         max_workers,
         shutdown_timeout_secs,
         engine,
-        job_repo,
+        trace_repo,
     ));
 
-    let queue = JobQueue { sender: tx.clone() };
+    let queue = TraceQueue { sender: tx.clone() };
     let worker_handle = WorkerHandle {
         _sender: tx,
         join_handle: handle,
@@ -100,14 +100,14 @@ pub fn start_workers(
     (queue, worker_handle)
 }
 
-/// Main dispatcher loop: receives jobs from the channel and spawns processing
-/// tasks, limited by a semaphore to `max_workers` concurrent jobs.
+/// Main dispatcher loop: receives traces from the channel and spawns processing
+/// tasks, limited by a semaphore to `max_workers` concurrent traces.
 async fn dispatcher_loop(
     mut rx: mpsc::Receiver<QueueMessage>,
     max_workers: usize,
     shutdown_timeout_secs: u64,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
-    job_repo: Arc<dyn JobRepository>,
+    trace_repo: Arc<dyn TraceRepository>,
 ) {
     let semaphore = Arc::new(Semaphore::new(max_workers));
 
@@ -119,15 +119,15 @@ async fn dispatcher_loop(
         };
 
         let engine = engine.clone();
-        let job_repo = job_repo.clone();
+        let trace_repo = trace_repo.clone();
 
         tokio::spawn(async move {
             let _permit = permit; // guard: dropped on scope exit, even on panic
-            process_job(msg, engine, job_repo).await;
+            process_trace(msg, engine, trace_repo).await;
         });
     }
 
-    // Wait for all in-flight jobs to complete, with a timeout
+    // Wait for all in-flight traces to complete, with a timeout
     if tokio::time::timeout(
         Duration::from_secs(shutdown_timeout_secs),
         semaphore.acquire_many(max_workers as u32),
@@ -135,17 +135,17 @@ async fn dispatcher_loop(
     .await
     .is_err()
     {
-        tracing::warn!("Timed out waiting for in-flight jobs to complete");
+        tracing::warn!("Timed out waiting for in-flight traces to complete");
     }
-    tracing::info!("Job queue workers shut down");
+    tracing::info!("Trace queue workers shut down");
 }
 
-/// Process a single queued job.
-#[tracing::instrument(skip(msg, engine, job_repo), fields(job_id = %msg.job_id, channel = %msg.channel))]
-async fn process_job(
+/// Process a single queued trace.
+#[tracing::instrument(skip(msg, engine, trace_repo), fields(trace_id = %msg.trace_id, channel = %msg.channel))]
+async fn process_trace(
     msg: QueueMessage,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
-    job_repo: Arc<dyn JobRepository>,
+    trace_repo: Arc<dyn TraceRepository>,
 ) {
     // Restore W3C trace context from the originating request so this span
     // appears as a child in the caller's distributed trace.
@@ -170,22 +170,23 @@ async fn process_job(
         tracing::Span::current().set_parent(cx);
     }
 
-    let job_id = msg.job_id;
+    let trace_id = msg.trace_id;
     let channel = msg.channel;
     let start = Instant::now();
 
     // Mark as running
-    if let Err(e) = job_repo
-        .update_status(&job_id, models::JOB_STATUS_RUNNING, None, None)
+    if let Err(e) = trace_repo
+        .update_status(&trace_id, models::TRACE_STATUS_RUNNING, None)
         .await
     {
-        tracing::error!(job_id = %job_id, error = %e, "Failed to update job status to running");
+        tracing::error!(trace_id = %trace_id, error = %e, "Failed to update trace status to running");
         return;
     }
 
     // Build message
     let mut message = dataflow_rs::Message::from_value(&msg.payload);
     crate::engine::utils::merge_metadata(&mut message, &msg.metadata);
+    crate::engine::utils::inject_rollout_bucket(&mut message);
 
     // Clone the inner Arc<Engine> and release the lock immediately
     let engine_ref = engine.read().await.clone();
@@ -193,28 +194,31 @@ async fn process_job(
         .process_message_for_channel(&channel, &mut message)
         .await;
 
-    let duration = start.elapsed().as_secs_f64();
+    crate::engine::utils::remove_rollout_bucket(&mut message);
+
+    let duration = start.elapsed();
+    let duration_secs = duration.as_secs_f64();
+    let duration_ms = duration.as_secs_f64() * 1000.0;
 
     match result {
         Ok(()) => {
             metrics::record_message(&channel, "ok");
-            metrics::record_message_duration(&channel, duration);
+            metrics::record_message_duration(&channel, duration_secs);
             metrics::record_channel_execution(&channel);
 
             let result_json = match serde_json::to_string(&message) {
                 Ok(json) => json,
                 Err(e) => {
-                    tracing::error!(job_id = %job_id, error = %e, "Failed to serialize job result");
-                    if let Err(db_err) = job_repo
+                    tracing::error!(trace_id = %trace_id, error = %e, "Failed to serialize trace result");
+                    if let Err(db_err) = trace_repo
                         .update_status(
-                            &job_id,
-                            models::JOB_STATUS_FAILED,
+                            &trace_id,
+                            models::TRACE_STATUS_FAILED,
                             Some(&format!("Result serialization failed: {e}")),
-                            None,
                         )
                         .await
                     {
-                        tracing::error!(job_id = %job_id, error = %db_err, "Failed to update job status to failed after serialization error");
+                        tracing::error!(trace_id = %trace_id, error = %db_err, "Failed to update trace status to failed after serialization error");
                     }
                     return;
                 }
@@ -222,15 +226,18 @@ async fn process_job(
 
             let mut result_saved = false;
             for attempt in 0..3 {
-                match job_repo.set_result(&job_id, &result_json).await {
+                match trace_repo
+                    .set_result(&trace_id, &result_json, duration_ms)
+                    .await
+                {
                     Ok(_) => {
                         result_saved = true;
                         break;
                     }
                     Err(e) => {
                         tracing::warn!(
-                            job_id = %job_id, error = %e, attempt = attempt + 1,
-                            "Failed to save job result, retrying"
+                            trace_id = %trace_id, error = %e, attempt = attempt + 1,
+                            "Failed to save trace result, retrying"
                         );
                         tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
                     }
@@ -238,24 +245,23 @@ async fn process_job(
             }
 
             if result_saved {
-                if let Err(e) = job_repo
-                    .update_status(&job_id, models::JOB_STATUS_COMPLETED, None, Some(1))
+                if let Err(e) = trace_repo
+                    .update_status(&trace_id, models::TRACE_STATUS_COMPLETED, None)
                     .await
                 {
-                    tracing::error!(job_id = %job_id, error = %e, "Failed to mark job as completed");
+                    tracing::error!(trace_id = %trace_id, error = %e, "Failed to mark trace as completed");
                 }
             } else {
-                tracing::error!(job_id = %job_id, "Failed to save job result after 3 attempts, marking as failed");
-                if let Err(db_err) = job_repo
+                tracing::error!(trace_id = %trace_id, "Failed to save trace result after 3 attempts, marking as failed");
+                if let Err(db_err) = trace_repo
                     .update_status(
-                        &job_id,
-                        models::JOB_STATUS_FAILED,
+                        &trace_id,
+                        models::TRACE_STATUS_FAILED,
                         Some("Result persistence failed after retries"),
-                        None,
                     )
                     .await
                 {
-                    tracing::error!(job_id = %job_id, error = %db_err, "Failed to update job status to failed after persistence failure");
+                    tracing::error!(trace_id = %trace_id, error = %db_err, "Failed to update trace status to failed after persistence failure");
                 }
             }
         }
@@ -263,16 +269,11 @@ async fn process_job(
             metrics::record_message(&channel, "error");
             metrics::record_error("engine");
 
-            if let Err(db_err) = job_repo
-                .update_status(
-                    &job_id,
-                    models::JOB_STATUS_FAILED,
-                    Some(&e.to_string()),
-                    None,
-                )
+            if let Err(db_err) = trace_repo
+                .update_status(&trace_id, models::TRACE_STATUS_FAILED, Some(&e.to_string()))
                 .await
             {
-                tracing::error!(job_id = %job_id, error = %db_err, "Failed to mark job as failed");
+                tracing::error!(trace_id = %trace_id, error = %db_err, "Failed to mark trace as failed");
             }
         }
     }
