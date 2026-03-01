@@ -8,6 +8,53 @@ use crate::metrics;
 use crate::storage::models;
 use crate::storage::repositories::traces::TraceRepository;
 
+/// Start a background task that periodically deletes old traces.
+///
+/// Returns a `JoinHandle` that can be aborted on shutdown.
+/// If `retention_hours` is 0, no cleanup task is started.
+pub fn start_trace_cleanup(
+    retention_hours: u64,
+    interval_secs: u64,
+    trace_repo: Arc<dyn TraceRepository>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if retention_hours == 0 {
+        tracing::info!("Trace retention disabled (trace_retention_hours = 0)");
+        return None;
+    }
+
+    let handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+        // Skip the first immediate tick
+        interval.tick().await;
+
+        loop {
+            interval.tick().await;
+            match trace_repo.delete_older_than(retention_hours).await {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!(
+                            deleted = count,
+                            retention_hours = retention_hours,
+                            "Trace cleanup completed"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Trace cleanup failed");
+                }
+            }
+        }
+    });
+
+    tracing::info!(
+        retention_hours = retention_hours,
+        interval_secs = interval_secs,
+        "Trace cleanup task started"
+    );
+
+    Some(handle)
+}
+
 /// A message submitted to the trace queue for async processing.
 pub struct QueueMessage {
     pub trace_id: String,

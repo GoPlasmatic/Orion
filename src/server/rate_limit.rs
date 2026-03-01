@@ -61,8 +61,8 @@ impl RateLimitState {
 }
 
 fn build_keyed_limiter(rps: u32, burst: u32) -> KeyedLimiter {
-    let quota = Quota::per_second(NonZeroU32::new(rps).unwrap_or(NonZeroU32::new(1).unwrap()))
-        .allow_burst(NonZeroU32::new(burst).unwrap_or(NonZeroU32::new(1).unwrap()));
+    let quota = Quota::per_second(NonZeroU32::new(rps).unwrap_or(NonZeroU32::MIN))
+        .allow_burst(NonZeroU32::new(burst).unwrap_or(NonZeroU32::MIN));
     RateLimiter::dashmap(quota)
 }
 

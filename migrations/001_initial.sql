@@ -110,6 +110,7 @@ CREATE INDEX idx_traces_status ON traces(status);
 CREATE INDEX idx_traces_status_channel ON traces(status, channel);
 CREATE INDEX idx_traces_channel ON traces(channel);
 CREATE INDEX idx_traces_mode ON traces(mode);
+CREATE INDEX idx_traces_created_at ON traces(created_at);
 
 CREATE TRIGGER trg_traces_updated_at AFTER UPDATE ON traces
 BEGIN

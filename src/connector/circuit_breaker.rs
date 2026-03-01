@@ -13,6 +13,8 @@ pub struct CircuitBreakerConfig {
     pub enabled: bool,
     pub failure_threshold: u32,
     pub recovery_timeout_secs: u64,
+    /// Maximum number of tracked circuit breakers. Oldest entries are evicted when exceeded.
+    pub max_breakers: usize,
 }
 
 impl Default for CircuitBreakerConfig {
@@ -21,6 +23,7 @@ impl Default for CircuitBreakerConfig {
             enabled: false,
             failure_threshold: 5,
             recovery_timeout_secs: 30,
+            max_breakers: 10_000,
         }
     }
 }
@@ -154,6 +157,7 @@ mod tests {
             enabled: true,
             failure_threshold: threshold,
             recovery_timeout_secs: recovery_secs,
+            ..Default::default()
         }
     }
 

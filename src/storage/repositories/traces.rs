@@ -57,6 +57,8 @@ pub trait TraceRepository: Send + Sync {
         &self,
         filter: &TraceFilter,
     ) -> Result<PaginatedResult<Trace>, OrionError>;
+    /// Delete traces older than the given number of hours. Returns the count deleted.
+    async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError>;
 }
 
 // -- SQLite implementation --
@@ -256,5 +258,106 @@ impl TraceRepository for SqliteTraceRepository {
             })
         })
         .await
+    }
+
+    async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError> {
+        crate::metrics::timed_db_op("traces.delete_older_than", async {
+            let cutoff = chrono::Utc::now()
+                .naive_utc()
+                .checked_sub_signed(chrono::Duration::hours(hours as i64))
+                .unwrap_or(chrono::NaiveDateTime::MIN)
+                .to_string();
+
+            let result = sqlx::query(
+                "DELETE FROM traces WHERE created_at < ? AND status IN ('completed', 'failed')",
+            )
+            .bind(&cutoff)
+            .execute(&self.pool)
+            .await?;
+
+            Ok(result.rows_affected())
+        })
+        .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_pool() -> sqlx::SqlitePool {
+        let pool = crate::storage::init_pool(&crate::config::StorageConfig {
+            path: ":memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn test_delete_older_than_removes_old_completed_traces() {
+        let pool = test_pool().await;
+        let repo = SqliteTraceRepository::new(pool.clone());
+
+        // Create a completed trace
+        let id = repo
+            .store_completed("orders", "sync", None, r#"{"ok":true}"#, 10.0)
+            .await
+            .unwrap();
+
+        // Backdate it to 100 hours ago
+        let old_time = chrono::Utc::now()
+            .naive_utc()
+            .checked_sub_signed(chrono::Duration::hours(100))
+            .unwrap()
+            .to_string();
+        sqlx::query("UPDATE traces SET created_at = ? WHERE id = ?")
+            .bind(&old_time)
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Create a recent trace that should NOT be deleted
+        let _recent_id = repo
+            .store_completed("orders", "sync", None, r#"{"ok":true}"#, 5.0)
+            .await
+            .unwrap();
+
+        // Delete traces older than 72 hours
+        let deleted = repo.delete_older_than(72).await.unwrap();
+        assert_eq!(deleted, 1);
+
+        // Verify the recent trace still exists
+        let remaining = repo.list_paginated(&TraceFilter::default()).await.unwrap();
+        assert_eq!(remaining.total, 1);
+    }
+
+    #[tokio::test]
+    async fn test_delete_older_than_preserves_pending_traces() {
+        let pool = test_pool().await;
+        let repo = SqliteTraceRepository::new(pool.clone());
+
+        // Create a pending trace
+        let trace = repo.create_pending("orders", "async", None).await.unwrap();
+
+        // Backdate it
+        let old_time = chrono::Utc::now()
+            .naive_utc()
+            .checked_sub_signed(chrono::Duration::hours(200))
+            .unwrap()
+            .to_string();
+        sqlx::query("UPDATE traces SET created_at = ? WHERE id = ?")
+            .bind(&old_time)
+            .bind(&trace.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // Cleanup should NOT delete pending traces
+        let deleted = repo.delete_older_than(72).await.unwrap();
+        assert_eq!(deleted, 0);
     }
 }
