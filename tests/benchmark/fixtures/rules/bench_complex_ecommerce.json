@@ -5,24 +5,16 @@
     "condition": true,
     "tasks": [
         {
-            "id": "parse",
-            "name": "Parse Payload",
-            "function": {
-                "name": "parse_json",
-                "input": { "source": "payload", "target": "order" }
-            }
-        },
-        {
             "id": "vip_tier",
             "name": "VIP Classification",
-            "condition": { ">=": [{ "var": "data.order.amount" }, 500] },
+            "condition": { ">=": [{ "var": "data.amount" }, 500] },
             "function": {
                 "name": "map",
                 "input": {
                     "mappings": [
-                        { "path": "data.order.tier", "logic": "vip" },
-                        { "path": "data.order.discount_pct", "logic": 20 },
-                        { "path": "data.order.free_shipping", "logic": true }
+                        { "path": "data.tier", "logic": "vip" },
+                        { "path": "data.discount_pct", "logic": 20 },
+                        { "path": "data.free_shipping", "logic": true }
                     ]
                 }
             }
@@ -32,17 +24,17 @@
             "name": "Premium Classification",
             "condition": {
                 "and": [
-                    { ">=": [{ "var": "data.order.amount" }, 100] },
-                    { "<": [{ "var": "data.order.amount" }, 500] }
+                    { ">=": [{ "var": "data.amount" }, 100] },
+                    { "<": [{ "var": "data.amount" }, 500] }
                 ]
             },
             "function": {
                 "name": "map",
                 "input": {
                     "mappings": [
-                        { "path": "data.order.tier", "logic": "premium" },
-                        { "path": "data.order.discount_pct", "logic": 10 },
-                        { "path": "data.order.free_shipping", "logic": false }
+                        { "path": "data.tier", "logic": "premium" },
+                        { "path": "data.discount_pct", "logic": 10 },
+                        { "path": "data.free_shipping", "logic": false }
                     ]
                 }
             }
@@ -50,14 +42,14 @@
         {
             "id": "standard_tier",
             "name": "Standard Classification",
-            "condition": { "<": [{ "var": "data.order.amount" }, 100] },
+            "condition": { "<": [{ "var": "data.amount" }, 100] },
             "function": {
                 "name": "map",
                 "input": {
                     "mappings": [
-                        { "path": "data.order.tier", "logic": "standard" },
-                        { "path": "data.order.discount_pct", "logic": 0 },
-                        { "path": "data.order.free_shipping", "logic": false }
+                        { "path": "data.tier", "logic": "standard" },
+                        { "path": "data.discount_pct", "logic": 0 },
+                        { "path": "data.free_shipping", "logic": false }
                     ]
                 }
             }
@@ -70,24 +62,24 @@
                 "input": {
                     "mappings": [
                         {
-                            "path": "data.order.processed_at",
+                            "path": "data.processed_at",
                             "logic": { "now": [] }
                         },
                         {
-                            "path": "data.order.label",
+                            "path": "data.label",
                             "logic": {
                                 "cat": [
-                                    { "var": "data.order.tier" },
+                                    { "var": "data.tier" },
                                     "-",
-                                    { "var": "data.order.country" }
+                                    { "var": "data.country" }
                                 ]
                             }
                         },
                         {
-                            "path": "data.order.priority",
+                            "path": "data.priority",
                             "logic": {
                                 "if": [
-                                    { "in": [{ "var": "data.order.country" }, ["US", "UK", "DE"]] },
+                                    { "in": [{ "var": "data.country" }, ["US", "UK", "DE"]] },
                                     "high",
                                     "normal"
                                 ]
