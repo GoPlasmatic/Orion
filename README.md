@@ -5,18 +5,16 @@
 
   **Stop building microservices for business logic.**
 
-  New business logic shouldn't need a new service. Orion consolidates your business logic into a
-  single platform with governance built in — observability, circuit breakers, hot-reload,
-  and audit trails out of the box. Add logic as JSON rules, not as services.
-
-  AI makes this even faster: LLMs generate rules, not infrastructure. Dry-run validates
-  them before deploy. Orion handles the rest.
-
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)
   [![JSONLogic](https://img.shields.io/badge/JSONLogic-standard-green.svg)](https://jsonlogic.com)
   [![GitHub Release](https://img.shields.io/github/v/release/GoPlasmatic/Orion)](https://github.com/GoPlasmatic/Orion/releases)
 </div>
+
+
+New business logic shouldn't need a new service. Orion consolidates your business logic into a single platform with governance built in — observability, circuit breakers, hot-reload, and audit trails out of the box. Add logic as JSON rules, not as services.
+
+AI makes this even faster: LLMs generate rules, not infrastructure. Dry-run validates them before deploy. Orion handles the rest.
 
 ---
 
