@@ -42,7 +42,7 @@ src/
   main.rs              # Server binary entry point
   lib.rs               # Library root
   config/              # Configuration loading (TOML + env vars)
-  engine/              # Rule engine, custom functions (http_call, enrich, publish_kafka)
+  engine/              # Rule engine, custom functions (http_call, publish_kafka)
   server/              # Axum routes, middleware, AppState
   storage/             # Repository traits and SQLite implementations
   errors.rs            # Error types and HTTP error responses

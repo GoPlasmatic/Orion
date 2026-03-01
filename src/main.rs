@@ -136,7 +136,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a shared HTTP client
     let http_client = reqwest::Client::new();
 
-    // Build custom function handlers (http_call, enrich, publish_kafka)
+    // Build custom function handlers (http_call, publish_kafka)
     #[allow(unused_mut)]
     let mut custom_functions =
         orion::engine::build_custom_functions(connector_registry.clone(), http_client.clone());

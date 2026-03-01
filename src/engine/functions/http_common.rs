@@ -80,26 +80,26 @@ pub async fn execute_request(
         }
     }
 
-    // Apply connector default headers
+    // Apply connector default headers (lowest priority)
     for (k, v) in &http_config.headers {
         req = req.header(k, v);
     }
 
-    // Apply task-level headers (override connector defaults)
-    if let Some(headers) = task_headers {
-        for (k, v) in headers {
-            req = req.header(k, v);
-        }
-    }
-
-    // Apply auth
+    // Apply auth headers (override connector defaults)
     if let Some(ref auth) = http_config.auth {
         req = apply_auth(req, auth);
     }
 
-    // Apply body
+    // Apply default content-type and body
     if let Some(b) = body {
         req = req.header("content-type", "application/json").json(b);
+    }
+
+    // Apply task-level headers LAST (highest priority — rule developer's explicit choice wins)
+    if let Some(headers) = task_headers {
+        for (k, v) in headers {
+            req = req.header(k, v);
+        }
     }
 
     let response = req.send().await.map_err(|e| {
