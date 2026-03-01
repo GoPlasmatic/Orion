@@ -4,9 +4,9 @@ pub mod connectors;
 pub mod data;
 pub mod engine;
 pub mod health;
-pub mod jobs;
 pub mod metrics;
 pub mod rules;
+pub mod traces;
 
 use clap::Subcommand;
 
@@ -27,8 +27,8 @@ pub enum Commands {
     /// Send data for processing
     Send(data::SendCmd),
 
-    /// Monitor async jobs
-    Jobs(jobs::JobsCmd),
+    /// View and monitor traces
+    Traces(traces::TracesCmd),
 
     /// Engine control
     Engine(engine::EngineCmd),

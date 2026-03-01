@@ -16,7 +16,14 @@ pub struct ConnectorsCmd {
 #[derive(Subcommand)]
 enum ConnectorsSubcommand {
     /// List all connectors
-    List,
+    List {
+        /// Page size
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Page offset
+        #[arg(long)]
+        offset: Option<i64>,
+    },
     /// Get a connector by ID
     Get {
         /// Connector ID
@@ -80,7 +87,9 @@ impl ConnectorsCmd {
         yes: bool,
     ) -> Result<i32> {
         match &self.command {
-            ConnectorsSubcommand::List => list(client, format, quiet).await,
+            ConnectorsSubcommand::List { limit, offset } => {
+                list(client, format, quiet, limit, offset).await
+            }
             ConnectorsSubcommand::Get { id } => get(client, format, quiet, id).await,
             ConnectorsSubcommand::Create { file, data } => {
                 let body = read_input(file.as_deref(), data.as_deref())?;
@@ -97,8 +106,27 @@ impl ConnectorsCmd {
     }
 }
 
-async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Result<i32> {
-    let resp: Value = client.get("/api/v1/admin/connectors").await?;
+async fn list(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    limit: &Option<i64>,
+    offset: &Option<i64>,
+) -> Result<i32> {
+    let mut query = Vec::new();
+    if let Some(l) = limit {
+        query.push(format!("limit={l}"));
+    }
+    if let Some(o) = offset {
+        query.push(format!("offset={o}"));
+    }
+    let qs = if query.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", query.join("&"))
+    };
+
+    let resp: Value = client.get(&format!("/api/v1/admin/connectors{qs}")).await?;
     let connectors = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {

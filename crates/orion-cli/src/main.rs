@@ -88,7 +88,7 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             let client = build_client(&cli)?;
             cmd.run(&client, &cli.output, cli.quiet, cli.verbose).await
         }
-        Commands::Jobs(cmd) => {
+        Commands::Traces(cmd) => {
             let client = build_client(&cli)?;
             cmd.run(&client, &cli.output, cli.quiet).await
         }

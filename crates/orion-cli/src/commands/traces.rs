@@ -1,0 +1,348 @@
+use anyhow::Result;
+use clap::{Args, Subcommand};
+use colored::Colorize;
+use serde_json::Value;
+use tabled::Tabled;
+
+use crate::client::OrionClient;
+use crate::output::{self, OutputFormat};
+
+#[derive(Args)]
+pub struct TracesCmd {
+    #[command(subcommand)]
+    command: TracesSubcommand,
+}
+
+#[derive(Subcommand)]
+enum TracesSubcommand {
+    /// List traces
+    List {
+        /// Filter by status
+        #[arg(long)]
+        status: Option<String>,
+        /// Filter by channel
+        #[arg(long)]
+        channel: Option<String>,
+        /// Filter by mode (sync, async)
+        #[arg(long)]
+        mode: Option<String>,
+        /// Sort by column (created_at, updated_at, status, channel, mode)
+        #[arg(long)]
+        sort_by: Option<String>,
+        /// Sort direction (asc, desc)
+        #[arg(long)]
+        sort_order: Option<String>,
+        /// Page size
+        #[arg(long)]
+        limit: Option<i64>,
+        /// Page offset
+        #[arg(long)]
+        offset: Option<i64>,
+    },
+    /// Get trace details
+    Get {
+        /// Trace ID
+        id: String,
+    },
+    /// Wait for a trace to complete
+    Wait {
+        /// Trace ID
+        id: String,
+        /// Poll interval in seconds
+        #[arg(long, default_value = "1")]
+        interval: u64,
+        /// Timeout in seconds
+        #[arg(long, default_value = "60")]
+        timeout: u64,
+    },
+}
+
+#[derive(Tabled)]
+struct TraceRow {
+    #[tabled(rename = "ID")]
+    id: String,
+    #[tabled(rename = "Channel")]
+    channel: String,
+    #[tabled(rename = "Mode")]
+    mode: String,
+    #[tabled(rename = "Status")]
+    status: String,
+    #[tabled(rename = "Duration")]
+    duration: String,
+    #[tabled(rename = "Created")]
+    created: String,
+}
+
+impl TracesCmd {
+    pub async fn run(
+        &self,
+        client: &OrionClient,
+        format: &OutputFormat,
+        quiet: bool,
+    ) -> Result<i32> {
+        match &self.command {
+            TracesSubcommand::List {
+                status,
+                channel,
+                mode,
+                sort_by,
+                sort_order,
+                limit,
+                offset,
+            } => {
+                list(
+                    client, format, quiet, status, channel, mode, sort_by, sort_order, limit,
+                    offset,
+                )
+                .await
+            }
+            TracesSubcommand::Get { id } => get(client, format, quiet, id).await,
+            TracesSubcommand::Wait {
+                id,
+                interval,
+                timeout,
+            } => wait(client, format, quiet, id, *interval, *timeout).await,
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn list(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    status: &Option<String>,
+    channel: &Option<String>,
+    mode: &Option<String>,
+    sort_by: &Option<String>,
+    sort_order: &Option<String>,
+    limit: &Option<i64>,
+    offset: &Option<i64>,
+) -> Result<i32> {
+    let mut query = Vec::new();
+    if let Some(s) = status {
+        query.push(format!("status={s}"));
+    }
+    if let Some(c) = channel {
+        query.push(format!("channel={c}"));
+    }
+    if let Some(m) = mode {
+        query.push(format!("mode={m}"));
+    }
+    if let Some(s) = sort_by {
+        query.push(format!("sort_by={s}"));
+    }
+    if let Some(s) = sort_order {
+        query.push(format!("sort_order={s}"));
+    }
+    if let Some(l) = limit {
+        query.push(format!("limit={l}"));
+    }
+    if let Some(o) = offset {
+        query.push(format!("offset={o}"));
+    }
+    let qs = if query.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", query.join("&"))
+    };
+
+    let resp: Value = client.get(&format!("/api/v1/data/traces{qs}")).await?;
+    let traces = resp["data"].as_array().cloned().unwrap_or_default();
+
+    if quiet {
+        for t in &traces {
+            if let Some(id) = t["id"].as_str() {
+                println!("{id}");
+            }
+        }
+        return Ok(0);
+    }
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+
+    if traces.is_empty() {
+        println!("{}", "No traces found.".dimmed());
+        return Ok(0);
+    }
+
+    let rows: Vec<TraceRow> = traces
+        .iter()
+        .map(|t| {
+            let duration = t["duration_ms"]
+                .as_f64()
+                .map(|d| format!("{:.1}ms", d))
+                .unwrap_or_else(|| "-".to_string());
+            TraceRow {
+                id: truncate(t["id"].as_str().unwrap_or(""), 12),
+                channel: t["channel"].as_str().unwrap_or("").to_string(),
+                mode: t["mode"].as_str().unwrap_or("").to_string(),
+                status: colorize_trace_status(t["status"].as_str().unwrap_or("")),
+                duration,
+                created: t["created_at"].as_str().unwrap_or("").to_string(),
+            }
+        })
+        .collect();
+
+    output::print_table(rows);
+    let total = resp["total"].as_i64().unwrap_or(traces.len() as i64);
+    println!("{}", format!("{} trace(s)", total).dimmed());
+    Ok(0)
+}
+
+async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str) -> Result<i32> {
+    let resp: Value = client.get(&format!("/api/v1/data/traces/{id}")).await?;
+
+    let status = resp["status"].as_str().unwrap_or("unknown");
+
+    if quiet {
+        println!("{status}");
+        return Ok(status_exit_code(status));
+    }
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(status_exit_code(status));
+    }
+
+    println!("{}", "Trace Details".bold());
+    println!("  ID:        {}", resp["id"].as_str().unwrap_or(""));
+    if let Some(channel) = resp["channel"].as_str() {
+        println!("  Channel:   {channel}");
+    }
+    println!("  Mode:      {}", resp["mode"].as_str().unwrap_or(""));
+    println!("  Status:    {}", colorize_trace_status(status));
+    println!("  Created:   {}", resp["created_at"]);
+
+    if let Some(started) = resp["started_at"].as_str() {
+        println!("  Started:   {started}");
+    }
+    if let Some(completed) = resp["completed_at"].as_str() {
+        println!("  Completed: {completed}");
+    }
+    if let Some(duration) = resp["duration_ms"].as_f64() {
+        println!("  Duration:  {:.1}ms", duration);
+    }
+
+    if status == "completed" {
+        if let Some(msg) = resp.get("message") {
+            println!("\n{}", "Result:".bold());
+            println!("{}", serde_json::to_string_pretty(msg)?);
+        } else if let Some(result) = resp.get("result_json").and_then(|r| r.as_str()) {
+            if let Ok(parsed) = serde_json::from_str::<Value>(result) {
+                println!("\n{}", "Result:".bold());
+                println!("{}", serde_json::to_string_pretty(&parsed)?);
+            }
+        }
+    }
+
+    if status == "failed" {
+        if let Some(err) = resp["error_message"].as_str() {
+            println!("\n{} {err}", "Error:".red().bold());
+        } else if let Some(err) = resp["error"].as_str() {
+            println!("\n{} {err}", "Error:".red().bold());
+        }
+    }
+
+    Ok(status_exit_code(status))
+}
+
+async fn wait(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    id: &str,
+    interval: u64,
+    timeout: u64,
+) -> Result<i32> {
+    let start = std::time::Instant::now();
+    let timeout_dur = std::time::Duration::from_secs(timeout);
+    let interval_dur = std::time::Duration::from_secs(interval);
+
+    if !quiet {
+        eprint!("Waiting for trace {id}...");
+    }
+
+    loop {
+        let resp: Value = client.get(&format!("/api/v1/data/traces/{id}")).await?;
+
+        let status = resp["status"].as_str().unwrap_or("unknown");
+
+        if status == "completed" || status == "failed" {
+            if !quiet {
+                eprintln!();
+            }
+
+            if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+                output::print_value(format, &resp)?;
+            } else if !quiet {
+                match status {
+                    "completed" => {
+                        println!("{} Trace completed", "OK".green().bold());
+                        if let Some(msg) = resp.get("message") {
+                            println!("{}", serde_json::to_string_pretty(msg)?);
+                        } else if let Some(result) =
+                            resp.get("result_json").and_then(|r| r.as_str())
+                        {
+                            if let Ok(parsed) = serde_json::from_str::<Value>(result) {
+                                println!("{}", serde_json::to_string_pretty(&parsed)?);
+                            }
+                        }
+                    }
+                    "failed" => {
+                        let err = resp["error_message"]
+                            .as_str()
+                            .or(resp["error"].as_str())
+                            .unwrap_or("Unknown error");
+                        println!("{} Trace failed: {err}", "ERR".red().bold());
+                    }
+                    _ => {}
+                }
+            }
+
+            return Ok(status_exit_code(status));
+        }
+
+        if start.elapsed() >= timeout_dur {
+            if !quiet {
+                eprintln!();
+                println!(
+                    "{} Timed out after {timeout}s (status: {status})",
+                    "TIMEOUT".yellow().bold()
+                );
+            }
+            return Ok(2);
+        }
+
+        tokio::time::sleep(interval_dur).await;
+    }
+}
+
+fn colorize_trace_status(status: &str) -> String {
+    match status {
+        "pending" => "pending".yellow().to_string(),
+        "running" => "running".blue().to_string(),
+        "completed" => "completed".green().to_string(),
+        "failed" => "failed".red().to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn status_exit_code(status: &str) -> i32 {
+    match status {
+        "completed" => 0,
+        "failed" => 1,
+        _ => 0,
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() > max {
+        format!("{}...", &s[..max - 3])
+    } else {
+        s.to_string()
+    }
+}

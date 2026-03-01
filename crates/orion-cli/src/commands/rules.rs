@@ -63,13 +63,35 @@ enum RulesSubcommand {
         /// Rule ID
         id: String,
     },
-    /// Pause a rule
-    Pause {
+    /// Archive a rule
+    Archive {
         /// Rule ID
         id: String,
     },
-    /// Archive a rule
-    Archive {
+    /// Validate a rule definition without creating it
+    Validate {
+        /// JSON file path
+        #[arg(short, long)]
+        file: Option<String>,
+        /// Inline JSON data
+        #[arg(short, long)]
+        data: Option<String>,
+    },
+    /// Update rollout percentage for a rule
+    Rollout {
+        /// Rule ID
+        id: String,
+        /// Rollout percentage (0-100)
+        #[arg(short, long)]
+        percentage: i64,
+    },
+    /// List version history for a rule
+    Versions {
+        /// Rule ID
+        id: String,
+    },
+    /// Create a new draft version of a rule
+    NewVersion {
         /// Rule ID
         id: String,
     },
@@ -134,8 +156,22 @@ struct RuleRow {
     status: String,
     #[tabled(rename = "Priority")]
     priority: i64,
+    #[tabled(rename = "Rollout")]
+    rollout: String,
     #[tabled(rename = "Version")]
     version: i64,
+}
+
+#[derive(Tabled)]
+struct VersionRow {
+    #[tabled(rename = "Version")]
+    version: i64,
+    #[tabled(rename = "Status")]
+    status: String,
+    #[tabled(rename = "Priority")]
+    priority: i64,
+    #[tabled(rename = "Updated")]
+    updated: String,
 }
 
 impl RulesCmd {
@@ -164,8 +200,16 @@ impl RulesCmd {
             }
             RulesSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
             RulesSubcommand::Activate { id } => change_status(client, quiet, id, "active").await,
-            RulesSubcommand::Pause { id } => change_status(client, quiet, id, "paused").await,
             RulesSubcommand::Archive { id } => change_status(client, quiet, id, "archived").await,
+            RulesSubcommand::Validate { file, data } => {
+                let body = read_json_input(file.as_deref(), data.as_deref(), false)?;
+                validate(client, format, quiet, &body).await
+            }
+            RulesSubcommand::Rollout { id, percentage } => {
+                rollout(client, quiet, id, *percentage).await
+            }
+            RulesSubcommand::Versions { id } => versions(client, format, quiet, id).await,
+            RulesSubcommand::NewVersion { id } => new_version(client, format, quiet, id).await,
             RulesSubcommand::Test {
                 id,
                 file,
@@ -220,7 +264,7 @@ async fn list(
 
     if quiet {
         for rule in &rules {
-            if let Some(id) = rule["id"].as_str() {
+            if let Some(id) = rule["rule_id"].as_str() {
                 println!("{id}");
             }
         }
@@ -239,13 +283,17 @@ async fn list(
 
     let rows: Vec<RuleRow> = rules
         .iter()
-        .map(|r| RuleRow {
-            id: truncate(r["id"].as_str().unwrap_or(""), 12),
-            name: truncate(r["name"].as_str().unwrap_or(""), 30),
-            channel: r["channel"].as_str().unwrap_or("").to_string(),
-            status: colorize_status(r["status"].as_str().unwrap_or("")),
-            priority: r["priority"].as_i64().unwrap_or(0),
-            version: r["version"].as_i64().unwrap_or(0),
+        .map(|r| {
+            let rollout = r["rollout_percentage"].as_i64().unwrap_or(0);
+            RuleRow {
+                id: truncate(r["rule_id"].as_str().unwrap_or(""), 12),
+                name: truncate(r["name"].as_str().unwrap_or(""), 30),
+                channel: r["channel"].as_str().unwrap_or("").to_string(),
+                status: colorize_status(r["status"].as_str().unwrap_or("")),
+                priority: r["priority"].as_i64().unwrap_or(0),
+                rollout: format!("{rollout}%"),
+                version: r["version"].as_i64().unwrap_or(0),
+            }
         })
         .collect();
 
@@ -275,10 +323,9 @@ async fn get_rule(
     }
 
     let rule = &resp["data"];
-    let version_count = resp["version_count"].as_i64().unwrap_or(0);
 
     println!("{}", "Rule Details".bold());
-    println!("  ID:          {}", rule["id"].as_str().unwrap_or(""));
+    println!("  ID:          {}", rule["rule_id"].as_str().unwrap_or(""));
     println!("  Name:        {}", rule["name"].as_str().unwrap_or(""));
     println!(
         "  Description: {}",
@@ -291,9 +338,10 @@ async fn get_rule(
     );
     println!("  Priority:    {}", rule["priority"].as_i64().unwrap_or(0));
     println!(
-        "  Version:     {} ({version_count} total)",
-        rule["version"].as_i64().unwrap_or(0)
+        "  Rollout:     {}%",
+        rule["rollout_percentage"].as_i64().unwrap_or(0)
     );
+    println!("  Version:     {}", rule["version"].as_i64().unwrap_or(0));
     println!("  Tags:        {}", rule["tags"]);
     println!(
         "  Continue on error: {}",
@@ -334,7 +382,7 @@ async fn create(
     let rule = &resp["data"];
 
     if quiet {
-        println!("{}", rule["id"].as_str().unwrap_or(""));
+        println!("{}", rule["rule_id"].as_str().unwrap_or(""));
         return Ok(0);
     }
 
@@ -347,7 +395,7 @@ async fn create(
         "{} Rule created: {} ({})",
         "OK".green().bold(),
         rule["name"].as_str().unwrap_or(""),
-        rule["id"].as_str().unwrap_or("")
+        rule["rule_id"].as_str().unwrap_or("")
     );
     Ok(0)
 }
@@ -486,6 +534,150 @@ async fn test_rule(
     }
 
     Ok(if matched { 0 } else { 1 })
+}
+
+async fn validate(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    body: &Value,
+) -> Result<i32> {
+    let resp: Value = client.post("/api/v1/admin/rules/validate", body).await?;
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        let valid = resp["valid"].as_bool().unwrap_or(false);
+        return Ok(if valid { 0 } else { 1 });
+    }
+
+    let valid = resp["valid"].as_bool().unwrap_or(false);
+
+    if quiet {
+        println!("{}", if valid { "valid" } else { "invalid" });
+        return Ok(if valid { 0 } else { 1 });
+    }
+
+    if valid {
+        println!("{} Rule definition is valid", "OK".green().bold());
+    } else {
+        println!("{} Rule definition has issues", "INVALID".red().bold());
+    }
+
+    if let Some(errors) = resp["errors"].as_array() {
+        if !errors.is_empty() {
+            println!("\n{}", "Errors:".red().bold());
+            for err in errors {
+                let field = err["field"].as_str().unwrap_or("");
+                let msg = err["message"].as_str().unwrap_or("");
+                println!("  - {field}: {msg}");
+            }
+        }
+    }
+
+    if let Some(warnings) = resp["warnings"].as_array() {
+        if !warnings.is_empty() {
+            println!("\n{}", "Warnings:".yellow().bold());
+            for warn in warnings {
+                let field = warn["field"].as_str().unwrap_or("");
+                let msg = warn["message"].as_str().unwrap_or("");
+                println!("  - {field}: {msg}");
+            }
+        }
+    }
+
+    Ok(if valid { 0 } else { 1 })
+}
+
+async fn rollout(client: &OrionClient, quiet: bool, id: &str, percentage: i64) -> Result<i32> {
+    let body = serde_json::json!({ "rollout_percentage": percentage });
+    let resp: Value = client
+        .patch(&format!("/api/v1/admin/rules/{id}/rollout"), &body)
+        .await?;
+
+    if !quiet {
+        let rule = &resp["data"];
+        println!(
+            "{} Rule {} rollout set to {}%",
+            "OK".green().bold(),
+            rule["name"].as_str().unwrap_or(id),
+            percentage
+        );
+    }
+    Ok(0)
+}
+
+async fn versions(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    id: &str,
+) -> Result<i32> {
+    let resp: Value = client
+        .get(&format!("/api/v1/admin/rules/{id}/versions"))
+        .await?;
+    let vers = resp["data"].as_array().cloned().unwrap_or_default();
+
+    if quiet {
+        for v in &vers {
+            println!("{}", v["version"].as_i64().unwrap_or(0));
+        }
+        return Ok(0);
+    }
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+
+    if vers.is_empty() {
+        println!("{}", "No versions found.".dimmed());
+        return Ok(0);
+    }
+
+    let rows: Vec<VersionRow> = vers
+        .iter()
+        .map(|v| VersionRow {
+            version: v["version"].as_i64().unwrap_or(0),
+            status: colorize_status(v["status"].as_str().unwrap_or("")),
+            priority: v["priority"].as_i64().unwrap_or(0),
+            updated: v["updated_at"].as_str().unwrap_or("").to_string(),
+        })
+        .collect();
+
+    output::print_table(rows);
+    let total = resp["total"].as_i64().unwrap_or(vers.len() as i64);
+    println!("{}", format!("{} version(s)", total).dimmed());
+    Ok(0)
+}
+
+async fn new_version(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    id: &str,
+) -> Result<i32> {
+    let resp: Value = client
+        .post_empty(&format!("/api/v1/admin/rules/{id}/versions"))
+        .await?;
+    let rule = &resp["data"];
+
+    if quiet {
+        println!("{}", rule["version"].as_i64().unwrap_or(0));
+        return Ok(0);
+    }
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+
+    println!(
+        "{} New draft version {} created for rule {}",
+        "OK".green().bold(),
+        rule["version"].as_i64().unwrap_or(0),
+        rule["name"].as_str().unwrap_or(id)
+    );
+    Ok(0)
 }
 
 fn print_trace(trace: &Value, indent: usize) {
@@ -701,7 +893,7 @@ fn read_json_input(file: Option<&str>, data: Option<&str>, stdin: bool) -> Resul
 fn colorize_status(status: &str) -> String {
     match status {
         "active" => "active".green().to_string(),
-        "paused" => "paused".yellow().to_string(),
+        "draft" => "draft".blue().to_string(),
         "archived" => "archived".dimmed().to_string(),
         other => other.to_string(),
     }

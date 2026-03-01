@@ -3,15 +3,14 @@ use clap::Args;
 use colored::Colorize;
 use serde_json::Value;
 use std::io::Read;
-use tabled::Tabled;
 
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 
 #[derive(Args)]
 pub struct SendCmd {
-    /// Channel name (required for sync/async, not for batch)
-    channel: Option<String>,
+    /// Channel name
+    channel: String,
 
     /// JSON file with payload
     #[arg(short, long)]
@@ -26,10 +25,10 @@ pub struct SendCmd {
     stdin: bool,
 
     /// Submit for async processing
-    #[arg(long, name = "async")]
+    #[arg(long = "async")]
     async_mode: bool,
 
-    /// Wait for async job to complete
+    /// Wait for async trace to complete
     #[arg(long)]
     wait: bool,
 
@@ -37,23 +36,9 @@ pub struct SendCmd {
     #[arg(long, default_value = "60")]
     timeout: u64,
 
-    /// Batch mode: process multiple messages
-    #[arg(long)]
-    batch: bool,
-
     /// Optional metadata JSON
     #[arg(long)]
     metadata: Option<String>,
-}
-
-#[derive(Tabled)]
-struct BatchResultRow {
-    #[tabled(rename = "#")]
-    index: usize,
-    #[tabled(rename = "ID")]
-    id: String,
-    #[tabled(rename = "Status")]
-    status: String,
 }
 
 impl SendCmd {
@@ -64,22 +49,13 @@ impl SendCmd {
         quiet: bool,
         verbose: bool,
     ) -> Result<i32> {
-        if self.batch {
-            return self.run_batch(client, format, quiet).await;
-        }
-
-        let channel = self
-            .channel
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Channel name is required"))?;
-
         let payload = self.read_payload()?;
 
         if self.async_mode {
-            self.run_async(client, format, quiet, channel, &payload)
+            self.run_async(client, format, quiet, &self.channel, &payload)
                 .await
         } else {
-            self.run_sync(client, format, quiet, verbose, channel, &payload)
+            self.run_sync(client, format, quiet, verbose, &self.channel, &payload)
                 .await
         }
     }
@@ -159,19 +135,23 @@ impl SendCmd {
             .post(&format!("/api/v1/data/{channel}/async"), &body)
             .await?;
 
-        let job_id = resp["job_id"].as_str().unwrap_or("");
+        let trace_id = resp["trace_id"].as_str().unwrap_or("");
 
         if quiet {
-            println!("{job_id}");
+            println!("{trace_id}");
         } else if !self.wait {
-            println!("{} Job submitted: {}", "OK".green().bold(), job_id.cyan());
+            println!(
+                "{} Trace submitted: {}",
+                "OK".green().bold(),
+                trace_id.cyan()
+            );
         }
 
         if self.wait {
             if !quiet {
-                eprint!("Waiting for job {job_id}...");
+                eprint!("Waiting for trace {trace_id}...");
             }
-            let result = poll_job(client, job_id, self.timeout).await?;
+            let result = poll_trace(client, trace_id, self.timeout).await?;
 
             if !quiet {
                 eprintln!();
@@ -187,26 +167,32 @@ impl SendCmd {
             match status {
                 "completed" => {
                     if !quiet {
-                        println!("{} Job completed", "OK".green().bold());
-                        if let Some(result_data) = result.get("result") {
-                            println!("{}", serde_json::to_string_pretty(result_data)?);
+                        println!("{} Trace completed", "OK".green().bold());
+                        if let Some(msg) = result.get("message") {
+                            println!("{}", serde_json::to_string_pretty(msg)?);
+                        } else if let Some(result_json) =
+                            result.get("result_json").and_then(|r| r.as_str())
+                        {
+                            if let Ok(parsed) = serde_json::from_str::<Value>(result_json) {
+                                println!("{}", serde_json::to_string_pretty(&parsed)?);
+                            }
                         }
                     }
                     Ok(0)
                 }
                 "failed" => {
                     if !quiet {
-                        let err = result["error"].as_str().unwrap_or("Unknown error");
-                        println!("{} Job failed: {err}", "ERR".red().bold());
+                        let err = result["error_message"]
+                            .as_str()
+                            .or(result["error"].as_str())
+                            .unwrap_or("Unknown error");
+                        println!("{} Trace failed: {err}", "ERR".red().bold());
                     }
                     Ok(1)
                 }
                 _ => {
                     if !quiet {
-                        println!(
-                            "{} Job timed out (status: {status})",
-                            "TIMEOUT".yellow().bold()
-                        );
+                        println!("{} Timed out (status: {status})", "TIMEOUT".yellow().bold());
                     }
                     Ok(2)
                 }
@@ -214,71 +200,6 @@ impl SendCmd {
         } else {
             Ok(0)
         }
-    }
-
-    async fn run_batch(
-        &self,
-        client: &OrionClient,
-        format: &OutputFormat,
-        quiet: bool,
-    ) -> Result<i32> {
-        let payload = self.read_payload()?;
-
-        // Payload should be the full batch request or an array of messages
-        let body = if payload.get("messages").is_some() {
-            payload
-        } else if payload.is_array() {
-            serde_json::json!({ "messages": payload })
-        } else {
-            bail!("Batch payload must be an array of messages or {{\"messages\": [...]}}");
-        };
-
-        let resp: Value = client.post("/api/v1/data/batch", &body).await?;
-
-        if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
-            output::print_value(format, &resp)?;
-            return Ok(0);
-        }
-
-        let results = resp["results"].as_array().cloned().unwrap_or_default();
-
-        if quiet {
-            let ok = results
-                .iter()
-                .filter(|r| r["status"].as_str() == Some("ok"))
-                .count();
-            let fail = results.len() - ok;
-            println!("{ok} ok, {fail} failed");
-            return Ok(if fail > 0 { 1 } else { 0 });
-        }
-
-        let rows: Vec<BatchResultRow> = results
-            .iter()
-            .enumerate()
-            .map(|(i, r)| {
-                let status = r["status"].as_str().unwrap_or("unknown");
-                BatchResultRow {
-                    index: i + 1,
-                    id: r["id"].as_str().unwrap_or("").chars().take(12).collect(),
-                    status: if status == "ok" {
-                        "ok".green().to_string()
-                    } else {
-                        "error".red().to_string()
-                    },
-                }
-            })
-            .collect();
-
-        output::print_table(rows);
-
-        let ok = results
-            .iter()
-            .filter(|r| r["status"].as_str() == Some("ok"))
-            .count();
-        let fail = results.len() - ok;
-        println!("{}", format!("{ok} succeeded, {fail} failed").dimmed());
-
-        Ok(if fail > 0 { 1 } else { 0 })
     }
 
     fn read_payload(&self) -> Result<Value> {
@@ -297,12 +218,14 @@ impl SendCmd {
     }
 }
 
-async fn poll_job(client: &OrionClient, job_id: &str, timeout_secs: u64) -> Result<Value> {
+async fn poll_trace(client: &OrionClient, trace_id: &str, timeout_secs: u64) -> Result<Value> {
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
 
     loop {
-        let resp: Value = client.get(&format!("/api/v1/data/jobs/{job_id}")).await?;
+        let resp: Value = client
+            .get(&format!("/api/v1/data/traces/{trace_id}"))
+            .await?;
 
         let status = resp["status"].as_str().unwrap_or("");
         if status == "completed" || status == "failed" {
