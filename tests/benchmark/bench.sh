@@ -213,11 +213,29 @@ create_rule() {
     }
 
     local rule_id
-    rule_id=$(echo "$response" | jq -r '.data.id // empty')
+    rule_id=$(echo "$response" | jq -r '.data.rule_id // empty')
     if [[ -z "$rule_id" ]]; then
         log_error "No rule ID in response: $response"
         return 1
     fi
+    echo "$rule_id"
+}
+
+activate_rule() {
+    local rule_id="$1"
+    curl -sf -X PATCH "${BENCH_URL}/api/v1/admin/rules/${rule_id}/status" \
+        -H "Content-Type: application/json" \
+        -d '{"status": "active"}' >/dev/null 2>&1 || {
+        log_error "Failed to activate rule $rule_id"
+        return 1
+    }
+}
+
+create_and_activate_rule() {
+    local rule_file="$1"
+    local rule_id
+    rule_id=$(create_rule "$rule_file") || return 1
+    activate_rule "$rule_id" || return 1
     echo "$rule_id"
 }
 
@@ -234,6 +252,18 @@ import_rules() {
     local imported
     imported=$(echo "$response" | jq -r '.imported // 0')
     log_info "Imported $imported rules"
+
+    # Activate all imported (draft) rules
+    local rules_json
+    rules_json=$(curl -sf "${BENCH_URL}/api/v1/admin/rules?status=draft" 2>/dev/null) || return 0
+
+    local ids
+    ids=$(echo "$rules_json" | jq -r '.data[]?.rule_id // empty' 2>/dev/null) || return 0
+
+    while IFS= read -r id; do
+        [[ -z "$id" ]] && continue
+        activate_rule "$id"
+    done <<< "$ids"
 }
 
 reload_engine() {
@@ -245,7 +275,7 @@ clear_rules() {
     rules_json=$(curl -sf "${BENCH_URL}/api/v1/admin/rules" 2>/dev/null) || return 0
 
     local ids
-    ids=$(echo "$rules_json" | jq -r '.data[]?.id // empty' 2>/dev/null) || return 0
+    ids=$(echo "$rules_json" | jq -r '.data[]?.rule_id // empty' 2>/dev/null) || return 0
 
     while IFS= read -r id; do
         [[ -z "$id" ]] && continue
@@ -409,22 +439,22 @@ scenario_simple() {
     CURRENT_SCENARIO="B_simple_rule"
 
     clear_rules
-    create_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
+    create_and_activate_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
 
     run_hey POST "${BENCH_URL}/api/v1/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "B: Simple rule (1 log task)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
-# C: Complex rule — 5-task ecommerce rule
+# C: Complex rule — 4-task ecommerce rule
 scenario_complex() {
-    log_info "C: Complex rule (5 tasks)"
+    log_info "C: Complex rule (4 tasks)"
     CURRENT_SCENARIO="C_complex_rule"
 
     clear_rules
-    create_rule "$FIXTURES_DIR/rules/bench_complex_ecommerce.json" >/dev/null
+    create_and_activate_rule "$FIXTURES_DIR/rules/bench_complex_ecommerce.json" >/dev/null
 
     run_hey POST "${BENCH_URL}/api/v1/data/orders" "$FIXTURES_DIR/data/complex_payload.json"
-    record_result "C: Complex rule (5 tasks)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+    record_result "C: Complex rule (4 tasks)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
 # D: Multi-rule channel — 12 rules on same channel
@@ -444,7 +474,7 @@ scenario_concurrency() {
     log_info "E: Concurrency scaling"
 
     clear_rules
-    create_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
+    create_and_activate_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
 
     for c in 1 10 50 100; do
         CURRENT_SCENARIO="E_concurrency_${c}"
@@ -461,7 +491,7 @@ scenario_reload() {
     CURRENT_SCENARIO="F_reload_under_load"
 
     clear_rules
-    create_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
+    create_and_activate_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
 
     # Start hey in background
     local hey_output_file
