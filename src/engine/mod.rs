@@ -20,16 +20,15 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "filter",
     "log",
     "http_call",
-    "enrich",
     "publish_kafka",
 ];
 
 /// Function names that require a connector reference.
-pub const CONNECTOR_FUNCTIONS: &[&str] = &["http_call", "enrich", "publish_kafka"];
+pub const CONNECTOR_FUNCTIONS: &[&str] = &["http_call", "publish_kafka"];
 
 /// Build the custom function handlers for the dataflow-rs engine.
 ///
-/// Registers http_call, enrich, and (when kafka feature is disabled) a stub
+/// Registers http_call and (when kafka feature is disabled) a stub
 /// publish_kafka handler. Use [`upgrade_publish_kafka`] to register the real
 /// Kafka-backed handler when the feature is enabled.
 pub fn build_custom_functions(
@@ -43,14 +42,6 @@ pub fn build_custom_functions(
         Box::new(functions::http_call::HttpCallHandler {
             registry: registry.clone(),
             client: client.clone(),
-        }),
-    );
-
-    fns.insert(
-        "enrich".to_string(),
-        Box::new(functions::enrich::EnrichHandler {
-            registry: registry.clone(),
-            client,
         }),
     );
 

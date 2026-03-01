@@ -43,7 +43,7 @@ CLI args -> config (TOML + `ORION_SECTION__KEY` env overrides) -> tracing -> met
 
 - **Repository pattern:** Trait-based (`RuleRepository`, `ConnectorRepository`, `TraceRepository`) with SQLite implementations. Traits use `async_trait`. All repos are stored as `Arc<dyn Trait>` in `AppState`.
 - **Engine hot-reload:** Engine is `Arc<RwLock<Arc<Engine>>>`. Double-Arc allows swapping the inner engine while readers hold the old one. Reload triggers on status changes (activate/archive), delete, and manually via `POST /api/v1/admin/engine/reload`. Draft rule creates/updates do not trigger reload. The reload is in `server/routes/mod.rs::reload_engine()` — it builds the new engine outside the write lock to minimize lock hold time.
-- **Custom async functions:** `HttpCallHandler`, `EnrichHandler`, `PublishKafkaHandler` implement `dataflow_rs::engine::functions::AsyncFunctionHandler`. Registered in `engine/mod.rs::build_custom_functions()`.
+- **Custom async functions:** `HttpCallHandler`, `PublishKafkaHandler` implement `dataflow_rs::engine::functions::AsyncFunctionHandler`. Registered in `engine/mod.rs::build_custom_functions()`.
 - **Connector registry:** In-memory `RwLock<HashMap<String, Arc<ConnectorConfig>>>` with secret masking on API reads (`connector/mod.rs::mask_connector_secrets()`).
 - **Trace queue:** `tokio::sync::mpsc` channel with semaphore-limited concurrency for async trace processing (`queue/mod.rs`).
 - **Error handling:** `OrionError` enum in `errors.rs` implements `axum::response::IntoResponse`, mapping variants to HTTP status codes. Returns JSON `{"error": {"code": "...", "message": "..."}}`.

@@ -33,6 +33,19 @@ Three auth schemes are supported:
 | `basic` | `username`, `password` | `{ "type": "basic", "username": "user", "password": "pass" }` |
 | `apikey` | `header`, `key` | `{ "type": "apikey", "header": "X-API-Key", "key": "abc123" }` |
 
+## Header Precedence
+
+When `http_call` builds a request, headers are applied in this order — later layers override earlier ones:
+
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 (lowest) | Connector default headers | `"headers": {"x-source": "orion"}` in connector config |
+| 2 | Connector auth | Bearer token, Basic auth, API key |
+| 3 | Default `content-type` | `application/json` (only when a body is present) |
+| 4 (highest) | Task-level headers | `"headers": {"content-type": "text/xml"}` in the task input |
+
+Task-level headers always win. This means a rule developer can override `content-type`, `authorization`, or any other header set by the connector.
+
 ## Retry with Exponential Backoff
 
 All HTTP connectors support automatic retries with exponential backoff, capped at 60 seconds:

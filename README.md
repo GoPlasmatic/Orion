@@ -240,7 +240,7 @@ Inbound (REST or Kafka)
         │
         ▼
    Task Pipeline
-   (parse → filter → transform → enrich → call APIs → publish)
+   (parse → filter → transform → call APIs → publish)
         │
         ▼
    Output (HTTP response / Kafka / webhooks)
@@ -255,7 +255,6 @@ Inbound (REST or Kafka)
 | `filter` | Allow or halt processing based on JSONLogic conditions |
 | `map` | Transform and reshape JSON using JSONLogic expressions |
 | `validation` | Enforce required fields, constraints, and schema-like checks |
-| `enrich` | Fetch external data via HTTP and merge it into the message |
 | `http_call` | Invoke downstream APIs, webhooks, or services |
 | `publish_json` | Serialize data to JSON output format |
 | `publish_xml` | Serialize data to XML output format |
@@ -325,7 +324,7 @@ Zero errors across all scenarios, including concurrent engine reloads. Run `./te
 
 - **Externalize pricing logic** — discount rules, tax calculations, and tiered pricing as JSON
 - **Route and transform webhooks** — Stripe, GitHub, Shopify events to internal services
-- **Enrich events** — call external APIs to add context before processing
+- **Enrich events** — use `http_call` to fetch external data and `map` to merge context before processing
 - **Bridge protocols** — REST-to-Kafka, Kafka-to-HTTP routing with transformation
 - **AI-managed business rules** — LLMs create and update rules via the REST API
 - **Multi-agent orchestration** — route agent outputs to channels with coordinating rules

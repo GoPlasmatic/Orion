@@ -1,4 +1,3 @@
-pub mod enrich;
 pub mod http_call;
 pub mod http_common;
 pub mod publish_kafka;
