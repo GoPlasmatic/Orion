@@ -326,6 +326,7 @@ mod tests {
             enabled: true,
             failure_threshold: 5,
             recovery_timeout_secs: 30,
+            ..Default::default()
         };
         let breaker = Arc::new(CircuitBreaker::new(config));
 
@@ -349,6 +350,7 @@ mod tests {
             enabled: true,
             failure_threshold: 1,
             recovery_timeout_secs: 300,
+            ..Default::default()
         };
         let breaker = Arc::new(CircuitBreaker::new(config));
 
@@ -381,6 +383,7 @@ mod tests {
             enabled: true,
             failure_threshold: 5,
             recovery_timeout_secs: 300,
+            ..Default::default()
         };
         let breaker = Arc::new(CircuitBreaker::new(config));
 

@@ -3,11 +3,37 @@ pub mod circuit_breaker;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
 
 use crate::errors::OrionError;
 use crate::storage::repositories::connectors::ConnectorRepository;
 use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+
+/// Monotonic counter for LRU tracking of circuit breaker access.
+static BREAKER_ACCESS_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A circuit breaker entry with LRU tracking.
+struct BreakerEntry {
+    breaker: Arc<CircuitBreaker>,
+    last_access: AtomicU64,
+}
+
+impl BreakerEntry {
+    fn new(breaker: Arc<CircuitBreaker>) -> Self {
+        Self {
+            breaker,
+            last_access: AtomicU64::new(BREAKER_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed)),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_access.store(
+            BREAKER_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -81,7 +107,7 @@ pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka"];
 /// In-memory registry for active connector configurations.
 pub struct ConnectorRegistry {
     configs: RwLock<HashMap<String, Arc<ConnectorConfig>>>,
-    circuit_breakers: RwLock<HashMap<String, Arc<CircuitBreaker>>>,
+    circuit_breakers: RwLock<HashMap<String, BreakerEntry>>,
     cb_config: CircuitBreakerConfig,
 }
 
@@ -105,16 +131,43 @@ impl ConnectorRegistry {
         // Fast path: read lock
         {
             let breakers = self.circuit_breakers.read().await;
-            if let Some(cb) = breakers.get(key) {
-                return cb.clone();
+            if let Some(entry) = breakers.get(key) {
+                entry.touch();
+                return entry.breaker.clone();
             }
         }
         // Slow path: write lock on miss
         let mut breakers = self.circuit_breakers.write().await;
-        breakers
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(CircuitBreaker::new(self.cb_config.clone())))
-            .clone()
+        // Double-check after acquiring write lock
+        if let Some(entry) = breakers.get(key) {
+            entry.touch();
+            return entry.breaker.clone();
+        }
+
+        // Evict LRU entry if at capacity
+        let max = self.cb_config.max_breakers;
+        if breakers.len() >= max {
+            if breakers.len() >= max * 9 / 10 {
+                tracing::warn!(
+                    count = breakers.len(),
+                    max = max,
+                    "Circuit breaker map approaching capacity limit"
+                );
+            }
+            // Find the least-recently-used entry
+            if let Some(lru_key) = breakers
+                .iter()
+                .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
+                .map(|(k, _)| k.clone())
+            {
+                breakers.remove(&lru_key);
+            }
+        }
+
+        let breaker = Arc::new(CircuitBreaker::new(self.cb_config.clone()));
+        let entry = BreakerEntry::new(breaker.clone());
+        breakers.insert(key.to_string(), entry);
+        breaker
     }
 
     /// Return all circuit breaker states for admin/health introspection.
@@ -122,15 +175,15 @@ impl ConnectorRegistry {
         let breakers = self.circuit_breakers.read().await;
         breakers
             .iter()
-            .map(|(k, v)| (k.clone(), v.state_name().to_string()))
+            .map(|(k, v)| (k.clone(), v.breaker.state_name().to_string()))
             .collect()
     }
 
     /// Force-reset a circuit breaker by key. Returns `true` if the key existed.
     pub async fn reset_circuit_breaker(&self, key: &str) -> bool {
         let breakers = self.circuit_breakers.read().await;
-        if let Some(cb) = breakers.get(key) {
-            cb.reset();
+        if let Some(entry) = breakers.get(key) {
+            entry.breaker.reset();
             true
         } else {
             false
@@ -378,6 +431,7 @@ mod tests {
             enabled: true,
             failure_threshold: 5,
             recovery_timeout_secs: 30,
+            ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
         assert!(registry.circuit_breaker_enabled());
@@ -389,6 +443,7 @@ mod tests {
             enabled: true,
             failure_threshold: 5,
             recovery_timeout_secs: 30,
+            ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
         let b1 = registry.get_or_create_breaker("key1").await;
@@ -403,6 +458,7 @@ mod tests {
             enabled: true,
             failure_threshold: 5,
             recovery_timeout_secs: 30,
+            ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
         let _ = registry.get_or_create_breaker("key1").await;
@@ -417,6 +473,7 @@ mod tests {
             enabled: true,
             failure_threshold: 1,
             recovery_timeout_secs: 300,
+            ..Default::default()
         };
         let registry = ConnectorRegistry::new(config);
         let breaker = registry.get_or_create_breaker("key1").await;
@@ -432,6 +489,39 @@ mod tests {
     async fn test_connector_registry_reset_nonexistent_breaker() {
         let registry = ConnectorRegistry::default();
         assert!(!registry.reset_circuit_breaker("nope").await);
+    }
+
+    #[tokio::test]
+    async fn test_circuit_breaker_bounded_capacity() {
+        let config = CircuitBreakerConfig {
+            enabled: true,
+            failure_threshold: 5,
+            recovery_timeout_secs: 30,
+            max_breakers: 3,
+        };
+        let registry = ConnectorRegistry::new(config);
+
+        // Fill to capacity
+        let _b1 = registry.get_or_create_breaker("key1").await;
+        let _b2 = registry.get_or_create_breaker("key2").await;
+        let _b3 = registry.get_or_create_breaker("key3").await;
+
+        // Access key2 and key3 to make key1 the LRU
+        let _b2_again = registry.get_or_create_breaker("key2").await;
+        let _b3_again = registry.get_or_create_breaker("key3").await;
+
+        // Adding a 4th should evict key1 (LRU)
+        let _b4 = registry.get_or_create_breaker("key4").await;
+
+        let states = registry.circuit_breaker_states().await;
+        assert_eq!(states.len(), 3);
+        assert!(
+            !states.contains_key("key1"),
+            "key1 should have been evicted as LRU"
+        );
+        assert!(states.contains_key("key2"));
+        assert!(states.contains_key("key3"));
+        assert!(states.contains_key("key4"));
     }
 
     #[test]

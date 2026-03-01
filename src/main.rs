@@ -221,6 +221,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Trace queue started"
     );
 
+    // Start trace cleanup task
+    let trace_cleanup_handle = orion::queue::start_trace_cleanup(
+        config.queue.trace_retention_hours,
+        config.queue.trace_cleanup_interval_secs,
+        trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+    );
+
     // Set initial active rules gauge
     orion::metrics::set_active_rules(active_rules.len() as f64);
 
@@ -274,6 +281,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(handle) = kafka_consumer_handle {
         tracing::info!("Shutting down Kafka consumer...");
         handle.shutdown().await;
+    }
+
+    if let Some(handle) = trace_cleanup_handle {
+        tracing::info!("Stopping trace cleanup task...");
+        handle.abort();
     }
 
     tracing::info!("Shutting down trace queue workers...");

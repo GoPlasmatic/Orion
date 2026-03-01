@@ -102,6 +102,10 @@ pub struct QueueConfig {
     pub buffer_size: usize,
     /// Timeout in seconds to wait for in-flight traces during shutdown.
     pub shutdown_timeout_secs: u64,
+    /// How long to retain completed/failed traces in hours (0 = forever).
+    pub trace_retention_hours: u64,
+    /// How often to run the trace cleanup task in seconds.
+    pub trace_cleanup_interval_secs: u64,
 }
 
 impl Default for QueueConfig {
@@ -110,6 +114,8 @@ impl Default for QueueConfig {
             workers: 4,
             buffer_size: 1000,
             shutdown_timeout_secs: 30,
+            trace_retention_hours: 72,
+            trace_cleanup_interval_secs: 3600,
         }
     }
 }
@@ -360,6 +366,14 @@ where
         config.queue.shutdown_timeout_secs =
             parse_env::<u64>("ORION_QUEUE__SHUTDOWN_TIMEOUT_SECS", &v)?;
     }
+    if let Ok(v) = env_var("ORION_QUEUE__TRACE_RETENTION_HOURS") {
+        config.queue.trace_retention_hours =
+            parse_env::<u64>("ORION_QUEUE__TRACE_RETENTION_HOURS", &v)?;
+    }
+    if let Ok(v) = env_var("ORION_QUEUE__TRACE_CLEANUP_INTERVAL_SECS") {
+        config.queue.trace_cleanup_interval_secs =
+            parse_env::<u64>("ORION_QUEUE__TRACE_CLEANUP_INTERVAL_SECS", &v)?;
+    }
     if let Ok(v) = env_var("ORION_METRICS__ENABLED") {
         config.metrics.enabled = parse_env::<bool>("ORION_METRICS__ENABLED", &v)?;
     }
@@ -397,6 +411,10 @@ where
     if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS") {
         config.engine.circuit_breaker.recovery_timeout_secs =
             parse_env::<u64>("ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS", &v)?;
+    }
+    if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__MAX_BREAKERS") {
+        config.engine.circuit_breaker.max_breakers =
+            parse_env::<usize>("ORION_ENGINE__CIRCUIT_BREAKER__MAX_BREAKERS", &v)?;
     }
     // Rate limit overrides
     if let Ok(v) = env_var("ORION_RATE_LIMIT__ENABLED") {
