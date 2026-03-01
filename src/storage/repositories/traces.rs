@@ -286,14 +286,13 @@ mod tests {
     use super::*;
 
     async fn test_pool() -> sqlx::SqlitePool {
-        let pool = crate::storage::init_pool(&crate::config::StorageConfig {
+        crate::storage::init_pool(&crate::config::StorageConfig {
             path: ":memory:".to_string(),
             max_connections: 1,
             ..Default::default()
         })
         .await
-        .unwrap();
-        pool
+        .unwrap()
     }
 
     #[tokio::test]
