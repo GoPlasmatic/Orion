@@ -1,5 +1,5 @@
 [package]
-name = "orion-cli"
+name = "orion"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -9,7 +9,7 @@ repository = "https://github.com/GoPlasmatic/Orion-cli"
 homepage = "https://github.com/GoPlasmatic/Orion-cli"
 
 [[bin]]
-name = "orion-cli"
+name = "orion"
 path = "src/main.rs"
 
 [dependencies]
@@ -25,3 +25,9 @@ toml = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 anyhow = "1"
+rmcp = { version = "0.16", features = ["server", "transport-io", "transport-streamable-http-server"] }
+schemars = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+axum = "0.8"
+tokio-util = "0.7"

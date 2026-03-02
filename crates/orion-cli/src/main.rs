@@ -1,6 +1,7 @@
 mod client;
 mod commands;
 mod config;
+mod mcp;
 mod output;
 
 use clap::Parser;
@@ -9,12 +10,12 @@ use std::process;
 
 use client::OrionClient;
 use commands::Commands;
-use config::CliConfig;
+use config::OrionConfig;
 use output::OutputFormat;
 
 #[derive(Parser)]
 #[command(
-    name = "orion-cli",
+    name = "orion",
     version,
     about = "CLI tool for interacting with an Orion rules engine server"
 )]
@@ -104,6 +105,7 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             cmd.run();
             Ok(0)
         }
+        Commands::Mcp(cmd) => cmd.run(&cli).await,
     }
 }
 
@@ -111,11 +113,11 @@ fn build_client(cli: &Cli) -> anyhow::Result<OrionClient> {
     let server_url = if let Some(url) = &cli.server {
         url.clone()
     } else {
-        let config = CliConfig::load()?;
+        let config = OrionConfig::load()?;
         config.server_url.ok_or_else(|| {
             anyhow::anyhow!(
                 "No server URL configured. Run {} or use {}",
-                "orion-cli config set-server <url>".yellow(),
+                "orion config set-server <url>".yellow(),
                 "--server <url>".yellow()
             )
         })?

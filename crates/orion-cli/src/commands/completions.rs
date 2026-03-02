@@ -10,6 +10,6 @@ pub struct CompletionsCmd {
 impl CompletionsCmd {
     pub fn run(&self) {
         let mut cmd = crate::Cli::command();
-        generate(self.shell, &mut cmd, "orion-cli", &mut std::io::stdout());
+        generate(self.shell, &mut cmd, "orion", &mut std::io::stdout());
     }
 }

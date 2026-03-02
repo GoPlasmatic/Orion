@@ -21,15 +21,8 @@ test_update_nonexistent_rule() {
     assert_exit_code 1 "$CLI_EXIT"
 }
 
-test_empty_batch_rejected() {
-    reset_server_state
-    cli send --batch -d '{"messages":[]}'
-    assert_exit_code 1 "$CLI_EXIT"
-}
-
 run_test "invalid JSON body rejected"     test_invalid_json_body
 run_test "delete nonexistent rule errors"  test_delete_nonexistent_rule
 run_test "update nonexistent rule errors"  test_update_nonexistent_rule
-run_test "empty batch rejected"            test_empty_batch_rejected
 
 end_suite

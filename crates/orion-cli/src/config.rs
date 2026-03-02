@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-pub struct CliConfig {
+pub struct OrionConfig {
     pub server_url: Option<String>,
     #[serde(default = "default_output")]
     pub default_output: String,
@@ -14,7 +14,7 @@ fn default_output() -> String {
     "table".to_string()
 }
 
-impl CliConfig {
+impl OrionConfig {
     pub fn path() -> Result<PathBuf> {
         let config_dir = dirs::home_dir()
             .context("Could not determine home directory")?
@@ -31,6 +31,21 @@ impl CliConfig {
             .with_context(|| format!("Failed to read config from {}", path.display()))?;
         toml::from_str(&content)
             .with_context(|| format!("Failed to parse config from {}", path.display()))
+    }
+
+    /// Resolve server URL: env var > config file
+    pub fn resolve_server_url() -> Result<String> {
+        if let Ok(url) = std::env::var("ORION_SERVER_URL") {
+            if !url.is_empty() {
+                return Ok(url);
+            }
+        }
+        let config = Self::load()?;
+        config.server_url.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No server URL configured. Set ORION_SERVER_URL environment variable or configure server_url in ~/.orion/config.toml"
+            )
+        })
     }
 
     pub fn save(&self) -> Result<()> {

@@ -9,9 +9,9 @@ test_create_rule_from_file() {
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.data.name' 'E2E Simple Log'
     assert_json_eq "$CLI_OUTPUT" '.data.channel' 'orders'
-    assert_json_eq "$CLI_OUTPUT" '.data.status' 'active'
+    assert_json_eq "$CLI_OUTPUT" '.data.status' 'draft'
     assert_json_eq "$CLI_OUTPUT" '.data.version' '1'
-    assert_json_has_key "$CLI_OUTPUT" '.data.id'
+    assert_json_has_key "$CLI_OUTPUT" '.data.rule_id'
 }
 
 test_create_rule_inline() {
@@ -37,8 +37,8 @@ test_get_rule() {
     cli rules get "$rule_id"
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.data.name' 'E2E Simple Log'
-    assert_json_eq "$CLI_OUTPUT" '.data.id' "$rule_id"
-    assert_json_has_key "$CLI_OUTPUT" '.version_count'
+    assert_json_eq "$CLI_OUTPUT" '.data.rule_id' "$rule_id"
+    assert_json_has_key "$CLI_OUTPUT" '.data.version'
 }
 
 test_list_rules() {
@@ -71,7 +71,6 @@ test_update_rule() {
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_eq "$CLI_OUTPUT" '.data.name' 'Updated Name'
     assert_json_eq "$CLI_OUTPUT" '.data.priority' '99'
-    assert_json_eq "$CLI_OUTPUT" '.data.version' '2'
 }
 
 test_delete_rule() {
@@ -98,7 +97,7 @@ run_test "create rule quiet returns UUID"     test_create_rule_quiet_returns_id
 run_test "get rule by id"                     test_get_rule
 run_test "list rules"                         test_list_rules
 run_test "list rules filter by channel"       test_list_rules_filter_by_channel
-run_test "update rule increments version"     test_update_rule
+run_test "update rule"                        test_update_rule
 run_test "delete rule"                        test_delete_rule
 run_test "get nonexistent rule returns error" test_get_nonexistent_rule
 

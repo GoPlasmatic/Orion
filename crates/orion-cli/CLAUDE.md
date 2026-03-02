@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Orion CLI is a Rust CLI for the [Orion rules engine platform](https://github.com/GoPlasmatic/Orion). It manages rules, connectors, data channels, engine health, and async jobs via HTTP against an Orion server.
+Orion CLI is a Rust CLI and MCP server for the [Orion rules engine platform](https://github.com/GoPlasmatic/Orion). It manages rules, connectors, data channels, engine health, and async jobs via HTTP against an Orion server. The binary also includes a built-in MCP server (`orion mcp serve`) for AI tool integration (Claude Desktop, Cursor, etc.).
 
 ## Build & Development Commands
 
@@ -30,6 +30,14 @@ ORION_BIN=/path/to/orion-server ./tests/e2e/run.sh
 # E2E_KEEP_SERVER=1    Don't stop server after tests
 ```
 
+### MCP Server
+
+```bash
+orion mcp serve                           # stdio transport (Claude Desktop / Cursor)
+orion mcp serve --http                    # HTTP transport (remote clients), default bind 0.0.0.0:8081
+orion mcp serve --http --bind 0.0.0.0:9090  # HTTP on custom address
+```
+
 E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suites/`, fixtures in `tests/e2e/fixtures/`, test case definitions in `tests/e2e/cases/`.
 
 ## Architecture
@@ -40,9 +48,12 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 
 - `src/main.rs` — Entry point, clap CLI definition with global flags (`--server`, `--output`, `--quiet`, `--verbose`, `--no-color`, `--yes`)
 - `src/client.rs` — `OrionClient` HTTP wrapper around reqwest (30s timeout, JSON request/response, structured error handling)
-- `src/config.rs` — `CliConfig` loaded from `~/.orion/config.toml` (server_url, default_output)
+- `src/config.rs` — `OrionConfig` loaded from `~/.orion/config.toml` (server_url, default_output), includes `resolve_server_url()` for MCP
 - `src/output.rs` — Output formatting: `print_table()` (tabled with rounded borders), `print_value()` (JSON/YAML)
 - `src/commands/` — One file per command group, each defining clap subcommands and `execute()` async functions
+- `src/mcp/` — MCP server module (OrionService with tool_router/tool_handler, serve function for stdio/HTTP)
+- `src/mcp/tools/` — MCP tool implementations (rules, connectors, data, traces, engine, health, metrics)
+- `src/mcp/tools/descriptions/` — Markdown files with detailed tool descriptions for MCP clients
 
 ### Command Modules
 
@@ -57,6 +68,7 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 | `metrics.rs` | Raw Prometheus metrics retrieval |
 | `config.rs` | CLI config management (set-server, show, set key-value) |
 | `completions.rs` | Shell completion generation (bash/zsh/fish/powershell) |
+| `mcp.rs` | MCP server subcommand (`orion mcp serve`) |
 
 ### Key Patterns
 
@@ -67,7 +79,7 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 
 ### Dependencies
 
-Core: `clap` (derive) for CLI, `reqwest` (rustls-tls) for HTTP, `tokio` for async, `serde`/`serde_json`/`serde_yaml`/`toml` for serialization, `anyhow` for errors, `colored` + `tabled` for terminal output.
+Core: `clap` (derive) for CLI, `reqwest` (rustls-tls) for HTTP, `tokio` for async, `serde`/`serde_json`/`serde_yaml`/`toml` for serialization, `anyhow` for errors, `colored` + `tabled` for terminal output. MCP: `rmcp` (server, transport-io, transport-streamable-http-server), `schemars`, `tracing`/`tracing-subscriber`, `axum`.
 
 ### CI/CD
 

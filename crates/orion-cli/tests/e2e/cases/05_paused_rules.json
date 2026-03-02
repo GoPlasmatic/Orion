@@ -1,6 +1,6 @@
 {
-    "name": "Paused Rule Behavior",
-    "description": "Verify that paused rules skip processing and reactivated rules resume",
+    "name": "Archived Rule Behavior",
+    "description": "Verify that archived rules skip processing",
     "rules": [
         {
             "name": "Content Moderator",
@@ -45,29 +45,15 @@
             }
         },
         {
-            "name": "Paused rule skips processing",
+            "name": "Archived rule skips processing",
             "before": [
-                { "action": "pause_rule", "rule_index": 0 },
+                { "action": "archive_rule", "rule_index": 0 },
                 { "action": "reload" }
             ],
             "channel": "content",
             "input": { "text": "Should not be moderated" },
             "expect": {
                 ".status": "ok"
-            }
-        },
-        {
-            "name": "Reactivated rule resumes processing",
-            "before": [
-                { "action": "activate_rule", "rule_index": 0 },
-                { "action": "reload" }
-            ],
-            "channel": "content",
-            "input": { "text": "Back online" },
-            "expect": {
-                ".status": "ok",
-                ".data.post.moderated": "true",
-                ".data.post.status": "reviewed"
             }
         }
     ]

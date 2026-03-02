@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Args, Subcommand};
 use colored::Colorize;
 
-use crate::config::CliConfig;
+use crate::config::OrionConfig;
 
 #[derive(Args)]
 pub struct ConfigCmd {
@@ -32,14 +32,14 @@ impl ConfigCmd {
     pub async fn run(&self) -> Result<()> {
         match &self.command {
             ConfigSubcommand::SetServer { url } => {
-                let mut config = CliConfig::load()?;
+                let mut config = OrionConfig::load()?;
                 config.server_url = Some(url.clone());
                 config.save()?;
                 println!("{} Server URL set to {}", "OK".green().bold(), url.cyan());
             }
             ConfigSubcommand::Show => {
-                let config = CliConfig::load()?;
-                let path = CliConfig::path()?;
+                let config = OrionConfig::load()?;
+                let path = OrionConfig::path()?;
                 println!("{}", "Configuration".bold());
                 println!("  Path:       {}", path.display().to_string().dimmed());
                 println!(
@@ -49,7 +49,7 @@ impl ConfigCmd {
                 println!("  Output:     {}", config.default_output);
             }
             ConfigSubcommand::Set { key, value } => {
-                let mut config = CliConfig::load()?;
+                let mut config = OrionConfig::load()?;
                 match key.as_str() {
                     "server_url" => config.server_url = Some(value.clone()),
                     "default_output" => config.default_output = value.clone(),

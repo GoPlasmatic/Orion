@@ -38,7 +38,7 @@ FIXTURES_DIR="$E2E_DIR/fixtures"
 # Orion server binary (from the main Orion repo)
 ORION_BIN="${ORION_BIN:-}"
 # Orion CLI binary (built from this repo)
-ORION_CLI="${ORION_CLI:-$PROJECT_ROOT/target/debug/orion-cli}"
+ORION_CLI="${ORION_CLI:-$PROJECT_ROOT/target/debug/orion}"
 
 # ── Test Port & Server URL ──────────────────────────────────────
 E2E_PORT="${E2E_PORT:-0}"
@@ -494,10 +494,10 @@ _run_before_actions() {
         action=$(jq -r ".tests[$test_idx].before[$a].action" "$case_file")
 
         case "$action" in
-            pause_rule)
+            archive_rule)
                 local ri
                 ri=$(jq -r ".tests[$test_idx].before[$a].rule_index" "$case_file")
-                cli_quiet rules pause "${rule_ids[$ri]}"
+                cli_quiet rules archive "${rule_ids[$ri]}"
                 ;;
             activate_rule)
                 local ri
@@ -629,7 +629,7 @@ run_case_file() {
         CASE_CONNECTOR_IDS+=("$CLI_OUTPUT")
     done
 
-    # Create rules, store IDs
+    # Create rules, activate them, store IDs
     _CASE_RULE_IDS=()
     local rule_count
     rule_count=$(jq '.rules // [] | length' "$case_file")
@@ -637,7 +637,9 @@ run_case_file() {
         local rule_data
         rule_data=$(jq -c ".rules[$i]" "$case_file")
         cli_quiet rules create -d "$rule_data"
-        _CASE_RULE_IDS+=("$CLI_OUTPUT")
+        local _rule_id="$CLI_OUTPUT"
+        _CASE_RULE_IDS+=("$_rule_id")
+        cli_quiet rules activate "$_rule_id"
     done
 
     # Reload engine if we created rules or connectors

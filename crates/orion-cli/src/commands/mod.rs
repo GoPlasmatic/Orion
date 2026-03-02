@@ -4,6 +4,7 @@ pub mod connectors;
 pub mod data;
 pub mod engine;
 pub mod health;
+pub mod mcp;
 pub mod metrics;
 pub mod rules;
 pub mod traces;
@@ -38,4 +39,7 @@ pub enum Commands {
 
     /// Generate shell completions
     Completions(completions::CompletionsCmd),
+
+    /// MCP server for AI tool integration
+    Mcp(mcp::McpCmd),
 }

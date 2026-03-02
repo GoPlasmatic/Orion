@@ -25,7 +25,7 @@ pub struct SendCmd {
     stdin: bool,
 
     /// Submit for async processing
-    #[arg(long = "async")]
+    #[arg(long = "async-mode", alias = "async")]
     async_mode: bool,
 
     /// Wait for async trace to complete

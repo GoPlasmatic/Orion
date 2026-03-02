@@ -3,6 +3,7 @@ use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+#[derive(Debug, Clone)]
 pub struct OrionClient {
     base_url: String,
     http: Client,

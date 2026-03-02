@@ -6,6 +6,7 @@ begin_suite "Synchronous Data Processing"
 test_sync_process_data() {
     reset_server_state
     cli_quiet rules create -f "$FIXTURES_DIR/rules/simple_log.json"
+    cli_quiet rules activate "$CLI_OUTPUT"
     cli_quiet engine reload
 
     cli send orders -d '{"order_id":"ORD-001","amount":150}'
@@ -18,6 +19,7 @@ test_sync_process_data() {
 test_sync_process_with_transform() {
     reset_server_state
     cli_quiet rules create -f "$FIXTURES_DIR/rules/conditional.json"
+    cli_quiet rules activate "$CLI_OUTPUT"
     cli_quiet engine reload
 
     cli send orders -d '{"amount":250,"product":"Widget Pro"}'
@@ -40,6 +42,7 @@ test_sync_no_matching_rules() {
 test_sync_from_file() {
     reset_server_state
     cli_quiet rules create -f "$FIXTURES_DIR/rules/simple_log.json"
+    cli_quiet rules activate "$CLI_OUTPUT"
     cli_quiet engine reload
 
     cli send orders -f "$FIXTURES_DIR/data/order_high.json"
