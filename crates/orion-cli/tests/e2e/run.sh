@@ -38,7 +38,7 @@ build_cli() {
     if [[ -n "${E2E_SKIP_BUILD:-}" ]]; then
         log_info "Skipping build (E2E_SKIP_BUILD=1)"
     else
-        echo -e "${BOLD}Building orion...${RESET}"
+        echo -e "${BOLD}Building orion-cli...${RESET}"
         if ! cargo build --manifest-path "$PROJECT_ROOT/Cargo.toml" 2>&1; then
             echo -e "${RED}Build failed${RESET}" >&2
             exit 1
@@ -46,7 +46,7 @@ build_cli() {
     fi
 
     if [[ ! -x "$ORION_CLI" ]]; then
-        echo -e "${RED}orion binary not found at $ORION_CLI${RESET}" >&2
+        echo -e "${RED}orion-cli binary not found at $ORION_CLI${RESET}" >&2
         exit 1
     fi
 
@@ -62,7 +62,7 @@ build_cli() {
     fi
 
     log_info "orion-server: $ORION_BIN"
-    log_info "orion:    $ORION_CLI"
+    log_info "orion-cli: $ORION_CLI"
 }
 
 # ── Discover and Run Suites ────────────────────────────────────

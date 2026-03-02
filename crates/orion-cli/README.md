@@ -25,13 +25,13 @@ cargo install --git https://github.com/GoPlasmatic/Orion-cli.git
 **2. Point it at your [Orion server](https://github.com/GoPlasmatic/Orion):**
 
 ```bash
-orion config set-server http://localhost:8080
+orion-cli config set-server http://localhost:8080
 ```
 
 **3. Check the server is running:**
 
 ```bash
-orion health
+orion-cli health
 ```
 
 ```
@@ -48,13 +48,13 @@ Orion Server v0.1.0
 
 ```bash
 # Create a rule from a JSON file
-orion rules create -f high-value-order.json
+orion-cli rules create -f high-value-order.json
 
 # Dry-run test it with sample data
-orion rules test <RULE_ID> -d '{"data":{"order_id":"ORD-9182","total":25000}}' --trace
+orion-cli rules test <RULE_ID> -d '{"data":{"order_id":"ORD-9182","total":25000}}' --trace
 
 # Send real data through the channel
-orion send orders -d '{"order_id":"ORD-9182","total":25000}'
+orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 ```
 
 ---
@@ -66,9 +66,8 @@ orion send orders -d '{"order_id":"ORD-9182","total":25000}'
 | `health` | Check server health and component status |
 | `rules` | Manage rules — create, update, delete, test, import/export, diff |
 | `connectors` | Manage connectors — create, update, delete, enable/disable |
-| `send` | Send data through channels (sync, async, or batch) |
+| `send` | Send data through channels (sync or async) |
 | `traces` | View and monitor execution traces |
-| `jobs` | Monitor async job status |
 | `engine` | View engine status and trigger reloads |
 | `metrics` | Retrieve Prometheus metrics |
 | `config` | Configure server URL and defaults |
@@ -94,25 +93,24 @@ Full lifecycle management for [Orion rules](https://github.com/GoPlasmatic/Orion
 
 ```bash
 # List rules with filters
-orion rules list --channel orders --status active --tag fraud
+orion-cli rules list --channel orders --status active --tag fraud
 
 # Get full rule details
-orion rules get <ID>
+orion-cli rules get <ID>
 
 # Create from file or inline JSON
-orion rules create -f rule.json
-orion rules create -d '{"name":"My Rule","channel":"orders",...}'
+orion-cli rules create -f rule.json
+orion-cli rules create -d '{"name":"My Rule","channel":"orders",...}'
 
 # Update a rule (version auto-increments)
-orion rules update <ID> -f updated-rule.json
+orion-cli rules update <ID> -f updated-rule.json
 
 # Change rule status
-orion rules activate <ID>
-orion rules pause <ID>
-orion rules archive <ID>
+orion-cli rules activate <ID>
+orion-cli rules archive <ID>
 
 # Delete (with confirmation prompt)
-orion rules delete <ID>
+orion-cli rules delete <ID>
 ```
 
 ### Dry-Run Testing
@@ -120,7 +118,7 @@ orion rules delete <ID>
 Test any rule against sample data before activating — with a full execution trace:
 
 ```bash
-orion rules test <ID> -d '{"data":{"order_id":"ORD-9182","total":25000}}' --trace
+orion-cli rules test <ID> -d '{"data":{"order_id":"ORD-9182","total":25000}}' --trace
 ```
 
 ```
@@ -149,16 +147,16 @@ GitOps-ready workflows for CI/CD pipelines:
 
 ```bash
 # Export rules (with optional filters)
-orion rules export --channel orders > rules.json
+orion-cli rules export --channel orders > rules.json
 
 # Import rules from file
-orion rules import -f rules.json
+orion-cli rules import -f rules.json
 
 # Preview import without applying
-orion rules import -f rules.json --dry-run
+orion-cli rules import -f rules.json --dry-run
 
 # Compare local file against server state
-orion rules diff -f rules.json
+orion-cli rules diff -f rules.json
 ```
 
 The diff command shows color-coded changes: **+** new, **~** modified, **=** unchanged, **-** deleted.
@@ -170,55 +168,49 @@ The diff command shows color-coded changes: **+** new, **~** modified, **=** unc
 Manage [named external service configurations](https://github.com/GoPlasmatic/Orion/blob/main/docs/connectors.md) with auth and retry policies:
 
 ```bash
-orion connectors list
-orion connectors get <ID>
-orion connectors create -f connector.json
-orion connectors update <ID> -f connector.json
-orion connectors delete <ID>
-orion connectors enable <ID>
-orion connectors disable <ID>
+orion-cli connectors list
+orion-cli connectors get <ID>
+orion-cli connectors create -f connector.json
+orion-cli connectors update <ID> -f connector.json
+orion-cli connectors delete <ID>
+orion-cli connectors enable <ID>
+orion-cli connectors disable <ID>
 ```
 
 ---
 
 ## Sending Data
 
-Three [processing modes](https://github.com/GoPlasmatic/Orion/blob/main/docs/api-reference.md#data-api) for any workload:
+[Processing modes](https://github.com/GoPlasmatic/Orion/blob/main/docs/api-reference.md#data-api) for any workload:
 
 ### Synchronous (default)
 
 ```bash
-orion send orders -d '{"order_id":"ORD-001","amount":150}'
+orion-cli send orders -d '{"order_id":"ORD-001","amount":150}'
 ```
 
 ### Asynchronous
 
 ```bash
-# Fire and forget — returns job_id
-orion send orders --async-mode -d '{"amount":100}'
+# Fire and forget — returns trace_id
+orion-cli send orders --async-mode -d '{"amount":100}'
 
 # Submit and wait for completion
-orion send orders --async-mode --wait --timeout 30 -d '{"amount":100}'
-```
-
-### Batch
-
-```bash
-orion send --batch -d '[{"order_id":"1","amount":50},{"order_id":"2","amount":75}]'
+orion-cli send orders --async-mode --wait --timeout 30 -d '{"amount":100}'
 ```
 
 ---
 
-## Job Monitoring
+## Traces
 
-Track async job status:
+View and monitor execution traces:
 
 ```bash
-# Check job status
-orion jobs get <JOB_ID>
+# Check trace status
+orion-cli traces get <TRACE_ID>
 
 # Poll until complete (with timeout)
-orion jobs wait <JOB_ID> --interval 2 --timeout 60
+orion-cli traces wait <TRACE_ID> --interval 2 --timeout 60
 ```
 
 Exit codes: `0` completed, `1` failed, `2` timeout.
@@ -229,10 +221,10 @@ Exit codes: `0` completed, `1` failed, `2` timeout.
 
 ```bash
 # View engine status — version, uptime, rule counts, channels
-orion engine status
+orion-cli engine status
 
 # Hot-reload rules (zero downtime)
-orion engine reload
+orion-cli engine reload
 ```
 
 ---
@@ -244,14 +236,14 @@ Orion includes a built-in [MCP (Model Context Protocol)](https://modelcontextpro
 ### Stdio Transport (Claude Desktop / Cursor)
 
 ```bash
-orion mcp serve --server http://localhost:8080
+orion-cli mcp serve --server http://localhost:8080
 ```
 
 ### HTTP Transport (Remote Clients)
 
 ```bash
-orion mcp serve --http --server http://localhost:8080
-orion mcp serve --http --bind 0.0.0.0:9090 --server http://localhost:8080
+orion-cli mcp serve --http --server http://localhost:8080
+orion-cli mcp serve --http --bind 0.0.0.0:9090 --server http://localhost:8080
 ```
 
 ### Claude Desktop Configuration
@@ -262,7 +254,7 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "orion": {
-      "command": "orion",
+      "command": "orion-cli",
       "args": ["mcp", "serve"],
       "env": {
         "ORION_SERVER_URL": "http://localhost:8080"
@@ -279,7 +271,7 @@ Add to Cursor MCP settings (Settings > MCP Servers):
 ```json
 {
   "orion": {
-    "command": "orion",
+    "command": "orion-cli",
     "args": ["mcp", "serve"],
     "env": {
       "ORION_SERVER_URL": "http://localhost:8080"
@@ -296,7 +288,7 @@ The MCP server exposes 29 tools covering the full Orion API:
 |----------|-------|
 | **Health** | `health_check` |
 | **Engine** | `engine_status`, `engine_reload` |
-| **Rules** | `rules_list`, `rules_get`, `rules_create`, `rules_update`, `rules_delete`, `rules_activate`, `rules_pause`, `rules_archive`, `rules_test`, `rules_validate`, `rules_rollout`, `rules_versions`, `rules_create_version`, `rules_export`, `rules_import` |
+| **Rules** | `rules_list`, `rules_get`, `rules_create`, `rules_update`, `rules_delete`, `rules_activate`, `rules_archive`, `rules_test`, `rules_validate`, `rules_rollout`, `rules_versions`, `rules_create_version`, `rules_export`, `rules_import` |
 | **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable` |
 | **Data** | `data_send_sync`, `data_send_async` |
 | **Traces** | `traces_list`, `traces_get` |
@@ -309,16 +301,16 @@ The MCP server exposes 29 tools covering the full Orion API:
 All commands support three output formats:
 
 ```bash
-orion --output table rules list    # Pretty tables (default)
-orion --output json  rules list    # JSON for scripting
-orion --output yaml  rules list    # YAML for config files
+orion-cli --output table rules list    # Pretty tables (default)
+orion-cli --output json  rules list    # JSON for scripting
+orion-cli --output yaml  rules list    # YAML for config files
 ```
 
 Use `--quiet` for minimal output (just IDs) — ideal for shell scripts:
 
 ```bash
-RULE_ID=$(orion --quiet rules create -f rule.json)
-orion rules test "$RULE_ID" -d '{"data":{"amount":100}}'
+RULE_ID=$(orion-cli --quiet rules create -f rule.json)
+orion-cli rules test "$RULE_ID" -d '{"data":{"amount":100}}'
 ```
 
 ---
@@ -333,9 +325,9 @@ default_output = "table"
 ```
 
 ```bash
-orion config set-server http://localhost:8080
-orion config set default_output json
-orion config show
+orion-cli config set-server http://localhost:8080
+orion-cli config set default_output json
+orion-cli config show
 ```
 
 **Precedence** (highest to lowest):
@@ -349,13 +341,13 @@ orion config show
 
 ```bash
 # Bash
-orion completions bash > ~/.bash_completions/orion
+orion-cli completions bash > ~/.bash_completions/orion-cli
 
 # Zsh
-orion completions zsh > ~/.zfunctions/_orion
+orion-cli completions zsh > ~/.zfunctions/_orion-cli
 
 # Fish
-orion completions fish > ~/.config/fish/completions/orion.fish
+orion-cli completions fish > ~/.config/fish/completions/orion-cli.fish
 ```
 
 ---

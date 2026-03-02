@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Orion CLI is a Rust CLI and MCP server for the [Orion rules engine platform](https://github.com/GoPlasmatic/Orion). It manages rules, connectors, data channels, engine health, and async jobs via HTTP against an Orion server. The binary also includes a built-in MCP server (`orion mcp serve`) for AI tool integration (Claude Desktop, Cursor, etc.).
+Orion CLI is a Rust CLI and MCP server for the [Orion rules engine platform](https://github.com/GoPlasmatic/Orion). It manages rules, connectors, data channels, engine health, and traces via HTTP against an Orion server. The binary also includes a built-in MCP server (`orion-cli mcp serve`) for AI tool integration (Claude Desktop, Cursor, etc.).
 
 ## Build & Development Commands
 
@@ -33,9 +33,9 @@ ORION_BIN=/path/to/orion-server ./tests/e2e/run.sh
 ### MCP Server
 
 ```bash
-orion mcp serve                           # stdio transport (Claude Desktop / Cursor)
-orion mcp serve --http                    # HTTP transport (remote clients), default bind 0.0.0.0:8081
-orion mcp serve --http --bind 0.0.0.0:9090  # HTTP on custom address
+orion-cli mcp serve                           # stdio transport (Claude Desktop / Cursor)
+orion-cli mcp serve --http                    # HTTP transport (remote clients), default bind 0.0.0.0:8081
+orion-cli mcp serve --http --bind 0.0.0.0:9090  # HTTP on custom address
 ```
 
 E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suites/`, fixtures in `tests/e2e/fixtures/`, test case definitions in `tests/e2e/cases/`.
@@ -59,16 +59,16 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 
 | Module | Key functionality |
 |---|---|
-| `rules.rs` (largest, ~716 lines) | Full CRUD, status transitions (activate/pause/archive), test dry-run, import/export with diff |
-| `data.rs` | Send data: sync, async (with wait/timeout/job tracking), batch modes |
+| `rules.rs` (largest, ~716 lines) | Full CRUD, status transitions (activate/archive), test dry-run, import/export with diff |
+| `data.rs` | Send data: sync, async (with wait/timeout/trace tracking) |
 | `connectors.rs` | Connector CRUD, enable/disable |
-| `jobs.rs` | Async job status polling with configurable interval/timeout |
+| `traces.rs` | Execution trace viewing and polling |
 | `engine.rs` | Engine status, hot-reload |
 | `health.rs` | Health check with component status, exit code 1 if degraded |
 | `metrics.rs` | Raw Prometheus metrics retrieval |
 | `config.rs` | CLI config management (set-server, show, set key-value) |
 | `completions.rs` | Shell completion generation (bash/zsh/fish/powershell) |
-| `mcp.rs` | MCP server subcommand (`orion mcp serve`) |
+| `mcp.rs` | MCP server subcommand (`orion-cli mcp serve`) |
 
 ### Key Patterns
 

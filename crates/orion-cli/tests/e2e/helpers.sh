@@ -38,7 +38,7 @@ FIXTURES_DIR="$E2E_DIR/fixtures"
 # Orion server binary (from the main Orion repo)
 ORION_BIN="${ORION_BIN:-}"
 # Orion CLI binary (built from this repo)
-ORION_CLI="${ORION_CLI:-$PROJECT_ROOT/target/debug/orion}"
+ORION_CLI="${ORION_CLI:-$PROJECT_ROOT/target/debug/orion-cli}"
 
 # ── Test Port & Server URL ──────────────────────────────────────
 E2E_PORT="${E2E_PORT:-0}"

@@ -38,7 +38,7 @@ impl McpCmd {
                     OrionConfig::resolve_server_url().map_err(|_| {
                         anyhow::anyhow!(
                             "No server URL configured. Run {} or use {}",
-                            "orion config set-server <url>".yellow(),
+                            "orion-cli config set-server <url>".yellow(),
                             "--server <url>".yellow()
                         )
                     })?

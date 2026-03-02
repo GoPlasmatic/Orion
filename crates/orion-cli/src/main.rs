@@ -15,7 +15,7 @@ use output::OutputFormat;
 
 #[derive(Parser)]
 #[command(
-    name = "orion",
+    name = "orion-cli",
     version,
     about = "CLI tool for interacting with an Orion rules engine server"
 )]
@@ -117,7 +117,7 @@ fn build_client(cli: &Cli) -> anyhow::Result<OrionClient> {
         config.server_url.ok_or_else(|| {
             anyhow::anyhow!(
                 "No server URL configured. Run {} or use {}",
-                "orion config set-server <url>".yellow(),
+                "orion-cli config set-server <url>".yellow(),
                 "--server <url>".yellow()
             )
         })?

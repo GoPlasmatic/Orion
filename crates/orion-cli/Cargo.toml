@@ -1,5 +1,5 @@
 [package]
-name = "orion"
+name = "orion-cli"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
@@ -9,7 +9,7 @@ repository = "https://github.com/GoPlasmatic/Orion-cli"
 homepage = "https://github.com/GoPlasmatic/Orion-cli"
 
 [[bin]]
-name = "orion"
+name = "orion-cli"
 path = "src/main.rs"
 
 [dependencies]
