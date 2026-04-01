@@ -1,38 +1,10 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{body_json, json_request};
+use common::{body_json, json_request, poll_trace_until_done};
 use serde_json::json;
 use std::time::Duration;
 use tower::ServiceExt;
-
-/// Helper: poll a trace until it reaches a terminal status or max iterations.
-async fn poll_trace_until_done(
-    app: &axum::Router,
-    trace_id: &str,
-    max_polls: usize,
-) -> serde_json::Value {
-    let mut body = json!(null);
-    for _ in 0..max_polls {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "GET",
-                &format!("/api/v1/data/traces/{}", trace_id),
-                None,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        body = body_json(resp).await;
-        let status = body["status"].as_str().unwrap_or("");
-        if status == "completed" || status == "failed" {
-            break;
-        }
-    }
-    body
-}
 
 // ============================================================
 // Basic async submission
@@ -41,6 +13,18 @@ async fn poll_trace_until_done(
 #[tokio::test]
 async fn test_async_submit_returns_202_with_trace_id() {
     let app = common::test_app().await;
+
+    // Create and activate a channel for the async endpoint
+    common::create_and_activate_channel(
+        &app,
+        "events",
+        json!({
+            "name": "Events Workflow",
+            "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"event"}}}]
+        }),
+    )
+    .await;
 
     let resp = app
         .oneshot(json_request(
@@ -60,6 +44,18 @@ async fn test_async_submit_returns_202_with_trace_id() {
 #[tokio::test]
 async fn test_async_trace_completes_successfully() {
     let app = common::test_app().await;
+
+    // Create and activate a channel
+    common::create_and_activate_channel(
+        &app,
+        "orders",
+        json!({
+            "name": "Orders Workflow",
+            "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"order"}}}]
+        }),
+    )
+    .await;
 
     // Submit async trace
     let resp = app
@@ -82,15 +78,15 @@ async fn test_async_trace_completes_successfully() {
 }
 
 #[tokio::test]
-async fn test_async_trace_with_no_matching_rules() {
+async fn test_async_trace_with_no_matching_channel() {
     let app = common::test_app().await;
 
-    // Submit to a channel with no rules configured
+    // Submit to a channel with no channel/workflow configured
     let resp = app
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/no-rules-channel/async",
+            "/api/v1/data/no-workflows-channel/async",
             Some(json!({"data": {"key": "value"}})),
         ))
         .await
@@ -129,6 +125,18 @@ async fn test_async_trace_empty_channel_rejected() {
 async fn test_multiple_concurrent_async_traces() {
     let app = common::test_app().await;
 
+    // Create and activate a channel
+    common::create_and_activate_channel(
+        &app,
+        "events",
+        json!({
+            "name": "Events Workflow",
+            "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"event"}}}]
+        }),
+    )
+    .await;
+
     // Submit 10 traces concurrently
     let mut trace_ids = Vec::new();
     for i in 0..10 {
@@ -166,6 +174,18 @@ async fn test_multiple_concurrent_async_traces() {
 #[tokio::test]
 async fn test_trace_list_pagination() {
     let app = common::test_app().await;
+
+    // Create and activate a channel
+    common::create_and_activate_channel(
+        &app,
+        "orders",
+        json!({
+            "name": "Orders Workflow",
+            "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"order"}}}]
+        }),
+    )
+    .await;
 
     // Submit 5 async traces
     for i in 0..5 {
@@ -221,6 +241,18 @@ async fn test_trace_list_pagination() {
 async fn test_trace_list_filter_by_status() {
     let app = common::test_app().await;
 
+    // Create and activate a channel
+    common::create_and_activate_channel(
+        &app,
+        "events",
+        json!({
+            "name": "Events Workflow",
+            "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"event"}}}]
+        }),
+    )
+    .await;
+
     // Submit a trace and wait for it to complete
     let resp = app
         .clone()
@@ -260,6 +292,29 @@ async fn test_trace_list_filter_by_status() {
 #[tokio::test]
 async fn test_trace_list_filter_by_channel() {
     let app = common::test_app().await;
+
+    // Create and activate two channels
+    common::create_and_activate_channel(
+        &app,
+        "channel-a",
+        json!({
+            "name": "Channel A Workflow",
+            "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"a"}}}]
+        }),
+    )
+    .await;
+
+    common::create_and_activate_channel(
+        &app,
+        "channel-b",
+        json!({
+            "name": "Channel B Workflow",
+            "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"b"}}}]
+        }),
+    )
+    .await;
 
     // Submit traces on two different channels
     let resp = app
@@ -302,4 +357,43 @@ async fn test_trace_list_filter_by_channel() {
     let traces = body["data"].as_array().unwrap();
     assert_eq!(traces.len(), 1);
     assert_eq!(traces[0]["channel"], "channel-a");
+}
+
+// ============================================================
+// Get Trace - completed with result
+// ============================================================
+
+#[tokio::test]
+async fn test_get_completed_trace_with_result() {
+    let app = common::test_app().await;
+
+    common::create_and_activate_channel(
+        &app,
+        "test-ch",
+        json!({
+            "name": "Test Workflow",
+            "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+        }),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/test-ch/async",
+            Some(json!({"data": {"key": "value"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
+
+    let body = poll_trace_until_done(&app, &trace_id, 40).await;
+    assert_eq!(body["status"], "completed");
+    assert!(body.get("message").is_some());
+    assert!(body.get("started_at").is_some());
+    assert!(body.get("completed_at").is_some());
 }

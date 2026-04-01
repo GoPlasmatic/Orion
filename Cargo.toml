@@ -2,8 +2,7 @@
 name = "orion-server"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
-description = "Standalone rules engine service wrapping dataflow-rs"
+description = "Declarative services runtime powered by dataflow-rs"
 license = "Apache-2.0"
 repository = "https://github.com/GoPlasmatic/Orion"
 homepage = "https://github.com/GoPlasmatic/Orion"
@@ -19,25 +18,25 @@ path = "src/lib.rs"
 [dependencies]
 dataflow-rs = "2.1.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "chrono", "uuid"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros", "chrono"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header"] }
-toml = "0.8"
+toml = { version = "0.8", default-features = false, features = ["parse"] }
 clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "tracing-log", "env-filter", "json"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 thiserror = "2"
 async-trait = "0.1"
 datalogic-rs = "4"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false }
 url = "2"
-rand = "0.8"
+rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
 governor = { version = "0.8", default-features = false, features = ["dashmap", "std"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }

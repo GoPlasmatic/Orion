@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 
 use crate::errors::OrionError;
 use crate::storage::models::Connector;
-use crate::storage::repositories::rules::PaginatedResult;
+use crate::storage::repositories::workflows::PaginatedResult;
 
 // -- DTOs --
 

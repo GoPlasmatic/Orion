@@ -40,6 +40,9 @@ impl BreakerEntry {
 pub enum ConnectorConfig {
     Http(HttpConnectorConfig),
     Kafka(KafkaConnectorConfig),
+    Db(DbConnectorConfig),
+    Cache(CacheConnectorConfig),
+    Storage(StorageConnectorConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,8 +104,54 @@ pub struct KafkaConnectorConfig {
     pub group_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbConnectorConfig {
+    pub connection_string: String,
+    #[serde(default = "default_db_driver")]
+    pub driver: String,
+    #[serde(default)]
+    pub max_connections: Option<u32>,
+    #[serde(default)]
+    pub connect_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub query_timeout_ms: Option<u64>,
+    pub auth: Option<AuthConfig>,
+    #[serde(default)]
+    pub retry: RetryConfig,
+}
+
+fn default_db_driver() -> String {
+    "postgres".to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheConnectorConfig {
+    pub url: String,
+    #[serde(default)]
+    pub default_ttl_secs: Option<u64>,
+    #[serde(default)]
+    pub max_connections: Option<u32>,
+    pub auth: Option<AuthConfig>,
+    #[serde(default)]
+    pub retry: RetryConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StorageConnectorConfig {
+    pub provider: String,
+    #[serde(default)]
+    pub bucket: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub base_path: Option<String>,
+    pub auth: Option<AuthConfig>,
+    #[serde(default)]
+    pub retry: RetryConfig,
+}
+
 /// Allowed connector type values.
-pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka"];
+pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "storage"];
 
 /// In-memory registry for active connector configurations.
 pub struct ConnectorRegistry {
@@ -243,7 +292,13 @@ const MASK: &str = "******";
 const AUTH_SECRET_KEYS: &[&str] = &["token", "password", "key", "secret"];
 
 /// Keys to mask at the top level of a connector config.
-const TOP_LEVEL_SECRET_KEYS: &[&str] = &["password", "secret", "api_key", "token"];
+const TOP_LEVEL_SECRET_KEYS: &[&str] = &[
+    "password",
+    "secret",
+    "api_key",
+    "token",
+    "connection_string",
+];
 
 /// Mask sensitive fields in a connector's config_json for API responses.
 pub fn mask_connector_secrets(config_json: &str) -> String {
@@ -522,6 +577,67 @@ mod tests {
         assert!(states.contains_key("key2"));
         assert!(states.contains_key("key3"));
         assert!(states.contains_key("key4"));
+    }
+
+    #[test]
+    fn test_connector_config_deserialization_db() {
+        let json = r#"{"type":"db","connection_string":"postgres://localhost/mydb","driver":"postgres","max_connections":5}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        match config {
+            ConnectorConfig::Db(db) => {
+                assert_eq!(db.connection_string, "postgres://localhost/mydb");
+                assert_eq!(db.driver, "postgres");
+                assert_eq!(db.max_connections, Some(5));
+            }
+            _ => panic!("Expected Db config"),
+        }
+    }
+
+    #[test]
+    fn test_connector_config_deserialization_cache() {
+        let json = r#"{"type":"cache","url":"redis://localhost:6379","default_ttl_secs":300}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        match config {
+            ConnectorConfig::Cache(cache) => {
+                assert_eq!(cache.url, "redis://localhost:6379");
+                assert_eq!(cache.default_ttl_secs, Some(300));
+            }
+            _ => panic!("Expected Cache config"),
+        }
+    }
+
+    #[test]
+    fn test_connector_config_deserialization_storage() {
+        let json =
+            r#"{"type":"storage","provider":"s3","bucket":"my-bucket","region":"us-east-1"}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        match config {
+            ConnectorConfig::Storage(storage) => {
+                assert_eq!(storage.provider, "s3");
+                assert_eq!(storage.bucket, Some("my-bucket".to_string()));
+                assert_eq!(storage.region, Some("us-east-1".to_string()));
+            }
+            _ => panic!("Expected Storage config"),
+        }
+    }
+
+    #[test]
+    fn test_mask_connector_secrets_connection_string() {
+        let config = r#"{"type":"db","connection_string":"postgres://user:pass@host/db","driver":"postgres"}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        assert_eq!(val["connection_string"], "******");
+        assert_eq!(val["driver"], "postgres");
+    }
+
+    #[test]
+    fn test_valid_connector_types_expanded() {
+        assert!(VALID_CONNECTOR_TYPES.contains(&"http"));
+        assert!(VALID_CONNECTOR_TYPES.contains(&"kafka"));
+        assert!(VALID_CONNECTOR_TYPES.contains(&"db"));
+        assert!(VALID_CONNECTOR_TYPES.contains(&"cache"));
+        assert!(VALID_CONNECTOR_TYPES.contains(&"storage"));
+        assert!(!VALID_CONNECTOR_TYPES.contains(&"grpc"));
     }
 
     #[test]

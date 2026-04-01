@@ -95,7 +95,7 @@ pub async fn execute_request(
         req = req.header("content-type", "application/json").json(b);
     }
 
-    // Apply task-level headers LAST (highest priority — rule developer's explicit choice wins)
+    // Apply task-level headers LAST (highest priority — workflow developer's explicit choice wins)
     if let Some(headers) = task_headers {
         for (k, v) in headers {
             req = req.header(k, v);
@@ -114,16 +114,16 @@ pub async fn execute_request(
     let status = response.status();
 
     // Check Content-Length hint before reading body
-    if let Some(content_length) = response.content_length() {
-        if content_length as usize > max_size {
-            return Err(DataflowError::function_execution(
-                format!(
-                    "Response from {} declared Content-Length {} exceeds limit of {} bytes",
-                    url, content_length, max_size
-                ),
-                None,
-            ));
-        }
+    if let Some(content_length) = response.content_length()
+        && content_length as usize > max_size
+    {
+        return Err(DataflowError::function_execution(
+            format!(
+                "Response from {} declared Content-Length {} exceeds limit of {} bytes",
+                url, content_length, max_size
+            ),
+            None,
+        ));
     }
 
     if !status.is_success() {

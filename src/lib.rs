@@ -1,3 +1,4 @@
+pub mod channel;
 pub mod config;
 pub mod connector;
 pub mod engine;

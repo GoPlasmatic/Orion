@@ -1,8 +1,9 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::response::IntoResponse;
+use axum::routing::{any, get};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -16,88 +17,266 @@ use crate::storage::repositories::traces::TraceFilter;
 pub(crate) use crate::engine::utils::merge_metadata;
 use crate::engine::utils::{inject_rollout_bucket, remove_rollout_bucket};
 
+/// JSONLogic truthiness: false, null, 0, "", and [] are falsy; everything else is truthy.
+fn is_truthy(val: &serde_json::Value) -> bool {
+    match val {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
+        serde_json::Value::String(s) => !s.is_empty(),
+        serde_json::Value::Array(a) => !a.is_empty(),
+        serde_json::Value::Object(_) => true,
+    }
+}
+
 pub fn data_routes() -> Router<AppState> {
     Router::new()
         .route("/traces", get(list_traces))
         .route("/traces/{id}", get(get_trace))
-        .route("/{channel}", post(sync_process))
-        .route("/{channel}/async", post(async_submit))
+        // Catch-all: handles simple HTTP channels (/{channel}),
+        // async submissions (/{channel}/async), and REST routes (/{path...}).
+        .route("/{*path}", any(dynamic_handler))
 }
 
 // ============================================================
-// Synchronous Processing
+// Unified Dynamic Route Handler
 // ============================================================
 
-#[derive(Deserialize, utoipa::ToSchema)]
-pub(crate) struct ProcessRequest {
-    data: Value,
-    #[serde(default)]
-    metadata: Value,
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/data/{channel}",
-    tag = "Data",
-    params(("channel" = String, Path, description = "Channel name")),
-    request_body = ProcessRequest,
-    responses(
-        (status = 200, description = "Processing result"),
-        (status = 400, description = "Invalid input"),
-    )
-)]
-#[tracing::instrument(skip(state, req), fields(channel = %channel))]
-pub(crate) async fn sync_process(
+/// Unified handler for all data routes. Handles:
+/// - Simple HTTP channels: `POST /{channel}` (single segment, direct name match)
+/// - Async submissions: `POST /{channel}/async` or `POST /{path...}/async`
+/// - REST channels: any method matched against route patterns from DB
+#[tracing::instrument(skip(state, headers, query_params, body), fields(path = %path))]
+async fn dynamic_handler(
     State(state): State<AppState>,
-    Path(channel): Path<String>,
-    Json(req): Json<ProcessRequest>,
-) -> Result<Json<Value>, OrionError> {
-    let channel = channel.trim().to_string();
-    if channel.is_empty() {
+    Path(path): Path<String>,
+    method: axum::http::Method,
+    headers: axum::http::HeaderMap,
+    Query(query_params): Query<std::collections::HashMap<String, String>>,
+    body: axum::body::Bytes,
+) -> Result<impl IntoResponse, OrionError> {
+    // Strip trailing /async suffix
+    let (route_path, is_async) = if let Some(stripped) = path.strip_suffix("/async") {
+        (stripped, true)
+    } else {
+        (path.as_str(), false)
+    };
+
+    let route_path = route_path.trim_matches('/').trim();
+    if route_path.is_empty() {
         return Err(OrionError::BadRequest(
             "Channel name must not be empty".into(),
         ));
     }
 
-    let input_json = serde_json::to_string(&req.data).ok();
-    let start = Instant::now();
-
-    // Clone the inner Arc<Engine> and release the lock immediately to avoid
-    // holding the read lock across async processing (which blocks engine reloads).
-    let engine = state.engine.read().await.clone();
-
-    let mut message = dataflow_rs::Message::from_value(&req.data);
-    merge_metadata(&mut message, &req.metadata);
-    inject_rollout_bucket(&mut message);
-
-    match engine
-        .process_message_for_channel(&channel, &mut message)
+    // Resolve channel: try REST route table first, then direct name lookup
+    let (channel, route_params) = if let Some(rm) = state
+        .channel_registry
+        .match_route(method.as_str(), route_path)
         .await
     {
+        (rm.channel_name, rm.params)
+    } else if !route_path.contains('/') {
+        // Single segment — treat as simple channel name (backward compat)
+        (route_path.to_string(), std::collections::HashMap::new())
+    } else {
+        return Err(OrionError::NotFound(format!(
+            "No channel matches {} /{}",
+            method, route_path
+        )));
+    };
+
+    // Parse body: empty body is valid (GET/DELETE), otherwise must be JSON
+    let req: ProcessRequest = if body.is_empty() {
+        ProcessRequest {
+            data: json!({}),
+            metadata: json!({}),
+        }
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| OrionError::BadRequest(format!("Invalid JSON body: {e}")))?
+    };
+
+    // Build metadata with all request context available for validation_logic
+    let mut metadata = if req.metadata.is_object() {
+        req.metadata.clone()
+    } else {
+        json!({})
+    };
+    metadata["http_method"] = json!(method.as_str());
+    if !route_params.is_empty() {
+        metadata["params"] = json!(route_params);
+    }
+    if !query_params.is_empty() {
+        metadata["query"] = json!(query_params);
+    }
+    // Expose request headers so validation_logic can check content-type,
+    // content-length, authorization, etc.
+    let header_map: serde_json::Map<String, Value> = headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|v| (name.as_str().to_string(), json!(v)))
+        })
+        .collect();
+    metadata["headers"] = Value::Object(header_map);
+
+    if is_async {
+        let input_json = serde_json::to_string(&req.data).ok();
+        let trace = state
+            .trace_repo
+            .create_pending(&channel, "async", input_json.as_deref())
+            .await?;
+        let trace_id = trace.id.clone();
+
+        #[cfg(feature = "otel")]
+        let trace_headers = {
+            let mut h = std::collections::HashMap::new();
+            crate::server::trace_context::inject_trace_context(&mut h);
+            h
+        };
+
+        state
+            .trace_queue
+            .submit(crate::queue::QueueMessage {
+                trace_id,
+                channel,
+                payload: req.data,
+                metadata,
+                #[cfg(feature = "otel")]
+                trace_headers,
+            })
+            .await?;
+
+        return Ok((StatusCode::ACCEPTED, Json(json!({ "trace_id": trace.id }))));
+    }
+
+    let result = process_sync_for_channel(&state, &channel, req.data, metadata, &headers).await?;
+    Ok((StatusCode::OK, result))
+}
+
+/// Core sync processing logic shared between simple HTTP and REST routes.
+async fn process_sync_for_channel(
+    state: &AppState,
+    channel: &str,
+    data: Value,
+    metadata: Value,
+    headers: &axum::http::HeaderMap,
+) -> Result<Json<Value>, OrionError> {
+    let input_json = serde_json::to_string(&data).ok();
+
+    let channel_config = state.channel_registry.get_by_name(channel).await;
+
+    // Per-channel CORS
+    if let Some(ref cfg) = channel_config
+        && let Some(ref cors) = cfg.parsed_config.cors
+        && let Some(ref allowed_origins) = cors.allowed_origins
+        && let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok())
+        && !allowed_origins.iter().any(|o| o == "*" || o == origin)
+    {
+        return Err(OrionError::Forbidden(format!(
+            "Origin '{}' is not allowed for channel '{}'",
+            origin, channel
+        )));
+    }
+
+    // Per-channel input validation
+    if let Some(ref cfg) = channel_config
+        && let Some(ref compiled) = cfg.validation_logic
+    {
+        let context = std::sync::Arc::new(json!({ "data": &data, "metadata": &metadata }));
+        match state.datalogic.evaluate(compiled, context) {
+            Ok(result) => {
+                if !is_truthy(&result) {
+                    return Err(OrionError::BadRequest(
+                        "Input validation failed".to_string(),
+                    ));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(channel = %channel, error = %e, "validation_logic evaluation failed, rejecting");
+                return Err(OrionError::BadRequest(format!(
+                    "Input validation error: {e}"
+                )));
+            }
+        }
+    }
+
+    // Per-channel backpressure
+    let _backpressure_permit = if let Some(ref cfg) = channel_config
+        && let Some(ref semaphore) = cfg.backpressure_semaphore
+    {
+        match semaphore.clone().try_acquire_owned() {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                metrics::record_error("backpressure");
+                return Err(OrionError::ServiceUnavailable(format!(
+                    "Channel '{}' is at capacity",
+                    channel
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
+    let start = Instant::now();
+    let engine = state.engine.read().await.clone();
+    let mut message = dataflow_rs::Message::from_value(&data);
+    merge_metadata(&mut message, &metadata);
+    inject_rollout_bucket(&mut message);
+
+    let timeout_ms = channel_config.and_then(|c| c.parsed_config.timeout_ms);
+
+    let result = if let Some(ms) = timeout_ms {
+        match tokio::time::timeout(
+            Duration::from_millis(ms),
+            engine.process_message_for_channel(channel, &mut message),
+        )
+        .await
+        {
+            Ok(inner) => inner,
+            Err(_) => {
+                remove_rollout_bucket(&mut message);
+                metrics::record_message(channel, "timeout");
+                metrics::record_error("timeout");
+                return Err(OrionError::Timeout {
+                    channel: channel.to_string(),
+                    timeout_ms: ms,
+                });
+            }
+        }
+    } else {
+        engine
+            .process_message_for_channel(channel, &mut message)
+            .await
+    };
+
+    match result {
         Ok(()) => {
             remove_rollout_bucket(&mut message);
             let duration = start.elapsed();
             let duration_secs = duration.as_secs_f64();
             let duration_ms = duration.as_secs_f64() * 1000.0;
-            metrics::record_message(&channel, "ok");
-            metrics::record_message_duration(&channel, duration_secs);
-            metrics::record_channel_execution(&channel);
+            metrics::record_message(channel, "ok");
+            metrics::record_message_duration(channel, duration_secs);
+            metrics::record_channel_execution(channel);
 
-            // Store full message in DB
-            if let Ok(result_json) = serde_json::to_string(&message) {
-                if let Err(e) = state
+            if let Ok(result_json) = serde_json::to_string(&message)
+                && let Err(e) = state
                     .trace_repo
                     .store_completed(
-                        &channel,
+                        channel,
                         "sync",
                         input_json.as_deref(),
                         &result_json,
                         duration_ms,
                     )
                     .await
-                {
-                    tracing::warn!(error = %e, "Failed to store sync processing result");
-                }
+            {
+                tracing::warn!(error = %e, "Failed to store sync processing result");
             }
 
             Ok(Json(json!({
@@ -109,7 +288,7 @@ pub(crate) async fn sync_process(
         }
         Err(e) => {
             remove_rollout_bucket(&mut message);
-            metrics::record_message(&channel, "error");
+            metrics::record_message(channel, "error");
             metrics::record_error("engine");
             Err(OrionError::Engine(e))
         }
@@ -117,61 +296,14 @@ pub(crate) async fn sync_process(
 }
 
 // ============================================================
-// Asynchronous Processing
+// Request Types
 // ============================================================
 
-#[utoipa::path(
-    post,
-    path = "/api/v1/data/{channel}/async",
-    tag = "Data",
-    params(("channel" = String, Path, description = "Channel name")),
-    request_body = ProcessRequest,
-    responses(
-        (status = 202, description = "Trace accepted"),
-        (status = 400, description = "Invalid input"),
-    )
-)]
-#[tracing::instrument(skip(state, req), fields(channel = %channel))]
-pub(crate) async fn async_submit(
-    State(state): State<AppState>,
-    Path(channel): Path<String>,
-    Json(req): Json<ProcessRequest>,
-) -> Result<(StatusCode, Json<Value>), OrionError> {
-    let channel = channel.trim().to_string();
-    if channel.is_empty() {
-        return Err(OrionError::BadRequest(
-            "Channel name must not be empty".into(),
-        ));
-    }
-
-    let input_json = serde_json::to_string(&req.data).ok();
-    let trace = state
-        .trace_repo
-        .create_pending(&channel, "async", input_json.as_deref())
-        .await?;
-    let trace_id = trace.id.clone();
-
-    // Capture current trace context so the background trace inherits it
-    #[cfg(feature = "otel")]
-    let trace_headers = {
-        let mut headers = std::collections::HashMap::new();
-        crate::server::trace_context::inject_trace_context(&mut headers);
-        headers
-    };
-
-    state
-        .trace_queue
-        .submit(crate::queue::QueueMessage {
-            trace_id,
-            channel,
-            payload: req.data,
-            metadata: req.metadata,
-            #[cfg(feature = "otel")]
-            trace_headers,
-        })
-        .await?;
-
-    Ok((StatusCode::ACCEPTED, Json(json!({ "trace_id": trace.id }))))
+#[derive(Deserialize, utoipa::ToSchema)]
+pub(crate) struct ProcessRequest {
+    data: Value,
+    #[serde(default)]
+    metadata: Value,
 }
 
 // ============================================================

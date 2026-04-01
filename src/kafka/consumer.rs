@@ -190,11 +190,10 @@ async fn consume_loop(
                             let mut header_map = HashMap::new();
                             if let Some(headers) = msg.headers() {
                                 for idx in 0..headers.count() {
-                                    if let Ok(header) = headers.get_as::<str>(idx) {
-                                        if let Some(value) = header.value {
+                                    if let Ok(header) = headers.get_as::<str>(idx)
+                                        && let Some(value) = header.value {
                                             header_map.insert(header.key.to_string(), value.to_string());
                                         }
-                                    }
                                 }
                             }
 

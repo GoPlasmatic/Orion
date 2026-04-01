@@ -18,6 +18,17 @@ pub struct AppConfig {
     pub cors: CorsConfig,
     pub tracing: TracingConfig,
     pub rate_limit: RateLimitConfig,
+    pub channels: ChannelLoadingConfig,
+}
+
+/// Controls which channels an Orion instance loads from the database.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChannelLoadingConfig {
+    /// Glob patterns for channels to include. Empty means include all.
+    pub include: Vec<String>,
+    /// Glob patterns for channels to exclude. Applied after include.
+    pub exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,8 +261,6 @@ pub struct RateLimitConfig {
     pub default_burst: u32,
     #[serde(default)]
     pub endpoints: EndpointRateLimits,
-    #[serde(default)]
-    pub channels: std::collections::HashMap<String, ChannelRateLimit>,
 }
 
 fn default_rps() -> u32 {
@@ -267,13 +276,6 @@ fn default_burst() -> u32 {
 pub struct EndpointRateLimits {
     pub admin_rps: Option<u32>,
     pub data_rps: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelRateLimit {
-    pub rps: u32,
-    #[serde(default)]
-    pub burst: Option<u32>,
 }
 
 /// Load configuration from an optional TOML file path, then apply env overrides.
@@ -551,11 +553,7 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
                 message: "kafka.group_id must not be empty when Kafka is enabled".to_string(),
             });
         }
-        if config.kafka.topics.is_empty() {
-            return Err(OrionError::Config {
-                message: "kafka.topics must not be empty when Kafka is enabled".to_string(),
-            });
-        }
+        // Topics can be empty in config when async channels provide them from DB
         let mut seen_topics = std::collections::HashSet::new();
         let mut seen_channels = std::collections::HashSet::new();
         for (i, mapping) in config.kafka.topics.iter().enumerate() {
@@ -951,10 +949,6 @@ default_burst = 100
 [rate_limit.endpoints]
 admin_rps = 50
 data_rps = 500
-
-[rate_limit.channels.orders]
-rps = 100
-burst = 50
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(config.rate_limit.enabled);
@@ -962,9 +956,6 @@ burst = 50
         assert_eq!(config.rate_limit.default_burst, 100);
         assert_eq!(config.rate_limit.endpoints.admin_rps, Some(50));
         assert_eq!(config.rate_limit.endpoints.data_rps, Some(500));
-        let orders = config.rate_limit.channels.get("orders").unwrap();
-        assert_eq!(orders.rps, 100);
-        assert_eq!(orders.burst, Some(50));
     }
 
     #[test]
