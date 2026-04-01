@@ -1,10 +1,9 @@
 {
-    "name": "Archived Rule Behavior",
-    "description": "Verify that archived rules skip processing",
-    "rules": [
+    "name": "Archived Workflow Behavior",
+    "description": "Verify that archived workflows skip processing",
+    "workflows": [
         {
             "name": "Content Moderator",
-            "channel": "content",
             "priority": 10,
             "condition": true,
             "tasks": [

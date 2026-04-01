@@ -1,6 +1,5 @@
 {
     "name": "E2E Multi Task",
-    "channel": "orders",
     "priority": 15,
     "condition": true,
     "tasks": [

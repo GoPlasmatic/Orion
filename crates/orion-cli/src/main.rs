@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod mcp;
 mod output;
+pub mod utils;
 
 use clap::Parser;
 use colored::Colorize;
@@ -17,7 +18,7 @@ use output::OutputFormat;
 #[command(
     name = "orion-cli",
     version,
-    about = "CLI tool for interacting with an Orion rules engine server"
+    about = "CLI tool for the Orion services runtime"
 )]
 pub struct Cli {
     /// Orion server URL (overrides config)
@@ -76,10 +77,14 @@ async fn run(cli: Cli) -> anyhow::Result<i32> {
             let client = build_client(&cli)?;
             commands::health::run(&client, &cli.output, cli.quiet).await
         }
-        Commands::Rules(cmd) => {
+        Commands::Workflows(cmd) => {
             let client = build_client(&cli)?;
             cmd.run(&client, &cli.output, cli.quiet, cli.verbose, cli.yes)
                 .await
+        }
+        Commands::Channels(cmd) => {
+            let client = build_client(&cli)?;
+            cmd.run(&client, &cli.output, cli.quiet, cli.yes).await
         }
         Commands::Connectors(cmd) => {
             let client = build_client(&cli)?;

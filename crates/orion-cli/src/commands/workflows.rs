@@ -2,39 +2,39 @@ use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use serde_json::Value;
-use std::io::Read;
 use tabled::Tabled;
 
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
+use crate::utils::{self, colorize_status, truncate};
 
 #[derive(Args)]
-pub struct RulesCmd {
+pub struct WorkflowsCmd {
     #[command(subcommand)]
-    command: RulesSubcommand,
+    command: WorkflowsSubcommand,
 }
 
 #[derive(Subcommand)]
-enum RulesSubcommand {
-    /// List all rules
+enum WorkflowsSubcommand {
+    /// List all workflows
     List {
-        /// Filter by status (active, paused, archived)
+        /// Filter by status (draft, active, archived)
         #[arg(long)]
         status: Option<String>,
-        /// Filter by channel
-        #[arg(long)]
-        channel: Option<String>,
         /// Filter by tag
         #[arg(long)]
         tag: Option<String>,
     },
-    /// Get a rule by ID
+    /// Get a workflow by ID
     Get {
-        /// Rule ID
+        /// Workflow ID
         id: String,
     },
-    /// Create a new rule
+    /// Create a new workflow
     Create {
+        /// Custom workflow ID
+        #[arg(long)]
+        id: Option<String>,
         /// JSON file path
         #[arg(short, long)]
         file: Option<String>,
@@ -42,9 +42,9 @@ enum RulesSubcommand {
         #[arg(short, long)]
         data: Option<String>,
     },
-    /// Update a rule
+    /// Update a workflow
     Update {
-        /// Rule ID
+        /// Workflow ID
         id: String,
         /// JSON file path
         #[arg(short, long)]
@@ -53,22 +53,22 @@ enum RulesSubcommand {
         #[arg(short, long)]
         data: Option<String>,
     },
-    /// Delete a rule
+    /// Delete a workflow
     Delete {
-        /// Rule ID
+        /// Workflow ID
         id: String,
     },
-    /// Activate a rule
+    /// Activate a workflow
     Activate {
-        /// Rule ID
+        /// Workflow ID
         id: String,
     },
-    /// Archive a rule
+    /// Archive a workflow
     Archive {
-        /// Rule ID
+        /// Workflow ID
         id: String,
     },
-    /// Validate a rule definition without creating it
+    /// Validate a workflow definition without creating it
     Validate {
         /// JSON file path
         #[arg(short, long)]
@@ -77,27 +77,27 @@ enum RulesSubcommand {
         #[arg(short, long)]
         data: Option<String>,
     },
-    /// Update rollout percentage for a rule
+    /// Update rollout percentage for a workflow
     Rollout {
-        /// Rule ID
+        /// Workflow ID
         id: String,
         /// Rollout percentage (0-100)
         #[arg(short, long)]
         percentage: i64,
     },
-    /// List version history for a rule
+    /// List version history for a workflow
     Versions {
-        /// Rule ID
+        /// Workflow ID
         id: String,
     },
-    /// Create a new draft version of a rule
+    /// Create a new draft version of a workflow
     NewVersion {
-        /// Rule ID
+        /// Workflow ID
         id: String,
     },
-    /// Test/dry-run a rule with data
+    /// Test/dry-run a workflow with data
     Test {
-        /// Rule ID
+        /// Workflow ID
         id: String,
         /// JSON file with test payload
         #[arg(short, long)]
@@ -115,21 +115,18 @@ enum RulesSubcommand {
         #[arg(long)]
         trace: bool,
     },
-    /// Export rules
+    /// Export workflows
     Export {
         /// Filter by status
         #[arg(long)]
         status: Option<String>,
-        /// Filter by channel
-        #[arg(long)]
-        channel: Option<String>,
         /// Filter by tag
         #[arg(long)]
         tag: Option<String>,
     },
-    /// Import rules from file
+    /// Import workflows from file
     Import {
-        /// JSON file with rules array
+        /// JSON file with workflows array
         #[arg(short, long)]
         file: String,
         /// Preview without importing
@@ -138,20 +135,18 @@ enum RulesSubcommand {
     },
     /// Compare local file against server state
     Diff {
-        /// JSON file with rules
+        /// JSON file with workflows
         #[arg(short, long)]
         file: String,
     },
 }
 
 #[derive(Tabled)]
-struct RuleRow {
+struct WorkflowRow {
     #[tabled(rename = "ID")]
     id: String,
     #[tabled(rename = "Name")]
     name: String,
-    #[tabled(rename = "Channel")]
-    channel: String,
     #[tabled(rename = "Status")]
     status: String,
     #[tabled(rename = "Priority")]
@@ -174,7 +169,7 @@ struct VersionRow {
     updated: String,
 }
 
-impl RulesCmd {
+impl WorkflowsCmd {
     pub async fn run(
         &self,
         client: &OrionClient,
@@ -184,33 +179,44 @@ impl RulesCmd {
         yes: bool,
     ) -> Result<i32> {
         match &self.command {
-            RulesSubcommand::List {
-                status,
-                channel,
-                tag,
-            } => list(client, format, quiet, status, channel, tag).await,
-            RulesSubcommand::Get { id } => get_rule(client, format, quiet, verbose, id).await,
-            RulesSubcommand::Create { file, data } => {
-                let body = read_json_input(file.as_deref(), data.as_deref(), false)?;
+            WorkflowsSubcommand::List { status, tag } => {
+                list(client, format, quiet, status, tag).await
+            }
+            WorkflowsSubcommand::Get { id } => {
+                get_workflow(client, format, quiet, verbose, id).await
+            }
+            WorkflowsSubcommand::Create {
+                id: custom_id,
+                file,
+                data,
+            } => {
+                let mut body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
+                if let Some(wid) = custom_id {
+                    body["workflow_id"] = Value::String(wid.clone());
+                }
                 create(client, format, quiet, &body).await
             }
-            RulesSubcommand::Update { id, file, data } => {
-                let body = read_json_input(file.as_deref(), data.as_deref(), false)?;
+            WorkflowsSubcommand::Update { id, file, data } => {
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
                 update(client, format, quiet, id, &body).await
             }
-            RulesSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
-            RulesSubcommand::Activate { id } => change_status(client, quiet, id, "active").await,
-            RulesSubcommand::Archive { id } => change_status(client, quiet, id, "archived").await,
-            RulesSubcommand::Validate { file, data } => {
-                let body = read_json_input(file.as_deref(), data.as_deref(), false)?;
+            WorkflowsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
+            WorkflowsSubcommand::Activate { id } => {
+                change_status(client, quiet, id, "active").await
+            }
+            WorkflowsSubcommand::Archive { id } => {
+                change_status(client, quiet, id, "archived").await
+            }
+            WorkflowsSubcommand::Validate { file, data } => {
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
                 validate(client, format, quiet, &body).await
             }
-            RulesSubcommand::Rollout { id, percentage } => {
+            WorkflowsSubcommand::Rollout { id, percentage } => {
                 rollout(client, quiet, id, *percentage).await
             }
-            RulesSubcommand::Versions { id } => versions(client, format, quiet, id).await,
-            RulesSubcommand::NewVersion { id } => new_version(client, format, quiet, id).await,
-            RulesSubcommand::Test {
+            WorkflowsSubcommand::Versions { id } => versions(client, format, quiet, id).await,
+            WorkflowsSubcommand::NewVersion { id } => new_version(client, format, quiet, id).await,
+            WorkflowsSubcommand::Test {
                 id,
                 file,
                 data,
@@ -218,19 +224,15 @@ impl RulesCmd {
                 metadata,
                 trace,
             } => {
-                let payload = read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
+                let payload = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 let meta = metadata.as_deref().map(serde_json::from_str).transpose()?;
-                test_rule(client, format, quiet, id, &payload, meta.as_ref(), *trace).await
+                test_workflow(client, format, quiet, id, &payload, meta.as_ref(), *trace).await
             }
-            RulesSubcommand::Export {
-                status,
-                channel,
-                tag,
-            } => export(client, status, channel, tag).await,
-            RulesSubcommand::Import { file, dry_run } => {
+            WorkflowsSubcommand::Export { status, tag } => export(client, status, tag).await,
+            WorkflowsSubcommand::Import { file, dry_run } => {
                 import(client, quiet, file, *dry_run).await
             }
-            RulesSubcommand::Diff { file } => diff(client, file).await,
+            WorkflowsSubcommand::Diff { file } => diff(client, file).await,
         }
     }
 }
@@ -240,31 +242,16 @@ async fn list(
     format: &OutputFormat,
     quiet: bool,
     status: &Option<String>,
-    channel: &Option<String>,
     tag: &Option<String>,
 ) -> Result<i32> {
-    let mut query = Vec::new();
-    if let Some(s) = status {
-        query.push(format!("status={s}"));
-    }
-    if let Some(c) = channel {
-        query.push(format!("channel={c}"));
-    }
-    if let Some(t) = tag {
-        query.push(format!("tag={t}"));
-    }
-    let qs = if query.is_empty() {
-        String::new()
-    } else {
-        format!("?{}", query.join("&"))
-    };
+    let qs = utils::build_query_string(&[("status", status.clone()), ("tag", tag.clone())]);
 
-    let resp: Value = client.get(&format!("/api/v1/admin/rules{qs}")).await?;
-    let rules = resp["data"].as_array().cloned().unwrap_or_default();
+    let resp: Value = client.get(&format!("/api/v1/admin/workflows{qs}")).await?;
+    let workflows = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
-        for rule in &rules {
-            if let Some(id) = rule["rule_id"].as_str() {
+        for wf in &workflows {
+            if let Some(id) = wf["workflow_id"].as_str() {
                 println!("{id}");
             }
         }
@@ -276,19 +263,18 @@ async fn list(
         return Ok(0);
     }
 
-    if rules.is_empty() {
-        println!("{}", "No rules found.".dimmed());
+    if workflows.is_empty() {
+        println!("{}", "No workflows found.".dimmed());
         return Ok(0);
     }
 
-    let rows: Vec<RuleRow> = rules
+    let rows: Vec<WorkflowRow> = workflows
         .iter()
         .map(|r| {
             let rollout = r["rollout_percentage"].as_i64().unwrap_or(0);
-            RuleRow {
-                id: truncate(r["rule_id"].as_str().unwrap_or(""), 12),
+            WorkflowRow {
+                id: truncate(r["workflow_id"].as_str().unwrap_or(""), 12),
                 name: truncate(r["name"].as_str().unwrap_or(""), 30),
-                channel: r["channel"].as_str().unwrap_or("").to_string(),
                 status: colorize_status(r["status"].as_str().unwrap_or("")),
                 priority: r["priority"].as_i64().unwrap_or(0),
                 rollout: format!("{rollout}%"),
@@ -298,19 +284,19 @@ async fn list(
         .collect();
 
     output::print_table(rows);
-    let total = resp["total"].as_i64().unwrap_or(rules.len() as i64);
-    println!("{}", format!("{} rule(s)", total).dimmed());
+    let total = resp["total"].as_i64().unwrap_or(workflows.len() as i64);
+    println!("{}", format!("{} workflow(s)", total).dimmed());
     Ok(0)
 }
 
-async fn get_rule(
+async fn get_workflow(
     client: &OrionClient,
     format: &OutputFormat,
     quiet: bool,
     verbose: bool,
     id: &str,
 ) -> Result<i32> {
-    let resp: Value = client.get(&format!("/api/v1/admin/rules/{id}")).await?;
+    let resp: Value = client.get(&format!("/api/v1/admin/workflows/{id}")).await?;
 
     if quiet {
         println!("{id}");
@@ -322,50 +308,51 @@ async fn get_rule(
         return Ok(0);
     }
 
-    let rule = &resp["data"];
+    let wf = &resp["data"];
 
-    println!("{}", "Rule Details".bold());
-    println!("  ID:          {}", rule["rule_id"].as_str().unwrap_or(""));
-    println!("  Name:        {}", rule["name"].as_str().unwrap_or(""));
+    println!("{}", "Workflow Details".bold());
+    println!(
+        "  ID:          {}",
+        wf["workflow_id"].as_str().unwrap_or("")
+    );
+    println!("  Name:        {}", wf["name"].as_str().unwrap_or(""));
     println!(
         "  Description: {}",
-        rule["description"].as_str().unwrap_or("(none)")
+        wf["description"].as_str().unwrap_or("(none)")
     );
-    println!("  Channel:     {}", rule["channel"].as_str().unwrap_or(""));
     println!(
         "  Status:      {}",
-        colorize_status(rule["status"].as_str().unwrap_or(""))
+        colorize_status(wf["status"].as_str().unwrap_or(""))
     );
-    println!("  Priority:    {}", rule["priority"].as_i64().unwrap_or(0));
+    println!("  Priority:    {}", wf["priority"].as_i64().unwrap_or(0));
     println!(
         "  Rollout:     {}%",
-        rule["rollout_percentage"].as_i64().unwrap_or(0)
+        wf["rollout_percentage"].as_i64().unwrap_or(0)
     );
-    println!("  Version:     {}", rule["version"].as_i64().unwrap_or(0));
-    println!("  Tags:        {}", rule["tags"]);
+    println!("  Version:     {}", wf["version"].as_i64().unwrap_or(0));
+    println!("  Tags:        {}", wf["tags"]);
     println!(
         "  Continue on error: {}",
-        rule["continue_on_error"].as_bool().unwrap_or(false)
+        wf["continue_on_error"].as_bool().unwrap_or(false)
     );
-    println!("  Created:     {}", rule["created_at"]);
-    println!("  Updated:     {}", rule["updated_at"]);
+    println!("  Created:     {}", wf["created_at"]);
+    println!("  Updated:     {}", wf["updated_at"]);
 
     if verbose {
         println!("\n{}", "Condition:".bold());
         if let Ok(cond) =
-            serde_json::from_str::<Value>(rule["condition_json"].as_str().unwrap_or("true"))
+            serde_json::from_str::<Value>(wf["condition_json"].as_str().unwrap_or("true"))
         {
             println!("{}", serde_json::to_string_pretty(&cond)?);
         } else {
-            println!("{}", rule["condition_json"]);
+            println!("{}", wf["condition_json"]);
         }
         println!("\n{}", "Tasks:".bold());
-        if let Ok(tasks) =
-            serde_json::from_str::<Value>(rule["tasks_json"].as_str().unwrap_or("[]"))
+        if let Ok(tasks) = serde_json::from_str::<Value>(wf["tasks_json"].as_str().unwrap_or("[]"))
         {
             println!("{}", serde_json::to_string_pretty(&tasks)?);
         } else {
-            println!("{}", rule["tasks_json"]);
+            println!("{}", wf["tasks_json"]);
         }
     }
 
@@ -378,11 +365,11 @@ async fn create(
     quiet: bool,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client.post("/api/v1/admin/rules", body).await?;
-    let rule = &resp["data"];
+    let resp: Value = client.post("/api/v1/admin/workflows", body).await?;
+    let wf = &resp["data"];
 
     if quiet {
-        println!("{}", rule["rule_id"].as_str().unwrap_or(""));
+        println!("{}", wf["workflow_id"].as_str().unwrap_or(""));
         return Ok(0);
     }
 
@@ -392,10 +379,10 @@ async fn create(
     }
 
     println!(
-        "{} Rule created: {} ({})",
+        "{} Workflow created: {} ({})",
         "OK".green().bold(),
-        rule["name"].as_str().unwrap_or(""),
-        rule["rule_id"].as_str().unwrap_or("")
+        wf["name"].as_str().unwrap_or(""),
+        wf["workflow_id"].as_str().unwrap_or("")
     );
     Ok(0)
 }
@@ -408,9 +395,9 @@ async fn update(
     body: &Value,
 ) -> Result<i32> {
     let resp: Value = client
-        .put(&format!("/api/v1/admin/rules/{id}"), body)
+        .put(&format!("/api/v1/admin/workflows/{id}"), body)
         .await?;
-    let rule = &resp["data"];
+    let wf = &resp["data"];
 
     if quiet {
         println!("{id}");
@@ -423,31 +410,26 @@ async fn update(
     }
 
     println!(
-        "{} Rule updated: {} (v{})",
+        "{} Workflow updated: {} (v{})",
         "OK".green().bold(),
-        rule["name"].as_str().unwrap_or(""),
-        rule["version"].as_i64().unwrap_or(0)
+        wf["name"].as_str().unwrap_or(""),
+        wf["version"].as_i64().unwrap_or(0)
     );
     Ok(0)
 }
 
 async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Result<i32> {
-    if !yes {
-        eprint!("Delete rule {id}? [y/N] ");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Cancelled.");
-            return Ok(0);
-        }
+    if !utils::confirm(&format!("Delete workflow {id}?"), yes)? {
+        println!("Cancelled.");
+        return Ok(0);
     }
 
     client
-        .delete_request(&format!("/api/v1/admin/rules/{id}"))
+        .delete_request(&format!("/api/v1/admin/workflows/{id}"))
         .await?;
 
     if !quiet {
-        println!("{} Rule {id} deleted", "OK".green().bold());
+        println!("{} Workflow {id} deleted", "OK".green().bold());
     }
     Ok(0)
 }
@@ -455,22 +437,22 @@ async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Resul
 async fn change_status(client: &OrionClient, quiet: bool, id: &str, status: &str) -> Result<i32> {
     let body = serde_json::json!({ "status": status });
     let resp: Value = client
-        .patch(&format!("/api/v1/admin/rules/{id}/status"), &body)
+        .patch(&format!("/api/v1/admin/workflows/{id}/status"), &body)
         .await?;
 
     if !quiet {
-        let rule = &resp["data"];
+        let wf = &resp["data"];
         println!(
-            "{} Rule {} status changed to {}",
+            "{} Workflow {} status changed to {}",
             "OK".green().bold(),
-            rule["name"].as_str().unwrap_or(id),
+            wf["name"].as_str().unwrap_or(id),
             colorize_status(status)
         );
     }
     Ok(0)
 }
 
-async fn test_rule(
+async fn test_workflow(
     client: &OrionClient,
     format: &OutputFormat,
     quiet: bool,
@@ -485,7 +467,7 @@ async fn test_rule(
     }
 
     let resp: Value = client
-        .post(&format!("/api/v1/admin/rules/{id}/test"), &body)
+        .post(&format!("/api/v1/admin/workflows/{id}/test"), &body)
         .await?;
 
     if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
@@ -507,8 +489,8 @@ async fn test_rule(
         "NO MATCH".red().bold()
     };
     println!("{}", "Test Result".bold());
-    println!("  Rule:    {id}");
-    println!("  Result:  {match_display}");
+    println!("  Workflow: {id}");
+    println!("  Result:   {match_display}");
 
     if matched {
         if let Some(output) = resp.get("output") {
@@ -542,7 +524,9 @@ async fn validate(
     quiet: bool,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client.post("/api/v1/admin/rules/validate", body).await?;
+    let resp: Value = client
+        .post("/api/v1/admin/workflows/validate", body)
+        .await?;
 
     if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
         output::print_value(format, &resp)?;
@@ -558,9 +542,9 @@ async fn validate(
     }
 
     if valid {
-        println!("{} Rule definition is valid", "OK".green().bold());
+        println!("{} Workflow definition is valid", "OK".green().bold());
     } else {
-        println!("{} Rule definition has issues", "INVALID".red().bold());
+        println!("{} Workflow definition has issues", "INVALID".red().bold());
     }
 
     if let Some(errors) = resp["errors"].as_array() {
@@ -591,15 +575,15 @@ async fn validate(
 async fn rollout(client: &OrionClient, quiet: bool, id: &str, percentage: i64) -> Result<i32> {
     let body = serde_json::json!({ "rollout_percentage": percentage });
     let resp: Value = client
-        .patch(&format!("/api/v1/admin/rules/{id}/rollout"), &body)
+        .patch(&format!("/api/v1/admin/workflows/{id}/rollout"), &body)
         .await?;
 
     if !quiet {
-        let rule = &resp["data"];
+        let wf = &resp["data"];
         println!(
-            "{} Rule {} rollout set to {}%",
+            "{} Workflow {} rollout set to {}%",
             "OK".green().bold(),
-            rule["name"].as_str().unwrap_or(id),
+            wf["name"].as_str().unwrap_or(id),
             percentage
         );
     }
@@ -613,7 +597,7 @@ async fn versions(
     id: &str,
 ) -> Result<i32> {
     let resp: Value = client
-        .get(&format!("/api/v1/admin/rules/{id}/versions"))
+        .get(&format!("/api/v1/admin/workflows/{id}/versions"))
         .await?;
     let vers = resp["data"].as_array().cloned().unwrap_or_default();
 
@@ -657,12 +641,12 @@ async fn new_version(
     id: &str,
 ) -> Result<i32> {
     let resp: Value = client
-        .post_empty(&format!("/api/v1/admin/rules/{id}/versions"))
+        .post_empty(&format!("/api/v1/admin/workflows/{id}/versions"))
         .await?;
-    let rule = &resp["data"];
+    let wf = &resp["data"];
 
     if quiet {
-        println!("{}", rule["version"].as_i64().unwrap_or(0));
+        println!("{}", wf["version"].as_i64().unwrap_or(0));
         return Ok(0);
     }
 
@@ -672,10 +656,10 @@ async fn new_version(
     }
 
     println!(
-        "{} New draft version {} created for rule {}",
+        "{} New draft version {} created for workflow {}",
         "OK".green().bold(),
-        rule["version"].as_i64().unwrap_or(0),
-        rule["name"].as_str().unwrap_or(id)
+        wf["version"].as_i64().unwrap_or(0),
+        wf["name"].as_str().unwrap_or(id)
     );
     Ok(0)
 }
@@ -711,60 +695,46 @@ fn print_trace(trace: &Value, indent: usize) {
 async fn export(
     client: &OrionClient,
     status: &Option<String>,
-    channel: &Option<String>,
     tag: &Option<String>,
 ) -> Result<i32> {
-    let mut query = Vec::new();
-    if let Some(s) = status {
-        query.push(format!("status={s}"));
-    }
-    if let Some(c) = channel {
-        query.push(format!("channel={c}"));
-    }
-    if let Some(t) = tag {
-        query.push(format!("tag={t}"));
-    }
-    let qs = if query.is_empty() {
-        String::new()
-    } else {
-        format!("?{}", query.join("&"))
-    };
+    let qs = utils::build_query_string(&[("status", status.clone()), ("tag", tag.clone())]);
 
     let resp: Value = client
-        .get(&format!("/api/v1/admin/rules/export{qs}"))
+        .get(&format!("/api/v1/admin/workflows/export{qs}"))
         .await?;
-    let rules = resp.get("data").unwrap_or(&resp);
-    println!("{}", serde_json::to_string_pretty(rules)?);
+    let workflows = resp.get("data").unwrap_or(&resp);
+    println!("{}", serde_json::to_string_pretty(workflows)?);
     Ok(0)
 }
 
 async fn import(client: &OrionClient, quiet: bool, file: &str, dry_run: bool) -> Result<i32> {
     let content = std::fs::read_to_string(file)?;
-    let rules: Value = serde_json::from_str(&content)?;
+    let workflows: Value = serde_json::from_str(&content)?;
 
-    if !rules.is_array() {
-        bail!("Import file must contain a JSON array of rules");
+    if !workflows.is_array() {
+        bail!("Import file must contain a JSON array of workflows");
     }
 
-    let count = rules.as_array().map(|a| a.len()).unwrap_or(0);
+    let count = workflows.as_array().map(|a| a.len()).unwrap_or(0);
 
     if dry_run {
         println!(
-            "{} Would import {} rule(s) from {file}",
+            "{} Would import {} workflow(s) from {file}",
             "DRY RUN".yellow().bold(),
             count
         );
-        if let Some(arr) = rules.as_array() {
-            for (i, rule) in arr.iter().enumerate() {
-                let name = rule["name"].as_str().unwrap_or("(unnamed)");
-                let channel = rule["channel"].as_str().unwrap_or("default");
-                println!("  {}. {name} (channel: {channel})", i + 1);
+        if let Some(arr) = workflows.as_array() {
+            for (i, wf) in arr.iter().enumerate() {
+                let name = wf["name"].as_str().unwrap_or("(unnamed)");
+                println!("  {}. {name}", i + 1);
             }
         }
         return Ok(0);
     }
 
-    let resp: Value = client.post("/api/v1/admin/rules/import", &rules).await?;
+    let resp: Value = client
+        .post("/api/v1/admin/workflows/import", &workflows)
+        .await?;
 
     if quiet {
         let imported = resp["imported"].as_u64().unwrap_or(0);
@@ -794,7 +764,7 @@ async fn import(client: &OrionClient, quiet: bool, file: &str, dry_run: bool) ->
         for err in errors {
             let idx = err["index"].as_u64().unwrap_or(0);
             let msg = err["error"].as_str().unwrap_or("unknown");
-            println!("  {} Rule #{idx}: {msg}", "ERR".red());
+            println!("  {} Workflow #{idx}: {msg}", "ERR".red());
         }
     }
 
@@ -803,30 +773,30 @@ async fn import(client: &OrionClient, quiet: bool, file: &str, dry_run: bool) ->
 
 async fn diff(client: &OrionClient, file: &str) -> Result<i32> {
     let content = std::fs::read_to_string(file)?;
-    let local_rules: Vec<Value> = serde_json::from_str(&content)?;
+    let local_workflows: Vec<Value> = serde_json::from_str(&content)?;
 
-    let resp: Value = client.get("/api/v1/admin/rules/export").await?;
-    let server_rules = resp["data"].as_array().cloned().unwrap_or_default();
+    let resp: Value = client.get("/api/v1/admin/workflows/export").await?;
+    let server_workflows = resp["data"].as_array().cloned().unwrap_or_default();
 
     let mut new_count = 0;
     let mut modified_count = 0;
     let mut unchanged_count = 0;
 
-    // Index server rules by name
-    let server_by_name: std::collections::HashMap<&str, &Value> = server_rules
+    // Index server workflows by name
+    let server_by_name: std::collections::HashMap<&str, &Value> = server_workflows
         .iter()
         .filter_map(|r| r["name"].as_str().map(|n| (n, r)))
         .collect();
 
-    let local_names: std::collections::HashSet<&str> = local_rules
+    let local_names: std::collections::HashSet<&str> = local_workflows
         .iter()
         .filter_map(|r| r["name"].as_str())
         .collect();
 
-    println!("{}", "Rule Diff".bold());
+    println!("{}", "Workflow Diff".bold());
     println!();
 
-    for local in &local_rules {
+    for local in &local_workflows {
         let name = local["name"].as_str().unwrap_or("(unnamed)");
         if let Some(server) = server_by_name.get(name) {
             let local_cond = local.get("condition").map(|v| v.to_string());
@@ -855,7 +825,7 @@ async fn diff(client: &OrionClient, file: &str) -> Result<i32> {
     }
 
     let mut deleted_count = 0;
-    for server in &server_rules {
+    for server in &server_workflows {
         let name = server["name"].as_str().unwrap_or("");
         if !local_names.contains(name) {
             println!("  {} {name}", "-".red().bold());
@@ -873,36 +843,4 @@ async fn diff(client: &OrionClient, file: &str) -> Result<i32> {
     );
 
     Ok(0)
-}
-
-fn read_json_input(file: Option<&str>, data: Option<&str>, stdin: bool) -> Result<Value> {
-    if let Some(path) = file {
-        let content = std::fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&content)?)
-    } else if let Some(json) = data {
-        Ok(serde_json::from_str(json)?)
-    } else if stdin {
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
-        Ok(serde_json::from_str(&buf)?)
-    } else {
-        bail!("Provide input with -f <file>, -d '<json>', or --stdin")
-    }
-}
-
-fn colorize_status(status: &str) -> String {
-    match status {
-        "active" => "active".green().to_string(),
-        "draft" => "draft".blue().to_string(),
-        "archived" => "archived".dimmed().to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() > max {
-        format!("{}...", &s[..max - 3])
-    } else {
-        s.to_string()
-    }
 }

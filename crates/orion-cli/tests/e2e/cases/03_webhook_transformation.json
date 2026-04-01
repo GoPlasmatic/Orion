@@ -1,10 +1,9 @@
 {
     "name": "Webhook Payload Transformation",
     "description": "Parse incoming webhook and normalize schema via mapping",
-    "rules": [
+    "workflows": [
         {
             "name": "Webhook Transform Pipeline",
-            "channel": "webhooks",
             "priority": 10,
             "condition": true,
             "tasks": [

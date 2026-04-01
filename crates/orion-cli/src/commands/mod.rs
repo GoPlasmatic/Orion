@@ -1,3 +1,4 @@
+pub mod channels;
 pub mod completions;
 pub mod config;
 pub mod connectors;
@@ -6,8 +7,8 @@ pub mod engine;
 pub mod health;
 pub mod mcp;
 pub mod metrics;
-pub mod rules;
 pub mod traces;
+pub mod workflows;
 
 use clap::Subcommand;
 
@@ -19,8 +20,12 @@ pub enum Commands {
     /// Check server health
     Health,
 
-    /// Manage rules
-    Rules(rules::RulesCmd),
+    /// Manage workflows
+    #[command(alias = "rules")]
+    Workflows(workflows::WorkflowsCmd),
+
+    /// Manage channels
+    Channels(channels::ChannelsCmd),
 
     /// Manage connectors
     Connectors(connectors::ConnectorsCmd),

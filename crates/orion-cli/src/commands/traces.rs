@@ -6,6 +6,7 @@ use tabled::Tabled;
 
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
+use crate::utils;
 
 #[derive(Args)]
 pub struct TracesCmd {
@@ -119,33 +120,15 @@ async fn list(
     limit: &Option<i64>,
     offset: &Option<i64>,
 ) -> Result<i32> {
-    let mut query = Vec::new();
-    if let Some(s) = status {
-        query.push(format!("status={s}"));
-    }
-    if let Some(c) = channel {
-        query.push(format!("channel={c}"));
-    }
-    if let Some(m) = mode {
-        query.push(format!("mode={m}"));
-    }
-    if let Some(s) = sort_by {
-        query.push(format!("sort_by={s}"));
-    }
-    if let Some(s) = sort_order {
-        query.push(format!("sort_order={s}"));
-    }
-    if let Some(l) = limit {
-        query.push(format!("limit={l}"));
-    }
-    if let Some(o) = offset {
-        query.push(format!("offset={o}"));
-    }
-    let qs = if query.is_empty() {
-        String::new()
-    } else {
-        format!("?{}", query.join("&"))
-    };
+    let qs = utils::build_query_string(&[
+        ("status", status.clone()),
+        ("channel", channel.clone()),
+        ("mode", mode.clone()),
+        ("sort_by", sort_by.clone()),
+        ("sort_order", sort_order.clone()),
+        ("limit", limit.map(|l| l.to_string())),
+        ("offset", offset.map(|o| o.to_string())),
+    ]);
 
     let resp: Value = client.get(&format!("/api/v1/data/traces{qs}")).await?;
     let traces = resp["data"].as_array().cloned().unwrap_or_default();
@@ -177,10 +160,10 @@ async fn list(
                 .map(|d| format!("{:.1}ms", d))
                 .unwrap_or_else(|| "-".to_string());
             TraceRow {
-                id: truncate(t["id"].as_str().unwrap_or(""), 12),
+                id: utils::truncate(t["id"].as_str().unwrap_or(""), 12),
                 channel: t["channel"].as_str().unwrap_or("").to_string(),
                 mode: t["mode"].as_str().unwrap_or("").to_string(),
-                status: colorize_trace_status(t["status"].as_str().unwrap_or("")),
+                status: utils::colorize_status(t["status"].as_str().unwrap_or("")),
                 duration,
                 created: t["created_at"].as_str().unwrap_or("").to_string(),
             }
@@ -214,7 +197,7 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
         println!("  Channel:   {channel}");
     }
     println!("  Mode:      {}", resp["mode"].as_str().unwrap_or(""));
-    println!("  Status:    {}", colorize_trace_status(status));
+    println!("  Status:    {}", utils::colorize_status(status));
     println!("  Created:   {}", resp["created_at"]);
 
     if let Some(started) = resp["started_at"].as_str() {
@@ -321,28 +304,10 @@ async fn wait(
     }
 }
 
-fn colorize_trace_status(status: &str) -> String {
-    match status {
-        "pending" => "pending".yellow().to_string(),
-        "running" => "running".blue().to_string(),
-        "completed" => "completed".green().to_string(),
-        "failed" => "failed".red().to_string(),
-        other => other.to_string(),
-    }
-}
-
 fn status_exit_code(status: &str) -> i32 {
     match status {
         "completed" => 0,
         "failed" => 1,
         _ => 0,
-    }
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() > max {
-        format!("{}...", &s[..max - 3])
-    } else {
-        s.to_string()
     }
 }

@@ -3,9 +3,9 @@
 
   # Orion
 
-  **The command-line interface and MCP server for [Orion](https://github.com/GoPlasmatic/Orion) — manage rules, connectors, and data pipelines from your terminal or AI assistant.**
+  **The command-line interface and MCP server for [Orion](https://github.com/GoPlasmatic/Orion) — manage workflows, channels, connectors, and data pipelines from your terminal or AI assistant.**
 
-  Create, test, and deploy business rules. Send data through channels. Monitor engine health and metrics. Use as a CLI or as an MCP server for Claude Desktop, Cursor, and other AI tools.
+  Create, test, and deploy workflows. Define channels as service endpoints. Send data through channels. Monitor engine health and metrics. Use as a CLI or as an MCP server for Claude Desktop, Cursor, and other AI tools.
 
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)
@@ -38,20 +38,29 @@ orion-cli health
 Orion Server v0.1.0
   Status:       OK
   Uptime:       2h 30m
-  Rules loaded: 15
   Components:
     database     OK
     engine       OK
 ```
 
-**4. Create a rule, test it, send data:**
+**4. Create a workflow and channel, test it, send data:**
 
 ```bash
-# Create a rule from a JSON file
-orion-cli rules create -f high-value-order.json
+# Create a workflow from a JSON file
+orion-cli workflows create -f high-value-order.json
 
-# Dry-run test it with sample data
-orion-cli rules test <RULE_ID> -d '{"data":{"order_id":"ORD-9182","total":25000}}' --trace
+# Activate it
+orion-cli workflows activate <WORKFLOW_ID>
+
+# Create a channel that links to the workflow
+orion-cli channels create -d '{"name":"orders","channel_type":"sync","protocol":"http","workflow_id":"<WORKFLOW_ID>"}'
+orion-cli channels activate <CHANNEL_ID>
+
+# Reload the engine to pick up changes
+orion-cli engine reload
+
+# Dry-run test with sample data
+orion-cli workflows test <WORKFLOW_ID> -d '{"data":{"order_id":"ORD-9182","total":25000}}' --trace
 
 # Send real data through the channel
 orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
@@ -64,8 +73,9 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 | Command | Description |
 |---------|-------------|
 | `health` | Check server health and component status |
-| `rules` | Manage rules — create, update, delete, test, import/export, diff |
-| `connectors` | Manage connectors — create, update, delete, enable/disable |
+| `workflows` | Manage workflows — create, update, delete, test, import/export, diff |
+| `channels` | Manage channels — create, update, delete, activate/archive, versioning |
+| `connectors` | Manage connectors — create, update, delete, enable/disable, circuit breakers |
 | `send` | Send data through channels (sync or async) |
 | `traces` | View and monitor execution traces |
 | `engine` | View engine status and trigger reloads |
@@ -87,38 +97,44 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 
 ---
 
-## Rules Management
+## Workflow Management
 
-Full lifecycle management for [Orion rules](https://github.com/GoPlasmatic/Orion/blob/main/docs/api-reference.md#admin-api):
+Full lifecycle management for [Orion workflows](https://github.com/GoPlasmatic/Orion/blob/main/docs/api-reference.md#admin-api):
 
 ```bash
-# List rules with filters
-orion-cli rules list --channel orders --status active --tag fraud
+# List workflows with filters
+orion-cli workflows list --status active --tag fraud
 
-# Get full rule details
-orion-cli rules get <ID>
+# Get full workflow details
+orion-cli workflows get <ID>
 
 # Create from file or inline JSON
-orion-cli rules create -f rule.json
-orion-cli rules create -d '{"name":"My Rule","channel":"orders",...}'
+orion-cli workflows create -f workflow.json
+orion-cli workflows create -d '{"name":"My Workflow",...}'
 
-# Update a rule (version auto-increments)
-orion-cli rules update <ID> -f updated-rule.json
+# Create with a custom ID
+orion-cli workflows create --id my-custom-id -f workflow.json
 
-# Change rule status
-orion-cli rules activate <ID>
-orion-cli rules archive <ID>
+# Update a workflow (version auto-increments)
+orion-cli workflows update <ID> -f updated-workflow.json
+
+# Change workflow status
+orion-cli workflows activate <ID>
+orion-cli workflows archive <ID>
+
+# Control rollout percentage
+orion-cli workflows rollout <ID> -p 50
 
 # Delete (with confirmation prompt)
-orion-cli rules delete <ID>
+orion-cli workflows delete <ID>
 ```
 
 ### Dry-Run Testing
 
-Test any rule against sample data before activating — with a full execution trace:
+Test any workflow against sample data before activating — with a full execution trace:
 
 ```bash
-orion-cli rules test <ID> -d '{"data":{"order_id":"ORD-9182","total":25000}}' --trace
+orion-cli workflows test <ID> -d '{"data":{"order_id":"ORD-9182","total":25000}}' --trace
 ```
 
 ```
@@ -146,20 +162,42 @@ Supports input from file (`-f`), inline JSON (`-d`), or stdin (`--stdin`).
 GitOps-ready workflows for CI/CD pipelines:
 
 ```bash
-# Export rules (with optional filters)
-orion-cli rules export --channel orders > rules.json
+# Export workflows (with optional filters)
+orion-cli workflows export --status active > workflows.json
 
-# Import rules from file
-orion-cli rules import -f rules.json
+# Import workflows from file
+orion-cli workflows import -f workflows.json
 
 # Preview import without applying
-orion-cli rules import -f rules.json --dry-run
+orion-cli workflows import -f workflows.json --dry-run
 
 # Compare local file against server state
-orion-cli rules diff -f rules.json
+orion-cli workflows diff -f workflows.json
 ```
 
 The diff command shows color-coded changes: **+** new, **~** modified, **=** unchanged, **-** deleted.
+
+---
+
+## Channel Management
+
+Channels are service endpoints that receive data and route it to workflows:
+
+```bash
+# List channels
+orion-cli channels list --status active --protocol rest
+
+# Create a channel
+orion-cli channels create -d '{"name":"orders","channel_type":"sync","protocol":"rest","route_pattern":"/orders/{id}","workflow_id":"process-orders"}'
+
+# Activate / Archive
+orion-cli channels activate <ID>
+orion-cli channels archive <ID>
+
+# Version management
+orion-cli channels versions <ID>
+orion-cli channels new-version <ID>
+```
 
 ---
 
@@ -175,6 +213,10 @@ orion-cli connectors update <ID> -f connector.json
 orion-cli connectors delete <ID>
 orion-cli connectors enable <ID>
 orion-cli connectors disable <ID>
+
+# Circuit breaker management
+orion-cli connectors circuit-breakers
+orion-cli connectors reset-breaker <KEY>
 ```
 
 ---
@@ -220,10 +262,10 @@ Exit codes: `0` completed, `1` failed, `2` timeout.
 ## Engine Control
 
 ```bash
-# View engine status — version, uptime, rule counts, channels
+# View engine status — version, uptime, workflow counts, channels
 orion-cli engine status
 
-# Hot-reload rules (zero downtime)
+# Hot-reload workflows and channels (zero downtime)
 orion-cli engine reload
 ```
 
@@ -282,14 +324,16 @@ Add to Cursor MCP settings (Settings > MCP Servers):
 
 ### Available MCP Tools
 
-The MCP server exposes 29 tools covering the full Orion API:
+The MCP server exposes 40 tools covering the full Orion API:
 
 | Category | Tools |
 |----------|-------|
 | **Health** | `health_check` |
 | **Engine** | `engine_status`, `engine_reload` |
-| **Rules** | `rules_list`, `rules_get`, `rules_create`, `rules_update`, `rules_delete`, `rules_activate`, `rules_archive`, `rules_test`, `rules_validate`, `rules_rollout`, `rules_versions`, `rules_create_version`, `rules_export`, `rules_import` |
+| **Workflows** | `workflows_list`, `workflows_get`, `workflows_create`, `workflows_update`, `workflows_delete`, `workflows_activate`, `workflows_archive`, `workflows_test`, `workflows_validate`, `workflows_rollout`, `workflows_versions`, `workflows_create_version`, `workflows_export`, `workflows_import` |
+| **Channels** | `channels_list`, `channels_get`, `channels_create`, `channels_update`, `channels_delete`, `channels_activate`, `channels_archive`, `channels_versions`, `channels_create_version` |
 | **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable` |
+| **Circuit Breakers** | `circuit_breakers_list`, `circuit_breaker_reset` |
 | **Data** | `data_send_sync`, `data_send_async` |
 | **Traces** | `traces_list`, `traces_get` |
 | **Metrics** | `get_metrics` |
@@ -301,16 +345,16 @@ The MCP server exposes 29 tools covering the full Orion API:
 All commands support three output formats:
 
 ```bash
-orion-cli --output table rules list    # Pretty tables (default)
-orion-cli --output json  rules list    # JSON for scripting
-orion-cli --output yaml  rules list    # YAML for config files
+orion-cli --output table workflows list    # Pretty tables (default)
+orion-cli --output json  workflows list    # JSON for scripting
+orion-cli --output yaml  workflows list    # YAML for config files
 ```
 
 Use `--quiet` for minimal output (just IDs) — ideal for shell scripts:
 
 ```bash
-RULE_ID=$(orion-cli --quiet rules create -f rule.json)
-orion-cli rules test "$RULE_ID" -d '{"data":{"amount":100}}'
+WF_ID=$(orion-cli --quiet workflows create -f workflow.json)
+orion-cli workflows test "$WF_ID" -d '{"data":{"amount":100}}'
 ```
 
 ---
@@ -365,7 +409,7 @@ Requires Rust 1.85+.
 
 ## Related
 
-- **[Orion Server](https://github.com/GoPlasmatic/Orion)** — The rules engine platform
+- **[Orion Server](https://github.com/GoPlasmatic/Orion)** — The services runtime platform
 - **[API Reference](https://github.com/GoPlasmatic/Orion/blob/main/docs/api-reference.md)** — Full REST API documentation
 - **[Connectors Guide](https://github.com/GoPlasmatic/Orion/blob/main/docs/connectors.md)** — Auth schemes, retry policies, and secrets
 - **[Production Features](https://github.com/GoPlasmatic/Orion/blob/main/docs/production-features.md)** — Custom IDs, versioning, fault tolerance

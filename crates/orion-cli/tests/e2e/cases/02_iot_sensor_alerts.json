@@ -1,10 +1,9 @@
 {
     "name": "IoT Sensor Alert Classification",
     "description": "Classify sensor readings by severity with validation and filtering",
-    "rules": [
+    "workflows": [
         {
             "name": "Sensor Alert Pipeline",
-            "channel": "sensors",
             "priority": 10,
             "condition": true,
             "tasks": [

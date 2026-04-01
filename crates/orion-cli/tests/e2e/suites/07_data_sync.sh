@@ -5,8 +5,8 @@ begin_suite "Synchronous Data Processing"
 
 test_sync_process_data() {
     reset_server_state
-    cli_quiet rules create -f "$FIXTURES_DIR/rules/simple_log.json"
-    cli_quiet rules activate "$CLI_OUTPUT"
+    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
+    cli_quiet workflows activate "$CLI_OUTPUT"
     cli_quiet engine reload
 
     cli send orders -d '{"order_id":"ORD-001","amount":150}'
@@ -18,8 +18,8 @@ test_sync_process_data() {
 
 test_sync_process_with_transform() {
     reset_server_state
-    cli_quiet rules create -f "$FIXTURES_DIR/rules/conditional.json"
-    cli_quiet rules activate "$CLI_OUTPUT"
+    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/conditional.json"
+    cli_quiet workflows activate "$CLI_OUTPUT"
     cli_quiet engine reload
 
     cli send orders -d '{"amount":250,"product":"Widget Pro"}'
@@ -41,8 +41,8 @@ test_sync_no_matching_rules() {
 
 test_sync_from_file() {
     reset_server_state
-    cli_quiet rules create -f "$FIXTURES_DIR/rules/simple_log.json"
-    cli_quiet rules activate "$CLI_OUTPUT"
+    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
+    cli_quiet workflows activate "$CLI_OUTPUT"
     cli_quiet engine reload
 
     cli send orders -f "$FIXTURES_DIR/data/order_high.json"
@@ -52,7 +52,7 @@ test_sync_from_file() {
 
 run_test "sync process data"                test_sync_process_data
 run_test "sync process with transform rule" test_sync_process_with_transform
-run_test "sync process no matching rules"   test_sync_no_matching_rules
+run_test "sync process no matching workflows" test_sync_no_matching_rules
 run_test "sync process from file"           test_sync_from_file
 
 end_suite

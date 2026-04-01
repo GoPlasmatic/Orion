@@ -25,7 +25,7 @@ test_engine_status_empty() {
     assert_exit_code 0 "$CLI_EXIT"
     assert_json_has_key "$CLI_OUTPUT" '.version'
     assert_json_has_key "$CLI_OUTPUT" '.uptime_seconds'
-    assert_json_eq "$CLI_OUTPUT" '.rules_count' '0'
+    assert_json_eq "$CLI_OUTPUT" '.workflows_count' '0'
 }
 
 run_test "health check returns ok with components" test_health_check

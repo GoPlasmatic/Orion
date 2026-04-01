@@ -3,6 +3,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::client::OrionClient;
+use crate::utils;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConnectorsListParams {
@@ -45,18 +46,10 @@ pub struct ConnectorsToggleParams {
 }
 
 pub async fn list(client: &OrionClient, params: ConnectorsListParams) -> Result<String, String> {
-    let mut query = Vec::new();
-    if let Some(l) = params.limit {
-        query.push(format!("limit={l}"));
-    }
-    if let Some(o) = params.offset {
-        query.push(format!("offset={o}"));
-    }
-    let qs = if query.is_empty() {
-        String::new()
-    } else {
-        format!("?{}", query.join("&"))
-    };
+    let qs = utils::build_query_string(&[
+        ("limit", params.limit.map(|l| l.to_string())),
+        ("offset", params.offset.map(|o| o.to_string())),
+    ]);
     let resp: Value = client
         .get(&format!("/api/v1/admin/connectors{qs}"))
         .await

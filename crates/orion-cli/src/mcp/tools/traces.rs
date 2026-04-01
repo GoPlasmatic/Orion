@@ -3,6 +3,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::client::OrionClient;
+use crate::utils;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TracesListParams {
@@ -29,33 +30,15 @@ pub struct TracesGetParams {
 }
 
 pub async fn list(client: &OrionClient, params: TracesListParams) -> Result<String, String> {
-    let mut query = Vec::new();
-    if let Some(s) = &params.status {
-        query.push(format!("status={s}"));
-    }
-    if let Some(c) = &params.channel {
-        query.push(format!("channel={c}"));
-    }
-    if let Some(m) = &params.mode {
-        query.push(format!("mode={m}"));
-    }
-    if let Some(l) = params.limit {
-        query.push(format!("limit={l}"));
-    }
-    if let Some(o) = params.offset {
-        query.push(format!("offset={o}"));
-    }
-    if let Some(sb) = &params.sort_by {
-        query.push(format!("sort_by={sb}"));
-    }
-    if let Some(so) = &params.sort_order {
-        query.push(format!("sort_order={so}"));
-    }
-    let qs = if query.is_empty() {
-        String::new()
-    } else {
-        format!("?{}", query.join("&"))
-    };
+    let qs = utils::build_query_string(&[
+        ("status", params.status),
+        ("channel", params.channel),
+        ("mode", params.mode),
+        ("limit", params.limit.map(|l| l.to_string())),
+        ("offset", params.offset.map(|o| o.to_string())),
+        ("sort_by", params.sort_by),
+        ("sort_order", params.sort_order),
+    ]);
     let resp: Value = client
         .get(&format!("/api/v1/data/traces{qs}"))
         .await

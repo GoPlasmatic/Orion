@@ -43,163 +43,238 @@ impl OrionService {
     // ── Engine ─────────────────────────────────────────────────────────
 
     #[tool(
-        description = "Get the current engine status including version, uptime, active rules count, and available channels"
+        description = "Get the current engine status including version, uptime, active workflows count, and available channels"
     )]
     async fn engine_status(&self) -> Result<String, String> {
         tools::engine::status(&self.client).await
     }
 
     #[tool(
-        description = "Reload the engine to pick up rule changes. This hot-reloads rules without server restart."
+        description = "Reload the engine to pick up workflow and channel changes. This hot-reloads without server restart."
     )]
     async fn engine_reload(&self) -> Result<String, String> {
         tools::engine::reload(&self.client).await
     }
 
-    // ── Rules ──────────────────────────────────────────────────────────
+    // ── Workflows ──────────────────────────────────────────────────────
 
     #[tool(
-        description = "List all rules in the Orion engine. Optionally filter by status (active/paused/archived), channel, or tag. Supports pagination with limit and offset."
+        description = "List all workflows in the Orion engine. Optionally filter by status (draft/active/archived) or tag. Supports pagination with limit and offset."
     )]
-    async fn rules_list(
+    async fn workflows_list(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesListParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsListParams>,
     ) -> Result<String, String> {
-        tools::rules::list(&self.client, params).await
+        tools::workflows::list(&self.client, params).await
     }
 
     #[tool(
-        description = "Get a rule by its ID, including full details like condition, tasks, tags, and version history count"
+        description = "Get a workflow by its ID, including full details like condition, tasks, tags, and version history count"
     )]
-    async fn rules_get(
+    async fn workflows_get(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesGetParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsGetParams>,
     ) -> Result<String, String> {
-        tools::rules::get(&self.client, params).await
+        tools::workflows::get(&self.client, params).await
     }
 
-    #[doc = include_str!("tools/descriptions/rules_create.md")]
+    #[doc = include_str!("tools/descriptions/workflows_create.md")]
     #[tool]
-    async fn rules_create(
+    async fn workflows_create(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesCreateParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsCreateParams>,
     ) -> Result<String, String> {
-        tools::rules::create(&self.client, params).await
+        tools::workflows::create(&self.client, params).await
     }
 
-    #[doc = include_str!("tools/descriptions/rules_update.md")]
+    #[doc = include_str!("tools/descriptions/workflows_update.md")]
     #[tool]
-    async fn rules_update(
+    async fn workflows_update(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesUpdateParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsUpdateParams>,
     ) -> Result<String, String> {
-        tools::rules::update(&self.client, params).await
+        tools::workflows::update(&self.client, params).await
     }
 
-    #[tool(description = "Delete a rule by its ID. This is irreversible.")]
-    async fn rules_delete(
+    #[tool(description = "Delete a workflow by its ID. This is irreversible.")]
+    async fn workflows_delete(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesDeleteParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsDeleteParams>,
     ) -> Result<String, String> {
-        tools::rules::delete(&self.client, params).await
-    }
-
-    #[tool(
-        description = "Activate a rule by setting its status to 'active'. Active rules are evaluated during data processing."
-    )]
-    async fn rules_activate(
-        &self,
-        Parameters(params): Parameters<tools::rules::RulesStatusParams>,
-    ) -> Result<String, String> {
-        tools::rules::activate(&self.client, params).await
+        tools::workflows::delete(&self.client, params).await
     }
 
     #[tool(
-        description = "Pause a rule by setting its status to 'paused'. Paused rules are skipped during data processing."
+        description = "Activate a workflow by setting its status to 'active'. Active workflows are evaluated during data processing."
     )]
-    async fn rules_pause(
+    async fn workflows_activate(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesStatusParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsStatusParams>,
     ) -> Result<String, String> {
-        tools::rules::pause(&self.client, params).await
+        tools::workflows::activate(&self.client, params).await
     }
 
     #[tool(
-        description = "Archive a rule by setting its status to 'archived'. Archived rules are not evaluated and hidden from default listings."
+        description = "Archive a workflow by setting its status to 'archived'. Archived workflows are not evaluated and hidden from default listings."
     )]
-    async fn rules_archive(
+    async fn workflows_archive(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesStatusParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsStatusParams>,
     ) -> Result<String, String> {
-        tools::rules::archive(&self.client, params).await
+        tools::workflows::archive(&self.client, params).await
     }
 
-    #[doc = include_str!("tools/descriptions/rules_test.md")]
+    #[doc = include_str!("tools/descriptions/workflows_test.md")]
     #[tool]
-    async fn rules_test(
+    async fn workflows_test(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesTestParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsTestParams>,
     ) -> Result<String, String> {
-        tools::rules::test(&self.client, params).await
+        tools::workflows::test(&self.client, params).await
     }
 
     #[tool(
-        description = "Validate a rule definition without creating it. Returns validation errors and warnings. Useful for checking rule syntax before creating or updating."
+        description = "Validate a workflow definition without creating it. Returns validation errors and warnings. Useful for checking workflow syntax before creating or updating."
     )]
-    async fn rules_validate(
+    async fn workflows_validate(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesValidateParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsValidateParams>,
     ) -> Result<String, String> {
-        tools::rules::validate(&self.client, params).await
+        tools::workflows::validate(&self.client, params).await
     }
 
     #[tool(
-        description = "Update the rollout percentage for a rule (0-100). Controls what percentage of matching data is processed by this rule. Useful for gradual rollouts."
+        description = "Update the rollout percentage for a workflow (0-100). Controls what percentage of matching data is processed by this workflow. Useful for gradual rollouts."
     )]
-    async fn rules_rollout(
+    async fn workflows_rollout(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesRolloutParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsRolloutParams>,
     ) -> Result<String, String> {
-        tools::rules::rollout(&self.client, params).await
+        tools::workflows::rollout(&self.client, params).await
     }
 
     #[tool(
-        description = "List all versions of a rule by its ID. Shows the version history including changes over time."
+        description = "List all versions of a workflow by its ID. Shows the version history including changes over time."
     )]
-    async fn rules_versions(
+    async fn workflows_versions(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesVersionsParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsVersionsParams>,
     ) -> Result<String, String> {
-        tools::rules::versions(&self.client, params).await
+        tools::workflows::versions(&self.client, params).await
     }
 
     #[tool(
-        description = "Create a new version of an existing rule. Snapshots the current state as a new version for version tracking."
+        description = "Create a new draft version of an existing workflow. Snapshots the current state as a new version for version tracking."
     )]
-    async fn rules_create_version(
+    async fn workflows_create_version(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesVersionsParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsVersionsParams>,
     ) -> Result<String, String> {
-        tools::rules::create_version(&self.client, params).await
+        tools::workflows::create_version(&self.client, params).await
     }
 
     #[tool(
-        description = "Export rules from the server as a JSON array. Optionally filter by status, channel, or tag. Supports pagination. Useful for backup or GitOps workflows."
+        description = "Export workflows from the server as a JSON array. Optionally filter by status or tag. Supports pagination. Useful for backup or GitOps workflows."
     )]
-    async fn rules_export(
+    async fn workflows_export(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesExportParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsExportParams>,
     ) -> Result<String, String> {
-        tools::rules::export(&self.client, params).await
+        tools::workflows::export(&self.client, params).await
     }
 
-    #[doc = include_str!("tools/descriptions/rules_import.md")]
+    #[doc = include_str!("tools/descriptions/workflows_import.md")]
     #[tool]
-    async fn rules_import(
+    async fn workflows_import(
         &self,
-        Parameters(params): Parameters<tools::rules::RulesImportParams>,
+        Parameters(params): Parameters<tools::workflows::WorkflowsImportParams>,
     ) -> Result<String, String> {
-        tools::rules::import(&self.client, params).await
+        tools::workflows::import(&self.client, params).await
+    }
+
+    // ── Channels ──────────────────────────────────────────────────────
+
+    #[tool(
+        description = "List all channels in the Orion engine. Optionally filter by status (draft/active/archived), channel type (sync/async), or protocol (http/rest/kafka). Supports pagination."
+    )]
+    async fn channels_list(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsListParams>,
+    ) -> Result<String, String> {
+        tools::channels::list(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Get a channel by its ID, including full details like protocol, route pattern, workflow link, and configuration"
+    )]
+    async fn channels_get(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsGetParams>,
+    ) -> Result<String, String> {
+        tools::channels::get(&self.client, params).await
+    }
+
+    #[doc = include_str!("tools/descriptions/channels_create.md")]
+    #[tool]
+    async fn channels_create(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsCreateParams>,
+    ) -> Result<String, String> {
+        tools::channels::create(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Update a draft channel by ID. Only draft channels can be updated. The channel_json contains only the fields to update."
+    )]
+    async fn channels_update(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsUpdateParams>,
+    ) -> Result<String, String> {
+        tools::channels::update(&self.client, params).await
+    }
+
+    #[tool(description = "Delete a channel by its ID. This is irreversible.")]
+    async fn channels_delete(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsDeleteParams>,
+    ) -> Result<String, String> {
+        tools::channels::delete(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Activate a channel by setting its status to 'active'. Active channels accept and process incoming data."
+    )]
+    async fn channels_activate(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsStatusParams>,
+    ) -> Result<String, String> {
+        tools::channels::activate(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Archive a channel by setting its status to 'archived'. Archived channels no longer accept data."
+    )]
+    async fn channels_archive(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsStatusParams>,
+    ) -> Result<String, String> {
+        tools::channels::archive(&self.client, params).await
+    }
+
+    #[tool(description = "List all versions of a channel by its ID. Shows the version history.")]
+    async fn channels_versions(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsVersionsParams>,
+    ) -> Result<String, String> {
+        tools::channels::versions(&self.client, params).await
+    }
+
+    #[tool(description = "Create a new draft version of an existing channel for version tracking.")]
+    async fn channels_create_version(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsVersionsParams>,
+    ) -> Result<String, String> {
+        tools::channels::create_version(&self.client, params).await
     }
 
     // ── Connectors ─────────────────────────────────────────────────────
@@ -251,7 +326,7 @@ impl OrionService {
     }
 
     #[tool(
-        description = "Enable a connector so it can be used by rules for external service calls"
+        description = "Enable a connector so it can be used by workflows for external service calls"
     )]
     async fn connectors_enable(
         &self,
@@ -260,12 +335,34 @@ impl OrionService {
         tools::connectors::enable(&self.client, params).await
     }
 
-    #[tool(description = "Disable a connector to prevent it from being used by rules")]
+    #[tool(description = "Disable a connector to prevent it from being used by workflows")]
     async fn connectors_disable(
         &self,
         Parameters(params): Parameters<tools::connectors::ConnectorsToggleParams>,
     ) -> Result<String, String> {
         tools::connectors::disable(&self.client, params).await
+    }
+
+    // ── Circuit Breakers ──────────────────────────────────────────────
+
+    #[tool(
+        description = "List all circuit breaker states for connectors. Shows which connector-channel pairs have tripped breakers."
+    )]
+    async fn circuit_breakers_list(
+        &self,
+        Parameters(params): Parameters<tools::circuit_breakers::CircuitBreakersListParams>,
+    ) -> Result<String, String> {
+        tools::circuit_breakers::list(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Reset a circuit breaker by its key (format: connector:channel). Allows requests to flow through again after a breaker trip."
+    )]
+    async fn circuit_breaker_reset(
+        &self,
+        Parameters(params): Parameters<tools::circuit_breakers::CircuitBreakerResetParams>,
+    ) -> Result<String, String> {
+        tools::circuit_breakers::reset(&self.client, params).await
     }
 
     // ── Data ───────────────────────────────────────────────────────────

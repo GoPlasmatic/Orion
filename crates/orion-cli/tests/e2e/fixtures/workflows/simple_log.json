@@ -1,6 +1,5 @@
 {
     "name": "E2E Simple Log",
-    "channel": "orders",
     "priority": 10,
     "condition": true,
     "tasks": [

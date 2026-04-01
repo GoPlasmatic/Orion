@@ -1,10 +1,9 @@
 {
     "name": "Notification Routing Pipeline",
     "description": "Route notifications by severity: filter low, email for medium+, SMS for high+",
-    "rules": [
+    "workflows": [
         {
             "name": "Notification Router",
-            "channel": "notifications",
             "priority": 10,
             "condition": true,
             "tasks": [

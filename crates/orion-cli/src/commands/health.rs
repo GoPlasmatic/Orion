@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
+use crate::utils;
 
 pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Result<i32> {
     let resp: Value = client.get("/health").await?;
@@ -37,7 +38,7 @@ pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Re
         format!("v{version}").dimmed()
     );
     println!("  Status:       {status_display}");
-    println!("  Uptime:       {}", format_duration(uptime));
+    println!("  Uptime:       {}", utils::format_duration(uptime));
     println!("  Rules loaded: {rules}");
 
     if let Some(components) = resp.get("components").and_then(|c| c.as_object()) {
@@ -54,16 +55,4 @@ pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Re
     }
 
     Ok(if status == "ok" { 0 } else { 1 })
-}
-
-fn format_duration(seconds: i64) -> String {
-    if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3600 {
-        format!("{}m {}s", seconds / 60, seconds % 60)
-    } else if seconds < 86400 {
-        format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60)
-    } else {
-        format!("{}d {}h", seconds / 86400, (seconds % 86400) / 3600)
-    }
 }

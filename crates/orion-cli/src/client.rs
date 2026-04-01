@@ -101,6 +101,18 @@ impl OrionClient {
             .send()
             .await
             .with_context(|| format!("Failed to connect to {url}"))?;
+        Self::check_error(resp).await?;
+        Ok(())
+    }
+
+    async fn handle_response<T: DeserializeOwned>(&self, resp: reqwest::Response) -> Result<T> {
+        let resp = Self::check_error(resp).await?;
+        resp.json::<T>()
+            .await
+            .context("Failed to parse response JSON")
+    }
+
+    async fn check_error(resp: reqwest::Response) -> Result<reqwest::Response> {
         if !resp.status().is_success() {
             let status = resp.status();
             let body: Value = resp.json().await.unwrap_or_default();
@@ -111,22 +123,6 @@ impl OrionClient {
             }
             bail!("Request failed ({status})");
         }
-        Ok(())
-    }
-
-    async fn handle_response<T: DeserializeOwned>(&self, resp: reqwest::Response) -> Result<T> {
-        let status = resp.status();
-        if !status.is_success() {
-            let body: Value = resp.json().await.unwrap_or_default();
-            if let Some(err) = body.get("error") {
-                let code = err["code"].as_str().unwrap_or("UNKNOWN");
-                let msg = err["message"].as_str().unwrap_or("Unknown error");
-                bail!("[{code}] {msg}");
-            }
-            bail!("Request failed ({status})");
-        }
-        resp.json::<T>()
-            .await
-            .context("Failed to parse response JSON")
+        Ok(resp)
     }
 }

@@ -1,11 +1,11 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::Args;
 use colored::Colorize;
 use serde_json::Value;
-use std::io::Read;
 
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
+use crate::utils;
 
 #[derive(Args)]
 pub struct SendCmd {
@@ -49,7 +49,8 @@ impl SendCmd {
         quiet: bool,
         verbose: bool,
     ) -> Result<i32> {
-        let payload = self.read_payload()?;
+        let payload =
+            utils::read_json_input(self.file.as_deref(), self.data.as_deref(), self.stdin)?;
 
         if self.async_mode {
             self.run_async(client, format, quiet, &self.channel, &payload)
@@ -199,21 +200,6 @@ impl SendCmd {
             }
         } else {
             Ok(0)
-        }
-    }
-
-    fn read_payload(&self) -> Result<Value> {
-        if let Some(path) = &self.file {
-            let content = std::fs::read_to_string(path)?;
-            Ok(serde_json::from_str(&content)?)
-        } else if let Some(json) = &self.data {
-            Ok(serde_json::from_str(json)?)
-        } else if self.stdin {
-            let mut buf = String::new();
-            std::io::stdin().read_to_string(&mut buf)?;
-            Ok(serde_json::from_str(&buf)?)
-        } else {
-            bail!("Provide input with -f <file>, -d '<json>', or --stdin")
         }
     }
 }

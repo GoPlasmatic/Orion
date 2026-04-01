@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Orion CLI is a Rust CLI and MCP server for the [Orion rules engine platform](https://github.com/GoPlasmatic/Orion). It manages rules, connectors, data channels, engine health, and traces via HTTP against an Orion server. The binary also includes a built-in MCP server (`orion-cli mcp serve`) for AI tool integration (Claude Desktop, Cursor, etc.).
+Orion CLI is a Rust CLI and MCP server for the [Orion services runtime](https://github.com/GoPlasmatic/Orion). It manages workflows, channels, connectors, data processing, engine health, and traces via HTTP against an Orion server. The binary also includes a built-in MCP server (`orion-cli mcp serve`) for AI tool integration (Claude Desktop, Cursor, etc.).
 
 ## Build & Development Commands
 
@@ -52,16 +52,17 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 - `src/output.rs` — Output formatting: `print_table()` (tabled with rounded borders), `print_value()` (JSON/YAML)
 - `src/commands/` — One file per command group, each defining clap subcommands and `execute()` async functions
 - `src/mcp/` — MCP server module (OrionService with tool_router/tool_handler, serve function for stdio/HTTP)
-- `src/mcp/tools/` — MCP tool implementations (rules, connectors, data, traces, engine, health, metrics)
+- `src/mcp/tools/` — MCP tool implementations (workflows, channels, connectors, circuit_breakers, data, traces, engine, health, metrics)
 - `src/mcp/tools/descriptions/` — Markdown files with detailed tool descriptions for MCP clients
 
 ### Command Modules
 
 | Module | Key functionality |
 |---|---|
-| `rules.rs` (largest, ~716 lines) | Full CRUD, status transitions (activate/archive), test dry-run, import/export with diff |
+| `workflows.rs` (largest) | Full CRUD, status transitions (activate/archive), test dry-run, rollout, versioning, import/export with diff |
+| `channels.rs` | Channel CRUD, status transitions, versioning |
 | `data.rs` | Send data: sync, async (with wait/timeout/trace tracking) |
-| `connectors.rs` | Connector CRUD, enable/disable |
+| `connectors.rs` | Connector CRUD, enable/disable, circuit breaker management |
 | `traces.rs` | Execution trace viewing and polling |
 | `engine.rs` | Engine status, hot-reload |
 | `health.rs` | Health check with component status, exit code 1 if degraded |

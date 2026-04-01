@@ -1,10 +1,9 @@
 {
     "name": "Compliance Risk Classification",
     "description": "Classify transactions by risk level with dry-run trace verification",
-    "rules": [
+    "workflows": [
         {
             "name": "Risk Classifier",
-            "channel": "compliance",
             "priority": 10,
             "condition": true,
             "tasks": [

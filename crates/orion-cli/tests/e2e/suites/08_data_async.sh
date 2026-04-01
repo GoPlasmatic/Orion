@@ -5,8 +5,8 @@ begin_suite "Asynchronous Data Processing"
 
 test_async_submit_and_poll() {
     reset_server_state
-    cli_quiet rules create -f "$FIXTURES_DIR/rules/simple_log.json"
-    cli_quiet rules activate "$CLI_OUTPUT"
+    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
+    cli_quiet workflows activate "$CLI_OUTPUT"
     cli_quiet engine reload
 
     # submit uses quiet mode — returns trace_id
@@ -23,8 +23,8 @@ test_async_submit_and_poll() {
 
 test_async_with_wait_flag() {
     reset_server_state
-    cli_quiet rules create -f "$FIXTURES_DIR/rules/simple_log.json"
-    cli_quiet rules activate "$CLI_OUTPUT"
+    cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
+    cli_quiet workflows activate "$CLI_OUTPUT"
     cli_quiet engine reload
 
     cli send orders --async-mode --wait --timeout 15 -d '{"order_id":"ASYNC-002"}'

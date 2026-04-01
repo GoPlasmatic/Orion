@@ -440,14 +440,25 @@ show_server_log() {
 # CLEANUP
 # ═══════════════════════════════════════════════════════════════════
 
-# clean_all_rules — delete every rule from the server
-clean_all_rules() {
+# clean_all_workflows — delete every workflow from the server
+clean_all_workflows() {
     local ids
-    ids=$("$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color rules list 2>/dev/null) || return 0
+    ids=$("$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color workflows list 2>/dev/null) || return 0
 
     while IFS= read -r id; do
         [[ -z "$id" ]] && continue
-        "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color rules delete "$id" 2>/dev/null || true
+        "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color workflows delete "$id" 2>/dev/null || true
+    done <<< "$ids"
+}
+
+# clean_all_channels — delete every channel from the server
+clean_all_channels() {
+    local ids
+    ids=$("$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color channels list 2>/dev/null) || return 0
+
+    while IFS= read -r id; do
+        [[ -z "$id" ]] && continue
+        "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color channels delete "$id" 2>/dev/null || true
     done <<< "$ids"
 }
 
@@ -467,7 +478,8 @@ clean_all_connectors() {
 
 # reset_server_state — clean everything and reload engine
 reset_server_state() {
-    clean_all_rules
+    clean_all_workflows
+    clean_all_channels
     clean_all_connectors
     "$ORION_CLI" --server "$ORION_URL" --quiet --yes --no-color engine reload 2>/dev/null || true
 }
@@ -478,7 +490,7 @@ reset_server_state() {
 # ═══════════════════════════════════════════════════════════════════
 
 # _run_before_actions <case_file> <test_index> <rule_ids...>
-# Execute "before" actions for a test (pause/activate rules, reload engine)
+# Execute "before" actions for a test (archive/activate workflows, reload engine)
 _run_before_actions() {
     local case_file="$1"
     local test_idx="$2"
@@ -497,12 +509,12 @@ _run_before_actions() {
             archive_rule)
                 local ri
                 ri=$(jq -r ".tests[$test_idx].before[$a].rule_index" "$case_file")
-                cli_quiet rules archive "${rule_ids[$ri]}"
+                cli_quiet workflows archive "${rule_ids[$ri]}"
                 ;;
             activate_rule)
                 local ri
                 ri=$(jq -r ".tests[$test_idx].before[$a].rule_index" "$case_file")
-                cli_quiet rules activate "${rule_ids[$ri]}"
+                cli_quiet workflows activate "${rule_ids[$ri]}"
                 ;;
             reload)
                 cli_quiet engine reload
@@ -551,7 +563,7 @@ _run_case_test() {
         local rule_id="${rule_ids[$rule_idx]}"
         local input
         input=$(jq -c ".tests[$test_idx].input" "$case_file")
-        cli rules test "$rule_id" -d "$input"
+        cli workflows test "$rule_id" -d "$input"
         response="$CLI_OUTPUT"
     elif [[ "$has_batch" == "true" ]]; then
         # Batch test
@@ -629,20 +641,20 @@ run_case_file() {
         CASE_CONNECTOR_IDS+=("$CLI_OUTPUT")
     done
 
-    # Create rules, activate them, store IDs
+    # Create workflows, activate them, store IDs
     _CASE_RULE_IDS=()
     local rule_count
-    rule_count=$(jq '.rules // [] | length' "$case_file")
+    rule_count=$(jq '.workflows // [] | length' "$case_file")
     for ((i=0; i<rule_count; i++)); do
         local rule_data
-        rule_data=$(jq -c ".rules[$i]" "$case_file")
-        cli_quiet rules create -d "$rule_data"
+        rule_data=$(jq -c ".workflows[$i]" "$case_file")
+        cli_quiet workflows create -d "$rule_data"
         local _rule_id="$CLI_OUTPUT"
         _CASE_RULE_IDS+=("$_rule_id")
-        cli_quiet rules activate "$_rule_id"
+        cli_quiet workflows activate "$_rule_id"
     done
 
-    # Reload engine if we created rules or connectors
+    # Reload engine if we created workflows or connectors
     if [[ $rule_count -gt 0 ]] || [[ $conn_count -gt 0 ]]; then
         cli_quiet engine reload
     fi

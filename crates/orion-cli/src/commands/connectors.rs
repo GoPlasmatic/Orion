@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use serde_json::Value;
@@ -6,6 +6,7 @@ use tabled::Tabled;
 
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
+use crate::utils;
 
 #[derive(Args)]
 pub struct ConnectorsCmd {
@@ -64,6 +65,13 @@ enum ConnectorsSubcommand {
         /// Connector ID
         id: String,
     },
+    /// List circuit breaker states
+    CircuitBreakers,
+    /// Reset a circuit breaker
+    ResetBreaker {
+        /// Circuit breaker key (connector:channel)
+        key: String,
+    },
 }
 
 #[derive(Tabled)]
@@ -92,16 +100,18 @@ impl ConnectorsCmd {
             }
             ConnectorsSubcommand::Get { id } => get(client, format, quiet, id).await,
             ConnectorsSubcommand::Create { file, data } => {
-                let body = read_input(file.as_deref(), data.as_deref())?;
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
                 create(client, format, quiet, &body).await
             }
             ConnectorsSubcommand::Update { id, file, data } => {
-                let body = read_input(file.as_deref(), data.as_deref())?;
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
                 update(client, format, quiet, id, &body).await
             }
             ConnectorsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
             ConnectorsSubcommand::Enable { id } => toggle(client, quiet, id, true).await,
             ConnectorsSubcommand::Disable { id } => toggle(client, quiet, id, false).await,
+            ConnectorsSubcommand::CircuitBreakers => circuit_breakers(client, format, quiet).await,
+            ConnectorsSubcommand::ResetBreaker { key } => reset_breaker(client, quiet, key).await,
         }
     }
 }
@@ -113,18 +123,10 @@ async fn list(
     limit: &Option<i64>,
     offset: &Option<i64>,
 ) -> Result<i32> {
-    let mut query = Vec::new();
-    if let Some(l) = limit {
-        query.push(format!("limit={l}"));
-    }
-    if let Some(o) = offset {
-        query.push(format!("offset={o}"));
-    }
-    let qs = if query.is_empty() {
-        String::new()
-    } else {
-        format!("?{}", query.join("&"))
-    };
+    let qs = utils::build_query_string(&[
+        ("limit", limit.map(|l| l.to_string())),
+        ("offset", offset.map(|o| o.to_string())),
+    ]);
 
     let resp: Value = client.get(&format!("/api/v1/admin/connectors{qs}")).await?;
     let connectors = resp["data"].as_array().cloned().unwrap_or_default();
@@ -151,7 +153,7 @@ async fn list(
     let rows: Vec<ConnectorRow> = connectors
         .iter()
         .map(|c| ConnectorRow {
-            id: truncate(c["id"].as_str().unwrap_or(""), 12),
+            id: utils::truncate(c["id"].as_str().unwrap_or(""), 12),
             name: c["name"].as_str().unwrap_or("").to_string(),
             connector_type: c["connector_type"].as_str().unwrap_or("").to_string(),
             enabled: if c["enabled"].as_bool().unwrap_or(false) {
@@ -271,14 +273,9 @@ async fn update(
 }
 
 async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Result<i32> {
-    if !yes {
-        eprint!("Delete connector {id}? [y/N] ");
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input)?;
-        if !input.trim().eq_ignore_ascii_case("y") {
-            println!("Cancelled.");
-            return Ok(0);
-        }
+    if !utils::confirm(&format!("Delete connector {id}?"), yes)? {
+        println!("Cancelled.");
+        return Ok(0);
     }
 
     client
@@ -313,21 +310,61 @@ async fn toggle(client: &OrionClient, quiet: bool, id: &str, enabled: bool) -> R
     Ok(0)
 }
 
-fn read_input(file: Option<&str>, data: Option<&str>) -> Result<Value> {
-    if let Some(path) = file {
-        let content = std::fs::read_to_string(path)?;
-        Ok(serde_json::from_str(&content)?)
-    } else if let Some(json) = data {
-        Ok(serde_json::from_str(json)?)
-    } else {
-        bail!("Provide input with -f <file> or -d '<json>'")
+async fn circuit_breakers(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Result<i32> {
+    let resp: Value = client
+        .get("/api/v1/admin/connectors/circuit-breakers")
+        .await?;
+
+    if quiet {
+        let enabled = resp["enabled"].as_bool().unwrap_or(false);
+        println!("{enabled}");
+        return Ok(0);
     }
+
+    if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+        output::print_value(format, &resp)?;
+        return Ok(0);
+    }
+
+    let enabled = resp["enabled"].as_bool().unwrap_or(false);
+    println!(
+        "{} Circuit breakers: {}",
+        "INFO".bold(),
+        if enabled {
+            "enabled".green().to_string()
+        } else {
+            "disabled".red().to_string()
+        }
+    );
+
+    if let Some(breakers) = resp.get("breakers").and_then(|b| b.as_object()) {
+        if breakers.is_empty() {
+            println!("{}", "  No active circuit breakers.".dimmed());
+        } else {
+            for (key, state) in breakers {
+                let state_owned = state.to_string();
+                let state_str = state.as_str().unwrap_or(&state_owned);
+                let colored_state = match state_str {
+                    "closed" => state_str.green().to_string(),
+                    "open" => state_str.red().to_string(),
+                    "half_open" | "half-open" => state_str.yellow().to_string(),
+                    _ => state_str.to_string(),
+                };
+                println!("  {key}: {colored_state}");
+            }
+        }
+    }
+
+    Ok(0)
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() > max {
-        format!("{}...", &s[..max - 3])
-    } else {
-        s.to_string()
+async fn reset_breaker(client: &OrionClient, quiet: bool, key: &str) -> Result<i32> {
+    let _: Value = client
+        .post_empty(&format!("/api/v1/admin/connectors/circuit-breakers/{key}"))
+        .await?;
+
+    if !quiet {
+        println!("{} Circuit breaker '{key}' reset", "OK".green().bold());
     }
+    Ok(0)
 }

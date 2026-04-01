@@ -1,10 +1,9 @@
 {
     "name": "E-Commerce Order Classification",
-    "description": "Classify orders by value tier with computed discounts using multi-rule priority ordering",
-    "rules": [
+    "description": "Classify orders by value tier with computed discounts using multi-workflow priority ordering",
+    "workflows": [
         {
             "name": "Parse Orders",
-            "channel": "orders",
             "priority": 0,
             "condition": true,
             "tasks": [
@@ -19,8 +18,7 @@
             ]
         },
         {
-            "name": "VIP Order Rule",
-            "channel": "orders",
+            "name": "VIP Order Workflow",
             "priority": 10,
             "condition": true,
             "tasks": [

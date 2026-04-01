@@ -1,7 +1,6 @@
 [
     {
-        "name": "Imported Rule A",
-        "channel": "alpha",
+        "name": "Imported Workflow A",
         "condition": true,
         "tasks": [
             {
@@ -15,8 +14,7 @@
         ]
     },
     {
-        "name": "Imported Rule B",
-        "channel": "beta",
+        "name": "Imported Workflow B",
         "condition": true,
         "tasks": [
             {
@@ -30,8 +28,7 @@
         ]
     },
     {
-        "name": "Imported Rule C",
-        "channel": "alpha",
+        "name": "Imported Workflow C",
         "condition": true,
         "tasks": [
             {
