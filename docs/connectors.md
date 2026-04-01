@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md)
 
-Connectors are named external service configurations. Secrets stay in connectors — out of your rules.
+Connectors are named external service configurations. Secrets stay in connectors — out of your workflows.
 
 ## Authentication
 
@@ -44,7 +44,7 @@ When `http_call` builds a request, headers are applied in this order — later l
 | 3 | Default `content-type` | `application/json` (only when a body is present) |
 | 4 (highest) | Task-level headers | `"headers": {"content-type": "text/xml"}` in the task input |
 
-Task-level headers always win. This means a rule developer can override `content-type`, `authorization`, or any other header set by the connector.
+Task-level headers always win. This means a workflow developer can override `content-type`, `authorization`, or any other header set by the connector.
 
 ## Retry with Exponential Backoff
 
@@ -88,4 +88,4 @@ curl -s http://localhost:8080/api/v1/admin/connectors/<id>
 # auth.key → "******"
 ```
 
-Usernames and non-sensitive fields are returned as-is. Rules reference connectors by name (`"connector": "bearer-auth-api"`) — they never see or embed actual credentials.
+Usernames and non-sensitive fields are returned as-is. Workflows reference connectors by name (`"connector": "bearer-auth-api"`) — they never see or embed actual credentials.

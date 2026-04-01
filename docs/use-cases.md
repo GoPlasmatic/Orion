@@ -2,46 +2,33 @@
 
 [← Back to README](../README.md)
 
-Real-world examples showing how AI generates Orion rules from natural language. Every example follows the same workflow: **describe what you need → AI generates the rule → send data → get results**.
+Real-world examples showing how AI generates Orion workflows from natural language. Every example follows the same pattern: **describe what you need → AI generates the workflow → create a channel → send data → get results**.
 
 ## E-Commerce Order Classification
 
-Classify orders into tiers and compute discounts using multiple rules on the same channel.
+Classify orders into tiers and compute discounts.
 
 **AI prompt:**
 
 ```
-Create two rules on the "orders" channel:
-1. A parse rule at priority 0 that parses the payload into "order"
-2. A classification rule at priority 10 that assigns tiers based on amount:
+Create a workflow for the "orders" channel that:
+1. Parses the payload into "order"
+2. Assigns tiers based on amount:
    - VIP: amount >= 500, discount 15%
    - Premium: amount 100-500, discount 5%
    - Standard: amount < 100, no discount
 ```
 
-**Generated rules:**
+**Generated workflow:**
 
 ```json
 {
-  "name": "Parse Orders",
-  "channel": "orders",
-  "priority": 0,
+  "name": "Order Classification",
   "condition": true,
   "tasks": [
     { "id": "parse", "name": "Parse Payload", "function": {
         "name": "parse_json", "input": { "source": "payload", "target": "order" }
-    }}
-  ]
-}
-```
-
-```json
-{
-  "name": "VIP Order Rule",
-  "channel": "orders",
-  "priority": 10,
-  "condition": true,
-  "tasks": [
+    }},
     { "id": "vip_tier", "name": "Set VIP Tier",
       "condition": { ">=": [{ "var": "data.order.amount" }, 500] },
       "function": { "name": "map", "input": { "mappings": [
@@ -90,7 +77,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders \
 }
 ```
 
-**Key patterns:** Multi-rule priority ordering, task-level conditions, computed output fields.
+**Key patterns:** Task-level conditions, computed output fields.
 
 ## IoT Sensor Alert Classification
 
@@ -99,20 +86,18 @@ Classify sensor readings into severity levels using range-based conditions.
 **AI prompt:**
 
 ```
-Create a rule on the "sensors" channel that classifies temperature readings:
+Create a workflow for the "sensors" channel that classifies temperature readings:
 - Critical: temperature > 90 or below 0, set alert flag
 - Warning: temperature 70-90, set alert flag
 - Normal: temperature 0-70, no alert
 Parse the payload into "reading" and set severity and alert fields.
 ```
 
-**Generated rule:**
+**Generated workflow:**
 
 ```json
 {
   "name": "Sensor Alert Pipeline",
-  "channel": "sensors",
-  "priority": 10,
   "condition": true,
   "tasks": [
     { "id": "parse", "name": "Parse Payload", "function": {
@@ -188,7 +173,7 @@ Normalize incoming webhook payloads from different providers into a consistent i
 **AI prompt:**
 
 ```
-Create a rule on the "webhooks" channel that normalizes webhook payloads from any provider:
+Create a workflow for the "webhooks" channel that normalizes webhook payloads from any provider:
 - Map "origin" to "source"
 - Map "type" to "event_type"
 - Map "body" to "payload"
@@ -196,13 +181,11 @@ Create a rule on the "webhooks" channel that normalizes webhook payloads from an
 Output should be under data.normalized.
 ```
 
-**Generated rule:**
+**Generated workflow:**
 
 ```json
 {
   "name": "Webhook Transform Pipeline",
-  "channel": "webhooks",
-  "priority": 10,
   "condition": true,
   "tasks": [
     { "id": "parse", "name": "Parse Payload", "function": {
@@ -251,19 +234,18 @@ Route notifications to different delivery channels based on severity.
 **AI prompt:**
 
 ```
-Create a rule on the "notifications" channel that routes by severity:
+Create a workflow for the "notifications" channel that routes by severity:
 - Log all notifications
 - Send email for anything except "low" severity
 - Send SMS only for "high" and "critical" severity
 Parse the payload into "notification".
 ```
 
-**Generated rule:**
+**Generated workflow:**
 
 ```json
 {
   "name": "Notification Router",
-  "channel": "notifications",
   "condition": true,
   "tasks": [
     { "id": "parse", "name": "Parse Payload", "function": {
@@ -323,23 +305,22 @@ In production, replace the `map` tasks with `http_call` tasks pointing to your e
 
 ## Compliance Risk Classification
 
-Classify transactions by risk level and use [dry-run testing](api-reference.md) to verify rules before activating them.
+Classify transactions by risk level and use [dry-run testing](api-reference.md) to verify workflows before activating them.
 
 **AI prompt:**
 
 ```
-Create a rule on the "compliance" channel that classifies transaction risk:
+Create a workflow for the "compliance" channel that classifies transaction risk:
 - High risk: amount > 10000, requires manual review
 - Normal risk: amount <= 10000, no review needed
 Parse the payload into "txn".
 ```
 
-**Generated rule:**
+**Generated workflow:**
 
 ```json
 {
   "name": "Risk Classifier",
-  "channel": "compliance",
   "condition": true,
   "tasks": [
     { "id": "parse", "name": "Parse Payload", "function": {
@@ -366,7 +347,7 @@ Parse the payload into "txn".
 **Dry-run before going live:**
 
 ```bash
-curl -s -X POST http://localhost:8080/api/v1/admin/rules/<rule-id>/test \
+curl -s -X POST http://localhost:8080/api/v1/admin/workflows/<workflow-id>/test \
   -H "Content-Type: application/json" \
   -d '{"data": {"amount": 50000, "currency": "USD"}}'
 ```
@@ -409,49 +390,51 @@ The trace shows exactly which tasks ran and which were skipped — verify the lo
 
 ## AI Workflow & CI/CD
 
-AI writes rules, not services. Instead of generating microservices that need their own governance, LLMs generate Orion rules — constrained JSON that the platform validates, versions, and monitors automatically.
+AI writes workflows, not services. Instead of generating microservices that need their own governance, LLMs generate Orion workflows — constrained JSON that the platform validates, versions, and monitors automatically.
 
 ### Prompt Templates
 
-Structure your LLM prompts to produce valid Orion rules. Here's a reusable system prompt:
+Structure your LLM prompts to produce valid Orion workflows. Here's a reusable system prompt:
 
 ```
-You generate Orion rules in JSON format. Rules have:
-- name, channel, priority (integer, lower runs first), condition (JSONLogic or true)
+You generate Orion workflows in JSON format. Workflows have:
+- name, condition (JSONLogic or true), continue_on_error (optional boolean)
 - tasks: array of { id, name, condition (optional, JSONLogic), function: { name, input } }
-- Every rule starts with a parse_json task: { "name": "parse_json", "input": { "source": "payload", "target": "<entity>" } }
+- Every workflow starts with a parse_json task: { "name": "parse_json", "input": { "source": "payload", "target": "<entity>" } }
 - Use "map" function with "mappings" array for transforms. Each mapping has "path" (dot notation) and "logic" (value or JSONLogic).
-- Use "http_call" with "connector" (by name) for external API calls. Do not embed URLs or credentials in rules.
+- Use "http_call" with "connector" (by name) for external API calls. Do not embed URLs or credentials in workflows.
+- Use "channel_call" with "channel" (by name) for in-process inter-channel invocation.
 - Task conditions use { "var": "data.<entity>.<field>" } to reference parsed data.
 
-Output ONLY the JSON rule. No explanation.
+Output ONLY the JSON workflow. No explanation.
 ```
 
 ### Validation Workflow
 
-Every AI-generated rule should go through this workflow before reaching production:
+Every AI-generated workflow should go through this pipeline before reaching production:
 
 1. **Generate** — use your LLM with the prompt template above
-2. **Create as draft** — `POST /api/v1/admin/rules` (rules are created as drafts by default, not loaded into the engine)
-3. **Dry-run** — `POST /api/v1/admin/rules/{id}/test` with representative test data
-4. **Check the trace** — verify the right tasks ran, the right ones were skipped, and output matches expectations
-5. **Activate** — `PATCH /api/v1/admin/rules/{id}/status` with `"status": "active"`
+2. **Validate** — `POST /api/v1/admin/workflows/validate` to check structure
+3. **Create as draft** — `POST /api/v1/admin/workflows` (workflows are created as drafts by default, not loaded into the engine)
+4. **Dry-run** — `POST /api/v1/admin/workflows/{id}/test` with representative test data
+5. **Check the trace** — verify the right tasks ran, the right ones were skipped, and output matches expectations
+6. **Activate** — `PATCH /api/v1/admin/workflows/{id}/status` with `"status": "active"`
 
 ### CI/CD Pipeline
 
-Integrate AI rule generation into your deployment pipeline. Rules are JSON files — they version, diff, and review like any other config.
+Integrate AI workflow generation into your deployment pipeline. Workflows are JSON files — they version, diff, and review like any other config.
 
 ```
-AI generates rule → commit as JSON → CI runs dry-run → review → import
+AI generates workflow → commit as JSON → CI runs dry-run → review → import
 ```
 
 **GitHub Actions example:**
 
 ```yaml
-name: Validate AI Rules
+name: Validate AI Workflows
 on:
   pull_request:
-    paths: ['rules/**/*.json']
+    paths: ['workflows/**/*.json']
 
 jobs:
   validate:
@@ -463,23 +446,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Import rules (as drafts)
+      - name: Import workflows (as drafts)
         run: |
-          for file in rules/**/*.json; do
-            curl -s -X POST http://localhost:8080/api/v1/admin/rules \
+          for file in workflows/**/*.json; do
+            curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
               -H "Content-Type: application/json" \
               -d @"$file"
           done
 
       - name: Dry-run test cases
         run: |
-          for test in rules/tests/**/*.json; do
-            RULE_ID=$(jq -r '.rule_id' "$test")
+          for test in workflows/tests/**/*.json; do
+            WORKFLOW_ID=$(jq -r '.workflow_id' "$test")
             DATA=$(jq -c '.data' "$test")
             EXPECTED=$(jq -c '.expected_output' "$test")
 
             RESULT=$(curl -s -X POST \
-              "http://localhost:8080/api/v1/admin/rules/${RULE_ID}/test" \
+              "http://localhost:8080/api/v1/admin/workflows/${WORKFLOW_ID}/test" \
               -H "Content-Type: application/json" \
               -d "$DATA")
 
@@ -495,18 +478,18 @@ jobs:
       - name: Deploy to production
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          for file in rules/**/*.json; do
-            curl -s -X POST "${{ secrets.ORION_URL }}/api/v1/admin/rules" \
+          for file in workflows/**/*.json; do
+            curl -s -X POST "${{ secrets.ORION_URL }}/api/v1/admin/workflows" \
               -H "Content-Type: application/json" \
               -d @"$file"
           done
 ```
 
-**Test case format** — store test cases alongside rules:
+**Test case format** — store test cases alongside workflows:
 
 ```
-rules/
-  fraud-detection.json       # The rule
+workflows/
+  fraud-detection.json       # The workflow
   tests/
     fraud-high-risk.json     # Test case
     fraud-clear.json         # Test case
@@ -516,7 +499,7 @@ Each test case:
 
 ```json
 {
-  "rule_id": "fraud-detection",
+  "workflow_id": "fraud-detection",
   "data": { "data": { "amount": 15000, "country": "US" } },
   "expected_output": { "order": { "amount": 15000, "risk": "high", "requires_review": true } }
 }
@@ -524,19 +507,19 @@ Each test case:
 
 ### Safety Guardrails
 
-AI-generated rules get the same governance as hand-written ones:
+AI-generated workflows get the same governance as hand-written ones:
 
-- **Version history** — every rule change is recorded. Roll back if an AI-generated rule misbehaves.
-- **Draft status** — rules are created as `draft` by default and are not loaded into the engine until explicitly activated.
+- **Version history** — every workflow change is recorded. Roll back if an AI-generated workflow misbehaves.
+- **Draft status** — workflows are created as `draft` by default and are not loaded into the engine until explicitly activated.
 - **Dry-run before activate** — test with representative data and inspect the full execution trace.
-- **Audit trail** — every rule version is recorded in the `rules` table with incrementing version numbers.
-- **Connectors isolate secrets** — AI generates rules that reference connector names, never credentials.
+- **Audit trail** — every workflow version is recorded in the `workflows` table with incrementing version numbers.
+- **Connectors isolate secrets** — AI generates workflows that reference connector names, never credentials.
 
-## Common Rule Patterns
+## Common Workflow Patterns
 
 ### The parse-then-process pattern
 
-Every rule that reads input data must start with `parse_json`. Without it, task conditions referencing `data.X` see empty context.
+Every workflow that reads input data must start with `parse_json`. Without it, task conditions referencing `data.X` see empty context.
 
 ```json
 {
@@ -547,20 +530,10 @@ Every rule that reads input data must start with `parse_json`. Without it, task 
 }
 ```
 
-### Multi-rule pipelines with priority
+### Task-level vs workflow-level conditions
 
-Multiple rules on the same channel execute in priority order (lowest first). Use a shared parse rule at priority 0, then classification rules at higher priorities:
-
-```
-Priority 0:  Parse payload → data.order
-Priority 10: Classify tier (VIP/premium/standard)
-Priority 20: Apply discounts based on tier
-```
-
-### Task-level vs rule-level conditions
-
-- **Rule-level condition** — determines whether the entire rule matches. Set to `true` for rules that always run.
-- **Task-level condition** — determines whether a specific task within a matched rule executes. Use for branching logic within a pipeline.
+- **Workflow-level condition** — determines whether the entire workflow matches. Set to `true` for workflows that always run.
+- **Task-level condition** — determines whether a specific task within a matched workflow executes. Use for branching logic within a pipeline.
 
 ```json
 {
@@ -574,7 +547,7 @@ Priority 20: Apply discounts based on tier
 
 ### External API calls with connectors
 
-Keep credentials in [connectors](connectors.md), reference them by name in rules:
+Keep credentials in [connectors](connectors.md), reference them by name in workflows:
 
 ```json
 {
@@ -585,6 +558,24 @@ Keep credentials in [connectors](connectors.md), reference them by name in rules
         "method": "POST",
         "body_logic": { "var": "data.event" }
     }}}
+  ]
+}
+```
+
+### Inter-channel composition with channel_call
+
+Invoke another channel's workflow in-process for service composition:
+
+```json
+{
+  "tasks": [
+    { "id": "parse", "function": { "name": "parse_json", "input": { "source": "payload", "target": "order" } } },
+    { "id": "enrich", "function": { "name": "channel_call", "input": {
+        "channel": "customer-lookup",
+        "data_logic": { "var": "data.order.customer_id" },
+        "response_path": "data.customer"
+    }}},
+    { "id": "process", "condition": { "==": [{ "var": "data.customer.tier" }, "vip"] }, "function": { ... } }
   ]
 }
 ```
