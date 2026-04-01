@@ -4,7 +4,7 @@ use sqlx::SqlitePool;
 
 use crate::errors::OrionError;
 use crate::storage::models::{self, Trace};
-use crate::storage::repositories::rules::PaginatedResult;
+use crate::storage::repositories::workflows::PaginatedResult;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct TraceFilter {
