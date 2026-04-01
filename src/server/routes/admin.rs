@@ -10,75 +10,98 @@ use crate::connector::mask_connector;
 use crate::errors::OrionError;
 use crate::server::routes::reload_engine;
 use crate::server::state::AppState;
-use crate::storage::models::RuleResponse;
+use crate::storage::models::{
+    CHANNEL_STATUS_ACTIVE, CHANNEL_STATUS_ARCHIVED, ChannelResponse, WORKFLOW_STATUS_ACTIVE,
+    WORKFLOW_STATUS_ARCHIVED, WorkflowResponse,
+};
+use crate::storage::repositories::channels::{
+    ChannelFilter, ChannelStatusChangeRequest, CreateChannelRequest, UpdateChannelRequest,
+};
 use crate::storage::repositories::connectors::{
     ConnectorFilter, CreateConnectorRequest, UpdateConnectorRequest,
 };
-use crate::storage::repositories::rules::{
-    CreateRuleRequest, RolloutUpdateRequest, RuleFilter, StatusChangeRequest, UpdateRuleRequest,
+use crate::storage::repositories::workflows::{
+    CreateWorkflowRequest, RolloutUpdateRequest, StatusChangeRequest, UpdateWorkflowRequest,
+    WorkflowFilter,
 };
-use crate::validation;
 
 pub fn admin_routes() -> Router<AppState> {
-    Router::new()
-        // Rules
-        .route("/rules", get(list_rules).post(create_rule))
-        .route("/rules/import", post(import_rules))
-        .route("/rules/export", get(export_rules))
-        .route("/rules/validate", post(validate_rule))
+    let channel_routes = Router::new()
+        .route("/", get(list_channels).post(create_channel))
         .route(
-            "/rules/{id}",
-            get(get_rule).put(update_rule).delete(delete_rule),
+            "/{id}",
+            get(get_channel).put(update_channel).delete(delete_channel),
         )
-        .route("/rules/{id}/status", patch(change_rule_status))
+        .route("/{id}/status", patch(change_channel_status))
         .route(
-            "/rules/{id}/versions",
-            get(list_rule_versions).post(create_new_version),
+            "/{id}/versions",
+            get(list_channel_versions).post(create_new_channel_version),
+        );
+
+    let workflow_routes = Router::new()
+        .route("/", get(list_workflows).post(create_workflow))
+        .route("/import", post(import_workflows))
+        .route("/export", get(export_workflows))
+        .route("/validate", post(validate_workflow))
+        .route(
+            "/{id}",
+            get(get_workflow)
+                .put(update_workflow)
+                .delete(delete_workflow),
         )
-        .route("/rules/{id}/rollout", patch(update_rollout))
-        .route("/rules/{id}/test", post(test_rule))
-        // Connectors
-        .route("/connectors", get(list_connectors).post(create_connector))
+        .route("/{id}/status", patch(change_workflow_status))
         .route(
-            "/connectors/{id}",
+            "/{id}/versions",
+            get(list_workflow_versions).post(create_new_workflow_version),
+        )
+        .route("/{id}/rollout", patch(update_rollout))
+        .route("/{id}/test", post(test_workflow));
+
+    let connector_routes = Router::new()
+        .route("/", get(list_connectors).post(create_connector))
+        .route(
+            "/{id}",
             get(get_connector)
                 .put(update_connector)
                 .delete(delete_connector),
         )
-        // Circuit breakers
-        .route("/connectors/circuit-breakers", get(list_circuit_breakers))
-        .route(
-            "/connectors/circuit-breakers/{key}",
-            post(reset_circuit_breaker),
-        )
-        // Engine
-        .route("/engine/status", get(engine_status))
-        .route("/engine/reload", post(engine_reload))
+        .route("/circuit-breakers", get(list_circuit_breakers))
+        .route("/circuit-breakers/{key}", post(reset_circuit_breaker));
+
+    let engine_routes = Router::new()
+        .route("/status", get(engine_status))
+        .route("/reload", post(engine_reload));
+
+    Router::new()
+        .nest("/channels", channel_routes)
+        .nest("/workflows", workflow_routes)
+        .nest("/connectors", connector_routes)
+        .nest("/engine", engine_routes)
 }
 
 // ============================================================
-// Rules CRUD
+// Channels CRUD
 // ============================================================
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/rules",
-    params(RuleFilter),
-    tag = "Rules",
+    path = "/api/v1/admin/channels",
+    params(ChannelFilter),
+    tag = "Channels",
     responses(
-        (status = 200, description = "Paginated list of rules"),
+        (status = 200, description = "Paginated list of channels"),
     )
 )]
 #[tracing::instrument(skip(state))]
-pub(crate) async fn list_rules(
+pub(crate) async fn list_channels(
     State(state): State<AppState>,
-    Query(filter): Query<RuleFilter>,
+    Query(filter): Query<ChannelFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let result = state.rule_repo.list_paginated(&filter).await?;
-    let data: Vec<RuleResponse> = result
+    let result = state.channel_repo.list_paginated(&filter).await?;
+    let data: Vec<ChannelResponse> = result
         .data
         .iter()
-        .map(RuleResponse::try_from)
+        .map(ChannelResponse::try_from)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(json!({
         "data": data,
@@ -90,121 +113,119 @@ pub(crate) async fn list_rules(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/rules",
-    tag = "Rules",
-    request_body = CreateRuleRequest,
+    path = "/api/v1/admin/channels",
+    tag = "Channels",
+    request_body = CreateChannelRequest,
     responses(
-        (status = 201, description = "Rule created as draft"),
+        (status = 201, description = "Channel created as draft"),
         (status = 400, description = "Invalid input"),
     )
 )]
 #[tracing::instrument(skip(state, req))]
-pub(crate) async fn create_rule(
+pub(crate) async fn create_channel(
     State(state): State<AppState>,
-    Json(req): Json<CreateRuleRequest>,
+    Json(req): Json<CreateChannelRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
-    validation::validate_create_rule(&req)?;
-    let rule = state.rule_repo.create(&req).await?;
+    crate::validation::validate_create_channel(&req)?;
+    let channel = state.channel_repo.create(&req).await?;
     // No engine reload — drafts are not in the engine
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "data": RuleResponse::try_from(&rule)? })),
+        Json(json!({ "data": ChannelResponse::try_from(&channel)? })),
     ))
 }
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/rules/{id}",
-    tag = "Rules",
-    params(("id" = String, Path, description = "Rule ID")),
+    path = "/api/v1/admin/channels/{id}",
+    tag = "Channels",
+    params(("id" = String, Path, description = "Channel ID")),
     responses(
-        (status = 200, description = "Rule details"),
-        (status = 404, description = "Rule not found"),
+        (status = 200, description = "Channel details"),
+        (status = 404, description = "Channel not found"),
     )
 )]
 #[tracing::instrument(skip(state))]
-pub(crate) async fn get_rule(
+pub(crate) async fn get_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
-    let rule = state.rule_repo.get_by_id(&id).await?;
+    let channel = state.channel_repo.get_by_id(&id).await?;
     Ok(Json(json!({
-        "data": RuleResponse::try_from(&rule)?,
+        "data": ChannelResponse::try_from(&channel)?,
     })))
 }
 
 #[utoipa::path(
     put,
-    path = "/api/v1/admin/rules/{id}",
-    tag = "Rules",
-    params(("id" = String, Path, description = "Rule ID")),
-    request_body = UpdateRuleRequest,
+    path = "/api/v1/admin/channels/{id}",
+    tag = "Channels",
+    params(("id" = String, Path, description = "Channel ID")),
+    request_body = UpdateChannelRequest,
     responses(
-        (status = 200, description = "Draft rule updated"),
+        (status = 200, description = "Draft channel updated"),
         (status = 400, description = "No draft version or invalid input"),
-        (status = 404, description = "Rule not found"),
+        (status = 404, description = "Channel not found"),
     )
 )]
 #[tracing::instrument(skip(state, req))]
-pub(crate) async fn update_rule(
+pub(crate) async fn update_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(req): Json<UpdateRuleRequest>,
+    Json(req): Json<UpdateChannelRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    validation::validate_update_rule(&req)?;
-    let rule = state.rule_repo.update_draft(&id, &req).await?;
+    let channel = state.channel_repo.update_draft(&id, &req).await?;
     // No engine reload — drafts are not in the engine
-    Ok(Json(json!({ "data": RuleResponse::try_from(&rule)? })))
+    Ok(Json(
+        json!({ "data": ChannelResponse::try_from(&channel)? }),
+    ))
 }
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/admin/rules/{id}",
-    tag = "Rules",
-    params(("id" = String, Path, description = "Rule ID")),
+    path = "/api/v1/admin/channels/{id}",
+    tag = "Channels",
+    params(("id" = String, Path, description = "Channel ID")),
     responses(
-        (status = 204, description = "Rule deleted"),
-        (status = 404, description = "Rule not found"),
+        (status = 204, description = "Channel deleted"),
+        (status = 404, description = "Channel not found"),
     )
 )]
 #[tracing::instrument(skip(state))]
-pub(crate) async fn delete_rule(
+pub(crate) async fn delete_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
-    state.rule_repo.delete(&id).await?;
+    state.channel_repo.delete(&id).await?;
     reload_engine(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 // ============================================================
-// Rule Status Management
+// Channel Status Management
 // ============================================================
 
 #[utoipa::path(
     patch,
-    path = "/api/v1/admin/rules/{id}/status",
-    tag = "Rules",
-    params(("id" = String, Path, description = "Rule ID")),
-    request_body = StatusChangeRequest,
+    path = "/api/v1/admin/channels/{id}/status",
+    tag = "Channels",
+    params(("id" = String, Path, description = "Channel ID")),
+    request_body = ChannelStatusChangeRequest,
     responses(
         (status = 200, description = "Status updated"),
         (status = 400, description = "Invalid status transition"),
-        (status = 404, description = "Rule not found"),
+        (status = 404, description = "Channel not found"),
     )
 )]
 #[tracing::instrument(skip(state, req))]
-pub(crate) async fn change_rule_status(
+pub(crate) async fn change_channel_status(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(req): Json<StatusChangeRequest>,
+    Json(req): Json<ChannelStatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    let rule = match req.status.as_str() {
-        "active" => {
-            let rollout_pct = req.rollout_percentage.unwrap_or(100);
-            state.rule_repo.activate(&id, rollout_pct).await?
-        }
-        "archived" => state.rule_repo.archive(&id).await?,
+    let channel = match req.status.as_str() {
+        CHANNEL_STATUS_ACTIVE => state.channel_repo.activate(&id).await?,
+        CHANNEL_STATUS_ARCHIVED => state.channel_repo.archive(&id).await?,
         other => {
             return Err(OrionError::BadRequest(format!(
                 "Invalid status transition to '{}'. Use 'active' or 'archived'",
@@ -213,18 +234,254 @@ pub(crate) async fn change_rule_status(
         }
     };
     reload_engine(&state).await?;
-    Ok(Json(json!({ "data": RuleResponse::try_from(&rule)? })))
+    Ok(Json(
+        json!({ "data": ChannelResponse::try_from(&channel)? }),
+    ))
 }
 
 // ============================================================
-// Rule Rollout Management
+// Channel Version Management
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct VersionFilter {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/channels/{id}/versions",
+    tag = "Channels",
+    params(
+        ("id" = String, Path, description = "Channel ID"),
+    ),
+    responses(
+        (status = 200, description = "Paginated version history"),
+        (status = 404, description = "Channel not found"),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn list_channel_versions(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(filter): Query<VersionFilter>,
+) -> Result<Json<Value>, OrionError> {
+    // Verify channel exists
+    let _ = state.channel_repo.get_by_id(&id).await?;
+
+    let limit = filter.limit.unwrap_or(50);
+    let offset = filter.offset.unwrap_or(0);
+    let result = state.channel_repo.list_versions(&id, limit, offset).await?;
+    let data: Vec<ChannelResponse> = result
+        .data
+        .iter()
+        .map(ChannelResponse::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(Json(json!({
+        "data": data,
+        "total": result.total,
+        "limit": result.limit,
+        "offset": result.offset,
+    })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/channels/{id}/versions",
+    tag = "Channels",
+    params(("id" = String, Path, description = "Channel ID")),
+    responses(
+        (status = 201, description = "New draft version created"),
+        (status = 409, description = "Draft already exists"),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn create_new_channel_version(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<Value>), OrionError> {
+    let channel = state.channel_repo.create_new_version(&id).await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "data": ChannelResponse::try_from(&channel)? })),
+    ))
+}
+
+// ============================================================
+// Workflows CRUD
+// ============================================================
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/workflows",
+    params(WorkflowFilter),
+    tag = "Workflows",
+    responses(
+        (status = 200, description = "Paginated list of workflows"),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn list_workflows(
+    State(state): State<AppState>,
+    Query(filter): Query<WorkflowFilter>,
+) -> Result<Json<Value>, OrionError> {
+    let result = state.workflow_repo.list_paginated(&filter).await?;
+    let data: Vec<WorkflowResponse> = result
+        .data
+        .iter()
+        .map(WorkflowResponse::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Json(json!({
+        "data": data,
+        "total": result.total,
+        "limit": result.limit,
+        "offset": result.offset,
+    })))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/workflows",
+    tag = "Workflows",
+    request_body = CreateWorkflowRequest,
+    responses(
+        (status = 201, description = "Workflow created as draft"),
+        (status = 400, description = "Invalid input"),
+    )
+)]
+#[tracing::instrument(skip(state, req))]
+pub(crate) async fn create_workflow(
+    State(state): State<AppState>,
+    Json(req): Json<CreateWorkflowRequest>,
+) -> Result<(StatusCode, Json<Value>), OrionError> {
+    crate::validation::validate_create_workflow(&req)?;
+    let workflow = state.workflow_repo.create(&req).await?;
+    // No engine reload — drafts are not in the engine
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "data": WorkflowResponse::try_from(&workflow)? })),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/workflows/{id}",
+    tag = "Workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
+    responses(
+        (status = 200, description = "Workflow details"),
+        (status = 404, description = "Workflow not found"),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn get_workflow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, OrionError> {
+    let workflow = state.workflow_repo.get_by_id(&id).await?;
+    Ok(Json(json!({
+        "data": WorkflowResponse::try_from(&workflow)?,
+    })))
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/admin/workflows/{id}",
+    tag = "Workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
+    request_body = UpdateWorkflowRequest,
+    responses(
+        (status = 200, description = "Draft workflow updated"),
+        (status = 400, description = "No draft version or invalid input"),
+        (status = 404, description = "Workflow not found"),
+    )
+)]
+#[tracing::instrument(skip(state, req))]
+pub(crate) async fn update_workflow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateWorkflowRequest>,
+) -> Result<Json<Value>, OrionError> {
+    crate::validation::validate_update_workflow(&req)?;
+    let workflow = state.workflow_repo.update_draft(&id, &req).await?;
+    // No engine reload — drafts are not in the engine
+    Ok(Json(
+        json!({ "data": WorkflowResponse::try_from(&workflow)? }),
+    ))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/v1/admin/workflows/{id}",
+    tag = "Workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
+    responses(
+        (status = 204, description = "Workflow deleted"),
+        (status = 404, description = "Workflow not found"),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn delete_workflow(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, OrionError> {
+    state.workflow_repo.delete(&id).await?;
+    reload_engine(&state).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ============================================================
+// Workflow Status Management
 // ============================================================
 
 #[utoipa::path(
     patch,
-    path = "/api/v1/admin/rules/{id}/rollout",
-    tag = "Rules",
-    params(("id" = String, Path, description = "Rule ID")),
+    path = "/api/v1/admin/workflows/{id}/status",
+    tag = "Workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
+    request_body = StatusChangeRequest,
+    responses(
+        (status = 200, description = "Status updated"),
+        (status = 400, description = "Invalid status transition"),
+        (status = 404, description = "Workflow not found"),
+    )
+)]
+#[tracing::instrument(skip(state, req))]
+pub(crate) async fn change_workflow_status(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(req): Json<StatusChangeRequest>,
+) -> Result<Json<Value>, OrionError> {
+    let workflow = match req.status.as_str() {
+        WORKFLOW_STATUS_ACTIVE => {
+            let rollout_pct = req.rollout_percentage.unwrap_or(100);
+            state.workflow_repo.activate(&id, rollout_pct).await?
+        }
+        WORKFLOW_STATUS_ARCHIVED => state.workflow_repo.archive(&id).await?,
+        other => {
+            return Err(OrionError::BadRequest(format!(
+                "Invalid status transition to '{}'. Use 'active' or 'archived'",
+                other
+            )));
+        }
+    };
+    reload_engine(&state).await?;
+    Ok(Json(
+        json!({ "data": WorkflowResponse::try_from(&workflow)? }),
+    ))
+}
+
+// ============================================================
+// Workflow Rollout Management
+// ============================================================
+
+#[utoipa::path(
+    patch,
+    path = "/api/v1/admin/workflows/{id}/rollout",
+    tag = "Workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
     request_body = RolloutUpdateRequest,
     responses(
         (status = 200, description = "Rollout percentage updated"),
@@ -237,52 +494,51 @@ pub(crate) async fn update_rollout(
     Path(id): Path<String>,
     Json(req): Json<RolloutUpdateRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    let rule = state
-        .rule_repo
+    let workflow = state
+        .workflow_repo
         .update_rollout(&id, req.rollout_percentage)
         .await?;
     reload_engine(&state).await?;
-    Ok(Json(json!({ "data": RuleResponse::try_from(&rule)? })))
+    Ok(Json(
+        json!({ "data": WorkflowResponse::try_from(&workflow)? }),
+    ))
 }
 
 // ============================================================
-// Rule Version Management
+// Workflow Version Management
 // ============================================================
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct VersionFilter {
-    pub limit: Option<i64>,
-    pub offset: Option<i64>,
-}
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/rules/{id}/versions",
-    tag = "Rules",
+    path = "/api/v1/admin/workflows/{id}/versions",
+    tag = "Workflows",
     params(
-        ("id" = String, Path, description = "Rule ID"),
+        ("id" = String, Path, description = "Workflow ID"),
     ),
     responses(
         (status = 200, description = "Paginated version history"),
-        (status = 404, description = "Rule not found"),
+        (status = 404, description = "Workflow not found"),
     )
 )]
 #[tracing::instrument(skip(state))]
-pub(crate) async fn list_rule_versions(
+pub(crate) async fn list_workflow_versions(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Query(filter): Query<VersionFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    // Verify rule exists
-    let _ = state.rule_repo.get_by_id(&id).await?;
+    // Verify workflow exists
+    let _ = state.workflow_repo.get_by_id(&id).await?;
 
     let limit = filter.limit.unwrap_or(50);
     let offset = filter.offset.unwrap_or(0);
-    let result = state.rule_repo.list_versions(&id, limit, offset).await?;
-    let data: Vec<RuleResponse> = result
+    let result = state
+        .workflow_repo
+        .list_versions(&id, limit, offset)
+        .await?;
+    let data: Vec<WorkflowResponse> = result
         .data
         .iter()
-        .map(RuleResponse::try_from)
+        .map(WorkflowResponse::try_from)
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Json(json!({
@@ -295,32 +551,32 @@ pub(crate) async fn list_rule_versions(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/rules/{id}/versions",
-    tag = "Rules",
-    params(("id" = String, Path, description = "Rule ID")),
+    path = "/api/v1/admin/workflows/{id}/versions",
+    tag = "Workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
     responses(
         (status = 201, description = "New draft version created"),
         (status = 409, description = "Draft already exists"),
     )
 )]
 #[tracing::instrument(skip(state))]
-pub(crate) async fn create_new_version(
+pub(crate) async fn create_new_workflow_version(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
-    let rule = state.rule_repo.create_new_version(&id).await?;
+    let workflow = state.workflow_repo.create_new_version(&id).await?;
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "data": RuleResponse::try_from(&rule)? })),
+        Json(json!({ "data": WorkflowResponse::try_from(&workflow)? })),
     ))
 }
 
 // ============================================================
-// Rule Dry-Run / Testing
+// Workflow Dry-Run / Testing
 // ============================================================
 
 #[derive(Deserialize, utoipa::ToSchema)]
-pub(crate) struct TestRuleRequest {
+pub(crate) struct TestWorkflowRequest {
     data: Value,
     #[serde(default)]
     metadata: Value,
@@ -328,32 +584,34 @@ pub(crate) struct TestRuleRequest {
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/rules/{id}/test",
-    tag = "Rules",
-    params(("id" = String, Path, description = "Rule ID")),
-    request_body = TestRuleRequest,
+    path = "/api/v1/admin/workflows/{id}/test",
+    tag = "Workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
+    request_body = TestWorkflowRequest,
     responses(
         (status = 200, description = "Test result with trace"),
-        (status = 404, description = "Rule not found"),
+        (status = 404, description = "Workflow not found"),
     )
 )]
 #[tracing::instrument(skip(state, req))]
-pub(crate) async fn test_rule(
+pub(crate) async fn test_workflow(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(req): Json<TestRuleRequest>,
+    Json(req): Json<TestWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    use crate::storage::repositories::rules::rule_to_workflow;
+    use crate::storage::repositories::workflows::workflow_to_dataflow;
 
-    let rule = state.rule_repo.get_by_id(&id).await?;
-    let workflow = rule_to_workflow(&rule)?;
+    let workflow = state.workflow_repo.get_by_id(&id).await?;
+    let df_workflow = workflow_to_dataflow(&workflow, "__test__")?;
 
-    // Create an isolated engine with just this one rule, reusing the shared HTTP client
+    // Create an isolated engine with just this one workflow, reusing the shared HTTP client.
+    // channel_call in dry-run still routes through the main engine for cross-channel calls.
     let custom_fns = crate::engine::build_custom_functions(
         state.connector_registry.clone(),
         state.http_client.clone(),
+        state.engine.clone(),
     );
-    let test_engine = dataflow_rs::Engine::new(vec![workflow], Some(custom_fns));
+    let test_engine = dataflow_rs::Engine::new(vec![df_workflow], Some(custom_fns));
 
     let mut payload = json!({});
     if let Some(obj) = req.data.as_object() {
@@ -391,24 +649,24 @@ pub(crate) async fn test_rule(
 }
 
 // ============================================================
-// Rule Import / Export
+// Workflow Import / Export
 // ============================================================
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/rules/import",
-    tag = "Rules",
-    request_body = Vec<CreateRuleRequest>,
+    path = "/api/v1/admin/workflows/import",
+    tag = "Workflows",
+    request_body = Vec<CreateWorkflowRequest>,
     responses(
         (status = 200, description = "Import results with counts"),
     )
 )]
-#[tracing::instrument(skip(state, rules), fields(count = rules.len()))]
-pub(crate) async fn import_rules(
+#[tracing::instrument(skip(state, workflows), fields(count = workflows.len()))]
+pub(crate) async fn import_workflows(
     State(state): State<AppState>,
-    Json(rules): Json<Vec<CreateRuleRequest>>,
+    Json(workflows): Json<Vec<CreateWorkflowRequest>>,
 ) -> Result<Json<Value>, OrionError> {
-    let results = state.rule_repo.bulk_create(&rules).await?;
+    let results = state.workflow_repo.bulk_create(&workflows).await?;
 
     let mut imported = 0u64;
     let mut failed = 0u64;
@@ -427,7 +685,7 @@ pub(crate) async fn import_rules(
         }
     }
 
-    // No engine reload — imported rules are drafts
+    // No engine reload — imported workflows are drafts
 
     Ok(Json(json!({
         "imported": imported,
@@ -438,28 +696,28 @@ pub(crate) async fn import_rules(
 
 #[utoipa::path(
     get,
-    path = "/api/v1/admin/rules/export",
-    tag = "Rules",
-    params(RuleFilter),
+    path = "/api/v1/admin/workflows/export",
+    tag = "Workflows",
+    params(WorkflowFilter),
     responses(
-        (status = 200, description = "Exported rules"),
+        (status = 200, description = "Exported workflows"),
     )
 )]
 #[tracing::instrument(skip(state))]
-pub(crate) async fn export_rules(
+pub(crate) async fn export_workflows(
     State(state): State<AppState>,
-    Query(filter): Query<RuleFilter>,
+    Query(filter): Query<WorkflowFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let rules = state.rule_repo.list(&filter).await?;
-    let data: Vec<RuleResponse> = rules
+    let workflows = state.workflow_repo.list(&filter).await?;
+    let data: Vec<WorkflowResponse> = workflows
         .iter()
-        .map(RuleResponse::try_from)
+        .map(WorkflowResponse::try_from)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Json(json!({ "data": data })))
 }
 
 // ============================================================
-// Rule Validation
+// Workflow Validation
 // ============================================================
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -477,17 +735,17 @@ pub(crate) struct ValidationResponse {
 
 #[utoipa::path(
     post,
-    path = "/api/v1/admin/rules/validate",
-    tag = "Rules",
-    request_body = CreateRuleRequest,
+    path = "/api/v1/admin/workflows/validate",
+    tag = "Workflows",
+    request_body = CreateWorkflowRequest,
     responses(
         (status = 200, description = "Validation result", body = ValidationResponse),
     )
 )]
 #[tracing::instrument(skip(state, req))]
-pub(crate) async fn validate_rule(
+pub(crate) async fn validate_workflow(
     State(state): State<AppState>,
-    Json(req): Json<CreateRuleRequest>,
+    Json(req): Json<CreateWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let result = run_validation(&req, &state).await;
     Ok(Json(json!({
@@ -497,7 +755,7 @@ pub(crate) async fn validate_rule(
     })))
 }
 
-async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> ValidationResponse {
+async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> ValidationResponse {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
@@ -509,8 +767,8 @@ async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> Validation
         validate_tasks(tasks, &dl, state, &mut errors, &mut warnings).await;
     }
 
-    validate_rule_condition(&req.condition, &dl, &mut errors);
-    validate_workflow_conversion(req, &mut errors);
+    validate_workflow_condition(&req.condition, &dl, &mut errors);
+    validate_dataflow_conversion(req, &mut errors);
 
     ValidationResponse {
         valid: errors.is_empty(),
@@ -519,18 +777,12 @@ async fn run_validation(req: &CreateRuleRequest, state: &AppState) -> Validation
     }
 }
 
-/// Validate name, channel, and tasks are non-empty.
-fn validate_basic_fields(req: &CreateRuleRequest, errors: &mut Vec<ValidationIssue>) {
+/// Validate name and tasks are non-empty.
+fn validate_basic_fields(req: &CreateWorkflowRequest, errors: &mut Vec<ValidationIssue>) {
     if req.name.trim().is_empty() {
         errors.push(ValidationIssue {
             field: "name".to_string(),
             message: "Name cannot be empty".to_string(),
-        });
-    }
-    if req.channel.trim().is_empty() {
-        errors.push(ValidationIssue {
-            field: "channel".to_string(),
-            message: "Channel cannot be empty".to_string(),
         });
     }
     let tasks = req.tasks.as_array();
@@ -593,13 +845,13 @@ async fn validate_tasks(
             });
         }
 
-        if let Some(condition) = task.get("condition") {
-            if let Err(e) = dl.compile(condition) {
-                errors.push(ValidationIssue {
-                    field: format!("tasks[{i}].condition"),
-                    message: format!("Invalid JSONLogic in task condition: {e}"),
-                });
-            }
+        if let Some(condition) = task.get("condition")
+            && let Err(e) = dl.compile(condition)
+        {
+            errors.push(ValidationIssue {
+                field: format!("tasks[{i}].condition"),
+                message: format!("Invalid JSONLogic in task condition: {e}"),
+            });
         }
 
         if !fn_name.is_empty() && !crate::engine::KNOWN_FUNCTIONS.contains(&fn_name) {
@@ -609,25 +861,24 @@ async fn validate_tasks(
             });
         }
 
-        if !fn_name.is_empty() && crate::engine::CONNECTOR_FUNCTIONS.contains(&fn_name) {
-            if let Some(connector_name) = function
+        if !fn_name.is_empty()
+            && crate::engine::CONNECTOR_FUNCTIONS.contains(&fn_name)
+            && let Some(connector_name) = function
                 .and_then(|f| f.get("input"))
                 .and_then(|input| input.get("connector"))
                 .and_then(|c| c.as_str())
-            {
-                if state.connector_registry.get(connector_name).await.is_none() {
-                    warnings.push(ValidationIssue {
-                        field: format!("tasks[{i}].function.input.connector"),
-                        message: format!("Connector '{connector_name}' not found in registry"),
-                    });
-                }
-            }
+            && state.connector_registry.get(connector_name).await.is_none()
+        {
+            warnings.push(ValidationIssue {
+                field: format!("tasks[{i}].function.input.connector"),
+                message: format!("Connector '{connector_name}' not found in registry"),
+            });
         }
     }
 }
 
-/// Validate rule-level JSONLogic condition.
-fn validate_rule_condition(
+/// Validate workflow-level JSONLogic condition.
+fn validate_workflow_condition(
     condition: &Value,
     dl: &datalogic_rs::DataLogic,
     errors: &mut Vec<ValidationIssue>,
@@ -635,20 +886,19 @@ fn validate_rule_condition(
     if let Err(e) = dl.compile(condition) {
         errors.push(ValidationIssue {
             field: "condition".to_string(),
-            message: format!("Invalid JSONLogic in rule condition: {e}"),
+            message: format!("Invalid JSONLogic in workflow condition: {e}"),
         });
     }
 }
 
-/// Validate that the rule can be converted to a workflow.
-fn validate_workflow_conversion(req: &CreateRuleRequest, errors: &mut Vec<ValidationIssue>) {
-    use crate::storage::repositories::rules::rule_to_workflow;
+/// Validate that the workflow can be converted to a dataflow-rs workflow.
+fn validate_dataflow_conversion(req: &CreateWorkflowRequest, errors: &mut Vec<ValidationIssue>) {
+    use crate::storage::repositories::workflows::workflow_to_dataflow;
 
-    let temp_rule = crate::storage::models::Rule {
-        rule_id: "temp-validate".to_string(),
+    let temp_workflow = crate::storage::models::Workflow {
+        workflow_id: "temp-validate".to_string(),
         name: req.name.clone(),
         description: req.description.clone(),
-        channel: req.channel.clone(),
         priority: req.priority,
         version: 1,
         status: "active".to_string(),
@@ -679,10 +929,10 @@ fn validate_workflow_conversion(req: &CreateRuleRequest, errors: &mut Vec<Valida
         updated_at: chrono::Utc::now().naive_utc(),
     };
 
-    if let Err(e) = rule_to_workflow(&temp_rule) {
+    if let Err(e) = workflow_to_dataflow(&temp_workflow, "__validate__") {
         errors.push(ValidationIssue {
             field: "(root)".to_string(),
-            message: format!("Failed to convert to workflow: {e}"),
+            message: format!("Failed to convert to dataflow workflow: {e}"),
         });
     }
 }
@@ -739,7 +989,7 @@ pub(crate) async fn create_connector(
     State(state): State<AppState>,
     Json(req): Json<CreateConnectorRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
-    validation::validate_create_connector(&req)?;
+    crate::validation::validate_create_connector(&req)?;
     let connector = state.connector_repo.create(&req).await?;
     reload_connectors(&state).await?;
     let masked = mask_connector(&connector);
@@ -783,7 +1033,7 @@ pub(crate) async fn update_connector(
     Path(id): Path<String>,
     Json(req): Json<UpdateConnectorRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    validation::validate_update_connector(&req)?;
+    crate::validation::validate_update_connector(&req)?;
     let connector = state.connector_repo.update(&id, &req).await?;
     reload_connectors(&state).await?;
     let masked = mask_connector(&connector);
@@ -875,8 +1125,8 @@ pub(crate) async fn engine_status(
     Ok(Json(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": uptime.num_seconds(),
-        "rules_count": workflows.len(),
-        "active_rules": active_count,
+        "workflows_count": workflows.len(),
+        "active_workflows": active_count,
         "channels": channels.into_iter().collect::<Vec<_>>(),
     })))
 }
@@ -896,10 +1146,10 @@ pub(crate) async fn engine_reload(
     reload_engine(&state).await?;
 
     let engine = state.engine.read().await;
-    let rules_count = engine.workflows().len();
+    let workflows_count = engine.workflows().len();
 
     Ok(Json(json!({
         "reloaded": true,
-        "rules_count": rules_count,
+        "workflows_count": workflows_count,
     })))
 }

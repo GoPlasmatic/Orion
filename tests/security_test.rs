@@ -10,19 +10,18 @@ use tower::ServiceExt;
 // ============================================================
 
 #[tokio::test]
-async fn test_sql_injection_in_rule_name() {
+async fn test_sql_injection_in_workflow_name() {
     let app = common::test_app().await;
 
-    let malicious_name = "'; DROP TABLE rules;--";
+    let malicious_name = "'; DROP TABLE workflows;--";
 
     let resp = app
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/rules",
+            "/api/v1/admin/workflows",
             Some(json!({
                 "name": malicious_name,
-                "channel": "orders",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
             })),
         ))
@@ -30,14 +29,14 @@ async fn test_sql_injection_in_rule_name() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
-    let rule_id = body["data"]["rule_id"].as_str().unwrap().to_string();
+    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
 
-    // Verify the rule is stored safely and retrievable
+    // Verify the workflow is stored safely and retrievable
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/rules/{}", rule_id),
+            &format!("/api/v1/admin/workflows/{}", workflow_id),
             None,
         ))
         .await
@@ -46,9 +45,9 @@ async fn test_sql_injection_in_rule_name() {
     let body = body_json(resp).await;
     assert_eq!(body["data"]["name"], malicious_name);
 
-    // Verify the rules table still exists by listing rules
+    // Verify the workflows table still exists by listing workflows
     let resp = app
-        .oneshot(json_request("GET", "/api/v1/admin/rules", None))
+        .oneshot(json_request("GET", "/api/v1/admin/workflows", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -60,15 +59,14 @@ async fn test_sql_injection_in_rule_name() {
 async fn test_sql_injection_in_tag_filter() {
     let app = common::test_app().await;
 
-    // Create a rule with a normal tag
+    // Create a workflow with a normal tag
     let resp = app
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/rules",
+            "/api/v1/admin/workflows",
             Some(json!({
-                "name": "Tagged Rule",
-                "channel": "orders",
+                "name": "Tagged Workflow",
                 "tags": ["safe-tag"],
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
             })),
@@ -82,50 +80,14 @@ async fn test_sql_injection_in_tag_filter() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/rules?tag=%25%27%20OR%201%3D1%20--",
+            "/api/v1/admin/workflows?tag=%25%27%20OR%201%3D1%20--",
             None,
         ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    // The injection should not return all rules — should match 0 since no tag matches the payload
-    assert_eq!(body["total"], 0);
-}
-
-#[tokio::test]
-async fn test_sql_injection_in_channel_filter() {
-    let app = common::test_app().await;
-
-    // Create a rule
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v1/admin/rules",
-            Some(json!({
-                "name": "Channel Rule",
-                "channel": "orders",
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-
-    // Attempt SQL injection via channel filter (percent-encoded: ' OR '1'='1)
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v1/admin/rules?channel=%27%20OR%20%271%27%3D%271",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    // Should not return any rules (no channel matches the injection string)
+    // The injection should not return all workflows -- should match 0 since no tag matches the payload
     assert_eq!(body["total"], 0);
 }
 
@@ -134,7 +96,7 @@ async fn test_sql_injection_in_channel_filter() {
 // ============================================================
 
 #[tokio::test]
-async fn test_xss_in_rule_description() {
+async fn test_xss_in_workflow_description() {
     let app = common::test_app().await;
 
     let xss_payload = "<script>alert('xss')</script>";
@@ -143,11 +105,10 @@ async fn test_xss_in_rule_description() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/rules",
+            "/api/v1/admin/workflows",
             Some(json!({
-                "name": "XSS Test Rule",
+                "name": "XSS Test Workflow",
                 "description": xss_payload,
-                "channel": "orders",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
             })),
         ))
@@ -155,13 +116,13 @@ async fn test_xss_in_rule_description() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
-    let rule_id = body["data"]["rule_id"].as_str().unwrap().to_string();
+    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
 
     // Verify the description is stored and returned as-is (JSON-escaped, not interpreted)
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/rules/{}", rule_id),
+            &format!("/api/v1/admin/workflows/{}", workflow_id),
             None,
         ))
         .await
@@ -194,7 +155,7 @@ async fn test_deeply_nested_json_payload() {
         .await
         .unwrap();
 
-    // Should process without stack overflow — either succeeds or returns a client/server error
+    // Should process without stack overflow -- either succeeds or returns a client/server error
     assert!(resp.status().as_u16() < 600);
 }
 
@@ -203,22 +164,21 @@ async fn test_deeply_nested_json_payload() {
 // ============================================================
 
 #[tokio::test]
-async fn test_unicode_in_rule_fields() {
+async fn test_unicode_in_workflow_fields() {
     let app = common::test_app().await;
 
     let emoji_name = "Order Processing \u{1F680}\u{2728}";
-    let cjk_description = "\u{4E1A}\u{52A1}\u{89C4}\u{5219} (Business Rule)";
+    let cjk_description = "\u{4E1A}\u{52A1}\u{89C4}\u{5219} (Business Workflow)";
     let unicode_tags = vec!["tag-\u{00E9}\u{00E8}\u{00EA}", "\u{0442}\u{0435}\u{0433}"];
 
     let resp = app
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/rules",
+            "/api/v1/admin/workflows",
             Some(json!({
                 "name": emoji_name,
                 "description": cjk_description,
-                "channel": "orders",
                 "tags": unicode_tags,
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
             })),
@@ -227,13 +187,13 @@ async fn test_unicode_in_rule_fields() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
-    let rule_id = body["data"]["rule_id"].as_str().unwrap().to_string();
+    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
 
     // Verify roundtrip
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/admin/rules/{}", rule_id),
+            &format!("/api/v1/admin/workflows/{}", workflow_id),
             None,
         ))
         .await
@@ -261,33 +221,32 @@ async fn test_null_bytes_in_string_fields() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/rules",
+            "/api/v1/admin/workflows",
             Some(json!({
                 "name": name_with_null,
-                "channel": "orders",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
             })),
         ))
         .await
         .unwrap();
 
-    // System should either accept safely or reject — must not panic
+    // System should either accept safely or reject -- must not panic
     if resp.status().is_success() {
         let body = body_json(resp).await;
-        let rule_id = body["data"]["rule_id"].as_str().unwrap().to_string();
+        let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
 
         // Verify retrieval is consistent
         let resp = app
             .oneshot(json_request(
                 "GET",
-                &format!("/api/v1/admin/rules/{}", rule_id),
+                &format!("/api/v1/admin/workflows/{}", workflow_id),
                 None,
             ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
-    // If rejected, that is also acceptable — no crash or corruption
+    // If rejected, that is also acceptable -- no crash or corruption
 }
 
 // ============================================================

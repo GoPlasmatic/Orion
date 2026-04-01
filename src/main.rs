@@ -11,12 +11,17 @@ use tracing_subscriber::util::SubscriberInitExt;
 use orion::config::{self, LogFormat};
 use orion::connector::ConnectorRegistry;
 use orion::server::state::AppState;
+use orion::storage::repositories::channels::{ChannelRepository, SqliteChannelRepository};
 use orion::storage::repositories::connectors::SqliteConnectorRepository;
-use orion::storage::repositories::rules::{RuleRepository, SqliteRuleRepository};
 use orion::storage::repositories::traces::SqliteTraceRepository;
+use orion::storage::repositories::workflows::{SqliteWorkflowRepository, WorkflowRepository};
 
 #[derive(Parser)]
-#[command(name = "orion", version, about = "Orion Rules Engine Service")]
+#[command(
+    name = "orion",
+    version,
+    about = "Orion — Declarative Services Runtime"
+)]
 struct Cli {
     /// Path to TOML configuration file
     #[arg(short, long)]
@@ -100,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
-        "Starting Orion Rules Engine"
+        "Starting Orion — Declarative Services Runtime"
     );
 
     // Init metrics (gated by config)
@@ -120,9 +125,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(path = %config.storage.path, "Database initialized");
 
     // Create repositories
-    let rule_repo = Arc::new(SqliteRuleRepository::new(pool.clone()));
+    let workflow_repo = Arc::new(SqliteWorkflowRepository::new(pool.clone()));
+    let channel_repo = Arc::new(SqliteChannelRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
     let trace_repo = Arc::new(SqliteTraceRepository::new(pool.clone()));
+
+    // Channel registry
+    let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
 
     // Load connectors
     let connector_registry = Arc::new(ConnectorRegistry::new(
@@ -136,10 +145,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a shared HTTP client
     let http_client = reqwest::Client::new();
 
-    // Build custom function handlers (http_call, publish_kafka)
+    // Create the engine lock early so channel_call handler can reference it.
+    // We'll populate it with the real engine after building workflows.
+    let engine: Arc<RwLock<Arc<dataflow_rs::Engine>>> = Arc::new(RwLock::new(Arc::new(
+        dataflow_rs::Engine::new(vec![], None),
+    )));
+
+    // Build custom function handlers (http_call, channel_call, publish_kafka)
     #[allow(unused_mut)]
-    let mut custom_functions =
-        orion::engine::build_custom_functions(connector_registry.clone(), http_client.clone());
+    let mut custom_functions = orion::engine::build_custom_functions(
+        connector_registry.clone(),
+        http_client.clone(),
+        engine.clone(),
+    );
 
     // Kafka producer setup (when kafka feature is enabled)
     #[cfg(feature = "kafka")]
@@ -158,50 +176,81 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // Load active rules and build engine with custom functions
-    let active_rules = rule_repo.list_active().await?;
-    let workflows = orion::engine::build_engine_workflows(&active_rules);
+    // Load active channels and workflows, build engine
+    let channels = channel_repo.list_active().await?;
+    let active_workflows = workflow_repo.list_active().await?;
+    let workflows = orion::engine::build_engine_workflows(&channels, &active_workflows);
+    channel_registry.reload(&channels).await;
 
-    let channels: std::collections::HashSet<&str> =
+    let channel_names: std::collections::HashSet<&str> =
         workflows.iter().map(|w| w.channel.as_str()).collect();
 
     tracing::info!(
-        rules = active_rules.len(),
-        channels = channels.len(),
-        "Rules loaded"
+        workflows = active_workflows.len(),
+        channels = channel_names.len(),
+        "Workflows loaded"
     );
 
-    let engine = dataflow_rs::Engine::new(workflows, Some(custom_functions));
-    let engine = Arc::new(RwLock::new(Arc::new(engine)));
+    // Populate the pre-created engine lock with the real engine
+    let built_engine = dataflow_rs::Engine::new(workflows, Some(custom_functions));
+    *engine.write().await = Arc::new(built_engine);
 
-    // Start Kafka consumer (when kafka feature is enabled and configured)
+    // Start Kafka consumer (when kafka feature is enabled and configured).
+    // Also load async channel topic mappings from the database.
     #[cfg(feature = "kafka")]
-    let kafka_consumer_handle = if config.kafka.enabled && !config.kafka.topics.is_empty() {
-        let dlq_producer = if config.kafka.dlq.enabled {
-            kafka_producer.clone()
+    let kafka_consumer_handle = if config.kafka.enabled {
+        // Merge config-file topics with DB-driven async channels
+        let mut all_topics = config.kafka.topics.clone();
+        for ch in &channels {
+            if (ch.protocol == "kafka" || ch.channel_type == "async")
+                && let Some(ref topic) = ch.topic
+            {
+                // Only add if not already mapped from config file
+                if !all_topics.iter().any(|t| t.topic == *topic) {
+                    all_topics.push(orion::config::TopicMapping {
+                        topic: topic.clone(),
+                        channel: ch.name.clone(),
+                    });
+                }
+            }
+        }
+
+        if !all_topics.is_empty() {
+            let merged_config = orion::config::KafkaIngestConfig {
+                topics: all_topics,
+                ..config.kafka.clone()
+            };
+
+            let dlq_producer = if config.kafka.dlq.enabled {
+                kafka_producer.clone()
+            } else {
+                None
+            };
+            let dlq_topic = if config.kafka.dlq.enabled {
+                Some(config.kafka.dlq.topic.clone())
+            } else {
+                None
+            };
+
+            let handle = orion::kafka::consumer::start_consumer(
+                &merged_config,
+                engine.clone(),
+                dlq_producer,
+                dlq_topic,
+            )?;
+
+            tracing::info!(
+                config_topics = config.kafka.topics.len(),
+                db_topics = merged_config.topics.len() - config.kafka.topics.len(),
+                total_topics = merged_config.topics.len(),
+                group_id = %config.kafka.group_id,
+                "Kafka consumer started"
+            );
+
+            Some(handle)
         } else {
             None
-        };
-        let dlq_topic = if config.kafka.dlq.enabled {
-            Some(config.kafka.dlq.topic.clone())
-        } else {
-            None
-        };
-
-        let handle = orion::kafka::consumer::start_consumer(
-            &config.kafka,
-            engine.clone(),
-            dlq_producer,
-            dlq_topic,
-        )?;
-
-        tracing::info!(
-            topics = config.kafka.topics.len(),
-            group_id = %config.kafka.group_id,
-            "Kafka consumer started"
-        );
-
-        Some(handle)
+        }
     } else {
         None
     };
@@ -229,7 +278,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Set initial active rules gauge
-    orion::metrics::set_active_rules(active_rules.len() as f64);
+    orion::metrics::set_active_workflows(active_workflows.len() as f64);
 
     // Build rate limiter (if enabled)
     let rate_limit_state = if config.rate_limit.enabled {
@@ -246,19 +295,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build state and router
     let config = Arc::new(config);
+
+    #[cfg(feature = "kafka")]
+    let kafka_consumer_handle_arc = Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle));
+
     let state = AppState {
         engine,
-        rule_repo: rule_repo as Arc<dyn orion::storage::repositories::rules::RuleRepository>,
+        channel_repo: channel_repo
+            as Arc<dyn orion::storage::repositories::channels::ChannelRepository>,
+        workflow_repo: workflow_repo
+            as Arc<dyn orion::storage::repositories::workflows::WorkflowRepository>,
         connector_repo: connector_repo
             as Arc<dyn orion::storage::repositories::connectors::ConnectorRepository>,
         trace_repo: trace_repo as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
         connector_registry,
+        channel_registry,
         trace_queue,
         config: config.clone(),
         start_time: chrono::Utc::now(),
         metrics_handle,
         http_client,
+        datalogic: Arc::new(datalogic_rs::DataLogic::new()),
         rate_limit_state,
+        #[cfg(feature = "kafka")]
+        kafka_consumer_handle: kafka_consumer_handle_arc.clone(),
+        #[cfg(feature = "kafka")]
+        kafka_producer,
     };
 
     let router = orion::server::build_router(state);
@@ -278,7 +340,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Graceful shutdown
     #[cfg(feature = "kafka")]
-    if let Some(handle) = kafka_consumer_handle {
+    if let Some(handle) = kafka_consumer_handle_arc.lock().await.take() {
         tracing::info!("Shutting down Kafka consumer...");
         handle.shutdown().await;
     }

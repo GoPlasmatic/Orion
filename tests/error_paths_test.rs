@@ -11,9 +11,11 @@ use tower::ServiceExt;
 // ============================================================
 
 #[tokio::test]
-async fn test_wrong_content_type_rejected() {
+async fn test_any_content_type_accepted_if_body_is_valid_json() {
     let app = common::test_app().await;
 
+    // Content-type validation is handled by per-channel validation_logic,
+    // not hardcoded. Valid JSON with any content-type should parse fine.
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/data/orders")
@@ -22,7 +24,7 @@ async fn test_wrong_content_type_rejected() {
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    assert!(resp.status().is_success());
 }
 
 #[tokio::test]
@@ -41,9 +43,11 @@ async fn test_completely_invalid_json_body() {
 }
 
 #[tokio::test]
-async fn test_empty_body_to_data_endpoint() {
+async fn test_empty_body_accepted() {
     let app = common::test_app().await;
 
+    // Empty body is treated as {data: {}, metadata: {}} — valid for GET/DELETE
+    // or any request without payload.
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/data/orders")
@@ -52,7 +56,7 @@ async fn test_empty_body_to_data_endpoint() {
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
-    assert!(resp.status().is_client_error());
+    assert!(resp.status().is_success());
 }
 
 #[tokio::test]
@@ -93,13 +97,13 @@ async fn test_nonexistent_trace_returns_404() {
 }
 
 #[tokio::test]
-async fn test_delete_nonexistent_rule_returns_404() {
+async fn test_delete_nonexistent_workflow_returns_404() {
     let app = common::test_app().await;
 
     let resp = app
         .oneshot(json_request(
             "DELETE",
-            "/api/v1/admin/rules/nonexistent-rule",
+            "/api/v1/admin/workflows/nonexistent-workflow",
             None,
         ))
         .await
@@ -125,14 +129,14 @@ async fn test_delete_nonexistent_connector_returns_404() {
 }
 
 #[tokio::test]
-async fn test_update_nonexistent_rule_returns_400() {
+async fn test_update_nonexistent_workflow_returns_400() {
     let app = common::test_app().await;
 
     // update_draft returns BadRequest "No draft version found"
     let resp = app
         .oneshot(json_request(
             "PUT",
-            "/api/v1/admin/rules/nonexistent-rule",
+            "/api/v1/admin/workflows/nonexistent-workflow",
             Some(json!({"name": "Updated Name"})),
         ))
         .await
@@ -149,15 +153,14 @@ async fn test_update_nonexistent_rule_returns_400() {
 async fn test_invalid_status_transition() {
     let app = common::test_app().await;
 
-    // Create a rule (draft)
+    // Create a workflow (draft)
     let resp = app
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/rules",
+            "/api/v1/admin/workflows",
             Some(json!({
-                "name": "Status Test Rule",
-                "channel": "orders",
+                "name": "Status Test Workflow",
                 "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
             })),
         ))
@@ -165,13 +168,13 @@ async fn test_invalid_status_transition() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let body = body_json(resp).await;
-    let rule_id = body["data"]["rule_id"].as_str().unwrap().to_string();
+    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
 
     // Try to set an invalid status
     let resp = app
         .oneshot(json_request(
             "PATCH",
-            &format!("/api/v1/admin/rules/{}/status", rule_id),
+            &format!("/api/v1/admin/workflows/{}/status", workflow_id),
             Some(json!({"status": "invalid_status"})),
         ))
         .await
@@ -192,13 +195,12 @@ async fn test_invalid_status_transition() {
 // ============================================================
 
 #[tokio::test]
-async fn test_duplicate_rule_id_rejected() {
+async fn test_duplicate_workflow_id_rejected() {
     let app = common::test_app().await;
 
-    let rule = json!({
-        "rule_id": "duplicate-rule",
-        "name": "First Rule",
-        "channel": "orders",
+    let workflow = json!({
+        "workflow_id": "duplicate-workflow",
+        "name": "First Workflow",
         "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
     });
 
@@ -207,8 +209,8 @@ async fn test_duplicate_rule_id_rejected() {
         .clone()
         .oneshot(json_request(
             "POST",
-            "/api/v1/admin/rules",
-            Some(rule.clone()),
+            "/api/v1/admin/workflows",
+            Some(workflow.clone()),
         ))
         .await
         .unwrap();
@@ -216,7 +218,11 @@ async fn test_duplicate_rule_id_rejected() {
 
     // Second creation with same ID must fail
     let resp = app
-        .oneshot(json_request("POST", "/api/v1/admin/rules", Some(rule)))
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(workflow),
+        ))
         .await
         .unwrap();
     assert!(!resp.status().is_success());

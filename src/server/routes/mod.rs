@@ -44,10 +44,10 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     let uptime = chrono::Utc::now() - state.start_time;
 
     // Check database connectivity
-    let db_healthy = state.rule_repo.ping().await.is_ok();
+    let db_healthy = state.workflow_repo.ping().await.is_ok();
 
     // Check engine state — independently verify the engine lock is acquirable
-    let mut rules_loaded = 0;
+    let mut workflows_loaded = 0;
     let engine_healthy = match tokio::time::timeout(
         std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
         state.engine.read(),
@@ -55,7 +55,7 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     .await
     {
         Ok(guard) => {
-            rules_loaded = guard.workflows().len();
+            workflows_loaded = guard.workflows().len();
             true
         }
         Err(_) => false,
@@ -76,7 +76,7 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "status": status_str,
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": uptime.num_seconds(),
-        "rules_loaded": rules_loaded,
+        "workflows_loaded": workflows_loaded,
         "components": {
             "database": if db_healthy { "ok" } else { "error" },
             "engine": if engine_healthy { "ok" } else { "error" },
@@ -106,14 +106,15 @@ pub(crate) async fn metrics_endpoint(State(state): State<AppState>) -> impl Into
     )
 }
 
-/// Reload the engine with all active rules from the database.
+/// Reload the engine with all active channels and workflows from the database.
 #[tracing::instrument(skip(state))]
 pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionError> {
     let start = std::time::Instant::now();
 
     let result = async {
-        let rules = state.rule_repo.list_active().await?;
-        let workflows = crate::engine::build_engine_workflows(&rules);
+        let channels = state.channel_repo.list_active().await?;
+        let active_workflows = state.workflow_repo.list_active().await?;
+        let workflows = crate::engine::build_engine_workflows(&channels, &active_workflows);
 
         // Build the new engine outside the write lock to minimize lock hold time.
         // Clone the current engine Arc, build new workflows, then swap atomically.
@@ -132,10 +133,23 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
         })?;
         *engine_write = new_engine;
 
-        // Update active rules gauge
-        crate::metrics::set_active_rules(rules.len() as f64);
+        // Rebuild channel registry
+        state.channel_registry.reload(&channels).await;
 
-        tracing::info!(rules_count = rules.len(), "Engine reloaded");
+        // Update active workflows gauge
+        crate::metrics::set_active_workflows(active_workflows.len() as f64);
+
+        // Restart Kafka consumer if async channel topics changed
+        #[cfg(feature = "kafka")]
+        if state.config.kafka.enabled {
+            restart_kafka_consumer_if_needed(state, &channels).await;
+        }
+
+        tracing::info!(
+            workflow_count = active_workflows.len(),
+            channel_count = channels.len(),
+            "Engine reloaded"
+        );
         Ok(())
     }
     .await;
@@ -149,4 +163,83 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
     }
 
     result
+}
+
+/// Restart the Kafka consumer when async channel topic mappings have changed.
+///
+/// Merges config-file topics with DB-driven async channel topics. If the set
+/// of topics differs from what the current consumer is subscribed to, the old
+/// consumer is shut down and a new one is started.
+#[cfg(feature = "kafka")]
+async fn restart_kafka_consumer_if_needed(
+    state: &AppState,
+    channels: &[crate::storage::models::Channel],
+) {
+    use std::collections::HashSet;
+
+    // Build merged topic list: config-file + DB async channels
+    let mut all_topics = state.config.kafka.topics.clone();
+    for ch in channels {
+        if (ch.protocol == "kafka" || ch.channel_type == "async")
+            && let Some(ref topic) = ch.topic
+            && !all_topics.iter().any(|t| t.topic == *topic)
+        {
+            all_topics.push(crate::config::TopicMapping {
+                topic: topic.clone(),
+                channel: ch.name.clone(),
+            });
+        }
+    }
+
+    // Compare with currently tracked topics (stored in consumer handle)
+    let new_topic_set: HashSet<String> = all_topics.iter().map(|t| t.topic.clone()).collect();
+
+    // Always restart: we don't track the old topic set, so rebuild unconditionally.
+    // The brief consumer restart (milliseconds) is acceptable during an engine reload.
+    let mut handle_guard = state.kafka_consumer_handle.lock().await;
+
+    // Shut down existing consumer
+    if let Some(old_handle) = handle_guard.take() {
+        tracing::info!("Shutting down Kafka consumer for topic refresh...");
+        old_handle.shutdown().await;
+    }
+
+    if all_topics.is_empty() {
+        tracing::info!("No Kafka topics configured or from DB, consumer not started");
+        return;
+    }
+
+    let merged_config = crate::config::KafkaIngestConfig {
+        topics: all_topics,
+        ..state.config.kafka.clone()
+    };
+
+    let dlq_producer = if state.config.kafka.dlq.enabled {
+        state.kafka_producer.clone()
+    } else {
+        None
+    };
+    let dlq_topic = if state.config.kafka.dlq.enabled {
+        Some(state.config.kafka.dlq.topic.clone())
+    } else {
+        None
+    };
+
+    match crate::kafka::consumer::start_consumer(
+        &merged_config,
+        state.engine.clone(),
+        dlq_producer,
+        dlq_topic,
+    ) {
+        Ok(new_handle) => {
+            tracing::info!(
+                topics = ?new_topic_set,
+                "Kafka consumer restarted with updated topics"
+            );
+            *handle_guard = Some(new_handle);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Failed to restart Kafka consumer");
+        }
+    }
 }

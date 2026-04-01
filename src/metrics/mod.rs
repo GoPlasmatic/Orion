@@ -62,9 +62,9 @@ pub fn record_circuit_breaker_rejection(connector: &str, channel: &str) {
     .increment(1);
 }
 
-/// Set the active_rules gauge.
-pub fn set_active_rules(count: f64) {
-    gauge!("active_rules").set(count);
+/// Set the active_workflows gauge.
+pub fn set_active_workflows(count: f64) {
+    gauge!("active_workflows").set(count);
 }
 
 // ---------------------------------------------------------------------------
@@ -172,10 +172,10 @@ mod tests {
     }
 
     #[test]
-    fn test_set_active_rules() {
+    fn test_set_active_workflows() {
         ensure_recorder();
-        set_active_rules(5.0);
-        set_active_rules(0.0);
+        set_active_workflows(5.0);
+        set_active_workflows(0.0);
     }
 
     #[test]

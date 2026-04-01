@@ -21,3 +21,6 @@ target
 #.idea/
 
 *.db*
+
+# Local config
+config.toml

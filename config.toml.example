@@ -38,9 +38,8 @@
 # admin_rps = 50                # Rate limit for admin routes
 # data_rps = 200                # Rate limit for data routes
 
-# [rate_limit.channels.orders]  # Per-channel rate limits
-# rps = 500
-# burst = 100
+# Per-channel rate limits are configured via the channel's config_json in the DB.
+# Example: POST /api/v1/admin/channels with config.rate_limit.requests_per_second
 
 [logging]
 # level = "info"              # trace, debug, info, warn, error

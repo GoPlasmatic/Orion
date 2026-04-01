@@ -199,70 +199,70 @@ stop_bench_server() {
 }
 
 # ═══════════════════════════════════════════════════════════════════
-# RULE MANAGEMENT (curl-based, no orion-cli dependency)
+# WORKFLOW MANAGEMENT (curl-based, no orion-cli dependency)
 # ═══════════════════════════════════════════════════════════════════
 
-create_rule() {
-    local rule_file="$1"
+create_workflow() {
+    local workflow_file="$1"
     local response
-    response=$(curl -sf -X POST "${BENCH_URL}/api/v1/admin/rules" \
+    response=$(curl -sf -X POST "${BENCH_URL}/api/v1/admin/workflows" \
         -H "Content-Type: application/json" \
-        -d @"$rule_file" 2>/dev/null) || {
-        log_error "Failed to create rule from $rule_file"
+        -d @"$workflow_file" 2>/dev/null) || {
+        log_error "Failed to create workflow from $workflow_file"
         return 1
     }
 
-    local rule_id
-    rule_id=$(echo "$response" | jq -r '.data.rule_id // empty')
-    if [[ -z "$rule_id" ]]; then
-        log_error "No rule ID in response: $response"
+    local workflow_id
+    workflow_id=$(echo "$response" | jq -r '.data.workflow_id // empty')
+    if [[ -z "$workflow_id" ]]; then
+        log_error "No workflow ID in response: $response"
         return 1
     fi
-    echo "$rule_id"
+    echo "$workflow_id"
 }
 
-activate_rule() {
-    local rule_id="$1"
-    curl -sf -X PATCH "${BENCH_URL}/api/v1/admin/rules/${rule_id}/status" \
+activate_workflow() {
+    local workflow_id="$1"
+    curl -sf -X PATCH "${BENCH_URL}/api/v1/admin/workflows/${workflow_id}/status" \
         -H "Content-Type: application/json" \
         -d '{"status": "active"}' >/dev/null 2>&1 || {
-        log_error "Failed to activate rule $rule_id"
+        log_error "Failed to activate workflow $workflow_id"
         return 1
     }
 }
 
-create_and_activate_rule() {
-    local rule_file="$1"
-    local rule_id
-    rule_id=$(create_rule "$rule_file") || return 1
-    activate_rule "$rule_id" || return 1
-    echo "$rule_id"
+create_and_activate_workflow() {
+    local workflow_file="$1"
+    local workflow_id
+    workflow_id=$(create_workflow "$workflow_file") || return 1
+    activate_workflow "$workflow_id" || return 1
+    echo "$workflow_id"
 }
 
-import_rules() {
-    local rules_file="$1"
+import_workflows() {
+    local workflows_file="$1"
     local response
-    response=$(curl -sf -X POST "${BENCH_URL}/api/v1/admin/rules/import" \
+    response=$(curl -sf -X POST "${BENCH_URL}/api/v1/admin/workflows/import" \
         -H "Content-Type: application/json" \
-        -d @"$rules_file" 2>/dev/null) || {
-        log_error "Failed to import rules from $rules_file"
+        -d @"$workflows_file" 2>/dev/null) || {
+        log_error "Failed to import workflows from $workflows_file"
         return 1
     }
 
     local imported
     imported=$(echo "$response" | jq -r '.imported // 0')
-    log_info "Imported $imported rules"
+    log_info "Imported $imported workflows"
 
-    # Activate all imported (draft) rules
-    local rules_json
-    rules_json=$(curl -sf "${BENCH_URL}/api/v1/admin/rules?status=draft" 2>/dev/null) || return 0
+    # Activate all imported (draft) workflows
+    local workflows_json
+    workflows_json=$(curl -sf "${BENCH_URL}/api/v1/admin/workflows?status=draft" 2>/dev/null) || return 0
 
     local ids
-    ids=$(echo "$rules_json" | jq -r '.data[]?.rule_id // empty' 2>/dev/null) || return 0
+    ids=$(echo "$workflows_json" | jq -r '.data[]?.workflow_id // empty' 2>/dev/null) || return 0
 
     while IFS= read -r id; do
         [[ -z "$id" ]] && continue
-        activate_rule "$id"
+        activate_workflow "$id"
     done <<< "$ids"
 }
 
@@ -270,16 +270,16 @@ reload_engine() {
     curl -sf -X POST "${BENCH_URL}/api/v1/admin/engine/reload" >/dev/null 2>&1 || true
 }
 
-clear_rules() {
-    local rules_json
-    rules_json=$(curl -sf "${BENCH_URL}/api/v1/admin/rules" 2>/dev/null) || return 0
+clear_workflows() {
+    local workflows_json
+    workflows_json=$(curl -sf "${BENCH_URL}/api/v1/admin/workflows" 2>/dev/null) || return 0
 
     local ids
-    ids=$(echo "$rules_json" | jq -r '.data[]?.rule_id // empty' 2>/dev/null) || return 0
+    ids=$(echo "$workflows_json" | jq -r '.data[]?.workflow_id // empty' 2>/dev/null) || return 0
 
     while IFS= read -r id; do
         [[ -z "$id" ]] && continue
-        curl -sf -X DELETE "${BENCH_URL}/api/v1/admin/rules/${id}" >/dev/null 2>&1 || true
+        curl -sf -X DELETE "${BENCH_URL}/api/v1/admin/workflows/${id}" >/dev/null 2>&1 || true
     done <<< "$ids"
 
     reload_engine
@@ -433,48 +433,48 @@ scenario_baseline() {
     record_result "A: Health check baseline" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
-# B: Simple rule — 1 rule, 1 log task
+# B: Simple workflow — 1 workflow, 1 log task
 scenario_simple() {
-    log_info "B: Simple rule (1 log task)"
-    CURRENT_SCENARIO="B_simple_rule"
+    log_info "B: Simple workflow (1 log task)"
+    CURRENT_SCENARIO="B_simple_workflow"
 
-    clear_rules
-    create_and_activate_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
+    clear_workflows
+    create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json" >/dev/null
 
     run_hey POST "${BENCH_URL}/api/v1/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
-    record_result "B: Simple rule (1 log task)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+    record_result "B: Simple workflow (1 log task)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
-# C: Complex rule — 4-task ecommerce rule
+# C: Complex workflow — 4-task ecommerce workflow
 scenario_complex() {
-    log_info "C: Complex rule (4 tasks)"
-    CURRENT_SCENARIO="C_complex_rule"
+    log_info "C: Complex workflow (4 tasks)"
+    CURRENT_SCENARIO="C_complex_workflow"
 
-    clear_rules
-    create_and_activate_rule "$FIXTURES_DIR/rules/bench_complex_ecommerce.json" >/dev/null
+    clear_workflows
+    create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_complex_ecommerce.json" >/dev/null
 
     run_hey POST "${BENCH_URL}/api/v1/data/orders" "$FIXTURES_DIR/data/complex_payload.json"
-    record_result "C: Complex rule (4 tasks)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+    record_result "C: Complex workflow (4 tasks)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
-# D: Multi-rule channel — 12 rules on same channel
+# D: Multi-workflow channel — 12 workflows on same channel
 scenario_multi() {
-    log_info "D: Multi-rule channel (12 rules)"
-    CURRENT_SCENARIO="D_multi_rules"
+    log_info "D: Multi-workflow channel (12 workflows)"
+    CURRENT_SCENARIO="D_multi_workflows"
 
-    clear_rules
-    import_rules "$FIXTURES_DIR/rules/bench_multi_rules.json"
+    clear_workflows
+    import_workflows "$FIXTURES_DIR/workflows/bench_multi_rules.json"
 
     run_hey POST "${BENCH_URL}/api/v1/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
-    record_result "D: Multi-rule channel (12 rules)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+    record_result "D: Multi-workflow channel (12 workflows)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
 # E: Concurrency scaling — c=1, 10, 50, 100
 scenario_concurrency() {
     log_info "E: Concurrency scaling"
 
-    clear_rules
-    create_and_activate_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
+    clear_workflows
+    create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json" >/dev/null
 
     for c in 1 10 50 100; do
         CURRENT_SCENARIO="E_concurrency_${c}"
@@ -490,8 +490,8 @@ scenario_reload() {
     log_info "F: Reload under load"
     CURRENT_SCENARIO="F_reload_under_load"
 
-    clear_rules
-    create_and_activate_rule "$FIXTURES_DIR/rules/bench_simple_log.json" >/dev/null
+    clear_workflows
+    create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json" >/dev/null
 
     # Start hey in background
     local hey_output_file

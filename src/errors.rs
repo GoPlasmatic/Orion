@@ -10,6 +10,9 @@ pub enum OrionError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
+
     #[error("Conflict: {0}")]
     Conflict(String),
 
@@ -27,6 +30,12 @@ pub enum OrionError {
 
     #[error("Response too large: {0}")]
     ResponseTooLarge(String),
+
+    #[error("Service unavailable: {0}")]
+    ServiceUnavailable(String),
+
+    #[error("Timeout: channel '{channel}' exceeded {timeout_ms}ms")]
+    Timeout { channel: String, timeout_ms: u64 },
 
     #[error("Queue error: {0}")]
     Queue(String),
@@ -67,6 +76,7 @@ impl IntoResponse for OrionError {
         let (status, code, message) = match &self {
             OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
             OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
+            OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
             OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
             OrionError::CircuitOpen { connector, channel } => (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -76,9 +86,25 @@ impl IntoResponse for OrionError {
                     connector, channel
                 ),
             ),
+            OrionError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+                msg.clone(),
+            ),
             OrionError::RateLimited(msg) => {
                 (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", msg.clone())
             }
+            OrionError::Timeout {
+                channel,
+                timeout_ms,
+            } => (
+                StatusCode::GATEWAY_TIMEOUT,
+                "TIMEOUT",
+                format!(
+                    "Workflow execution on channel '{}' exceeded {}ms timeout",
+                    channel, timeout_ms
+                ),
+            ),
             OrionError::ResponseTooLarge(msg) => {
                 (StatusCode::BAD_GATEWAY, "RESPONSE_TOO_LARGE", msg.clone())
             }
@@ -171,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_not_found_status() {
-        let err = OrionError::NotFound("rule xyz".to_string());
+        let err = OrionError::NotFound("workflow xyz".to_string());
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
@@ -376,9 +402,9 @@ mod tests {
     #[test]
     fn test_error_display_messages() {
         assert!(
-            OrionError::NotFound("rule".to_string())
+            OrionError::NotFound("workflow".to_string())
                 .to_string()
-                .contains("rule")
+                .contains("workflow")
         );
         assert!(
             OrionError::BadRequest("bad".to_string())

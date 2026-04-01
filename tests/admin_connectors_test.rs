@@ -1,7 +1,7 @@
 mod common;
 
 use axum::http::StatusCode;
-use common::{body_json, json_request};
+use common::{body_json, json_request, poll_trace_until_done};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -115,12 +115,12 @@ async fn test_connectors_crud_lifecycle() {
 async fn test_data_sync_processing() {
     let app = common::test_app().await;
 
-    // Create and activate a rule
-    common::create_and_activate_rule(
+    // Create and activate a channel (which also creates and activates a workflow)
+    common::create_and_activate_channel(
         &app,
+        "orders",
         json!({
             "name": "Order Logger",
-            "channel": "orders",
             "condition": true,
             "tasks": [{
                 "id": "t1",
@@ -155,6 +155,18 @@ async fn test_data_sync_processing() {
 async fn test_data_async_processing() {
     let app = common::test_app().await;
 
+    // Create and activate a channel
+    common::create_and_activate_channel(
+        &app,
+        "events",
+        json!({
+            "name": "Events Workflow",
+            "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"event"}}}]
+        }),
+    )
+    .await;
+
     // Submit async trace
     let resp = app
         .clone()
@@ -172,29 +184,8 @@ async fn test_data_async_processing() {
     let body = body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap().to_string();
 
-    // Poll trace status with retry until completed or timeout
-    let mut final_status = String::new();
-    for _ in 0..20 {
-        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "GET",
-                &format!("/api/v1/data/traces/{}", trace_id),
-                None,
-            ))
-            .await
-            .unwrap();
-
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = body_json(resp).await;
-        final_status = body["status"].as_str().unwrap().to_string();
-        if final_status == "completed" || final_status == "failed" {
-            break;
-        }
-    }
-    assert_eq!(final_status, "completed");
+    let body = poll_trace_until_done(&app, &trace_id, 20).await;
+    assert_eq!(body["status"], "completed");
 }
 
 #[tokio::test]
@@ -357,4 +348,280 @@ async fn test_update_connector_invalid_type() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ============================================================
+// Circuit Breaker Admin Endpoints
+// ============================================================
+
+#[tokio::test]
+async fn test_circuit_breaker_list_endpoint() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/connectors/circuit-breakers",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["enabled"], false);
+    assert!(body.get("breakers").is_some());
+}
+
+#[tokio::test]
+async fn test_circuit_breaker_reset_not_found() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors/circuit-breakers/nonexistent-key",
+            None,
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = body_json(resp).await;
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("not found")
+    );
+}
+
+// ============================================================
+// Connector Update with type + config validation
+// ============================================================
+
+#[tokio::test]
+async fn test_update_connector_with_type_and_config() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "type-cfg-conn",
+                "name": "type-config-test",
+                "connector_type": "http",
+                "config": {
+                    "type": "http",
+                    "url": "https://example.com/api"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/type-cfg-conn",
+            Some(json!({
+                "connector_type": "http",
+                "config": {
+                    "type": "http",
+                    "url": "https://updated.example.com/api"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["name"], "type-config-test");
+}
+
+#[tokio::test]
+async fn test_update_connector_name_only() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "name-only-conn",
+                "name": "original-name",
+                "connector_type": "http",
+                "config": {"type": "http", "url": "https://example.com"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/name-only-conn",
+            Some(json!({"name": "renamed-connector"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["name"], "renamed-connector");
+}
+
+// ============================================================
+// Data sync processing with metadata
+// ============================================================
+
+#[tokio::test]
+async fn test_sync_processing_with_metadata() {
+    let app = common::test_app().await;
+
+    common::create_and_activate_channel(
+        &app,
+        "meta-ch",
+        json!({
+            "name": "Metadata Workflow",
+            "condition": true,
+            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "meta test"}}}]
+        }),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/meta-ch",
+            Some(json!({
+                "data": {"order_id": "ORD-001"},
+                "metadata": {"source": "api", "trace_id": "abc123"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+    assert!(body.get("id").is_some());
+    assert!(body.get("data").is_some());
+    assert!(body.get("errors").is_some());
+}
+
+// ============================================================
+// Connector list with pagination
+// ============================================================
+
+#[tokio::test]
+async fn test_connector_list_with_pagination() {
+    let app = common::test_app().await;
+
+    for i in 0..2 {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/connectors",
+                Some(json!({
+                    "id": format!("page-conn-{}", i),
+                    "name": format!("page-conn-{}", i),
+                    "connector_type": "http",
+                    "config": {"type": "http", "url": "https://example.com"}
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/connectors?limit=1&offset=0",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["limit"], 1);
+    assert_eq!(body["offset"], 0);
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert!(body["total"].as_i64().unwrap() >= 2);
+}
+
+// ============================================================
+// Create connector with custom ID
+// ============================================================
+
+#[tokio::test]
+async fn test_create_connector_with_custom_id() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "my-custom-conn-id",
+                "name": "custom-id-test",
+                "connector_type": "http",
+                "config": {"type": "http", "url": "https://example.com"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["id"], "my-custom-conn-id");
+}
+
+// ============================================================
+// Connector enable/disable via update
+// ============================================================
+
+#[tokio::test]
+async fn test_update_connector_enabled_flag() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "enable-conn",
+                "name": "enable-test",
+                "connector_type": "http",
+                "config": {"type": "http", "url": "https://example.com"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/enable-conn",
+            Some(json!({"enabled": false})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["enabled"], false);
 }

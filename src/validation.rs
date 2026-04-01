@@ -1,12 +1,15 @@
 use crate::connector::{ConnectorConfig, VALID_CONNECTOR_TYPES};
 use crate::errors::OrionError;
+use crate::storage::models::{
+    CHANNEL_PROTOCOL_HTTP, CHANNEL_PROTOCOL_KAFKA, CHANNEL_PROTOCOL_REST,
+};
+use crate::storage::repositories::channels::CreateChannelRequest;
 use crate::storage::repositories::connectors::{CreateConnectorRequest, UpdateConnectorRequest};
-use crate::storage::repositories::rules::{CreateRuleRequest, UpdateRuleRequest};
+use crate::storage::repositories::workflows::{CreateWorkflowRequest, UpdateWorkflowRequest};
 
 const MAX_ID_LEN: usize = 128;
 const MAX_NAME_LEN: usize = 255;
 const MAX_DESCRIPTION_LEN: usize = 2048;
-const MAX_CHANNEL_LEN: usize = 128;
 
 /// Check if a string matches the identifier pattern:
 /// starts with alphanumeric, then alphanumeric + dots/hyphens/underscores.
@@ -54,25 +57,6 @@ fn validate_description(desc: &str) -> Result<(), OrionError> {
     Ok(())
 }
 
-fn validate_channel(channel: &str) -> Result<(), OrionError> {
-    if channel.trim().is_empty() {
-        return Err(OrionError::BadRequest(
-            "Channel must not be empty".to_string(),
-        ));
-    }
-    if channel.len() > MAX_CHANNEL_LEN {
-        return Err(OrionError::BadRequest(format!(
-            "Channel exceeds maximum length of {MAX_CHANNEL_LEN} characters"
-        )));
-    }
-    if !is_valid_identifier(channel) {
-        return Err(OrionError::BadRequest(
-            "Channel must start with an alphanumeric character and contain only alphanumeric characters, dots, hyphens, or underscores".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn validate_connector_type(ct: &str) -> Result<(), OrionError> {
     if !VALID_CONNECTOR_TYPES.contains(&ct) {
         return Err(OrionError::BadRequest(format!(
@@ -108,46 +92,86 @@ fn validate_connector_config(
     })?;
 
     // For HTTP connectors, validate the URL scheme
-    if let ConnectorConfig::Http(http_config) = &parsed {
-        if !http_config.url.is_empty() {
-            let parsed_url = url::Url::parse(&http_config.url).map_err(|e| {
-                OrionError::BadRequest(format!("Invalid connector URL '{}': {e}", http_config.url))
-            })?;
-            let scheme = parsed_url.scheme();
-            if scheme != "http" && scheme != "https" {
-                return Err(OrionError::BadRequest(format!(
-                    "Connector URL must use http or https scheme, got '{scheme}'"
-                )));
-            }
+    if let ConnectorConfig::Http(http_config) = &parsed
+        && !http_config.url.is_empty()
+    {
+        let parsed_url = url::Url::parse(&http_config.url).map_err(|e| {
+            OrionError::BadRequest(format!("Invalid connector URL '{}': {e}", http_config.url))
+        })?;
+        let scheme = parsed_url.scheme();
+        if scheme != "http" && scheme != "https" {
+            return Err(OrionError::BadRequest(format!(
+                "Connector URL must use http or https scheme, got '{scheme}'"
+            )));
         }
     }
 
     Ok(())
 }
 
-pub fn validate_create_rule(req: &CreateRuleRequest) -> Result<(), OrionError> {
-    if let Some(ref id) = req.rule_id {
+pub fn validate_create_workflow(req: &CreateWorkflowRequest) -> Result<(), OrionError> {
+    if let Some(ref id) = req.workflow_id {
         validate_id(id)?;
     }
     validate_name(&req.name, "Name")?;
     if let Some(ref desc) = req.description {
         validate_description(desc)?;
     }
-    validate_channel(&req.channel)?;
     Ok(())
 }
 
-pub fn validate_update_rule(req: &UpdateRuleRequest) -> Result<(), OrionError> {
+pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), OrionError> {
     if let Some(ref name) = req.name {
         validate_name(name, "Name")?;
     }
     if let Some(ref desc) = req.description {
         validate_description(desc)?;
     }
-    if let Some(ref channel) = req.channel {
-        validate_channel(channel)?;
+    Ok(())
+}
+
+pub fn validate_workflow_id(id: &str) -> Result<(), OrionError> {
+    validate_id(id)
+}
+
+pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionError> {
+    if let Some(ref id) = req.channel_id {
+        validate_id(id)?;
+    }
+    validate_name(&req.name, "Name")?;
+    if let Some(ref desc) = req.description {
+        validate_description(desc)?;
+    }
+    // REST/HTTP channels need methods + route_pattern
+    if req.protocol == CHANNEL_PROTOCOL_REST || req.protocol == CHANNEL_PROTOCOL_HTTP {
+        if req.methods.as_ref().is_none_or(|m| m.is_empty()) {
+            return Err(OrionError::BadRequest(
+                "REST/HTTP channels must specify at least one HTTP method".to_string(),
+            ));
+        }
+        if req
+            .route_pattern
+            .as_ref()
+            .is_none_or(|r| r.trim().is_empty())
+        {
+            return Err(OrionError::BadRequest(
+                "REST/HTTP channels must specify a route_pattern".to_string(),
+            ));
+        }
+    }
+    // Kafka channels need a topic
+    if req.protocol == CHANNEL_PROTOCOL_KAFKA
+        && req.topic.as_ref().is_none_or(|t| t.trim().is_empty())
+    {
+        return Err(OrionError::BadRequest(
+            "Kafka channels must specify a topic".to_string(),
+        ));
     }
     Ok(())
+}
+
+pub fn validate_channel_id(id: &str) -> Result<(), OrionError> {
+    validate_id(id)
 }
 
 pub fn validate_create_connector(req: &CreateConnectorRequest) -> Result<(), OrionError> {
@@ -183,8 +207,8 @@ mod tests {
 
     #[test]
     fn test_valid_id() {
-        assert!(validate_id("my-rule-1").is_ok());
-        assert!(validate_id("rule.v2").is_ok());
+        assert!(validate_id("my-workflow-1").is_ok());
+        assert!(validate_id("workflow.v2").is_ok());
         assert!(validate_id("A123_test").is_ok());
     }
 
@@ -205,7 +229,7 @@ mod tests {
 
     #[test]
     fn test_valid_name() {
-        assert!(validate_name("My Rule", "Name").is_ok());
+        assert!(validate_name("My Workflow", "Name").is_ok());
     }
 
     #[test]
@@ -228,15 +252,15 @@ mod tests {
 
     #[test]
     fn test_valid_channel() {
-        assert!(validate_channel("orders").is_ok());
-        assert!(validate_channel("my-channel.v2").is_ok());
+        assert!(validate_channel_id("orders").is_ok());
+        assert!(validate_channel_id("my-channel.v2").is_ok());
     }
 
     #[test]
     fn test_invalid_channel() {
-        assert!(validate_channel("").is_err());
-        assert!(validate_channel("   ").is_err());
-        assert!(validate_channel("has spaces").is_err());
+        assert!(validate_channel_id("").is_err());
+        assert!(validate_channel_id("   ").is_err());
+        assert!(validate_channel_id("has spaces").is_err());
     }
 
     #[test]
@@ -277,8 +301,8 @@ mod tests {
 
     #[test]
     fn test_channel_too_long() {
-        let long_channel = "a".repeat(MAX_CHANNEL_LEN + 1);
-        assert!(validate_channel(&long_channel).is_err());
+        let long_channel = "a".repeat(MAX_ID_LEN + 1);
+        assert!(validate_channel_id(&long_channel).is_err());
     }
 
     #[test]
@@ -288,111 +312,222 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_create_rule_full() {
-        let req = CreateRuleRequest {
-            rule_id: Some("my-rule-1".to_string()),
-            name: "Test Rule".to_string(),
-            description: Some("A test rule".to_string()),
-            channel: "orders".to_string(),
+    fn test_validate_create_workflow_full() {
+        let req = CreateWorkflowRequest {
+            workflow_id: Some("my-workflow-1".to_string()),
+            name: "Test Workflow".to_string(),
+            description: Some("A test workflow".to_string()),
             priority: 10,
             condition: json!(true),
             tasks: json!([]),
             tags: vec!["tag1".to_string()],
             continue_on_error: false,
         };
-        assert!(validate_create_rule(&req).is_ok());
+        assert!(validate_create_workflow(&req).is_ok());
     }
 
     #[test]
-    fn test_validate_create_rule_invalid_id() {
-        let req = CreateRuleRequest {
-            rule_id: Some("bad id with spaces".to_string()),
-            name: "Test Rule".to_string(),
+    fn test_validate_create_workflow_invalid_id() {
+        let req = CreateWorkflowRequest {
+            workflow_id: Some("bad id with spaces".to_string()),
+            name: "Test Workflow".to_string(),
             description: None,
-            channel: "orders".to_string(),
             priority: 0,
             condition: json!(true),
             tasks: json!([]),
             tags: vec![],
             continue_on_error: false,
         };
-        assert!(validate_create_rule(&req).is_err());
+        assert!(validate_create_workflow(&req).is_err());
     }
 
     #[test]
-    fn test_validate_create_rule_long_description() {
-        let req = CreateRuleRequest {
-            rule_id: None,
-            name: "Test Rule".to_string(),
+    fn test_validate_create_workflow_long_description() {
+        let req = CreateWorkflowRequest {
+            workflow_id: None,
+            name: "Test Workflow".to_string(),
             description: Some("d".repeat(MAX_DESCRIPTION_LEN + 1)),
-            channel: "orders".to_string(),
             priority: 0,
             condition: json!(true),
             tasks: json!([]),
             tags: vec![],
             continue_on_error: false,
         };
-        assert!(validate_create_rule(&req).is_err());
+        assert!(validate_create_workflow(&req).is_err());
     }
 
     #[test]
-    fn test_validate_update_rule_all_fields() {
-        let req = UpdateRuleRequest {
+    fn test_validate_update_workflow_all_fields() {
+        let req = UpdateWorkflowRequest {
             name: Some("Updated Name".to_string()),
             description: Some("Updated desc".to_string()),
-            channel: Some("updated-ch".to_string()),
             priority: Some(5),
             condition: None,
             tasks: None,
             tags: None,
             continue_on_error: None,
         };
-        assert!(validate_update_rule(&req).is_ok());
+        assert!(validate_update_workflow(&req).is_ok());
     }
 
     #[test]
-    fn test_validate_update_rule_invalid_name() {
-        let req = UpdateRuleRequest {
+    fn test_validate_update_workflow_invalid_name() {
+        let req = UpdateWorkflowRequest {
             name: Some("".to_string()),
             description: None,
-            channel: None,
             priority: None,
             condition: None,
             tasks: None,
             tags: None,
             continue_on_error: None,
         };
-        assert!(validate_update_rule(&req).is_err());
+        assert!(validate_update_workflow(&req).is_err());
     }
 
     #[test]
-    fn test_validate_update_rule_invalid_description() {
-        let req = UpdateRuleRequest {
+    fn test_validate_update_workflow_invalid_description() {
+        let req = UpdateWorkflowRequest {
             name: None,
             description: Some("x".repeat(MAX_DESCRIPTION_LEN + 1)),
-            channel: None,
             priority: None,
             condition: None,
             tasks: None,
             tags: None,
             continue_on_error: None,
         };
-        assert!(validate_update_rule(&req).is_err());
+        assert!(validate_update_workflow(&req).is_err());
     }
 
     #[test]
-    fn test_validate_update_rule_invalid_channel() {
-        let req = UpdateRuleRequest {
-            name: None,
+    fn test_validate_create_channel_sync_valid() {
+        let req = CreateChannelRequest {
+            channel_id: Some("orders-sync".to_string()),
+            name: "Orders Sync".to_string(),
             description: None,
-            channel: Some("bad channel!".to_string()),
-            priority: None,
-            condition: None,
-            tasks: None,
-            tags: None,
-            continue_on_error: None,
+            channel_type: "sync".to_string(),
+            protocol: "rest".to_string(),
+            methods: Some(vec!["POST".to_string()]),
+            route_pattern: Some("/orders".to_string()),
+            topic: None,
+            consumer_group: None,
+            transport_config: json!({}),
+            workflow_id: None,
+            config: json!({}),
+            priority: 0,
         };
-        assert!(validate_update_rule(&req).is_err());
+        assert!(validate_create_channel(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_create_channel_sync_missing_methods() {
+        let req = CreateChannelRequest {
+            channel_id: None,
+            name: "Bad Sync".to_string(),
+            description: None,
+            channel_type: "sync".to_string(),
+            protocol: "rest".to_string(),
+            methods: None,
+            route_pattern: Some("/orders".to_string()),
+            topic: None,
+            consumer_group: None,
+            transport_config: json!({}),
+            workflow_id: None,
+            config: json!({}),
+            priority: 0,
+        };
+        assert!(validate_create_channel(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_create_channel_sync_missing_route() {
+        let req = CreateChannelRequest {
+            channel_id: None,
+            name: "Bad Sync".to_string(),
+            description: None,
+            channel_type: "sync".to_string(),
+            protocol: "rest".to_string(),
+            methods: Some(vec!["POST".to_string()]),
+            route_pattern: None,
+            topic: None,
+            consumer_group: None,
+            transport_config: json!({}),
+            workflow_id: None,
+            config: json!({}),
+            priority: 0,
+        };
+        assert!(validate_create_channel(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_create_channel_async_valid() {
+        let req = CreateChannelRequest {
+            channel_id: None,
+            name: "Orders Async".to_string(),
+            description: None,
+            channel_type: "async".to_string(),
+            protocol: "kafka".to_string(),
+            methods: None,
+            route_pattern: None,
+            topic: Some("orders-topic".to_string()),
+            consumer_group: None,
+            transport_config: json!({}),
+            workflow_id: None,
+            config: json!({}),
+            priority: 0,
+        };
+        assert!(validate_create_channel(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_create_channel_async_missing_topic() {
+        let req = CreateChannelRequest {
+            channel_id: None,
+            name: "Bad Async".to_string(),
+            description: None,
+            channel_type: "async".to_string(),
+            protocol: "kafka".to_string(),
+            methods: None,
+            route_pattern: None,
+            topic: None,
+            consumer_group: None,
+            transport_config: json!({}),
+            workflow_id: None,
+            config: json!({}),
+            priority: 0,
+        };
+        assert!(validate_create_channel(&req).is_err());
+    }
+
+    #[test]
+    fn test_validate_create_channel_kafka_valid() {
+        let req = CreateChannelRequest {
+            channel_id: None,
+            name: "Kafka Channel".to_string(),
+            description: None,
+            channel_type: "async".to_string(),
+            protocol: "kafka".to_string(),
+            methods: None,
+            route_pattern: None,
+            topic: Some("kafka-topic".to_string()),
+            consumer_group: Some("my-group".to_string()),
+            transport_config: json!({}),
+            workflow_id: None,
+            config: json!({}),
+            priority: 0,
+        };
+        assert!(validate_create_channel(&req).is_ok());
+    }
+
+    #[test]
+    fn test_validate_channel_id() {
+        assert!(validate_channel_id("my-channel-1").is_ok());
+        assert!(validate_channel_id("bad id!").is_err());
+    }
+
+    #[test]
+    fn test_validate_workflow_id() {
+        assert!(validate_workflow_id("my-workflow-1").is_ok());
+        assert!(validate_workflow_id("bad id!").is_err());
     }
 
     #[test]

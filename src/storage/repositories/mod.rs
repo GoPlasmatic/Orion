@@ -1,3 +1,4 @@
+pub mod channels;
 pub mod connectors;
-pub mod rules;
 pub mod traces;
+pub mod workflows;

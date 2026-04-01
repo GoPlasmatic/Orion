@@ -1,31 +1,25 @@
-use std::collections::HashMap;
-use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use axum::extract::{MatchedPath, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use governor::clock::DefaultClock;
-use governor::state::keyed::DashMapStateStore;
-use governor::{Quota, RateLimiter};
-use serde_json::json;
+use serde_json::{Value, json};
 
+use crate::channel::{KeyedLimiter, build_keyed_limiter};
 use crate::config::RateLimitConfig;
 use crate::metrics;
 
-type KeyedLimiter = RateLimiter<String, DashMapStateStore<String>, DefaultClock>;
-
-/// Holds all rate limiters for the application.
+/// Holds platform-level rate limiters (global defaults + endpoint-level).
+/// Per-channel rate limiters live in `ChannelRegistry` and are built from DB config.
 pub struct RateLimitState {
     default_limiter: Arc<KeyedLimiter>,
     admin_limiter: Option<Arc<KeyedLimiter>>,
     data_limiter: Option<Arc<KeyedLimiter>>,
-    channel_limiters: HashMap<String, Arc<KeyedLimiter>>,
 }
 
 impl RateLimitState {
-    /// Build rate limiters from config.
+    /// Build platform-level rate limiters from config.
     pub fn from_config(config: &RateLimitConfig) -> Self {
         let default_limiter = Arc::new(build_keyed_limiter(
             config.default_rps,
@@ -42,50 +36,33 @@ impl RateLimitState {
             .data_rps
             .map(|rps| Arc::new(build_keyed_limiter(rps, rps / 2 + 1)));
 
-        let mut channel_limiters = HashMap::new();
-        for (channel, limit) in &config.channels {
-            let burst = limit.burst.unwrap_or(limit.rps / 2 + 1);
-            channel_limiters.insert(
-                channel.clone(),
-                Arc::new(build_keyed_limiter(limit.rps, burst)),
-            );
-        }
-
         Self {
             default_limiter,
             admin_limiter,
             data_limiter,
-            channel_limiters,
         }
     }
-}
-
-fn build_keyed_limiter(rps: u32, burst: u32) -> KeyedLimiter {
-    let quota = Quota::per_second(NonZeroU32::new(rps).unwrap_or(NonZeroU32::MIN))
-        .allow_burst(NonZeroU32::new(burst).unwrap_or(NonZeroU32::MIN));
-    RateLimiter::dashmap(quota)
 }
 
 /// Extract client IP from proxy headers or connection info.
 fn extract_client_ip(req: &Request) -> String {
     // Try X-Forwarded-For first (may contain comma-separated list)
-    if let Some(xff) = req.headers().get("x-forwarded-for") {
-        if let Ok(val) = xff.to_str() {
-            if let Some(first_ip) = val.split(',').next() {
-                let ip = first_ip.trim();
-                if !ip.is_empty() {
-                    return ip.to_string();
-                }
-            }
+    if let Some(xff) = req.headers().get("x-forwarded-for")
+        && let Ok(val) = xff.to_str()
+        && let Some(first_ip) = val.split(',').next()
+    {
+        let ip = first_ip.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
         }
     }
     // Try X-Real-IP
-    if let Some(xri) = req.headers().get("x-real-ip") {
-        if let Ok(val) = xri.to_str() {
-            let ip = val.trim();
-            if !ip.is_empty() {
-                return ip.to_string();
-            }
+    if let Some(xri) = req.headers().get("x-real-ip")
+        && let Ok(val) = xri.to_str()
+    {
+        let ip = val.trim();
+        if !ip.is_empty() {
+            return ip.to_string();
         }
     }
     "unknown".to_string()
@@ -120,6 +97,9 @@ fn classify_route(path: &str) -> RouteGroup {
 }
 
 /// Rate limiting middleware.
+///
+/// Per-channel limits are read from the `ChannelRegistry` (DB-driven, hot-reloaded).
+/// Platform-level defaults (global, admin, data endpoint) come from `RateLimitState` (config file).
 pub async fn rate_limit_middleware(
     State(state): State<crate::server::state::AppState>,
     matched_path: Option<MatchedPath>,
@@ -138,23 +118,36 @@ pub async fn rate_limit_middleware(
         .unwrap_or(req.uri().path());
     let route_group = classify_route(path);
 
-    // For data routes, check channel-specific limiter first
+    // For data routes, check per-channel limiter from ChannelRegistry first
     if let RouteGroup::Data = &route_group {
         let uri_path = req.uri().path().to_string();
-        if let Some(channel) = extract_channel_from_path(&uri_path) {
-            if let Some(channel_limiter) = rate_limit_state.channel_limiters.get(channel) {
-                let key = format!("{}:{}", client_ip, channel);
-                if channel_limiter.check_key(&key).is_err() {
-                    metrics::record_rate_limit_rejected(&client_ip);
-                    return rate_limited_response();
+        if let Some(channel) = extract_channel_from_path(&uri_path)
+            && let Some(channel_config) = state.channel_registry.get_by_name(channel).await
+            && let Some(ref limiter) = channel_config.rate_limiter
+        {
+            // Compute rate limit key from key_logic or default to client_ip
+            let key = if let Some(ref compiled) = channel_config.rate_limit_key_logic {
+                let context = build_rate_limit_context(&client_ip, channel, &req);
+                match state.datalogic.evaluate(compiled, Arc::new(context)) {
+                    Ok(val) => val.as_str().map(|s| s.to_string()).unwrap_or_else(|| {
+                        serde_json::to_string(&val).unwrap_or_else(|_| client_ip.clone())
+                    }),
+                    Err(_) => client_ip.clone(),
                 }
-                // Channel-specific limiter passed; skip the group/default limiter
-                return next.run(req).await;
+            } else {
+                client_ip.clone()
+            };
+
+            if limiter.check_key(&key).is_err() {
+                metrics::record_rate_limit_rejected(&client_ip);
+                return rate_limited_response();
             }
+            // Channel-specific limiter passed; skip the group/default limiter
+            return next.run(req).await;
         }
     }
 
-    // Pick the appropriate limiter
+    // Fall through to platform-level limiter
     let limiter = match route_group {
         RouteGroup::Admin => rate_limit_state
             .admin_limiter
@@ -173,6 +166,21 @@ pub async fn rate_limit_middleware(
     }
 
     next.run(req).await
+}
+
+/// Build the context object available to rate limit `key_logic` expressions.
+fn build_rate_limit_context(client_ip: &str, channel: &str, req: &Request) -> Value {
+    let mut headers = serde_json::Map::new();
+    for (name, value) in req.headers() {
+        if let Ok(v) = value.to_str() {
+            headers.insert(name.as_str().to_string(), Value::String(v.to_string()));
+        }
+    }
+    json!({
+        "client_ip": client_ip,
+        "channel": channel,
+        "headers": headers,
+    })
 }
 
 fn rate_limited_response() -> Response {
@@ -280,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_extract_channel_from_path_wrong_prefix() {
-        assert_eq!(extract_channel_from_path("/api/v1/admin/rules"), None);
+        assert_eq!(extract_channel_from_path("/api/v1/admin/workflows"), None);
     }
 
     #[test]
@@ -291,7 +299,7 @@ mod tests {
     #[test]
     fn test_classify_route_admin() {
         assert!(matches!(
-            classify_route("/api/v1/admin/rules"),
+            classify_route("/api/v1/admin/workflows"),
             RouteGroup::Admin
         ));
     }
@@ -324,7 +332,6 @@ mod tests {
         let state = RateLimitState::from_config(&config);
         assert!(state.admin_limiter.is_none());
         assert!(state.data_limiter.is_none());
-        assert!(state.channel_limiters.is_empty());
     }
 
     #[test]
@@ -342,36 +349,6 @@ mod tests {
         let state = RateLimitState::from_config(&config);
         assert!(state.admin_limiter.is_some());
         assert!(state.data_limiter.is_some());
-    }
-
-    #[test]
-    fn test_from_config_with_channel_limiters() {
-        let mut channels = HashMap::new();
-        channels.insert(
-            "orders".to_string(),
-            crate::config::ChannelRateLimit {
-                rps: 50,
-                burst: Some(25),
-            },
-        );
-        channels.insert(
-            "events".to_string(),
-            crate::config::ChannelRateLimit {
-                rps: 10,
-                burst: None,
-            },
-        );
-        let config = RateLimitConfig {
-            enabled: true,
-            default_rps: 100,
-            default_burst: 50,
-            channels,
-            ..Default::default()
-        };
-        let state = RateLimitState::from_config(&config);
-        assert_eq!(state.channel_limiters.len(), 2);
-        assert!(state.channel_limiters.contains_key("orders"));
-        assert!(state.channel_limiters.contains_key("events"));
     }
 
     #[test]
