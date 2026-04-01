@@ -12,14 +12,31 @@ port = 8080
 
 [storage]
 path = "orion.db"              # SQLite database file path
-# max_connections = 10          # SQLite connection pool size
+# busy_timeout_ms = 5000        # SQLite busy timeout in milliseconds
+# acquire_timeout_secs = 5      # Connection pool acquire timeout in seconds
 
 [ingest]
 max_payload_size = 1048576     # Maximum payload size in bytes (1 MB)
 
+[engine]
+# health_check_timeout_secs = 2   # Timeout for engine read lock in health checks
+# reload_timeout_secs = 10        # Timeout for engine write lock during reload
+
 [queue]
 workers = 4                    # Concurrent async trace workers
 buffer_size = 1000             # Channel buffer for pending traces
+# shutdown_timeout_secs = 30    # Timeout for in-flight jobs during shutdown
+
+[rate_limit]
+# enabled = false               # Enable platform-level request rate limiting
+# default_rps = 100             # Default requests per second
+# default_burst = 50            # Default burst allowance
+
+# [rate_limit.endpoints]
+# admin_rps = 50                # Rate limit for admin routes
+# data_rps = 200                # Rate limit for data routes
+
+# Per-channel rate limits are configured via the channel's config_json in the DB.
 
 [kafka]                        # Requires the `kafka` feature flag
 enabled = false
@@ -40,6 +57,12 @@ format = "pretty"              # pretty or json
 
 [metrics]
 enabled = false
+
+[tracing]                           # Requires the `otel` feature flag
+# enabled = false                   # Enable OpenTelemetry trace export
+# otlp_endpoint = "http://localhost:4317"  # OTLP gRPC endpoint
+# service_name = "orion"            # Service name in traces
+# sample_rate = 1.0                 # 0.0 (none) to 1.0 (all)
 ```
 
 ## Environment Variable Overrides
@@ -50,6 +73,7 @@ Override any setting with environment variables using double-underscore nesting:
 ORION_SERVER__PORT=9090
 ORION_KAFKA__ENABLED=true
 ORION_LOGGING__FORMAT=json
+ORION_RATE_LIMIT__ENABLED=true
 ```
 
 All settings have sensible defaults. You can run Orion with no config file at all — `orion-server` just works.
@@ -80,5 +104,6 @@ Orion handles `SIGTERM` and `SIGINT` with a controlled shutdown sequence:
 - Mount a persistent volume for `orion.db`
 - Set `ORION_LOGGING__FORMAT=json` for structured log ingestion
 - Enable Prometheus metrics with `ORION_METRICS__ENABLED=true`
-- Tune `storage.max_connections` for your concurrency needs (default: 10)
+- Configure `rate_limit` for traffic protection (platform-level and per-channel)
 - Use `RUST_LOG=orion=info` for per-crate log filtering
+- Enable OpenTelemetry with `ORION_TRACING__ENABLED=true` for distributed tracing

@@ -6,7 +6,7 @@
 
 ## Topic-to-Channel Mapping
 
-Map Kafka topics to Orion channels in your config:
+Map Kafka topics to Orion channels in your config file:
 
 ```toml
 [kafka]
@@ -22,6 +22,23 @@ channel = "orders"
 topic = "raw-events"
 channel = "events"
 ```
+
+### DB-Driven Topic Mapping
+
+Async channels with `protocol: "kafka"` or `channel_type: "async"` that have a `topic` field are automatically registered as Kafka consumers at startup and on engine reload. This means you can add Kafka ingestion channels via the API without restarting Orion:
+
+```json
+{
+  "name": "kafka-orders",
+  "channel_type": "async",
+  "protocol": "kafka",
+  "topic": "incoming-orders",
+  "consumer_group": "orion-orders",
+  "workflow_id": "order-processing"
+}
+```
+
+Config-file topics and DB-driven topics are merged — duplicates (by topic name) are deduplicated with config-file entries taking precedence. The Kafka consumer is automatically restarted on engine reload when the topic set changes.
 
 ## Metadata Injection
 
