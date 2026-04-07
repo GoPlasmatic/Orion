@@ -1,15 +1,37 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, patch, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
 use crate::connector::mask_connector;
 use crate::errors::OrionError;
+use crate::server::admin_auth::AdminPrincipal;
 use crate::server::routes::reload_engine;
 use crate::server::state::AppState;
+
+/// Emit a structured audit log event for admin mutations.
+fn audit_log(
+    principal: Option<&AdminPrincipal>,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+) {
+    let who = principal
+        .map(|p| p.key_prefix.as_str())
+        .unwrap_or("anonymous");
+    tracing::info!(
+        target: "audit",
+        principal = %who,
+        action = %action,
+        resource_type = %resource_type,
+        resource_id = %resource_id,
+        "admin_audit_event"
+    );
+    crate::metrics::record_admin_audit(action, resource_type);
+}
 use crate::storage::models::{ChannelResponse, StatusAction, WorkflowResponse};
 use crate::storage::repositories::channels::{
     ChannelFilter, ChannelStatusChangeRequest, CreateChannelRequest, UpdateChannelRequest,
@@ -118,13 +140,20 @@ pub(crate) async fn list_channels(
         (status = 400, description = "Invalid input"),
     )
 )]
-#[tracing::instrument(skip(state, req))]
+#[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn create_channel(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Json(req): Json<CreateChannelRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_channel(&req)?;
     let channel = state.channel_repo.create(&req).await?;
+    audit_log(
+        principal.as_ref().map(|e| &e.0),
+        "create",
+        "channel",
+        &channel.channel_id,
+    );
     // No engine reload — drafts are not in the engine
     Ok((
         StatusCode::CREATED,
@@ -165,13 +194,15 @@ pub(crate) async fn get_channel(
         (status = 404, description = "Channel not found"),
     )
 )]
-#[tracing::instrument(skip(state, req))]
+#[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn update_channel(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
     Json(req): Json<UpdateChannelRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let channel = state.channel_repo.update_draft(&id, &req).await?;
+    audit_log(principal.as_ref().map(|e| &e.0), "update", "channel", &id);
     // No engine reload — drafts are not in the engine
     Ok(Json(
         json!({ "data": ChannelResponse::try_from(&channel)? }),
@@ -188,12 +219,14 @@ pub(crate) async fn update_channel(
         (status = 404, description = "Channel not found"),
     )
 )]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, principal))]
 pub(crate) async fn delete_channel(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.channel_repo.delete(&id).await?;
+    audit_log(principal.as_ref().map(|e| &e.0), "delete", "channel", &id);
     reload_engine(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -214,9 +247,10 @@ pub(crate) async fn delete_channel(
         (status = 404, description = "Channel not found"),
     )
 )]
-#[tracing::instrument(skip(state, req))]
+#[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn change_channel_status(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
     Json(req): Json<ChannelStatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
@@ -225,6 +259,12 @@ pub(crate) async fn change_channel_status(
         StatusAction::Activate => state.channel_repo.activate(&id).await?,
         StatusAction::Archive => state.channel_repo.archive(&id).await?,
     };
+    audit_log(
+        principal.as_ref().map(|e| &e.0),
+        &format!("status_{}", req.status),
+        "channel",
+        &id,
+    );
     reload_engine(&state).await?;
     Ok(Json(
         json!({ "data": ChannelResponse::try_from(&channel)? }),
@@ -289,12 +329,19 @@ pub(crate) async fn list_channel_versions(
         (status = 409, description = "Draft already exists"),
     )
 )]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, principal))]
 pub(crate) async fn create_new_channel_version(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let channel = state.channel_repo.create_new_version(&id).await?;
+    audit_log(
+        principal.as_ref().map(|e| &e.0),
+        "create_version",
+        "channel",
+        &id,
+    );
     Ok((
         StatusCode::CREATED,
         Json(json!({ "data": ChannelResponse::try_from(&channel)? })),
@@ -343,13 +390,20 @@ pub(crate) async fn list_workflows(
         (status = 400, description = "Invalid input"),
     )
 )]
-#[tracing::instrument(skip(state, req))]
+#[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn create_workflow(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Json(req): Json<CreateWorkflowRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_workflow(&req)?;
     let workflow = state.workflow_repo.create(&req).await?;
+    audit_log(
+        principal.as_ref().map(|e| &e.0),
+        "create",
+        "workflow",
+        &workflow.workflow_id,
+    );
     // No engine reload — drafts are not in the engine
     Ok((
         StatusCode::CREATED,
@@ -390,14 +444,16 @@ pub(crate) async fn get_workflow(
         (status = 404, description = "Workflow not found"),
     )
 )]
-#[tracing::instrument(skip(state, req))]
+#[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn update_workflow(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
     Json(req): Json<UpdateWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_workflow(&req)?;
     let workflow = state.workflow_repo.update_draft(&id, &req).await?;
+    audit_log(principal.as_ref().map(|e| &e.0), "update", "workflow", &id);
     // No engine reload — drafts are not in the engine
     Ok(Json(
         json!({ "data": WorkflowResponse::try_from(&workflow)? }),
@@ -414,12 +470,14 @@ pub(crate) async fn update_workflow(
         (status = 404, description = "Workflow not found"),
     )
 )]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, principal))]
 pub(crate) async fn delete_workflow(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.workflow_repo.delete(&id).await?;
+    audit_log(principal.as_ref().map(|e| &e.0), "delete", "workflow", &id);
     reload_engine(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -440,9 +498,10 @@ pub(crate) async fn delete_workflow(
         (status = 404, description = "Workflow not found"),
     )
 )]
-#[tracing::instrument(skip(state, req))]
+#[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn change_workflow_status(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
     Json(req): Json<StatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
@@ -454,6 +513,12 @@ pub(crate) async fn change_workflow_status(
         }
         StatusAction::Archive => state.workflow_repo.archive(&id).await?,
     };
+    audit_log(
+        principal.as_ref().map(|e| &e.0),
+        &format!("status_{}", req.status),
+        "workflow",
+        &id,
+    );
     reload_engine(&state).await?;
     Ok(Json(
         json!({ "data": WorkflowResponse::try_from(&workflow)? }),
@@ -475,9 +540,10 @@ pub(crate) async fn change_workflow_status(
         (status = 400, description = "Invalid rollout configuration"),
     )
 )]
-#[tracing::instrument(skip(state, req))]
+#[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn update_rollout(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
     Json(req): Json<RolloutUpdateRequest>,
 ) -> Result<Json<Value>, OrionError> {
@@ -485,6 +551,12 @@ pub(crate) async fn update_rollout(
         .workflow_repo
         .update_rollout(&id, req.rollout_percentage)
         .await?;
+    audit_log(
+        principal.as_ref().map(|e| &e.0),
+        "update_rollout",
+        "workflow",
+        &id,
+    );
     reload_engine(&state).await?;
     Ok(Json(
         json!({ "data": WorkflowResponse::try_from(&workflow)? }),
@@ -546,12 +618,19 @@ pub(crate) async fn list_workflow_versions(
         (status = 409, description = "Draft already exists"),
     )
 )]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, principal))]
 pub(crate) async fn create_new_workflow_version(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let workflow = state.workflow_repo.create_new_version(&id).await?;
+    audit_log(
+        principal.as_ref().map(|e| &e.0),
+        "create_version",
+        "workflow",
+        &id,
+    );
     Ok((
         StatusCode::CREATED,
         Json(json!({ "data": WorkflowResponse::try_from(&workflow)? })),
@@ -649,9 +728,10 @@ pub(crate) async fn test_workflow(
         (status = 200, description = "Import results with counts"),
     )
 )]
-#[tracing::instrument(skip(state, workflows), fields(count = workflows.len()))]
+#[tracing::instrument(skip(state, workflows, principal), fields(count = workflows.len()))]
 pub(crate) async fn import_workflows(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Json(workflows): Json<Vec<CreateWorkflowRequest>>,
 ) -> Result<Json<Value>, OrionError> {
     let results = state.workflow_repo.bulk_create(&workflows).await?;
@@ -672,6 +752,13 @@ pub(crate) async fn import_workflows(
             }
         }
     }
+
+    audit_log(
+        principal.as_ref().map(|e| &e.0),
+        "import",
+        "workflow",
+        &format!("{imported} imported"),
+    );
 
     // No engine reload — imported workflows are drafts
 
@@ -972,13 +1059,20 @@ pub(crate) async fn list_connectors(
         (status = 409, description = "Connector name conflict"),
     )
 )]
-#[tracing::instrument(skip(state, req))]
+#[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn create_connector(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Json(req): Json<CreateConnectorRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_connector(&req)?;
     let connector = state.connector_repo.create(&req).await?;
+    audit_log(
+        principal.as_ref().map(|e| &e.0),
+        "create",
+        "connector",
+        &connector.id,
+    );
     reload_connectors(&state).await?;
     let masked = mask_connector(&connector);
     Ok((StatusCode::CREATED, Json(json!({ "data": masked }))))
@@ -1015,14 +1109,16 @@ pub(crate) async fn get_connector(
         (status = 404, description = "Connector not found"),
     )
 )]
-#[tracing::instrument(skip(state, req))]
+#[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn update_connector(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
     Json(req): Json<UpdateConnectorRequest>,
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_connector(&req)?;
     let connector = state.connector_repo.update(&id, &req).await?;
+    audit_log(principal.as_ref().map(|e| &e.0), "update", "connector", &id);
     reload_connectors(&state).await?;
     let masked = mask_connector(&connector);
     Ok(Json(json!({ "data": masked })))
@@ -1038,12 +1134,14 @@ pub(crate) async fn update_connector(
         (status = 404, description = "Connector not found"),
     )
 )]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, principal))]
 pub(crate) async fn delete_connector(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.connector_repo.delete(&id).await?;
+    audit_log(principal.as_ref().map(|e| &e.0), "delete", "connector", &id);
     reload_connectors(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1052,6 +1150,14 @@ pub(crate) async fn delete_connector(
 // Circuit Breakers
 // ============================================================
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/connectors/circuit-breakers",
+    tag = "Connectors",
+    responses(
+        (status = 200, description = "Circuit breaker states"),
+    )
+)]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_circuit_breakers(
     State(state): State<AppState>,
@@ -1063,13 +1169,30 @@ pub(crate) async fn list_circuit_breakers(
     })))
 }
 
-#[tracing::instrument(skip(state))]
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/connectors/circuit-breakers/{key}",
+    tag = "Connectors",
+    params(("key" = String, Path, description = "Circuit breaker key (channel:connector)")),
+    responses(
+        (status = 200, description = "Circuit breaker reset"),
+        (status = 404, description = "Circuit breaker not found"),
+    )
+)]
+#[tracing::instrument(skip(state, principal))]
 pub(crate) async fn reset_circuit_breaker(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
     Path(key): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
     let found = state.connector_registry.reset_circuit_breaker(&key).await;
     if found {
+        audit_log(
+            principal.as_ref().map(|e| &e.0),
+            "reset",
+            "circuit_breaker",
+            &key,
+        );
         Ok(Json(json!({ "reset": true, "key": key })))
     } else {
         Err(OrionError::NotFound(format!(
@@ -1127,10 +1250,17 @@ pub(crate) async fn engine_status(
         (status = 200, description = "Engine reloaded"),
     )
 )]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, principal))]
 pub(crate) async fn engine_reload(
     State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
 ) -> Result<Json<Value>, OrionError> {
+    audit_log(
+        principal.as_ref().map(|e| &e.0),
+        "reload",
+        "engine",
+        "manual",
+    );
     reload_engine(&state).await?;
 
     let engine = state.engine.read().await;

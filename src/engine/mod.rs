@@ -27,11 +27,22 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "publish_kafka",
     "db_read",
     "db_write",
+    "cache_read",
+    "cache_write",
+    "mongo_read",
     "channel_call",
 ];
 
 /// Function names that require a connector reference.
-pub const CONNECTOR_FUNCTIONS: &[&str] = &["http_call", "publish_kafka", "db_read", "db_write"];
+pub const CONNECTOR_FUNCTIONS: &[&str] = &[
+    "http_call",
+    "publish_kafka",
+    "db_read",
+    "db_write",
+    "cache_read",
+    "cache_write",
+    "mongo_read",
+];
 
 /// Build the custom function handlers for the dataflow-rs engine.
 ///
@@ -72,6 +83,59 @@ pub fn build_custom_functions(
         }),
     );
 
+    // Register SQL database handlers (db_read, db_write)
+    #[cfg(feature = "connectors-sql")]
+    {
+        let sql_pool_cache = Arc::new(crate::connector::pool_cache::SqlPoolCache::new());
+        fns.insert(
+            "db_read".to_string(),
+            Box::new(functions::db_read::DbReadHandler {
+                pool_cache: sql_pool_cache.clone(),
+                registry: registry.clone(),
+            }),
+        );
+        fns.insert(
+            "db_write".to_string(),
+            Box::new(functions::db_write::DbWriteHandler {
+                pool_cache: sql_pool_cache,
+                registry: registry.clone(),
+            }),
+        );
+    }
+
+    // Register Redis cache handlers (cache_read, cache_write)
+    #[cfg(feature = "connectors-redis")]
+    {
+        let redis_pool_cache = Arc::new(crate::connector::redis_pool::RedisPoolCache::new());
+        fns.insert(
+            "cache_read".to_string(),
+            Box::new(functions::cache_read::CacheReadHandler {
+                pool_cache: redis_pool_cache.clone(),
+                registry: registry.clone(),
+            }),
+        );
+        fns.insert(
+            "cache_write".to_string(),
+            Box::new(functions::cache_write::CacheWriteHandler {
+                pool_cache: redis_pool_cache,
+                registry: registry.clone(),
+            }),
+        );
+    }
+
+    // Register MongoDB handler (mongo_read)
+    #[cfg(feature = "connectors-mongodb")]
+    {
+        let mongo_pool_cache = Arc::new(crate::connector::mongo_pool::MongoPoolCache::new());
+        fns.insert(
+            "mongo_read".to_string(),
+            Box::new(functions::mongo_read::MongoReadHandler {
+                pool_cache: mongo_pool_cache,
+                registry: registry.clone(),
+            }),
+        );
+    }
+
     fns
 }
 
@@ -88,6 +152,65 @@ pub fn register_kafka_publisher(
         "publish_kafka".to_string(),
         Box::new(functions::publish_kafka::PublishKafkaHandler { registry, producer }),
     );
+}
+
+/// Filter channels based on include/exclude glob patterns from [`ChannelLoadingConfig`].
+///
+/// - If `include` is non-empty, only channels matching at least one include pattern are kept.
+/// - Channels matching any `exclude` pattern are removed (applied after include).
+/// - Supports simple `*` wildcards (e.g., `internal-*`, `*-debug`).
+pub fn filter_channels(
+    channels: Vec<Channel>,
+    config: &crate::config::ChannelLoadingConfig,
+) -> Vec<Channel> {
+    if config.include.is_empty() && config.exclude.is_empty() {
+        return channels;
+    }
+
+    channels
+        .into_iter()
+        .filter(|ch| {
+            // Include filter: if non-empty, channel must match at least one pattern
+            if !config.include.is_empty() && !config.include.iter().any(|p| glob_match(p, &ch.name))
+            {
+                return false;
+            }
+            // Exclude filter: channel must not match any exclude pattern
+            !config.exclude.iter().any(|p| glob_match(p, &ch.name))
+        })
+        .collect()
+}
+
+/// Simple glob matching supporting `*` wildcards.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    if parts.len() == 1 {
+        // No wildcard — exact match
+        return pattern == name;
+    }
+
+    let mut pos = 0;
+    for (i, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(found) = name[pos..].find(part) {
+            if i == 0 && found != 0 {
+                // First segment must be a prefix match
+                return false;
+            }
+            pos += found + part.len();
+        } else {
+            return false;
+        }
+    }
+
+    // If pattern ends with *, remaining chars are fine. Otherwise name must be fully consumed.
+    if pattern.ends_with('*') {
+        true
+    } else {
+        pos == name.len()
+    }
 }
 
 /// Convert active channels and their workflows to dataflow-rs workflows for the engine.
@@ -168,4 +291,119 @@ pub fn build_engine_workflows(
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_glob_match_exact() {
+        assert!(glob_match("orders", "orders"));
+        assert!(!glob_match("orders", "events"));
+    }
+
+    #[test]
+    fn test_glob_match_prefix_wildcard() {
+        assert!(glob_match("internal-*", "internal-debug"));
+        assert!(glob_match("internal-*", "internal-"));
+        assert!(!glob_match("internal-*", "external-debug"));
+    }
+
+    #[test]
+    fn test_glob_match_suffix_wildcard() {
+        assert!(glob_match("*-debug", "internal-debug"));
+        assert!(!glob_match("*-debug", "internal-prod"));
+    }
+
+    #[test]
+    fn test_glob_match_star_only() {
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("*", ""));
+    }
+
+    #[test]
+    fn test_glob_match_middle_wildcard() {
+        assert!(glob_match("pre*suf", "presuf"));
+        assert!(glob_match("pre*suf", "pre-middle-suf"));
+        assert!(!glob_match("pre*suf", "pre-middle"));
+    }
+
+    fn make_channel(name: &str) -> Channel {
+        Channel {
+            channel_id: name.to_string(),
+            name: name.to_string(),
+            version: 1,
+            status: "active".to_string(),
+            channel_type: "sync".to_string(),
+            protocol: "http".to_string(),
+            methods: Some("POST".to_string()),
+            workflow_id: None,
+            topic: None,
+            consumer_group: None,
+            route_pattern: None,
+            description: None,
+            transport_config_json: "{}".to_string(),
+            config_json: "{}".to_string(),
+            priority: 0,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        }
+    }
+
+    #[test]
+    fn test_filter_channels_no_config() {
+        let channels = vec![make_channel("orders"), make_channel("events")];
+        let config = crate::config::ChannelLoadingConfig::default();
+        let filtered = filter_channels(channels, &config);
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_channels_include_only() {
+        let channels = vec![
+            make_channel("orders"),
+            make_channel("events"),
+            make_channel("internal-debug"),
+        ];
+        let config = crate::config::ChannelLoadingConfig {
+            include: vec!["orders".to_string(), "events".to_string()],
+            exclude: vec![],
+        };
+        let filtered = filter_channels(channels, &config);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|c| c.name != "internal-debug"));
+    }
+
+    #[test]
+    fn test_filter_channels_exclude_only() {
+        let channels = vec![
+            make_channel("orders"),
+            make_channel("events"),
+            make_channel("internal-debug"),
+        ];
+        let config = crate::config::ChannelLoadingConfig {
+            include: vec![],
+            exclude: vec!["internal-*".to_string()],
+        };
+        let filtered = filter_channels(channels, &config);
+        assert_eq!(filtered.len(), 2);
+        assert!(filtered.iter().all(|c| c.name != "internal-debug"));
+    }
+
+    #[test]
+    fn test_filter_channels_include_and_exclude() {
+        let channels = vec![
+            make_channel("orders"),
+            make_channel("orders-debug"),
+            make_channel("events"),
+        ];
+        let config = crate::config::ChannelLoadingConfig {
+            include: vec!["orders*".to_string()],
+            exclude: vec!["*-debug".to_string()],
+        };
+        let filtered = filter_channels(channels, &config);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].name, "orders");
+    }
 }

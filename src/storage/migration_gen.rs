@@ -193,12 +193,7 @@ fn traces_table() -> TableCreateStatement {
     Table::create()
         .table(Traces::Table)
         .if_not_exists()
-        .col(
-            ColumnDef::new(Traces::Id)
-                .text()
-                .not_null()
-                .primary_key(),
-        )
+        .col(ColumnDef::new(Traces::Id).text().not_null().primary_key())
         .col(
             ColumnDef::new(Traces::Channel)
                 .text()
@@ -572,15 +567,13 @@ DELIMITER ;
 
 fn partial_index_sql(backend: &str) -> String {
     match backend {
-        "sqlite" | "postgres" => {
-            r#"
+        "sqlite" | "postgres" => r#"
 CREATE INDEX idx_channels_route_partial ON channels(route_pattern) WHERE route_pattern IS NOT NULL;
 CREATE INDEX idx_channels_topic_partial ON channels(topic) WHERE topic IS NOT NULL;
 CREATE INDEX idx_channels_workflow_partial ON channels(workflow_id) WHERE workflow_id IS NOT NULL;
 CREATE INDEX idx_traces_channel_id_partial ON traces(channel_id) WHERE channel_id IS NOT NULL;
 "#
-            .to_string()
-        }
+        .to_string(),
         // MySQL doesn't support partial indexes
         _ => String::new(),
     }
@@ -617,14 +610,11 @@ pub fn generate_migration(backend: &str) -> String {
     }
 
     // Generate indexes
-    let all_indexes: Vec<IndexCreateStatement> = [
-        workflow_indexes(),
-        channel_indexes(),
-        trace_indexes(),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
+    let all_indexes: Vec<IndexCreateStatement> =
+        [workflow_indexes(), channel_indexes(), trace_indexes()]
+            .into_iter()
+            .flatten()
+            .collect();
 
     for idx in &all_indexes {
         let ddl = match backend {
@@ -687,8 +677,7 @@ mod tests {
     #[test]
     #[ignore] // Run manually with: cargo test test_write_migration -- --ignored
     fn test_write_migration_files() {
-        let manifest_dir =
-            std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
+        let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         for backend in &["sqlite", "postgres", "mysql"] {
             let sql = generate_migration(backend);
             let dir = format!("{manifest_dir}/migrations/{backend}");

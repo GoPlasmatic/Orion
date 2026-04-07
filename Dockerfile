@@ -1,6 +1,12 @@
 # Build stage
 FROM rust:1.93-slim AS builder
 
+# Features to compile. Override with --build-arg to customize.
+# Examples:
+#   --build-arg FEATURES="db-postgres,kafka,otel"
+#   --build-arg FEATURES="db-sqlite,swagger-ui"
+ARG FEATURES="default"
+
 RUN apt-get update && apt-get install -y pkg-config cmake g++ curl libcurl4-openssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -9,8 +15,9 @@ RUN cargo fetch --locked
 
 COPY src/ src/
 COPY migrations/ migrations/
+COPY build.rs ./
 
-RUN cargo build --release --locked
+RUN cargo build --release --locked --features "${FEATURES}"
 
 # Runtime stage
 FROM debian:trixie-slim
@@ -20,12 +27,18 @@ RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib
 RUN groupadd --system orion && useradd --system --gid orion --no-create-home orion
 
 WORKDIR /app
-RUN chown orion:orion /app
+RUN mkdir -p /app/data && chown -R orion:orion /app
 
 COPY --from=builder --chown=orion:orion /app/target/release/orion-server /usr/local/bin/orion-server
 COPY --chown=orion:orion config.toml.example /app/config.toml.example
 
 USER orion
+
+# Default data directory for SQLite database.
+# Mount a persistent volume here to preserve data across container restarts.
+# Note: SQLite WAL mode creates .wal and .shm sidecar files that must be
+# on the same volume as the main database file.
+VOLUME /app/data
 
 EXPOSE 8080
 

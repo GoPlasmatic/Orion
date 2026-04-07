@@ -127,7 +127,36 @@ Orion ships as a **single binary**. With the default SQLite backend, there are n
 - **Sidecar** — deploy alongside your application in Kubernetes
 - **Homebrew** — `brew install GoPlasmatic/tap/orion`
 
-For production with SQLite, configure persistent volume mounts for the database file (including `.wal` and `.shm` sidecar files). For PostgreSQL or MySQL, point `storage.url` to your database server.
+For PostgreSQL or MySQL, point `storage.url` to your database server.
+
+### Docker with SQLite Persistence
+
+SQLite stores data in a local file. Without a persistent volume, **data is lost when the container restarts**. SQLite WAL mode also creates `.wal` and `.shm` sidecar files that must be on the same volume as the main database file.
+
+```bash
+# Named volume (recommended)
+docker run -p 8080:8080 \
+  -v orion-data:/app/data \
+  -e ORION_STORAGE__URL=sqlite:/app/data/orion.db \
+  orion
+```
+
+With Docker Compose:
+
+```yaml
+services:
+  orion:
+    image: orion
+    ports:
+      - "8080:8080"
+    environment:
+      ORION_STORAGE__URL: sqlite:/app/data/orion.db
+    volumes:
+      - orion-data:/app/data
+
+volumes:
+  orion-data:
+```
 
 ## Graceful Shutdown
 

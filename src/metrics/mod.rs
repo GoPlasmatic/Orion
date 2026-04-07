@@ -130,6 +130,94 @@ pub fn record_rate_limit_rejected(client: &str) {
     counter!("rate_limit_rejections_total", "client" => client.to_string()).increment(1);
 }
 
+// ---------------------------------------------------------------------------
+// Trace queue gauges
+// ---------------------------------------------------------------------------
+
+/// Set the trace queue pending depth gauge.
+pub fn set_trace_queue_depth(depth: f64) {
+    gauge!("trace_queue_depth").set(depth);
+}
+
+/// Set the number of active trace worker tasks.
+pub fn set_trace_workers_active(count: f64) {
+    gauge!("trace_workers_active").set(count);
+}
+
+/// Set the total (max) trace worker capacity.
+pub fn set_trace_workers_total(count: f64) {
+    gauge!("trace_workers_total").set(count);
+}
+
+/// Set the approximate memory usage of queued trace payloads.
+pub fn set_trace_queue_memory_bytes(bytes: f64) {
+    gauge!("trace_queue_memory_bytes").set(bytes);
+}
+
+// ---------------------------------------------------------------------------
+// Connector request metrics
+// ---------------------------------------------------------------------------
+
+/// Record a connector request outcome.
+pub fn record_connector_request(connector: &str, channel: &str, status: &str) {
+    counter!(
+        "connector_requests_total",
+        "connector" => connector.to_string(),
+        "channel" => channel.to_string(),
+        "status" => status.to_string()
+    )
+    .increment(1);
+}
+
+/// Record connector request duration.
+pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: f64) {
+    histogram!(
+        "connector_request_duration_seconds",
+        "connector" => connector.to_string(),
+        "channel" => channel.to_string()
+    )
+    .record(duration_secs);
+}
+
+// ---------------------------------------------------------------------------
+// Kafka consumer lag gauge
+// ---------------------------------------------------------------------------
+
+/// Set the consumer lag for a specific topic-partition.
+#[cfg(feature = "kafka")]
+pub fn set_kafka_consumer_lag(topic: &str, partition: i32, lag: f64) {
+    gauge!(
+        "kafka_consumer_lag",
+        "topic" => topic.to_string(),
+        "partition" => partition.to_string()
+    )
+    .set(lag);
+}
+
+// ---------------------------------------------------------------------------
+// Database pool gauges
+// ---------------------------------------------------------------------------
+
+/// Set the database connection pool size (total connections).
+pub fn set_db_pool_size(size: f64) {
+    gauge!("db_pool_size").set(size);
+}
+
+/// Set the number of idle database connections.
+pub fn set_db_pool_idle(idle: f64) {
+    gauge!("db_pool_idle").set(idle);
+}
+
+/// Record an admin audit event.
+pub fn record_admin_audit(action: &str, resource_type: &str) {
+    counter!(
+        "admin_audit_events_total",
+        "action" => action.to_string(),
+        "resource_type" => resource_type.to_string()
+    )
+    .increment(1);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -105,6 +105,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
+        git_hash = env!("GIT_HASH"),
+        build_timestamp = env!("BUILD_TIMESTAMP"),
+        environment = %config.environment,
         "Starting Orion — Declarative Services Runtime"
     );
 
@@ -119,6 +122,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build_recorder()
             .handle()
     };
+
+    // Install sqlx Any drivers for external connector pools (must be before any pool creation)
+    #[cfg(feature = "connectors-sql")]
+    sqlx::any::install_default_drivers();
 
     // Init database
     let pool = orion::storage::init_pool(&config.storage).await?;
@@ -143,7 +150,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(count = connector_count, "Connectors loaded");
 
     // Create a shared HTTP client
-    let http_client = reqwest::Client::new();
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(
+            config.engine.global_http_timeout_secs,
+        ))
+        .build()
+        .map_err(|e| {
+            orion::errors::OrionError::Internal(format!("Failed to build HTTP client: {e}"))
+        })?;
 
     // Create the engine lock early so channel_call handler can reference it.
     // We'll populate it with the real engine after building workflows.
@@ -179,6 +193,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load active channels and workflows, build engine
     let channels = channel_repo.list_active().await?;
+    let channels = orion::engine::filter_channels(channels, &config.channels);
     let active_workflows = workflow_repo.list_active().await?;
     let workflows = orion::engine::build_engine_workflows(&channels, &active_workflows);
     channel_registry.reload(&channels).await;
@@ -268,6 +283,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.queue.buffer_size,
         config.queue.shutdown_timeout_secs,
         config.queue.processing_timeout_ms,
+        config.queue.max_result_size_bytes,
+        config.queue.max_queue_memory_bytes,
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
     );
@@ -319,6 +336,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         connector_registry,
         channel_registry,
         trace_queue,
+        db_pool: pool,
         config: config.clone(),
         start_time: chrono::Utc::now(),
         metrics_handle,
@@ -358,8 +376,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let drain_secs = config.server.shutdown_drain_secs;
         tokio::spawn(async move {
             orion::server::shutdown_signal().await;
-            shutdown_handle
-                .graceful_shutdown(Some(std::time::Duration::from_secs(drain_secs)));
+            shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(drain_secs)));
         });
 
         tracing::info!(

@@ -97,10 +97,13 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
             source: Box::new(e),
         })?;
 
-    MIGRATOR.run(&pool).await.map_err(|e| OrionError::InternalSource {
-        context: "Failed to run migrations".to_string(),
-        source: Box::new(e),
-    })?;
+    MIGRATOR
+        .run(&pool)
+        .await
+        .map_err(|e| OrionError::InternalSource {
+            context: "Failed to run migrations".to_string(),
+            source: Box::new(e),
+        })?;
 
     Ok(pool)
 }
@@ -119,10 +122,13 @@ async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError
             source: Box::new(e),
         })?;
 
-    MIGRATOR.run(&pool).await.map_err(|e| OrionError::InternalSource {
-        context: "Failed to run migrations".to_string(),
-        source: Box::new(e),
-    })?;
+    MIGRATOR
+        .run(&pool)
+        .await
+        .map_err(|e| OrionError::InternalSource {
+            context: "Failed to run migrations".to_string(),
+            source: Box::new(e),
+        })?;
 
     Ok(pool)
 }
@@ -141,10 +147,13 @@ async fn init_mysql_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
             source: Box::new(e),
         })?;
 
-    MIGRATOR.run(&pool).await.map_err(|e| OrionError::InternalSource {
-        context: "Failed to run migrations".to_string(),
-        source: Box::new(e),
-    })?;
+    MIGRATOR
+        .run(&pool)
+        .await
+        .map_err(|e| OrionError::InternalSource {
+            context: "Failed to run migrations".to_string(),
+            source: Box::new(e),
+        })?;
 
     Ok(pool)
 }

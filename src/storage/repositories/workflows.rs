@@ -1,13 +1,16 @@
+use crate::storage::DbPool;
 use async_trait::async_trait;
 use dataflow_rs::Workflow as DataflowWorkflow;
 use sea_query::{Asterisk, Condition, Expr, Func, Order, Query};
 use sea_query_binder::SqlxBinder;
 use serde::{Deserialize, Serialize};
-use crate::storage::DbPool;
 
 use crate::errors::OrionError;
 use crate::storage::models::Workflow;
-use crate::storage::{query_builder, schema::{Workflows, CurrentWorkflows}};
+use crate::storage::{
+    query_builder,
+    schema::{CurrentWorkflows, Workflows},
+};
 
 #[derive(Debug, Serialize)]
 pub struct PaginatedResult<T: Serialize> {
@@ -144,10 +147,7 @@ fn build_condition(filter: &WorkflowFilter) -> Condition {
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
-        cond = cond.add(
-            Expr::col(Workflows::Tags)
-                .like(format!("%\"{}\"%", escaped))
-        );
+        cond = cond.add(Expr::col(Workflows::Tags).like(format!("%\"{}\"%", escaped)));
     }
     cond
 }
@@ -173,10 +173,17 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let (sql, values) = Query::insert()
                 .into_table(Workflows::Table)
                 .columns([
-                    Workflows::WorkflowId, Workflows::Version, Workflows::Name,
-                    Workflows::Description, Workflows::Priority, Workflows::Status,
-                    Workflows::RolloutPercentage, Workflows::ConditionJson,
-                    Workflows::TasksJson, Workflows::Tags, Workflows::ContinueOnError,
+                    Workflows::WorkflowId,
+                    Workflows::Version,
+                    Workflows::Name,
+                    Workflows::Description,
+                    Workflows::Priority,
+                    Workflows::Status,
+                    Workflows::RolloutPercentage,
+                    Workflows::ConditionJson,
+                    Workflows::TasksJson,
+                    Workflows::Tags,
+                    Workflows::ContinueOnError,
                 ])
                 .values_panic([
                     Expr::val(workflow_id.as_str()).into(),
@@ -193,9 +200,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 ])
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             self.get_version(&workflow_id, 1).await
         })
@@ -215,7 +220,9 @@ impl WorkflowRepository for SqlWorkflowRepository {
             sqlx::query_as_with::<_, Workflow, _>(&sql, values)
                 .fetch_optional(&self.pool)
                 .await?
-                .ok_or_else(|| OrionError::NotFound(format!("Workflow '{}' not found", workflow_id)))
+                .ok_or_else(|| {
+                    OrionError::NotFound(format!("Workflow '{}' not found", workflow_id))
+                })
         })
         .await
     }
@@ -249,11 +256,9 @@ impl WorkflowRepository for SqlWorkflowRepository {
             .order_by(Workflows::Name, Order::Asc)
             .build_sqlx(query_builder());
 
-        Ok(
-            sqlx::query_as_with::<_, Workflow, _>(&sql, values)
-                .fetch_all(&self.pool)
-                .await?,
-        )
+        Ok(sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+            .fetch_all(&self.pool)
+            .await?)
     }
 
     async fn list_paginated(
@@ -361,9 +366,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .and_where(Expr::col(Workflows::Status).eq("draft"))
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             self.get_version(workflow_id, existing.version).await
         })
@@ -377,9 +380,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                 .build_sqlx(query_builder());
 
-            let result = sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            let result = sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             if result.rows_affected() == 0 {
                 return Err(OrionError::NotFound(format!(
@@ -402,11 +403,9 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .order_by(Workflows::Priority, Order::Desc)
                 .build_sqlx(query_builder());
 
-            Ok(
-                sqlx::query_as_with::<_, Workflow, _>(&sql, values)
-                    .fetch_all(&self.pool)
-                    .await?,
-            )
+            Ok(sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                .fetch_all(&self.pool)
+                .await?)
         })
         .await
     }
@@ -425,11 +424,9 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .order_by(Workflows::Priority, Order::Desc)
                 .build_sqlx(query_builder());
 
-            Ok(
-                sqlx::query_as_with::<_, Workflow, _>(&sql, values)
-                    .fetch_all(&self.pool)
-                    .await?,
-            )
+            Ok(sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                .fetch_all(&self.pool)
+                .await?)
         })
         .await
     }
@@ -484,9 +481,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                         .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                         .and_where(Expr::col(Workflows::Version).eq(active.version))
                         .build_sqlx(query_builder());
-                    sqlx::query_with(&sql, values)
-                        .execute(&mut *tx)
-                        .await?;
+                    sqlx::query_with(&sql, values).execute(&mut *tx).await?;
                 }
 
                 let (sql, values) = Query::update()
@@ -496,9 +491,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                     .and_where(Expr::col(Workflows::Version).eq(draft.version))
                     .build_sqlx(query_builder());
-                sqlx::query_with(&sql, values)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query_with(&sql, values).execute(&mut *tx).await?;
             } else {
                 if active_versions.len() > 1 {
                     for active in &active_versions[1..] {
@@ -508,9 +501,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                             .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                             .and_where(Expr::col(Workflows::Version).eq(active.version))
                             .build_sqlx(query_builder());
-                        sqlx::query_with(&sql, values)
-                            .execute(&mut *tx)
-                            .await?;
+                        sqlx::query_with(&sql, values).execute(&mut *tx).await?;
                     }
                 }
 
@@ -521,9 +512,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                         .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                         .and_where(Expr::col(Workflows::Version).eq(primary_active.version))
                         .build_sqlx(query_builder());
-                    sqlx::query_with(&sql, values)
-                        .execute(&mut *tx)
-                        .await?;
+                    sqlx::query_with(&sql, values).execute(&mut *tx).await?;
                 }
 
                 let (sql, values) = Query::update()
@@ -533,9 +522,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                     .and_where(Expr::col(Workflows::Version).eq(draft.version))
                     .build_sqlx(query_builder());
-                sqlx::query_with(&sql, values)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query_with(&sql, values).execute(&mut *tx).await?;
             }
 
             tx.commit().await?;
@@ -575,9 +562,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .and_where(Expr::col(Workflows::Status).eq("active"))
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             self.get_version(workflow_id, active.version).await
         })
@@ -638,9 +623,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                     .and_where(Expr::col(Workflows::Version).eq(older.version))
                     .build_sqlx(query_builder());
-                sqlx::query_with(&sql, values)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query_with(&sql, values).execute(&mut *tx).await?;
 
                 // Set newer to 100%
                 let (sql, values) = Query::update()
@@ -649,9 +632,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                     .and_where(Expr::col(Workflows::Version).eq(newer.version))
                     .build_sqlx(query_builder());
-                sqlx::query_with(&sql, values)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query_with(&sql, values).execute(&mut *tx).await?;
             } else {
                 // Update both percentages
                 let (sql, values) = Query::update()
@@ -660,9 +641,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                     .and_where(Expr::col(Workflows::Version).eq(newer.version))
                     .build_sqlx(query_builder());
-                sqlx::query_with(&sql, values)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query_with(&sql, values).execute(&mut *tx).await?;
 
                 let (sql, values) = Query::update()
                     .table(Workflows::Table)
@@ -670,9 +649,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                     .and_where(Expr::col(Workflows::Version).eq(older.version))
                     .build_sqlx(query_builder());
-                sqlx::query_with(&sql, values)
-                    .execute(&mut *tx)
-                    .await?;
+                sqlx::query_with(&sql, values).execute(&mut *tx).await?;
             }
 
             tx.commit().await?;
@@ -717,10 +694,17 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let (sql, values) = Query::insert()
                 .into_table(Workflows::Table)
                 .columns([
-                    Workflows::WorkflowId, Workflows::Version, Workflows::Name,
-                    Workflows::Description, Workflows::Priority, Workflows::Status,
-                    Workflows::RolloutPercentage, Workflows::ConditionJson,
-                    Workflows::TasksJson, Workflows::Tags, Workflows::ContinueOnError,
+                    Workflows::WorkflowId,
+                    Workflows::Version,
+                    Workflows::Name,
+                    Workflows::Description,
+                    Workflows::Priority,
+                    Workflows::Status,
+                    Workflows::RolloutPercentage,
+                    Workflows::ConditionJson,
+                    Workflows::TasksJson,
+                    Workflows::Tags,
+                    Workflows::ContinueOnError,
                 ])
                 .values_panic([
                     Expr::val(workflow_id).into(),
@@ -737,9 +721,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 ])
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             self.get_version(workflow_id, new_version).await
         })

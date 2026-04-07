@@ -40,6 +40,9 @@ pub enum OrionError {
     #[error("Timeout: channel '{channel}' exceeded {timeout_ms}ms")]
     Timeout { channel: String, timeout_ms: u64 },
 
+    #[error("Unsupported media type: {0}")]
+    UnsupportedMediaType(String),
+
     #[error("Queue error: {0}")]
     Queue(String),
 
@@ -91,6 +94,11 @@ impl IntoResponse for OrionError {
                     "Circuit breaker open for connector '{}' on channel '{}'",
                     connector, channel
                 ),
+            ),
+            OrionError::UnsupportedMediaType(msg) => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "UNSUPPORTED_MEDIA_TYPE",
+                msg.clone(),
             ),
             OrionError::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,

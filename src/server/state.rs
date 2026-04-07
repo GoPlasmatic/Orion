@@ -10,6 +10,7 @@ use crate::config::AppConfig;
 use crate::connector::ConnectorRegistry;
 use crate::queue::TraceQueue;
 use crate::server::rate_limit::RateLimitState;
+use crate::storage::DbPool;
 use crate::storage::repositories::channels::ChannelRepository;
 use crate::storage::repositories::connectors::ConnectorRepository;
 use crate::storage::repositories::traces::TraceRepository;
@@ -26,6 +27,7 @@ pub struct AppState {
     pub connector_registry: Arc<ConnectorRegistry>,
     pub channel_registry: Arc<ChannelRegistry>,
     pub trace_queue: TraceQueue,
+    pub db_pool: DbPool,
     pub config: Arc<AppConfig>,
     pub start_time: chrono::DateTime<chrono::Utc>,
     pub metrics_handle: PrometheusHandle,

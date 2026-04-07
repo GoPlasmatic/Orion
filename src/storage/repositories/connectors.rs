@@ -1,8 +1,8 @@
+use crate::storage::DbPool;
 use async_trait::async_trait;
 use sea_query::{Asterisk, Expr, Func, Order, Query};
 use sea_query_binder::SqlxBinder;
 use serde::Deserialize;
-use crate::storage::DbPool;
 
 use crate::errors::OrionError;
 use crate::storage::models::Connector;
@@ -136,11 +136,9 @@ impl ConnectorRepository for SqlConnectorRepository {
             .order_by(Connectors::Name, Order::Asc)
             .build_sqlx(query_builder());
 
-        Ok(
-            sqlx::query_as_with::<_, Connector, _>(&sql, values)
-                .fetch_all(&self.pool)
-                .await?,
-        )
+        Ok(sqlx::query_as_with::<_, Connector, _>(&sql, values)
+            .fetch_all(&self.pool)
+            .await?)
     }
 
     async fn list_paginated(
@@ -156,10 +154,9 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .from(Connectors::Table)
                 .build_sqlx(query_builder());
 
-            let (total,): (i64,) =
-                sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
-                    .fetch_one(&self.pool)
-                    .await?;
+            let (total,): (i64,) = sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
+                .fetch_one(&self.pool)
+                .await?;
 
             let (sql, values) = Query::select()
                 .column(Asterisk)
@@ -211,9 +208,7 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .and_where(Expr::col(Connectors::Id).eq(id))
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             self.get_by_id(id).await
         })
@@ -227,9 +222,7 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .and_where(Expr::col(Connectors::Id).eq(id))
                 .build_sqlx(query_builder());
 
-            let result = sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            let result = sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             if result.rows_affected() == 0 {
                 return Err(OrionError::NotFound(format!(
@@ -252,11 +245,9 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .order_by(Connectors::Name, Order::Asc)
                 .build_sqlx(query_builder());
 
-            Ok(
-                sqlx::query_as_with::<_, Connector, _>(&sql, values)
-                    .fetch_all(&self.pool)
-                    .await?,
-            )
+            Ok(sqlx::query_as_with::<_, Connector, _>(&sql, values)
+                .fetch_all(&self.pool)
+                .await?)
         })
         .await
     }

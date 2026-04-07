@@ -86,6 +86,21 @@ async fn dynamic_handler(
         )));
     };
 
+    // Content-Type enforcement: non-empty bodies must declare a JSON media type
+    if !body.is_empty() {
+        let content_type = headers
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let is_json =
+            content_type.starts_with("application/json") || content_type.contains("+json");
+        if !is_json {
+            return Err(OrionError::UnsupportedMediaType(
+                "Content-Type must be application/json for requests with a body".to_string(),
+            ));
+        }
+    }
+
     // Parse body: empty body is valid (GET/DELETE), otherwise must be JSON
     let req: ProcessRequest = if body.is_empty() {
         ProcessRequest {
@@ -264,8 +279,18 @@ async fn process_sync_for_channel(
             metrics::record_message_duration(channel, duration_secs);
             metrics::record_channel_execution(channel);
 
-            if let Ok(result_json) = serde_json::to_string(&message)
-                && let Err(e) = state
+            // Enforce result size limit
+            let max_result_size = state.config.queue.max_result_size_bytes;
+            if let Ok(result_json) = serde_json::to_string(&message) {
+                if max_result_size > 0 && result_json.len() > max_result_size {
+                    metrics::record_error("result_size_exceeded");
+                    return Err(OrionError::ResponseTooLarge(format!(
+                        "Result size {} bytes exceeds limit of {} bytes",
+                        result_json.len(),
+                        max_result_size
+                    )));
+                }
+                if let Err(e) = state
                     .trace_repo
                     .store_completed(
                         channel,
@@ -275,8 +300,9 @@ async fn process_sync_for_channel(
                         duration_ms,
                     )
                     .await
-            {
-                tracing::warn!(error = %e, "Failed to store sync processing result");
+                {
+                    tracing::warn!(error = %e, "Failed to store sync processing result");
+                }
             }
 
             Ok(Json(json!({

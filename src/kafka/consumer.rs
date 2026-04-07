@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use rdkafka::ClientConfig;
 use rdkafka::Message as KafkaMessage;
+use rdkafka::TopicPartitionList;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use tokio::sync::{RwLock, watch};
 
@@ -55,6 +56,23 @@ pub fn start_consumer(
             source: Box::new(e),
         })?;
 
+    // Verify broker connectivity (non-fatal — brokers may come online later)
+    match consumer.fetch_metadata(None, std::time::Duration::from_secs(5)) {
+        Ok(metadata) => {
+            tracing::info!(
+                brokers = metadata.brokers().len(),
+                topics = metadata.topics().len(),
+                "Kafka broker connectivity verified"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "Kafka broker connectivity check failed — consumer will retry on its own"
+            );
+        }
+    }
+
     // Build topic-to-channel map
     let topic_map: HashMap<String, String> = config
         .topics
@@ -73,6 +91,10 @@ pub fn start_consumer(
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let processing_timeout_ms = config.processing_timeout_ms;
+    let max_inflight = config.max_inflight;
+    let lag_poll_interval_secs = config.lag_poll_interval_secs;
+
+    let consumer = Arc::new(consumer);
 
     let handle = tokio::spawn(consume_loop(
         consumer,
@@ -82,6 +104,8 @@ pub fn start_consumer(
         dlq_topic,
         shutdown_rx,
         processing_timeout_ms,
+        max_inflight,
+        lag_poll_interval_secs,
     ));
 
     Ok(ConsumerHandle {
@@ -90,23 +114,50 @@ pub fn start_consumer(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn consume_loop(
-    consumer: StreamConsumer,
+    consumer: Arc<StreamConsumer>,
     topic_map: HashMap<String, String>,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     dlq_producer: Option<Arc<KafkaProducer>>,
     dlq_topic: Option<String>,
     mut shutdown_rx: watch::Receiver<bool>,
     processing_timeout_ms: u64,
+    max_inflight: usize,
+    lag_poll_interval_secs: u64,
 ) {
     use rdkafka::consumer::CommitMode;
 
+    let backpressure = Arc::new(tokio::sync::Semaphore::new(max_inflight));
+
+    // Spawn consumer lag monitoring task
+    let lag_handle = if lag_poll_interval_secs > 0 {
+        let lag_consumer = consumer.clone();
+        let lag_shutdown = shutdown_rx.clone();
+        Some(tokio::spawn(poll_consumer_lag(
+            lag_consumer,
+            lag_shutdown,
+            lag_poll_interval_secs,
+        )))
+    } else {
+        None
+    };
+
     tracing::info!(
         topics = ?topic_map.keys().collect::<Vec<_>>(),
+        max_inflight = max_inflight,
+        lag_poll_secs = lag_poll_interval_secs,
         "Kafka consumer started"
     );
 
     loop {
+        // Backpressure: wait for a permit before reading the next message.
+        // This pauses the consumer when max_inflight messages are in progress.
+        let _permit = match backpressure.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => break, // Semaphore closed
+        };
+
         tokio::select! {
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
@@ -297,7 +348,73 @@ async fn consume_loop(
         }
     }
 
+    // Stop the lag polling task
+    if let Some(handle) = lag_handle {
+        handle.abort();
+    }
+
     tracing::info!("Kafka consumer stopped");
+}
+
+/// Periodically poll committed offsets and high watermarks to compute consumer lag.
+async fn poll_consumer_lag(
+    consumer: Arc<StreamConsumer>,
+    mut shutdown_rx: watch::Receiver<bool>,
+    interval_secs: u64,
+) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+    // Skip the first immediate tick — let the consumer establish itself first
+    interval.tick().await;
+
+    loop {
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() { break; }
+            }
+            _ = interval.tick() => {
+                let consumer = consumer.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    let committed = match consumer.committed(std::time::Duration::from_secs(5)) {
+                        Ok(tpl) => tpl,
+                        Err(e) => {
+                            tracing::debug!(error = %e, "Failed to fetch committed offsets for lag metric");
+                            return;
+                        }
+                    };
+                    report_lag_for_partitions(&consumer, &committed);
+                }).await;
+            }
+        }
+    }
+}
+
+/// Compute and report lag for each topic-partition in the committed offsets list.
+fn report_lag_for_partitions(consumer: &StreamConsumer, committed: &TopicPartitionList) {
+    for elem in committed.elements() {
+        let topic = elem.topic();
+        let partition = elem.partition();
+
+        let committed_offset = match elem.offset() {
+            rdkafka::Offset::Offset(n) => n,
+            rdkafka::Offset::Invalid | rdkafka::Offset::Beginning => 0,
+            _ => continue, // Stored, End, etc. — skip
+        };
+
+        match consumer.fetch_watermarks(topic, partition, std::time::Duration::from_secs(5)) {
+            Ok((_low, high)) => {
+                let lag = (high - committed_offset).max(0);
+                metrics::set_kafka_consumer_lag(topic, partition, lag as f64);
+            }
+            Err(e) => {
+                tracing::debug!(
+                    topic = %topic,
+                    partition = partition,
+                    error = %e,
+                    "Failed to fetch watermarks for lag metric"
+                );
+            }
+        }
+    }
 }
 
 /// Build a DLQ envelope message from error context.
@@ -370,6 +487,8 @@ mod tests {
             ],
             dlq: crate::config::DlqConfig::default(),
             processing_timeout_ms: 60_000,
+            max_inflight: 10,
+            lag_poll_interval_secs: 30,
         };
 
         let topic_map: HashMap<String, String> = config
@@ -391,10 +510,7 @@ mod tests {
 
         assert_eq!(msg["source_topic"], "test-topic");
         assert_eq!(msg["error"], "JSON parse error");
-        assert_eq!(
-            msg["original_payload"],
-            r#"{"data": {"broken": true}}"#
-        );
+        assert_eq!(msg["original_payload"], r#"{"data": {"broken": true}}"#);
         // Timestamp should be a valid RFC3339 string
         let ts = msg["timestamp"].as_str().unwrap();
         assert!(ts.contains("T"));

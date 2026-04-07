@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -39,24 +38,18 @@ impl AsyncFunctionHandler for CacheReadHandler {
         let connector_name = input
             .get("connector")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                DataflowError::Validation("cache_read requires 'connector'".into())
-            })?;
+            .ok_or_else(|| DataflowError::Validation("cache_read requires 'connector'".into()))?;
         let key = input
             .get("key")
             .and_then(|v| v.as_str())
             .ok_or_else(|| DataflowError::Validation("cache_read requires 'key'".into()))?;
 
-        let connector_config =
-            self.registry
-                .get(connector_name)
-                .await
-                .ok_or_else(|| {
-                    DataflowError::function_execution(
-                        format!("Connector '{}' not found", connector_name),
-                        None,
-                    )
-                })?;
+        let connector_config = self.registry.get(connector_name).await.ok_or_else(|| {
+            DataflowError::function_execution(
+                format!("Connector '{}' not found", connector_name),
+                None,
+            )
+        })?;
         let cache_config = match connector_config.as_ref() {
             ConnectorConfig::Cache(c) => c,
             _ => {
@@ -90,8 +83,7 @@ impl AsyncFunctionHandler for CacheReadHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("data");
 
-        let old_value =
-            super::http_common::get_nested(&message.context, output_path);
+        let old_value = super::http_common::get_nested(&message.context, output_path);
         super::http_common::set_nested(&mut message.context, output_path, result.clone());
         message.invalidate_context_cache();
 

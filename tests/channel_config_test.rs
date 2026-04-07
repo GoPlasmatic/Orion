@@ -40,7 +40,8 @@ async fn test_channel_timeout_returns_504() {
                 "config": {
                     "type": "http",
                     "url": format!("http://{}", mock_addr),
-                    "retry": {"max_retries": 0, "retry_delay_ms": 10}
+                    "retry": {"max_retries": 0, "retry_delay_ms": 10},
+                    "allow_private_urls": true
                 }
             })),
         ))
