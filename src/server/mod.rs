@@ -9,6 +9,7 @@ pub mod state;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use tower_http::catch_panic::CatchPanicLayer;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
@@ -34,6 +35,7 @@ pub fn build_router(state: AppState) -> Router {
 
     let router = routes::api_routes()
         .layer(DefaultBodyLimit::max(max_body_size))
+        .layer(CompressionLayer::new())
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid))
         .layer(TraceLayer::new_for_http())

@@ -167,7 +167,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
         child_message.metadata_mut()[META_CALL_CHAIN] = serde_json::json!(child_chain);
 
         // Get current engine and process with timeout
-        let engine = self.engine.read().await.clone();
+        let engine = crate::engine::acquire_engine_read(&self.engine).await;
         let timeout = Duration::from_millis(input.timeout_ms.unwrap_or(self.default_timeout_ms));
 
         let process_result = tokio::time::timeout(

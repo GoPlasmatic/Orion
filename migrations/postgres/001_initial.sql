@@ -9,6 +9,20 @@ CREATE TABLE IF NOT EXISTS "connectors" ( "id" text NOT NULL PRIMARY KEY, "name"
 
 CREATE TABLE IF NOT EXISTS "traces" ( "id" text NOT NULL PRIMARY KEY, "channel" text NOT NULL DEFAULT 'default', "channel_id" text, "mode" text NOT NULL DEFAULT 'sync', "status" text NOT NULL DEFAULT 'pending', "input_json" text, "result_json" text, "error_message" text, "duration_ms" double precision, "started_at" timestamp, "completed_at" timestamp, "created_at" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP, "updated_at" timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP );
 
+CREATE TABLE IF NOT EXISTS "trace_dlq" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "trace_id" TEXT NOT NULL,
+    "channel" TEXT NOT NULL,
+    "payload_json" TEXT NOT NULL,
+    "metadata_json" TEXT NOT NULL DEFAULT '{}',
+    "error_message" TEXT NOT NULL,
+    "retry_count" INTEGER NOT NULL DEFAULT 0,
+    "max_retries" INTEGER NOT NULL DEFAULT 5,
+    "next_retry_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "created_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX "idx_workflows_status" ON "workflows" ("status");
 CREATE INDEX "idx_workflows_workflow_id" ON "workflows" ("workflow_id");
 CREATE INDEX "idx_workflows_priority_name" ON "workflows" ("priority" DESC, "name" ASC);
@@ -30,6 +44,9 @@ CREATE INDEX idx_channels_route_partial ON channels(route_pattern) WHERE route_p
 CREATE INDEX idx_channels_topic_partial ON channels(topic) WHERE topic IS NOT NULL;
 CREATE INDEX idx_channels_workflow_partial ON channels(workflow_id) WHERE workflow_id IS NOT NULL;
 CREATE INDEX idx_traces_channel_id_partial ON traces(channel_id) WHERE channel_id IS NOT NULL;
+
+CREATE INDEX "idx_trace_dlq_next_retry" ON "trace_dlq" ("next_retry_at") WHERE "retry_count" < "max_retries";
+CREATE INDEX "idx_trace_dlq_channel" ON "trace_dlq" ("channel");
 
 -- Latest version per workflow_id
 CREATE VIEW current_workflows AS
@@ -74,6 +91,10 @@ CREATE TRIGGER trg_connectors_updated_at
 
 CREATE TRIGGER trg_traces_updated_at
     BEFORE UPDATE ON traces
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER trg_trace_dlq_updated_at
+    BEFORE UPDATE ON trace_dlq
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Single-draft enforcement via partial unique indexes

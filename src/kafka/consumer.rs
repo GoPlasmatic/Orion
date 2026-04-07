@@ -278,7 +278,7 @@ async fn consume_loop(
                             serde_json::json!(msg.offset());
 
                         // Clone the inner Arc<Engine> and release the lock immediately
-                        let engine_ref = engine.read().await.clone();
+                        let engine_ref = crate::engine::acquire_engine_read(&engine).await;
                         let process_result = tokio::time::timeout(
                             std::time::Duration::from_millis(processing_timeout_ms),
                             engine_ref.process_message_for_channel(&channel, &mut message),

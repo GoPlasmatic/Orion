@@ -66,6 +66,10 @@ pub struct ChannelFilter {
     pub protocol: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// Column to sort by: priority (default), name, status, channel_type, protocol, created_at, updated_at.
+    pub sort_by: Option<String>,
+    /// Sort direction: asc or desc (default).
+    pub sort_order: Option<String>,
 }
 
 // -- Repository trait --
@@ -283,12 +287,26 @@ impl ChannelRepository for SqlChannelRepository {
                 .fetch_one(&self.pool)
                 .await?;
 
+            // Sort column mapping
+            let sort_iden = match filter.sort_by.as_deref() {
+                Some("name") => Channels::Name,
+                Some("status") => Channels::Status,
+                Some("channel_type") => Channels::ChannelType,
+                Some("protocol") => Channels::Protocol,
+                Some("created_at") => Channels::CreatedAt,
+                Some("updated_at") => Channels::UpdatedAt,
+                _ => Channels::Priority,
+            };
+            let order = match filter.sort_order.as_deref() {
+                Some("asc") => Order::Asc,
+                _ => Order::Desc,
+            };
+
             let (sql, values) = Query::select()
                 .column(Asterisk)
                 .from(CurrentChannels::Table)
                 .cond_where(cond)
-                .order_by(Channels::Priority, Order::Desc)
-                .order_by(Channels::Name, Order::Asc)
+                .order_by(sort_iden, order)
                 .limit(limit as u64)
                 .offset(offset as u64)
                 .build_sqlx(query_builder());
@@ -787,6 +805,7 @@ mod tests {
             protocol: Some("kafka".to_string()),
             limit: Some(10),
             offset: Some(0),
+            ..Default::default()
         };
         let cond = build_condition(&filter);
         let (sql, _) = Query::select()

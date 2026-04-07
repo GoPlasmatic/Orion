@@ -87,9 +87,14 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
         .pragma("synchronous", "NORMAL")
         .pragma("cache_size", "-20000");
 
-    let pool = SqlitePoolOptions::new()
+    let mut pool_opts = SqlitePoolOptions::new()
         .max_connections(config.max_connections)
-        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs))
+        .min_connections(config.min_connections)
+        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs));
+    if config.idle_timeout_secs > 0 {
+        pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));
+    }
+    let pool = pool_opts
         .connect_with(options)
         .await
         .map_err(|e| OrionError::InternalSource {
@@ -112,9 +117,14 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
 async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
     use sqlx::postgres::PgPoolOptions;
 
-    let pool = PgPoolOptions::new()
+    let mut pool_opts = PgPoolOptions::new()
         .max_connections(config.max_connections)
-        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs))
+        .min_connections(config.min_connections)
+        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs));
+    if config.idle_timeout_secs > 0 {
+        pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));
+    }
+    let pool = pool_opts
         .connect(&config.url)
         .await
         .map_err(|e| OrionError::InternalSource {
@@ -137,9 +147,14 @@ async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError
 async fn init_mysql_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
     use sqlx::mysql::MySqlPoolOptions;
 
-    let pool = MySqlPoolOptions::new()
+    let mut pool_opts = MySqlPoolOptions::new()
         .max_connections(config.max_connections)
-        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs))
+        .min_connections(config.min_connections)
+        .acquire_timeout(Duration::from_secs(config.acquire_timeout_secs));
+    if config.idle_timeout_secs > 0 {
+        pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));
+    }
+    let pool = pool_opts
         .connect(&config.url)
         .await
         .map_err(|e| OrionError::InternalSource {

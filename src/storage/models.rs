@@ -269,6 +269,23 @@ pub struct Trace {
     pub updated_at: NaiveDateTime,
 }
 
+// -- Trace DLQ model --
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct TraceDlqEntry {
+    pub id: String,
+    pub trace_id: String,
+    pub channel: String,
+    pub payload_json: String,
+    pub metadata_json: String,
+    pub error_message: String,
+    pub retry_count: i64,
+    pub max_retries: i64,
+    pub next_retry_at: NaiveDateTime,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

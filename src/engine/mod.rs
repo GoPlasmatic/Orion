@@ -6,11 +6,38 @@ use std::sync::Arc;
 
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 
+use tokio::sync::RwLock;
+
 use crate::connector::ConnectorRegistry;
 use crate::storage::models::{Channel, Workflow};
 use crate::storage::repositories::workflows::{
     workflow_to_dataflow, workflow_to_dataflow_with_rollout,
 };
+
+/// Acquire the engine read lock with timing instrumentation.
+///
+/// Records lock wait time as a histogram metric and returns the cloned inner `Arc<Engine>`,
+/// releasing the lock immediately.
+pub async fn acquire_engine_read(
+    lock: &RwLock<Arc<dataflow_rs::Engine>>,
+) -> Arc<dataflow_rs::Engine> {
+    let start = std::time::Instant::now();
+    let guard = lock.read().await;
+    crate::metrics::record_engine_lock_wait("read", start.elapsed().as_secs_f64());
+    guard.clone()
+}
+
+/// Acquire the engine write lock with timing instrumentation.
+///
+/// Records lock wait time as a histogram metric.
+pub async fn acquire_engine_write(
+    lock: &RwLock<Arc<dataflow_rs::Engine>>,
+) -> tokio::sync::RwLockWriteGuard<'_, Arc<dataflow_rs::Engine>> {
+    let start = std::time::Instant::now();
+    let guard = lock.write().await;
+    crate::metrics::record_engine_lock_wait("write", start.elapsed().as_secs_f64());
+    guard
+}
 
 /// Known function names supported by the engine.
 pub const KNOWN_FUNCTIONS: &[&str] = &[

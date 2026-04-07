@@ -1,6 +1,7 @@
 //! Admin API authentication middleware.
 //!
-//! When enabled, requires a valid API key for all `/api/v1/admin/*` endpoints.
+//! When enabled, requires a valid API key for all `/api/v1/admin/*` endpoints
+//! and the `/metrics` endpoint.
 //! Supports `Authorization: Bearer <token>` or custom header (e.g. `X-API-Key: <token>`).
 
 use axum::extract::{MatchedPath, Request, State};
@@ -46,7 +47,7 @@ pub async fn admin_auth_middleware(
         .map(|m| m.as_str())
         .unwrap_or(req.uri().path());
 
-    if !path.starts_with("/api/v1/admin") {
+    if !path.starts_with("/api/v1/admin") && path != "/metrics" {
         return Ok(next.run(req).await);
     }
 

@@ -90,10 +90,14 @@ pub struct StorageConfig {
     /// Examples: "sqlite:orion.db", "postgres://user:pass@host/db", "mysql://user:pass@host/db"
     pub url: String,
     pub max_connections: u32,
+    /// Minimum number of connections to maintain in the pool (0 = no minimum).
+    pub min_connections: u32,
     /// SQLite busy timeout in milliseconds (ignored for other backends).
     pub busy_timeout_ms: u64,
     /// Connection pool acquire timeout in seconds.
     pub acquire_timeout_secs: u64,
+    /// Maximum idle time in seconds before a connection is closed (0 = no limit).
+    pub idle_timeout_secs: u64,
 }
 
 impl Default for StorageConfig {
@@ -101,8 +105,10 @@ impl Default for StorageConfig {
         Self {
             url: "sqlite:orion.db".to_string(),
             max_connections: 10,
+            min_connections: 0,
             busy_timeout_ms: 5000,
             acquire_timeout_secs: 5,
+            idle_timeout_secs: 300,
         }
     }
 }
@@ -173,6 +179,12 @@ pub struct QueueConfig {
     /// Maximum total memory in bytes for queued trace payloads. New submissions
     /// are rejected with 503 when this limit is exceeded. Default 100 MB.
     pub max_queue_memory_bytes: usize,
+    /// Enable DLQ retry processing for failed async traces.
+    pub dlq_retry_enabled: bool,
+    /// Maximum number of retries for DLQ entries before giving up.
+    pub dlq_max_retries: i64,
+    /// How often to poll the DLQ for pending retries, in seconds.
+    pub dlq_poll_interval_secs: u64,
 }
 
 impl Default for QueueConfig {
@@ -186,6 +198,9 @@ impl Default for QueueConfig {
             processing_timeout_ms: 60_000,
             max_result_size_bytes: 1_048_576,    // 1 MB
             max_queue_memory_bytes: 104_857_600, // 100 MB
+            dlq_retry_enabled: true,
+            dlq_max_retries: 5,
+            dlq_poll_interval_secs: 30,
         }
     }
 }

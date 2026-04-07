@@ -443,3 +443,45 @@ async fn test_connector_secret_masking() {
     // URL should NOT be masked
     assert_eq!(config["url"], "https://example.com/api");
 }
+
+// ============================================================
+// Metrics endpoint authentication
+// ============================================================
+
+#[tokio::test]
+async fn test_metrics_endpoint_protected_when_auth_enabled() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_key = "test-secret-key".to_string();
+    config.metrics.enabled = true;
+    let app = common::test_app_with_config(config).await;
+
+    // Without auth header → 401
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/metrics", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // With valid auth header → 200
+    let req = Request::builder()
+        .method("GET")
+        .uri("/metrics")
+        .header("Authorization", "Bearer test-secret-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_metrics_endpoint_open_when_auth_disabled() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .oneshot(json_request("GET", "/metrics", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}

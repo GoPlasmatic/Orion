@@ -21,7 +21,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono"] }
 sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
 sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header", "catch-panic"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header", "catch-panic", "compression-gzip", "compression-br"] }
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
@@ -40,6 +40,7 @@ metrics-exporter-prometheus = { version = "0.16", default-features = false }
 url = "2"
 rand = { version = "0.8", default-features = false, features = ["std", "std_rng"] }
 governor = { version = "0.8", default-features = false, features = ["dashmap", "std"] }
+dashmap = "6"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }

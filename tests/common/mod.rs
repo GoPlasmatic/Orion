@@ -54,6 +54,10 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
     *engine.write().await = Arc::new(built_engine);
 
     // Start a small worker pool for async trace tests
+    let dlq_repo: Option<Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository>> =
+        Some(Arc::new(
+            orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
+        ));
     let (trace_queue, _worker_handle) = orion::queue::start_workers(
         2,
         100,
@@ -63,6 +67,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         104_857_600, // 100 MB max queue memory
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+        dlq_repo,
     );
 
     // Init metrics recorder (use try — may already be initialized by another test)

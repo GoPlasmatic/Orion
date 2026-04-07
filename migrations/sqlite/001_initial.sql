@@ -9,6 +9,20 @@ CREATE TABLE IF NOT EXISTS "connectors" ( "id" text NOT NULL PRIMARY KEY, "name"
 
 CREATE TABLE IF NOT EXISTS "traces" ( "id" text NOT NULL PRIMARY KEY, "channel" text NOT NULL DEFAULT 'default', "channel_id" text, "mode" text NOT NULL DEFAULT 'sync', "status" text NOT NULL DEFAULT 'pending', "input_json" text, "result_json" text, "error_message" text, "duration_ms" double, "started_at" timestamp_text, "completed_at" timestamp_text, "created_at" timestamp_text NOT NULL DEFAULT CURRENT_TIMESTAMP, "updated_at" timestamp_text NOT NULL DEFAULT CURRENT_TIMESTAMP );
 
+CREATE TABLE IF NOT EXISTS "trace_dlq" (
+    "id" text NOT NULL PRIMARY KEY,
+    "trace_id" text NOT NULL,
+    "channel" text NOT NULL,
+    "payload_json" text NOT NULL,
+    "metadata_json" text NOT NULL DEFAULT '{}',
+    "error_message" text NOT NULL,
+    "retry_count" integer NOT NULL DEFAULT 0,
+    "max_retries" integer NOT NULL DEFAULT 5,
+    "next_retry_at" timestamp_text NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "created_at" timestamp_text NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" timestamp_text NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX "idx_workflows_status" ON "workflows" ("status");
 CREATE INDEX "idx_workflows_workflow_id" ON "workflows" ("workflow_id");
 CREATE INDEX "idx_workflows_priority_name" ON "workflows" ("priority" DESC, "name" ASC);
@@ -30,6 +44,9 @@ CREATE INDEX idx_channels_route_partial ON channels(route_pattern) WHERE route_p
 CREATE INDEX idx_channels_topic_partial ON channels(topic) WHERE topic IS NOT NULL;
 CREATE INDEX idx_channels_workflow_partial ON channels(workflow_id) WHERE workflow_id IS NOT NULL;
 CREATE INDEX idx_traces_channel_id_partial ON traces(channel_id) WHERE channel_id IS NOT NULL;
+
+CREATE INDEX "idx_trace_dlq_next_retry" ON "trace_dlq" ("next_retry_at") WHERE "retry_count" < "max_retries";
+CREATE INDEX "idx_trace_dlq_channel" ON "trace_dlq" ("channel");
 
 -- Latest version per workflow_id
 CREATE VIEW current_workflows AS
@@ -72,6 +89,11 @@ END;
 CREATE TRIGGER trg_traces_updated_at AFTER UPDATE ON traces
 BEGIN
   UPDATE traces SET updated_at = datetime('now') WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER trg_trace_dlq_updated_at AFTER UPDATE ON trace_dlq
+BEGIN
+  UPDATE trace_dlq SET updated_at = datetime('now') WHERE id = NEW.id;
 END;
 
 -- Only one draft per workflow_id

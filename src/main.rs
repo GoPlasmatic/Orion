@@ -212,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Populate the pre-created engine lock with the real engine
     let built_engine = dataflow_rs::Engine::new(workflows, Some(custom_functions));
-    *engine.write().await = Arc::new(built_engine);
+    *orion::engine::acquire_engine_write(&engine).await = Arc::new(built_engine);
 
     // Mark the service as ready now that the engine and channel registry are loaded
     ready.store(true, std::sync::atomic::Ordering::Release);
@@ -277,7 +277,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // Start trace queue worker pool
+    // Start trace queue worker pool (with DLQ for failed async traces)
+    let dlq_repo: Option<Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository>> =
+        Some(Arc::new(
+            orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
+        ));
     let (trace_queue, worker_handle) = orion::queue::start_workers(
         config.queue.workers,
         config.queue.buffer_size,
@@ -287,6 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.queue.max_queue_memory_bytes,
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+        dlq_repo,
     );
 
     tracing::info!(
@@ -301,6 +306,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.queue.trace_cleanup_interval_secs,
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
     );
+
+    // Start DLQ retry consumer
+    let dlq_retry_handle = if config.queue.dlq_retry_enabled {
+        let dlq_for_retry: Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository> =
+            Arc::new(
+                orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
+            );
+        let handle = orion::queue::start_dlq_retry(
+            config.queue.dlq_poll_interval_secs,
+            dlq_for_retry,
+            trace_queue.clone(),
+            trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+        );
+        tracing::info!(
+            poll_interval_secs = config.queue.dlq_poll_interval_secs,
+            max_retries = config.queue.dlq_max_retries,
+            "DLQ retry consumer started"
+        );
+        Some(handle)
+    } else {
+        None
+    };
 
     // Set initial active rules gauge
     orion::metrics::set_active_workflows(active_workflows.len() as f64);
@@ -434,6 +461,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(handle) = trace_cleanup_handle {
         tracing::info!("Stopping trace cleanup task...");
+        handle.abort();
+    }
+
+    if let Some(handle) = dlq_retry_handle {
+        tracing::info!("Stopping DLQ retry consumer...");
         handle.abort();
     }
 
