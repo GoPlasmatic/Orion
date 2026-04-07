@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
@@ -11,6 +12,13 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use super::http_common::{get_nested, set_nested};
+
+/// Metadata key prefix for internal Orion tracking fields.
+const ORION_META_PREFIX: &str = "_orion_";
+/// Metadata key for current call depth.
+const META_CALL_DEPTH: &str = "_orion_call_depth";
+/// Metadata key for the call chain (array of channel names).
+const META_CALL_CHAIN: &str = "_orion_call_chain";
 
 /// Input configuration for the channel_call function.
 #[derive(Debug, Deserialize)]
@@ -29,11 +37,16 @@ pub struct ChannelCallInput {
     /// Optional JSONLogic expression to compute data to send.
     #[serde(default)]
     pub data_logic: Option<Value>,
+    /// Optional timeout in milliseconds for this specific channel_call invocation.
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
 }
 
 /// Invokes another channel's workflow in-process (no HTTP round-trip).
 pub struct ChannelCallHandler {
     pub engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    pub max_call_depth: u32,
+    pub default_timeout_ms: u64,
 }
 
 #[async_trait]
@@ -78,6 +91,41 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             ));
         }
 
+        // --- Cycle detection and depth tracking ---
+        let parent_depth = message
+            .metadata()
+            .get(META_CALL_DEPTH)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        let parent_chain: Vec<String> = message
+            .metadata()
+            .get(META_CALL_CHAIN)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Check depth limit
+        if parent_depth >= self.max_call_depth as u64 {
+            return Err(DataflowError::Validation(format!(
+                "channel_call: max call depth {} exceeded (chain: {})",
+                self.max_call_depth,
+                format_chain(&parent_chain, &target_channel),
+            )));
+        }
+
+        // Check for cycle
+        if parent_chain.contains(&target_channel) {
+            return Err(DataflowError::Validation(format!(
+                "channel_call: cycle detected: {}",
+                format_chain(&parent_chain, &target_channel),
+            )));
+        }
+
         // Resolve data to send
         let call_data = if let Some(ref logic) = input.data_logic {
             let context = message.get_context_arc();
@@ -110,17 +158,44 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             }
         }
 
-        // Get current engine and process
+        // Set tracking metadata on child (after propagation so we override parent values)
+        let child_depth = parent_depth + 1;
+        let mut child_chain = parent_chain;
+        child_chain.push(target_channel.clone());
+
+        child_message.metadata_mut()[META_CALL_DEPTH] = serde_json::json!(child_depth);
+        child_message.metadata_mut()[META_CALL_CHAIN] = serde_json::json!(child_chain);
+
+        // Get current engine and process with timeout
         let engine = self.engine.read().await.clone();
-        engine
-            .process_message_for_channel(&target_channel, &mut child_message)
-            .await
-            .map_err(|e| {
+        let timeout = Duration::from_millis(input.timeout_ms.unwrap_or(self.default_timeout_ms));
+
+        let process_result = tokio::time::timeout(
+            timeout,
+            engine.process_message_for_channel(&target_channel, &mut child_message),
+        )
+        .await;
+
+        match process_result {
+            Ok(inner) => inner.map_err(|e| {
                 DataflowError::function_execution(
                     format!("channel_call to '{}' failed: {}", target_channel, e),
                     None,
                 )
-            })?;
+            })?,
+            Err(_) => {
+                return Err(DataflowError::Timeout(format!(
+                    "channel_call to '{}' timed out after {}ms",
+                    target_channel,
+                    timeout.as_millis()
+                )));
+            }
+        }
+
+        // Strip internal tracking metadata from child result
+        if let Some(meta) = child_message.metadata_mut().as_object_mut() {
+            meta.retain(|k, _| !k.starts_with(ORION_META_PREFIX));
+        }
 
         // Store result at response_path (or merge back into parent).
         let mut changes = Vec::new();
@@ -151,4 +226,11 @@ impl AsyncFunctionHandler for ChannelCallHandler {
 
         Ok((200, changes))
     }
+}
+
+/// Format a call chain for error messages: "A -> B -> C"
+fn format_chain(chain: &[String], target: &str) -> String {
+    let mut parts: Vec<&str> = chain.iter().map(|s| s.as_str()).collect();
+    parts.push(target);
+    parts.join(" -> ")
 }

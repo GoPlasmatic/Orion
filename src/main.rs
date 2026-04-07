@@ -157,6 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         connector_registry.clone(),
         http_client.clone(),
         engine.clone(),
+        &config.engine,
     );
 
     // Kafka producer setup (when kafka feature is enabled)
@@ -191,9 +192,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Workflows loaded"
     );
 
+    // Readiness flag — set after engine is fully initialized
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // Populate the pre-created engine lock with the real engine
     let built_engine = dataflow_rs::Engine::new(workflows, Some(custom_functions));
     *engine.write().await = Arc::new(built_engine);
+
+    // Mark the service as ready now that the engine and channel registry are loaded
+    ready.store(true, std::sync::atomic::Ordering::Release);
 
     // Start Kafka consumer (when kafka feature is enabled and configured).
     // Also load async channel topic mappings from the database.
@@ -260,6 +267,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.queue.workers,
         config.queue.buffer_size,
         config.queue.shutdown_timeout_secs,
+        config.queue.processing_timeout_ms,
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
     );
@@ -317,6 +325,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_client,
         datalogic: Arc::new(datalogic_rs::DataLogic::new()),
         rate_limit_state,
+        ready,
         #[cfg(feature = "kafka")]
         kafka_consumer_handle: kafka_consumer_handle_arc.clone(),
         #[cfg(feature = "kafka")]
@@ -326,17 +335,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let router = orion::server::build_router(state);
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-    tracing::info!(
-        address = %addr,
-        storage = %config.storage.path,
-        "Orion is ready"
-    );
+    // Warn if TLS is configured but the feature is not compiled
+    #[cfg(not(feature = "tls"))]
+    if config.server.tls.enabled {
+        tracing::warn!(
+            "server.tls.enabled=true but Orion was compiled without the `tls` feature. \
+             Rebuild with `--features tls` to enable HTTPS. Starting in plain HTTP mode."
+        );
+    }
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(orion::server::shutdown_signal())
+    #[cfg(feature = "tls")]
+    if config.server.tls.enabled {
+        let rustls_config = orion::server::tls::load_rustls_config(
+            &config.server.tls.cert_path,
+            &config.server.tls.key_path,
+        )
         .await?;
+
+        let handle = axum_server::Handle::new();
+        let shutdown_handle = handle.clone();
+        let drain_secs = config.server.shutdown_drain_secs;
+        tokio::spawn(async move {
+            orion::server::shutdown_signal().await;
+            shutdown_handle
+                .graceful_shutdown(Some(std::time::Duration::from_secs(drain_secs)));
+        });
+
+        tracing::info!(
+            address = %addr,
+            storage = %config.storage.path,
+            tls = true,
+            "Orion is ready (HTTPS)"
+        );
+
+        axum_server::bind_rustls(addr.parse()?, rustls_config)
+            .handle(handle)
+            .serve(router.into_make_service())
+            .await?;
+    } else {
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+        tracing::info!(
+            address = %addr,
+            storage = %config.storage.path,
+            "Orion is ready"
+        );
+        let drain_secs = config.server.shutdown_drain_secs;
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                orion::server::shutdown_signal().await;
+                tracing::info!(drain_secs, "Starting HTTP connection drain");
+                tokio::time::sleep(std::time::Duration::from_secs(drain_secs)).await;
+            })
+            .await?;
+    }
+
+    #[cfg(not(feature = "tls"))]
+    {
+        let listener = tokio::net::TcpListener::bind(&addr).await?;
+        tracing::info!(
+            address = %addr,
+            storage = %config.storage.path,
+            "Orion is ready"
+        );
+        let drain_secs = config.server.shutdown_drain_secs;
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                orion::server::shutdown_signal().await;
+                tracing::info!(drain_secs, "Starting HTTP connection drain");
+                tokio::time::sleep(std::time::Duration::from_secs(drain_secs)).await;
+            })
+            .await?;
+    }
 
     // Graceful shutdown
     #[cfg(feature = "kafka")]

@@ -42,6 +42,7 @@ pub fn build_custom_functions(
     registry: Arc<ConnectorRegistry>,
     client: reqwest::Client,
     engine: Arc<tokio::sync::RwLock<Arc<dataflow_rs::Engine>>>,
+    engine_config: &crate::config::EngineConfig,
 ) -> HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> {
     let mut fns: HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> = HashMap::new();
 
@@ -55,7 +56,11 @@ pub fn build_custom_functions(
 
     fns.insert(
         "channel_call".to_string(),
-        Box::new(functions::channel_call::ChannelCallHandler { engine }),
+        Box::new(functions::channel_call::ChannelCallHandler {
+            engine,
+            max_call_depth: engine_config.max_channel_call_depth,
+            default_timeout_ms: engine_config.default_channel_call_timeout_ms,
+        }),
     );
 
     // Register stub publish_kafka when kafka feature is not available

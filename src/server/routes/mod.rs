@@ -17,6 +17,8 @@ use crate::server::state::AppState;
 pub fn api_routes() -> Router<AppState> {
     let router = Router::new()
         .route("/health", get(health_check))
+        .route("/healthz", get(liveness_check))
+        .route("/readyz", get(readiness_check))
         .route("/metrics", get(metrics_endpoint))
         .nest("/api/v1/admin", admin::admin_routes())
         .nest("/api/v1/data", data::data_routes());
@@ -104,6 +106,45 @@ pub(crate) async fn metrics_endpoint(State(state): State<AppState>) -> impl Into
         [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
         metrics,
     )
+}
+
+/// Liveness probe — always returns 200 if the process is running.
+/// Use for Kubernetes `livenessProbe`.
+pub(crate) async fn liveness_check() -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({ "status": "ok" })))
+}
+
+/// Readiness probe — checks DB, engine, and startup readiness.
+/// Use for Kubernetes `readinessProbe`.
+pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse {
+    use std::sync::atomic::Ordering;
+
+    let db_healthy = state.workflow_repo.ping().await.is_ok();
+    let engine_healthy = tokio::time::timeout(
+        std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
+        state.engine.read(),
+    )
+    .await
+    .is_ok();
+    let initialized = state.ready.load(Ordering::Acquire);
+
+    let all_ready = db_healthy && engine_healthy && initialized;
+    let http_status = if all_ready {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    let body = json!({
+        "status": if all_ready { "ready" } else { "not_ready" },
+        "components": {
+            "database": if db_healthy { "ok" } else { "error" },
+            "engine": if engine_healthy { "ok" } else { "error" },
+            "initialized": initialized,
+        }
+    });
+
+    (http_status, Json(body))
 }
 
 /// Reload the engine with all active channels and workflows from the database.

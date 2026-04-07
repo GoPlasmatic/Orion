@@ -1,6 +1,7 @@
 mod common;
 
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use common::{body_json, json_request};
 use serde_json::json;
 use tower::ServiceExt;
@@ -247,6 +248,140 @@ async fn test_null_bytes_in_string_fields() {
         assert_eq!(resp.status(), StatusCode::OK);
     }
     // If rejected, that is also acceptable -- no crash or corruption
+}
+
+// ============================================================
+// Admin API authentication
+// ============================================================
+
+#[tokio::test]
+async fn test_admin_auth_missing_token_returns_401() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_key = "test-secret-key".to_string();
+    let app = common::test_app_with_config(config).await;
+
+    let resp = app
+        .oneshot(json_request("GET", "/api/v1/admin/engine/status", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+}
+
+#[tokio::test]
+async fn test_admin_auth_wrong_token_returns_401() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_key = "test-secret-key".to_string();
+    let app = common::test_app_with_config(config).await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("Authorization", "Bearer wrong-key")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+}
+
+#[tokio::test]
+async fn test_admin_auth_correct_token_returns_200() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_key = "test-secret-key".to_string();
+    let app = common::test_app_with_config(config).await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("Authorization", "Bearer test-secret-key")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_admin_auth_custom_header() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_key = "my-api-key".to_string();
+    config.admin_auth.header = "X-API-Key".to_string();
+    let app = common::test_app_with_config(config).await;
+
+    // Wrong header name → 401
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("Authorization", "Bearer my-api-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Correct custom header → 200
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("X-API-Key", "my-api-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_admin_auth_data_routes_not_protected() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_key = "test-secret-key".to_string();
+    let app = common::test_app_with_config(config).await;
+
+    // Data endpoint should work without auth
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/orders",
+            Some(json!({"data": {"test": true}})),
+        ))
+        .await
+        .unwrap();
+    // Should NOT be 401 — either 200 (no channel) or 404, but not auth-blocked
+    assert_ne!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn test_admin_auth_health_not_protected() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_key = "test-secret-key".to_string();
+    let app = common::test_app_with_config(config).await;
+
+    let resp = app
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_admin_auth_disabled_allows_all() {
+    // Default config has auth disabled
+    let app = common::test_app().await;
+
+    let resp = app
+        .oneshot(json_request("GET", "/api/v1/admin/engine/status", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 // ============================================================

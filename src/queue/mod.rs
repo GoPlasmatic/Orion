@@ -124,6 +124,7 @@ pub fn start_workers(
     max_workers: usize,
     buffer_size: usize,
     shutdown_timeout_secs: u64,
+    processing_timeout_ms: u64,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     trace_repo: Arc<dyn TraceRepository>,
 ) -> (TraceQueue, WorkerHandle) {
@@ -133,6 +134,7 @@ pub fn start_workers(
         rx,
         max_workers,
         shutdown_timeout_secs,
+        processing_timeout_ms,
         engine,
         trace_repo,
     ));
@@ -153,6 +155,7 @@ async fn dispatcher_loop(
     mut rx: mpsc::Receiver<QueueMessage>,
     max_workers: usize,
     shutdown_timeout_secs: u64,
+    processing_timeout_ms: u64,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     trace_repo: Arc<dyn TraceRepository>,
 ) {
@@ -170,7 +173,7 @@ async fn dispatcher_loop(
 
         tokio::spawn(async move {
             let _permit = permit; // guard: dropped on scope exit, even on panic
-            process_trace(msg, engine, trace_repo).await;
+            process_trace(msg, engine, trace_repo, processing_timeout_ms).await;
         });
     }
 
@@ -200,11 +203,12 @@ async fn set_trace_status(
 }
 
 /// Process a single queued trace.
-#[tracing::instrument(skip(msg, engine, trace_repo), fields(trace_id = %msg.trace_id, channel = %msg.channel))]
+#[tracing::instrument(skip(msg, engine, trace_repo, processing_timeout_ms), fields(trace_id = %msg.trace_id, channel = %msg.channel))]
 async fn process_trace(
     msg: QueueMessage,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     trace_repo: Arc<dyn TraceRepository>,
+    processing_timeout_ms: u64,
 ) {
     // Restore W3C trace context from the originating request so this span
     // appears as a child in the caller's distributed trace.
@@ -249,9 +253,26 @@ async fn process_trace(
 
     // Clone the inner Arc<Engine> and release the lock immediately
     let engine_ref = engine.read().await.clone();
-    let result = engine_ref
-        .process_message_for_channel(&channel, &mut message)
-        .await;
+    let result = match tokio::time::timeout(
+        Duration::from_millis(processing_timeout_ms),
+        engine_ref.process_message_for_channel(&channel, &mut message),
+    )
+    .await
+    {
+        Ok(inner) => inner,
+        Err(_) => {
+            tracing::warn!(
+                trace_id = %trace_id,
+                channel = %channel,
+                timeout_ms = processing_timeout_ms,
+                "Async trace processing timed out"
+            );
+            Err(dataflow_rs::DataflowError::Timeout(format!(
+                "Processing timed out after {}ms",
+                processing_timeout_ms
+            )))
+        }
+    };
 
     crate::engine::utils::remove_rollout_bucket(&mut message);
 
