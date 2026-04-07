@@ -89,3 +89,139 @@ curl -s http://localhost:8080/api/v1/admin/connectors/<id>
 ```
 
 Usernames and non-sensitive fields are returned as-is. Workflows reference connectors by name (`"connector": "bearer-auth-api"`) — they never see or embed actual credentials.
+
+## Connector Types
+
+### HTTP Connector
+
+REST API calls, webhooks, and external service integration:
+
+```json
+{
+  "name": "payments-api",
+  "connector_type": "http",
+  "config": {
+    "type": "http",
+    "url": "https://api.stripe.com/v1",
+    "auth": { "type": "bearer", "token": "sk-..." },
+    "headers": { "x-source": "orion" },
+    "retry": { "max_retries": 3, "retry_delay_ms": 1000 },
+    "max_response_size": 10485760
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `url` | required | Base URL for all requests |
+| `method` | `""` | Default HTTP method |
+| `headers` | `{}` | Default headers applied to every request |
+| `auth` | `null` | Authentication config (bearer, basic, or apikey) |
+| `retry` | 3 retries, 1000ms | Retry with exponential backoff |
+| `max_response_size` | 10 MB | Maximum response body size to prevent OOM |
+
+### Kafka Connector
+
+Produce to Kafka topics. Consumer configuration is separate (see [Kafka Integration](kafka.md)).
+
+```json
+{
+  "name": "event-bus",
+  "connector_type": "kafka",
+  "config": {
+    "type": "kafka",
+    "brokers": ["kafka1:9092", "kafka2:9092"],
+    "topic": "events",
+    "group_id": "orion-producer"
+  }
+}
+```
+
+### DB Connector
+
+Parameterized SQL queries against external databases. Supports PostgreSQL, MySQL, and SQLite.
+
+```json
+{
+  "name": "orders-db",
+  "connector_type": "db",
+  "config": {
+    "type": "db",
+    "connection_string": "postgres://user:pass@db-host:5432/orders",
+    "driver": "postgres",
+    "max_connections": 10,
+    "connect_timeout_ms": 5000,
+    "query_timeout_ms": 30000,
+    "retry": { "max_retries": 2, "retry_delay_ms": 500 }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `connection_string` | required | Database URL (auto-masked in API responses) |
+| `driver` | `"postgres"` | Driver type: `postgres`, `mysql`, or `sqlite` |
+| `max_connections` | `null` | Connection pool max size |
+| `connect_timeout_ms` | `null` | Connection establishment timeout |
+| `query_timeout_ms` | `null` | Individual query timeout |
+| `auth` | `null` | Optional auth config |
+| `retry` | 3 retries, 1000ms | Retry with exponential backoff |
+
+> **Note:** The `db_read` and `db_write` function handlers are implemented but not yet registered in the engine. DB connectors can be created and managed via the admin API in preparation.
+
+### Cache Connector
+
+Redis cache for lookups, session state, and temporary storage.
+
+```json
+{
+  "name": "session-cache",
+  "connector_type": "cache",
+  "config": {
+    "type": "cache",
+    "url": "redis://localhost:6379",
+    "default_ttl_secs": 300,
+    "max_connections": 10,
+    "retry": { "max_retries": 2, "retry_delay_ms": 200 }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `url` | required | Redis connection URL |
+| `default_ttl_secs` | `null` | Default TTL for cache entries |
+| `max_connections` | `null` | Connection pool max size |
+| `auth` | `null` | Optional auth config |
+| `retry` | 3 retries, 1000ms | Retry with exponential backoff |
+
+> **Note:** The `cache_read` and `cache_write` function handlers are implemented but not yet registered in the engine.
+
+### Storage Connector
+
+S3, GCS, or local filesystem for file read/write operations.
+
+```json
+{
+  "name": "uploads",
+  "connector_type": "storage",
+  "config": {
+    "type": "storage",
+    "provider": "s3",
+    "bucket": "my-uploads",
+    "region": "us-east-1",
+    "base_path": "/data",
+    "auth": { "type": "apikey", "header": "Authorization", "key": "..." },
+    "retry": { "max_retries": 3, "retry_delay_ms": 1000 }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `provider` | required | Storage provider: `s3`, `gcs`, `local` |
+| `bucket` | `null` | Bucket or container name |
+| `region` | `null` | Cloud region |
+| `base_path` | `null` | Base path prefix for all operations |
+| `auth` | `null` | Optional auth config |
+| `retry` | 3 retries, 1000ms | Retry with exponential backoff |

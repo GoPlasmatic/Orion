@@ -1,10 +1,13 @@
 use async_trait::async_trait;
+use sea_query::{Asterisk, Condition, Expr, Func, Order, Query};
+use sea_query_binder::SqlxBinder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::SqlitePool;
+use crate::storage::DbPool;
 
 use crate::errors::OrionError;
 use crate::storage::models::Channel;
+use crate::storage::{query_builder, schema::{Channels, CurrentChannels}};
 
 use super::workflows::PaginatedResult;
 
@@ -104,40 +107,34 @@ pub trait ChannelRepository: Send + Sync {
     async fn get_active_by_name(&self, name: &str) -> Result<Channel, OrionError>;
 }
 
-// -- SQLite implementation --
+// -- SQL implementation --
 
-pub struct SqliteChannelRepository {
-    pool: SqlitePool,
+pub struct SqlChannelRepository {
+    pool: DbPool,
 }
 
-impl SqliteChannelRepository {
-    pub fn new(pool: SqlitePool) -> Self {
+impl SqlChannelRepository {
+    pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
 
-fn build_where_clause(filter: &ChannelFilter) -> (String, Vec<String>) {
-    let mut clause = String::from("WHERE 1=1");
-    let mut binds: Vec<String> = Vec::new();
-
+fn build_condition(filter: &ChannelFilter) -> Condition {
+    let mut cond = Condition::all();
     if let Some(ref status) = filter.status {
-        clause.push_str(" AND status = ?");
-        binds.push(status.clone());
+        cond = cond.add(Expr::col(Channels::Status).eq(status.as_str()));
     }
     if let Some(ref channel_type) = filter.channel_type {
-        clause.push_str(" AND channel_type = ?");
-        binds.push(channel_type.clone());
+        cond = cond.add(Expr::col(Channels::ChannelType).eq(channel_type.as_str()));
     }
     if let Some(ref protocol) = filter.protocol {
-        clause.push_str(" AND protocol = ?");
-        binds.push(protocol.clone());
+        cond = cond.add(Expr::col(Channels::Protocol).eq(protocol.as_str()));
     }
-
-    (clause, binds)
+    cond
 }
 
 #[async_trait]
-impl ChannelRepository for SqliteChannelRepository {
+impl ChannelRepository for SqlChannelRepository {
     async fn create(&self, req: &CreateChannelRequest) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.create", async {
             let channel_id = req
@@ -152,25 +149,77 @@ impl ChannelRepository for SqliteChannelRepository {
             let transport_config_json = serde_json::to_string(&req.transport_config)?;
             let config_json = serde_json::to_string(&req.config)?;
 
-            sqlx::query(
-                r#"INSERT INTO channels (channel_id, version, name, description, channel_type, protocol, methods, route_pattern, topic, consumer_group, transport_config_json, workflow_id, config_json, status, priority)
-                   VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)"#,
-            )
-            .bind(&channel_id)
-            .bind(&req.name)
-            .bind(&req.description)
-            .bind(&req.channel_type)
-            .bind(&req.protocol)
-            .bind(&methods_json)
-            .bind(&req.route_pattern)
-            .bind(&req.topic)
-            .bind(&req.consumer_group)
-            .bind(&transport_config_json)
-            .bind(&req.workflow_id)
-            .bind(&config_json)
-            .bind(req.priority)
-            .execute(&self.pool)
-            .await?;
+            let methods_val: sea_query::Value = methods_json
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let description_val: sea_query::Value = req
+                .description
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let route_pattern_val: sea_query::Value = req
+                .route_pattern
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let topic_val: sea_query::Value = req
+                .topic
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let consumer_group_val: sea_query::Value = req
+                .consumer_group
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let workflow_id_val: sea_query::Value = req
+                .workflow_id
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+
+            let (sql, values) = Query::insert()
+                .into_table(Channels::Table)
+                .columns([
+                    Channels::ChannelId,
+                    Channels::Version,
+                    Channels::Name,
+                    Channels::Description,
+                    Channels::ChannelType,
+                    Channels::Protocol,
+                    Channels::Methods,
+                    Channels::RoutePattern,
+                    Channels::Topic,
+                    Channels::ConsumerGroup,
+                    Channels::TransportConfigJson,
+                    Channels::WorkflowId,
+                    Channels::ConfigJson,
+                    Channels::Status,
+                    Channels::Priority,
+                ])
+                .values_panic([
+                    Expr::val(channel_id.as_str()).into(),
+                    Expr::val(1i64).into(),
+                    Expr::val(req.name.as_str()).into(),
+                    Expr::val(description_val).into(),
+                    Expr::val(req.channel_type.as_str()).into(),
+                    Expr::val(req.protocol.as_str()).into(),
+                    Expr::val(methods_val).into(),
+                    Expr::val(route_pattern_val).into(),
+                    Expr::val(topic_val).into(),
+                    Expr::val(consumer_group_val).into(),
+                    Expr::val(transport_config_json.as_str()).into(),
+                    Expr::val(workflow_id_val).into(),
+                    Expr::val(config_json.as_str()).into(),
+                    Expr::val("draft").into(),
+                    Expr::val(req.priority).into(),
+                ])
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             self.get_version(&channel_id, 1).await
         })
@@ -179,21 +228,31 @@ impl ChannelRepository for SqliteChannelRepository {
 
     async fn get_by_id(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.get_by_id", async {
-            sqlx::query_as::<_, Channel>(
-                "SELECT * FROM channels WHERE channel_id = ? ORDER BY version DESC LIMIT 1",
-            )
-            .bind(channel_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| OrionError::NotFound(format!("Channel '{}' not found", channel_id)))
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .order_by(Channels::Version, Order::Desc)
+                .limit(1)
+                .build_sqlx(query_builder());
+
+            sqlx::query_as_with::<_, Channel, _>(&sql, values)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| OrionError::NotFound(format!("Channel '{}' not found", channel_id)))
         })
         .await
     }
 
     async fn get_version(&self, channel_id: &str, version: i64) -> Result<Channel, OrionError> {
-        sqlx::query_as::<_, Channel>("SELECT * FROM channels WHERE channel_id = ? AND version = ?")
-            .bind(channel_id)
-            .bind(version)
+        let (sql, values) = Query::select()
+            .column(Asterisk)
+            .from(Channels::Table)
+            .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+            .and_where(Expr::col(Channels::Version).eq(version))
+            .build_sqlx(query_builder());
+
+        sqlx::query_as_with::<_, Channel, _>(&sql, values)
             .fetch_optional(&self.pool)
             .await?
             .ok_or_else(|| {
@@ -209,26 +268,34 @@ impl ChannelRepository for SqliteChannelRepository {
         filter: &ChannelFilter,
     ) -> Result<PaginatedResult<Channel>, OrionError> {
         crate::metrics::timed_db_op("channels.list_paginated", async {
-            let (where_clause, binds) = build_where_clause(filter);
+            let cond = build_condition(filter);
             let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
             let offset = filter.offset.unwrap_or(0).max(0);
 
-            let count_query = format!("SELECT COUNT(*) FROM current_channels {where_clause}");
-            let mut cq = sqlx::query_as::<_, (i64,)>(&count_query);
-            for b in &binds {
-                cq = cq.bind(b);
-            }
-            let (total,) = cq.fetch_one(&self.pool).await?;
+            let (count_sql, count_values) = Query::select()
+                .expr(Func::count(Expr::col(Asterisk)))
+                .from(CurrentChannels::Table)
+                .cond_where(cond.clone())
+                .build_sqlx(query_builder());
 
-            let data_query = format!(
-                "SELECT * FROM current_channels {where_clause} ORDER BY priority DESC, name ASC LIMIT ? OFFSET ?"
-            );
-            let mut dq = sqlx::query_as::<_, Channel>(&data_query);
-            for b in &binds {
-                dq = dq.bind(b);
-            }
-            dq = dq.bind(limit).bind(offset);
-            let data = dq.fetch_all(&self.pool).await?;
+            let (total,): (i64,) =
+                sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
+                    .fetch_one(&self.pool)
+                    .await?;
+
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(CurrentChannels::Table)
+                .cond_where(cond)
+                .order_by(Channels::Priority, Order::Desc)
+                .order_by(Channels::Name, Order::Asc)
+                .limit(limit as u64)
+                .offset(offset as u64)
+                .build_sqlx(query_builder());
+
+            let data = sqlx::query_as_with::<_, Channel, _>(&sql, values)
+                .fetch_all(&self.pool)
+                .await?;
 
             Ok(PaginatedResult {
                 data,
@@ -246,18 +313,22 @@ impl ChannelRepository for SqliteChannelRepository {
         req: &UpdateChannelRequest,
     ) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.update_draft", async {
-            let existing = sqlx::query_as::<_, Channel>(
-                "SELECT * FROM channels WHERE channel_id = ? AND status = 'draft'",
-            )
-            .bind(channel_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| {
-                OrionError::BadRequest(format!(
-                    "No draft version found for channel '{}'",
-                    channel_id
-                ))
-            })?;
+            let (draft_sql, draft_values) = Query::select()
+                .column(Asterisk)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Status).eq("draft"))
+                .build_sqlx(query_builder());
+
+            let existing = sqlx::query_as_with::<_, Channel, _>(&draft_sql, draft_values)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| {
+                    OrionError::BadRequest(format!(
+                        "No draft version found for channel '{}'",
+                        channel_id
+                    ))
+                })?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let description = req
@@ -292,26 +363,45 @@ impl ChannelRepository for SqliteChannelRepository {
                 None => existing.config_json.clone(),
             };
 
-            sqlx::query(
-                r#"UPDATE channels
-                   SET name = ?, description = ?, methods = ?, route_pattern = ?,
-                       topic = ?, consumer_group = ?, transport_config_json = ?,
-                       workflow_id = ?, config_json = ?, priority = ?
-                   WHERE channel_id = ? AND status = 'draft'"#,
-            )
-            .bind(name)
-            .bind(description)
-            .bind(&methods_json)
-            .bind(route_pattern)
-            .bind(topic)
-            .bind(consumer_group)
-            .bind(&transport_config_json)
-            .bind(workflow_id)
-            .bind(&config_json)
-            .bind(priority)
-            .bind(channel_id)
-            .execute(&self.pool)
-            .await?;
+            let description_val: sea_query::Value = description
+                .map(|s| s.to_string().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let methods_val: sea_query::Value = methods_json
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let route_pattern_val: sea_query::Value = route_pattern
+                .map(|s| s.to_string().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let topic_val: sea_query::Value = topic
+                .map(|s| s.to_string().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let consumer_group_val: sea_query::Value = consumer_group
+                .map(|s| s.to_string().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let workflow_id_val: sea_query::Value = workflow_id
+                .map(|s| s.to_string().into())
+                .unwrap_or(sea_query::Value::String(None));
+
+            let (sql, values) = Query::update()
+                .table(Channels::Table)
+                .value(Channels::Name, name)
+                .value(Channels::Description, description_val)
+                .value(Channels::Methods, methods_val)
+                .value(Channels::RoutePattern, route_pattern_val)
+                .value(Channels::Topic, topic_val)
+                .value(Channels::ConsumerGroup, consumer_group_val)
+                .value(Channels::TransportConfigJson, transport_config_json.as_str())
+                .value(Channels::WorkflowId, workflow_id_val)
+                .value(Channels::ConfigJson, config_json.as_str())
+                .value(Channels::Priority, priority)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Status).eq("draft"))
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             self.get_version(channel_id, existing.version).await
         })
@@ -320,8 +410,12 @@ impl ChannelRepository for SqliteChannelRepository {
 
     async fn delete(&self, channel_id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("channels.delete", async {
-            let result = sqlx::query("DELETE FROM channels WHERE channel_id = ?")
-                .bind(channel_id)
+            let (sql, values) = Query::delete()
+                .from_table(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .build_sqlx(query_builder());
+
+            let result = sqlx::query_with(&sql, values)
                 .execute(&self.pool)
                 .await?;
 
@@ -339,11 +433,18 @@ impl ChannelRepository for SqliteChannelRepository {
 
     async fn list_active(&self) -> Result<Vec<Channel>, OrionError> {
         crate::metrics::timed_db_op("channels.list_active", async {
-            Ok(sqlx::query_as::<_, Channel>(
-                "SELECT * FROM channels WHERE status = 'active' ORDER BY priority DESC",
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::Status).eq("active"))
+                .order_by(Channels::Priority, Order::Desc)
+                .build_sqlx(query_builder());
+
+            Ok(
+                sqlx::query_as_with::<_, Channel, _>(&sql, values)
+                    .fetch_all(&self.pool)
+                    .await?,
             )
-            .fetch_all(&self.pool)
-            .await?)
         })
         .await
     }
@@ -352,33 +453,47 @@ impl ChannelRepository for SqliteChannelRepository {
         crate::metrics::timed_db_op("channels.activate", async {
             let mut tx = self.pool.begin().await?;
 
-            let draft = sqlx::query_as::<_, Channel>(
-                "SELECT * FROM channels WHERE channel_id = ? AND status = 'draft'",
-            )
-            .bind(channel_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| {
-                OrionError::BadRequest(format!(
-                    "No draft version found for channel '{}'",
-                    channel_id
-                ))
-            })?;
+            // Find the draft version
+            let (draft_sql, draft_values) = Query::select()
+                .column(Asterisk)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Status).eq("draft"))
+                .build_sqlx(query_builder());
 
-            sqlx::query(
-                "UPDATE channels SET status = 'archived' WHERE channel_id = ? AND status = 'active'",
-            )
-            .bind(channel_id)
-            .execute(&mut *tx)
-            .await?;
+            let draft = sqlx::query_as_with::<_, Channel, _>(&draft_sql, draft_values)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| {
+                    OrionError::BadRequest(format!(
+                        "No draft version found for channel '{}'",
+                        channel_id
+                    ))
+                })?;
 
-            sqlx::query(
-                "UPDATE channels SET status = 'active' WHERE channel_id = ? AND version = ?",
-            )
-            .bind(channel_id)
-            .bind(draft.version)
-            .execute(&mut *tx)
-            .await?;
+            // Archive current active versions
+            let (archive_sql, archive_values) = Query::update()
+                .table(Channels::Table)
+                .value(Channels::Status, "archived")
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Status).eq("active"))
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&archive_sql, archive_values)
+                .execute(&mut *tx)
+                .await?;
+
+            // Activate the draft
+            let (activate_sql, activate_values) = Query::update()
+                .table(Channels::Table)
+                .value(Channels::Status, "active")
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Version).eq(draft.version))
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&activate_sql, activate_values)
+                .execute(&mut *tx)
+                .await?;
 
             tx.commit().await?;
 
@@ -389,25 +504,35 @@ impl ChannelRepository for SqliteChannelRepository {
 
     async fn archive(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.archive", async {
-            let active = sqlx::query_as::<_, Channel>(
-                "SELECT * FROM channels WHERE channel_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1",
-            )
-            .bind(channel_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| {
-                OrionError::BadRequest(format!(
-                    "No active version found for channel '{}'",
-                    channel_id
-                ))
-            })?;
+            let (active_sql, active_values) = Query::select()
+                .column(Asterisk)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Status).eq("active"))
+                .order_by(Channels::Version, Order::Desc)
+                .limit(1)
+                .build_sqlx(query_builder());
 
-            sqlx::query(
-                "UPDATE channels SET status = 'archived' WHERE channel_id = ? AND status = 'active'",
-            )
-            .bind(channel_id)
-            .execute(&self.pool)
-            .await?;
+            let active = sqlx::query_as_with::<_, Channel, _>(&active_sql, active_values)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| {
+                    OrionError::BadRequest(format!(
+                        "No active version found for channel '{}'",
+                        channel_id
+                    ))
+                })?;
+
+            let (archive_sql, archive_values) = Query::update()
+                .table(Channels::Table)
+                .value(Channels::Status, "archived")
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Status).eq("active"))
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&archive_sql, archive_values)
+                .execute(&self.pool)
+                .await?;
 
             self.get_version(channel_id, active.version).await
         })
@@ -417,12 +542,16 @@ impl ChannelRepository for SqliteChannelRepository {
     async fn create_new_version(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.create_new_version", async {
             // Check no draft already exists
-            let existing_draft = sqlx::query_as::<_, Channel>(
-                "SELECT * FROM channels WHERE channel_id = ? AND status = 'draft'",
-            )
-            .bind(channel_id)
-            .fetch_optional(&self.pool)
-            .await?;
+            let (draft_sql, draft_values) = Query::select()
+                .column(Asterisk)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Status).eq("draft"))
+                .build_sqlx(query_builder());
+
+            let existing_draft = sqlx::query_as_with::<_, Channel, _>(&draft_sql, draft_values)
+                .fetch_optional(&self.pool)
+                .await?;
 
             if existing_draft.is_some() {
                 return Err(OrionError::Conflict(format!(
@@ -436,26 +565,78 @@ impl ChannelRepository for SqliteChannelRepository {
 
             let new_version = latest.version + 1;
 
-            sqlx::query(
-                r#"INSERT INTO channels (channel_id, version, name, description, channel_type, protocol, methods, route_pattern, topic, consumer_group, transport_config_json, workflow_id, config_json, status, priority)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)"#,
-            )
-            .bind(channel_id)
-            .bind(new_version)
-            .bind(&latest.name)
-            .bind(&latest.description)
-            .bind(&latest.channel_type)
-            .bind(&latest.protocol)
-            .bind(&latest.methods)
-            .bind(&latest.route_pattern)
-            .bind(&latest.topic)
-            .bind(&latest.consumer_group)
-            .bind(&latest.transport_config_json)
-            .bind(&latest.workflow_id)
-            .bind(&latest.config_json)
-            .bind(latest.priority)
-            .execute(&self.pool)
-            .await?;
+            let description_val: sea_query::Value = latest
+                .description
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let methods_val: sea_query::Value = latest
+                .methods
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let route_pattern_val: sea_query::Value = latest
+                .route_pattern
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let topic_val: sea_query::Value = latest
+                .topic
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let consumer_group_val: sea_query::Value = latest
+                .consumer_group
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+            let workflow_id_val: sea_query::Value = latest
+                .workflow_id
+                .as_ref()
+                .map(|s| s.as_str().into())
+                .unwrap_or(sea_query::Value::String(None));
+
+            let (sql, values) = Query::insert()
+                .into_table(Channels::Table)
+                .columns([
+                    Channels::ChannelId,
+                    Channels::Version,
+                    Channels::Name,
+                    Channels::Description,
+                    Channels::ChannelType,
+                    Channels::Protocol,
+                    Channels::Methods,
+                    Channels::RoutePattern,
+                    Channels::Topic,
+                    Channels::ConsumerGroup,
+                    Channels::TransportConfigJson,
+                    Channels::WorkflowId,
+                    Channels::ConfigJson,
+                    Channels::Status,
+                    Channels::Priority,
+                ])
+                .values_panic([
+                    Expr::val(channel_id).into(),
+                    Expr::val(new_version).into(),
+                    Expr::val(latest.name.as_str()).into(),
+                    Expr::val(description_val).into(),
+                    Expr::val(latest.channel_type.as_str()).into(),
+                    Expr::val(latest.protocol.as_str()).into(),
+                    Expr::val(methods_val).into(),
+                    Expr::val(route_pattern_val).into(),
+                    Expr::val(topic_val).into(),
+                    Expr::val(consumer_group_val).into(),
+                    Expr::val(latest.transport_config_json.as_str()).into(),
+                    Expr::val(workflow_id_val).into(),
+                    Expr::val(latest.config_json.as_str()).into(),
+                    Expr::val("draft").into(),
+                    Expr::val(latest.priority).into(),
+                ])
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             self.get_version(channel_id, new_version).await
         })
@@ -471,19 +652,29 @@ impl ChannelRepository for SqliteChannelRepository {
         let limit = limit.clamp(1, 1000);
         let offset = offset.max(0);
 
-        let (total,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM channels WHERE channel_id = ?")
-            .bind(channel_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let (count_sql, count_values) = Query::select()
+            .expr(Func::count(Expr::col(Asterisk)))
+            .from(Channels::Table)
+            .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+            .build_sqlx(query_builder());
 
-        let data = sqlx::query_as::<_, Channel>(
-            "SELECT * FROM channels WHERE channel_id = ? ORDER BY version DESC LIMIT ? OFFSET ?",
-        )
-        .bind(channel_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
+        let (total,): (i64,) =
+            sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
+                .fetch_one(&self.pool)
+                .await?;
+
+        let (sql, values) = Query::select()
+            .column(Asterisk)
+            .from(Channels::Table)
+            .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+            .order_by(Channels::Version, Order::Desc)
+            .limit(limit as u64)
+            .offset(offset as u64)
+            .build_sqlx(query_builder());
+
+        let data = sqlx::query_as_with::<_, Channel, _>(&sql, values)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(PaginatedResult {
             data,
@@ -495,15 +686,21 @@ impl ChannelRepository for SqliteChannelRepository {
 
     async fn get_active_by_name(&self, name: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.get_active_by_name", async {
-            sqlx::query_as::<_, Channel>(
-                "SELECT * FROM channels WHERE name = ? AND status = 'active' ORDER BY version DESC LIMIT 1",
-            )
-            .bind(name)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| {
-                OrionError::NotFound(format!("No active channel found with name '{}'", name))
-            })
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::Name).eq(name))
+                .and_where(Expr::col(Channels::Status).eq("active"))
+                .order_by(Channels::Version, Order::Desc)
+                .limit(1)
+                .build_sqlx(query_builder());
+
+            sqlx::query_as_with::<_, Channel, _>(&sql, values)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| {
+                    OrionError::NotFound(format!("No active channel found with name '{}'", name))
+                })
         })
         .await
     }
@@ -514,48 +711,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_build_where_clause_empty() {
+    fn test_build_condition_empty() {
         let filter = ChannelFilter::default();
-        let (clause, binds) = build_where_clause(&filter);
-        assert_eq!(clause, "WHERE 1=1");
-        assert!(binds.is_empty());
+        let cond = build_condition(&filter);
+        // Build a query with the condition to verify it produces valid SQL
+        let (sql, _) = Query::select()
+            .column(Asterisk)
+            .from(CurrentChannels::Table)
+            .cond_where(cond)
+            .build_sqlx(query_builder());
+        // Empty Condition::all() produces WHERE TRUE -- no actual column filters
+        assert!(!sql.contains("\"status\""), "empty filter should not filter by status, got: {}", sql);
     }
 
     #[test]
-    fn test_build_where_clause_status() {
+    fn test_build_condition_status() {
         let filter = ChannelFilter {
             status: Some("active".to_string()),
             ..Default::default()
         };
-        let (clause, binds) = build_where_clause(&filter);
-        assert!(clause.contains("AND status = ?"));
-        assert_eq!(binds, vec!["active"]);
+        let cond = build_condition(&filter);
+        let (sql, _) = Query::select()
+            .column(Asterisk)
+            .from(CurrentChannels::Table)
+            .cond_where(cond)
+            .build_sqlx(query_builder());
+        assert!(sql.contains("status"), "SQL should contain status filter, got: {}", sql);
     }
 
     #[test]
-    fn test_build_where_clause_channel_type() {
+    fn test_build_condition_channel_type() {
         let filter = ChannelFilter {
             channel_type: Some("sync".to_string()),
             ..Default::default()
         };
-        let (clause, binds) = build_where_clause(&filter);
-        assert!(clause.contains("AND channel_type = ?"));
-        assert_eq!(binds, vec!["sync"]);
+        let cond = build_condition(&filter);
+        let (sql, _) = Query::select()
+            .column(Asterisk)
+            .from(CurrentChannels::Table)
+            .cond_where(cond)
+            .build_sqlx(query_builder());
+        assert!(sql.contains("channel_type"), "SQL should contain channel_type filter, got: {}", sql);
     }
 
     #[test]
-    fn test_build_where_clause_protocol() {
+    fn test_build_condition_protocol() {
         let filter = ChannelFilter {
             protocol: Some("rest".to_string()),
             ..Default::default()
         };
-        let (clause, binds) = build_where_clause(&filter);
-        assert!(clause.contains("AND protocol = ?"));
-        assert_eq!(binds, vec!["rest"]);
+        let cond = build_condition(&filter);
+        let (sql, _) = Query::select()
+            .column(Asterisk)
+            .from(CurrentChannels::Table)
+            .cond_where(cond)
+            .build_sqlx(query_builder());
+        assert!(sql.contains("protocol"), "SQL should contain protocol filter, got: {}", sql);
     }
 
     #[test]
-    fn test_build_where_clause_all_filters() {
+    fn test_build_condition_all_filters() {
         let filter = ChannelFilter {
             status: Some("draft".to_string()),
             channel_type: Some("async".to_string()),
@@ -563,14 +778,15 @@ mod tests {
             limit: Some(10),
             offset: Some(0),
         };
-        let (clause, binds) = build_where_clause(&filter);
-        assert!(clause.contains("AND status = ?"));
-        assert!(clause.contains("AND channel_type = ?"));
-        assert!(clause.contains("AND protocol = ?"));
-        assert_eq!(binds.len(), 3);
-        assert_eq!(binds[0], "draft");
-        assert_eq!(binds[1], "async");
-        assert_eq!(binds[2], "kafka");
+        let cond = build_condition(&filter);
+        let (sql, _) = Query::select()
+            .column(Asterisk)
+            .from(CurrentChannels::Table)
+            .cond_where(cond)
+            .build_sqlx(query_builder());
+        assert!(sql.contains("status"), "SQL should contain status filter, got: {}", sql);
+        assert!(sql.contains("channel_type"), "SQL should contain channel_type filter, got: {}", sql);
+        assert!(sql.contains("protocol"), "SQL should contain protocol filter, got: {}", sql);
     }
 
     #[test]

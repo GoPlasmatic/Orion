@@ -3,6 +3,17 @@ pub mod http_call;
 pub mod http_common;
 pub mod publish_kafka;
 
+#[cfg(feature = "connectors-sql")]
+pub mod db_read;
+#[cfg(feature = "connectors-sql")]
+pub mod db_write;
+#[cfg(feature = "connectors-mongodb")]
+pub mod mongo_read;
+#[cfg(feature = "connectors-redis")]
+pub mod cache_read;
+#[cfg(feature = "connectors-redis")]
+pub mod cache_write;
+
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;

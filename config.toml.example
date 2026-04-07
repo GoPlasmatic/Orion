@@ -8,9 +8,10 @@
 # workers = <num_cpus>        # Defaults to number of CPU cores
 
 [storage]
-# path = "orion.db"           # SQLite database file path
-# busy_timeout_ms = 5000      # SQLite busy timeout in milliseconds
-# acquire_timeout_secs = 5    # Connection pool acquire timeout in seconds
+# url = "sqlite:orion.db"       # Database URL (sqlite:, postgres://, mysql://)
+# max_connections = 10          # Connection pool max connections
+# busy_timeout_ms = 5000        # SQLite busy timeout in milliseconds (ignored for other backends)
+# acquire_timeout_secs = 5      # Connection pool acquire timeout in seconds
 
 [ingest]
 # max_payload_size = 1048576  # Maximum payload size in bytes (1 MB)

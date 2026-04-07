@@ -1,4 +1,10 @@
 pub mod circuit_breaker;
+#[cfg(feature = "connectors-mongodb")]
+pub mod mongo_pool;
+#[cfg(feature = "connectors-sql")]
+pub mod pool_cache;
+#[cfg(feature = "connectors-redis")]
+pub mod redis_pool;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

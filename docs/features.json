@@ -1,0 +1,182 @@
+{
+  "title": "Orion Architectural Characteristics",
+  "subtitle": "Production-grade capabilities Orion manages out of the box",
+  "categories": [
+    {
+      "name": "Observability",
+      "type": "S",
+      "color": "#81ECEC",
+      "border": "#00CEC9",
+      "children": [
+        {
+          "name": "Structured Logging",
+          "children": ["JSON & pretty-print formats", "Configurable log levels", "Per-request context"]
+        },
+        {
+          "name": "Prometheus Metrics",
+          "children": ["Request counters & error rates", "Latency histograms", "Circuit breaker metrics"]
+        },
+        {
+          "name": "Distributed Tracing",
+          "children": ["W3C Trace Context", "OpenTelemetry OTLP export", "Configurable sampling rate"]
+        },
+        {
+          "name": "Health Monitoring",
+          "children": ["Component-level health checks", "Automatic degradation", "Request ID propagation"]
+        }
+      ]
+    },
+    {
+      "name": "Resilience",
+      "type": "S",
+      "color": "#A29BFE",
+      "border": "#6C5CE7",
+      "children": [
+        {
+          "name": "Circuit Breakers",
+          "children": ["Lock-free state machine", "Per-connector isolation", "Auto-recovery after cooldown"]
+        },
+        {
+          "name": "Retry & Backoff",
+          "children": ["Exponential backoff", "Configurable max retries", "Retryable error detection"]
+        },
+        {
+          "name": "Timeouts",
+          "children": ["Per-channel enforcement", "Workflow execution limits"]
+        },
+        {
+          "name": "Graceful Shutdown",
+          "children": ["Signal handling (SIGTERM)", "Connection draining", "Queue flushing with timeout"]
+        }
+      ]
+    },
+    {
+      "name": "Security",
+      "type": "B",
+      "color": "#FF7675",
+      "border": "#D63031",
+      "children": [
+        {
+          "name": "Secret Management",
+          "children": ["Auto-masked API responses", "Credential isolation via connectors"]
+        },
+        {
+          "name": "Input Validation",
+          "children": ["Per-channel JSONLogic rules", "Payload size limits", "Header & query param access"]
+        },
+        {
+          "name": "Access Control",
+          "children": ["Per-channel CORS enforcement", "Origin allowlist"]
+        },
+        {
+          "name": "SQL Safety",
+          "children": ["Parameterized queries only", "Injection protection verified"]
+        }
+      ]
+    },
+    {
+      "name": "Scalability",
+      "type": "C",
+      "color": "#74B9FF",
+      "border": "#0984E3",
+      "children": [
+        {
+          "name": "Rate Limiting",
+          "children": ["Token bucket algorithm", "Per-client keying", "JSONLogic key extraction"]
+        },
+        {
+          "name": "Backpressure",
+          "children": ["Semaphore concurrency limits", "503 load shedding", "Per-channel configuration"]
+        },
+        {
+          "name": "Async Processing",
+          "children": ["Multi-worker trace queue", "Bounded buffer channels"]
+        },
+        {
+          "name": "Horizontal Scaling",
+          "children": ["Stateless instances", "No shared state required"]
+        }
+      ]
+    },
+    {
+      "name": "Deployability",
+      "type": "C",
+      "color": "#FFEAA7",
+      "border": "#FDCB6E",
+      "children": [
+        {
+          "name": "Packaging",
+          "children": ["Single binary", "SQLite, PostgreSQL, MySQL", "Minimal footprint"]
+        },
+        {
+          "name": "Containerization",
+          "children": ["Multi-stage Docker build", "Non-root execution", "Built-in health probes"]
+        },
+        {
+          "name": "Configuration",
+          "children": ["TOML + env var overrides", "Sensible defaults", "Feature flags"]
+        }
+      ]
+    },
+    {
+      "name": "Extensibility",
+      "type": "S",
+      "color": "#FDCB6E",
+      "border": "#E17055",
+      "children": [
+        {
+          "name": "Connectors",
+          "children": ["HTTP & Webhooks", "Kafka pub/sub", "Database (SQL)", "Cache (Redis)", "Storage (S3/GCS)", "MongoDB (NoSQL)"]
+        },
+        {
+          "name": "Custom Functions",
+          "children": ["Async function handlers", "Built-in function library", "JSONLogic expressions"]
+        },
+        {
+          "name": "Channel Protocols",
+          "children": ["REST (sync)", "Simple HTTP (sync)", "Kafka (async)"]
+        }
+      ]
+    },
+    {
+      "name": "Availability",
+      "type": "C",
+      "color": "#55EFC4",
+      "border": "#00B894",
+      "children": [
+        {
+          "name": "Hot-Reload",
+          "children": ["Zero-downtime engine swap", "Channel registry rebuild", "Kafka consumer restart"]
+        },
+        {
+          "name": "Canary Rollouts",
+          "children": ["Percentage-based traffic split", "Gradual migration", "Instant rollback"]
+        },
+        {
+          "name": "Versioning",
+          "children": ["Draft / Active / Archived lifecycle", "Multi-version execution"]
+        }
+      ]
+    },
+    {
+      "name": "Maintainability",
+      "type": "B",
+      "color": "#DDA0DD",
+      "border": "#BA68C8",
+      "children": [
+        {
+          "name": "Admin APIs",
+          "children": ["Full CRUD for all entities", "Version management", "Engine control"]
+        },
+        {
+          "name": "CI/CD Integration",
+          "children": ["Bulk import & export", "Pre-deploy validation", "GitOps-friendly"]
+        },
+        {
+          "name": "Testing",
+          "children": ["Dry-run execution", "Workflow validation", "Step-by-step traces"]
+        }
+      ]
+    }
+  ]
+}

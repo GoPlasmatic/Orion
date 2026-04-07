@@ -114,7 +114,7 @@ You build services in Orion with three things:
 |-----------|-----------|---------|
 | **Channel** | A service endpoint — sync (REST, HTTP) or async (Kafka) | `POST /orders`, `GET /users/{id}`, Kafka topic `order.placed` |
 | **Workflow** | A pipeline of tasks that defines what the service does | Parse → validate → enrich → transform → respond |
-| **Connector** | A named connection to an external system, with auth and retries | Stripe API, Slack webhook, Kafka cluster |
+| **Connector** | A named connection to an external system, with auth and retries | Stripe API, PostgreSQL, Redis, Kafka cluster |
 
 **Design-time:** define channels, build workflows, configure connectors, test with dry-run, manage versions — all through the admin API.
 
@@ -264,10 +264,17 @@ Compose services from other services. Same interface, same governance, zero netw
 | `validation` | Enforce required fields, constraints, and schema-like checks |
 | `http_call` | Invoke downstream APIs, webhooks, or services via [connectors](docs/connectors.md) |
 | `channel_call` | Invoke another channel's workflow in-process |
+| `db_read` | Execute SQL SELECT queries, return rows as JSON `*` |
+| `db_write` | Execute SQL INSERT/UPDATE/DELETE, return affected count `*` |
+| `cache_read` | Read from Redis cache `*` |
+| `cache_write` | Write to Redis cache with optional TTL `*` |
+| `mongo_read` | Query MongoDB collections, BSON-to-JSON conversion `*` |
 | `publish_json` | Serialize data to JSON output format |
 | `publish_xml` | Serialize data to XML output format |
 | `publish_kafka` | Publish messages to [Kafka topics](docs/kafka.md) |
 | `log` | Emit structured log entries for auditing and debugging |
+
+`*` Requires feature flag: `connectors-sql`, `connectors-redis`, or `connectors-mongodb`. Handler code is implemented; engine registration is pending.
 
 ---
 
@@ -283,7 +290,7 @@ Compose services from other services. Same interface, same governance, zero netw
 └────────────────┘   └────────────────────┘   └────────────────┘
 ```
 
-Single binary. Embedded SQLite. No database to provision. No runtime dependencies.
+Single binary. SQLite by default — no database to provision, no runtime dependencies. Need more scale? Swap to **PostgreSQL** or **MySQL** with a feature flag at build time.
 
 **Same channel definitions work in any topology** — run everything in one instance, split channels across instances with include/exclude filters, or deploy as sidecars. The definition doesn't change; only the deployment config does.
 
@@ -325,8 +332,11 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/relea
 # Windows (PowerShell)
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-installer.ps1 | iex"
 
-# From source
+# From source (SQLite default)
 cargo install --git https://github.com/GoPlasmatic/Orion.git
+
+# From source (PostgreSQL backend)
+cargo install --git https://github.com/GoPlasmatic/Orion.git --no-default-features --features db-postgres,swagger-ui
 ```
 
 Verify with `orion-server --version`. See [Configuration](docs/configuration.md#deployment) for Docker and deployment options.
@@ -336,8 +346,8 @@ Verify with `orion-server --version`. See [Configuration](docs/configuration.md#
 | Guide | Description |
 |-------|-------------|
 | [API Reference](docs/api-reference.md) | Channels, workflows, connectors, data, and operational endpoints |
-| [Configuration](docs/configuration.md) | Config file, env vars, deployment, and production checklist |
-| [Connectors](docs/connectors.md) | Auth schemes, retry policies, and secret masking |
+| [Configuration](docs/configuration.md) | Config file, env vars, database backends, deployment, and production checklist |
+| [Connectors](docs/connectors.md) | HTTP, DB, Cache, Storage, Kafka — auth, retry, and secret masking |
 | [Kafka Integration](docs/kafka.md) | Topic mapping, DB-driven consumers, DLQ, and publishing |
 | [Production Features](docs/production-features.md) | Versioning, rollout, channel config, REST routing, fault tolerance |
 | [Use Cases & Patterns](docs/use-cases.md) | AI prompt templates, tested examples, validation workflows, CI/CD |
@@ -346,17 +356,19 @@ Verify with `orion-server --version`. See [Configuration](docs/configuration.md#
 
 ## Built With
 
-[Axum](https://github.com/tokio-rs/axum) (HTTP), [Tokio](https://tokio.rs) (async runtime), [SQLx](https://github.com/launchbadge/sqlx) (database), SQLite (storage), [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) (JSONLogic), [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) (workflow orchestration).
+[Axum](https://github.com/tokio-rs/axum) (HTTP), [Tokio](https://tokio.rs) (async runtime), [SQLx](https://github.com/launchbadge/sqlx) (database), [sea-query](https://github.com/SeaQL/sea-query) (portable SQL builder), SQLite/PostgreSQL/MySQL (storage), [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) (JSONLogic), [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) (workflow orchestration).
 
 ## Contributing
 
 Contributions welcome. [Open an issue](https://github.com/GoPlasmatic/Orion/issues) or submit a pull request.
 
 ```bash
-cargo build                  # Build
-cargo test                   # Run tests
-cargo clippy                 # Lint
-cargo fmt                    # Format
+cargo build                              # Build (SQLite default)
+cargo build --features kafka             # Build with Kafka support
+cargo build --features connectors-sql    # Build with external SQL connectors
+cargo test                               # Run tests
+cargo clippy                             # Lint
+cargo fmt                                # Format
 ```
 
 ## License

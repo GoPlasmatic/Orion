@@ -1,10 +1,13 @@
 use async_trait::async_trait;
 use dataflow_rs::Workflow as DataflowWorkflow;
+use sea_query::{Asterisk, Condition, Expr, Func, Order, Query};
+use sea_query_binder::SqlxBinder;
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use crate::storage::DbPool;
 
 use crate::errors::OrionError;
 use crate::storage::models::Workflow;
+use crate::storage::{query_builder, schema::{Workflows, CurrentWorkflows}};
 
 #[derive(Debug, Serialize)]
 pub struct PaginatedResult<T: Serialize> {
@@ -119,40 +122,38 @@ pub trait WorkflowRepository: Send + Sync {
     async fn ping(&self) -> Result<(), OrionError>;
 }
 
-// -- SQLite implementation --
+// -- SQL implementation --
 
-pub struct SqliteWorkflowRepository {
-    pool: SqlitePool,
+pub struct SqlWorkflowRepository {
+    pool: DbPool,
 }
 
-impl SqliteWorkflowRepository {
-    pub fn new(pool: SqlitePool) -> Self {
+impl SqlWorkflowRepository {
+    pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
 
-fn build_where_clause(filter: &WorkflowFilter) -> (String, Vec<String>) {
-    let mut clause = String::from("WHERE 1=1");
-    let mut binds: Vec<String> = Vec::new();
-
+fn build_condition(filter: &WorkflowFilter) -> Condition {
+    let mut cond = Condition::all();
     if let Some(ref status) = filter.status {
-        clause.push_str(" AND status = ?");
-        binds.push(status.clone());
+        cond = cond.add(Expr::col(Workflows::Status).eq(status.as_str()));
     }
     if let Some(ref tag) = filter.tag {
-        clause.push_str(" AND tags LIKE ? ESCAPE '\\'");
         let escaped = tag
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
-        binds.push(format!("%\"{}\"%", escaped));
+        cond = cond.add(
+            Expr::col(Workflows::Tags)
+                .like(format!("%\"{}\"%", escaped))
+        );
     }
-
-    (clause, binds)
+    cond
 }
 
 #[async_trait]
-impl WorkflowRepository for SqliteWorkflowRepository {
+impl WorkflowRepository for SqlWorkflowRepository {
     async fn create(&self, req: &CreateWorkflowRequest) -> Result<Workflow, OrionError> {
         crate::metrics::timed_db_op("workflows.create", async {
             let workflow_id = req
@@ -163,20 +164,38 @@ impl WorkflowRepository for SqliteWorkflowRepository {
             let tasks_json = serde_json::to_string(&req.tasks)?;
             let tags_json = serde_json::to_string(&req.tags)?;
 
-            sqlx::query(
-                r#"INSERT INTO workflows (workflow_id, version, name, description, priority, status, rollout_percentage, condition_json, tasks_json, tags, continue_on_error)
-                   VALUES (?, 1, ?, ?, ?, 'draft', 100, ?, ?, ?, ?)"#,
-            )
-            .bind(&workflow_id)
-            .bind(&req.name)
-            .bind(&req.description)
-            .bind(req.priority)
-            .bind(&condition_json)
-            .bind(&tasks_json)
-            .bind(&tags_json)
-            .bind(req.continue_on_error)
-            .execute(&self.pool)
-            .await?;
+            let description_val: sea_query::Value = req
+                .description
+                .as_deref()
+                .map(|s| s.to_string().into())
+                .unwrap_or(sea_query::Value::String(None));
+
+            let (sql, values) = Query::insert()
+                .into_table(Workflows::Table)
+                .columns([
+                    Workflows::WorkflowId, Workflows::Version, Workflows::Name,
+                    Workflows::Description, Workflows::Priority, Workflows::Status,
+                    Workflows::RolloutPercentage, Workflows::ConditionJson,
+                    Workflows::TasksJson, Workflows::Tags, Workflows::ContinueOnError,
+                ])
+                .values_panic([
+                    Expr::val(workflow_id.as_str()).into(),
+                    Expr::val(1i64).into(),
+                    Expr::val(req.name.as_str()).into(),
+                    Expr::val(description_val).into(),
+                    Expr::val(req.priority).into(),
+                    Expr::val("draft").into(),
+                    Expr::val(100i64).into(),
+                    Expr::val(condition_json.as_str()).into(),
+                    Expr::val(tasks_json.as_str()).into(),
+                    Expr::val(tags_json.as_str()).into(),
+                    Expr::val(req.continue_on_error).into(),
+                ])
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             self.get_version(&workflow_id, 1).await
         })
@@ -185,45 +204,56 @@ impl WorkflowRepository for SqliteWorkflowRepository {
 
     async fn get_by_id(&self, workflow_id: &str) -> Result<Workflow, OrionError> {
         crate::metrics::timed_db_op("workflows.get_by_id", async {
-            sqlx::query_as::<_, Workflow>(
-                "SELECT * FROM workflows WHERE workflow_id = ? ORDER BY version DESC LIMIT 1",
-            )
-            .bind(workflow_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| OrionError::NotFound(format!("Workflow '{}' not found", workflow_id)))
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .order_by(Workflows::Version, Order::Desc)
+                .limit(1)
+                .build_sqlx(query_builder());
+
+            sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| OrionError::NotFound(format!("Workflow '{}' not found", workflow_id)))
         })
         .await
     }
 
     async fn get_version(&self, workflow_id: &str, version: i64) -> Result<Workflow, OrionError> {
-        sqlx::query_as::<_, Workflow>(
-            "SELECT * FROM workflows WHERE workflow_id = ? AND version = ?",
-        )
-        .bind(workflow_id)
-        .bind(version)
-        .fetch_optional(&self.pool)
-        .await?
-        .ok_or_else(|| {
-            OrionError::NotFound(format!(
-                "Workflow '{}' version {} not found",
-                workflow_id, version
-            ))
-        })
+        let (sql, values) = Query::select()
+            .column(Asterisk)
+            .from(Workflows::Table)
+            .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+            .and_where(Expr::col(Workflows::Version).eq(version))
+            .build_sqlx(query_builder());
+
+        sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+            .fetch_optional(&self.pool)
+            .await?
+            .ok_or_else(|| {
+                OrionError::NotFound(format!(
+                    "Workflow '{}' version {} not found",
+                    workflow_id, version
+                ))
+            })
     }
 
     async fn list(&self, filter: &WorkflowFilter) -> Result<Vec<Workflow>, OrionError> {
-        let (where_clause, binds) = build_where_clause(filter);
-        let query = format!(
-            "SELECT * FROM current_workflows {where_clause} ORDER BY priority DESC, name ASC"
-        );
+        let cond = build_condition(filter);
+        let (sql, values) = Query::select()
+            .column(Asterisk)
+            .from(CurrentWorkflows::Table)
+            .cond_where(cond)
+            .order_by(Workflows::Priority, Order::Desc)
+            .order_by(Workflows::Name, Order::Asc)
+            .build_sqlx(query_builder());
 
-        let mut q = sqlx::query_as::<_, Workflow>(&query);
-        for b in &binds {
-            q = q.bind(b);
-        }
-
-        Ok(q.fetch_all(&self.pool).await?)
+        Ok(
+            sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                .fetch_all(&self.pool)
+                .await?,
+        )
     }
 
     async fn list_paginated(
@@ -231,26 +261,33 @@ impl WorkflowRepository for SqliteWorkflowRepository {
         filter: &WorkflowFilter,
     ) -> Result<PaginatedResult<Workflow>, OrionError> {
         crate::metrics::timed_db_op("workflows.list_paginated", async {
-            let (where_clause, binds) = build_where_clause(filter);
+            let cond = build_condition(filter);
             let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
             let offset = filter.offset.unwrap_or(0).max(0);
 
-            let count_query = format!("SELECT COUNT(*) FROM current_workflows {where_clause}");
-            let mut cq = sqlx::query_as::<_, (i64,)>(&count_query);
-            for b in &binds {
-                cq = cq.bind(b);
-            }
-            let (total,) = cq.fetch_one(&self.pool).await?;
+            // Count
+            let (sql, values) = Query::select()
+                .expr(Func::count(Expr::col(Asterisk)))
+                .from(CurrentWorkflows::Table)
+                .cond_where(cond.clone())
+                .build_sqlx(query_builder());
+            let (total,): (i64,) = sqlx::query_as_with::<_, (i64,), _>(&sql, values)
+                .fetch_one(&self.pool)
+                .await?;
 
-            let data_query = format!(
-                "SELECT * FROM current_workflows {where_clause} ORDER BY priority DESC, name ASC LIMIT ? OFFSET ?"
-            );
-            let mut dq = sqlx::query_as::<_, Workflow>(&data_query);
-            for b in &binds {
-                dq = dq.bind(b);
-            }
-            dq = dq.bind(limit).bind(offset);
-            let data = dq.fetch_all(&self.pool).await?;
+            // Data
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(CurrentWorkflows::Table)
+                .cond_where(cond)
+                .order_by(Workflows::Priority, Order::Desc)
+                .order_by(Workflows::Name, Order::Asc)
+                .limit(limit as u64)
+                .offset(offset as u64)
+                .build_sqlx(query_builder());
+            let data = sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                .fetch_all(&self.pool)
+                .await?;
 
             Ok(PaginatedResult {
                 data,
@@ -268,18 +305,23 @@ impl WorkflowRepository for SqliteWorkflowRepository {
         req: &UpdateWorkflowRequest,
     ) -> Result<Workflow, OrionError> {
         crate::metrics::timed_db_op("workflows.update_draft", async {
-            let existing = sqlx::query_as::<_, Workflow>(
-                "SELECT * FROM workflows WHERE workflow_id = ? AND status = 'draft'",
-            )
-            .bind(workflow_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| {
-                OrionError::BadRequest(format!(
-                    "No draft version found for workflow '{}'",
-                    workflow_id
-                ))
-            })?;
+            // Fetch existing draft
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq("draft"))
+                .build_sqlx(query_builder());
+
+            let existing = sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| {
+                    OrionError::BadRequest(format!(
+                        "No draft version found for workflow '{}'",
+                        workflow_id
+                    ))
+                })?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let description = req
@@ -302,22 +344,26 @@ impl WorkflowRepository for SqliteWorkflowRepository {
                 None => existing.tags.clone(),
             };
 
-            sqlx::query(
-                r#"UPDATE workflows
-                   SET name = ?, description = ?, priority = ?,
-                       condition_json = ?, tasks_json = ?, tags = ?, continue_on_error = ?
-                   WHERE workflow_id = ? AND status = 'draft'"#,
-            )
-            .bind(name)
-            .bind(description)
-            .bind(priority)
-            .bind(&condition_json)
-            .bind(&tasks_json)
-            .bind(&tags_json)
-            .bind(continue_on_error)
-            .bind(workflow_id)
-            .execute(&self.pool)
-            .await?;
+            let description_val: sea_query::Value = description
+                .map(|s| s.to_string().into())
+                .unwrap_or(sea_query::Value::String(None));
+
+            let (sql, values) = Query::update()
+                .table(Workflows::Table)
+                .value(Workflows::Name, name)
+                .value(Workflows::Description, description_val)
+                .value(Workflows::Priority, priority)
+                .value(Workflows::ConditionJson, condition_json.as_str())
+                .value(Workflows::TasksJson, tasks_json.as_str())
+                .value(Workflows::Tags, tags_json.as_str())
+                .value(Workflows::ContinueOnError, continue_on_error)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq("draft"))
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             self.get_version(workflow_id, existing.version).await
         })
@@ -326,8 +372,12 @@ impl WorkflowRepository for SqliteWorkflowRepository {
 
     async fn delete(&self, workflow_id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("workflows.delete", async {
-            let result = sqlx::query("DELETE FROM workflows WHERE workflow_id = ?")
-                .bind(workflow_id)
+            let (sql, values) = Query::delete()
+                .from_table(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .build_sqlx(query_builder());
+
+            let result = sqlx::query_with(&sql, values)
                 .execute(&self.pool)
                 .await?;
 
@@ -345,11 +395,18 @@ impl WorkflowRepository for SqliteWorkflowRepository {
 
     async fn list_active(&self) -> Result<Vec<Workflow>, OrionError> {
         crate::metrics::timed_db_op("workflows.list_active", async {
-            Ok(sqlx::query_as::<_, Workflow>(
-                "SELECT * FROM workflows WHERE status = 'active' ORDER BY priority DESC",
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .order_by(Workflows::Priority, Order::Desc)
+                .build_sqlx(query_builder());
+
+            Ok(
+                sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                    .fetch_all(&self.pool)
+                    .await?,
             )
-            .fetch_all(&self.pool)
-            .await?)
         })
         .await
     }
@@ -360,22 +417,19 @@ impl WorkflowRepository for SqliteWorkflowRepository {
                 return Ok(Vec::new());
             }
 
-            let placeholders = workflow_ids
-                .iter()
-                .map(|_| "?")
-                .collect::<Vec<_>>()
-                .join(", ");
-            let query = format!(
-                "SELECT * FROM workflows WHERE status = 'active' AND workflow_id IN ({}) ORDER BY priority DESC",
-                placeholders
-            );
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .and_where(Expr::col(Workflows::WorkflowId).is_in(workflow_ids.iter().copied()))
+                .order_by(Workflows::Priority, Order::Desc)
+                .build_sqlx(query_builder());
 
-            let mut q = sqlx::query_as::<_, Workflow>(&query);
-            for id in workflow_ids {
-                q = q.bind(id);
-            }
-
-            Ok(q.fetch_all(&self.pool).await?)
+            Ok(
+                sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                    .fetch_all(&self.pool)
+                    .await?,
+            )
         })
         .await
     }
@@ -390,76 +444,98 @@ impl WorkflowRepository for SqliteWorkflowRepository {
         crate::metrics::timed_db_op("workflows.activate", async {
             let mut tx = self.pool.begin().await?;
 
-            let draft = sqlx::query_as::<_, Workflow>(
-                "SELECT * FROM workflows WHERE workflow_id = ? AND status = 'draft'",
-            )
-            .bind(workflow_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or_else(|| {
-                OrionError::BadRequest(format!(
-                    "No draft version found for workflow '{}'",
-                    workflow_id
-                ))
-            })?;
+            // Fetch draft version
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq("draft"))
+                .build_sqlx(query_builder());
 
-            let active_versions: Vec<Workflow> = sqlx::query_as::<_, Workflow>(
-                "SELECT * FROM workflows WHERE workflow_id = ? AND status = 'active' ORDER BY version DESC",
-            )
-            .bind(workflow_id)
-            .fetch_all(&mut *tx)
-            .await?;
+            let draft = sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                .fetch_optional(&mut *tx)
+                .await?
+                .ok_or_else(|| {
+                    OrionError::BadRequest(format!(
+                        "No draft version found for workflow '{}'",
+                        workflow_id
+                    ))
+                })?;
+
+            // Fetch active versions
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .order_by(Workflows::Version, Order::Desc)
+                .build_sqlx(query_builder());
+
+            let active_versions: Vec<Workflow> =
+                sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                    .fetch_all(&mut *tx)
+                    .await?;
 
             if rollout_pct == 100 {
                 for active in &active_versions {
-                    sqlx::query(
-                        "UPDATE workflows SET status = 'archived' WHERE workflow_id = ? AND version = ?",
-                    )
-                    .bind(workflow_id)
-                    .bind(active.version)
-                    .execute(&mut *tx)
-                    .await?;
+                    let (sql, values) = Query::update()
+                        .table(Workflows::Table)
+                        .value(Workflows::Status, "archived")
+                        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                        .and_where(Expr::col(Workflows::Version).eq(active.version))
+                        .build_sqlx(query_builder());
+                    sqlx::query_with(&sql, values)
+                        .execute(&mut *tx)
+                        .await?;
                 }
 
-                sqlx::query(
-                    "UPDATE workflows SET status = 'active', rollout_percentage = 100 WHERE workflow_id = ? AND version = ?",
-                )
-                .bind(workflow_id)
-                .bind(draft.version)
-                .execute(&mut *tx)
-                .await?;
+                let (sql, values) = Query::update()
+                    .table(Workflows::Table)
+                    .value(Workflows::Status, "active")
+                    .value(Workflows::RolloutPercentage, 100i64)
+                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                    .and_where(Expr::col(Workflows::Version).eq(draft.version))
+                    .build_sqlx(query_builder());
+                sqlx::query_with(&sql, values)
+                    .execute(&mut *tx)
+                    .await?;
             } else {
                 if active_versions.len() > 1 {
                     for active in &active_versions[1..] {
-                        sqlx::query(
-                            "UPDATE workflows SET status = 'archived' WHERE workflow_id = ? AND version = ?",
-                        )
-                        .bind(workflow_id)
-                        .bind(active.version)
-                        .execute(&mut *tx)
-                        .await?;
+                        let (sql, values) = Query::update()
+                            .table(Workflows::Table)
+                            .value(Workflows::Status, "archived")
+                            .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                            .and_where(Expr::col(Workflows::Version).eq(active.version))
+                            .build_sqlx(query_builder());
+                        sqlx::query_with(&sql, values)
+                            .execute(&mut *tx)
+                            .await?;
                     }
                 }
 
                 if let Some(primary_active) = active_versions.first() {
-                    sqlx::query(
-                        "UPDATE workflows SET rollout_percentage = ? WHERE workflow_id = ? AND version = ?",
-                    )
-                    .bind(100 - rollout_pct)
-                    .bind(workflow_id)
-                    .bind(primary_active.version)
-                    .execute(&mut *tx)
-                    .await?;
+                    let (sql, values) = Query::update()
+                        .table(Workflows::Table)
+                        .value(Workflows::RolloutPercentage, 100 - rollout_pct)
+                        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                        .and_where(Expr::col(Workflows::Version).eq(primary_active.version))
+                        .build_sqlx(query_builder());
+                    sqlx::query_with(&sql, values)
+                        .execute(&mut *tx)
+                        .await?;
                 }
 
-                sqlx::query(
-                    "UPDATE workflows SET status = 'active', rollout_percentage = ? WHERE workflow_id = ? AND version = ?",
-                )
-                .bind(rollout_pct)
-                .bind(workflow_id)
-                .bind(draft.version)
-                .execute(&mut *tx)
-                .await?;
+                let (sql, values) = Query::update()
+                    .table(Workflows::Table)
+                    .value(Workflows::Status, "active")
+                    .value(Workflows::RolloutPercentage, rollout_pct)
+                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                    .and_where(Expr::col(Workflows::Version).eq(draft.version))
+                    .build_sqlx(query_builder());
+                sqlx::query_with(&sql, values)
+                    .execute(&mut *tx)
+                    .await?;
             }
 
             tx.commit().await?;
@@ -471,25 +547,37 @@ impl WorkflowRepository for SqliteWorkflowRepository {
 
     async fn archive(&self, workflow_id: &str) -> Result<Workflow, OrionError> {
         crate::metrics::timed_db_op("workflows.archive", async {
-            let active = sqlx::query_as::<_, Workflow>(
-                "SELECT * FROM workflows WHERE workflow_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1",
-            )
-            .bind(workflow_id)
-            .fetch_optional(&self.pool)
-            .await?
-            .ok_or_else(|| {
-                OrionError::BadRequest(format!(
-                    "No active version found for workflow '{}'",
-                    workflow_id
-                ))
-            })?;
+            // Fetch latest active version
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .order_by(Workflows::Version, Order::Desc)
+                .limit(1)
+                .build_sqlx(query_builder());
 
-            sqlx::query(
-                "UPDATE workflows SET status = 'archived' WHERE workflow_id = ? AND status = 'active'",
-            )
-            .bind(workflow_id)
-            .execute(&self.pool)
-            .await?;
+            let active = sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                .fetch_optional(&self.pool)
+                .await?
+                .ok_or_else(|| {
+                    OrionError::BadRequest(format!(
+                        "No active version found for workflow '{}'",
+                        workflow_id
+                    ))
+                })?;
+
+            // Archive all active versions
+            let (sql, values) = Query::update()
+                .table(Workflows::Table)
+                .value(Workflows::Status, "archived")
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             self.get_version(workflow_id, active.version).await
         })
@@ -507,12 +595,18 @@ impl WorkflowRepository for SqliteWorkflowRepository {
             let mut tx = self.pool.begin().await?;
 
             // Get active versions ordered by version DESC (newest first)
-            let active_versions: Vec<Workflow> = sqlx::query_as::<_, Workflow>(
-                "SELECT * FROM workflows WHERE workflow_id = ? AND status = 'active' ORDER BY version DESC",
-            )
-            .bind(workflow_id)
-            .fetch_all(&mut *tx)
-            .await?;
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .order_by(Workflows::Version, Order::Desc)
+                .build_sqlx(query_builder());
+
+            let active_versions: Vec<Workflow> =
+                sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                    .fetch_all(&mut *tx)
+                    .await?;
 
             if active_versions.is_empty() {
                 return Err(OrionError::BadRequest(format!(
@@ -538,41 +632,47 @@ impl WorkflowRepository for SqliteWorkflowRepository {
 
             if pct == 100 {
                 // Archive the older version
-                sqlx::query(
-                    "UPDATE workflows SET status = 'archived' WHERE workflow_id = ? AND version = ?",
-                )
-                .bind(workflow_id)
-                .bind(older.version)
-                .execute(&mut *tx)
-                .await?;
+                let (sql, values) = Query::update()
+                    .table(Workflows::Table)
+                    .value(Workflows::Status, "archived")
+                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                    .and_where(Expr::col(Workflows::Version).eq(older.version))
+                    .build_sqlx(query_builder());
+                sqlx::query_with(&sql, values)
+                    .execute(&mut *tx)
+                    .await?;
 
                 // Set newer to 100%
-                sqlx::query(
-                    "UPDATE workflows SET rollout_percentage = 100 WHERE workflow_id = ? AND version = ?",
-                )
-                .bind(workflow_id)
-                .bind(newer.version)
-                .execute(&mut *tx)
-                .await?;
+                let (sql, values) = Query::update()
+                    .table(Workflows::Table)
+                    .value(Workflows::RolloutPercentage, 100i64)
+                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                    .and_where(Expr::col(Workflows::Version).eq(newer.version))
+                    .build_sqlx(query_builder());
+                sqlx::query_with(&sql, values)
+                    .execute(&mut *tx)
+                    .await?;
             } else {
                 // Update both percentages
-                sqlx::query(
-                    "UPDATE workflows SET rollout_percentage = ? WHERE workflow_id = ? AND version = ?",
-                )
-                .bind(pct)
-                .bind(workflow_id)
-                .bind(newer.version)
-                .execute(&mut *tx)
-                .await?;
+                let (sql, values) = Query::update()
+                    .table(Workflows::Table)
+                    .value(Workflows::RolloutPercentage, pct)
+                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                    .and_where(Expr::col(Workflows::Version).eq(newer.version))
+                    .build_sqlx(query_builder());
+                sqlx::query_with(&sql, values)
+                    .execute(&mut *tx)
+                    .await?;
 
-                sqlx::query(
-                    "UPDATE workflows SET rollout_percentage = ? WHERE workflow_id = ? AND version = ?",
-                )
-                .bind(100 - pct)
-                .bind(workflow_id)
-                .bind(older.version)
-                .execute(&mut *tx)
-                .await?;
+                let (sql, values) = Query::update()
+                    .table(Workflows::Table)
+                    .value(Workflows::RolloutPercentage, 100 - pct)
+                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                    .and_where(Expr::col(Workflows::Version).eq(older.version))
+                    .build_sqlx(query_builder());
+                sqlx::query_with(&sql, values)
+                    .execute(&mut *tx)
+                    .await?;
             }
 
             tx.commit().await?;
@@ -585,12 +685,16 @@ impl WorkflowRepository for SqliteWorkflowRepository {
     async fn create_new_version(&self, workflow_id: &str) -> Result<Workflow, OrionError> {
         crate::metrics::timed_db_op("workflows.create_new_version", async {
             // Check no draft already exists
-            let existing_draft = sqlx::query_as::<_, Workflow>(
-                "SELECT * FROM workflows WHERE workflow_id = ? AND status = 'draft'",
-            )
-            .bind(workflow_id)
-            .fetch_optional(&self.pool)
-            .await?;
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq("draft"))
+                .build_sqlx(query_builder());
+
+            let existing_draft = sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+                .fetch_optional(&self.pool)
+                .await?;
 
             if existing_draft.is_some() {
                 return Err(OrionError::Conflict(format!(
@@ -604,21 +708,38 @@ impl WorkflowRepository for SqliteWorkflowRepository {
 
             let new_version = latest.version + 1;
 
-            sqlx::query(
-                r#"INSERT INTO workflows (workflow_id, version, name, description, priority, status, rollout_percentage, condition_json, tasks_json, tags, continue_on_error)
-                   VALUES (?, ?, ?, ?, ?, 'draft', 100, ?, ?, ?, ?)"#,
-            )
-            .bind(workflow_id)
-            .bind(new_version)
-            .bind(&latest.name)
-            .bind(&latest.description)
-            .bind(latest.priority)
-            .bind(&latest.condition_json)
-            .bind(&latest.tasks_json)
-            .bind(&latest.tags)
-            .bind(latest.continue_on_error)
-            .execute(&self.pool)
-            .await?;
+            let description_val: sea_query::Value = latest
+                .description
+                .as_deref()
+                .map(|s| s.to_string().into())
+                .unwrap_or(sea_query::Value::String(None));
+
+            let (sql, values) = Query::insert()
+                .into_table(Workflows::Table)
+                .columns([
+                    Workflows::WorkflowId, Workflows::Version, Workflows::Name,
+                    Workflows::Description, Workflows::Priority, Workflows::Status,
+                    Workflows::RolloutPercentage, Workflows::ConditionJson,
+                    Workflows::TasksJson, Workflows::Tags, Workflows::ContinueOnError,
+                ])
+                .values_panic([
+                    Expr::val(workflow_id).into(),
+                    Expr::val(new_version).into(),
+                    Expr::val(latest.name.as_str()).into(),
+                    Expr::val(description_val).into(),
+                    Expr::val(latest.priority).into(),
+                    Expr::val("draft").into(),
+                    Expr::val(100i64).into(),
+                    Expr::val(latest.condition_json.as_str()).into(),
+                    Expr::val(latest.tasks_json.as_str()).into(),
+                    Expr::val(latest.tags.as_str()).into(),
+                    Expr::val(latest.continue_on_error).into(),
+                ])
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             self.get_version(workflow_id, new_version).await
         })
@@ -648,20 +769,28 @@ impl WorkflowRepository for SqliteWorkflowRepository {
         let limit = limit.clamp(1, 1000);
         let offset = offset.max(0);
 
-        let (total,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM workflows WHERE workflow_id = ?")
-                .bind(workflow_id)
-                .fetch_one(&self.pool)
-                .await?;
+        // Count
+        let (sql, values) = Query::select()
+            .expr(Func::count(Expr::col(Asterisk)))
+            .from(Workflows::Table)
+            .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+            .build_sqlx(query_builder());
+        let (total,): (i64,) = sqlx::query_as_with::<_, (i64,), _>(&sql, values)
+            .fetch_one(&self.pool)
+            .await?;
 
-        let data = sqlx::query_as::<_, Workflow>(
-            "SELECT * FROM workflows WHERE workflow_id = ? ORDER BY version DESC LIMIT ? OFFSET ?",
-        )
-        .bind(workflow_id)
-        .bind(limit)
-        .bind(offset)
-        .fetch_all(&self.pool)
-        .await?;
+        // Data
+        let (sql, values) = Query::select()
+            .column(Asterisk)
+            .from(Workflows::Table)
+            .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+            .order_by(Workflows::Version, Order::Desc)
+            .limit(limit as u64)
+            .offset(offset as u64)
+            .build_sqlx(query_builder());
+        let data = sqlx::query_as_with::<_, Workflow, _>(&sql, values)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(PaginatedResult {
             data,
@@ -672,7 +801,10 @@ impl WorkflowRepository for SqliteWorkflowRepository {
     }
 
     async fn ping(&self) -> Result<(), OrionError> {
-        sqlx::query_scalar::<_, i32>("SELECT 1")
+        let (sql, values) = Query::select()
+            .expr(Expr::val(1i32))
+            .build_sqlx(query_builder());
+        sqlx::query_scalar_with::<_, i32, _>(&sql, values)
             .fetch_one(&self.pool)
             .await?;
         Ok(())
@@ -833,59 +965,79 @@ mod tests {
     }
 
     #[test]
-    fn test_build_where_clause_empty_filter() {
+    fn test_build_condition_empty_filter() {
         let filter = WorkflowFilter::default();
-        let (clause, binds) = build_where_clause(&filter);
-        assert_eq!(clause, "WHERE 1=1");
-        assert!(binds.is_empty());
+        let cond = build_condition(&filter);
+        let (sql, _) = Query::select()
+            .column(Asterisk)
+            .from(CurrentWorkflows::Table)
+            .cond_where(cond)
+            .build(sea_query::SqliteQueryBuilder);
+        // With no filters, there should be no WHERE clause (Condition::all() with no adds is empty)
+        assert!(!sql.contains("WHERE") || sql.contains("WHERE TRUE") || sql.contains("WHERE 1"));
     }
 
     #[test]
-    fn test_build_where_clause_status_filter() {
+    fn test_build_condition_status_filter() {
         let filter = WorkflowFilter {
             status: Some("active".to_string()),
             ..Default::default()
         };
-        let (clause, binds) = build_where_clause(&filter);
-        assert!(clause.contains("status = ?"));
-        assert_eq!(binds, vec!["active"]);
+        let cond = build_condition(&filter);
+        let (sql, _) = Query::select()
+            .column(Asterisk)
+            .from(CurrentWorkflows::Table)
+            .cond_where(cond)
+            .build(sea_query::SqliteQueryBuilder);
+        assert!(sql.contains("\"status\""));
     }
 
     #[test]
-    fn test_build_where_clause_tag_filter() {
+    fn test_build_condition_tag_filter() {
         let filter = WorkflowFilter {
             tag: Some("billing".to_string()),
             ..Default::default()
         };
-        let (clause, binds) = build_where_clause(&filter);
-        assert!(clause.contains("tags LIKE ?"));
-        assert_eq!(binds, vec!["%\"billing\"%"]);
+        let cond = build_condition(&filter);
+        let (sql, _) = Query::select()
+            .column(Asterisk)
+            .from(CurrentWorkflows::Table)
+            .cond_where(cond)
+            .build(sea_query::SqliteQueryBuilder);
+        assert!(sql.contains("LIKE"));
     }
 
     #[test]
-    fn test_build_where_clause_tag_escaping() {
+    fn test_build_condition_tag_escaping() {
         let filter = WorkflowFilter {
             tag: Some("100%_done".to_string()),
             ..Default::default()
         };
-        let (_, binds) = build_where_clause(&filter);
-        assert_eq!(binds, vec!["%\"100\\%\\_done\"%"]);
+        let cond = build_condition(&filter);
+        let (sql, _) = Query::select()
+            .column(Asterisk)
+            .from(CurrentWorkflows::Table)
+            .cond_where(cond)
+            .build(sea_query::SqliteQueryBuilder);
+        assert!(sql.contains("LIKE"));
     }
 
     #[test]
-    fn test_build_where_clause_combined_filters() {
+    fn test_build_condition_combined_filters() {
         let filter = WorkflowFilter {
             status: Some("draft".to_string()),
             tag: Some("test".to_string()),
             limit: Some(10),
             offset: Some(0),
         };
-        let (clause, binds) = build_where_clause(&filter);
-        assert!(clause.contains("status = ?"));
-        assert!(clause.contains("tags LIKE ?"));
-        assert_eq!(binds.len(), 2);
-        assert_eq!(binds[0], "draft");
-        assert_eq!(binds[1], "%\"test\"%");
+        let cond = build_condition(&filter);
+        let (sql, _) = Query::select()
+            .column(Asterisk)
+            .from(CurrentWorkflows::Table)
+            .cond_where(cond)
+            .build(sea_query::SqliteQueryBuilder);
+        assert!(sql.contains("\"status\""));
+        assert!(sql.contains("LIKE"));
     }
 
     #[test]

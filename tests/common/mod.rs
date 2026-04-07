@@ -12,10 +12,10 @@ use orion::config::AppConfig;
 use orion::connector::ConnectorRegistry;
 use orion::server::rate_limit::RateLimitState;
 use orion::server::state::AppState;
-use orion::storage::repositories::channels::SqliteChannelRepository;
-use orion::storage::repositories::connectors::SqliteConnectorRepository;
-use orion::storage::repositories::traces::SqliteTraceRepository;
-use orion::storage::repositories::workflows::SqliteWorkflowRepository;
+use orion::storage::repositories::channels::SqlChannelRepository;
+use orion::storage::repositories::connectors::SqlConnectorRepository;
+use orion::storage::repositories::traces::SqlTraceRepository;
+use orion::storage::repositories::workflows::SqlWorkflowRepository;
 
 /// Create a test app with an in-memory SQLite database.
 pub async fn test_app() -> Router {
@@ -26,16 +26,16 @@ pub async fn test_app() -> Router {
 #[allow(dead_code)]
 pub async fn test_app_with_config(config: AppConfig) -> Router {
     let storage_config = orion::config::StorageConfig {
-        path: ":memory:".to_string(),
+        url: "sqlite::memory:".to_string(),
         max_connections: 5,
         ..Default::default()
     };
     let pool = orion::storage::init_pool(&storage_config).await.unwrap();
 
-    let channel_repo = Arc::new(SqliteChannelRepository::new(pool.clone()));
-    let workflow_repo = Arc::new(SqliteWorkflowRepository::new(pool.clone()));
-    let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
-    let trace_repo = Arc::new(SqliteTraceRepository::new(pool.clone()));
+    let channel_repo = Arc::new(SqlChannelRepository::new(pool.clone()));
+    let workflow_repo = Arc::new(SqlWorkflowRepository::new(pool.clone()));
+    let connector_repo = Arc::new(SqlConnectorRepository::new(pool.clone()));
+    let trace_repo = Arc::new(SqlTraceRepository::new(pool.clone()));
     let connector_registry = Arc::new(ConnectorRegistry::new(Default::default()));
     let channel_registry = Arc::new(ChannelRegistry::new());
 

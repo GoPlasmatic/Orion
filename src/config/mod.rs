@@ -70,9 +70,11 @@ pub struct TlsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
-    pub path: String,
+    /// Database connection URL.
+    /// Examples: "sqlite:orion.db", "postgres://user:pass@host/db", "mysql://user:pass@host/db"
+    pub url: String,
     pub max_connections: u32,
-    /// SQLite busy timeout in milliseconds.
+    /// SQLite busy timeout in milliseconds (ignored for other backends).
     pub busy_timeout_ms: u64,
     /// Connection pool acquire timeout in seconds.
     pub acquire_timeout_secs: u64,
@@ -81,7 +83,7 @@ pub struct StorageConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
-            path: "orion.db".to_string(),
+            url: "sqlite:orion.db".to_string(),
             max_connections: 10,
             busy_timeout_ms: 5000,
             acquire_timeout_secs: 5,
@@ -398,8 +400,8 @@ where
     if let Ok(v) = env_var("ORION_SERVER__TLS__KEY_PATH") {
         config.server.tls.key_path = v;
     }
-    if let Ok(v) = env_var("ORION_STORAGE__PATH") {
-        config.storage.path = v;
+    if let Ok(v) = env_var("ORION_STORAGE__URL") {
+        config.storage.url = v;
     }
     if let Ok(v) = env_var("ORION_STORAGE__BUSY_TIMEOUT_MS") {
         config.storage.busy_timeout_ms = parse_env::<u64>("ORION_STORAGE__BUSY_TIMEOUT_MS", &v)?;
@@ -573,9 +575,9 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
             message: "queue.buffer_size must be > 0".to_string(),
         });
     }
-    if config.storage.path.is_empty() {
+    if config.storage.url.is_empty() {
         return Err(OrionError::Config {
-            message: "storage.path must not be empty".to_string(),
+            message: "storage.url must not be empty".to_string(),
         });
     }
     if !VALID_LOG_LEVELS.contains(&config.logging.level.to_lowercase().as_str()) {
@@ -737,7 +739,7 @@ mod tests {
         let config = AppConfig::default();
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.host, "0.0.0.0");
-        assert_eq!(config.storage.path, "orion.db");
+        assert_eq!(config.storage.url, "sqlite:orion.db");
         assert_eq!(config.storage.max_connections, 10);
         assert_eq!(config.storage.busy_timeout_ms, 5000);
         assert_eq!(config.storage.acquire_timeout_secs, 5);
@@ -776,9 +778,9 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_config_empty_storage_path() {
+    fn test_validate_config_empty_storage_url() {
         let mut config = AppConfig::default();
-        config.storage.path = String::new();
+        config.storage.url = String::new();
         assert!(validate_config(&config).is_err());
     }
 
@@ -804,7 +806,7 @@ mod tests {
 
         let mut env = HashMap::new();
         env.insert("ORION_SERVER__PORT", "9090");
-        env.insert("ORION_STORAGE__PATH", "custom.db");
+        env.insert("ORION_STORAGE__URL", "postgres://localhost/orion");
         env.insert("ORION_LOGGING__LEVEL", "debug");
         env.insert("ORION_METRICS__ENABLED", "true");
 
@@ -816,7 +818,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(config.server.port, 9090);
-        assert_eq!(config.storage.path, "custom.db");
+        assert_eq!(config.storage.url, "postgres://localhost/orion");
         assert_eq!(config.logging.level, "debug");
         assert!(config.metrics.enabled);
     }
@@ -829,7 +831,7 @@ host = "127.0.0.1"
 port = 3000
 
 [storage]
-path = "test.db"
+url = "sqlite:test.db"
 
 [logging]
 level = "debug"
@@ -838,13 +840,13 @@ format = "json"
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 3000);
-        assert_eq!(config.storage.path, "test.db");
+        assert_eq!(config.storage.url, "sqlite:test.db");
         assert_eq!(config.logging.level, "debug");
     }
 
     #[test]
     fn test_validate_config_valid_default() {
-        let config = AppConfig::default();
+        let mut config = AppConfig::default();
         assert!(validate_config(&config).is_ok());
     }
 
@@ -921,7 +923,7 @@ format = "json"
         let mut env = HashMap::new();
         env.insert("ORION_SERVER__HOST", "localhost");
         env.insert("ORION_SERVER__PORT", "3000");
-        env.insert("ORION_STORAGE__PATH", "test.db");
+        env.insert("ORION_STORAGE__URL", "sqlite:test.db");
         env.insert("ORION_STORAGE__BUSY_TIMEOUT_MS", "10000");
         env.insert("ORION_STORAGE__ACQUIRE_TIMEOUT_SECS", "10");
         env.insert("ORION_LOGGING__LEVEL", "warn");
@@ -952,7 +954,7 @@ format = "json"
 
         assert_eq!(config.server.host, "localhost");
         assert_eq!(config.server.port, 3000);
-        assert_eq!(config.storage.path, "test.db");
+        assert_eq!(config.storage.url, "sqlite:test.db");
         assert_eq!(config.storage.busy_timeout_ms, 10000);
         assert_eq!(config.storage.acquire_timeout_secs, 10);
         assert_eq!(config.logging.level, "warn");
@@ -1199,7 +1201,7 @@ data_rps = 500
 
     #[test]
     fn test_validate_config_admin_auth_disabled_empty_key_ok() {
-        let config = AppConfig::default();
+        let mut config = AppConfig::default();
         // Auth disabled with empty key should be fine
         assert!(validate_config(&config).is_ok());
     }

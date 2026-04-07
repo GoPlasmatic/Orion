@@ -1,10 +1,13 @@
 use async_trait::async_trait;
+use sea_query::{Asterisk, Condition, Expr, Func, Order, Query};
+use sea_query_binder::SqlxBinder;
 use serde::Deserialize;
-use sqlx::SqlitePool;
+use crate::storage::DbPool;
 
 use crate::errors::OrionError;
 use crate::storage::models::{self, Trace};
 use crate::storage::repositories::workflows::PaginatedResult;
+use crate::storage::{query_builder, schema::Traces};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct TraceFilter {
@@ -18,9 +21,6 @@ pub struct TraceFilter {
     /// Sort direction: asc or desc (default).
     pub sort_order: Option<String>,
 }
-
-/// Allowed columns for the `sort_by` query parameter.
-const ALLOWED_SORT_COLUMNS: &[&str] = &["created_at", "updated_at", "status", "channel", "mode"];
 
 // -- Repository trait --
 
@@ -61,20 +61,20 @@ pub trait TraceRepository: Send + Sync {
     async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError>;
 }
 
-// -- SQLite implementation --
+// -- SQL implementation --
 
-pub struct SqliteTraceRepository {
-    pool: SqlitePool,
+pub struct SqlTraceRepository {
+    pool: DbPool,
 }
 
-impl SqliteTraceRepository {
-    pub fn new(pool: SqlitePool) -> Self {
+impl SqlTraceRepository {
+    pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
 }
 
 #[async_trait]
-impl TraceRepository for SqliteTraceRepository {
+impl TraceRepository for SqlTraceRepository {
     async fn create_pending(
         &self,
         channel: &str,
@@ -84,15 +84,31 @@ impl TraceRepository for SqliteTraceRepository {
         crate::metrics::timed_db_op("traces.create_pending", async {
             let id = uuid::Uuid::new_v4().to_string();
 
-            sqlx::query(
-                "INSERT INTO traces (id, status, channel, mode, input_json) VALUES (?, 'pending', ?, ?, ?)",
-            )
-            .bind(&id)
-            .bind(channel)
-            .bind(mode)
-            .bind(input_json)
-            .execute(&self.pool)
-            .await?;
+            let input_val: sea_query::Value = input_json
+                .map(|s| s.to_string().into())
+                .unwrap_or(sea_query::Value::String(None));
+
+            let (sql, values) = Query::insert()
+                .into_table(Traces::Table)
+                .columns([
+                    Traces::Id,
+                    Traces::Status,
+                    Traces::Channel,
+                    Traces::Mode,
+                    Traces::InputJson,
+                ])
+                .values_panic([
+                    Expr::val(id.as_str()).into(),
+                    Expr::val("pending").into(),
+                    Expr::val(channel).into(),
+                    Expr::val(mode).into(),
+                    Expr::val(input_val).into(),
+                ])
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             self.get_by_id(&id).await
         })
@@ -101,8 +117,13 @@ impl TraceRepository for SqliteTraceRepository {
 
     async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError> {
         crate::metrics::timed_db_op("traces.get_by_id", async {
-            sqlx::query_as::<_, Trace>("SELECT * FROM traces WHERE id = ?")
-                .bind(id)
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Traces::Table)
+                .and_where(Expr::col(Traces::Id).eq(id))
+                .build_sqlx(query_builder());
+
+            sqlx::query_as_with::<_, Trace, _>(&sql, values)
                 .fetch_optional(&self.pool)
                 .await?
                 .ok_or_else(|| OrionError::NotFound(format!("Trace '{}' not found", id)))
@@ -129,20 +150,28 @@ impl TraceRepository for SqliteTraceRepository {
                 (None, None)
             };
 
-            sqlx::query(
-                r#"UPDATE traces
-                   SET status = ?, error_message = COALESCE(?, error_message),
-                       started_at = COALESCE(?, started_at),
-                       completed_at = COALESCE(?, completed_at)
-                   WHERE id = ?"#,
-            )
-            .bind(status)
-            .bind(error_message)
-            .bind(&started_at)
-            .bind(&completed_at)
-            .bind(id)
-            .execute(&self.pool)
-            .await?;
+            let mut update = Query::update();
+            update
+                .table(Traces::Table)
+                .value(Traces::Status, status);
+
+            if let Some(err) = error_message {
+                update.value(Traces::ErrorMessage, err);
+            }
+            if let Some(ref sa) = started_at {
+                update.value(Traces::StartedAt, sa.as_str());
+            }
+            if let Some(ref ca) = completed_at {
+                update.value(Traces::CompletedAt, ca.as_str());
+            }
+
+            update.and_where(Expr::col(Traces::Id).eq(id));
+
+            let (sql, values) = update.build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             self.get_by_id(id).await
         })
@@ -156,10 +185,14 @@ impl TraceRepository for SqliteTraceRepository {
         duration_ms: f64,
     ) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("traces.set_result", async {
-            sqlx::query("UPDATE traces SET result_json = ?, duration_ms = ? WHERE id = ?")
-                .bind(result_json)
-                .bind(duration_ms)
-                .bind(id)
+            let (sql, values) = Query::update()
+                .table(Traces::Table)
+                .value(Traces::ResultJson, result_json)
+                .value(Traces::DurationMs, duration_ms)
+                .and_where(Expr::col(Traces::Id).eq(id))
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
                 .execute(&self.pool)
                 .await?;
             Ok(())
@@ -179,20 +212,39 @@ impl TraceRepository for SqliteTraceRepository {
             let id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now().naive_utc().to_string();
 
-            sqlx::query(
-                r#"INSERT INTO traces (id, status, channel, mode, input_json, result_json, duration_ms, started_at, completed_at)
-                   VALUES (?, 'completed', ?, ?, ?, ?, ?, ?, ?)"#,
-            )
-            .bind(&id)
-            .bind(channel)
-            .bind(mode)
-            .bind(input_json)
-            .bind(result_json)
-            .bind(duration_ms)
-            .bind(&now)
-            .bind(&now)
-            .execute(&self.pool)
-            .await?;
+            let input_val: sea_query::Value = input_json
+                .map(|s| s.to_string().into())
+                .unwrap_or(sea_query::Value::String(None));
+
+            let (sql, values) = Query::insert()
+                .into_table(Traces::Table)
+                .columns([
+                    Traces::Id,
+                    Traces::Status,
+                    Traces::Channel,
+                    Traces::Mode,
+                    Traces::InputJson,
+                    Traces::ResultJson,
+                    Traces::DurationMs,
+                    Traces::StartedAt,
+                    Traces::CompletedAt,
+                ])
+                .values_panic([
+                    Expr::val(id.as_str()).into(),
+                    Expr::val("completed").into(),
+                    Expr::val(channel).into(),
+                    Expr::val(mode).into(),
+                    Expr::val(input_val).into(),
+                    Expr::val(result_json).into(),
+                    Expr::val(duration_ms).into(),
+                    Expr::val(now.as_str()).into(),
+                    Expr::val(now.as_str()).into(),
+                ])
+                .build_sqlx(query_builder());
+
+            sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             Ok(id)
         })
@@ -207,48 +259,52 @@ impl TraceRepository for SqliteTraceRepository {
             let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
             let offset = filter.offset.unwrap_or(0).max(0);
 
-            let mut where_clause = String::from("WHERE 1=1");
-            let mut binds: Vec<String> = Vec::new();
-
+            let mut cond = Condition::all();
             if let Some(ref status) = filter.status {
-                where_clause.push_str(" AND status = ?");
-                binds.push(status.clone());
+                cond = cond.add(Expr::col(Traces::Status).eq(status.as_str()));
             }
             if let Some(ref channel) = filter.channel {
-                where_clause.push_str(" AND channel = ?");
-                binds.push(channel.clone());
+                cond = cond.add(Expr::col(Traces::Channel).eq(channel.as_str()));
             }
             if let Some(ref mode) = filter.mode {
-                where_clause.push_str(" AND mode = ?");
-                binds.push(mode.clone());
+                cond = cond.add(Expr::col(Traces::Mode).eq(mode.as_str()));
             }
 
-            let count_query = format!("SELECT COUNT(*) FROM traces {where_clause}");
-            let mut cq = sqlx::query_as::<_, (i64,)>(&count_query);
-            for b in &binds {
-                cq = cq.bind(b);
-            }
-            let (total,) = cq.fetch_one(&self.pool).await?;
+            // COUNT query
+            let (sql, values) = Query::select()
+                .expr(Func::count(Expr::col(Asterisk)))
+                .from(Traces::Table)
+                .cond_where(cond.clone())
+                .build_sqlx(query_builder());
+            let (total,): (i64,) = sqlx::query_as_with::<_, (i64,), _>(&sql, values)
+                .fetch_one(&self.pool)
+                .await?;
 
-            let sort_col = filter
-                .sort_by
-                .as_deref()
-                .filter(|c| ALLOWED_SORT_COLUMNS.contains(c))
-                .unwrap_or("created_at");
-            let sort_dir = match filter.sort_order.as_deref() {
-                Some("asc") => "ASC",
-                _ => "DESC",
+            // Sort column mapping
+            let sort_iden = match filter.sort_by.as_deref() {
+                Some("updated_at") => Traces::UpdatedAt,
+                Some("status") => Traces::Status,
+                Some("channel") => Traces::Channel,
+                Some("mode") => Traces::Mode,
+                _ => Traces::CreatedAt,
+            };
+            let order = match filter.sort_order.as_deref() {
+                Some("asc") => Order::Asc,
+                _ => Order::Desc,
             };
 
-            let data_query = format!(
-                "SELECT * FROM traces {where_clause} ORDER BY {sort_col} {sort_dir} LIMIT ? OFFSET ?"
-            );
-            let mut dq = sqlx::query_as::<_, Trace>(&data_query);
-            for b in &binds {
-                dq = dq.bind(b);
-            }
-            dq = dq.bind(limit).bind(offset);
-            let data = dq.fetch_all(&self.pool).await?;
+            // DATA query
+            let (sql, values) = Query::select()
+                .column(Asterisk)
+                .from(Traces::Table)
+                .cond_where(cond)
+                .order_by(sort_iden, order)
+                .limit(limit as u64)
+                .offset(offset as u64)
+                .build_sqlx(query_builder());
+            let data = sqlx::query_as_with::<_, Trace, _>(&sql, values)
+                .fetch_all(&self.pool)
+                .await?;
 
             Ok(PaginatedResult {
                 data,
@@ -268,12 +324,15 @@ impl TraceRepository for SqliteTraceRepository {
                 .unwrap_or(chrono::NaiveDateTime::MIN)
                 .to_string();
 
-            let result = sqlx::query(
-                "DELETE FROM traces WHERE created_at < ? AND status IN ('completed', 'failed')",
-            )
-            .bind(&cutoff)
-            .execute(&self.pool)
-            .await?;
+            let (sql, values) = Query::delete()
+                .from_table(Traces::Table)
+                .and_where(Expr::col(Traces::CreatedAt).lt(&cutoff))
+                .and_where(Expr::col(Traces::Status).is_in(["completed", "failed"]))
+                .build_sqlx(query_builder());
+
+            let result = sqlx::query_with(&sql, values)
+                .execute(&self.pool)
+                .await?;
 
             Ok(result.rows_affected())
         })
@@ -285,9 +344,9 @@ impl TraceRepository for SqliteTraceRepository {
 mod tests {
     use super::*;
 
-    async fn test_pool() -> sqlx::SqlitePool {
+    async fn test_pool() -> crate::storage::DbPool {
         crate::storage::init_pool(&crate::config::StorageConfig {
-            path: ":memory:".to_string(),
+            url: "sqlite::memory:".to_string(),
             max_connections: 1,
             ..Default::default()
         })
@@ -298,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_older_than_removes_old_completed_traces() {
         let pool = test_pool().await;
-        let repo = SqliteTraceRepository::new(pool.clone());
+        let repo = SqlTraceRepository::new(pool.clone());
 
         // Create a completed trace
         let id = repo
@@ -337,7 +396,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_older_than_preserves_pending_traces() {
         let pool = test_pool().await;
-        let repo = SqliteTraceRepository::new(pool.clone());
+        let repo = SqlTraceRepository::new(pool.clone());
 
         // Create a pending trace
         let trace = repo.create_pending("orders", "async", None).await.unwrap();
