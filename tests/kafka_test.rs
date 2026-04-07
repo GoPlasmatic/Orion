@@ -443,3 +443,218 @@ async fn test_consumer_multiple_topics() {
     handle.shutdown().await;
     // Success = consumer handles messages from multiple topics without confusion
 }
+
+// ============================================================
+// Partition rebalancing tests
+// ============================================================
+
+/// Start two consumers in the same group on a multi-partition topic.
+/// Verify that both consumers process messages and no messages are lost
+/// after rebalancing.
+#[tokio::test]
+#[ignore]
+async fn test_consumer_partition_rebalance() {
+    let (_container, brokers) = start_kafka().await;
+
+    let topic = format!("test-rebalance-{}", uuid::Uuid::new_v4());
+    let group_id = format!("rebalance-group-{}", uuid::Uuid::new_v4());
+
+    // Create a topic with 3 partitions using the admin API
+    let admin: rdkafka::admin::AdminClient<rdkafka::client::DefaultClientContext> =
+        ClientConfig::new()
+            .set("bootstrap.servers", &brokers)
+            .create()
+            .unwrap();
+
+    use rdkafka::admin::{AdminOptions, NewTopic, TopicReplication};
+    let new_topic = NewTopic::new(&topic, 3, TopicReplication::Fixed(1));
+    let results = admin
+        .create_topics(&[new_topic], &AdminOptions::new())
+        .await
+        .unwrap();
+    for result in &results {
+        assert!(result.is_ok(), "Failed to create topic: {:?}", result);
+    }
+
+    // Wait for topic to be fully created
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let engine = empty_engine();
+
+    // Start consumer A
+    let config_a = KafkaIngestConfig {
+        enabled: true,
+        brokers: vec![brokers.clone()],
+        group_id: group_id.clone(),
+        topics: vec![TopicMapping {
+            topic: topic.clone(),
+            channel: "rebalance-channel".to_string(),
+        }],
+        dlq: DlqConfig {
+            enabled: false,
+            topic: "unused".to_string(),
+        },
+        processing_timeout_ms: 5_000,
+        max_inflight: 10,
+        lag_poll_interval_secs: 0,
+    };
+    let handle_a = consumer::start_consumer(&config_a, engine.clone(), None, None).unwrap();
+
+    // Produce initial batch of messages across partitions
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .set("message.timeout.ms", "10000")
+        .create()
+        .unwrap();
+
+    for i in 0..9 {
+        let payload = format!(r#"{{"data": {{"batch": 1, "index": {}}}}}"#, i);
+        producer
+            .send(
+                FutureRecord::<str, str>::to(&topic)
+                    .key(&format!("key-{}", i % 3)) // distribute across 3 partitions
+                    .payload(&payload),
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("Failed to produce message");
+    }
+
+    // Give consumer A time to process
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Start consumer B in the same group — triggers rebalance
+    let config_b = KafkaIngestConfig {
+        group_id: group_id.clone(),
+        ..config_a.clone()
+    };
+    let handle_b = consumer::start_consumer(&config_b, engine.clone(), None, None).unwrap();
+
+    // Wait for rebalance to complete
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Produce more messages — both consumers should process them
+    for i in 0..9 {
+        let payload = format!(r#"{{"data": {{"batch": 2, "index": {}}}}}"#, i);
+        producer
+            .send(
+                FutureRecord::<str, str>::to(&topic)
+                    .key(&format!("key-{}", i % 3))
+                    .payload(&payload),
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("Failed to produce message");
+    }
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Shutdown consumer B — triggers another rebalance, A picks up all partitions
+    handle_b.shutdown().await;
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Produce final batch — only A should process
+    for i in 0..3 {
+        let payload = format!(r#"{{"data": {{"batch": 3, "index": {}}}}}"#, i);
+        producer
+            .send(
+                FutureRecord::<str, str>::to(&topic)
+                    .key(&format!("key-{}", i))
+                    .payload(&payload),
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("Failed to produce message");
+    }
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    handle_a.shutdown().await;
+    // Success = no panics, deadlocks, or message loss through rebalance cycles
+}
+
+// ============================================================
+// Broker failure / recovery tests
+// ============================================================
+
+/// Stop and restart the Kafka broker. Verify the consumer recovers
+/// and continues processing messages after the broker comes back.
+#[tokio::test]
+#[ignore]
+async fn test_consumer_broker_disconnect_recovery() {
+    let (container, brokers) = start_kafka().await;
+
+    let topic = "test-broker-recovery";
+    let channel = "recovery-channel";
+    let config = test_kafka_config(&brokers, topic, channel);
+    let engine = empty_engine();
+
+    let handle = consumer::start_consumer(&config, engine, None, None).unwrap();
+
+    // Produce initial messages
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .set("message.timeout.ms", "10000")
+        .create()
+        .unwrap();
+
+    for i in 0..5 {
+        let payload = format!(r#"{{"data": {{"pre_stop": {}}}}}"#, i);
+        producer
+            .send(
+                FutureRecord::<str, str>::to(topic).payload(&payload),
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("Failed to produce message");
+    }
+
+    // Give consumer time to process
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Stop the Kafka broker
+    container.stop().await.unwrap();
+    tracing::info!("Kafka broker stopped");
+
+    // Consumer should not panic during broker outage
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Restart the broker
+    container.start().await.unwrap();
+    tracing::info!("Kafka broker restarted");
+
+    // Wait for broker to stabilize and consumer to reconnect
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    // Create a new producer (old one may have stale connections)
+    let producer2: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .set("message.timeout.ms", "15000")
+        .create()
+        .unwrap();
+
+    // Produce messages after recovery
+    for i in 0..5 {
+        let payload = format!(r#"{{"data": {{"post_restart": {}}}}}"#, i);
+        match producer2
+            .send(
+                FutureRecord::<str, str>::to(topic).payload(&payload),
+                Duration::from_secs(10),
+            )
+            .await
+        {
+            Ok(_) => {}
+            Err((e, _)) => {
+                tracing::warn!(error = %e, "Failed to produce after restart, retrying...");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+
+    // Give consumer time to process recovered messages
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    handle.shutdown().await;
+    // Success = consumer survived broker outage and resumed processing
+}

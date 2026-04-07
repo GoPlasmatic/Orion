@@ -52,12 +52,12 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     let mut workflows_loaded = 0;
     let engine_healthy = match tokio::time::timeout(
         std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
-        state.engine.read(),
+        crate::engine::acquire_engine_read(&state.engine),
     )
     .await
     {
-        Ok(guard) => {
-            workflows_loaded = guard.workflows().len();
+        Ok(engine) => {
+            workflows_loaded = engine.workflows().len();
             true
         }
         Err(_) => false,
@@ -128,7 +128,7 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     let db_healthy = state.workflow_repo.ping().await.is_ok();
     let engine_healthy = tokio::time::timeout(
         std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
-        state.engine.read(),
+        crate::engine::acquire_engine_read(&state.engine),
     )
     .await
     .is_ok();
@@ -166,12 +166,12 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
 
         // Build the new engine outside the write lock to minimize lock hold time.
         // Clone the current engine Arc, build new workflows, then swap atomically.
-        let current_engine = state.engine.read().await.clone();
+        let current_engine = crate::engine::acquire_engine_read(&state.engine).await;
         let new_engine = Arc::new(current_engine.with_new_workflows(workflows));
 
         let mut engine_write = tokio::time::timeout(
             std::time::Duration::from_secs(state.config.engine.reload_timeout_secs),
-            state.engine.write(),
+            crate::engine::acquire_engine_write(&state.engine),
         )
         .await
         .map_err(|_| {

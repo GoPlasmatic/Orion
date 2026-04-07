@@ -87,6 +87,26 @@ pub enum Traces {
 }
 
 // ============================================================
+// Trace DLQ table
+// ============================================================
+
+#[derive(Iden)]
+pub enum TraceDlq {
+    Table,
+    Id,
+    TraceId,
+    Channel,
+    PayloadJson,
+    MetadataJson,
+    ErrorMessage,
+    RetryCount,
+    MaxRetries,
+    NextRetryAt,
+    CreatedAt,
+    UpdatedAt,
+}
+
+// ============================================================
 // Views
 // ============================================================
 

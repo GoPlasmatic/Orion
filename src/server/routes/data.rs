@@ -219,6 +219,19 @@ async fn process_sync_for_channel(
         }
     }
 
+    // Per-channel request deduplication
+    if let Some(ref cfg) = channel_config
+        && let Some(ref dedup) = cfg.parsed_config.deduplication
+        && let Some(ref store) = cfg.dedup_store
+        && let Some(key) = headers.get(&dedup.header).and_then(|v| v.to_str().ok())
+        && !store.check_and_insert(key)
+    {
+        return Err(OrionError::Conflict(format!(
+            "Duplicate request: idempotency key '{}' already seen",
+            key
+        )));
+    }
+
     // Per-channel backpressure
     let _backpressure_permit = if let Some(ref cfg) = channel_config
         && let Some(ref semaphore) = cfg.backpressure_semaphore
@@ -238,7 +251,7 @@ async fn process_sync_for_channel(
     };
 
     let start = Instant::now();
-    let engine = state.engine.read().await.clone();
+    let engine = crate::engine::acquire_engine_read(&state.engine).await;
     let mut message = dataflow_rs::Message::from_value(&data);
     merge_metadata(&mut message, &metadata);
     inject_rollout_bucket(&mut message);

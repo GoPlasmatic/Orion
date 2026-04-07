@@ -234,6 +234,54 @@ fn traces_table() -> TableCreateStatement {
         .to_owned()
 }
 
+fn trace_dlq_table() -> TableCreateStatement {
+    Table::create()
+        .table(TraceDlq::Table)
+        .if_not_exists()
+        .col(ColumnDef::new(TraceDlq::Id).text().not_null().primary_key())
+        .col(ColumnDef::new(TraceDlq::TraceId).text().not_null())
+        .col(ColumnDef::new(TraceDlq::Channel).text().not_null())
+        .col(ColumnDef::new(TraceDlq::PayloadJson).text().not_null())
+        .col(
+            ColumnDef::new(TraceDlq::MetadataJson)
+                .text()
+                .not_null()
+                .default("{}"),
+        )
+        .col(ColumnDef::new(TraceDlq::ErrorMessage).text().not_null())
+        .col(
+            ColumnDef::new(TraceDlq::RetryCount)
+                .integer()
+                .not_null()
+                .default(0),
+        )
+        .col(
+            ColumnDef::new(TraceDlq::MaxRetries)
+                .integer()
+                .not_null()
+                .default(5),
+        )
+        .col(
+            ColumnDef::new(TraceDlq::NextRetryAt)
+                .timestamp()
+                .not_null()
+                .default(Expr::current_timestamp()),
+        )
+        .col(
+            ColumnDef::new(TraceDlq::CreatedAt)
+                .timestamp()
+                .not_null()
+                .default(Expr::current_timestamp()),
+        )
+        .col(
+            ColumnDef::new(TraceDlq::UpdatedAt)
+                .timestamp()
+                .not_null()
+                .default(Expr::current_timestamp()),
+        )
+        .to_owned()
+}
+
 // ============================================================
 // Index definitions
 // ============================================================
@@ -342,6 +390,16 @@ fn trace_indexes() -> Vec<IndexCreateStatement> {
     indexes
 }
 
+fn trace_dlq_indexes() -> Vec<IndexCreateStatement> {
+    vec![
+        Index::create()
+            .name("idx_trace_dlq_channel")
+            .table(TraceDlq::Table)
+            .col(TraceDlq::Channel)
+            .to_owned(),
+    ]
+}
+
 // ============================================================
 // Backend-specific raw SQL (CHECK constraints, triggers, views)
 // ============================================================
@@ -405,6 +463,11 @@ END;
 CREATE TRIGGER trg_traces_updated_at AFTER UPDATE ON traces
 BEGIN
   UPDATE traces SET updated_at = datetime('now') WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER trg_trace_dlq_updated_at AFTER UPDATE ON trace_dlq
+BEGIN
+  UPDATE trace_dlq SET updated_at = datetime('now') WHERE id = NEW.id;
 END;
 
 -- Only one draft per workflow_id
@@ -496,6 +559,10 @@ CREATE TRIGGER trg_traces_updated_at
     BEFORE UPDATE ON traces
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER trg_trace_dlq_updated_at
+    BEFORE UPDATE ON trace_dlq
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- Single-draft enforcement via partial unique indexes
 CREATE UNIQUE INDEX idx_workflows_single_draft
     ON workflows (workflow_id) WHERE status = 'draft';
@@ -538,6 +605,13 @@ BEGIN
     SET NEW.updated_at = CURRENT_TIMESTAMP;
 END//
 
+CREATE TRIGGER trg_trace_dlq_updated_at
+    BEFORE UPDATE ON trace_dlq
+    FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = CURRENT_TIMESTAMP;
+END//
+
 -- Single-draft enforcement
 CREATE TRIGGER trg_workflows_single_draft
     BEFORE INSERT ON workflows
@@ -572,9 +646,15 @@ CREATE INDEX idx_channels_route_partial ON channels(route_pattern) WHERE route_p
 CREATE INDEX idx_channels_topic_partial ON channels(topic) WHERE topic IS NOT NULL;
 CREATE INDEX idx_channels_workflow_partial ON channels(workflow_id) WHERE workflow_id IS NOT NULL;
 CREATE INDEX idx_traces_channel_id_partial ON traces(channel_id) WHERE channel_id IS NOT NULL;
+
+CREATE INDEX "idx_trace_dlq_next_retry" ON "trace_dlq" ("next_retry_at") WHERE "retry_count" < "max_retries";
 "#
         .to_string(),
-        // MySQL doesn't support partial indexes
+        // MySQL doesn't support partial indexes; use composite index instead
+        "mysql" => r#"
+CREATE INDEX `idx_trace_dlq_next_retry` ON `trace_dlq` (`next_retry_at`, `retry_count`);
+"#
+        .to_string(),
         _ => String::new(),
     }
 }
@@ -590,6 +670,7 @@ pub fn generate_migration(backend: &str) -> String {
         channels_table(),
         connectors_table(),
         traces_table(),
+        trace_dlq_table(),
     ];
 
     let mut sql = format!(
@@ -610,11 +691,15 @@ pub fn generate_migration(backend: &str) -> String {
     }
 
     // Generate indexes
-    let all_indexes: Vec<IndexCreateStatement> =
-        [workflow_indexes(), channel_indexes(), trace_indexes()]
-            .into_iter()
-            .flatten()
-            .collect();
+    let all_indexes: Vec<IndexCreateStatement> = [
+        workflow_indexes(),
+        channel_indexes(),
+        trace_indexes(),
+        trace_dlq_indexes(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
     for idx in &all_indexes {
         let ddl = match backend {
@@ -651,9 +736,11 @@ mod tests {
         assert!(sql.contains("channels"));
         assert!(sql.contains("connectors"));
         assert!(sql.contains("traces"));
+        assert!(sql.contains("trace_dlq"));
         assert!(sql.contains("CREATE VIEW current_workflows"));
         assert!(sql.contains("CREATE TRIGGER trg_workflows_updated_at"));
         assert!(sql.contains("CREATE TRIGGER trg_workflows_single_draft"));
+        assert!(sql.contains("CREATE TRIGGER trg_trace_dlq_updated_at"));
     }
 
     #[test]

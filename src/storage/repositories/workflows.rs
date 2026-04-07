@@ -70,6 +70,10 @@ pub struct WorkflowFilter {
     pub tag: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// Column to sort by: priority (default), name, status, created_at, updated_at.
+    pub sort_by: Option<String>,
+    /// Sort direction: asc or desc (default).
+    pub sort_order: Option<String>,
 }
 
 // -- Repository trait --
@@ -280,13 +284,25 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .fetch_one(&self.pool)
                 .await?;
 
+            // Sort column mapping
+            let sort_iden = match filter.sort_by.as_deref() {
+                Some("name") => Workflows::Name,
+                Some("status") => Workflows::Status,
+                Some("created_at") => Workflows::CreatedAt,
+                Some("updated_at") => Workflows::UpdatedAt,
+                _ => Workflows::Priority,
+            };
+            let order = match filter.sort_order.as_deref() {
+                Some("asc") => Order::Asc,
+                _ => Order::Desc,
+            };
+
             // Data
             let (sql, values) = Query::select()
                 .column(Asterisk)
                 .from(CurrentWorkflows::Table)
                 .cond_where(cond)
-                .order_by(Workflows::Priority, Order::Desc)
-                .order_by(Workflows::Name, Order::Asc)
+                .order_by(sort_iden, order)
                 .limit(limit as u64)
                 .offset(offset as u64)
                 .build_sqlx(query_builder());
@@ -1011,6 +1027,7 @@ mod tests {
             tag: Some("test".to_string()),
             limit: Some(10),
             offset: Some(0),
+            ..Default::default()
         };
         let cond = build_condition(&filter);
         let (sql, _) = Query::select()

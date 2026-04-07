@@ -9,6 +9,20 @@ CREATE TABLE IF NOT EXISTS `connectors` ( `id` text NOT NULL PRIMARY KEY, `name`
 
 CREATE TABLE IF NOT EXISTS `traces` ( `id` text NOT NULL PRIMARY KEY, `channel` text NOT NULL DEFAULT 'default', `channel_id` text, `mode` text NOT NULL DEFAULT 'sync', `status` text NOT NULL DEFAULT 'pending', `input_json` text, `result_json` text, `error_message` text, `duration_ms` double, `started_at` timestamp, `completed_at` timestamp, `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP, `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP );
 
+CREATE TABLE IF NOT EXISTS `trace_dlq` (
+    `id` VARCHAR(36) NOT NULL PRIMARY KEY,
+    `trace_id` VARCHAR(36) NOT NULL,
+    `channel` VARCHAR(255) NOT NULL,
+    `payload_json` TEXT NOT NULL,
+    `metadata_json` TEXT NOT NULL,
+    `error_message` TEXT NOT NULL,
+    `retry_count` INT NOT NULL DEFAULT 0,
+    `max_retries` INT NOT NULL DEFAULT 5,
+    `next_retry_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
 CREATE INDEX `idx_workflows_status` ON `workflows` (`status`);
 CREATE INDEX `idx_workflows_workflow_id` ON `workflows` (`workflow_id`);
 CREATE INDEX `idx_workflows_priority_name` ON `workflows` (`priority` DESC, `name` ASC);
@@ -25,6 +39,9 @@ CREATE INDEX `idx_traces_channel` ON `traces` (`channel`);
 CREATE INDEX `idx_traces_mode` ON `traces` (`mode`);
 CREATE INDEX `idx_traces_created_at` ON `traces` (`created_at`);
 CREATE INDEX `idx_traces_channel_id` ON `traces` (`channel_id`);
+
+CREATE INDEX `idx_trace_dlq_next_retry` ON `trace_dlq` (`next_retry_at`, `retry_count`);
+CREATE INDEX `idx_trace_dlq_channel` ON `trace_dlq` (`channel`);
 
 -- Latest version per workflow_id
 CREATE VIEW current_workflows AS
@@ -71,6 +88,13 @@ END//
 
 CREATE TRIGGER trg_traces_updated_at
     BEFORE UPDATE ON traces
+    FOR EACH ROW
+BEGIN
+    SET NEW.updated_at = CURRENT_TIMESTAMP;
+END//
+
+CREATE TRIGGER trg_trace_dlq_updated_at
+    BEFORE UPDATE ON trace_dlq
     FOR EACH ROW
 BEGIN
     SET NEW.updated_at = CURRENT_TIMESTAMP;

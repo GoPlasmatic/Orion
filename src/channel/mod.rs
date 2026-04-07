@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use dashmap::DashMap;
 use governor::clock::DefaultClock;
 use governor::state::keyed::DashMapStateStore;
 use governor::{Quota, RateLimiter};
@@ -52,12 +54,13 @@ pub struct ChannelConfig {
     pub backpressure: Option<BackpressureConfig>,
 
     /// Request deduplication configuration.
-    /// TODO: not yet wired into the request pipeline.
+    /// Extracts an idempotency key from the configured header and rejects
+    /// duplicate submissions within the time window with 409 Conflict.
     #[serde(default)]
     pub deduplication: Option<DeduplicationConfig>,
 
     /// Response compression configuration.
-    /// TODO: not yet wired into the request pipeline.
+    /// Global gzip/brotli compression is applied via tower-http CompressionLayer.
     #[serde(default)]
     pub compression: Option<CompressionConfig>,
 
@@ -136,6 +139,63 @@ pub struct CompressionConfig {
     pub min_bytes: Option<usize>,
 }
 
+// ============================================================
+// Deduplication Store
+// ============================================================
+
+/// In-memory idempotency store backed by `DashMap` with TTL-based expiry.
+///
+/// Keys are idempotency tokens extracted from a request header. Duplicate
+/// submissions within the configured `window` are rejected with 409 Conflict.
+pub struct DeduplicationStore {
+    entries: DashMap<String, Instant>,
+    window: Duration,
+}
+
+impl DeduplicationStore {
+    /// Create a new store with a background cleanup task.
+    pub fn new(window_secs: u64) -> Arc<Self> {
+        let window = Duration::from_secs(window_secs);
+        let store = Arc::new(Self {
+            entries: DashMap::new(),
+            window,
+        });
+
+        // Spawn a background task that purges expired entries.
+        let weak = Arc::downgrade(&store);
+        tokio::spawn(async move {
+            let interval = Duration::from_secs(window_secs.max(1) / 2 + 1);
+            loop {
+                tokio::time::sleep(interval).await;
+                let Some(store) = weak.upgrade() else {
+                    break; // Store has been dropped — stop the cleanup task
+                };
+                store.purge_expired();
+            }
+        });
+
+        store
+    }
+
+    /// Check whether `key` is new. Returns `true` if this is the first time
+    /// (not a duplicate), `false` if a duplicate within the window.
+    pub fn check_and_insert(&self, key: &str) -> bool {
+        let now = Instant::now();
+        if let Some(entry) = self.entries.get(key)
+            && now.duration_since(*entry.value()) < self.window
+        {
+            return false; // duplicate
+        }
+        self.entries.insert(key.to_string(), now);
+        true
+    }
+
+    fn purge_expired(&self) {
+        let cutoff = Instant::now() - self.window;
+        self.entries.retain(|_, ts| *ts > cutoff);
+    }
+}
+
 /// Runtime state for a single active channel.
 pub struct ChannelRuntimeConfig {
     /// The channel DB model.
@@ -152,6 +212,8 @@ pub struct ChannelRuntimeConfig {
     /// Per-channel concurrency limiter for backpressure.
     /// Limits max in-flight requests — returns 503 when exhausted.
     pub backpressure_semaphore: Option<Arc<Semaphore>>,
+    /// Per-channel deduplication store for idempotent request handling.
+    pub dedup_store: Option<Arc<DeduplicationStore>>,
 }
 
 // ============================================================
@@ -378,6 +440,11 @@ impl ChannelRegistry {
                 .as_ref()
                 .map(|bp| Arc::new(Semaphore::new(bp.max_concurrent)));
 
+            let dedup_store = parsed_config
+                .deduplication
+                .as_ref()
+                .map(|dedup| DeduplicationStore::new(dedup.window_secs.unwrap_or(300)));
+
             let runtime = Arc::new(ChannelRuntimeConfig {
                 channel: channel.clone(),
                 parsed_config,
@@ -385,6 +452,7 @@ impl ChannelRegistry {
                 rate_limit_key_logic,
                 validation_logic,
                 backpressure_semaphore,
+                dedup_store,
             });
             new_map.insert(channel.name.clone(), runtime);
         }

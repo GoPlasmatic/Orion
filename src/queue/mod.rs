@@ -7,6 +7,7 @@ use tokio::sync::{RwLock, Semaphore, mpsc};
 
 use crate::metrics;
 use crate::storage::models;
+use crate::storage::repositories::trace_dlq::TraceDlqRepository;
 use crate::storage::repositories::traces::TraceRepository;
 
 /// Start a background task that periodically deletes old traces.
@@ -156,6 +157,7 @@ pub fn start_workers(
     max_queue_memory_bytes: usize,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     trace_repo: Arc<dyn TraceRepository>,
+    dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
 ) -> (TraceQueue, WorkerHandle) {
     let (tx, rx) = mpsc::channel::<QueueMessage>(buffer_size);
     let pending_count = Arc::new(AtomicUsize::new(0));
@@ -172,6 +174,7 @@ pub fn start_workers(
         max_result_size_bytes,
         engine,
         trace_repo,
+        dlq_repo,
         QueueCounters {
             pending: pending_count.clone(),
             active: active_workers,
@@ -212,6 +215,7 @@ async fn dispatcher_loop(
     max_result_size_bytes: usize,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     trace_repo: Arc<dyn TraceRepository>,
+    dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     counters: QueueCounters,
 ) {
     let semaphore = Arc::new(Semaphore::new(max_workers));
@@ -237,6 +241,7 @@ async fn dispatcher_loop(
 
         let engine = engine.clone();
         let trace_repo = trace_repo.clone();
+        let dlq_repo = dlq_repo.clone();
         let active_counter = counters.active.clone();
         let memory_counter = counters.memory_bytes.clone();
 
@@ -246,6 +251,7 @@ async fn dispatcher_loop(
                 msg,
                 engine,
                 trace_repo,
+                dlq_repo,
                 processing_timeout_ms,
                 max_result_size_bytes,
             )
@@ -288,11 +294,12 @@ async fn set_trace_status(
 }
 
 /// Process a single queued trace.
-#[tracing::instrument(skip(msg, engine, trace_repo, processing_timeout_ms, max_result_size_bytes), fields(trace_id = %msg.trace_id, channel = %msg.channel))]
+#[tracing::instrument(skip(msg, engine, trace_repo, dlq_repo, processing_timeout_ms, max_result_size_bytes), fields(trace_id = %msg.trace_id, channel = %msg.channel))]
 async fn process_trace(
     msg: QueueMessage,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     trace_repo: Arc<dyn TraceRepository>,
+    dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     processing_timeout_ms: u64,
     max_result_size_bytes: usize,
 ) {
@@ -323,6 +330,10 @@ async fn process_trace(
     let channel = msg.channel;
     let start = Instant::now();
 
+    // Capture payload/metadata for potential DLQ enqueue before consuming
+    let payload_json_for_dlq = serde_json::to_string(&msg.payload).ok();
+    let metadata_json_for_dlq = serde_json::to_string(&msg.metadata).ok();
+
     // Mark as running
     if let Err(e) = trace_repo
         .update_status(&trace_id, models::TRACE_STATUS_RUNNING, None)
@@ -338,7 +349,7 @@ async fn process_trace(
     crate::engine::utils::inject_rollout_bucket(&mut message);
 
     // Clone the inner Arc<Engine> and release the lock immediately
-    let engine_ref = engine.read().await.clone();
+    let engine_ref = crate::engine::acquire_engine_read(&engine).await;
     let result = match tokio::time::timeout(
         Duration::from_millis(processing_timeout_ms),
         engine_ref.process_message_for_channel(&channel, &mut message),
@@ -453,13 +464,159 @@ async fn process_trace(
             metrics::record_message(&channel, "error");
             metrics::record_error("engine");
 
+            let error_str = e.to_string();
             set_trace_status(
                 trace_repo.as_ref(),
                 &trace_id,
                 models::TRACE_STATUS_FAILED,
-                Some(&e.to_string()),
+                Some(&error_str),
             )
             .await;
+
+            // Enqueue to DLQ for retry
+            if let Some(ref dlq) = dlq_repo
+                && let Some(ref payload) = payload_json_for_dlq
+            {
+                let metadata = metadata_json_for_dlq.as_deref().unwrap_or("{}");
+                if let Err(dlq_err) = dlq
+                    .enqueue(&trace_id, &channel, payload, metadata, &error_str, 5)
+                    .await
+                {
+                    tracing::error!(
+                        trace_id = %trace_id,
+                        error = %dlq_err,
+                        "Failed to enqueue failed trace to DLQ"
+                    );
+                } else {
+                    tracing::info!(trace_id = %trace_id, "Failed trace enqueued to DLQ for retry");
+                }
+            }
         }
     }
+}
+
+// ============================================================
+// DLQ Retry Consumer
+// ============================================================
+
+/// Start a background task that polls the trace DLQ and re-submits entries
+/// for processing via the trace queue.
+///
+/// Uses exponential backoff: delay = base_delay * 2^retry_count (1s, 2s, 4s, 8s, 16s, ...).
+/// After `max_retries`, the entry is marked as exhausted and no longer retried.
+pub fn start_dlq_retry(
+    poll_interval_secs: u64,
+    dlq_repo: Arc<dyn TraceDlqRepository>,
+    trace_queue: TraceQueue,
+    trace_repo: Arc<dyn TraceRepository>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(poll_interval_secs));
+        // Skip the first immediate tick
+        interval.tick().await;
+
+        loop {
+            interval.tick().await;
+
+            let entries = match dlq_repo.list_pending(20).await {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::error!(error = %e, "DLQ retry: failed to fetch pending entries");
+                    continue;
+                }
+            };
+
+            for entry in entries {
+                let payload: serde_json::Value = match serde_json::from_str(&entry.payload_json) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::error!(
+                            dlq_id = %entry.id,
+                            error = %e,
+                            "DLQ retry: corrupt payload, marking exhausted"
+                        );
+                        let _ = dlq_repo.mark_exhausted(&entry.id).await;
+                        continue;
+                    }
+                };
+
+                let metadata: serde_json::Value =
+                    serde_json::from_str(&entry.metadata_json).unwrap_or_default();
+
+                // Create a new pending trace for the retry
+                let new_trace = match trace_repo
+                    .create_pending(&entry.channel, "async", Some(&entry.payload_json))
+                    .await
+                {
+                    Ok(t) => t,
+                    Err(e) => {
+                        tracing::error!(
+                            dlq_id = %entry.id,
+                            error = %e,
+                            "DLQ retry: failed to create pending trace"
+                        );
+                        continue;
+                    }
+                };
+
+                // Submit to the trace queue
+                let submit_result = trace_queue
+                    .submit(QueueMessage {
+                        trace_id: new_trace.id.clone(),
+                        channel: entry.channel.clone(),
+                        payload,
+                        metadata,
+                        #[cfg(feature = "otel")]
+                        trace_headers: std::collections::HashMap::new(),
+                    })
+                    .await;
+
+                match submit_result {
+                    Ok(()) => {
+                        // Successfully re-submitted — remove from DLQ
+                        if let Err(e) = dlq_repo.remove(&entry.id).await {
+                            tracing::error!(
+                                dlq_id = %entry.id,
+                                error = %e,
+                                "DLQ retry: failed to remove entry after successful resubmit"
+                            );
+                        } else {
+                            tracing::info!(
+                                dlq_id = %entry.id,
+                                retry = entry.retry_count + 1,
+                                new_trace_id = %new_trace.id,
+                                "DLQ retry: trace re-submitted successfully"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        // Queue is full or closed — bump retry count with backoff
+                        tracing::warn!(
+                            dlq_id = %entry.id,
+                            error = %e,
+                            "DLQ retry: failed to resubmit, scheduling next retry"
+                        );
+                        let new_retry_count = entry.retry_count + 1;
+                        if new_retry_count >= entry.max_retries {
+                            metrics::record_error("dlq_exhausted");
+                            let _ = dlq_repo.mark_exhausted(&entry.id).await;
+                            tracing::warn!(
+                                dlq_id = %entry.id,
+                                "DLQ retry: max retries exhausted, giving up"
+                            );
+                        } else {
+                            // Exponential backoff: 1s, 2s, 4s, 8s, 16s, ...
+                            let delay_secs = 1i64 << new_retry_count;
+                            let next_retry = chrono::Utc::now()
+                                .naive_utc()
+                                .checked_add_signed(chrono::Duration::seconds(delay_secs))
+                                .unwrap_or(chrono::Utc::now().naive_utc())
+                                .to_string();
+                            let _ = dlq_repo.record_retry(&entry.id, &next_retry).await;
+                        }
+                    }
+                }
+            }
+        }
+    })
 }

@@ -1218,7 +1218,7 @@ pub(crate) async fn reset_circuit_breaker(
 pub(crate) async fn engine_status(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, OrionError> {
-    let engine = state.engine.read().await;
+    let engine = crate::engine::acquire_engine_read(&state.engine).await;
     let workflows = engine.workflows();
 
     let mut channels: std::collections::HashSet<&str> = std::collections::HashSet::new();
@@ -1263,7 +1263,7 @@ pub(crate) async fn engine_reload(
     );
     reload_engine(&state).await?;
 
-    let engine = state.engine.read().await;
+    let engine = crate::engine::acquire_engine_read(&state.engine).await;
     let workflows_count = engine.workflows().len();
 
     Ok(Json(json!({

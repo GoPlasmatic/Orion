@@ -110,6 +110,11 @@ where
     result
 }
 
+/// Record engine lock acquisition wait time.
+pub fn record_engine_lock_wait(mode: &str, duration_secs: f64) {
+    histogram!("engine_lock_wait_seconds", "mode" => mode.to_string()).record(duration_secs);
+}
+
 /// Record engine reload duration.
 pub fn record_engine_reload_duration(duration_secs: f64) {
     histogram!("engine_reload_duration_seconds").record(duration_secs);
@@ -290,6 +295,13 @@ mod tests {
         ensure_recorder();
         let result = timed_db_op("test_op", async { 42 }).await;
         assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_record_engine_lock_wait() {
+        ensure_recorder();
+        record_engine_lock_wait("read", 0.001);
+        record_engine_lock_wait("write", 0.050);
     }
 
     #[test]
