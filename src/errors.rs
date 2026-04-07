@@ -10,6 +10,9 @@ pub enum OrionError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("Forbidden: {0}")]
     Forbidden(String),
 
@@ -76,6 +79,9 @@ impl IntoResponse for OrionError {
         let (status, code, message) = match &self {
             OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
             OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
+            OrionError::Unauthorized(msg) => {
+                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg.clone())
+            }
             OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
             OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
             OrionError::CircuitOpen { connector, channel } => (
@@ -207,6 +213,18 @@ mod tests {
         let err = OrionError::BadRequest("invalid input".to_string());
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_unauthorized_status() {
+        let err = OrionError::Unauthorized("missing token".to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn test_unauthorized_not_retryable() {
+        assert!(!OrionError::Unauthorized("bad".to_string()).is_retryable());
     }
 
     #[test]

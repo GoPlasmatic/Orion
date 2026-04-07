@@ -48,6 +48,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         connector_registry.clone(),
         http_client.clone(),
         engine.clone(),
+        &config.engine,
     );
     let built_engine = dataflow_rs::Engine::new(vec![], Some(custom_functions));
     *engine.write().await = Arc::new(built_engine);
@@ -57,6 +58,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         2,
         100,
         30,
+        60_000,
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
     );
@@ -92,6 +94,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         http_client,
         datalogic: Arc::new(datalogic_rs::DataLogic::new()),
         rate_limit_state,
+        ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         #[cfg(feature = "kafka")]
         kafka_consumer_handle: Arc::new(tokio::sync::Mutex::new(None)),
         #[cfg(feature = "kafka")]

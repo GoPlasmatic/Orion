@@ -72,6 +72,8 @@ pub fn start_consumer(
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
+    let processing_timeout_ms = config.processing_timeout_ms;
+
     let handle = tokio::spawn(consume_loop(
         consumer,
         topic_map,
@@ -79,6 +81,7 @@ pub fn start_consumer(
         dlq_producer,
         dlq_topic,
         shutdown_rx,
+        processing_timeout_ms,
     ));
 
     Ok(ConsumerHandle {
@@ -94,6 +97,7 @@ async fn consume_loop(
     dlq_producer: Option<Arc<KafkaProducer>>,
     dlq_topic: Option<String>,
     mut shutdown_rx: watch::Receiver<bool>,
+    processing_timeout_ms: u64,
 ) {
     use rdkafka::consumer::CommitMode;
 
@@ -224,22 +228,32 @@ async fn consume_loop(
 
                         // Clone the inner Arc<Engine> and release the lock immediately
                         let engine_ref = engine.read().await.clone();
-                        match engine_ref
-                            .process_message_for_channel(&channel, &mut message)
-                            .await
-                        {
-                            Ok(()) => {
-                                let duration = start.elapsed().as_secs_f64();
-                                metrics::record_message(&channel, "ok");
-                                metrics::record_message_duration(&channel, duration);
+                        let process_result = tokio::time::timeout(
+                            std::time::Duration::from_millis(processing_timeout_ms),
+                            engine_ref.process_message_for_channel(&channel, &mut message),
+                        )
+                        .await;
 
-                                tracing::debug!(
+                        match process_result {
+                            Err(_) => {
+                                metrics::record_message(&channel, "timeout");
+                                metrics::record_error("kafka_timeout");
+
+                                tracing::error!(
                                     topic = %topic,
                                     channel = %channel,
-                                    "Kafka message processed successfully"
+                                    timeout_ms = processing_timeout_ms,
+                                    "Kafka message processing timed out"
                                 );
+                                send_to_dlq(
+                                    &dlq_producer,
+                                    &dlq_topic,
+                                    &topic,
+                                    payload.as_bytes(),
+                                    &format!("Processing timed out after {}ms", processing_timeout_ms),
+                                ).await;
                             }
-                            Err(e) => {
+                            Ok(Err(e)) => {
                                 metrics::record_message(&channel, "error");
                                 metrics::record_error("kafka_processing");
 
@@ -256,6 +270,17 @@ async fn consume_loop(
                                     payload.as_bytes(),
                                     &format!("Processing error: {}", e),
                                 ).await;
+                            }
+                            Ok(Ok(())) => {
+                                let duration = start.elapsed().as_secs_f64();
+                                metrics::record_message(&channel, "ok");
+                                metrics::record_message_duration(&channel, duration);
+
+                                tracing::debug!(
+                                    topic = %topic,
+                                    channel = %channel,
+                                    "Kafka message processed successfully"
+                                );
                             }
                         }
 
@@ -275,6 +300,16 @@ async fn consume_loop(
     tracing::info!("Kafka consumer stopped");
 }
 
+/// Build a DLQ envelope message from error context.
+fn build_dlq_message(source_topic: &str, payload: &[u8], error: &str) -> serde_json::Value {
+    serde_json::json!({
+        "source_topic": source_topic,
+        "error": error,
+        "original_payload": String::from_utf8_lossy(payload),
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+    })
+}
+
 /// Send a failed message to the dead-letter queue if configured.
 async fn send_to_dlq(
     producer: &Option<Arc<KafkaProducer>>,
@@ -284,13 +319,7 @@ async fn send_to_dlq(
     error: &str,
 ) {
     if let (Some(producer), Some(topic)) = (producer, dlq_topic) {
-        // Wrap original message with error metadata
-        let dlq_message = serde_json::json!({
-            "source_topic": source_topic,
-            "error": error,
-            "original_payload": String::from_utf8_lossy(payload),
-            "timestamp": chrono::Utc::now().to_rfc3339(),
-        });
+        let dlq_message = build_dlq_message(source_topic, payload, error);
 
         let dlq_payload = serde_json::to_string(&dlq_message).unwrap_or_else(|e| {
             tracing::error!(error = %e, "Failed to serialize DLQ message");
@@ -316,5 +345,80 @@ async fn send_to_dlq(
                 "Message sent to DLQ"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_topic_map_construction() {
+        let config = crate::config::KafkaIngestConfig {
+            enabled: true,
+            brokers: vec!["localhost:9092".into()],
+            group_id: "test".into(),
+            topics: vec![
+                crate::config::TopicMapping {
+                    topic: "orders".into(),
+                    channel: "order-channel".into(),
+                },
+                crate::config::TopicMapping {
+                    topic: "events".into(),
+                    channel: "event-channel".into(),
+                },
+            ],
+            dlq: crate::config::DlqConfig::default(),
+            processing_timeout_ms: 60_000,
+        };
+
+        let topic_map: HashMap<String, String> = config
+            .topics
+            .iter()
+            .map(|t| (t.topic.clone(), t.channel.clone()))
+            .collect();
+
+        assert_eq!(topic_map.len(), 2);
+        assert_eq!(topic_map.get("orders").unwrap(), "order-channel");
+        assert_eq!(topic_map.get("events").unwrap(), "event-channel");
+        assert!(topic_map.get("unknown").is_none());
+    }
+
+    #[test]
+    fn test_dlq_message_format() {
+        let payload = br#"{"data": {"broken": true}}"#;
+        let msg = build_dlq_message("test-topic", payload, "JSON parse error");
+
+        assert_eq!(msg["source_topic"], "test-topic");
+        assert_eq!(msg["error"], "JSON parse error");
+        assert_eq!(
+            msg["original_payload"],
+            r#"{"data": {"broken": true}}"#
+        );
+        // Timestamp should be a valid RFC3339 string
+        let ts = msg["timestamp"].as_str().unwrap();
+        assert!(ts.contains("T"));
+        assert!(ts.ends_with('Z') || ts.contains('+'));
+    }
+
+    #[test]
+    fn test_dlq_message_invalid_utf8_payload() {
+        let payload: &[u8] = &[0xFF, 0xFE, 0xFD];
+        let msg = build_dlq_message("bad-topic", payload, "UTF-8 decode error");
+
+        assert_eq!(msg["source_topic"], "bad-topic");
+        assert_eq!(msg["error"], "UTF-8 decode error");
+        // Lossy conversion should produce replacement characters
+        let original = msg["original_payload"].as_str().unwrap();
+        assert!(original.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn test_dlq_message_empty_payload() {
+        let msg = build_dlq_message("topic", b"", "empty message");
+
+        assert_eq!(msg["source_topic"], "topic");
+        assert_eq!(msg["error"], "empty message");
+        assert_eq!(msg["original_payload"], "");
     }
 }

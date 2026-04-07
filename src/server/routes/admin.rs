@@ -610,6 +610,7 @@ pub(crate) async fn test_workflow(
         state.connector_registry.clone(),
         state.http_client.clone(),
         state.engine.clone(),
+        &state.config.engine,
     );
     let test_engine = dataflow_rs::Engine::new(vec![df_workflow], Some(custom_fns));
 

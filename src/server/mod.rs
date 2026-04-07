@@ -1,3 +1,4 @@
+pub mod admin_auth;
 pub mod observability;
 #[cfg(feature = "otel")]
 pub mod otel;
@@ -7,6 +8,7 @@ pub mod state;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::trace::TraceLayer;
@@ -14,6 +16,8 @@ use tower_http::trace::TraceLayer;
 use crate::config::CorsConfig;
 use crate::server::state::AppState;
 
+#[cfg(feature = "tls")]
+pub mod tls;
 #[cfg(feature = "otel")]
 pub mod trace_context;
 
@@ -45,6 +49,16 @@ pub fn build_router(state: AppState) -> Router {
         router
     };
 
+    // Admin auth layer (conditional, after rate limiting)
+    let router = if state.config.admin_auth.enabled {
+        router.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            admin_auth::admin_auth_middleware,
+        ))
+    } else {
+        router
+    };
+
     // HTTP metrics layer (unconditional, outermost to capture 429s)
     let router = router.layer(axum::middleware::from_fn(
         observability::http_metrics_middleware,
@@ -59,6 +73,23 @@ pub fn build_router(state: AppState) -> Router {
     } else {
         router
     };
+
+    // Panic recovery layer (outermost — catches panics from all inner layers)
+    let router = router.layer(CatchPanicLayer::custom(|_: Box<dyn std::any::Any + Send>| {
+        crate::metrics::record_error("panic");
+        tracing::error!("Handler panicked — recovered by CatchPanicLayer");
+        let body = serde_json::json!({
+            "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "Internal server error"
+            }
+        });
+        axum::http::Response::builder()
+            .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap()
+    }));
 
     router.with_state(state)
 }

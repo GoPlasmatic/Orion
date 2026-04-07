@@ -19,6 +19,7 @@ pub struct AppConfig {
     pub tracing: TracingConfig,
     pub rate_limit: RateLimitConfig,
     pub channels: ChannelLoadingConfig,
+    pub admin_auth: AdminAuthConfig,
 }
 
 /// Controls which channels an Orion instance loads from the database.
@@ -36,6 +37,10 @@ pub struct ChannelLoadingConfig {
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
+    /// Maximum time in seconds to wait for in-flight requests during graceful shutdown.
+    pub shutdown_drain_secs: u64,
+    /// TLS configuration for HTTPS support.
+    pub tls: TlsConfig,
 }
 
 impl Default for ServerConfig {
@@ -43,8 +48,23 @@ impl Default for ServerConfig {
         Self {
             host: "0.0.0.0".to_string(),
             port: 8080,
+            shutdown_drain_secs: 30,
+            tls: TlsConfig::default(),
         }
     }
+}
+
+/// TLS configuration for HTTPS support.
+/// When `enabled` is false (default), the server runs plain HTTP.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TlsConfig {
+    /// Enable TLS. Requires `cert_path` and `key_path` to be set.
+    pub enabled: bool,
+    /// Path to the PEM-encoded certificate chain file.
+    pub cert_path: String,
+    /// Path to the PEM-encoded private key file.
+    pub key_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +112,10 @@ pub struct EngineConfig {
     pub health_check_timeout_secs: u64,
     /// Timeout in seconds for acquiring engine write lock during reload.
     pub reload_timeout_secs: u64,
+    /// Maximum nesting depth for channel_call invocations.
+    pub max_channel_call_depth: u32,
+    /// Default timeout in milliseconds for channel_call invocations.
+    pub default_channel_call_timeout_ms: u64,
 }
 
 impl Default for EngineConfig {
@@ -100,6 +124,8 @@ impl Default for EngineConfig {
             circuit_breaker: Default::default(),
             health_check_timeout_secs: 2,
             reload_timeout_secs: 10,
+            max_channel_call_depth: 10,
+            default_channel_call_timeout_ms: 30_000,
         }
     }
 }
@@ -117,6 +143,8 @@ pub struct QueueConfig {
     pub trace_retention_hours: u64,
     /// How often to run the trace cleanup task in seconds.
     pub trace_cleanup_interval_secs: u64,
+    /// Maximum time in milliseconds for processing a single async trace.
+    pub processing_timeout_ms: u64,
 }
 
 impl Default for QueueConfig {
@@ -127,6 +155,7 @@ impl Default for QueueConfig {
             shutdown_timeout_secs: 30,
             trace_retention_hours: 72,
             trace_cleanup_interval_secs: 3600,
+            processing_timeout_ms: 60_000,
         }
     }
 }
@@ -145,6 +174,8 @@ pub struct KafkaIngestConfig {
     pub topics: Vec<TopicMapping>,
     /// Dead-letter queue configuration.
     pub dlq: DlqConfig,
+    /// Maximum time in milliseconds for processing a single Kafka message.
+    pub processing_timeout_ms: u64,
 }
 
 impl Default for KafkaIngestConfig {
@@ -155,6 +186,7 @@ impl Default for KafkaIngestConfig {
             group_id: "orion".to_string(),
             topics: vec![],
             dlq: DlqConfig::default(),
+            processing_timeout_ms: 60_000,
         }
     }
 }
@@ -278,6 +310,30 @@ pub struct EndpointRateLimits {
     pub data_rps: Option<u32>,
 }
 
+/// Admin API authentication configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdminAuthConfig {
+    /// Enable authentication for admin API endpoints.
+    pub enabled: bool,
+    /// Bearer token or API key required for admin access.
+    pub api_key: String,
+    /// Header name to extract the API key from.
+    /// When "Authorization" (default), expects `Bearer <token>` format.
+    /// For other values (e.g. "X-API-Key"), expects the raw key value.
+    pub header: String,
+}
+
+impl Default for AdminAuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: String::new(),
+            header: "Authorization".to_string(),
+        }
+    }
+}
+
 /// Load configuration from an optional TOML file path, then apply env overrides.
 pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
     let mut config = if let Some(p) = path {
@@ -328,6 +384,20 @@ where
     if let Ok(v) = env_var("ORION_SERVER__PORT") {
         config.server.port = parse_env::<u16>("ORION_SERVER__PORT", &v)?;
     }
+    if let Ok(v) = env_var("ORION_SERVER__SHUTDOWN_DRAIN_SECS") {
+        config.server.shutdown_drain_secs =
+            parse_env::<u64>("ORION_SERVER__SHUTDOWN_DRAIN_SECS", &v)?;
+    }
+    // TLS overrides
+    if let Ok(v) = env_var("ORION_SERVER__TLS__ENABLED") {
+        config.server.tls.enabled = parse_env::<bool>("ORION_SERVER__TLS__ENABLED", &v)?;
+    }
+    if let Ok(v) = env_var("ORION_SERVER__TLS__CERT_PATH") {
+        config.server.tls.cert_path = v;
+    }
+    if let Ok(v) = env_var("ORION_SERVER__TLS__KEY_PATH") {
+        config.server.tls.key_path = v;
+    }
     if let Ok(v) = env_var("ORION_STORAGE__PATH") {
         config.storage.path = v;
     }
@@ -376,6 +446,10 @@ where
         config.queue.trace_cleanup_interval_secs =
             parse_env::<u64>("ORION_QUEUE__TRACE_CLEANUP_INTERVAL_SECS", &v)?;
     }
+    if let Ok(v) = env_var("ORION_QUEUE__PROCESSING_TIMEOUT_MS") {
+        config.queue.processing_timeout_ms =
+            parse_env::<u64>("ORION_QUEUE__PROCESSING_TIMEOUT_MS", &v)?;
+    }
     if let Ok(v) = env_var("ORION_METRICS__ENABLED") {
         config.metrics.enabled = parse_env::<bool>("ORION_METRICS__ENABLED", &v)?;
     }
@@ -400,6 +474,15 @@ where
     if let Ok(v) = env_var("ORION_ENGINE__RELOAD_TIMEOUT_SECS") {
         config.engine.reload_timeout_secs =
             parse_env::<u64>("ORION_ENGINE__RELOAD_TIMEOUT_SECS", &v)?;
+    }
+    // Circuit breaker overrides
+    if let Ok(v) = env_var("ORION_ENGINE__MAX_CHANNEL_CALL_DEPTH") {
+        config.engine.max_channel_call_depth =
+            parse_env::<u32>("ORION_ENGINE__MAX_CHANNEL_CALL_DEPTH", &v)?;
+    }
+    if let Ok(v) = env_var("ORION_ENGINE__DEFAULT_CHANNEL_CALL_TIMEOUT_MS") {
+        config.engine.default_channel_call_timeout_ms =
+            parse_env::<u64>("ORION_ENGINE__DEFAULT_CHANNEL_CALL_TIMEOUT_MS", &v)?;
     }
     // Circuit breaker overrides
     if let Ok(v) = env_var("ORION_ENGINE__CIRCUIT_BREAKER__ENABLED") {
@@ -437,6 +520,20 @@ where
     }
     if let Ok(v) = env_var("ORION_KAFKA__GROUP_ID") {
         config.kafka.group_id = v;
+    }
+    if let Ok(v) = env_var("ORION_KAFKA__PROCESSING_TIMEOUT_MS") {
+        config.kafka.processing_timeout_ms =
+            parse_env::<u64>("ORION_KAFKA__PROCESSING_TIMEOUT_MS", &v)?;
+    }
+    // Admin auth overrides
+    if let Ok(v) = env_var("ORION_ADMIN_AUTH__ENABLED") {
+        config.admin_auth.enabled = parse_env::<bool>("ORION_ADMIN_AUTH__ENABLED", &v)?;
+    }
+    if let Ok(v) = env_var("ORION_ADMIN_AUTH__API_KEY") {
+        config.admin_auth.api_key = v;
+    }
+    if let Ok(v) = env_var("ORION_ADMIN_AUTH__HEADER") {
+        config.admin_auth.header = v;
     }
     Ok(())
 }
@@ -504,6 +601,54 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
         }
     }
     // Timeout validations
+    // Admin auth validation
+    if config.admin_auth.enabled && config.admin_auth.api_key.is_empty() {
+        return Err(OrionError::Config {
+            message: "admin_auth.api_key must not be empty when admin auth is enabled".to_string(),
+        });
+    }
+    // TLS validation
+    if config.server.tls.enabled {
+        if config.server.tls.cert_path.is_empty() {
+            return Err(OrionError::Config {
+                message: "server.tls.cert_path must not be empty when TLS is enabled".to_string(),
+            });
+        }
+        if config.server.tls.key_path.is_empty() {
+            return Err(OrionError::Config {
+                message: "server.tls.key_path must not be empty when TLS is enabled".to_string(),
+            });
+        }
+        if !Path::new(&config.server.tls.cert_path).exists() {
+            return Err(OrionError::Config {
+                message: format!(
+                    "TLS certificate file not found: '{}'",
+                    config.server.tls.cert_path
+                ),
+            });
+        }
+        if !Path::new(&config.server.tls.key_path).exists() {
+            return Err(OrionError::Config {
+                message: format!(
+                    "TLS private key file not found: '{}'",
+                    config.server.tls.key_path
+                ),
+            });
+        }
+    }
+    if config.engine.max_channel_call_depth == 0 {
+        return Err(OrionError::Config {
+            message: "engine.max_channel_call_depth must be > 0".to_string(),
+        });
+    }
+    require_nonzero(
+        config.engine.default_channel_call_timeout_ms,
+        "engine.default_channel_call_timeout_ms",
+    )?;
+    require_nonzero(
+        config.queue.processing_timeout_ms,
+        "queue.processing_timeout_ms",
+    )?;
     require_nonzero(
         config.engine.health_check_timeout_secs,
         "engine.health_check_timeout_secs",
@@ -982,5 +1127,109 @@ data_rps = 500
         assert_eq!(config.otlp_endpoint, "http://localhost:4317");
         assert_eq!(config.service_name, "orion");
         assert!((config.sample_rate - 1.0).abs() < f64::EPSILON);
+    }
+
+    // ---- Kafka config validation tests ----
+
+    #[test]
+    #[cfg(feature = "kafka")]
+    fn test_validate_config_kafka_empty_group_id() {
+        let mut config = AppConfig::default();
+        config.kafka.enabled = true;
+        config.kafka.group_id = String::new();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "kafka")]
+    fn test_validate_config_kafka_duplicate_topics() {
+        let mut config = AppConfig::default();
+        config.kafka.enabled = true;
+        config.kafka.topics = vec![
+            TopicMapping { topic: "dup".into(), channel: "ch1".into() },
+            TopicMapping { topic: "dup".into(), channel: "ch2".into() },
+        ];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "kafka")]
+    fn test_validate_config_kafka_duplicate_channels() {
+        let mut config = AppConfig::default();
+        config.kafka.enabled = true;
+        config.kafka.topics = vec![
+            TopicMapping { topic: "t1".into(), channel: "same".into() },
+            TopicMapping { topic: "t2".into(), channel: "same".into() },
+        ];
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_kafka_processing_timeout_zero() {
+        let mut config = AppConfig::default();
+        config.queue.processing_timeout_ms = 0;
+        assert!(validate_config(&config).is_err());
+    }
+
+    // ---- Admin auth config tests ----
+
+    #[test]
+    fn test_admin_auth_config_default() {
+        let config = AdminAuthConfig::default();
+        assert!(!config.enabled);
+        assert!(config.api_key.is_empty());
+        assert_eq!(config.header, "Authorization");
+    }
+
+    #[test]
+    fn test_validate_config_admin_auth_enabled_empty_key() {
+        let mut config = AppConfig::default();
+        config.admin_auth.enabled = true;
+        config.admin_auth.api_key = String::new();
+        assert!(validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn test_validate_config_admin_auth_enabled_valid() {
+        let mut config = AppConfig::default();
+        config.admin_auth.enabled = true;
+        config.admin_auth.api_key = "my-secret-key".to_string();
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_admin_auth_disabled_empty_key_ok() {
+        let config = AppConfig::default();
+        // Auth disabled with empty key should be fine
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_env_override_admin_auth() {
+        let mut env = HashMap::new();
+        env.insert("ORION_ADMIN_AUTH__ENABLED", "true");
+        env.insert("ORION_ADMIN_AUTH__API_KEY", "secret-123");
+        env.insert("ORION_ADMIN_AUTH__HEADER", "X-API-Key");
+
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).unwrap();
+
+        assert!(config.admin_auth.enabled);
+        assert_eq!(config.admin_auth.api_key, "secret-123");
+        assert_eq!(config.admin_auth.header, "X-API-Key");
+    }
+
+    #[test]
+    fn test_toml_parsing_admin_auth() {
+        let toml_str = r#"
+[admin_auth]
+enabled = true
+api_key = "my-key"
+header = "X-Custom-Auth"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.admin_auth.enabled);
+        assert_eq!(config.admin_auth.api_key, "my-key");
+        assert_eq!(config.admin_auth.header, "X-Custom-Auth");
     }
 }

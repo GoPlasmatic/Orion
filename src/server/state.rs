@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use datalogic_rs::DataLogic;
 use metrics_exporter_prometheus::PrometheusHandle;
@@ -31,6 +32,8 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub datalogic: Arc<DataLogic>,
     pub rate_limit_state: Option<Arc<RateLimitState>>,
+    /// Startup readiness flag — set to true after engine is fully loaded.
+    pub ready: Arc<AtomicBool>,
     /// Kafka consumer handle — stored here so engine reload can restart the
     /// consumer when async channel topic mappings change.
     #[cfg(feature = "kafka")]
