@@ -286,6 +286,17 @@ pub struct TraceDlqEntry {
     pub updated_at: NaiveDateTime,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct AuditLogEntry {
+    pub id: String,
+    pub principal: String,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: String,
+    pub details: Option<String>,
+    pub created_at: NaiveDateTime,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

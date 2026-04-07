@@ -8,10 +8,12 @@ pub mod state;
 
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
+use axum::http::{HeaderValue, header};
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::CorsConfig;
@@ -36,10 +38,41 @@ pub fn build_router(state: AppState) -> Router {
     let router = routes::api_routes()
         .layer(DefaultBodyLimit::max(max_body_size))
         .layer(CompressionLayer::new())
+        // Security response headers
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(
+            axum::http::HeaderName::from_static("permissions-policy"),
+            HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+        ))
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
         .layer(cors);
+
+    // HSTS header (only when TLS is enabled)
+    let router = if state.config.server.tls.enabled {
+        router.layer(SetResponseHeaderLayer::overriding(
+            header::STRICT_TRANSPORT_SECURITY,
+            HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+        ))
+    } else {
+        router
+    };
 
     // Rate limiting layer (conditional)
     let router = if rate_limit_enabled {

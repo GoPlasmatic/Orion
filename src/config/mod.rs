@@ -98,6 +98,8 @@ pub struct StorageConfig {
     pub acquire_timeout_secs: u64,
     /// Maximum idle time in seconds before a connection is closed (0 = no limit).
     pub idle_timeout_secs: u64,
+    /// Directory for database backup files (SQLite only).
+    pub backup_dir: String,
 }
 
 impl Default for StorageConfig {
@@ -109,6 +111,7 @@ impl Default for StorageConfig {
             busy_timeout_ms: 5000,
             acquire_timeout_secs: 5,
             idle_timeout_secs: 300,
+            backup_dir: "./backups".to_string(),
         }
     }
 }
@@ -143,6 +146,9 @@ pub struct EngineConfig {
     /// Global default timeout in seconds for all outbound HTTP requests (safety net).
     /// Individual connector/task timeouts override this when shorter.
     pub global_http_timeout_secs: u64,
+    /// Maximum entries in each external connector pool cache.
+    /// LRU eviction removes the least-recently-used pool when exceeded.
+    pub max_pool_cache_entries: usize,
 }
 
 impl Default for EngineConfig {
@@ -154,6 +160,7 @@ impl Default for EngineConfig {
             max_channel_call_depth: 10,
             default_channel_call_timeout_ms: 30_000,
             global_http_timeout_secs: 30,
+            max_pool_cache_entries: 100,
         }
     }
 }
@@ -369,12 +376,31 @@ pub struct EndpointRateLimits {
 pub struct AdminAuthConfig {
     /// Enable authentication for admin API endpoints.
     pub enabled: bool,
-    /// Bearer token or API key required for admin access.
+    /// Single API key (backward-compatible shorthand).
     pub api_key: String,
+    /// Multiple API keys for zero-downtime rotation.
+    /// Both `api_key` and `api_keys` are merged — duplicates are ignored.
+    pub api_keys: Vec<String>,
     /// Header name to extract the API key from.
     /// When "Authorization" (default), expects `Bearer <token>` format.
     /// For other values (e.g. "X-API-Key"), expects the raw key value.
     pub header: String,
+}
+
+impl AdminAuthConfig {
+    /// Return the effective list of API keys (merges single key + key list).
+    pub fn effective_keys(&self) -> Vec<&str> {
+        let mut keys: Vec<&str> = self
+            .api_keys
+            .iter()
+            .filter(|k| !k.is_empty())
+            .map(|k| k.as_str())
+            .collect();
+        if !self.api_key.is_empty() && !keys.contains(&self.api_key.as_str()) {
+            keys.push(&self.api_key);
+        }
+        keys
+    }
 }
 
 impl Default for AdminAuthConfig {
@@ -382,6 +408,7 @@ impl Default for AdminAuthConfig {
         Self {
             enabled: false,
             api_key: String::new(),
+            api_keys: Vec::new(),
             header: "Authorization".to_string(),
         }
     }
@@ -491,6 +518,11 @@ where
         "ORION_STORAGE__ACQUIRE_TIMEOUT_SECS",
         config.storage.acquire_timeout_secs,
         u64
+    );
+    env_str!(
+        env_var,
+        "ORION_STORAGE__BACKUP_DIR",
+        config.storage.backup_dir
     );
 
     // Logging
@@ -626,6 +658,12 @@ where
         config.engine.global_http_timeout_secs,
         u64
     );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__MAX_POOL_CACHE_ENTRIES",
+        config.engine.max_pool_cache_entries,
+        usize
+    );
 
     // Circuit breaker
     env_parsed!(
@@ -715,6 +753,13 @@ where
         "ORION_ADMIN_AUTH__HEADER",
         config.admin_auth.header
     );
+    if let Ok(v) = env_var("ORION_ADMIN_AUTH__API_KEYS") {
+        config.admin_auth.api_keys = v
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
 
     Ok(())
 }
@@ -783,10 +828,25 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     }
     // Timeout validations
     // Admin auth validation
-    if config.admin_auth.enabled && config.admin_auth.api_key.is_empty() {
+    if config.admin_auth.enabled && config.admin_auth.effective_keys().is_empty() {
         return Err(OrionError::Config {
-            message: "admin_auth.api_key must not be empty when admin auth is enabled".to_string(),
+            message: "At least one admin API key must be configured when admin auth is enabled. \
+                      Set admin_auth.api_key or admin_auth.api_keys"
+                .to_string(),
         });
+    }
+    // Admin auth must be enabled in production
+    if !config.admin_auth.enabled {
+        if config.is_production() {
+            return Err(OrionError::Config {
+                message: "admin_auth must be enabled when environment starts with 'prod'. \
+                          Set admin_auth.enabled = true and configure an api_key"
+                    .to_string(),
+            });
+        }
+        tracing::warn!(
+            "Admin auth is disabled. For production, enable admin_auth with a strong API key"
+        );
     }
     // TLS validation
     if config.server.tls.enabled {
@@ -1433,6 +1493,36 @@ data_rps = 500
     }
 
     #[test]
+    fn test_validate_config_production_admin_auth_disabled_error() {
+        let mut config = AppConfig::default();
+        config.environment = "production".to_string();
+        config.admin_auth.enabled = false;
+        // Production + disabled admin auth should fail
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("admin_auth must be enabled"));
+    }
+
+    #[test]
+    fn test_validate_config_production_admin_auth_enabled_ok() {
+        let mut config = AppConfig::default();
+        config.environment = "production".to_string();
+        config.admin_auth.enabled = true;
+        config.admin_auth.api_key = "secret-key-12345".to_string();
+        // Must also fix CORS for production
+        config.cors.allowed_origins = vec!["https://example.com".to_string()];
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_non_production_admin_auth_disabled_ok() {
+        let config = AppConfig::default();
+        // Non-production + disabled admin auth should be fine (just warns)
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
     fn test_env_override_admin_auth() {
         let mut env = HashMap::new();
         env.insert("ORION_ADMIN_AUTH__ENABLED", "true");
@@ -1459,5 +1549,115 @@ header = "X-Custom-Auth"
         assert!(config.admin_auth.enabled);
         assert_eq!(config.admin_auth.api_key, "my-key");
         assert_eq!(config.admin_auth.header, "X-Custom-Auth");
+    }
+
+    #[test]
+    fn test_effective_keys_single_key_only() {
+        let config = AdminAuthConfig {
+            enabled: true,
+            api_key: "key-a".to_string(),
+            api_keys: vec![],
+            header: "Authorization".to_string(),
+        };
+        assert_eq!(config.effective_keys(), vec!["key-a"]);
+    }
+
+    #[test]
+    fn test_effective_keys_multiple_keys_only() {
+        let config = AdminAuthConfig {
+            enabled: true,
+            api_key: String::new(),
+            api_keys: vec!["key-b".to_string(), "key-c".to_string()],
+            header: "Authorization".to_string(),
+        };
+        assert_eq!(config.effective_keys(), vec!["key-b", "key-c"]);
+    }
+
+    #[test]
+    fn test_effective_keys_merged_no_duplicates() {
+        let config = AdminAuthConfig {
+            enabled: true,
+            api_key: "key-a".to_string(),
+            api_keys: vec!["key-a".to_string(), "key-b".to_string()],
+            header: "Authorization".to_string(),
+        };
+        // api_key "key-a" is already in api_keys, so no duplicate
+        assert_eq!(config.effective_keys(), vec!["key-a", "key-b"]);
+    }
+
+    #[test]
+    fn test_effective_keys_merged_with_unique() {
+        let config = AdminAuthConfig {
+            enabled: true,
+            api_key: "key-c".to_string(),
+            api_keys: vec!["key-a".to_string(), "key-b".to_string()],
+            header: "Authorization".to_string(),
+        };
+        assert_eq!(config.effective_keys(), vec!["key-a", "key-b", "key-c"]);
+    }
+
+    #[test]
+    fn test_effective_keys_empty() {
+        let config = AdminAuthConfig::default();
+        assert!(config.effective_keys().is_empty());
+    }
+
+    #[test]
+    fn test_effective_keys_filters_empty_strings() {
+        let config = AdminAuthConfig {
+            enabled: true,
+            api_key: String::new(),
+            api_keys: vec!["".to_string(), "key-a".to_string(), "".to_string()],
+            header: "Authorization".to_string(),
+        };
+        assert_eq!(config.effective_keys(), vec!["key-a"]);
+    }
+
+    #[test]
+    fn test_validate_config_admin_auth_enabled_via_api_keys() {
+        let mut config = AppConfig::default();
+        config.admin_auth.enabled = true;
+        config.admin_auth.api_keys = vec!["key-a".to_string()];
+        // api_key is empty but api_keys has a value — should be valid
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_admin_auth_enabled_all_empty() {
+        let mut config = AppConfig::default();
+        config.admin_auth.enabled = true;
+        // Both api_key and api_keys are empty
+        let result = validate_config(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_env_override_admin_auth_api_keys() {
+        let mut env = HashMap::new();
+        env.insert("ORION_ADMIN_AUTH__API_KEYS", "key-1, key-2, key-3");
+
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).unwrap();
+
+        assert_eq!(
+            config.admin_auth.api_keys,
+            vec!["key-1", "key-2", "key-3"]
+        );
+    }
+
+    #[test]
+    fn test_toml_parsing_admin_auth_api_keys() {
+        let toml_str = r#"
+[admin_auth]
+enabled = true
+api_keys = ["key-a", "key-b"]
+header = "Authorization"
+"#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.admin_auth.enabled);
+        assert_eq!(
+            config.admin_auth.api_keys,
+            vec!["key-a".to_string(), "key-b".to_string()]
+        );
     }
 }

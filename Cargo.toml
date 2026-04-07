@@ -21,7 +21,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono"] }
 sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
 sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header", "catch-panic", "compression-gzip", "compression-br"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header", "catch-panic", "compression-gzip", "compression-br", "set-header"] }
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"

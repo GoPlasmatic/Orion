@@ -182,7 +182,7 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
         *engine_write = new_engine;
 
         // Rebuild channel registry
-        state.channel_registry.reload(&channels).await;
+        state.channel_registry.reload(&channels, &state.connector_registry, &state.cache_pool).await;
 
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);
@@ -239,14 +239,35 @@ async fn restart_kafka_consumer_if_needed(
         }
     }
 
-    // Compare with currently tracked topics (stored in consumer handle)
     let new_topic_set: HashSet<String> = all_topics.iter().map(|t| t.topic.clone()).collect();
 
-    // Always restart: we don't track the old topic set, so rebuild unconditionally.
-    // The brief consumer restart (milliseconds) is acceptable during an engine reload.
     let mut handle_guard = state.kafka_consumer_handle.lock().await;
 
-    // Shut down existing consumer
+    // Optimisation: if topics haven't changed, pause/resume instead of full restart
+    if let Some(ref existing_handle) = *handle_guard
+        && *existing_handle.topics() == new_topic_set
+    {
+        tracing::info!("Kafka topics unchanged, pausing consumer during engine swap");
+        if let Err(e) = existing_handle.pause() {
+            tracing::warn!(error = %e, "Failed to pause Kafka consumer, falling back to full restart");
+        } else {
+            // Brief sleep to allow in-flight messages to finish processing
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if let Err(e) = existing_handle.resume() {
+                tracing::error!(error = %e, "Failed to resume Kafka consumer after engine reload");
+                // Fall through to full restart below
+            } else {
+                tracing::info!("Kafka consumer resumed after engine reload");
+                return;
+            }
+        }
+    }
+
+    // Full restart path: pause first to minimize gap, then shutdown and restart
+    if let Some(ref existing_handle) = *handle_guard {
+        let _ = existing_handle.pause(); // Best-effort pause before shutdown
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     if let Some(old_handle) = handle_guard.take() {
         tracing::info!("Shutting down Kafka consumer for topic refresh...");
         old_handle.shutdown().await;

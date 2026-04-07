@@ -53,7 +53,14 @@ pub async fn admin_auth_middleware(
 
     let token = extract_api_key(&req, &state.config.admin_auth)?;
 
-    if !constant_time_eq(token.as_bytes(), state.config.admin_auth.api_key.as_bytes()) {
+    let matched_key = state
+        .config
+        .admin_auth
+        .effective_keys()
+        .into_iter()
+        .find(|key| constant_time_eq(token.as_bytes(), key.as_bytes()));
+
+    if matched_key.is_none() {
         metrics::record_error("auth_failure");
         tracing::warn!(
             path = %req.uri().path(),

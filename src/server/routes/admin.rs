@@ -5,15 +5,19 @@ use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use crate::connector::mask_connector;
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::routes::reload_engine;
 use crate::server::state::AppState;
+use crate::storage::repositories::audit_logs::AuditLogRepository;
 
 /// Emit a structured audit log event for admin mutations.
+/// Persists to the database via fire-and-forget to avoid blocking the response.
 fn audit_log(
+    repo: &Arc<dyn AuditLogRepository>,
     principal: Option<&AdminPrincipal>,
     action: &str,
     resource_type: &str,
@@ -31,6 +35,21 @@ fn audit_log(
         "admin_audit_event"
     );
     crate::metrics::record_admin_audit(action, resource_type);
+
+    // Fire-and-forget DB persistence — audit logging must never block admin responses
+    let repo = repo.clone();
+    let who = who.to_string();
+    let action = action.to_string();
+    let resource_type = resource_type.to_string();
+    let resource_id = resource_id.to_string();
+    tokio::spawn(async move {
+        if let Err(e) = repo
+            .insert(&who, &action, &resource_type, &resource_id, None)
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to persist audit log entry");
+        }
+    });
 }
 use crate::storage::models::{ChannelResponse, StatusAction, WorkflowResponse};
 use crate::storage::repositories::channels::{
@@ -91,11 +110,24 @@ pub fn admin_routes() -> Router<AppState> {
         .route("/status", get(engine_status))
         .route("/reload", post(engine_reload));
 
-    Router::new()
+    let audit_routes = Router::new()
+        .route("/", get(list_audit_logs));
+
+    let mut router = Router::new()
         .nest("/channels", channel_routes)
         .nest("/workflows", workflow_routes)
         .nest("/connectors", connector_routes)
         .nest("/engine", engine_routes)
+        .nest("/audit-logs", audit_routes);
+
+    #[cfg(feature = "db-sqlite")]
+    {
+        let backup_routes = Router::new()
+            .route("/", post(create_backup).get(list_backups));
+        router = router.nest("/backups", backup_routes);
+    }
+
+    router
 }
 
 // ============================================================
@@ -149,6 +181,7 @@ pub(crate) async fn create_channel(
     crate::validation::validate_create_channel(&req)?;
     let channel = state.channel_repo.create(&req).await?;
     audit_log(
+        &state.audit_log_repo,
         principal.as_ref().map(|e| &e.0),
         "create",
         "channel",
@@ -202,7 +235,7 @@ pub(crate) async fn update_channel(
     Json(req): Json<UpdateChannelRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let channel = state.channel_repo.update_draft(&id, &req).await?;
-    audit_log(principal.as_ref().map(|e| &e.0), "update", "channel", &id);
+    audit_log(&state.audit_log_repo, principal.as_ref().map(|e| &e.0), "update", "channel", &id);
     // No engine reload — drafts are not in the engine
     Ok(Json(
         json!({ "data": ChannelResponse::try_from(&channel)? }),
@@ -226,7 +259,7 @@ pub(crate) async fn delete_channel(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.channel_repo.delete(&id).await?;
-    audit_log(principal.as_ref().map(|e| &e.0), "delete", "channel", &id);
+    audit_log(&state.audit_log_repo, principal.as_ref().map(|e| &e.0), "delete", "channel", &id);
     reload_engine(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -260,6 +293,7 @@ pub(crate) async fn change_channel_status(
         StatusAction::Archive => state.channel_repo.archive(&id).await?,
     };
     audit_log(
+        &state.audit_log_repo,
         principal.as_ref().map(|e| &e.0),
         &format!("status_{}", req.status),
         "channel",
@@ -337,6 +371,7 @@ pub(crate) async fn create_new_channel_version(
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let channel = state.channel_repo.create_new_version(&id).await?;
     audit_log(
+        &state.audit_log_repo,
         principal.as_ref().map(|e| &e.0),
         "create_version",
         "channel",
@@ -399,6 +434,7 @@ pub(crate) async fn create_workflow(
     crate::validation::validate_create_workflow(&req)?;
     let workflow = state.workflow_repo.create(&req).await?;
     audit_log(
+        &state.audit_log_repo,
         principal.as_ref().map(|e| &e.0),
         "create",
         "workflow",
@@ -453,7 +489,7 @@ pub(crate) async fn update_workflow(
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_workflow(&req)?;
     let workflow = state.workflow_repo.update_draft(&id, &req).await?;
-    audit_log(principal.as_ref().map(|e| &e.0), "update", "workflow", &id);
+    audit_log(&state.audit_log_repo, principal.as_ref().map(|e| &e.0), "update", "workflow", &id);
     // No engine reload — drafts are not in the engine
     Ok(Json(
         json!({ "data": WorkflowResponse::try_from(&workflow)? }),
@@ -477,7 +513,7 @@ pub(crate) async fn delete_workflow(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.workflow_repo.delete(&id).await?;
-    audit_log(principal.as_ref().map(|e| &e.0), "delete", "workflow", &id);
+    audit_log(&state.audit_log_repo, principal.as_ref().map(|e| &e.0), "delete", "workflow", &id);
     reload_engine(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -514,6 +550,7 @@ pub(crate) async fn change_workflow_status(
         StatusAction::Archive => state.workflow_repo.archive(&id).await?,
     };
     audit_log(
+        &state.audit_log_repo,
         principal.as_ref().map(|e| &e.0),
         &format!("status_{}", req.status),
         "workflow",
@@ -552,6 +589,7 @@ pub(crate) async fn update_rollout(
         .update_rollout(&id, req.rollout_percentage)
         .await?;
     audit_log(
+        &state.audit_log_repo,
         principal.as_ref().map(|e| &e.0),
         "update_rollout",
         "workflow",
@@ -626,6 +664,7 @@ pub(crate) async fn create_new_workflow_version(
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let workflow = state.workflow_repo.create_new_version(&id).await?;
     audit_log(
+        &state.audit_log_repo,
         principal.as_ref().map(|e| &e.0),
         "create_version",
         "workflow",
@@ -677,6 +716,7 @@ pub(crate) async fn test_workflow(
         state.http_client.clone(),
         state.engine.clone(),
         &state.config.engine,
+        state.cache_pool.clone(),
     );
     let test_engine = dataflow_rs::Engine::new(vec![df_workflow], Some(custom_fns));
 
@@ -754,6 +794,7 @@ pub(crate) async fn import_workflows(
     }
 
     audit_log(
+        &state.audit_log_repo,
         principal.as_ref().map(|e| &e.0),
         "import",
         "workflow",
@@ -1068,6 +1109,7 @@ pub(crate) async fn create_connector(
     crate::validation::validate_create_connector(&req)?;
     let connector = state.connector_repo.create(&req).await?;
     audit_log(
+        &state.audit_log_repo,
         principal.as_ref().map(|e| &e.0),
         "create",
         "connector",
@@ -1118,7 +1160,7 @@ pub(crate) async fn update_connector(
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_connector(&req)?;
     let connector = state.connector_repo.update(&id, &req).await?;
-    audit_log(principal.as_ref().map(|e| &e.0), "update", "connector", &id);
+    audit_log(&state.audit_log_repo, principal.as_ref().map(|e| &e.0), "update", "connector", &id);
     reload_connectors(&state).await?;
     let masked = mask_connector(&connector);
     Ok(Json(json!({ "data": masked })))
@@ -1141,7 +1183,7 @@ pub(crate) async fn delete_connector(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.connector_repo.delete(&id).await?;
-    audit_log(principal.as_ref().map(|e| &e.0), "delete", "connector", &id);
+    audit_log(&state.audit_log_repo, principal.as_ref().map(|e| &e.0), "delete", "connector", &id);
     reload_connectors(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1188,6 +1230,7 @@ pub(crate) async fn reset_circuit_breaker(
     let found = state.connector_registry.reset_circuit_breaker(&key).await;
     if found {
         audit_log(
+            &state.audit_log_repo,
             principal.as_ref().map(|e| &e.0),
             "reset",
             "circuit_breaker",
@@ -1256,6 +1299,7 @@ pub(crate) async fn engine_reload(
     principal: Option<Extension<AdminPrincipal>>,
 ) -> Result<Json<Value>, OrionError> {
     audit_log(
+        &state.audit_log_repo,
         principal.as_ref().map(|e| &e.0),
         "reload",
         "engine",
@@ -1269,5 +1313,143 @@ pub(crate) async fn engine_reload(
     Ok(Json(json!({
         "reloaded": true,
         "workflows_count": workflows_count,
+    })))
+}
+
+// ============================================================
+// Backups (SQLite only)
+// ============================================================
+
+#[cfg(feature = "db-sqlite")]
+async fn create_backup(
+    State(state): State<AppState>,
+    principal: Option<Extension<AdminPrincipal>>,
+) -> Result<Json<Value>, OrionError> {
+    let backup_dir = &state.config.storage.backup_dir;
+
+    std::fs::create_dir_all(backup_dir).map_err(|e| OrionError::InternalSource {
+        context: format!("Failed to create backup directory '{backup_dir}'"),
+        source: Box::new(e),
+    })?;
+
+    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let filename = format!("orion_backup_{timestamp}.db");
+    let backup_path = std::path::Path::new(backup_dir).join(&filename);
+    let backup_path_str = backup_path.to_string_lossy().to_string();
+
+    sqlx::query(&format!("VACUUM INTO '{}'", backup_path_str.replace('\'', "''")))
+        .execute(&state.db_pool)
+        .await
+        .map_err(|e| OrionError::InternalSource {
+            context: "Failed to create database backup".to_string(),
+            source: Box::new(e),
+        })?;
+
+    let metadata = std::fs::metadata(&backup_path).map_err(|e| OrionError::InternalSource {
+        context: "Failed to read backup file metadata".to_string(),
+        source: Box::new(e),
+    })?;
+
+    audit_log(
+        &state.audit_log_repo,
+        principal.as_ref().map(|e| &e.0),
+        "create",
+        "backup",
+        &filename,
+    );
+
+    Ok(Json(json!({
+        "data": {
+            "filename": filename,
+            "path": backup_path_str,
+            "size_bytes": metadata.len(),
+            "created_at": chrono::Utc::now().to_rfc3339(),
+        }
+    })))
+}
+
+#[cfg(feature = "db-sqlite")]
+async fn list_backups(
+    State(state): State<AppState>,
+) -> Result<Json<Value>, OrionError> {
+    let backup_dir = &state.config.storage.backup_dir;
+
+    let dir = match std::fs::read_dir(backup_dir) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Json(json!({ "data": [] })));
+        }
+        Err(e) => {
+            return Err(OrionError::InternalSource {
+                context: format!("Failed to read backup directory '{backup_dir}'"),
+                source: Box::new(e),
+            });
+        }
+    };
+
+    let mut backups = Vec::new();
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "db")
+            && path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("orion_backup_"))
+            && let Ok(meta) = entry.metadata()
+        {
+            let modified = meta
+                .modified()
+                .ok()
+                .map(|t| {
+                    let dt: chrono::DateTime<chrono::Utc> = t.into();
+                    dt.to_rfc3339()
+                })
+                .unwrap_or_default();
+            backups.push(json!({
+                "filename": path.file_name().unwrap_or_default().to_string_lossy(),
+                "size_bytes": meta.len(),
+                "modified_at": modified,
+            }));
+        }
+    }
+
+    // Sort by filename (which includes timestamp) descending
+    backups.sort_by(|a, b| {
+        b["filename"]
+            .as_str()
+            .cmp(&a["filename"].as_str())
+    });
+
+    Ok(Json(json!({ "data": backups })))
+}
+
+// ============================================================
+// Audit Logs
+// ============================================================
+
+#[derive(Debug, Deserialize)]
+struct AuditLogQuery {
+    #[serde(default)]
+    offset: Option<i64>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+async fn list_audit_logs(
+    State(state): State<AppState>,
+    Query(params): Query<AuditLogQuery>,
+) -> Result<Json<Value>, OrionError> {
+    let offset = params.offset.unwrap_or(0).max(0);
+    let limit = params.limit.unwrap_or(50).clamp(1, 1000);
+
+    let entries = state.audit_log_repo.list_paginated(offset, limit).await?;
+    let total = state.audit_log_repo.count().await?;
+
+    Ok(Json(json!({
+        "data": entries,
+        "pagination": {
+            "offset": offset,
+            "limit": limit,
+            "total": total,
+        }
     })))
 }

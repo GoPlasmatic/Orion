@@ -220,16 +220,26 @@ async fn process_sync_for_channel(
     }
 
     // Per-channel request deduplication
+    // Note: the inner `if let` cannot be collapsed into the let-chain because
+    // the body contains `.await` which is not allowed in let-chain guards.
+    #[allow(clippy::collapsible_if)]
     if let Some(ref cfg) = channel_config
         && let Some(ref dedup) = cfg.parsed_config.deduplication
         && let Some(ref store) = cfg.dedup_store
-        && let Some(key) = headers.get(&dedup.header).and_then(|v| v.to_str().ok())
-        && !store.check_and_insert(key)
     {
-        return Err(OrionError::Conflict(format!(
-            "Duplicate request: idempotency key '{}' already seen",
-            key
-        )));
+        if let Some(key) = headers.get(&dedup.header).and_then(|v| v.to_str().ok()) {
+            let window = dedup.window_secs.unwrap_or(300);
+            let is_new = store
+                .check_and_insert(key, window)
+                .await
+                .unwrap_or(false);
+            if !is_new {
+                return Err(OrionError::Conflict(format!(
+                    "Duplicate request: idempotency key '{}' already seen",
+                    key
+                )));
+            }
+        }
     }
 
     // Per-channel backpressure

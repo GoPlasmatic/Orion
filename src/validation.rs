@@ -172,6 +172,27 @@ fn validate_connector_config(
         }
     }
 
+    // For Cache connectors, validate backend and url requirement
+    if let ConnectorConfig::Cache(cache_config) = &parsed {
+        if !crate::connector::VALID_CACHE_BACKENDS.contains(&cache_config.backend.as_str()) {
+            return Err(OrionError::BadRequest(format!(
+                "Invalid cache backend '{}'. Must be one of: {}",
+                cache_config.backend,
+                crate::connector::VALID_CACHE_BACKENDS.join(", ")
+            )));
+        }
+        if cache_config.backend == "redis"
+            && cache_config
+                .url
+                .as_ref()
+                .is_none_or(|u| u.trim().is_empty())
+        {
+            return Err(OrionError::BadRequest(
+                "Cache connector with backend='redis' requires a non-empty 'url'".to_string(),
+            ));
+        }
+    }
+
     Ok(())
 }
 

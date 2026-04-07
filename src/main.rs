@@ -136,6 +136,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channel_repo = Arc::new(SqlChannelRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqlConnectorRepository::new(pool.clone()));
     let trace_repo = Arc::new(SqlTraceRepository::new(pool.clone()));
+    let audit_log_repo = Arc::new(
+        orion::storage::repositories::audit_logs::SqlAuditLogRepository::new(pool.clone()),
+    );
 
     // Channel registry
     let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
@@ -165,13 +168,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         dataflow_rs::Engine::new(vec![], None),
     )));
 
-    // Build custom function handlers (http_call, channel_call, publish_kafka)
+    // Build cache pool (memory backend always available, redis feature-gated)
+    let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
+        #[cfg(feature = "connectors-redis")]
+        config.engine.max_pool_cache_entries,
+        60, // cleanup interval secs
+    ));
+
+    // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
     #[allow(unused_mut)]
     let mut custom_functions = orion::engine::build_custom_functions(
         connector_registry.clone(),
         http_client.clone(),
         engine.clone(),
         &config.engine,
+        cache_pool.clone(),
     );
 
     // Kafka producer setup (when kafka feature is enabled)
@@ -196,7 +207,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let channels = orion::engine::filter_channels(channels, &config.channels);
     let active_workflows = workflow_repo.list_active().await?;
     let workflows = orion::engine::build_engine_workflows(&channels, &active_workflows);
-    channel_registry.reload(&channels).await;
+    channel_registry
+        .reload(&channels, &connector_registry, &cache_pool)
+        .await;
 
     let channel_names: std::collections::HashSet<&str> =
         workflows.iter().map(|w| w.channel.as_str()).collect();
@@ -360,7 +373,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         connector_repo: connector_repo
             as Arc<dyn orion::storage::repositories::connectors::ConnectorRepository>,
         trace_repo: trace_repo as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+        audit_log_repo: audit_log_repo
+            as Arc<dyn orion::storage::repositories::audit_logs::AuditLogRepository>,
         connector_registry,
+        cache_pool,
         channel_registry,
         trace_queue,
         db_pool: pool,

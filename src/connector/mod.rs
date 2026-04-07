@@ -1,3 +1,4 @@
+pub mod cache_backend;
 pub mod circuit_breaker;
 #[cfg(feature = "connectors-mongodb")]
 pub mod mongo_pool;
@@ -18,6 +19,10 @@ use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 
 /// Monotonic counter for LRU tracking of circuit breaker access.
 static BREAKER_ACCESS_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Shared monotonic counter for LRU tracking across connector pool caches.
+#[cfg(any(feature = "connectors-sql", feature = "connectors-redis", feature = "connectors-mongodb"))]
+pub(crate) static POOL_ACCESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A circuit breaker entry with LRU tracking.
 struct BreakerEntry {
@@ -135,7 +140,11 @@ fn default_db_driver() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConnectorConfig {
-    pub url: String,
+    /// Cache backend: `"redis"` or `"memory"`. Required — no default.
+    pub backend: String,
+    /// Connection URL. Required when `backend = "redis"`, ignored for `"memory"`.
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub default_ttl_secs: Option<u64>,
     #[serde(default)]
@@ -161,6 +170,9 @@ pub struct StorageConnectorConfig {
 
 /// Allowed connector type values.
 pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "storage"];
+
+/// Allowed cache backend values.
+pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
 
 /// In-memory registry for active connector configurations.
 pub struct ConnectorRegistry {
@@ -603,16 +615,39 @@ mod tests {
     }
 
     #[test]
-    fn test_connector_config_deserialization_cache() {
-        let json = r#"{"type":"cache","url":"redis://localhost:6379","default_ttl_secs":300}"#;
+    fn test_connector_config_deserialization_cache_redis() {
+        let json = r#"{"type":"cache","backend":"redis","url":"redis://localhost:6379","default_ttl_secs":300}"#;
         let config: ConnectorConfig = serde_json::from_str(json).unwrap();
         match config {
             ConnectorConfig::Cache(cache) => {
-                assert_eq!(cache.url, "redis://localhost:6379");
+                assert_eq!(cache.backend, "redis");
+                assert_eq!(cache.url, Some("redis://localhost:6379".to_string()));
                 assert_eq!(cache.default_ttl_secs, Some(300));
             }
             _ => panic!("Expected Cache config"),
         }
+    }
+
+    #[test]
+    fn test_connector_config_deserialization_cache_memory() {
+        let json = r#"{"type":"cache","backend":"memory","default_ttl_secs":60}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        match config {
+            ConnectorConfig::Cache(cache) => {
+                assert_eq!(cache.backend, "memory");
+                assert!(cache.url.is_none());
+                assert_eq!(cache.default_ttl_secs, Some(60));
+            }
+            _ => panic!("Expected Cache config"),
+        }
+    }
+
+    #[test]
+    fn test_connector_config_deserialization_cache_missing_backend() {
+        // backend is required — deserialization should fail
+        let json = r#"{"type":"cache","url":"redis://localhost:6379"}"#;
+        let result = serde_json::from_str::<ConnectorConfig>(json);
+        assert!(result.is_err());
     }
 
     #[test]
