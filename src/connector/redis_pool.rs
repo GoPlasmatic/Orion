@@ -1,4 +1,3 @@
-
 use std::collections::HashMap;
 
 use redis::aio::MultiplexedConnection;
@@ -34,12 +33,11 @@ impl RedisPoolCache {
             return Ok(conn.clone());
         }
 
-        let client = redis::Client::open(config.url.as_str()).map_err(|e| {
-            OrionError::InternalSource {
+        let client =
+            redis::Client::open(config.url.as_str()).map_err(|e| OrionError::InternalSource {
                 context: format!("Invalid Redis URL for '{}'", connector_name),
                 source: Box::new(e),
-            }
-        })?;
+            })?;
         let conn = client
             .get_multiplexed_tokio_connection()
             .await

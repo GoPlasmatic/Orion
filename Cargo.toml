@@ -75,6 +75,9 @@ connectors-sql = ["sqlx/any", "sqlx/sqlite", "sqlx/postgres", "sqlx/mysql"]
 connectors-mongodb = ["dep:mongodb", "dep:futures"]
 connectors-redis = ["dep:redis"]
 
+[profile.release]
+strip = true
+
 [dev-dependencies]
 testcontainers = "0.23"
 testcontainers-modules = { version = "0.11", features = ["kafka"] }

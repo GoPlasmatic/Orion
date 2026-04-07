@@ -59,6 +59,8 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         100,
         30,
         60_000,
+        1_048_576,   // 1 MB max result size
+        104_857_600, // 100 MB max queue memory
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
     );
@@ -88,6 +90,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         connector_registry,
         channel_registry,
         trace_queue,
+        db_pool: pool,
         config: Arc::new(config),
         start_time: chrono::Utc::now(),
         metrics_handle,

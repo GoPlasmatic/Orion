@@ -68,6 +68,16 @@ pub async fn execute_request(
     body: Option<&Value>,
     timeout: Duration,
 ) -> dataflow_rs::Result<Value> {
+    // SSRF protection: block requests to private/internal IPs unless explicitly allowed
+    if !http_config.allow_private_urls
+        && let Err(msg) = crate::validation::validate_url_not_private(url).await
+    {
+        return Err(DataflowError::function_execution(
+            format!("SSRF protection: {msg}"),
+            None,
+        ));
+    }
+
     let mut req = client.request(method.clone(), url).timeout(timeout);
 
     // Inject W3C trace context headers (traceparent/tracestate) for distributed tracing
@@ -303,6 +313,7 @@ mod tests {
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
+            allow_private_urls: true, // Tests use localhost
         };
 
         let result = execute_request(
@@ -349,6 +360,7 @@ mod tests {
             }),
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
+            allow_private_urls: true, // Tests use localhost
         };
 
         let body = serde_json::json!({"data": "payload"});
@@ -387,6 +399,7 @@ mod tests {
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
+            allow_private_urls: true, // Tests use localhost
         };
 
         let result = execute_request(
@@ -425,6 +438,7 @@ mod tests {
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
+            allow_private_urls: true, // Tests use localhost
         };
 
         let result = execute_request(
@@ -464,7 +478,8 @@ mod tests {
             headers: std::collections::HashMap::new(),
             auth: None,
             retry: crate::connector::RetryConfig::default(),
-            max_response_size: 10, // Very small limit
+            max_response_size: 10,    // Very small limit
+            allow_private_urls: true, // Tests use localhost
         };
 
         let result = execute_request(
@@ -505,6 +520,7 @@ mod tests {
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
+            allow_private_urls: true, // Tests use localhost
         };
 
         let result = execute_request(
@@ -532,6 +548,7 @@ mod tests {
             auth: None,
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
+            allow_private_urls: true, // Tests use localhost
         };
 
         let result = execute_request(

@@ -3,16 +3,16 @@ pub mod http_call;
 pub mod http_common;
 pub mod publish_kafka;
 
+#[cfg(feature = "connectors-redis")]
+pub mod cache_read;
+#[cfg(feature = "connectors-redis")]
+pub mod cache_write;
 #[cfg(feature = "connectors-sql")]
 pub mod db_read;
 #[cfg(feature = "connectors-sql")]
 pub mod db_write;
 #[cfg(feature = "connectors-mongodb")]
 pub mod mongo_read;
-#[cfg(feature = "connectors-redis")]
-pub mod cache_read;
-#[cfg(feature = "connectors-redis")]
-pub mod cache_write;
 
 use std::future::Future;
 use std::sync::Arc;
@@ -107,11 +107,17 @@ where
         ));
     }
 
+    let start = std::time::Instant::now();
     let result = retry_with_backoff(max_retries, retry_delay_ms, label, operation).await;
+    let duration_secs = start.elapsed().as_secs_f64();
 
     match &result {
-        Ok(_) => breaker.record_success(),
+        Ok(_) => {
+            breaker.record_success();
+            crate::metrics::record_connector_request(connector, channel, "ok");
+        }
         Err(_) => {
+            crate::metrics::record_connector_request(connector, channel, "error");
             if breaker.record_failure() {
                 tracing::warn!(
                     connector = connector,
@@ -122,6 +128,7 @@ where
             }
         }
     }
+    crate::metrics::record_connector_duration(connector, channel, duration_secs);
 
     result
 }

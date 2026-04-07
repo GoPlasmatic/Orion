@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -40,9 +39,7 @@ impl AsyncFunctionHandler for MongoReadHandler {
         let connector_name = input
             .get("connector")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                DataflowError::Validation("mongo_read requires 'connector'".into())
-            })?;
+            .ok_or_else(|| DataflowError::Validation("mongo_read requires 'connector'".into()))?;
         let database = input
             .get("database")
             .and_then(|v| v.as_str())
@@ -50,9 +47,7 @@ impl AsyncFunctionHandler for MongoReadHandler {
         let collection = input
             .get("collection")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                DataflowError::Validation("mongo_read requires 'collection'".into())
-            })?;
+            .ok_or_else(|| DataflowError::Validation("mongo_read requires 'collection'".into()))?;
 
         // Optional filter document (default: {} = match all)
         let filter_val = input
@@ -63,16 +58,12 @@ impl AsyncFunctionHandler for MongoReadHandler {
             .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {}", e)))?;
 
         // Resolve connector
-        let connector_config =
-            self.registry
-                .get(connector_name)
-                .await
-                .ok_or_else(|| {
-                    DataflowError::function_execution(
-                        format!("Connector '{}' not found", connector_name),
-                        None,
-                    )
-                })?;
+        let connector_config = self.registry.get(connector_name).await.ok_or_else(|| {
+            DataflowError::function_execution(
+                format!("Connector '{}' not found", connector_name),
+                None,
+            )
+        })?;
         let db_config = match connector_config.as_ref() {
             ConnectorConfig::Db(c) => c,
             _ => {
@@ -89,9 +80,7 @@ impl AsyncFunctionHandler for MongoReadHandler {
             .await
             .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
 
-        let coll = client
-            .database(database)
-            .collection::<Document>(collection);
+        let coll = client.database(database).collection::<Document>(collection);
         let cursor = coll.find(filter_doc).await.map_err(|e| {
             DataflowError::function_execution(format!("MongoDB query failed: {}", e), None)
         })?;
@@ -111,8 +100,7 @@ impl AsyncFunctionHandler for MongoReadHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("data");
 
-        let old_value =
-            super::http_common::get_nested(&message.context, output_path);
+        let old_value = super::http_common::get_nested(&message.context, output_path);
         let new_value = Value::Array(result);
         super::http_common::set_nested(&mut message.context, output_path, new_value.clone());
         message.invalidate_context_cache();

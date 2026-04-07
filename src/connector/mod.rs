@@ -64,6 +64,9 @@ pub struct HttpConnectorConfig {
     /// Maximum response body size in bytes (default 10 MB). Prevents OOM from large responses.
     #[serde(default = "default_max_response_size")]
     pub max_response_size: usize,
+    /// Allow requests to private/internal IP addresses. Default false (SSRF protection).
+    #[serde(default)]
+    pub allow_private_urls: bool,
 }
 
 fn default_max_response_size() -> usize {

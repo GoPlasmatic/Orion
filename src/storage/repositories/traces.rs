@@ -1,8 +1,8 @@
+use crate::storage::DbPool;
 use async_trait::async_trait;
 use sea_query::{Asterisk, Condition, Expr, Func, Order, Query};
 use sea_query_binder::SqlxBinder;
 use serde::Deserialize;
-use crate::storage::DbPool;
 
 use crate::errors::OrionError;
 use crate::storage::models::{self, Trace};
@@ -106,9 +106,7 @@ impl TraceRepository for SqlTraceRepository {
                 ])
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             self.get_by_id(&id).await
         })
@@ -151,9 +149,7 @@ impl TraceRepository for SqlTraceRepository {
             };
 
             let mut update = Query::update();
-            update
-                .table(Traces::Table)
-                .value(Traces::Status, status);
+            update.table(Traces::Table).value(Traces::Status, status);
 
             if let Some(err) = error_message {
                 update.value(Traces::ErrorMessage, err);
@@ -169,9 +165,7 @@ impl TraceRepository for SqlTraceRepository {
 
             let (sql, values) = update.build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             self.get_by_id(id).await
         })
@@ -192,9 +186,7 @@ impl TraceRepository for SqlTraceRepository {
                 .and_where(Expr::col(Traces::Id).eq(id))
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
             Ok(())
         })
         .await
@@ -242,9 +234,7 @@ impl TraceRepository for SqlTraceRepository {
                 ])
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             Ok(id)
         })
@@ -330,9 +320,7 @@ impl TraceRepository for SqlTraceRepository {
                 .and_where(Expr::col(Traces::Status).is_in(["completed", "failed"]))
                 .build_sqlx(query_builder());
 
-            let result = sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            let result = sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             Ok(result.rows_affected())
         })

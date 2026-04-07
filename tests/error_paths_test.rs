@@ -11,11 +11,10 @@ use tower::ServiceExt;
 // ============================================================
 
 #[tokio::test]
-async fn test_any_content_type_accepted_if_body_is_valid_json() {
+async fn test_non_json_content_type_rejected_with_415() {
     let app = common::test_app().await;
 
-    // Content-type validation is handled by per-channel validation_logic,
-    // not hardcoded. Valid JSON with any content-type should parse fine.
+    // Non-JSON Content-Type with a body should return 415 Unsupported Media Type.
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/data/orders")
@@ -24,7 +23,7 @@ async fn test_any_content_type_accepted_if_body_is_valid_json() {
         .unwrap();
 
     let resp = app.oneshot(req).await.unwrap();
-    assert!(resp.status().is_success());
+    assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
 
 #[tokio::test]

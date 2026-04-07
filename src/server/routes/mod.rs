@@ -77,6 +77,8 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     let body = json!({
         "status": status_str,
         "version": env!("CARGO_PKG_VERSION"),
+        "git_hash": env!("GIT_HASH"),
+        "build_timestamp": env!("BUILD_TIMESTAMP"),
         "uptime_seconds": uptime.num_seconds(),
         "workflows_loaded": workflows_loaded,
         "components": {
@@ -100,6 +102,10 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     )
 )]
 pub(crate) async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
+    // Sample DB pool stats on each scrape
+    crate::metrics::set_db_pool_size(state.db_pool.size() as f64);
+    crate::metrics::set_db_pool_idle(state.db_pool.num_idle() as f64);
+
     let metrics = state.metrics_handle.render();
     (
         StatusCode::OK,
@@ -154,6 +160,7 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
 
     let result = async {
         let channels = state.channel_repo.list_active().await?;
+        let channels = crate::engine::filter_channels(channels, &state.config.channels);
         let active_workflows = state.workflow_repo.list_active().await?;
         let workflows = crate::engine::build_engine_workflows(&channels, &active_workflows);
 

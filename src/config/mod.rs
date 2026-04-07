@@ -7,6 +7,11 @@ use crate::errors::OrionError;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
+    /// Deployment environment (e.g. "development", "production").
+    /// Controls safety checks like CORS wildcard rejection.
+    /// Override via `ORION_ENV`.
+    #[serde(default = "default_environment")]
+    pub environment: String,
     pub server: ServerConfig,
     pub storage: StorageConfig,
     pub ingest: IngestConfig,
@@ -20,6 +25,17 @@ pub struct AppConfig {
     pub rate_limit: RateLimitConfig,
     pub channels: ChannelLoadingConfig,
     pub admin_auth: AdminAuthConfig,
+}
+
+fn default_environment() -> String {
+    "development".to_string()
+}
+
+impl AppConfig {
+    /// Returns true when the environment is a production variant.
+    pub fn is_production(&self) -> bool {
+        self.environment.to_lowercase().starts_with("prod")
+    }
 }
 
 /// Controls which channels an Orion instance loads from the database.
@@ -118,6 +134,9 @@ pub struct EngineConfig {
     pub max_channel_call_depth: u32,
     /// Default timeout in milliseconds for channel_call invocations.
     pub default_channel_call_timeout_ms: u64,
+    /// Global default timeout in seconds for all outbound HTTP requests (safety net).
+    /// Individual connector/task timeouts override this when shorter.
+    pub global_http_timeout_secs: u64,
 }
 
 impl Default for EngineConfig {
@@ -128,6 +147,7 @@ impl Default for EngineConfig {
             reload_timeout_secs: 10,
             max_channel_call_depth: 10,
             default_channel_call_timeout_ms: 30_000,
+            global_http_timeout_secs: 30,
         }
     }
 }
@@ -147,6 +167,12 @@ pub struct QueueConfig {
     pub trace_cleanup_interval_secs: u64,
     /// Maximum time in milliseconds for processing a single async trace.
     pub processing_timeout_ms: u64,
+    /// Maximum size in bytes for serialized trace results. Results exceeding
+    /// this limit are rejected (sync) or marked as failed (async). Default 1 MB.
+    pub max_result_size_bytes: usize,
+    /// Maximum total memory in bytes for queued trace payloads. New submissions
+    /// are rejected with 503 when this limit is exceeded. Default 100 MB.
+    pub max_queue_memory_bytes: usize,
 }
 
 impl Default for QueueConfig {
@@ -158,6 +184,8 @@ impl Default for QueueConfig {
             trace_retention_hours: 72,
             trace_cleanup_interval_secs: 3600,
             processing_timeout_ms: 60_000,
+            max_result_size_bytes: 1_048_576,    // 1 MB
+            max_queue_memory_bytes: 104_857_600, // 100 MB
         }
     }
 }
@@ -178,6 +206,12 @@ pub struct KafkaIngestConfig {
     pub dlq: DlqConfig,
     /// Maximum time in milliseconds for processing a single Kafka message.
     pub processing_timeout_ms: u64,
+    /// Maximum number of in-flight messages being processed concurrently.
+    /// The consumer pauses reading when this limit is reached (backpressure).
+    pub max_inflight: usize,
+    /// Interval in seconds between consumer lag metric polls.
+    /// Set to 0 to disable lag monitoring.
+    pub lag_poll_interval_secs: u64,
 }
 
 impl Default for KafkaIngestConfig {
@@ -189,6 +223,8 @@ impl Default for KafkaIngestConfig {
             topics: vec![],
             dlq: DlqConfig::default(),
             processing_timeout_ms: 60_000,
+            max_inflight: 10,
+            lag_poll_interval_secs: 30,
         }
     }
 }
@@ -398,18 +434,49 @@ where
         };
     }
 
+    // Environment
+    env_str!(env_var, "ORION_ENV", config.environment);
+
     // Server
     env_str!(env_var, "ORION_SERVER__HOST", config.server.host);
     env_parsed!(env_var, "ORION_SERVER__PORT", config.server.port, u16);
-    env_parsed!(env_var, "ORION_SERVER__SHUTDOWN_DRAIN_SECS", config.server.shutdown_drain_secs, u64);
-    env_parsed!(env_var, "ORION_SERVER__TLS__ENABLED", config.server.tls.enabled, bool);
-    env_str!(env_var, "ORION_SERVER__TLS__CERT_PATH", config.server.tls.cert_path);
-    env_str!(env_var, "ORION_SERVER__TLS__KEY_PATH", config.server.tls.key_path);
+    env_parsed!(
+        env_var,
+        "ORION_SERVER__SHUTDOWN_DRAIN_SECS",
+        config.server.shutdown_drain_secs,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_SERVER__TLS__ENABLED",
+        config.server.tls.enabled,
+        bool
+    );
+    env_str!(
+        env_var,
+        "ORION_SERVER__TLS__CERT_PATH",
+        config.server.tls.cert_path
+    );
+    env_str!(
+        env_var,
+        "ORION_SERVER__TLS__KEY_PATH",
+        config.server.tls.key_path
+    );
 
     // Storage
     env_str!(env_var, "ORION_STORAGE__URL", config.storage.url);
-    env_parsed!(env_var, "ORION_STORAGE__BUSY_TIMEOUT_MS", config.storage.busy_timeout_ms, u64);
-    env_parsed!(env_var, "ORION_STORAGE__ACQUIRE_TIMEOUT_SECS", config.storage.acquire_timeout_secs, u64);
+    env_parsed!(
+        env_var,
+        "ORION_STORAGE__BUSY_TIMEOUT_MS",
+        config.storage.busy_timeout_ms,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_STORAGE__ACQUIRE_TIMEOUT_SECS",
+        config.storage.acquire_timeout_secs,
+        u64
+    );
 
     // Logging
     env_str!(env_var, "ORION_LOGGING__LEVEL", config.logging.level);
@@ -429,41 +496,167 @@ where
     }
 
     // Ingest
-    env_parsed!(env_var, "ORION_INGEST__MAX_PAYLOAD_SIZE", config.ingest.max_payload_size, usize);
+    env_parsed!(
+        env_var,
+        "ORION_INGEST__MAX_PAYLOAD_SIZE",
+        config.ingest.max_payload_size,
+        usize
+    );
 
     // Queue
     env_parsed!(env_var, "ORION_QUEUE__WORKERS", config.queue.workers, usize);
-    env_parsed!(env_var, "ORION_QUEUE__BUFFER_SIZE", config.queue.buffer_size, usize);
-    env_parsed!(env_var, "ORION_QUEUE__SHUTDOWN_TIMEOUT_SECS", config.queue.shutdown_timeout_secs, u64);
-    env_parsed!(env_var, "ORION_QUEUE__TRACE_RETENTION_HOURS", config.queue.trace_retention_hours, u64);
-    env_parsed!(env_var, "ORION_QUEUE__TRACE_CLEANUP_INTERVAL_SECS", config.queue.trace_cleanup_interval_secs, u64);
-    env_parsed!(env_var, "ORION_QUEUE__PROCESSING_TIMEOUT_MS", config.queue.processing_timeout_ms, u64);
+    env_parsed!(
+        env_var,
+        "ORION_QUEUE__BUFFER_SIZE",
+        config.queue.buffer_size,
+        usize
+    );
+    env_parsed!(
+        env_var,
+        "ORION_QUEUE__SHUTDOWN_TIMEOUT_SECS",
+        config.queue.shutdown_timeout_secs,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_QUEUE__TRACE_RETENTION_HOURS",
+        config.queue.trace_retention_hours,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_QUEUE__TRACE_CLEANUP_INTERVAL_SECS",
+        config.queue.trace_cleanup_interval_secs,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_QUEUE__PROCESSING_TIMEOUT_MS",
+        config.queue.processing_timeout_ms,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_QUEUE__MAX_RESULT_SIZE_BYTES",
+        config.queue.max_result_size_bytes,
+        usize
+    );
+    env_parsed!(
+        env_var,
+        "ORION_QUEUE__MAX_QUEUE_MEMORY_BYTES",
+        config.queue.max_queue_memory_bytes,
+        usize
+    );
 
     // Metrics
-    env_parsed!(env_var, "ORION_METRICS__ENABLED", config.metrics.enabled, bool);
+    env_parsed!(
+        env_var,
+        "ORION_METRICS__ENABLED",
+        config.metrics.enabled,
+        bool
+    );
 
     // Tracing
-    env_parsed!(env_var, "ORION_TRACING__ENABLED", config.tracing.enabled, bool);
-    env_str!(env_var, "ORION_TRACING__OTLP_ENDPOINT", config.tracing.otlp_endpoint);
-    env_str!(env_var, "ORION_TRACING__SERVICE_NAME", config.tracing.service_name);
-    env_parsed!(env_var, "ORION_TRACING__SAMPLE_RATE", config.tracing.sample_rate, f64);
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__ENABLED",
+        config.tracing.enabled,
+        bool
+    );
+    env_str!(
+        env_var,
+        "ORION_TRACING__OTLP_ENDPOINT",
+        config.tracing.otlp_endpoint
+    );
+    env_str!(
+        env_var,
+        "ORION_TRACING__SERVICE_NAME",
+        config.tracing.service_name
+    );
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__SAMPLE_RATE",
+        config.tracing.sample_rate,
+        f64
+    );
 
     // Engine
-    env_parsed!(env_var, "ORION_ENGINE__HEALTH_CHECK_TIMEOUT_SECS", config.engine.health_check_timeout_secs, u64);
-    env_parsed!(env_var, "ORION_ENGINE__RELOAD_TIMEOUT_SECS", config.engine.reload_timeout_secs, u64);
-    env_parsed!(env_var, "ORION_ENGINE__MAX_CHANNEL_CALL_DEPTH", config.engine.max_channel_call_depth, u32);
-    env_parsed!(env_var, "ORION_ENGINE__DEFAULT_CHANNEL_CALL_TIMEOUT_MS", config.engine.default_channel_call_timeout_ms, u64);
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__HEALTH_CHECK_TIMEOUT_SECS",
+        config.engine.health_check_timeout_secs,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__RELOAD_TIMEOUT_SECS",
+        config.engine.reload_timeout_secs,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__MAX_CHANNEL_CALL_DEPTH",
+        config.engine.max_channel_call_depth,
+        u32
+    );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__DEFAULT_CHANNEL_CALL_TIMEOUT_MS",
+        config.engine.default_channel_call_timeout_ms,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__GLOBAL_HTTP_TIMEOUT_SECS",
+        config.engine.global_http_timeout_secs,
+        u64
+    );
 
     // Circuit breaker
-    env_parsed!(env_var, "ORION_ENGINE__CIRCUIT_BREAKER__ENABLED", config.engine.circuit_breaker.enabled, bool);
-    env_parsed!(env_var, "ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD", config.engine.circuit_breaker.failure_threshold, u32);
-    env_parsed!(env_var, "ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS", config.engine.circuit_breaker.recovery_timeout_secs, u64);
-    env_parsed!(env_var, "ORION_ENGINE__CIRCUIT_BREAKER__MAX_BREAKERS", config.engine.circuit_breaker.max_breakers, usize);
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__CIRCUIT_BREAKER__ENABLED",
+        config.engine.circuit_breaker.enabled,
+        bool
+    );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD",
+        config.engine.circuit_breaker.failure_threshold,
+        u32
+    );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS",
+        config.engine.circuit_breaker.recovery_timeout_secs,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__CIRCUIT_BREAKER__MAX_BREAKERS",
+        config.engine.circuit_breaker.max_breakers,
+        usize
+    );
 
     // Rate limit
-    env_parsed!(env_var, "ORION_RATE_LIMIT__ENABLED", config.rate_limit.enabled, bool);
-    env_parsed!(env_var, "ORION_RATE_LIMIT__DEFAULT_RPS", config.rate_limit.default_rps, u32);
-    env_parsed!(env_var, "ORION_RATE_LIMIT__DEFAULT_BURST", config.rate_limit.default_burst, u32);
+    env_parsed!(
+        env_var,
+        "ORION_RATE_LIMIT__ENABLED",
+        config.rate_limit.enabled,
+        bool
+    );
+    env_parsed!(
+        env_var,
+        "ORION_RATE_LIMIT__DEFAULT_RPS",
+        config.rate_limit.default_rps,
+        u32
+    );
+    env_parsed!(
+        env_var,
+        "ORION_RATE_LIMIT__DEFAULT_BURST",
+        config.rate_limit.default_burst,
+        u32
+    );
 
     // Kafka
     env_parsed!(env_var, "ORION_KAFKA__ENABLED", config.kafka.enabled, bool);
@@ -471,12 +664,42 @@ where
         config.kafka.brokers = v.split(',').map(|s| s.trim().to_string()).collect();
     }
     env_str!(env_var, "ORION_KAFKA__GROUP_ID", config.kafka.group_id);
-    env_parsed!(env_var, "ORION_KAFKA__PROCESSING_TIMEOUT_MS", config.kafka.processing_timeout_ms, u64);
+    env_parsed!(
+        env_var,
+        "ORION_KAFKA__PROCESSING_TIMEOUT_MS",
+        config.kafka.processing_timeout_ms,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_KAFKA__MAX_INFLIGHT",
+        config.kafka.max_inflight,
+        usize
+    );
+    env_parsed!(
+        env_var,
+        "ORION_KAFKA__LAG_POLL_INTERVAL_SECS",
+        config.kafka.lag_poll_interval_secs,
+        u64
+    );
 
     // Admin auth
-    env_parsed!(env_var, "ORION_ADMIN_AUTH__ENABLED", config.admin_auth.enabled, bool);
-    env_str!(env_var, "ORION_ADMIN_AUTH__API_KEY", config.admin_auth.api_key);
-    env_str!(env_var, "ORION_ADMIN_AUTH__HEADER", config.admin_auth.header);
+    env_parsed!(
+        env_var,
+        "ORION_ADMIN_AUTH__ENABLED",
+        config.admin_auth.enabled,
+        bool
+    );
+    env_str!(
+        env_var,
+        "ORION_ADMIN_AUTH__API_KEY",
+        config.admin_auth.api_key
+    );
+    env_str!(
+        env_var,
+        "ORION_ADMIN_AUTH__HEADER",
+        config.admin_auth.header
+    );
 
     Ok(())
 }
@@ -623,8 +846,15 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
             });
         }
     }
-    // CORS warning
+    // CORS: reject wildcard in production
     if config.cors.allowed_origins.len() == 1 && config.cors.allowed_origins[0] == "*" {
+        if config.is_production() {
+            return Err(OrionError::Config {
+                message: "CORS wildcard '*' is not allowed when environment starts with 'prod'. \
+                          Set explicit origins in [cors] allowed_origins"
+                    .to_string(),
+            });
+        }
         tracing::warn!(
             "CORS is set to permissive ('*'). For production, configure specific origins in [cors] allowed_origins"
         );
@@ -639,6 +869,34 @@ fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
         if config.kafka.group_id.is_empty() {
             return Err(OrionError::Config {
                 message: "kafka.group_id must not be empty when Kafka is enabled".to_string(),
+            });
+        }
+        // Validate broker address format (host:port)
+        for (i, broker) in config.kafka.brokers.iter().enumerate() {
+            let broker = broker.trim();
+            if broker.is_empty() {
+                return Err(OrionError::Config {
+                    message: format!("kafka.brokers[{}] must not be empty", i),
+                });
+            }
+            if !broker.contains(':') {
+                return Err(OrionError::Config {
+                    message: format!(
+                        "kafka.brokers[{}] '{}' must be in host:port format",
+                        i, broker
+                    ),
+                });
+            }
+            let port_str = broker.rsplit(':').next().unwrap_or("");
+            if port_str.parse::<u16>().is_err() {
+                return Err(OrionError::Config {
+                    message: format!("kafka.brokers[{}] '{}' has invalid port", i, broker),
+                });
+            }
+        }
+        if config.kafka.max_inflight == 0 {
+            return Err(OrionError::Config {
+                message: "kafka.max_inflight must be > 0".to_string(),
             });
         }
         // Topics can be empty in config when async channels provide them from DB
@@ -1089,8 +1347,14 @@ data_rps = 500
         let mut config = AppConfig::default();
         config.kafka.enabled = true;
         config.kafka.topics = vec![
-            TopicMapping { topic: "dup".into(), channel: "ch1".into() },
-            TopicMapping { topic: "dup".into(), channel: "ch2".into() },
+            TopicMapping {
+                topic: "dup".into(),
+                channel: "ch1".into(),
+            },
+            TopicMapping {
+                topic: "dup".into(),
+                channel: "ch2".into(),
+            },
         ];
         assert!(validate_config(&config).is_err());
     }
@@ -1101,8 +1365,14 @@ data_rps = 500
         let mut config = AppConfig::default();
         config.kafka.enabled = true;
         config.kafka.topics = vec![
-            TopicMapping { topic: "t1".into(), channel: "same".into() },
-            TopicMapping { topic: "t2".into(), channel: "same".into() },
+            TopicMapping {
+                topic: "t1".into(),
+                channel: "same".into(),
+            },
+            TopicMapping {
+                topic: "t2".into(),
+                channel: "same".into(),
+            },
         ];
         assert!(validate_config(&config).is_err());
     }

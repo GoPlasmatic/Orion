@@ -253,7 +253,8 @@ async fn test_http_call_end_to_end() {
                 "config": {
                     "type": "http",
                     "url": format!("http://{}", mock_addr),
-                    "retry": {"max_retries": 0, "retry_delay_ms": 10}
+                    "retry": {"max_retries": 0, "retry_delay_ms": 10},
+                    "allow_private_urls": true
                 }
             })),
         ))

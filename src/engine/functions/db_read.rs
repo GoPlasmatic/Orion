@@ -1,5 +1,5 @@
-
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
@@ -12,8 +12,8 @@ use sqlx::any::AnyRow;
 use sqlx::{Column, Row};
 
 use super::http_common::{get_nested, set_nested};
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
 use crate::connector::pool_cache::SqlPoolCache;
+use crate::connector::{ConnectorConfig, ConnectorRegistry};
 
 /// Executes SQL SELECT queries against external databases configured via connectors.
 pub struct DbReadHandler {
@@ -52,13 +52,12 @@ impl AsyncFunctionHandler for DbReadHandler {
 
         let params = input.get("params").and_then(|v| v.as_array());
 
-        let connector_config =
-            self.registry.get(connector_name).await.ok_or_else(|| {
-                DataflowError::function_execution(
-                    format!("Connector '{}' not found", connector_name),
-                    None,
-                )
-            })?;
+        let connector_config = self.registry.get(connector_name).await.ok_or_else(|| {
+            DataflowError::function_execution(
+                format!("Connector '{}' not found", connector_name),
+                None,
+            )
+        })?;
 
         let db_config = match connector_config.as_ref() {
             ConnectorConfig::Db(c) => c,
@@ -97,7 +96,16 @@ impl AsyncFunctionHandler for DbReadHandler {
             }
         }
 
-        let rows: Vec<AnyRow> = sqlx_query.fetch_all(&pool).await.map_err(|e| {
+        let timeout_ms = db_config.query_timeout_ms.unwrap_or(30_000);
+        let rows: Vec<AnyRow> = tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            sqlx_query.fetch_all(&pool),
+        )
+        .await
+        .map_err(|_| {
+            DataflowError::Timeout(format!("db_read query timed out after {}ms", timeout_ms))
+        })?
+        .map_err(|e| {
             DataflowError::function_execution(format!("db_read query failed: {}", e), None)
         })?;
 

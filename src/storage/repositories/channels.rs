@@ -1,13 +1,16 @@
+use crate::storage::DbPool;
 use async_trait::async_trait;
 use sea_query::{Asterisk, Condition, Expr, Func, Order, Query};
 use sea_query_binder::SqlxBinder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::storage::DbPool;
 
 use crate::errors::OrionError;
 use crate::storage::models::Channel;
-use crate::storage::{query_builder, schema::{Channels, CurrentChannels}};
+use crate::storage::{
+    query_builder,
+    schema::{Channels, CurrentChannels},
+};
 
 use super::workflows::PaginatedResult;
 
@@ -217,9 +220,7 @@ impl ChannelRepository for SqlChannelRepository {
                 ])
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             self.get_version(&channel_id, 1).await
         })
@@ -278,10 +279,9 @@ impl ChannelRepository for SqlChannelRepository {
                 .cond_where(cond.clone())
                 .build_sqlx(query_builder());
 
-            let (total,): (i64,) =
-                sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
-                    .fetch_one(&self.pool)
-                    .await?;
+            let (total,): (i64,) = sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
+                .fetch_one(&self.pool)
+                .await?;
 
             let (sql, values) = Query::select()
                 .column(Asterisk)
@@ -391,7 +391,10 @@ impl ChannelRepository for SqlChannelRepository {
                 .value(Channels::RoutePattern, route_pattern_val)
                 .value(Channels::Topic, topic_val)
                 .value(Channels::ConsumerGroup, consumer_group_val)
-                .value(Channels::TransportConfigJson, transport_config_json.as_str())
+                .value(
+                    Channels::TransportConfigJson,
+                    transport_config_json.as_str(),
+                )
                 .value(Channels::WorkflowId, workflow_id_val)
                 .value(Channels::ConfigJson, config_json.as_str())
                 .value(Channels::Priority, priority)
@@ -399,9 +402,7 @@ impl ChannelRepository for SqlChannelRepository {
                 .and_where(Expr::col(Channels::Status).eq("draft"))
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             self.get_version(channel_id, existing.version).await
         })
@@ -415,9 +416,7 @@ impl ChannelRepository for SqlChannelRepository {
                 .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
                 .build_sqlx(query_builder());
 
-            let result = sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            let result = sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             if result.rows_affected() == 0 {
                 return Err(OrionError::NotFound(format!(
@@ -440,11 +439,9 @@ impl ChannelRepository for SqlChannelRepository {
                 .order_by(Channels::Priority, Order::Desc)
                 .build_sqlx(query_builder());
 
-            Ok(
-                sqlx::query_as_with::<_, Channel, _>(&sql, values)
-                    .fetch_all(&self.pool)
-                    .await?,
-            )
+            Ok(sqlx::query_as_with::<_, Channel, _>(&sql, values)
+                .fetch_all(&self.pool)
+                .await?)
         })
         .await
     }
@@ -634,9 +631,7 @@ impl ChannelRepository for SqlChannelRepository {
                 ])
                 .build_sqlx(query_builder());
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
 
             self.get_version(channel_id, new_version).await
         })
@@ -658,10 +653,9 @@ impl ChannelRepository for SqlChannelRepository {
             .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
             .build_sqlx(query_builder());
 
-        let (total,): (i64,) =
-            sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
-                .fetch_one(&self.pool)
-                .await?;
+        let (total,): (i64,) = sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
+            .fetch_one(&self.pool)
+            .await?;
 
         let (sql, values) = Query::select()
             .column(Asterisk)
@@ -721,7 +715,11 @@ mod tests {
             .cond_where(cond)
             .build_sqlx(query_builder());
         // Empty Condition::all() produces WHERE TRUE -- no actual column filters
-        assert!(!sql.contains("\"status\""), "empty filter should not filter by status, got: {}", sql);
+        assert!(
+            !sql.contains("\"status\""),
+            "empty filter should not filter by status, got: {}",
+            sql
+        );
     }
 
     #[test]
@@ -736,7 +734,11 @@ mod tests {
             .from(CurrentChannels::Table)
             .cond_where(cond)
             .build_sqlx(query_builder());
-        assert!(sql.contains("status"), "SQL should contain status filter, got: {}", sql);
+        assert!(
+            sql.contains("status"),
+            "SQL should contain status filter, got: {}",
+            sql
+        );
     }
 
     #[test]
@@ -751,7 +753,11 @@ mod tests {
             .from(CurrentChannels::Table)
             .cond_where(cond)
             .build_sqlx(query_builder());
-        assert!(sql.contains("channel_type"), "SQL should contain channel_type filter, got: {}", sql);
+        assert!(
+            sql.contains("channel_type"),
+            "SQL should contain channel_type filter, got: {}",
+            sql
+        );
     }
 
     #[test]
@@ -766,7 +772,11 @@ mod tests {
             .from(CurrentChannels::Table)
             .cond_where(cond)
             .build_sqlx(query_builder());
-        assert!(sql.contains("protocol"), "SQL should contain protocol filter, got: {}", sql);
+        assert!(
+            sql.contains("protocol"),
+            "SQL should contain protocol filter, got: {}",
+            sql
+        );
     }
 
     #[test]
@@ -784,9 +794,21 @@ mod tests {
             .from(CurrentChannels::Table)
             .cond_where(cond)
             .build_sqlx(query_builder());
-        assert!(sql.contains("status"), "SQL should contain status filter, got: {}", sql);
-        assert!(sql.contains("channel_type"), "SQL should contain channel_type filter, got: {}", sql);
-        assert!(sql.contains("protocol"), "SQL should contain protocol filter, got: {}", sql);
+        assert!(
+            sql.contains("status"),
+            "SQL should contain status filter, got: {}",
+            sql
+        );
+        assert!(
+            sql.contains("channel_type"),
+            "SQL should contain channel_type filter, got: {}",
+            sql
+        );
+        assert!(
+            sql.contains("protocol"),
+            "SQL should contain protocol filter, got: {}",
+            sql
+        );
     }
 
     #[test]

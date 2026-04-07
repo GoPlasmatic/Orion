@@ -12,13 +12,29 @@ use crate::errors::OrionError;
 use crate::metrics;
 use crate::server::state::AppState;
 
+/// Identity of the authenticated admin principal, stored in request extensions.
+#[derive(Debug, Clone)]
+pub struct AdminPrincipal {
+    /// Truncated key prefix for audit logging (never the full key).
+    pub key_prefix: String,
+}
+
+impl AdminPrincipal {
+    fn from_token(token: &str) -> Self {
+        let prefix_len = token.len().min(8);
+        Self {
+            key_prefix: format!("{}...", &token[..prefix_len]),
+        }
+    }
+}
+
 /// Middleware that authenticates admin API requests.
 ///
 /// Skips authentication for non-admin routes and when auth is disabled.
 pub async fn admin_auth_middleware(
     State(state): State<AppState>,
     matched_path: Option<MatchedPath>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, OrionError> {
     if !state.config.admin_auth.enabled {
@@ -45,6 +61,10 @@ pub async fn admin_auth_middleware(
         return Err(OrionError::Unauthorized("Invalid API key".into()));
     }
 
+    // Store principal identity in request extensions for audit logging
+    req.extensions_mut()
+        .insert(AdminPrincipal::from_token(&token));
+
     Ok(next.run(req).await)
 }
 
@@ -54,9 +74,7 @@ fn extract_api_key(req: &Request, config: &AdminAuthConfig) -> Result<String, Or
         .headers()
         .get(&config.header)
         .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            OrionError::Unauthorized(format!("Missing {} header", config.header))
-        })?;
+        .ok_or_else(|| OrionError::Unauthorized(format!("Missing {} header", config.header)))?;
 
     if config.header.eq_ignore_ascii_case("authorization") {
         // Expect "Bearer <token>" format

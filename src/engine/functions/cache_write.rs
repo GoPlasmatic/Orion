@@ -1,4 +1,3 @@
-
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -39,24 +38,18 @@ impl AsyncFunctionHandler for CacheWriteHandler {
         let connector_name = input
             .get("connector")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                DataflowError::Validation("cache_write requires 'connector'".into())
-            })?;
+            .ok_or_else(|| DataflowError::Validation("cache_write requires 'connector'".into()))?;
         let key = input
             .get("key")
             .and_then(|v| v.as_str())
             .ok_or_else(|| DataflowError::Validation("cache_write requires 'key'".into()))?;
 
-        let connector_config =
-            self.registry
-                .get(connector_name)
-                .await
-                .ok_or_else(|| {
-                    DataflowError::function_execution(
-                        format!("Connector '{}' not found", connector_name),
-                        None,
-                    )
-                })?;
+        let connector_config = self.registry.get(connector_name).await.ok_or_else(|| {
+            DataflowError::function_execution(
+                format!("Connector '{}' not found", connector_name),
+                None,
+            )
+        })?;
         let cache_config = match connector_config.as_ref() {
             ConnectorConfig::Cache(c) => c,
             _ => {
@@ -93,20 +86,12 @@ impl AsyncFunctionHandler for CacheWriteHandler {
             conn.set_ex::<_, _, ()>(key, &value_str, ttl)
                 .await
                 .map_err(|e| {
-                    DataflowError::function_execution(
-                        format!("Redis SET EX failed: {}", e),
-                        None,
-                    )
+                    DataflowError::function_execution(format!("Redis SET EX failed: {}", e), None)
                 })?;
         } else {
-            conn.set::<_, _, ()>(key, &value_str)
-                .await
-                .map_err(|e| {
-                    DataflowError::function_execution(
-                        format!("Redis SET failed: {}", e),
-                        None,
-                    )
-                })?;
+            conn.set::<_, _, ()>(key, &value_str).await.map_err(|e| {
+                DataflowError::function_execution(format!("Redis SET failed: {}", e), None)
+            })?;
         }
 
         tracing::debug!(

@@ -1,5 +1,5 @@
-
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
@@ -10,8 +10,8 @@ use datalogic_rs::DataLogic;
 use serde_json::Value;
 
 use super::http_common::{get_nested, set_nested};
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
 use crate::connector::pool_cache::SqlPoolCache;
+use crate::connector::{ConnectorConfig, ConnectorRegistry};
 
 /// Executes SQL write queries (INSERT, UPDATE, DELETE) against external databases
 /// configured via connectors.
@@ -51,13 +51,12 @@ impl AsyncFunctionHandler for DbWriteHandler {
 
         let params = input.get("params").and_then(|v| v.as_array());
 
-        let connector_config =
-            self.registry.get(connector_name).await.ok_or_else(|| {
-                DataflowError::function_execution(
-                    format!("Connector '{}' not found", connector_name),
-                    None,
-                )
-            })?;
+        let connector_config = self.registry.get(connector_name).await.ok_or_else(|| {
+            DataflowError::function_execution(
+                format!("Connector '{}' not found", connector_name),
+                None,
+            )
+        })?;
 
         let db_config = match connector_config.as_ref() {
             ConnectorConfig::Db(c) => c,
@@ -96,9 +95,19 @@ impl AsyncFunctionHandler for DbWriteHandler {
             }
         }
 
-        let result = sqlx_query.execute(&pool).await.map_err(|e| {
-            DataflowError::function_execution(format!("db_write query failed: {}", e), None)
-        })?;
+        let timeout_ms = db_config.query_timeout_ms.unwrap_or(30_000);
+        let result =
+            tokio::time::timeout(Duration::from_millis(timeout_ms), sqlx_query.execute(&pool))
+                .await
+                .map_err(|_| {
+                    DataflowError::Timeout(format!(
+                        "db_write query timed out after {}ms",
+                        timeout_ms
+                    ))
+                })?
+                .map_err(|e| {
+                    DataflowError::function_execution(format!("db_write query failed: {}", e), None)
+                })?;
 
         let output = serde_json::json!({
             "rows_affected": result.rows_affected(),
