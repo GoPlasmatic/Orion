@@ -10,10 +10,7 @@ use crate::connector::mask_connector;
 use crate::errors::OrionError;
 use crate::server::routes::reload_engine;
 use crate::server::state::AppState;
-use crate::storage::models::{
-    CHANNEL_STATUS_ACTIVE, CHANNEL_STATUS_ARCHIVED, ChannelResponse, WORKFLOW_STATUS_ACTIVE,
-    WORKFLOW_STATUS_ARCHIVED, WorkflowResponse,
-};
+use crate::storage::models::{ChannelResponse, StatusAction, WorkflowResponse};
 use crate::storage::repositories::channels::{
     ChannelFilter, ChannelStatusChangeRequest, CreateChannelRequest, UpdateChannelRequest,
 };
@@ -223,15 +220,10 @@ pub(crate) async fn change_channel_status(
     Path(id): Path<String>,
     Json(req): Json<ChannelStatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    let channel = match req.status.as_str() {
-        CHANNEL_STATUS_ACTIVE => state.channel_repo.activate(&id).await?,
-        CHANNEL_STATUS_ARCHIVED => state.channel_repo.archive(&id).await?,
-        other => {
-            return Err(OrionError::BadRequest(format!(
-                "Invalid status transition to '{}'. Use 'active' or 'archived'",
-                other
-            )));
-        }
+    let action = StatusAction::parse(req.status.as_str())?;
+    let channel = match action {
+        StatusAction::Activate => state.channel_repo.activate(&id).await?,
+        StatusAction::Archive => state.channel_repo.archive(&id).await?,
     };
     reload_engine(&state).await?;
     Ok(Json(
@@ -454,18 +446,13 @@ pub(crate) async fn change_workflow_status(
     Path(id): Path<String>,
     Json(req): Json<StatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    let workflow = match req.status.as_str() {
-        WORKFLOW_STATUS_ACTIVE => {
+    let action = StatusAction::parse(req.status.as_str())?;
+    let workflow = match action {
+        StatusAction::Activate => {
             let rollout_pct = req.rollout_percentage.unwrap_or(100);
             state.workflow_repo.activate(&id, rollout_pct).await?
         }
-        WORKFLOW_STATUS_ARCHIVED => state.workflow_repo.archive(&id).await?,
-        other => {
-            return Err(OrionError::BadRequest(format!(
-                "Invalid status transition to '{}'. Use 'active' or 'archived'",
-                other
-            )));
-        }
+        StatusAction::Archive => state.workflow_repo.archive(&id).await?,
     };
     reload_engine(&state).await?;
     Ok(Json(

@@ -1,3 +1,5 @@
+#![warn(clippy::unwrap_used, clippy::panic)]
+
 pub mod channel;
 pub mod config;
 pub mod connector;
