@@ -69,7 +69,9 @@
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Health check (200 OK / 503 degraded) |
+| GET | `/health` | Health check (200 OK / 503 degraded) — checks DB, engine, uptime, circuit breakers |
+| GET | `/healthz` | Kubernetes liveness probe — always returns 200 |
+| GET | `/readyz` | Kubernetes readiness probe — returns 503 if DB, engine, or startup not ready |
 | GET | `/metrics` | Prometheus metrics |
 
 ## Lifecycle

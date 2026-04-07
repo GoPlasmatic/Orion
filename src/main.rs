@@ -11,10 +11,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 use orion::config::{self, LogFormat};
 use orion::connector::ConnectorRegistry;
 use orion::server::state::AppState;
-use orion::storage::repositories::channels::{ChannelRepository, SqliteChannelRepository};
-use orion::storage::repositories::connectors::SqliteConnectorRepository;
-use orion::storage::repositories::traces::SqliteTraceRepository;
-use orion::storage::repositories::workflows::{SqliteWorkflowRepository, WorkflowRepository};
+use orion::storage::repositories::channels::{ChannelRepository, SqlChannelRepository};
+use orion::storage::repositories::connectors::SqlConnectorRepository;
+use orion::storage::repositories::traces::SqlTraceRepository;
+use orion::storage::repositories::workflows::{SqlWorkflowRepository, WorkflowRepository};
 
 #[derive(Parser)]
 #[command(
@@ -122,13 +122,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Init database
     let pool = orion::storage::init_pool(&config.storage).await?;
-    tracing::info!(path = %config.storage.path, "Database initialized");
+    tracing::info!(path = %config.storage.url, "Database initialized");
 
     // Create repositories
-    let workflow_repo = Arc::new(SqliteWorkflowRepository::new(pool.clone()));
-    let channel_repo = Arc::new(SqliteChannelRepository::new(pool.clone()));
-    let connector_repo = Arc::new(SqliteConnectorRepository::new(pool.clone()));
-    let trace_repo = Arc::new(SqliteTraceRepository::new(pool.clone()));
+    let workflow_repo = Arc::new(SqlWorkflowRepository::new(pool.clone()));
+    let channel_repo = Arc::new(SqlChannelRepository::new(pool.clone()));
+    let connector_repo = Arc::new(SqlConnectorRepository::new(pool.clone()));
+    let trace_repo = Arc::new(SqlTraceRepository::new(pool.clone()));
 
     // Channel registry
     let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
@@ -364,7 +364,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         tracing::info!(
             address = %addr,
-            storage = %config.storage.path,
+            storage = %config.storage.url,
             tls = true,
             "Orion is ready (HTTPS)"
         );
@@ -377,7 +377,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         tracing::info!(
             address = %addr,
-            storage = %config.storage.path,
+            storage = %config.storage.url,
             "Orion is ready"
         );
         let drain_secs = config.server.shutdown_drain_secs;
@@ -395,7 +395,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let listener = tokio::net::TcpListener::bind(&addr).await?;
         tracing::info!(
             address = %addr,
-            storage = %config.storage.path,
+            storage = %config.storage.url,
             "Orion is ready"
         );
         let drain_secs = config.server.shutdown_drain_secs;
