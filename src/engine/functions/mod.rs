@@ -3,9 +3,7 @@ pub mod http_call;
 pub mod http_common;
 pub mod publish_kafka;
 
-#[cfg(feature = "connectors-redis")]
 pub mod cache_read;
-#[cfg(feature = "connectors-redis")]
 pub mod cache_write;
 #[cfg(feature = "connectors-sql")]
 pub mod db_read;

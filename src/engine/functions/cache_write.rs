@@ -6,15 +6,14 @@ use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::functions::config::FunctionConfig;
 use dataflow_rs::engine::message::{Change, Message};
 use datalogic_rs::DataLogic;
-use redis::AsyncCommands;
 use serde_json::Value;
 
-use crate::connector::redis_pool::RedisPoolCache;
+use crate::connector::cache_backend::CachePool;
 use crate::connector::{ConnectorConfig, ConnectorRegistry};
 
-/// Workflow function handler for writing values to Redis.
+/// Workflow function handler for writing values to a cache backend.
 pub struct CacheWriteHandler {
-    pub pool_cache: Arc<RedisPoolCache>,
+    pub cache_pool: Arc<CachePool>,
     pub registry: Arc<ConnectorRegistry>,
 }
 
@@ -22,7 +21,7 @@ pub struct CacheWriteHandler {
 impl AsyncFunctionHandler for CacheWriteHandler {
     async fn execute(
         &self,
-        message: &mut Message,
+        _message: &mut Message,
         config: &FunctionConfig,
         _datalogic: Arc<DataLogic>,
     ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
@@ -60,17 +59,17 @@ impl AsyncFunctionHandler for CacheWriteHandler {
             }
         };
 
-        let mut conn = self
-            .pool_cache
-            .get_conn(connector_name, cache_config)
+        let backend = self
+            .cache_pool
+            .get_backend(connector_name, cache_config)
             .await
             .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
 
-        // Serialize the value to a string for Redis storage
+        // Serialize the value to a string for storage
         let value_str = match input.get("value") {
             Some(Value::String(s)) => s.clone(),
             Some(v) => serde_json::to_string(v).map_err(|e| {
-                DataflowError::Validation(format!("Failed to serialize value for Redis: {}", e))
+                DataflowError::Validation(format!("Failed to serialize value for cache: {}", e))
             })?,
             None => {
                 return Err(DataflowError::Validation(
@@ -83,21 +82,21 @@ impl AsyncFunctionHandler for CacheWriteHandler {
         let ttl = input.get("ttl_secs").and_then(|v| v.as_u64());
 
         if let Some(ttl) = ttl {
-            conn.set_ex::<_, _, ()>(key, &value_str, ttl)
+            backend
+                .set_ex(key, &value_str, ttl)
                 .await
-                .map_err(|e| {
-                    DataflowError::function_execution(format!("Redis SET EX failed: {}", e), None)
-                })?;
+                .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
         } else {
-            conn.set::<_, _, ()>(key, &value_str).await.map_err(|e| {
-                DataflowError::function_execution(format!("Redis SET failed: {}", e), None)
-            })?;
+            backend
+                .set(key, &value_str)
+                .await
+                .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
         }
 
         tracing::debug!(
             key = %key,
             ttl = ?ttl,
-            "Wrote value to Redis"
+            "Wrote value to cache"
         );
 
         Ok((1, vec![]))

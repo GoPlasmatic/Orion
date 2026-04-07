@@ -36,8 +36,16 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
     let workflow_repo = Arc::new(SqlWorkflowRepository::new(pool.clone()));
     let connector_repo = Arc::new(SqlConnectorRepository::new(pool.clone()));
     let trace_repo = Arc::new(SqlTraceRepository::new(pool.clone()));
+    let audit_log_repo = Arc::new(
+        orion::storage::repositories::audit_logs::SqlAuditLogRepository::new(pool.clone()),
+    );
     let connector_registry = Arc::new(ConnectorRegistry::new(Default::default()));
     let channel_registry = Arc::new(ChannelRegistry::new());
+    let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
+        #[cfg(feature = "connectors-redis")]
+        config.engine.max_pool_cache_entries,
+        60,
+    ));
 
     let http_client = reqwest::Client::new();
     let engine = Arc::new(RwLock::new(Arc::new(dataflow_rs::Engine::new(
@@ -49,6 +57,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         http_client.clone(),
         engine.clone(),
         &config.engine,
+        cache_pool.clone(),
     );
     let built_engine = dataflow_rs::Engine::new(vec![], Some(custom_functions));
     *engine.write().await = Arc::new(built_engine);
@@ -92,7 +101,9 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         workflow_repo,
         connector_repo,
         trace_repo,
+        audit_log_repo,
         connector_registry,
+        cache_pool,
         channel_registry,
         trace_queue,
         db_pool: pool,

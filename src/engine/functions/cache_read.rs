@@ -6,15 +6,14 @@ use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::functions::config::FunctionConfig;
 use dataflow_rs::engine::message::{Change, Message};
 use datalogic_rs::DataLogic;
-use redis::AsyncCommands;
 use serde_json::Value;
 
-use crate::connector::redis_pool::RedisPoolCache;
+use crate::connector::cache_backend::CachePool;
 use crate::connector::{ConnectorConfig, ConnectorRegistry};
 
-/// Workflow function handler for reading values from Redis.
+/// Workflow function handler for reading values from a cache backend.
 pub struct CacheReadHandler {
-    pub pool_cache: Arc<RedisPoolCache>,
+    pub cache_pool: Arc<CachePool>,
     pub registry: Arc<ConnectorRegistry>,
 }
 
@@ -60,15 +59,16 @@ impl AsyncFunctionHandler for CacheReadHandler {
             }
         };
 
-        let mut conn = self
-            .pool_cache
-            .get_conn(connector_name, cache_config)
+        let backend = self
+            .cache_pool
+            .get_backend(connector_name, cache_config)
             .await
             .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
 
-        let value: Option<String> = conn.get(key).await.map_err(|e| {
-            DataflowError::function_execution(format!("Redis GET failed: {}", e), None)
-        })?;
+        let value = backend
+            .get(key)
+            .await
+            .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
 
         let result = match value {
             Some(v) => {

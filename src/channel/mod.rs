@@ -97,6 +97,9 @@ pub struct ChannelCacheConfig {
     /// Fields used to compute the cache key.
     #[serde(default)]
     pub cache_key_fields: Option<Vec<String>>,
+    /// Optional cache connector name for the response cache backend.
+    #[serde(default)]
+    pub connector: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +131,11 @@ pub struct DeduplicationConfig {
     /// Time window in seconds for deduplication.
     #[serde(default)]
     pub window_secs: Option<u64>,
+    /// Optional cache connector name for the dedup backend.
+    /// When set, uses the connector's backend (redis or memory).
+    /// When absent, uses the built-in in-memory store.
+    #[serde(default)]
+    pub connector: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,8 +220,9 @@ pub struct ChannelRuntimeConfig {
     /// Per-channel concurrency limiter for backpressure.
     /// Limits max in-flight requests — returns 503 when exhausted.
     pub backpressure_semaphore: Option<Arc<Semaphore>>,
-    /// Per-channel deduplication store for idempotent request handling.
-    pub dedup_store: Option<Arc<DeduplicationStore>>,
+    /// Per-channel deduplication backend for idempotent request handling.
+    /// Can be backed by in-memory DashMap or Redis, depending on channel config.
+    pub dedup_store: Option<Arc<dyn crate::connector::cache_backend::CacheBackend>>,
 }
 
 // ============================================================
@@ -396,7 +405,12 @@ impl ChannelRegistry {
 
     /// Rebuild the registry from a list of active channels.
     /// Builds per-channel rate limiters from `config_json.rate_limit` if configured.
-    pub async fn reload(&self, channels: &[Channel]) {
+    pub async fn reload(
+        &self,
+        channels: &[Channel],
+        connector_registry: &crate::connector::ConnectorRegistry,
+        cache_pool: &crate::connector::cache_backend::CachePool,
+    ) {
         let mut new_map = HashMap::new();
         for channel in channels {
             let parsed_config: ChannelConfig =
@@ -440,10 +454,56 @@ impl ChannelRegistry {
                 .as_ref()
                 .map(|bp| Arc::new(Semaphore::new(bp.max_concurrent)));
 
-            let dedup_store = parsed_config
-                .deduplication
-                .as_ref()
-                .map(|dedup| DeduplicationStore::new(dedup.window_secs.unwrap_or(300)));
+            let dedup_store: Option<Arc<dyn crate::connector::cache_backend::CacheBackend>> =
+                if let Some(ref dedup) = parsed_config.deduplication {
+                    if let Some(ref connector_name) = dedup.connector {
+                        // Use the configured cache connector for dedup
+                        match connector_registry.get(connector_name).await {
+                            Some(cfg) => match cfg.as_ref() {
+                                crate::connector::ConnectorConfig::Cache(cache_cfg) => {
+                                    match cache_pool
+                                        .get_backend(connector_name, cache_cfg)
+                                        .await
+                                    {
+                                        Ok(backend) => Some(backend),
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                channel = %channel.name,
+                                                connector = %connector_name,
+                                                error = %e,
+                                                "Failed to create dedup backend from connector, \
+                                                 falling back to in-memory"
+                                            );
+                                            Some(cache_pool.memory())
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    tracing::warn!(
+                                        channel = %channel.name,
+                                        connector = %connector_name,
+                                        "Dedup connector is not a cache connector, \
+                                         falling back to in-memory"
+                                    );
+                                    Some(cache_pool.memory())
+                                }
+                            },
+                            None => {
+                                tracing::warn!(
+                                    channel = %channel.name,
+                                    connector = %connector_name,
+                                    "Dedup connector not found, falling back to in-memory"
+                                );
+                                Some(cache_pool.memory())
+                            }
+                        }
+                    } else {
+                        // No connector specified — use built-in in-memory
+                        Some(cache_pool.memory())
+                    }
+                } else {
+                    None
+                };
 
             let runtime = Arc::new(ChannelRuntimeConfig {
                 channel: channel.clone(),

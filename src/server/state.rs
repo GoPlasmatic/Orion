@@ -8,9 +8,11 @@ use tokio::sync::{Mutex, RwLock};
 use crate::channel::ChannelRegistry;
 use crate::config::AppConfig;
 use crate::connector::ConnectorRegistry;
+use crate::connector::cache_backend::CachePool;
 use crate::queue::TraceQueue;
 use crate::server::rate_limit::RateLimitState;
 use crate::storage::DbPool;
+use crate::storage::repositories::audit_logs::AuditLogRepository;
 use crate::storage::repositories::channels::ChannelRepository;
 use crate::storage::repositories::connectors::ConnectorRepository;
 use crate::storage::repositories::traces::TraceRepository;
@@ -24,7 +26,9 @@ pub struct AppState {
     pub workflow_repo: Arc<dyn WorkflowRepository>,
     pub connector_repo: Arc<dyn ConnectorRepository>,
     pub trace_repo: Arc<dyn TraceRepository>,
+    pub audit_log_repo: Arc<dyn AuditLogRepository>,
     pub connector_registry: Arc<ConnectorRegistry>,
+    pub cache_pool: Arc<CachePool>,
     pub channel_registry: Arc<ChannelRegistry>,
     pub trace_queue: TraceQueue,
     pub db_pool: DbPool,

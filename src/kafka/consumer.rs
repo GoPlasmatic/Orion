@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -20,6 +20,8 @@ use rdkafka::message::Headers;
 pub struct ConsumerHandle {
     shutdown_tx: watch::Sender<bool>,
     join_handle: tokio::task::JoinHandle<()>,
+    consumer: Arc<StreamConsumer>,
+    topics: HashSet<String>,
 }
 
 impl ConsumerHandle {
@@ -31,6 +33,39 @@ impl ConsumerHandle {
         if let Err(e) = self.join_handle.await {
             tracing::error!(error = %e, "Kafka consumer task panicked during shutdown");
         }
+    }
+
+    /// Pause all assigned partitions (blocks message delivery without leaving consumer group).
+    pub fn pause(&self) -> Result<(), OrionError> {
+        let assignment = self.consumer.assignment().map_err(|e| {
+            OrionError::Internal(format!("Failed to get consumer assignment: {e}"))
+        })?;
+        if assignment.count() == 0 {
+            return Ok(());
+        }
+        self.consumer.pause(&assignment).map_err(|e| {
+            OrionError::Internal(format!("Failed to pause consumer partitions: {e}"))
+        })?;
+        Ok(())
+    }
+
+    /// Resume all assigned partitions.
+    pub fn resume(&self) -> Result<(), OrionError> {
+        let assignment = self.consumer.assignment().map_err(|e| {
+            OrionError::Internal(format!("Failed to get consumer assignment: {e}"))
+        })?;
+        if assignment.count() == 0 {
+            return Ok(());
+        }
+        self.consumer.resume(&assignment).map_err(|e| {
+            OrionError::Internal(format!("Failed to resume consumer partitions: {e}"))
+        })?;
+        Ok(())
+    }
+
+    /// Get the set of topics this consumer is subscribed to.
+    pub fn topics(&self) -> &HashSet<String> {
+        &self.topics
     }
 }
 
@@ -95,9 +130,10 @@ pub fn start_consumer(
     let lag_poll_interval_secs = config.lag_poll_interval_secs;
 
     let consumer = Arc::new(consumer);
+    let topic_set: HashSet<String> = config.topics.iter().map(|t| t.topic.clone()).collect();
 
     let handle = tokio::spawn(consume_loop(
-        consumer,
+        consumer.clone(),
         topic_map,
         engine,
         dlq_producer,
@@ -111,6 +147,8 @@ pub fn start_consumer(
     Ok(ConsumerHandle {
         shutdown_tx,
         join_handle: handle,
+        consumer,
+        topics: topic_set,
     })
 }
 

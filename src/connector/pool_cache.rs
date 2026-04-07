@@ -8,23 +8,48 @@
 //! at application startup before any pool is created.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use sqlx::{AnyPool, any::AnyPoolOptions};
 use tokio::sync::RwLock;
 
 use crate::connector::DbConnectorConfig;
+use crate::connector::POOL_ACCESS_COUNTER;
 use crate::errors::OrionError;
 
+/// A cached pool with LRU tracking.
+struct PoolEntry {
+    pool: AnyPool,
+    last_access: AtomicU64,
+}
+
+impl PoolEntry {
+    fn new(pool: AnyPool) -> Self {
+        Self {
+            pool,
+            last_access: AtomicU64::new(POOL_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed)),
+        }
+    }
+
+    fn touch(&self) {
+        self.last_access
+            .store(POOL_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+    }
+}
+
 /// Lazily creates and caches SQL connection pools keyed by connector name.
+/// Bounded by `max_entries` with LRU eviction.
 pub struct SqlPoolCache {
-    pools: RwLock<HashMap<String, AnyPool>>,
+    pools: RwLock<HashMap<String, PoolEntry>>,
+    max_entries: usize,
 }
 
 impl SqlPoolCache {
-    pub fn new() -> Self {
+    pub fn new(max_entries: usize) -> Self {
         Self {
             pools: RwLock::new(HashMap::new()),
+            max_entries,
         }
     }
 
@@ -37,8 +62,9 @@ impl SqlPoolCache {
         // Fast path: read lock
         {
             let pools = self.pools.read().await;
-            if let Some(pool) = pools.get(connector_name) {
-                return Ok(pool.clone());
+            if let Some(entry) = pools.get(connector_name) {
+                entry.touch();
+                return Ok(entry.pool.clone());
             }
         }
 
@@ -59,9 +85,27 @@ impl SqlPoolCache {
         // Insert under write lock; if another task raced, use theirs
         let mut pools = self.pools.write().await;
         if let Some(existing) = pools.get(connector_name) {
-            return Ok(existing.clone());
+            existing.touch();
+            return Ok(existing.pool.clone());
         }
-        pools.insert(connector_name.to_string(), pool.clone());
+
+        // LRU eviction when at capacity
+        if pools.len() >= self.max_entries {
+            if let Some(lru_key) = pools
+                .iter()
+                .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
+                .map(|(k, _)| k.clone())
+            {
+                tracing::info!(
+                    evicted = %lru_key,
+                    cache = "sql_pool",
+                    "Pool cache at capacity, evicting least-recently-used entry"
+                );
+                pools.remove(&lru_key);
+            }
+        }
+
+        pools.insert(connector_name.to_string(), PoolEntry::new(pool.clone()));
         Ok(pool)
     }
 
@@ -73,6 +117,6 @@ impl SqlPoolCache {
 
 impl Default for SqlPoolCache {
     fn default() -> Self {
-        Self::new()
+        Self::new(100)
     }
 }

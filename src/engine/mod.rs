@@ -81,6 +81,7 @@ pub fn build_custom_functions(
     client: reqwest::Client,
     engine: Arc<tokio::sync::RwLock<Arc<dataflow_rs::Engine>>>,
     engine_config: &crate::config::EngineConfig,
+    cache_pool: Arc<crate::connector::cache_backend::CachePool>,
 ) -> HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> {
     let mut fns: HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> = HashMap::new();
 
@@ -113,7 +114,9 @@ pub fn build_custom_functions(
     // Register SQL database handlers (db_read, db_write)
     #[cfg(feature = "connectors-sql")]
     {
-        let sql_pool_cache = Arc::new(crate::connector::pool_cache::SqlPoolCache::new());
+        let sql_pool_cache = Arc::new(crate::connector::pool_cache::SqlPoolCache::new(
+            engine_config.max_pool_cache_entries,
+        ));
         fns.insert(
             "db_read".to_string(),
             Box::new(functions::db_read::DbReadHandler {
@@ -130,30 +133,29 @@ pub fn build_custom_functions(
         );
     }
 
-    // Register Redis cache handlers (cache_read, cache_write)
-    #[cfg(feature = "connectors-redis")]
-    {
-        let redis_pool_cache = Arc::new(crate::connector::redis_pool::RedisPoolCache::new());
-        fns.insert(
-            "cache_read".to_string(),
-            Box::new(functions::cache_read::CacheReadHandler {
-                pool_cache: redis_pool_cache.clone(),
-                registry: registry.clone(),
-            }),
-        );
-        fns.insert(
-            "cache_write".to_string(),
-            Box::new(functions::cache_write::CacheWriteHandler {
-                pool_cache: redis_pool_cache,
-                registry: registry.clone(),
-            }),
-        );
-    }
+    // Register cache handlers (cache_read, cache_write)
+    // Memory backend is always available; Redis backend is feature-gated inside CachePool.
+    fns.insert(
+        "cache_read".to_string(),
+        Box::new(functions::cache_read::CacheReadHandler {
+            cache_pool: cache_pool.clone(),
+            registry: registry.clone(),
+        }),
+    );
+    fns.insert(
+        "cache_write".to_string(),
+        Box::new(functions::cache_write::CacheWriteHandler {
+            cache_pool,
+            registry: registry.clone(),
+        }),
+    );
 
     // Register MongoDB handler (mongo_read)
     #[cfg(feature = "connectors-mongodb")]
     {
-        let mongo_pool_cache = Arc::new(crate::connector::mongo_pool::MongoPoolCache::new());
+        let mongo_pool_cache = Arc::new(crate::connector::mongo_pool::MongoPoolCache::new(
+            engine_config.max_pool_cache_entries,
+        ));
         fns.insert(
             "mongo_read".to_string(),
             Box::new(functions::mongo_read::MongoReadHandler {
