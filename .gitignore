@@ -22,5 +22,20 @@ target
 
 *.db*
 
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+
+# Editor swap files
+*.swp
+*.swo
+
+# TLS material (safety net)
+*.pem
+*.key
+
 # Local config
 config.toml
