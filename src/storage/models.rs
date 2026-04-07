@@ -37,6 +37,25 @@ pub const VALID_CHANNEL_STATUSES: [&str; 3] = [
     CHANNEL_STATUS_ARCHIVED,
 ];
 
+/// Parsed status-change action for type-safe exhaustive matching in handlers.
+#[derive(Debug)]
+pub enum StatusAction {
+    Activate,
+    Archive,
+}
+
+impl StatusAction {
+    pub fn parse(s: &str) -> Result<Self, OrionError> {
+        match s {
+            "active" => Ok(Self::Activate),
+            "archived" => Ok(Self::Archive),
+            other => Err(OrionError::BadRequest(format!(
+                "Invalid status transition to '{other}'. Use 'active' or 'archived'"
+            ))),
+        }
+    }
+}
+
 // -- Channel type constants --
 pub const CHANNEL_TYPE_SYNC: &str = "sync";
 pub const CHANNEL_TYPE_ASYNC: &str = "async";

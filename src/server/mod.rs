@@ -84,11 +84,21 @@ pub fn build_router(state: AppState) -> Router {
                 "message": "Internal server error"
             }
         });
+        // Avoid unwrap inside panic handler — a second panic would abort the process.
+        let json = serde_json::to_string(&body).unwrap_or_else(|_| {
+            r#"{"error":{"code":"INTERNAL_ERROR","message":"Internal server error"}}"#.to_string()
+        });
         axum::http::Response::builder()
             .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
             .header("content-type", "application/json")
-            .body(axum::body::Body::from(serde_json::to_string(&body).unwrap()))
-            .unwrap()
+            .body(axum::body::Body::from(json))
+            .unwrap_or_else(|_| {
+                // Last-resort fallback: minimal valid response
+                let mut resp =
+                    axum::http::Response::new(axum::body::Body::from("Internal server error"));
+                *resp.status_mut() = axum::http::StatusCode::INTERNAL_SERVER_ERROR;
+                resp
+            })
     }));
 
     router.with_state(state)
