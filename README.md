@@ -104,10 +104,10 @@ You described what you needed. AI wrote the logic. You pushed JSON — Orion han
 You build services in Orion with three things:
 
 ```
-┌─────────────┐       ┌─────────────┐       ┌─────────────┐
+┌─────────────┐       ┌──────────────┐       ┌─────────────┐
 │   Channel   │──────▶│  Workflow    │──────▶│  Connector  │
-│  (endpoint) │       │  (logic)    │       │  (external) │
-└─────────────┘       └─────────────┘       └─────────────┘
+│  (endpoint) │       │  (logic)     │       │  (external) │
+└─────────────┘       └──────────────┘       └─────────────┘
 ```
 
 | Primitive | What it is | Example |
@@ -195,6 +195,8 @@ Every channel gets production-grade features without writing a line of code. Con
 | **Observability** | Prometheus metrics, structured logs, distributed tracing | Always on — zero configuration |
 | **Health checks** | Component-level status with degradation detection | `GET /health` — automatic |
 | **Request IDs** | UUID propagated through the entire pipeline | `x-request-id` header — automatic |
+| **Deduplication** | Prevent duplicate processing via idempotency keys | `Idempotency-Key` header, configurable retention window |
+| **Response caching** | Cache responses for identical requests | TTL-based, configurable cache key fields |
 
 A minimal channel needs only a name and a workflow. Everything else has sensible defaults.
 
@@ -264,17 +266,17 @@ Compose services from other services. Same interface, same governance, zero netw
 | `validation` | Enforce required fields, constraints, and schema-like checks |
 | `http_call` | Invoke downstream APIs, webhooks, or services via [connectors](docs/connectors.md) |
 | `channel_call` | Invoke another channel's workflow in-process |
-| `db_read` | Execute SQL SELECT queries, return rows as JSON `*` |
-| `db_write` | Execute SQL INSERT/UPDATE/DELETE, return affected count `*` |
-| `cache_read` | Read from Redis cache `*` |
-| `cache_write` | Write to Redis cache with optional TTL `*` |
-| `mongo_read` | Query MongoDB collections, BSON-to-JSON conversion `*` |
+| `db_read` | Execute SQL SELECT queries, return rows as JSON |
+| `db_write` | Execute SQL INSERT/UPDATE/DELETE, return affected count |
+| `cache_read` | Read from in-memory or Redis cache |
+| `cache_write` | Write to cache with optional TTL |
+| `mongo_read` | Query MongoDB collections, BSON-to-JSON conversion |
 | `publish_json` | Serialize data to JSON output format |
 | `publish_xml` | Serialize data to XML output format |
 | `publish_kafka` | Publish messages to [Kafka topics](docs/kafka.md) |
 | `log` | Emit structured log entries for auditing and debugging |
 
-`*` Requires feature flag: `connectors-sql`, `connectors-redis`, or `connectors-mongodb`. Handler code is implemented; engine registration is pending.
+`db_read`/`db_write` require the `connectors-sql` feature flag. `mongo_read` requires the `connectors-mongodb` feature flag. `cache_read`/`cache_write` use in-memory cache by default; Redis-backed cache requires the `connectors-redis` feature flag.
 
 ---
 
@@ -346,12 +348,13 @@ Verify with `orion-server --version`. See [Configuration](docs/configuration.md#
 | Guide | Description |
 |-------|-------------|
 | [API Reference](docs/api-reference.md) | Channels, workflows, connectors, data, and operational endpoints |
-| [Configuration](docs/configuration.md) | Config file, env vars, database backends, deployment, and production checklist |
-| [Connectors](docs/connectors.md) | HTTP, DB, Cache, Storage, Kafka — auth, retry, and secret masking |
+| [Configuration](docs/configuration.md) | Config file, env vars, feature flags, database backends, deployment |
+| [Connectors](docs/connectors.md) | HTTP, DB, Cache, Storage, MongoDB, Kafka — auth, retry, circuit breakers |
 | [Kafka Integration](docs/kafka.md) | Topic mapping, DB-driven consumers, DLQ, and publishing |
-| [Production Features](docs/production-features.md) | Versioning, rollout, channel config, REST routing, fault tolerance |
+| [Production Features](docs/production-features.md) | Versioning, rollout, deduplication, caching, REST routing, security |
 | [Use Cases & Patterns](docs/use-cases.md) | AI prompt templates, tested examples, validation workflows, CI/CD |
-| [Observability](docs/observability.md) | Prometheus metrics, health checks, engine status, and logging |
+| [Observability](docs/observability.md) | Prometheus metrics, health checks, Kubernetes probes, tracing, logging |
+| [Horizontal Scaling](docs/horizontal-scaling.md) | Multi-instance deployment, topology control, database recommendations |
 | [CLI Tool](https://github.com/GoPlasmatic/Orion-cli) | Command-line tool for managing channels, workflows, and connectors |
 
 ## Built With

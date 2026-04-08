@@ -1,15 +1,16 @@
 # Horizontal Scaling
 
-Orion is currently designed as a **single-instance** deployment. This document describes what works, what doesn't, and recommended workarounds when running multiple instances behind a load balancer.
+Orion is designed for **single-instance simplicity** with **multi-instance capability**. This document describes what works, what doesn't, and recommended patterns when running multiple instances behind a load balancer.
 
 ## What Works Across Multiple Instances
 
 | Component | How It Works |
 |-----------|-------------|
-| **Database** | All instances share the same database (SQLite file, PostgreSQL, or MySQL). Repositories are database-backed, so CRUD operations are consistent. |
+| **Database** | All instances share the same database (PostgreSQL or MySQL recommended). Repositories are database-backed, so CRUD operations are consistent. |
 | **Kafka Consumer** | rdkafka consumer groups handle partition assignment automatically. Multiple instances with the same `group_id` will split partitions across members. |
 | **Traces** | Stored in the shared database. Trace queries return consistent results regardless of which instance wrote them. |
 | **Workflows & Channels** | Definitions live in the database. All instances load the same active set on startup/reload. |
+| **Audit Logs** | Stored in the shared database. All admin actions are recorded regardless of which instance handles the request. |
 
 ## Per-Instance State (Not Shared)
 
@@ -25,11 +26,19 @@ Rate limiters use an in-memory `DashMap` (via the `governor` crate). Each instan
 
 ### Request Deduplication
 
-Idempotency key tracking uses an in-memory `DashMap` with TTL-based expiry. Duplicate detection only works within a single instance.
+Idempotency key tracking uses an in-memory cache with TTL-based expiry. Duplicate detection only works within a single instance.
 
 **Impact:** The same idempotency key sent to two different instances will be processed twice.
 
-**Workaround:** Use sticky sessions, or implement application-level deduplication via the shared database.
+**Workaround:** Use sticky sessions, or configure a Redis-backed cache connector for the deduplication store to share state across instances.
+
+### Response Caching
+
+Response caches are in-memory by default. Each instance maintains its own cache independently.
+
+**Impact:** Cache hit rates are lower with multiple instances (each has a cold cache for requests it hasn't seen). No consistency issue — just reduced efficiency.
+
+**Workaround:** Use sticky sessions for better cache utilization, or configure Redis-backed caching via a cache connector for shared state.
 
 ### Circuit Breakers
 
@@ -37,7 +46,7 @@ Circuit breaker state is tracked per-instance in memory. If an external service 
 
 **Impact:** Degraded but not catastrophic. Each instance independently protects itself. The external service still sees reduced traffic from tripped instances.
 
-**Workaround:** Acceptable for most deployments. For stricter coordination, monitor the `/health` endpoint on each instance (it reports breaker states) and use alerting to detect split-brain scenarios.
+**Workaround:** Acceptable for most deployments. Monitor the `/health` endpoint on each instance (it reports breaker states) and use alerting to detect split-brain scenarios.
 
 ### Engine State & Reload
 
@@ -76,16 +85,21 @@ For high availability without strict global rate limiting:
 5. Script engine reload to broadcast to all instances.
 6. Divide per-channel rate limits by instance count.
 
-### Future: Redis-Backed Distributed State
+### Topology Control
 
-Orion already supports Redis as a connector type (`cache` connectors with `cache_read`/`cache_write` functions). A future enhancement could use Redis for:
+Use channel include/exclude filters to control which channels each instance loads:
 
-- Distributed rate limiting (Redis sorted sets or token buckets)
-- Shared deduplication store (Redis SET with TTL)
-- Circuit breaker state coordination
-- Engine reload pub/sub notifications
+```toml
+# Instance A: order processing
+[channels]
+include = ["orders.*", "payments.*"]
 
-This would enable true horizontal scaling without sticky sessions.
+# Instance B: analytics and reporting
+[channels]
+include = ["analytics.*", "reports.*"]
+```
+
+This enables microservice-style deployment where each instance handles a subset of channels, all sharing the same database.
 
 ## Database Backend Recommendations
 
