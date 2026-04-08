@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
 use axum::{Json, Router};
 use serde::Deserialize;
@@ -163,11 +163,10 @@ async fn dynamic_handler(
             })
             .await?;
 
-        return Ok((StatusCode::ACCEPTED, Json(json!({ "trace_id": trace.id }))));
+        return Ok((StatusCode::ACCEPTED, Json(json!({ "trace_id": trace.id }))).into_response());
     }
 
-    let result = process_sync_for_channel(&state, &channel, req.data, metadata, &headers).await?;
-    Ok((StatusCode::OK, result))
+    process_sync_for_channel(&state, &channel, req.data, metadata, &headers).await
 }
 
 /// Check per-channel CORS: reject the request if the `Origin` header is present
@@ -303,21 +302,34 @@ fn compute_cache_key(
     format!("cache:{}:{:016x}", channel, h)
 }
 
+/// Build an HTTP response from a pre-serialized JSON string, avoiding
+/// the double-serialization that `Json<Value>` would incur.
+fn json_response(status: StatusCode, body: String) -> Response {
+    axum::response::Response::builder()
+        .status(status)
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(body))
+        .expect("valid HTTP response builder with static header")
+}
+
 /// Core sync processing logic shared between simple HTTP and REST routes.
+///
+/// Returns a pre-serialized `Response` so the JSON is serialized exactly once
+/// (or zero times on cache hit).
 async fn process_sync_for_channel(
     state: &AppState,
     channel: &str,
     data: Value,
     metadata: Value,
     headers: &axum::http::HeaderMap,
-) -> Result<Json<Value>, OrionError> {
+) -> Result<Response, OrionError> {
     let channel_config = state.channel_registry.get_by_name(channel).await;
 
     check_cors_origin(channel, &channel_config, headers)?;
     validate_input(channel, &channel_config, &data, &metadata, &state.datalogic)?;
     check_deduplication(&channel_config, headers).await?;
 
-    // Response cache check — return early on cache hit
+    // Response cache check — return early on cache hit (zero serialization)
     let cache_context = if let Some(ref cfg) = channel_config
         && let Some(ref cache_cfg) = cfg.parsed_config.cache
         && cache_cfg.enabled
@@ -327,11 +339,8 @@ async fn process_sync_for_channel(
         match cache.get(&key).await {
             Ok(Some(cached)) => {
                 metrics::record_cache_hit(channel);
-                if let Ok(parsed) = serde_json::from_str::<Value>(&cached) {
-                    return Ok(Json(parsed));
-                }
-                // Cache entry was corrupt — fall through to execute
-                None
+                // Return the cached JSON string directly — no deserialization needed
+                return Ok(json_response(StatusCode::OK, cached));
             }
             _ => {
                 metrics::record_cache_miss(channel);
@@ -395,42 +404,44 @@ async fn process_sync_for_channel(
                 "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
             });
 
-            // Serialize response once — reused for size check, trace storage, and cache
-            if let Ok(response_json) = serde_json::to_string(&response) {
-                let max_result_size = state.config.queue.max_result_size_bytes;
-                if max_result_size > 0 && response_json.len() > max_result_size {
-                    metrics::record_error("result_size_exceeded");
-                    return Err(OrionError::ResponseTooLarge(format!(
-                        "Result size {} bytes exceeds limit of {} bytes",
-                        response_json.len(),
-                        max_result_size
-                    )));
-                }
+            // Serialize response exactly once — reused for size check, trace storage,
+            // cache, and the HTTP response body (no re-serialization by Axum).
+            let response_json = serde_json::to_string(&response)
+                .map_err(|e| OrionError::Internal(format!("Failed to serialize response: {e}")))?;
 
-                let input_json = serde_json::to_string(&data).ok();
-                if let Err(e) = state
-                    .trace_repo
-                    .store_completed(
-                        channel,
-                        "sync",
-                        input_json.as_deref(),
-                        &response_json,
-                        duration_ms,
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, "Failed to store sync processing result");
-                }
-
-                // Fire-and-forget cache store
-                if let Some((ref key, ref cache, ttl)) = cache_context
-                    && let Err(e) = cache.set_ex(key, &response_json, ttl).await
-                {
-                    tracing::debug!(channel = channel, error = %e, "Failed to cache response");
-                }
+            let max_result_size = state.config.queue.max_result_size_bytes;
+            if max_result_size > 0 && response_json.len() > max_result_size {
+                metrics::record_error("result_size_exceeded");
+                return Err(OrionError::ResponseTooLarge(format!(
+                    "Result size {} bytes exceeds limit of {} bytes",
+                    response_json.len(),
+                    max_result_size
+                )));
             }
 
-            Ok(Json(response))
+            let input_json = serde_json::to_string(&data).ok();
+            if let Err(e) = state
+                .trace_repo
+                .store_completed(
+                    channel,
+                    "sync",
+                    input_json.as_deref(),
+                    &response_json,
+                    duration_ms,
+                )
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to store sync processing result");
+            }
+
+            // Fire-and-forget cache store
+            if let Some((ref key, ref cache, ttl)) = cache_context
+                && let Err(e) = cache.set_ex(key, &response_json, ttl).await
+            {
+                tracing::debug!(channel = channel, error = %e, "Failed to cache response");
+            }
+
+            Ok(json_response(StatusCode::OK, response_json))
         }
         Err(e) => {
             remove_rollout_bucket(&mut message);

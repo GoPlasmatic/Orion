@@ -54,7 +54,11 @@ fn match_segments(
     if segments.len() != path_parts.len() {
         return None;
     }
-    let mut params = HashMap::new();
+    let param_count = segments
+        .iter()
+        .filter(|s| matches!(s, RouteSegment::Param(_)))
+        .count();
+    let mut params = HashMap::with_capacity(param_count);
     for (seg, part) in segments.iter().zip(path_parts.iter()) {
         match seg {
             RouteSegment::Static(expected) => {
@@ -126,11 +130,12 @@ impl RouteTable {
     /// Path should NOT include the `/api/v1/data/` prefix.
     pub fn match_route(&self, method: &str, path: &str) -> Option<RouteMatch> {
         let path_parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        let method_upper = method.to_uppercase();
 
         for entry in &self.entries {
             // Check method match (empty methods = accept any)
-            if !entry.methods.is_empty() && !entry.methods.contains(&method_upper) {
+            if !entry.methods.is_empty()
+                && !entry.methods.iter().any(|m| m.eq_ignore_ascii_case(method))
+            {
                 continue;
             }
             if let Some(params) = match_segments(&entry.segments, &path_parts) {

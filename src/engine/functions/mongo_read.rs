@@ -57,11 +57,15 @@ impl AsyncFunctionHandler for MongoReadHandler {
         let cursor = coll.find(filter_doc).await.map_err(to_exec_error)?;
         let docs: Vec<Document> = cursor.try_collect().await.map_err(to_exec_error)?;
 
-        // Convert BSON documents to JSON
+        // Convert BSON documents directly to JSON values, skipping the
+        // intermediate Bson representation that the old two-step conversion used.
         let result: Vec<Value> = docs
             .iter()
-            .filter_map(|doc| bson::to_bson(doc).ok())
-            .filter_map(|bson_val| serde_json::to_value(&bson_val).ok())
+            .filter_map(|doc| {
+                // bson::to_bson(Document) always returns Bson::Document, so we
+                // can serialize the Document directly to serde_json::Value.
+                serde_json::to_value(doc).ok()
+            })
             .collect();
 
         let output_path = extract_output_path(input);

@@ -626,15 +626,53 @@ async fn serve_plain_http(
     drain_secs: u64,
     router: axum::Router,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
-        orion::errors::OrionError::InternalSource {
+    // Create a TCP socket with TCP_NODELAY enabled to avoid Nagle's algorithm
+    // latency (up to 40ms per small response).
+    let socket = socket2::Socket::new(
+        if addr.contains(':') && !addr.starts_with('[') {
+            socket2::Domain::IPV4
+        } else {
+            socket2::Domain::IPV6
+        },
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )
+    .map_err(|e| orion::errors::OrionError::InternalSource {
+        context: format!("Failed to create socket for {addr}"),
+        source: Box::new(e),
+    })?;
+    socket.set_nodelay(true).ok();
+    socket.set_reuse_address(true).ok();
+    socket
+        .bind(
+            &addr
+                .parse::<std::net::SocketAddr>()
+                .map_err(|e| {
+                    orion::errors::OrionError::Internal(format!("Invalid address '{addr}': {e}"))
+                })?
+                .into(),
+        )
+        .map_err(|e| orion::errors::OrionError::InternalSource {
             context: format!("Failed to bind to {addr}"),
+            source: Box::new(e),
+        })?;
+    socket
+        .listen(1024)
+        .map_err(|e| orion::errors::OrionError::InternalSource {
+            context: format!("Failed to listen on {addr}"),
+            source: Box::new(e),
+        })?;
+    socket.set_nonblocking(true).ok();
+    let listener = tokio::net::TcpListener::from_std(socket.into()).map_err(|e| {
+        orion::errors::OrionError::InternalSource {
+            context: format!("Failed to create async listener for {addr}"),
             source: Box::new(e),
         }
     })?;
     tracing::info!(
         address = %addr,
         storage = %storage_url,
+        tcp_nodelay = true,
         "Orion is ready"
     );
     axum::serve(listener, router)

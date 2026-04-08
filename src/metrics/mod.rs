@@ -20,7 +20,7 @@ pub fn init_metrics() -> PrometheusHandle {
 
 /// Increment the messages_total counter.
 pub fn record_message(channel: &str, status: &'static str) {
-    counter!("messages_total", "channel" => channel.to_string(), "status" => status).increment(1);
+    counter!("messages_total", "channel" => channel.to_owned(), "status" => status).increment(1);
 }
 
 /// Increment the errors_total counter.
@@ -34,7 +34,7 @@ pub fn record_error(error_type: &'static str) {
 
 /// Record message processing duration.
 pub fn record_message_duration(channel: &str, duration_secs: f64) {
-    histogram!("message_duration_seconds", "channel" => channel.to_string()).record(duration_secs);
+    histogram!("message_duration_seconds", "channel" => channel.to_owned()).record(duration_secs);
 }
 
 // ---------------------------------------------------------------------------
@@ -45,8 +45,8 @@ pub fn record_message_duration(channel: &str, duration_secs: f64) {
 pub fn record_circuit_breaker_trip(connector: &str, channel: &str) {
     counter!(
         "circuit_breaker_trips_total",
-        "connector" => connector.to_string(),
-        "channel" => channel.to_string()
+        "connector" => connector.to_owned(),
+        "channel" => channel.to_owned()
     )
     .increment(1);
 }
@@ -55,8 +55,8 @@ pub fn record_circuit_breaker_trip(connector: &str, channel: &str) {
 pub fn record_circuit_breaker_rejection(connector: &str, channel: &str) {
     counter!(
         "circuit_breaker_rejections_total",
-        "connector" => connector.to_string(),
-        "channel" => channel.to_string()
+        "connector" => connector.to_owned(),
+        "channel" => channel.to_owned()
     )
     .increment(1);
 }
@@ -72,11 +72,9 @@ pub fn set_active_workflows(count: f64) {
 
 /// Record HTTP request count and duration in a single call.
 ///
-/// Converts label values once and reuses them for both the counter and histogram,
-/// avoiding redundant allocations.
-pub fn record_http_request(method: &str, path: &str, status: u16, duration_secs: f64) {
-    let method = method.to_string();
-    let path = path.to_string();
+/// Accepts owned `String` labels so callers can pass values they already
+/// allocated without a redundant re-allocation.
+pub fn record_http_request(method: String, path: String, status: u16, duration_secs: f64) {
     let status = status.to_string();
     counter!(
         "http_requests_total",
@@ -127,22 +125,22 @@ pub fn record_engine_reload(status: &'static str) {
 
 /// Record a channel execution.
 pub fn record_channel_execution(channel: &str) {
-    counter!("channel_executions_total", "channel" => channel.to_string()).increment(1);
+    counter!("channel_executions_total", "channel" => channel.to_owned()).increment(1);
 }
 
 /// Record a rate-limit rejection.
 pub fn record_rate_limit_rejected(client: &str) {
-    counter!("rate_limit_rejections_total", "client" => client.to_string()).increment(1);
+    counter!("rate_limit_rejections_total", "client" => client.to_owned()).increment(1);
 }
 
 /// Record a response cache hit.
 pub fn record_cache_hit(channel: &str) {
-    counter!("response_cache_hits_total", "channel" => channel.to_string()).increment(1);
+    counter!("response_cache_hits_total", "channel" => channel.to_owned()).increment(1);
 }
 
 /// Record a response cache miss.
 pub fn record_cache_miss(channel: &str) {
-    counter!("response_cache_misses_total", "channel" => channel.to_string()).increment(1);
+    counter!("response_cache_misses_total", "channel" => channel.to_owned()).increment(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -177,8 +175,8 @@ pub fn set_trace_queue_memory_bytes(bytes: f64) {
 pub fn record_connector_request(connector: &str, channel: &str, status: &'static str) {
     counter!(
         "connector_requests_total",
-        "connector" => connector.to_string(),
-        "channel" => channel.to_string(),
+        "connector" => connector.to_owned(),
+        "channel" => channel.to_owned(),
         "status" => status
     )
     .increment(1);
@@ -188,8 +186,8 @@ pub fn record_connector_request(connector: &str, channel: &str, status: &'static
 pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: f64) {
     histogram!(
         "connector_request_duration_seconds",
-        "connector" => connector.to_string(),
-        "channel" => channel.to_string()
+        "connector" => connector.to_owned(),
+        "channel" => channel.to_owned()
     )
     .record(duration_secs);
 }
@@ -202,7 +200,7 @@ pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: 
 pub fn set_kafka_consumer_lag(topic: &str, partition: i32, lag: f64) {
     gauge!(
         "kafka_consumer_lag",
-        "topic" => topic.to_string(),
+        "topic" => topic.to_owned(),
         "partition" => partition.to_string()
     )
     .set(lag);
@@ -226,8 +224,8 @@ pub fn set_db_pool_idle(idle: f64) {
 pub fn record_admin_audit(action: &str, resource_type: &str) {
     counter!(
         "admin_audit_events_total",
-        "action" => action.to_string(),
-        "resource_type" => resource_type.to_string()
+        "action" => action.to_owned(),
+        "resource_type" => resource_type.to_owned()
     )
     .increment(1);
 }
@@ -283,8 +281,8 @@ mod tests {
     #[test]
     fn test_record_http_request() {
         ensure_recorder();
-        record_http_request("GET", "/health", 200, 0.005);
-        record_http_request("POST", "/api/v1/data/orders", 201, 0.010);
+        record_http_request("GET".into(), "/health".into(), 200, 0.005);
+        record_http_request("POST".into(), "/api/v1/data/orders".into(), 201, 0.010);
     }
 
     #[test]

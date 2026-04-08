@@ -110,7 +110,7 @@ pub fn bind_json_params<'q>(
 ) -> sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>> {
     for param in params {
         query = match param {
-            Value::String(s) => query.bind(s.clone()),
+            Value::String(s) => query.bind(s.as_str()),
             Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     query.bind(i)
