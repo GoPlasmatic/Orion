@@ -20,7 +20,30 @@ use orion::storage::repositories::workflows::{SqlWorkflowRepository, WorkflowRep
 #[command(
     name = "orion",
     version,
-    about = "Orion — Declarative Services Runtime"
+    long_version = concat!(
+        env!("CARGO_PKG_VERSION"),
+        "\ngit hash:  ", env!("GIT_HASH"),
+        "\nbuilt:     ", env!("BUILD_TIMESTAMP"),
+    ),
+    about = "Orion — Declarative Services Runtime",
+    long_about = "Orion — Declarative Services Runtime\n\n\
+        A workflow engine that processes data through configurable channels \
+        and workflows. Supports REST, HTTP, Kafka, and async processing modes.\n\
+        Ships as a single binary with an embedded SQLite database.",
+    after_help = "\
+EXAMPLES:\n    \
+    orion                              Start with default config\n    \
+    orion -c config.toml               Start with a config file\n    \
+    orion validate-config              Validate config and show summary\n    \
+    orion -c config.toml migrate       Run pending database migrations\n    \
+    orion migrate --dry-run            Preview pending migrations\n\n\
+ENVIRONMENT VARIABLES:\n    \
+    All settings can be overridden via ORION_SECTION__KEY env vars:\n\n    \
+    ORION_SERVER__PORT=9090            Override server port\n    \
+    ORION_STORAGE__URL=sqlite:app.db   Override database URL\n    \
+    ORION_LOGGING__LEVEL=debug         Override log level\n    \
+    ORION_ENV=production               Set deployment environment\n\n    \
+    See config.toml.example for all available settings."
 )]
 struct Cli {
     /// Path to TOML configuration file
@@ -60,23 +83,93 @@ fn init_fmt_subscriber(level: &str, format: &LogFormat) {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    if let Err(err) = run().await {
+        eprintln!("Error: {err}");
+        let mut source = std::error::Error::source(&*err);
+        while let Some(cause) = source {
+            eprintln!("  Caused by: {cause}");
+            source = std::error::Error::source(cause);
+        }
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Load configuration
     let config = config::load_config(cli.config.as_deref())?;
 
+    if cli.config.is_none() {
+        eprintln!(
+            "Note: no config file specified (-c <path>). Using defaults + ORION_* env overrides."
+        );
+    }
+
     // Handle subcommands that exit early (before starting the server)
     match cli.command {
         Some(Command::ValidateConfig) => {
-            println!("Configuration is valid.");
+            println!("Configuration is valid.\n");
             println!("  environment:     {}", config.environment);
             println!("  server:          {}:{}", config.server.host, config.server.port);
+            println!("  tls:             {}", if config.server.tls.enabled {
+                format!("enabled (cert={})", config.server.tls.cert_path)
+            } else {
+                "disabled".to_string()
+            });
             println!("  storage:         {}", config.storage.url);
+            println!("  logging:         level={}, format={}", config.logging.level, match config.logging.format {
+                config::LogFormat::Json => "json",
+                config::LogFormat::Pretty => "pretty",
+            });
             println!("  admin_auth:      {}", if config.admin_auth.enabled { "enabled" } else { "disabled" });
-            println!("  rate_limiting:   {}", if config.rate_limit.enabled { "enabled" } else { "disabled" });
+            println!("  cors:            {}", config.cors.allowed_origins.join(", "));
+            println!("  rate_limiting:   {}", if config.rate_limit.enabled {
+                format!("enabled (rps={}, burst={})", config.rate_limit.default_rps, config.rate_limit.default_burst)
+            } else {
+                "disabled".to_string()
+            });
+            println!("  queue:           workers={}, buffer={}", config.queue.workers, config.queue.buffer_size);
             println!("  metrics:         {}", if config.metrics.enabled { "enabled" } else { "disabled" });
-            println!("  tracing:         {}", if config.tracing.enabled { "enabled" } else { "disabled" });
+            println!("  tracing:         {}", if config.tracing.enabled {
+                format!("enabled (endpoint={})", config.tracing.otlp_endpoint)
+            } else {
+                "disabled".to_string()
+            });
+            #[cfg(feature = "kafka")]
+            println!("  kafka:           {}", if config.kafka.enabled {
+                format!("enabled (brokers={})", config.kafka.brokers.join(","))
+            } else {
+                "disabled".to_string()
+            });
+            let features: &[&str] = &[
+                #[cfg(feature = "db-sqlite")]
+                "db-sqlite",
+                #[cfg(feature = "db-postgres")]
+                "db-postgres",
+                #[cfg(feature = "db-mysql")]
+                "db-mysql",
+                #[cfg(feature = "kafka")]
+                "kafka",
+                #[cfg(feature = "tls")]
+                "tls",
+                #[cfg(feature = "otel")]
+                "otel",
+                #[cfg(feature = "swagger-ui")]
+                "swagger-ui",
+                #[cfg(feature = "connectors-sql")]
+                "connectors-sql",
+                #[cfg(feature = "connectors-mongodb")]
+                "connectors-mongodb",
+                #[cfg(feature = "connectors-redis")]
+                "connectors-redis",
+            ];
+            if features.is_empty() {
+                println!("  features:        none");
+            } else {
+                println!("  features:        {}", features.join(", "));
+            }
             return Ok(());
         }
         Some(Command::Migrate { dry_run }) => {
@@ -559,7 +652,12 @@ async fn serve_plain_http(
     drain_secs: u64,
     router: axum::Router,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
+        orion::errors::OrionError::InternalSource {
+            context: format!("Failed to bind to {addr}"),
+            source: Box::new(e),
+        }
+    })?;
     tracing::info!(
         address = %addr,
         storage = %storage_url,
