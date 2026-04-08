@@ -146,7 +146,6 @@ async fn dynamic_handler(
             .await?;
         let trace_id = trace.id.clone();
 
-        #[cfg(feature = "otel")]
         let trace_headers = {
             let mut h = std::collections::HashMap::new();
             crate::server::trace_context::inject_trace_context(&mut h);
@@ -160,7 +159,6 @@ async fn dynamic_handler(
                 channel,
                 payload: req.data,
                 metadata,
-                #[cfg(feature = "otel")]
                 trace_headers,
             })
             .await?;
@@ -351,7 +349,9 @@ async fn process_sync_for_channel(
     merge_metadata(&mut message, &metadata);
     inject_rollout_bucket(&mut message);
 
-    let timeout_ms = channel_config.as_ref().and_then(|c| c.parsed_config.timeout_ms);
+    let timeout_ms = channel_config
+        .as_ref()
+        .and_then(|c| c.parsed_config.timeout_ms);
 
     let result = if let Some(ms) = timeout_ms {
         match tokio::time::timeout(
@@ -421,12 +421,11 @@ async fn process_sync_for_channel(
             });
 
             // Fire-and-forget cache store
-            if let Some((ref key, ref cache, ttl)) = cache_context {
-                if let Ok(serialized) = serde_json::to_string(&response) {
-                    if let Err(e) = cache.set_ex(key, &serialized, ttl).await {
-                        tracing::debug!(channel = channel, error = %e, "Failed to cache response");
-                    }
-                }
+            if let Some((ref key, ref cache, ttl)) = cache_context
+                && let Ok(serialized) = serde_json::to_string(&response)
+                && let Err(e) = cache.set_ex(key, &serialized, ttl).await
+            {
+                tracing::debug!(channel = channel, error = %e, "Failed to cache response");
             }
 
             Ok(Json(response))

@@ -88,7 +88,7 @@ readinessProbe:
 
 ## Distributed Tracing
 
-Enable OpenTelemetry trace export (requires the `otel` feature flag):
+Enable OpenTelemetry trace export:
 
 ```toml
 [tracing]
@@ -111,7 +111,7 @@ Features:
 - Tracing spans for request lifecycle
 - Request ID propagation via `x-request-id` header
 - Per-crate filtering with `RUST_LOG` (e.g., `RUST_LOG=orion=debug,tower_http=info`)
-- Optional OpenTelemetry trace export via the `otel` feature flag
+- Optional OpenTelemetry trace export (enable with `tracing.enabled = true`)
 
 ### Log Levels
 

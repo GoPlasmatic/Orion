@@ -6,11 +6,8 @@ pub mod publish_kafka;
 
 pub mod cache_read;
 pub mod cache_write;
-#[cfg(feature = "connectors-sql")]
 pub mod db_read;
-#[cfg(feature = "connectors-sql")]
 pub mod db_write;
-#[cfg(feature = "connectors-mongodb")]
 pub mod mongo_read;
 
 use std::future::Future;

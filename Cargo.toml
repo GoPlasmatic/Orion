@@ -18,9 +18,9 @@ path = "src/lib.rs"
 [dependencies]
 dataflow-rs = "2.1.1"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
-sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono"] }
+sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header", "catch-panic", "compression-gzip", "compression-br", "set-header"] }
 toml = { version = "0.8", default-features = false, features = ["parse"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -42,39 +42,23 @@ rand = { version = "0.8", default-features = false, features = ["std", "std_rng"
 governor = { version = "0.8", default-features = false, features = ["dashmap", "std"] }
 dashmap = "6"
 tower = { version = "0.5", default-features = false, features = ["util"] }
-rdkafka = { version = "0.36", features = ["cmake-build"], optional = true }
+rdkafka = { version = "0.36", features = ["cmake-build"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
-utoipa-swagger-ui = { version = "9", features = ["axum"], optional = true }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
-# External DB connectors (sqlx Any driver for runtime backend selection)
-# mongodb and redis are optional NoSQL connector drivers
-mongodb = { version = "3", optional = true }
-redis = { version = "0.27", default-features = false, features = ["tokio-comp", "aio"], optional = true }
-futures = { version = "0.3", default-features = false, features = ["alloc"], optional = true }
+# External DB connectors
+mongodb = "3"
+redis = { version = "0.27", default-features = false, features = ["tokio-comp", "aio"] }
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
-# TLS support (gated behind `tls` feature)
-axum-server = { version = "0.7", features = ["tls-rustls"], optional = true }
+# TLS support
+axum-server = { version = "0.7", features = ["tls-rustls"] }
 
-# OpenTelemetry (gated behind `otel` feature)
-opentelemetry = { version = "0.28", default-features = false, features = ["trace"], optional = true }
-opentelemetry_sdk = { version = "0.28", default-features = false, features = ["rt-tokio", "trace"], optional = true }
-opentelemetry-otlp = { version = "0.28", default-features = false, features = ["grpc-tonic", "trace"], optional = true }
-tracing-opentelemetry = { version = "0.29", default-features = false, optional = true }
-
-[features]
-default = ["swagger-ui", "otel", "kafka", "db-sqlite"]
-swagger-ui = ["utoipa-swagger-ui"]
-kafka = ["rdkafka"]
-tls = ["dep:axum-server"]
-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
-# Internal storage backend (pick one at compile time)
-db-sqlite = ["sqlx/sqlite", "sea-query-binder/sqlx-sqlite"]
-db-postgres = ["sqlx/postgres", "sea-query-binder/sqlx-postgres"]
-db-mysql = ["sqlx/mysql", "sea-query-binder/sqlx-mysql"]
-# External connector drivers
-connectors-sql = ["sqlx/any", "sqlx/sqlite", "sqlx/postgres", "sqlx/mysql"]
-connectors-mongodb = ["dep:mongodb", "dep:futures"]
-connectors-redis = ["dep:redis"]
+# OpenTelemetry
+opentelemetry = { version = "0.28", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.28", default-features = false, features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["grpc-tonic", "trace"] }
+tracing-opentelemetry = { version = "0.29", default-features = false }
 
 [profile.release]
 strip = true

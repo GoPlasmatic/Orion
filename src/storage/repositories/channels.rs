@@ -1,14 +1,13 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
 use sea_query::{Asterisk, Condition, Expr, Func, Order, Query};
-use sea_query_binder::SqlxBinder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::errors::OrionError;
 use crate::storage::models::{Channel, EntityStatus};
 use crate::storage::{
-    query_builder,
+    build_sqlx,
     schema::{Channels, CurrentChannels},
 };
 
@@ -164,45 +163,46 @@ impl ChannelRepository for SqlChannelRepository {
             let consumer_group_val = optional_string_value(req.consumer_group.as_deref());
             let workflow_id_val = optional_string_value(req.workflow_id.as_deref());
 
-            let (sql, values) = Query::insert()
-                .into_table(Channels::Table)
-                .columns([
-                    Channels::ChannelId,
-                    Channels::Version,
-                    Channels::Name,
-                    Channels::Description,
-                    Channels::ChannelType,
-                    Channels::Protocol,
-                    Channels::Methods,
-                    Channels::RoutePattern,
-                    Channels::Topic,
-                    Channels::ConsumerGroup,
-                    Channels::TransportConfigJson,
-                    Channels::WorkflowId,
-                    Channels::ConfigJson,
-                    Channels::Status,
-                    Channels::Priority,
-                ])
-                .values_panic([
-                    Expr::val(channel_id.as_str()).into(),
-                    Expr::val(1i64).into(),
-                    Expr::val(req.name.as_str()).into(),
-                    Expr::val(description_val).into(),
-                    Expr::val(req.channel_type.as_str()).into(),
-                    Expr::val(req.protocol.as_str()).into(),
-                    Expr::val(methods_val).into(),
-                    Expr::val(route_pattern_val).into(),
-                    Expr::val(topic_val).into(),
-                    Expr::val(consumer_group_val).into(),
-                    Expr::val(transport_config_json.as_str()).into(),
-                    Expr::val(workflow_id_val).into(),
-                    Expr::val(config_json.as_str()).into(),
-                    Expr::val(EntityStatus::Draft.as_str()).into(),
-                    Expr::val(req.priority).into(),
-                ])
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::insert()
+                    .into_table(Channels::Table)
+                    .columns([
+                        Channels::ChannelId,
+                        Channels::Version,
+                        Channels::Name,
+                        Channels::Description,
+                        Channels::ChannelType,
+                        Channels::Protocol,
+                        Channels::Methods,
+                        Channels::RoutePattern,
+                        Channels::Topic,
+                        Channels::ConsumerGroup,
+                        Channels::TransportConfigJson,
+                        Channels::WorkflowId,
+                        Channels::ConfigJson,
+                        Channels::Status,
+                        Channels::Priority,
+                    ])
+                    .values_panic([
+                        Expr::val(channel_id.as_str()).into(),
+                        Expr::val(1i64).into(),
+                        Expr::val(req.name.as_str()).into(),
+                        Expr::val(description_val).into(),
+                        Expr::val(req.channel_type.as_str()).into(),
+                        Expr::val(req.protocol.as_str()).into(),
+                        Expr::val(methods_val).into(),
+                        Expr::val(route_pattern_val).into(),
+                        Expr::val(topic_val).into(),
+                        Expr::val(consumer_group_val).into(),
+                        Expr::val(transport_config_json.as_str()).into(),
+                        Expr::val(workflow_id_val).into(),
+                        Expr::val(config_json.as_str()).into(),
+                        Expr::val(EntityStatus::Draft.as_str()).into(),
+                        Expr::val(req.priority).into(),
+                    ]),
+            );
 
-            sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            self.pool.execute_query(&sql, values).await?;
 
             self.get_version(&channel_id, 1).await
         })
@@ -211,16 +211,17 @@ impl ChannelRepository for SqlChannelRepository {
 
     async fn get_by_id(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.get_by_id", async {
-            let (sql, values) = Query::select()
-                .column(Asterisk)
-                .from(Channels::Table)
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .order_by(Channels::Version, Order::Desc)
-                .limit(1)
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Channels::Table)
+                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                    .order_by(Channels::Version, Order::Desc)
+                    .limit(1),
+            );
 
-            sqlx::query_as_with::<_, Channel, _>(&sql, values)
-                .fetch_optional(&self.pool)
+            self.pool
+                .fetch_optional_as::<Channel>(&sql, values)
                 .await?
                 .ok_or_else(|| OrionError::NotFound(format!("Channel '{}' not found", channel_id)))
         })
@@ -228,15 +229,16 @@ impl ChannelRepository for SqlChannelRepository {
     }
 
     async fn get_version(&self, channel_id: &str, version: i64) -> Result<Channel, OrionError> {
-        let (sql, values) = Query::select()
-            .column(Asterisk)
-            .from(Channels::Table)
-            .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-            .and_where(Expr::col(Channels::Version).eq(version))
-            .build_sqlx(query_builder());
+        let (sql, values) = build_sqlx(
+            Query::select()
+                .column(Asterisk)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Version).eq(version)),
+        );
 
-        sqlx::query_as_with::<_, Channel, _>(&sql, values)
-            .fetch_optional(&self.pool)
+        self.pool
+            .fetch_optional_as::<Channel>(&sql, values)
             .await?
             .ok_or_else(|| {
                 OrionError::NotFound(format!(
@@ -254,14 +256,16 @@ impl ChannelRepository for SqlChannelRepository {
             let cond = build_condition(filter);
             let (limit, offset) = clamp_pagination(filter.limit, filter.offset);
 
-            let (count_sql, count_values) = Query::select()
-                .expr(Func::count(Expr::col(Asterisk)))
-                .from(CurrentChannels::Table)
-                .cond_where(cond.clone())
-                .build_sqlx(query_builder());
+            let (count_sql, count_values) = build_sqlx(
+                Query::select()
+                    .expr(Func::count(Expr::col(Asterisk)))
+                    .from(CurrentChannels::Table)
+                    .cond_where(cond.clone()),
+            );
 
-            let (total,): (i64,) = sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
-                .fetch_one(&self.pool)
+            let (total,): (i64,) = self
+                .pool
+                .fetch_one_as::<(i64,)>(&count_sql, count_values)
                 .await?;
 
             // Sort column mapping
@@ -276,18 +280,17 @@ impl ChannelRepository for SqlChannelRepository {
             };
             let order = parse_sort_order(filter.sort_order.as_deref());
 
-            let (sql, values) = Query::select()
-                .column(Asterisk)
-                .from(CurrentChannels::Table)
-                .cond_where(cond)
-                .order_by(sort_iden, order)
-                .limit(limit as u64)
-                .offset(offset as u64)
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(CurrentChannels::Table)
+                    .cond_where(cond)
+                    .order_by(sort_iden, order)
+                    .limit(limit as u64)
+                    .offset(offset as u64),
+            );
 
-            let data = sqlx::query_as_with::<_, Channel, _>(&sql, values)
-                .fetch_all(&self.pool)
-                .await?;
+            let data = self.pool.fetch_all_as::<Channel>(&sql, values).await?;
 
             Ok(PaginatedResult {
                 data,
@@ -305,15 +308,17 @@ impl ChannelRepository for SqlChannelRepository {
         req: &UpdateChannelRequest,
     ) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.update_draft", async {
-            let (draft_sql, draft_values) = Query::select()
-                .column(Asterisk)
-                .from(Channels::Table)
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
-                .build_sqlx(query_builder());
+            let (draft_sql, draft_values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Channels::Table)
+                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str())),
+            );
 
-            let existing = sqlx::query_as_with::<_, Channel, _>(&draft_sql, draft_values)
-                .fetch_optional(&self.pool)
+            let existing = self
+                .pool
+                .fetch_optional_as::<Channel>(&draft_sql, draft_values)
                 .await?
                 .ok_or_else(|| {
                     OrionError::BadRequest(format!(
@@ -362,26 +367,27 @@ impl ChannelRepository for SqlChannelRepository {
             let consumer_group_val = optional_string_value(consumer_group);
             let workflow_id_val = optional_string_value(workflow_id);
 
-            let (sql, values) = Query::update()
-                .table(Channels::Table)
-                .value(Channels::Name, name)
-                .value(Channels::Description, description_val)
-                .value(Channels::Methods, methods_val)
-                .value(Channels::RoutePattern, route_pattern_val)
-                .value(Channels::Topic, topic_val)
-                .value(Channels::ConsumerGroup, consumer_group_val)
-                .value(
-                    Channels::TransportConfigJson,
-                    transport_config_json.as_str(),
-                )
-                .value(Channels::WorkflowId, workflow_id_val)
-                .value(Channels::ConfigJson, config_json.as_str())
-                .value(Channels::Priority, priority)
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::update()
+                    .table(Channels::Table)
+                    .value(Channels::Name, name)
+                    .value(Channels::Description, description_val)
+                    .value(Channels::Methods, methods_val)
+                    .value(Channels::RoutePattern, route_pattern_val)
+                    .value(Channels::Topic, topic_val)
+                    .value(Channels::ConsumerGroup, consumer_group_val)
+                    .value(
+                        Channels::TransportConfigJson,
+                        transport_config_json.as_str(),
+                    )
+                    .value(Channels::WorkflowId, workflow_id_val)
+                    .value(Channels::ConfigJson, config_json.as_str())
+                    .value(Channels::Priority, priority)
+                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str())),
+            );
 
-            sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            self.pool.execute_query(&sql, values).await?;
 
             self.get_version(channel_id, existing.version).await
         })
@@ -390,14 +396,15 @@ impl ChannelRepository for SqlChannelRepository {
 
     async fn delete(&self, channel_id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("channels.delete", async {
-            let (sql, values) = Query::delete()
-                .from_table(Channels::Table)
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::delete()
+                    .from_table(Channels::Table)
+                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id)),
+            );
 
-            let result = sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            let rows_affected = self.pool.execute_query(&sql, values).await?;
 
-            if result.rows_affected() == 0 {
+            if rows_affected == 0 {
                 return Err(OrionError::NotFound(format!(
                     "Channel '{}' not found",
                     channel_id
@@ -411,34 +418,34 @@ impl ChannelRepository for SqlChannelRepository {
 
     async fn list_active(&self) -> Result<Vec<Channel>, OrionError> {
         crate::metrics::timed_db_op("channels.list_active", async {
-            let (sql, values) = Query::select()
-                .column(Asterisk)
-                .from(Channels::Table)
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
-                .order_by(Channels::Priority, Order::Desc)
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Channels::Table)
+                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
+                    .order_by(Channels::Priority, Order::Desc),
+            );
 
-            Ok(sqlx::query_as_with::<_, Channel, _>(&sql, values)
-                .fetch_all(&self.pool)
-                .await?)
+            Ok(self.pool.fetch_all_as::<Channel>(&sql, values).await?)
         })
         .await
     }
 
     async fn activate(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.activate", async {
-            let mut tx = self.pool.begin().await?;
+            let mut tx = self.pool.begin_tx().await?;
 
             // Find the draft version
-            let (draft_sql, draft_values) = Query::select()
-                .column(Asterisk)
-                .from(Channels::Table)
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
-                .build_sqlx(query_builder());
+            let (draft_sql, draft_values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Channels::Table)
+                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str())),
+            );
 
-            let draft = sqlx::query_as_with::<_, Channel, _>(&draft_sql, draft_values)
-                .fetch_optional(&mut *tx)
+            let draft = tx
+                .fetch_optional_as::<Channel>(&draft_sql, draft_values)
                 .await?
                 .ok_or_else(|| {
                     OrionError::BadRequest(format!(
@@ -448,28 +455,26 @@ impl ChannelRepository for SqlChannelRepository {
                 })?;
 
             // Archive current active versions
-            let (archive_sql, archive_values) = Query::update()
-                .table(Channels::Table)
-                .value(Channels::Status, EntityStatus::Archived.as_str())
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
-                .build_sqlx(query_builder());
+            let (archive_sql, archive_values) = build_sqlx(
+                Query::update()
+                    .table(Channels::Table)
+                    .value(Channels::Status, EntityStatus::Archived.as_str())
+                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str())),
+            );
 
-            sqlx::query_with(&archive_sql, archive_values)
-                .execute(&mut *tx)
-                .await?;
+            tx.execute_query(&archive_sql, archive_values).await?;
 
             // Activate the draft
-            let (activate_sql, activate_values) = Query::update()
-                .table(Channels::Table)
-                .value(Channels::Status, EntityStatus::Active.as_str())
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Version).eq(draft.version))
-                .build_sqlx(query_builder());
+            let (activate_sql, activate_values) = build_sqlx(
+                Query::update()
+                    .table(Channels::Table)
+                    .value(Channels::Status, EntityStatus::Active.as_str())
+                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                    .and_where(Expr::col(Channels::Version).eq(draft.version)),
+            );
 
-            sqlx::query_with(&activate_sql, activate_values)
-                .execute(&mut *tx)
-                .await?;
+            tx.execute_query(&activate_sql, activate_values).await?;
 
             tx.commit().await?;
 
@@ -480,17 +485,19 @@ impl ChannelRepository for SqlChannelRepository {
 
     async fn archive(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.archive", async {
-            let (active_sql, active_values) = Query::select()
-                .column(Asterisk)
-                .from(Channels::Table)
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
-                .order_by(Channels::Version, Order::Desc)
-                .limit(1)
-                .build_sqlx(query_builder());
+            let (active_sql, active_values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Channels::Table)
+                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
+                    .order_by(Channels::Version, Order::Desc)
+                    .limit(1),
+            );
 
-            let active = sqlx::query_as_with::<_, Channel, _>(&active_sql, active_values)
-                .fetch_optional(&self.pool)
+            let active = self
+                .pool
+                .fetch_optional_as::<Channel>(&active_sql, active_values)
                 .await?
                 .ok_or_else(|| {
                     OrionError::BadRequest(format!(
@@ -499,15 +506,16 @@ impl ChannelRepository for SqlChannelRepository {
                     ))
                 })?;
 
-            let (archive_sql, archive_values) = Query::update()
-                .table(Channels::Table)
-                .value(Channels::Status, EntityStatus::Archived.as_str())
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
-                .build_sqlx(query_builder());
+            let (archive_sql, archive_values) = build_sqlx(
+                Query::update()
+                    .table(Channels::Table)
+                    .value(Channels::Status, EntityStatus::Archived.as_str())
+                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str())),
+            );
 
-            sqlx::query_with(&archive_sql, archive_values)
-                .execute(&self.pool)
+            self.pool
+                .execute_query(&archive_sql, archive_values)
                 .await?;
 
             self.get_version(channel_id, active.version).await
@@ -518,15 +526,17 @@ impl ChannelRepository for SqlChannelRepository {
     async fn create_new_version(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.create_new_version", async {
             // Check no draft already exists
-            let (draft_sql, draft_values) = Query::select()
-                .column(Asterisk)
-                .from(Channels::Table)
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
-                .build_sqlx(query_builder());
+            let (draft_sql, draft_values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Channels::Table)
+                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str())),
+            );
 
-            let existing_draft = sqlx::query_as_with::<_, Channel, _>(&draft_sql, draft_values)
-                .fetch_optional(&self.pool)
+            let existing_draft = self
+                .pool
+                .fetch_optional_as::<Channel>(&draft_sql, draft_values)
                 .await?;
 
             if existing_draft.is_some() {
@@ -548,45 +558,46 @@ impl ChannelRepository for SqlChannelRepository {
             let consumer_group_val = optional_string_value(latest.consumer_group.as_deref());
             let workflow_id_val = optional_string_value(latest.workflow_id.as_deref());
 
-            let (sql, values) = Query::insert()
-                .into_table(Channels::Table)
-                .columns([
-                    Channels::ChannelId,
-                    Channels::Version,
-                    Channels::Name,
-                    Channels::Description,
-                    Channels::ChannelType,
-                    Channels::Protocol,
-                    Channels::Methods,
-                    Channels::RoutePattern,
-                    Channels::Topic,
-                    Channels::ConsumerGroup,
-                    Channels::TransportConfigJson,
-                    Channels::WorkflowId,
-                    Channels::ConfigJson,
-                    Channels::Status,
-                    Channels::Priority,
-                ])
-                .values_panic([
-                    Expr::val(channel_id).into(),
-                    Expr::val(new_version).into(),
-                    Expr::val(latest.name.as_str()).into(),
-                    Expr::val(description_val).into(),
-                    Expr::val(latest.channel_type.as_str()).into(),
-                    Expr::val(latest.protocol.as_str()).into(),
-                    Expr::val(methods_val).into(),
-                    Expr::val(route_pattern_val).into(),
-                    Expr::val(topic_val).into(),
-                    Expr::val(consumer_group_val).into(),
-                    Expr::val(latest.transport_config_json.as_str()).into(),
-                    Expr::val(workflow_id_val).into(),
-                    Expr::val(latest.config_json.as_str()).into(),
-                    Expr::val(EntityStatus::Draft.as_str()).into(),
-                    Expr::val(latest.priority).into(),
-                ])
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::insert()
+                    .into_table(Channels::Table)
+                    .columns([
+                        Channels::ChannelId,
+                        Channels::Version,
+                        Channels::Name,
+                        Channels::Description,
+                        Channels::ChannelType,
+                        Channels::Protocol,
+                        Channels::Methods,
+                        Channels::RoutePattern,
+                        Channels::Topic,
+                        Channels::ConsumerGroup,
+                        Channels::TransportConfigJson,
+                        Channels::WorkflowId,
+                        Channels::ConfigJson,
+                        Channels::Status,
+                        Channels::Priority,
+                    ])
+                    .values_panic([
+                        Expr::val(channel_id).into(),
+                        Expr::val(new_version).into(),
+                        Expr::val(latest.name.as_str()).into(),
+                        Expr::val(description_val).into(),
+                        Expr::val(latest.channel_type.as_str()).into(),
+                        Expr::val(latest.protocol.as_str()).into(),
+                        Expr::val(methods_val).into(),
+                        Expr::val(route_pattern_val).into(),
+                        Expr::val(topic_val).into(),
+                        Expr::val(consumer_group_val).into(),
+                        Expr::val(latest.transport_config_json.as_str()).into(),
+                        Expr::val(workflow_id_val).into(),
+                        Expr::val(latest.config_json.as_str()).into(),
+                        Expr::val(EntityStatus::Draft.as_str()).into(),
+                        Expr::val(latest.priority).into(),
+                    ]),
+            );
 
-            sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            self.pool.execute_query(&sql, values).await?;
 
             self.get_version(channel_id, new_version).await
         })
@@ -602,28 +613,29 @@ impl ChannelRepository for SqlChannelRepository {
         let limit = limit.clamp(1, 1000);
         let offset = offset.max(0);
 
-        let (count_sql, count_values) = Query::select()
-            .expr(Func::count(Expr::col(Asterisk)))
-            .from(Channels::Table)
-            .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-            .build_sqlx(query_builder());
+        let (count_sql, count_values) = build_sqlx(
+            Query::select()
+                .expr(Func::count(Expr::col(Asterisk)))
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id)),
+        );
 
-        let (total,): (i64,) = sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
-            .fetch_one(&self.pool)
+        let (total,): (i64,) = self
+            .pool
+            .fetch_one_as::<(i64,)>(&count_sql, count_values)
             .await?;
 
-        let (sql, values) = Query::select()
-            .column(Asterisk)
-            .from(Channels::Table)
-            .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-            .order_by(Channels::Version, Order::Desc)
-            .limit(limit as u64)
-            .offset(offset as u64)
-            .build_sqlx(query_builder());
+        let (sql, values) = build_sqlx(
+            Query::select()
+                .column(Asterisk)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .order_by(Channels::Version, Order::Desc)
+                .limit(limit as u64)
+                .offset(offset as u64),
+        );
 
-        let data = sqlx::query_as_with::<_, Channel, _>(&sql, values)
-            .fetch_all(&self.pool)
-            .await?;
+        let data = self.pool.fetch_all_as::<Channel>(&sql, values).await?;
 
         Ok(PaginatedResult {
             data,
@@ -635,17 +647,18 @@ impl ChannelRepository for SqlChannelRepository {
 
     async fn get_active_by_name(&self, name: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.get_active_by_name", async {
-            let (sql, values) = Query::select()
-                .column(Asterisk)
-                .from(Channels::Table)
-                .and_where(Expr::col(Channels::Name).eq(name))
-                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
-                .order_by(Channels::Version, Order::Desc)
-                .limit(1)
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Channels::Table)
+                    .and_where(Expr::col(Channels::Name).eq(name))
+                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
+                    .order_by(Channels::Version, Order::Desc)
+                    .limit(1),
+            );
 
-            sqlx::query_as_with::<_, Channel, _>(&sql, values)
-                .fetch_optional(&self.pool)
+            self.pool
+                .fetch_optional_as::<Channel>(&sql, values)
                 .await?
                 .ok_or_else(|| {
                     OrionError::NotFound(format!("No active channel found with name '{}'", name))
@@ -659,16 +672,23 @@ impl ChannelRepository for SqlChannelRepository {
 mod tests {
     use super::*;
 
+    /// Initialize the DB backend for unit tests that call `build_sqlx`.
+    fn init_test_backend() {
+        crate::storage::set_backend_for_test(crate::storage::DbBackend::Sqlite);
+    }
+
     #[test]
     fn test_build_condition_empty() {
+        init_test_backend();
         let filter = ChannelFilter::default();
         let cond = build_condition(&filter);
         // Build a query with the condition to verify it produces valid SQL
-        let (sql, _) = Query::select()
-            .column(Asterisk)
-            .from(CurrentChannels::Table)
-            .cond_where(cond)
-            .build_sqlx(query_builder());
+        let (sql, _) = build_sqlx(
+            Query::select()
+                .column(Asterisk)
+                .from(CurrentChannels::Table)
+                .cond_where(cond),
+        );
         // Empty Condition::all() produces WHERE TRUE -- no actual column filters
         assert!(
             !sql.contains("\"status\""),
@@ -679,16 +699,18 @@ mod tests {
 
     #[test]
     fn test_build_condition_status() {
+        init_test_backend();
         let filter = ChannelFilter {
             status: Some(EntityStatus::Active.as_str().to_string()),
             ..Default::default()
         };
         let cond = build_condition(&filter);
-        let (sql, _) = Query::select()
-            .column(Asterisk)
-            .from(CurrentChannels::Table)
-            .cond_where(cond)
-            .build_sqlx(query_builder());
+        let (sql, _) = build_sqlx(
+            Query::select()
+                .column(Asterisk)
+                .from(CurrentChannels::Table)
+                .cond_where(cond),
+        );
         assert!(
             sql.contains("status"),
             "SQL should contain status filter, got: {}",
@@ -698,16 +720,18 @@ mod tests {
 
     #[test]
     fn test_build_condition_channel_type() {
+        init_test_backend();
         let filter = ChannelFilter {
             channel_type: Some("sync".to_string()),
             ..Default::default()
         };
         let cond = build_condition(&filter);
-        let (sql, _) = Query::select()
-            .column(Asterisk)
-            .from(CurrentChannels::Table)
-            .cond_where(cond)
-            .build_sqlx(query_builder());
+        let (sql, _) = build_sqlx(
+            Query::select()
+                .column(Asterisk)
+                .from(CurrentChannels::Table)
+                .cond_where(cond),
+        );
         assert!(
             sql.contains("channel_type"),
             "SQL should contain channel_type filter, got: {}",
@@ -717,16 +741,18 @@ mod tests {
 
     #[test]
     fn test_build_condition_protocol() {
+        init_test_backend();
         let filter = ChannelFilter {
             protocol: Some("rest".to_string()),
             ..Default::default()
         };
         let cond = build_condition(&filter);
-        let (sql, _) = Query::select()
-            .column(Asterisk)
-            .from(CurrentChannels::Table)
-            .cond_where(cond)
-            .build_sqlx(query_builder());
+        let (sql, _) = build_sqlx(
+            Query::select()
+                .column(Asterisk)
+                .from(CurrentChannels::Table)
+                .cond_where(cond),
+        );
         assert!(
             sql.contains("protocol"),
             "SQL should contain protocol filter, got: {}",
@@ -736,6 +762,7 @@ mod tests {
 
     #[test]
     fn test_build_condition_all_filters() {
+        init_test_backend();
         let filter = ChannelFilter {
             status: Some(EntityStatus::Draft.as_str().to_string()),
             channel_type: Some("async".to_string()),
@@ -745,11 +772,12 @@ mod tests {
             ..Default::default()
         };
         let cond = build_condition(&filter);
-        let (sql, _) = Query::select()
-            .column(Asterisk)
-            .from(CurrentChannels::Table)
-            .cond_where(cond)
-            .build_sqlx(query_builder());
+        let (sql, _) = build_sqlx(
+            Query::select()
+                .column(Asterisk)
+                .from(CurrentChannels::Table)
+                .cond_where(cond),
+        );
         assert!(
             sql.contains("status"),
             "SQL should contain status filter, got: {}",

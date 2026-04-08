@@ -1,11 +1,10 @@
 use async_trait::async_trait;
 use sea_query::{Asterisk, Condition, Expr, Order, Query};
-use sea_query_binder::SqlxBinder;
 
 use crate::errors::OrionError;
 use crate::storage::models::TraceDlqEntry;
 use crate::storage::schema::TraceDlq;
-use crate::storage::{DbPool, query_builder};
+use crate::storage::{DbPool, build_sqlx};
 
 // -- Repository trait --
 
@@ -68,41 +67,43 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 .unwrap_or(chrono::Utc::now().naive_utc())
                 .to_string();
 
-            let (sql, values) = Query::insert()
-                .into_table(TraceDlq::Table)
-                .columns([
-                    TraceDlq::Id,
-                    TraceDlq::TraceId,
-                    TraceDlq::Channel,
-                    TraceDlq::PayloadJson,
-                    TraceDlq::MetadataJson,
-                    TraceDlq::ErrorMessage,
-                    TraceDlq::MaxRetries,
-                    TraceDlq::NextRetryAt,
-                ])
-                .values_panic([
-                    Expr::val(id.as_str()).into(),
-                    Expr::val(trace_id).into(),
-                    Expr::val(channel).into(),
-                    Expr::val(payload_json).into(),
-                    Expr::val(metadata_json).into(),
-                    Expr::val(error_message).into(),
-                    Expr::val(max_retries).into(),
-                    Expr::val(next_retry.as_str()).into(),
-                ])
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::insert()
+                    .into_table(TraceDlq::Table)
+                    .columns([
+                        TraceDlq::Id,
+                        TraceDlq::TraceId,
+                        TraceDlq::Channel,
+                        TraceDlq::PayloadJson,
+                        TraceDlq::MetadataJson,
+                        TraceDlq::ErrorMessage,
+                        TraceDlq::MaxRetries,
+                        TraceDlq::NextRetryAt,
+                    ])
+                    .values_panic([
+                        Expr::val(id.as_str()).into(),
+                        Expr::val(trace_id).into(),
+                        Expr::val(channel).into(),
+                        Expr::val(payload_json).into(),
+                        Expr::val(metadata_json).into(),
+                        Expr::val(error_message).into(),
+                        Expr::val(max_retries).into(),
+                        Expr::val(next_retry.as_str()).into(),
+                    ]),
+            );
 
-            sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            self.pool.execute_query(&sql, values).await?;
 
             // Fetch the inserted entry
-            let (sql, values) = Query::select()
-                .column(Asterisk)
-                .from(TraceDlq::Table)
-                .and_where(Expr::col(TraceDlq::Id).eq(id.as_str()))
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(TraceDlq::Table)
+                    .and_where(Expr::col(TraceDlq::Id).eq(id.as_str())),
+            );
 
-            sqlx::query_as_with::<_, TraceDlqEntry, _>(&sql, values)
-                .fetch_one(&self.pool)
+            self.pool
+                .fetch_one_as::<TraceDlqEntry>(&sql, values)
                 .await
                 .map_err(|e| OrionError::InternalSource {
                     context: "Failed to fetch inserted DLQ entry".to_string(),
@@ -120,16 +121,18 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 .add(Expr::col(TraceDlq::NextRetryAt).lte(now.as_str()))
                 .add(Expr::col(TraceDlq::RetryCount).lt(Expr::col(TraceDlq::MaxRetries)));
 
-            let (sql, values) = Query::select()
-                .column(Asterisk)
-                .from(TraceDlq::Table)
-                .cond_where(cond)
-                .order_by(TraceDlq::NextRetryAt, Order::Asc)
-                .limit(limit as u64)
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(TraceDlq::Table)
+                    .cond_where(cond)
+                    .order_by(TraceDlq::NextRetryAt, Order::Asc)
+                    .limit(limit as u64),
+            );
 
-            Ok(sqlx::query_as_with::<_, TraceDlqEntry, _>(&sql, values)
-                .fetch_all(&self.pool)
+            Ok(self
+                .pool
+                .fetch_all_as::<TraceDlqEntry>(&sql, values)
                 .await?)
         })
         .await
@@ -137,14 +140,15 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
 
     async fn record_retry(&self, id: &str, next_retry_at: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("trace_dlq.record_retry", async {
-            let (sql, values) = Query::update()
-                .table(TraceDlq::Table)
-                .value(TraceDlq::RetryCount, Expr::col(TraceDlq::RetryCount).add(1))
-                .value(TraceDlq::NextRetryAt, next_retry_at)
-                .and_where(Expr::col(TraceDlq::Id).eq(id))
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::update()
+                    .table(TraceDlq::Table)
+                    .value(TraceDlq::RetryCount, Expr::col(TraceDlq::RetryCount).add(1))
+                    .value(TraceDlq::NextRetryAt, next_retry_at)
+                    .and_where(Expr::col(TraceDlq::Id).eq(id)),
+            );
 
-            sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            self.pool.execute_query(&sql, values).await?;
             Ok(())
         })
         .await
@@ -152,12 +156,13 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
 
     async fn remove(&self, id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("trace_dlq.remove", async {
-            let (sql, values) = Query::delete()
-                .from_table(TraceDlq::Table)
-                .and_where(Expr::col(TraceDlq::Id).eq(id))
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::delete()
+                    .from_table(TraceDlq::Table)
+                    .and_where(Expr::col(TraceDlq::Id).eq(id)),
+            );
 
-            sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            self.pool.execute_query(&sql, values).await?;
             Ok(())
         })
         .await
@@ -165,13 +170,14 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
 
     async fn mark_exhausted(&self, id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("trace_dlq.mark_exhausted", async {
-            let (sql, values) = Query::update()
-                .table(TraceDlq::Table)
-                .value(TraceDlq::RetryCount, Expr::col(TraceDlq::MaxRetries))
-                .and_where(Expr::col(TraceDlq::Id).eq(id))
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::update()
+                    .table(TraceDlq::Table)
+                    .value(TraceDlq::RetryCount, Expr::col(TraceDlq::MaxRetries))
+                    .and_where(Expr::col(TraceDlq::Id).eq(id)),
+            );
 
-            sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            self.pool.execute_query(&sql, values).await?;
             Ok(())
         })
         .await

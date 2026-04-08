@@ -93,15 +93,15 @@ impl IntoResponse for OrionError {
                     connector, channel
                 ),
             ),
-            OrionError::UnsupportedMediaType(msg) => {
-                (StatusCode::UNSUPPORTED_MEDIA_TYPE, "UNSUPPORTED_MEDIA_TYPE", msg)
-            }
+            OrionError::UnsupportedMediaType(msg) => (
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "UNSUPPORTED_MEDIA_TYPE",
+                msg,
+            ),
             OrionError::ServiceUnavailable(msg) => {
                 (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", msg)
             }
-            OrionError::RateLimited(msg) => {
-                (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", msg)
-            }
+            OrionError::RateLimited(msg) => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", msg),
             OrionError::Timeout {
                 channel,
                 timeout_ms,

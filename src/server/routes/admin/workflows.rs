@@ -341,6 +341,8 @@ pub(crate) async fn test_workflow(
         state.engine.clone(),
         &state.config.engine,
         state.cache_pool.clone(),
+        state.sql_pool_cache.clone(),
+        state.mongo_pool_cache.clone(),
     );
     let test_engine = dataflow_rs::Engine::new(vec![df_workflow], Some(custom_fns));
 

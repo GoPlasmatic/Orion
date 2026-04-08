@@ -5,7 +5,6 @@ pub mod config;
 pub mod connector;
 pub mod engine;
 pub mod errors;
-#[cfg(feature = "kafka")]
 pub mod kafka;
 pub mod metrics;
 pub mod queue;

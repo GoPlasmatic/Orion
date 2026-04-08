@@ -4,23 +4,28 @@
 
 ## Database Backend
 
-Orion supports three database backends, selected at **compile time** via feature flags:
+Orion supports three database backends, selected at **runtime** via the `storage.url` configuration:
 
-| Backend | Feature Flag | Default | URL Format |
-|---------|-------------|---------|------------|
-| **SQLite** | `db-sqlite` | Yes | `sqlite:orion.db` |
-| **PostgreSQL** | `db-postgres` | No | `postgres://user:pass@host/db` |
-| **MySQL** | `db-mysql` | No | `mysql://user:pass@host/db` |
+| Backend | URL Format | Example |
+|---------|------------|---------|
+| **SQLite** | `sqlite:` | `sqlite:orion.db` or `sqlite::memory:` |
+| **PostgreSQL** | `postgres://` | `postgres://user:pass@host/db` |
+| **MySQL** | `mysql://` | `mysql://user:pass@host/db` |
 
-Pick **one** backend per build:
+The backend is detected automatically from the URL scheme — no rebuild needed:
 
 ```bash
-cargo build                              # SQLite (default)
-cargo build --no-default-features --features db-postgres,swagger-ui
-cargo build --no-default-features --features db-mysql,swagger-ui
+# SQLite (default)
+orion-server
+
+# PostgreSQL
+ORION_STORAGE__URL="postgres://user:pass@localhost/orion" orion-server
+
+# MySQL
+ORION_STORAGE__URL="mysql://user:pass@localhost/orion" orion-server
 ```
 
-Migrations are embedded at compile time from `migrations/{sqlite,postgres,mysql}/` and run automatically on startup.
+Migrations for all backends are embedded in the binary and the correct set is selected automatically at startup.
 
 ## Config File
 
@@ -30,7 +35,7 @@ host = "0.0.0.0"
 port = 8080
 # shutdown_drain_secs = 30     # HTTP connection drain timeout on shutdown
 
-# [server.tls]                  # Requires the `tls` feature flag
+# [server.tls]
 # enabled = false
 # cert_path = "cert.pem"
 # key_path = "key.pem"
@@ -93,7 +98,7 @@ buffer_size = 1000             # Channel buffer for pending traces
 [cors]
 # allowed_origins = ["*"]       # Global CORS allowed origins
 
-[kafka]                        # Requires the `kafka` feature flag
+[kafka]
 enabled = false
 brokers = ["localhost:9092"]
 group_id = "orion"
@@ -116,7 +121,7 @@ format = "pretty"              # pretty or json
 [metrics]
 enabled = false
 
-[tracing]                           # Requires the `otel` feature flag
+[tracing]
 # enabled = false                   # Enable OpenTelemetry trace export
 # otlp_endpoint = "http://localhost:4317"  # OTLP gRPC endpoint
 # service_name = "orion"            # Service name in traces
@@ -156,27 +161,22 @@ orion-server migrate                  # Run database migrations
 orion-server migrate --dry-run        # Preview pending migrations
 ```
 
-## Feature Flags
+## Built-in Capabilities
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `db-sqlite` | Yes | SQLite storage backend |
-| `db-postgres` | No | PostgreSQL storage backend |
-| `db-mysql` | No | MySQL storage backend |
-| `kafka` | Yes | Kafka producer & consumer support |
-| `otel` | Yes | OpenTelemetry trace export (OTLP) |
-| `swagger-ui` | Yes | Swagger UI at `/docs` |
-| `tls` | No | HTTPS/TLS support via rustls |
-| `connectors-sql` | No | External SQL connectors (`db_read`, `db_write`) |
-| `connectors-redis` | No | External Redis connectors (Redis-backed cache) |
-| `connectors-mongodb` | No | External MongoDB connectors (`mongo_read`) |
+All capabilities are compiled into a single binary and controlled at runtime via configuration:
 
-Build with specific features:
-
-```bash
-cargo build --features kafka,otel,connectors-sql
-cargo build --no-default-features --features db-postgres,swagger-ui,tls
-```
+| Capability | Configuration | Default |
+|-----------|--------------|---------|
+| **Database backend** | `storage.url` scheme (`sqlite:`, `postgres://`, `mysql://`) | SQLite |
+| **Kafka** | `kafka.enabled` | Disabled |
+| **OpenTelemetry** | `tracing.enabled` | Disabled |
+| **TLS/HTTPS** | `server.tls.enabled` | Disabled |
+| **Swagger UI** | Always available at `/docs` | Enabled |
+| **SQL connectors** | Available via `db_read`/`db_write` functions | Always available |
+| **Redis cache** | Available via `cache_read`/`cache_write` with Redis backend | Always available |
+| **MongoDB connector** | Available via `mongo_read` function | Always available |
+| **Rate limiting** | `rate_limit.enabled` | Disabled |
+| **Metrics** | `metrics.enabled` | Disabled |
 
 ## Deployment
 
@@ -218,15 +218,13 @@ volumes:
   orion-data:
 ```
 
-### Docker with Custom Features
+### Docker Build
 
 ```bash
-# PostgreSQL + Kafka + OTEL
-docker build -t orion --build-arg FEATURES="db-postgres,kafka,otel" .
-
-# Minimal SQLite-only build
-docker build -t orion --build-arg FEATURES="db-sqlite,swagger-ui" .
+docker build -t orion .
 ```
+
+The single binary includes all capabilities. Configure the database backend, Kafka, TLS, and other features at runtime via environment variables or config file.
 
 ## Graceful Shutdown
 
@@ -250,6 +248,6 @@ Orion handles `SIGTERM` and `SIGINT` with a controlled shutdown sequence:
 - Configure `rate_limit` for traffic protection (platform-level and per-channel)
 - Use `RUST_LOG=orion=info` for per-crate log filtering
 - Enable OpenTelemetry with `ORION_TRACING__ENABLED=true` for distributed tracing
-- Enable TLS with `--features tls` and configure `server.tls` section
+- Enable TLS by configuring the `server.tls` section
 - Enable circuit breakers with `engine.circuit_breaker.enabled = true`
 - Set `queue.trace_retention_hours` for trace data lifecycle management

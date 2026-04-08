@@ -1,6 +1,5 @@
 pub mod admin_auth;
 pub mod observability;
-#[cfg(feature = "otel")]
 pub mod otel;
 pub mod rate_limit;
 pub mod routes;
@@ -19,9 +18,7 @@ use tower_http::trace::TraceLayer;
 use crate::config::CorsConfig;
 use crate::server::state::AppState;
 
-#[cfg(feature = "tls")]
 pub mod tls;
-#[cfg(feature = "otel")]
 pub mod trace_context;
 
 /// Build the Axum router with all middleware layers.
@@ -30,7 +27,6 @@ pub fn build_router(state: AppState) -> Router {
     let max_body_size = state.config.ingest.max_payload_size;
     let cors = build_cors(&state.config.cors);
 
-    #[cfg(feature = "otel")]
     let otel_enabled = state.config.tracing.enabled;
 
     let rate_limit_enabled = state.rate_limit_state.is_some();
@@ -99,8 +95,7 @@ pub fn build_router(state: AppState) -> Router {
         observability::http_metrics_middleware,
     ));
 
-    // When OTel is compiled in and enabled, add trace context extraction middleware
-    #[cfg(feature = "otel")]
+    // When OTel is enabled, add trace context extraction middleware
     let router = if otel_enabled {
         router.layer(axum::middleware::from_fn(
             trace_context::extract_trace_context,

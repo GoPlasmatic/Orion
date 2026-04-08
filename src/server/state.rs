@@ -41,16 +41,12 @@ pub struct AppState {
     /// Startup readiness flag — set to true after engine is fully loaded.
     pub ready: Arc<AtomicBool>,
     /// External SQL connection pool cache — shared so admin routes can evict stale pools.
-    #[cfg(feature = "connectors-sql")]
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     /// External MongoDB connection pool cache — shared so admin routes can evict stale pools.
-    #[cfg(feature = "connectors-mongodb")]
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
     /// Kafka consumer handle — stored here so engine reload can restart the
     /// consumer when async channel topic mappings change.
-    #[cfg(feature = "kafka")]
     pub kafka_consumer_handle: Arc<Mutex<Option<crate::kafka::consumer::ConsumerHandle>>>,
     /// Kafka producer — needed to restart consumer with DLQ support.
-    #[cfg(feature = "kafka")]
     pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
 }

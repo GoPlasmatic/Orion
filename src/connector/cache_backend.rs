@@ -147,19 +147,16 @@ impl CacheBackend for MemoryCacheBackend {
 // Redis backend (feature-gated)
 // ============================================================
 
-#[cfg(feature = "connectors-redis")]
 pub struct RedisCacheBackend {
     conn: redis::aio::MultiplexedConnection,
 }
 
-#[cfg(feature = "connectors-redis")]
 impl RedisCacheBackend {
     pub fn new(conn: redis::aio::MultiplexedConnection) -> Self {
         Self { conn }
     }
 }
 
-#[cfg(feature = "connectors-redis")]
 #[async_trait]
 impl CacheBackend for RedisCacheBackend {
     async fn get(&self, key: &str) -> Result<Option<String>, OrionError> {
@@ -220,18 +217,13 @@ impl CacheBackend for RedisCacheBackend {
 /// Holds both backend implementations and dispatches based on connector config.
 pub struct CachePool {
     memory: Arc<MemoryCacheBackend>,
-    #[cfg(feature = "connectors-redis")]
     redis: Arc<super::redis_pool::RedisPoolCache>,
 }
 
 impl CachePool {
-    pub fn new(
-        #[cfg(feature = "connectors-redis")] max_redis_pool_entries: usize,
-        cleanup_interval_secs: u64,
-    ) -> Self {
+    pub fn new(max_redis_pool_entries: usize, cleanup_interval_secs: u64) -> Self {
         Self {
             memory: MemoryCacheBackend::new(cleanup_interval_secs),
-            #[cfg(feature = "connectors-redis")]
             redis: Arc::new(super::redis_pool::RedisPoolCache::new(
                 max_redis_pool_entries,
             )),
@@ -239,7 +231,6 @@ impl CachePool {
     }
 
     /// Get a cache backend for the given connector.
-    #[allow(unused_variables)] // connector_name only used with connectors-redis
     pub async fn get_backend(
         &self,
         connector_name: &str,
@@ -247,16 +238,10 @@ impl CachePool {
     ) -> Result<Arc<dyn CacheBackend>, OrionError> {
         match config.backend.as_str() {
             "memory" => Ok(self.memory.clone() as Arc<dyn CacheBackend>),
-            #[cfg(feature = "connectors-redis")]
             "redis" => {
                 let conn = self.redis.get_conn(connector_name, config).await?;
                 Ok(Arc::new(RedisCacheBackend::new(conn)))
             }
-            #[cfg(not(feature = "connectors-redis"))]
-            "redis" => Err(OrionError::BadRequest(
-                "Cache backend 'redis' requires the 'connectors-redis' feature to be enabled"
-                    .to_string(),
-            )),
             other => Err(OrionError::BadRequest(format!(
                 "Unknown cache backend '{other}'. Must be 'redis' or 'memory'"
             ))),
@@ -269,7 +254,6 @@ impl CachePool {
     }
 
     /// Evict a cached Redis connection pool for the named connector.
-    #[cfg(feature = "connectors-redis")]
     pub async fn evict_pool(&self, connector_name: &str) {
         self.redis.evict(connector_name).await;
     }

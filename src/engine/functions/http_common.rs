@@ -81,7 +81,6 @@ pub async fn execute_request(
     let mut req = client.request(method.clone(), url).timeout(timeout);
 
     // Inject W3C trace context headers (traceparent/tracestate) for distributed tracing
-    #[cfg(feature = "otel")]
     {
         let mut trace_headers = std::collections::HashMap::new();
         crate::server::trace_context::inject_trace_context(&mut trace_headers);

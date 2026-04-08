@@ -104,7 +104,6 @@ pub fn apply_output(message: &mut Message, output_path: &str, new_value: Value) 
 /// Bind a slice of JSON values to a sqlx query, matching each value type to
 /// the appropriate sqlx bind call.  Consolidates the identical loop found in
 /// `db_read` and `db_write`.
-#[cfg(feature = "connectors-sql")]
 pub fn bind_json_params<'q>(
     mut query: sqlx::query::Query<'q, sqlx::Any, sqlx::any::AnyArguments<'q>>,
     params: &'q [Value],
@@ -133,7 +132,6 @@ pub fn bind_json_params<'q>(
 /// `DataflowError::Timeout` and `DataflowError::FunctionExecution`
 /// respectively.  Consolidates the repeated timeout + error-mapping pattern
 /// in the SQL handler functions.
-#[cfg(feature = "connectors-sql")]
 pub async fn timed_query<F, T, E>(
     timeout_ms: Option<u64>,
     handler_name: &str,

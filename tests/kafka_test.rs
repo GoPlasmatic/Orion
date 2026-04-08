@@ -1,12 +1,10 @@
 //! Kafka integration tests.
 //!
 //! These tests require Docker to be running (uses testcontainers with Kafka).
-//! Run with: `cargo test --features kafka kafka_test`
+//! Run with: `cargo test kafka_test`
 //!
 //! Tests are marked #[ignore] by default to avoid CI failures when Docker is unavailable.
-//! Run explicitly with: `cargo test --features kafka -- --ignored kafka`
-
-#![cfg(feature = "kafka")]
+//! Run explicitly with: `cargo test -- --ignored kafka`
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use rdkafka::ClientConfig;
-#[cfg(feature = "otel")]
 use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
@@ -48,7 +47,6 @@ impl KafkaProducer {
         }
 
         // Inject trace context as Kafka message headers
-        #[cfg(feature = "otel")]
         let headers = {
             let mut trace_headers = std::collections::HashMap::new();
             crate::server::trace_context::inject_trace_context(&mut trace_headers);
@@ -61,7 +59,6 @@ impl KafkaProducer {
             }
             kafka_headers
         };
-        #[cfg(feature = "otel")]
         let record = record.headers(headers);
 
         self.producer

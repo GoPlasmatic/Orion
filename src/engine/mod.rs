@@ -82,8 +82,8 @@ pub fn build_custom_functions(
     engine: Arc<tokio::sync::RwLock<Arc<dataflow_rs::Engine>>>,
     engine_config: &crate::config::EngineConfig,
     cache_pool: Arc<crate::connector::cache_backend::CachePool>,
-    #[cfg(feature = "connectors-sql")] sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
-    #[cfg(feature = "connectors-mongodb")] mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
+    sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
+    mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
 ) -> HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> {
     let mut fns: HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> = HashMap::new();
 
@@ -104,33 +104,30 @@ pub fn build_custom_functions(
         }),
     );
 
-    // Register stub publish_kafka when kafka feature is not available
-    #[cfg(not(feature = "kafka"))]
+    // Register stub publish_kafka (will be replaced by register_kafka_publisher when Kafka is configured)
     fns.insert(
         "publish_kafka".to_string(),
         Box::new(functions::publish_kafka::PublishKafkaHandler {
             registry: registry.clone(),
+            producer: None,
         }),
     );
 
     // Register SQL database handlers (db_read, db_write)
-    #[cfg(feature = "connectors-sql")]
-    {
-        fns.insert(
-            "db_read".to_string(),
-            Box::new(functions::db_read::DbReadHandler {
-                pool_cache: sql_pool_cache.clone(),
-                registry: registry.clone(),
-            }),
-        );
-        fns.insert(
-            "db_write".to_string(),
-            Box::new(functions::db_write::DbWriteHandler {
-                pool_cache: sql_pool_cache,
-                registry: registry.clone(),
-            }),
-        );
-    }
+    fns.insert(
+        "db_read".to_string(),
+        Box::new(functions::db_read::DbReadHandler {
+            pool_cache: sql_pool_cache.clone(),
+            registry: registry.clone(),
+        }),
+    );
+    fns.insert(
+        "db_write".to_string(),
+        Box::new(functions::db_write::DbWriteHandler {
+            pool_cache: sql_pool_cache,
+            registry: registry.clone(),
+        }),
+    );
 
     // Register cache handlers (cache_read, cache_write)
     // Memory backend is always available; Redis backend is feature-gated inside CachePool.
@@ -150,16 +147,13 @@ pub fn build_custom_functions(
     );
 
     // Register MongoDB handler (mongo_read)
-    #[cfg(feature = "connectors-mongodb")]
-    {
-        fns.insert(
-            "mongo_read".to_string(),
-            Box::new(functions::mongo_read::MongoReadHandler {
-                pool_cache: mongo_pool_cache,
-                registry: registry.clone(),
-            }),
-        );
-    }
+    fns.insert(
+        "mongo_read".to_string(),
+        Box::new(functions::mongo_read::MongoReadHandler {
+            pool_cache: mongo_pool_cache,
+            registry: registry.clone(),
+        }),
+    );
 
     fns
 }
@@ -167,7 +161,6 @@ pub fn build_custom_functions(
 /// Register the real Kafka-backed publish_kafka handler.
 ///
 /// Replaces the stub handler (or adds the handler if not yet registered).
-#[cfg(feature = "kafka")]
 pub fn register_kafka_publisher(
     fns: &mut HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>>,
     registry: Arc<ConnectorRegistry>,
@@ -175,7 +168,10 @@ pub fn register_kafka_publisher(
 ) {
     fns.insert(
         "publish_kafka".to_string(),
-        Box::new(functions::publish_kafka::PublishKafkaHandler { registry, producer }),
+        Box::new(functions::publish_kafka::PublishKafkaHandler {
+            registry,
+            producer: Some(producer),
+        }),
     );
 }
 

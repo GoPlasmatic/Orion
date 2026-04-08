@@ -2,7 +2,7 @@
 
 [← Back to README](../README.md)
 
-> Requires the `kafka` feature flag: `cargo build --features kafka`
+> Kafka support is built in. Enable it with `kafka.enabled = true` in your config.
 
 ## Topic-to-Channel Mapping
 
