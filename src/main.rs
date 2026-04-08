@@ -166,7 +166,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
         #[cfg(feature = "connectors-redis")]
         config.engine.max_pool_cache_entries,
-        60, // cleanup interval secs
+        config.engine.cache_cleanup_interval_secs,
     ));
 
     // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
@@ -231,7 +231,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Merge config-file topics with DB-driven async channels
         let mut all_topics = config.kafka.topics.clone();
         for ch in &channels {
-            if (ch.protocol == "kafka" || ch.channel_type == "async")
+            if (ch.protocol == orion::storage::models::ChannelProtocol::Kafka.as_str()
+                || ch.channel_type == "async")
                 && let Some(ref topic) = ch.topic
             {
                 // Only add if not already mapped from config file
@@ -290,12 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
         ));
     let (trace_queue, worker_handle) = orion::queue::start_workers(
-        config.queue.workers,
-        config.queue.buffer_size,
-        config.queue.shutdown_timeout_secs,
-        config.queue.processing_timeout_ms,
-        config.queue.max_result_size_bytes,
-        config.queue.max_queue_memory_bytes,
+        &config.queue,
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
         dlq_repo,
@@ -428,38 +424,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .serve(router.into_make_service())
             .await?;
     } else {
-        let listener = tokio::net::TcpListener::bind(&addr).await?;
-        tracing::info!(
-            address = %addr,
-            storage = %config.storage.url,
-            "Orion is ready"
-        );
-        let drain_secs = config.server.shutdown_drain_secs;
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                orion::server::shutdown_signal().await;
-                tracing::info!(drain_secs, "Starting HTTP connection drain");
-                tokio::time::sleep(std::time::Duration::from_secs(drain_secs)).await;
-            })
-            .await?;
+        serve_plain_http(
+            &addr,
+            &config.storage.url,
+            config.server.shutdown_drain_secs,
+            router,
+        )
+        .await?;
     }
 
     #[cfg(not(feature = "tls"))]
     {
-        let listener = tokio::net::TcpListener::bind(&addr).await?;
-        tracing::info!(
-            address = %addr,
-            storage = %config.storage.url,
-            "Orion is ready"
-        );
-        let drain_secs = config.server.shutdown_drain_secs;
-        axum::serve(listener, router)
-            .with_graceful_shutdown(async move {
-                orion::server::shutdown_signal().await;
-                tracing::info!(drain_secs, "Starting HTTP connection drain");
-                tokio::time::sleep(std::time::Duration::from_secs(drain_secs)).await;
-            })
-            .await?;
+        serve_plain_http(
+            &addr,
+            &config.storage.url,
+            config.server.shutdown_drain_secs,
+            router,
+        )
+        .await?;
     }
 
     // Graceful shutdown
@@ -492,5 +474,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tracing::info!("Orion shut down cleanly");
+    Ok(())
+}
+
+/// Bind a plain (non-TLS) HTTP listener and serve `router` with graceful
+/// shutdown.  Extracted from the duplicated `#[cfg(feature = "tls")] else` and
+/// `#[cfg(not(feature = "tls"))]` code paths.
+async fn serve_plain_http(
+    addr: &str,
+    storage_url: &str,
+    drain_secs: u64,
+    router: axum::Router,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!(
+        address = %addr,
+        storage = %storage_url,
+        "Orion is ready"
+    );
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            orion::server::shutdown_signal().await;
+            tracing::info!(drain_secs, "Starting HTTP connection drain");
+            tokio::time::sleep(std::time::Duration::from_secs(drain_secs)).await;
+        })
+        .await?;
     Ok(())
 }

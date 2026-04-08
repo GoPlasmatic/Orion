@@ -363,9 +363,13 @@ mod tests {
             channel_id: name.to_string(),
             name: name.to_string(),
             version: 1,
-            status: "active".to_string(),
+            status: crate::storage::models::EntityStatus::Active
+                .as_str()
+                .to_string(),
             channel_type: "sync".to_string(),
-            protocol: "http".to_string(),
+            protocol: crate::storage::models::ChannelProtocol::Http
+                .as_str()
+                .to_string(),
             methods: Some("POST".to_string()),
             workflow_id: None,
             topic: None,

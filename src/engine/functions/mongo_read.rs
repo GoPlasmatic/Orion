@@ -11,7 +11,8 @@ use mongodb::bson::{self, Document};
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, extract_custom_input, require_db_connector, require_str_field, resolve_connector,
+    apply_output, extract_custom_input, extract_output_path, require_db_connector,
+    require_str_field, resolve_connector, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -50,15 +51,11 @@ impl AsyncFunctionHandler for MongoReadHandler {
             .pool_cache
             .get_client(connector_name, db_config)
             .await
-            .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
+            .map_err(to_exec_error)?;
 
         let coll = client.database(database).collection::<Document>(collection);
-        let cursor = coll.find(filter_doc).await.map_err(|e| {
-            DataflowError::function_execution(format!("MongoDB query failed: {}", e), None)
-        })?;
-        let docs: Vec<Document> = cursor.try_collect().await.map_err(|e| {
-            DataflowError::function_execution(format!("MongoDB cursor failed: {}", e), None)
-        })?;
+        let cursor = coll.find(filter_doc).await.map_err(to_exec_error)?;
+        let docs: Vec<Document> = cursor.try_collect().await.map_err(to_exec_error)?;
 
         // Convert BSON documents to JSON
         let result: Vec<Value> = docs
@@ -67,10 +64,7 @@ impl AsyncFunctionHandler for MongoReadHandler {
             .filter_map(|bson_val| serde_json::to_value(&bson_val).ok())
             .collect();
 
-        let output_path = input
-            .get("output")
-            .and_then(|v| v.as_str())
-            .unwrap_or("data");
+        let output_path = extract_output_path(input);
 
         let changes = apply_output(message, output_path, Value::Array(result));
         Ok((1, changes))

@@ -30,13 +30,17 @@ async fn test_worker_shutdown_empty_queue() {
         dataflow_rs::Engine::new(vec![], None),
     )));
 
+    let test_queue_config = orion::config::QueueConfig {
+        workers: 2,
+        buffer_size: 10,
+        shutdown_timeout_secs: 2, // short for tests
+        processing_timeout_ms: 60_000,
+        max_result_size_bytes: 1_048_576,
+        max_queue_memory_bytes: 104_857_600,
+        ..Default::default()
+    };
     let (queue, worker_handle) = orion::queue::start_workers(
-        2,      // max_workers
-        10,     // buffer_size
-        2,      // shutdown_timeout_secs — short for tests
-        60_000, // processing_timeout_ms
-        1_048_576,
-        104_857_600,
+        &test_queue_config,
         engine,
         trace_repo,
         None, // no DLQ for this test

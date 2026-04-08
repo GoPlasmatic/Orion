@@ -1,6 +1,6 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
-use sea_query::{Asterisk, Condition, Expr, Func, Order, Query};
+use sea_query::{Asterisk, Condition, Expr, Func, Query};
 use sea_query_binder::SqlxBinder;
 use serde::Deserialize;
 
@@ -273,10 +273,7 @@ impl TraceRepository for SqlTraceRepository {
                 Some("mode") => Traces::Mode,
                 _ => Traces::CreatedAt,
             };
-            let order = match filter.sort_order.as_deref() {
-                Some("asc") => Order::Asc,
-                _ => Order::Desc,
-            };
+            let order = super::helpers::parse_sort_order(filter.sort_order.as_deref());
 
             // DATA query
             let (sql, values) = Query::select()

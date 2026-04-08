@@ -47,7 +47,7 @@ pub(crate) async fn create_backup(
 
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "create",
         "backup",
         &filename,

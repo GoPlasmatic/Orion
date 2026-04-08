@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rdkafka::ClientConfig;
-use rdkafka::Message as KafkaMessage;
+use rdkafka::Message as _;
 use rdkafka::TopicPartitionList;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use tokio::sync::{RwLock, watch};
@@ -12,6 +12,19 @@ use crate::config::KafkaIngestConfig;
 use crate::errors::OrionError;
 use crate::kafka::producer::KafkaProducer;
 use crate::metrics;
+
+/// Bundled context for the Kafka consume loop, grouping parameters that share
+/// the same lifecycle and reducing positional argument count.
+struct ConsumeLoopContext {
+    consumer: Arc<StreamConsumer>,
+    topic_map: HashMap<String, String>,
+    engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    dlq_producer: Option<Arc<KafkaProducer>>,
+    dlq_topic: Option<String>,
+    processing_timeout_ms: u64,
+    max_inflight: usize,
+    lag_poll_interval_secs: u64,
+}
 
 #[cfg(feature = "otel")]
 use rdkafka::message::Headers;
@@ -134,17 +147,17 @@ pub fn start_consumer(
     let consumer = Arc::new(consumer);
     let topic_set: HashSet<String> = config.topics.iter().map(|t| t.topic.clone()).collect();
 
-    let handle = tokio::spawn(consume_loop(
-        consumer.clone(),
+    let ctx = ConsumeLoopContext {
+        consumer: consumer.clone(),
         topic_map,
         engine,
         dlq_producer,
         dlq_topic,
-        shutdown_rx,
         processing_timeout_ms,
         max_inflight,
         lag_poll_interval_secs,
-    ));
+    };
+    let handle = tokio::spawn(consume_loop(ctx, shutdown_rx));
 
     Ok(ConsumerHandle {
         shutdown_tx,
@@ -154,39 +167,26 @@ pub fn start_consumer(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn consume_loop(
-    consumer: Arc<StreamConsumer>,
-    topic_map: HashMap<String, String>,
-    engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
-    dlq_producer: Option<Arc<KafkaProducer>>,
-    dlq_topic: Option<String>,
-    mut shutdown_rx: watch::Receiver<bool>,
-    processing_timeout_ms: u64,
-    max_inflight: usize,
-    lag_poll_interval_secs: u64,
-) {
-    use rdkafka::consumer::CommitMode;
-
-    let backpressure = Arc::new(tokio::sync::Semaphore::new(max_inflight));
+async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<bool>) {
+    let backpressure = Arc::new(tokio::sync::Semaphore::new(ctx.max_inflight));
 
     // Spawn consumer lag monitoring task
-    let lag_handle = if lag_poll_interval_secs > 0 {
-        let lag_consumer = consumer.clone();
+    let lag_handle = if ctx.lag_poll_interval_secs > 0 {
+        let lag_consumer = ctx.consumer.clone();
         let lag_shutdown = shutdown_rx.clone();
         Some(tokio::spawn(poll_consumer_lag(
             lag_consumer,
             lag_shutdown,
-            lag_poll_interval_secs,
+            ctx.lag_poll_interval_secs,
         )))
     } else {
         None
     };
 
     tracing::info!(
-        topics = ?topic_map.keys().collect::<Vec<_>>(),
-        max_inflight = max_inflight,
-        lag_poll_secs = lag_poll_interval_secs,
+        topics = ?ctx.topic_map.keys().collect::<Vec<_>>(),
+        max_inflight = ctx.max_inflight,
+        lag_poll_secs = ctx.lag_poll_interval_secs,
         "Kafka consumer started"
     );
 
@@ -205,17 +205,15 @@ async fn consume_loop(
                     break;
                 }
             }
-            msg_result = consumer.recv() => {
+            msg_result = ctx.consumer.recv() => {
                 match msg_result {
                     Ok(msg) => {
                         let topic = msg.topic().to_string();
-                        let channel = match topic_map.get(&topic) {
+                        let channel = match ctx.topic_map.get(&topic) {
                             Some(ch) => ch.clone(),
                             None => {
                                 tracing::warn!(topic = %topic, "No channel mapping for topic, skipping");
-                                if let Err(e) = consumer.commit_message(&msg, CommitMode::Async) {
-                                    tracing::error!(error = %e, "Failed to commit offset");
-                                }
+                                commit_offset(&ctx.consumer, &msg);
                                 continue;
                             }
                         };
@@ -229,16 +227,12 @@ async fn consume_loop(
                                     error = %e,
                                     "Failed to decode Kafka message payload as UTF-8, skipping"
                                 );
-                                if let Err(e) = consumer.commit_message(&msg, CommitMode::Async) {
-                                    tracing::error!(error = %e, "Failed to commit offset");
-                                }
+                                commit_offset(&ctx.consumer, &msg);
                                 continue;
                             }
                             None => {
                                 tracing::warn!(topic = %topic, "Empty Kafka message, skipping");
-                                if let Err(e) = consumer.commit_message(&msg, CommitMode::Async) {
-                                    tracing::error!(error = %e, "Failed to commit offset");
-                                }
+                                commit_offset(&ctx.consumer, &msg);
                                 continue;
                             }
                         };
@@ -253,15 +247,13 @@ async fn consume_loop(
                                 );
                                 // Send to DLQ if enabled
                                 send_to_dlq(
-                                    &dlq_producer,
-                                    &dlq_topic,
+                                    &ctx.dlq_producer,
+                                    &ctx.dlq_topic,
                                     &topic,
                                     payload.as_bytes(),
                                     &format!("JSON parse error: {}", e),
                                 ).await;
-                                if let Err(e) = consumer.commit_message(&msg, CommitMode::Async) {
-                                    tracing::error!(error = %e, "Failed to commit offset");
-                                }
+                                commit_offset(&ctx.consumer, &msg);
                                 continue;
                             }
                         };
@@ -305,22 +297,12 @@ async fn consume_loop(
                         let start = Instant::now();
                         let mut message = dataflow_rs::Message::from_value(&data);
 
-                        // Add Kafka metadata
-                        message.metadata_mut()["kafka_topic"] =
-                            serde_json::Value::String(topic.clone());
-                        if let Some(key) = msg.key().and_then(|k| std::str::from_utf8(k).ok()) {
-                            message.metadata_mut()["kafka_key"] =
-                                serde_json::Value::String(key.to_string());
-                        }
-                        message.metadata_mut()["kafka_partition"] =
-                            serde_json::json!(msg.partition());
-                        message.metadata_mut()["kafka_offset"] =
-                            serde_json::json!(msg.offset());
+                        inject_kafka_metadata(&mut message, &topic, &msg);
 
                         // Clone the inner Arc<Engine> and release the lock immediately
-                        let engine_ref = crate::engine::acquire_engine_read(&engine).await;
+                        let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
                         let process_result = tokio::time::timeout(
-                            std::time::Duration::from_millis(processing_timeout_ms),
+                            std::time::Duration::from_millis(ctx.processing_timeout_ms),
                             engine_ref.process_message_for_channel(&channel, &mut message),
                         )
                         .await;
@@ -333,15 +315,15 @@ async fn consume_loop(
                                 tracing::error!(
                                     topic = %topic,
                                     channel = %channel,
-                                    timeout_ms = processing_timeout_ms,
+                                    timeout_ms = ctx.processing_timeout_ms,
                                     "Kafka message processing timed out"
                                 );
                                 send_to_dlq(
-                                    &dlq_producer,
-                                    &dlq_topic,
+                                    &ctx.dlq_producer,
+                                    &ctx.dlq_topic,
                                     &topic,
                                     payload.as_bytes(),
-                                    &format!("Processing timed out after {}ms", processing_timeout_ms),
+                                    &format!("Processing timed out after {}ms", ctx.processing_timeout_ms),
                                 ).await;
                             }
                             Ok(Err(e)) => {
@@ -355,8 +337,8 @@ async fn consume_loop(
                                     "Failed to process Kafka message"
                                 );
                                 send_to_dlq(
-                                    &dlq_producer,
-                                    &dlq_topic,
+                                    &ctx.dlq_producer,
+                                    &ctx.dlq_topic,
                                     &topic,
                                     payload.as_bytes(),
                                     &format!("Processing error: {}", e),
@@ -376,9 +358,7 @@ async fn consume_loop(
                         }
 
                         // Commit offset after processing
-                        if let Err(e) = consumer.commit_message(&msg, CommitMode::Async) {
-                            tracing::error!(error = %e, "Failed to commit Kafka offset");
-                        }
+                        commit_offset(&ctx.consumer, &msg);
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Kafka consumer error");
@@ -394,6 +374,29 @@ async fn consume_loop(
     }
 
     tracing::info!("Kafka consumer stopped");
+}
+
+/// Commit the offset for a consumed message, logging any errors.
+fn commit_offset(consumer: &StreamConsumer, msg: &rdkafka::message::BorrowedMessage<'_>) {
+    use rdkafka::consumer::CommitMode;
+    if let Err(e) = consumer.commit_message(msg, CommitMode::Async) {
+        tracing::error!(error = %e, "Failed to commit Kafka offset");
+    }
+}
+
+/// Inject Kafka-specific metadata (topic, key, partition, offset) into a dataflow message.
+fn inject_kafka_metadata(
+    message: &mut dataflow_rs::Message,
+    topic: &str,
+    msg: &rdkafka::message::BorrowedMessage<'_>,
+) {
+    use rdkafka::Message as KafkaMsg;
+    message.metadata_mut()["kafka_topic"] = serde_json::Value::String(topic.to_string());
+    if let Some(key) = msg.key().and_then(|k| std::str::from_utf8(k).ok()) {
+        message.metadata_mut()["kafka_key"] = serde_json::Value::String(key.to_string());
+    }
+    message.metadata_mut()["kafka_partition"] = serde_json::json!(msg.partition());
+    message.metadata_mut()["kafka_offset"] = serde_json::json!(msg.offset());
 }
 
 /// Periodically poll committed offsets and high watermarks to compute consumer lag.

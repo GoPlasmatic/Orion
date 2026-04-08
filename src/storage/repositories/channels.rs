@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::errors::OrionError;
-use crate::storage::models::Channel;
+use crate::storage::models::{Channel, EntityStatus};
 use crate::storage::{
     query_builder,
     schema::{Channels, CurrentChannels},
 };
 
-use super::helpers::{clamp_pagination, optional_string_value};
+use super::helpers::{clamp_pagination, optional_string_value, parse_sort_order};
 use super::workflows::PaginatedResult;
 
 // -- DTOs --
@@ -57,7 +57,7 @@ pub struct UpdateChannelRequest {
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ChannelStatusChangeRequest {
-    pub status: String,
+    pub status: crate::storage::models::EntityStatus,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, utoipa::IntoParams)]
@@ -197,7 +197,7 @@ impl ChannelRepository for SqlChannelRepository {
                     Expr::val(transport_config_json.as_str()).into(),
                     Expr::val(workflow_id_val).into(),
                     Expr::val(config_json.as_str()).into(),
-                    Expr::val("draft").into(),
+                    Expr::val(EntityStatus::Draft.as_str()).into(),
                     Expr::val(req.priority).into(),
                 ])
                 .build_sqlx(query_builder());
@@ -274,10 +274,7 @@ impl ChannelRepository for SqlChannelRepository {
                 Some("updated_at") => Channels::UpdatedAt,
                 _ => Channels::Priority,
             };
-            let order = match filter.sort_order.as_deref() {
-                Some("asc") => Order::Asc,
-                _ => Order::Desc,
-            };
+            let order = parse_sort_order(filter.sort_order.as_deref());
 
             let (sql, values) = Query::select()
                 .column(Asterisk)
@@ -312,7 +309,7 @@ impl ChannelRepository for SqlChannelRepository {
                 .column(Asterisk)
                 .from(Channels::Table)
                 .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq("draft"))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
                 .build_sqlx(query_builder());
 
             let existing = sqlx::query_as_with::<_, Channel, _>(&draft_sql, draft_values)
@@ -381,7 +378,7 @@ impl ChannelRepository for SqlChannelRepository {
                 .value(Channels::ConfigJson, config_json.as_str())
                 .value(Channels::Priority, priority)
                 .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq("draft"))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
                 .build_sqlx(query_builder());
 
             sqlx::query_with(&sql, values).execute(&self.pool).await?;
@@ -417,7 +414,7 @@ impl ChannelRepository for SqlChannelRepository {
             let (sql, values) = Query::select()
                 .column(Asterisk)
                 .from(Channels::Table)
-                .and_where(Expr::col(Channels::Status).eq("active"))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
                 .order_by(Channels::Priority, Order::Desc)
                 .build_sqlx(query_builder());
 
@@ -437,7 +434,7 @@ impl ChannelRepository for SqlChannelRepository {
                 .column(Asterisk)
                 .from(Channels::Table)
                 .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq("draft"))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
                 .build_sqlx(query_builder());
 
             let draft = sqlx::query_as_with::<_, Channel, _>(&draft_sql, draft_values)
@@ -453,9 +450,9 @@ impl ChannelRepository for SqlChannelRepository {
             // Archive current active versions
             let (archive_sql, archive_values) = Query::update()
                 .table(Channels::Table)
-                .value(Channels::Status, "archived")
+                .value(Channels::Status, EntityStatus::Archived.as_str())
                 .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq("active"))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
                 .build_sqlx(query_builder());
 
             sqlx::query_with(&archive_sql, archive_values)
@@ -465,7 +462,7 @@ impl ChannelRepository for SqlChannelRepository {
             // Activate the draft
             let (activate_sql, activate_values) = Query::update()
                 .table(Channels::Table)
-                .value(Channels::Status, "active")
+                .value(Channels::Status, EntityStatus::Active.as_str())
                 .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
                 .and_where(Expr::col(Channels::Version).eq(draft.version))
                 .build_sqlx(query_builder());
@@ -487,7 +484,7 @@ impl ChannelRepository for SqlChannelRepository {
                 .column(Asterisk)
                 .from(Channels::Table)
                 .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq("active"))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
                 .order_by(Channels::Version, Order::Desc)
                 .limit(1)
                 .build_sqlx(query_builder());
@@ -504,9 +501,9 @@ impl ChannelRepository for SqlChannelRepository {
 
             let (archive_sql, archive_values) = Query::update()
                 .table(Channels::Table)
-                .value(Channels::Status, "archived")
+                .value(Channels::Status, EntityStatus::Archived.as_str())
                 .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq("active"))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
                 .build_sqlx(query_builder());
 
             sqlx::query_with(&archive_sql, archive_values)
@@ -525,7 +522,7 @@ impl ChannelRepository for SqlChannelRepository {
                 .column(Asterisk)
                 .from(Channels::Table)
                 .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Status).eq("draft"))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
                 .build_sqlx(query_builder());
 
             let existing_draft = sqlx::query_as_with::<_, Channel, _>(&draft_sql, draft_values)
@@ -584,7 +581,7 @@ impl ChannelRepository for SqlChannelRepository {
                     Expr::val(latest.transport_config_json.as_str()).into(),
                     Expr::val(workflow_id_val).into(),
                     Expr::val(latest.config_json.as_str()).into(),
-                    Expr::val("draft").into(),
+                    Expr::val(EntityStatus::Draft.as_str()).into(),
                     Expr::val(latest.priority).into(),
                 ])
                 .build_sqlx(query_builder());
@@ -642,7 +639,7 @@ impl ChannelRepository for SqlChannelRepository {
                 .column(Asterisk)
                 .from(Channels::Table)
                 .and_where(Expr::col(Channels::Name).eq(name))
-                .and_where(Expr::col(Channels::Status).eq("active"))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
                 .order_by(Channels::Version, Order::Desc)
                 .limit(1)
                 .build_sqlx(query_builder());
@@ -683,7 +680,7 @@ mod tests {
     #[test]
     fn test_build_condition_status() {
         let filter = ChannelFilter {
-            status: Some("active".to_string()),
+            status: Some(EntityStatus::Active.as_str().to_string()),
             ..Default::default()
         };
         let cond = build_condition(&filter);
@@ -740,7 +737,7 @@ mod tests {
     #[test]
     fn test_build_condition_all_filters() {
         let filter = ChannelFilter {
-            status: Some("draft".to_string()),
+            status: Some(EntityStatus::Draft.as_str().to_string()),
             channel_type: Some("async".to_string()),
             protocol: Some("kafka".to_string()),
             limit: Some(10),
@@ -841,7 +838,7 @@ mod tests {
     fn test_channel_status_change_request() {
         let json = r#"{"status": "active"}"#;
         let req: ChannelStatusChangeRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.status, "active");
+        assert_eq!(req.status, EntityStatus::Active);
     }
 
     #[test]

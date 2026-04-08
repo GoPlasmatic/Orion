@@ -67,13 +67,17 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         Some(Arc::new(
             orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
         ));
+    let test_queue_config = orion::config::QueueConfig {
+        workers: 2,
+        buffer_size: 100,
+        shutdown_timeout_secs: 30,
+        processing_timeout_ms: 60_000,
+        max_result_size_bytes: 1_048_576,    // 1 MB
+        max_queue_memory_bytes: 104_857_600, // 100 MB
+        ..Default::default()
+    };
     let (trace_queue, _worker_handle) = orion::queue::start_workers(
-        2,
-        100,
-        30,
-        60_000,
-        1_048_576,   // 1 MB max result size
-        104_857_600, // 100 MB max queue memory
+        &test_queue_config,
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
         dlq_repo,
