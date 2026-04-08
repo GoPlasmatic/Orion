@@ -51,6 +51,8 @@ Kafka metadata is automatically injected into every message's metadata:
 | `kafka_partition` | Partition number |
 | `kafka_offset` | Offset within partition |
 
+Access these in workflow conditions or transforms via `{ "var": "metadata.kafka_topic" }`.
+
 ## Dead Letter Queue
 
 Failed messages are routed to a configurable DLQ topic with structured error metadata:
@@ -62,6 +64,15 @@ topic = "orion-dlq"    # default
 ```
 
 DLQ messages include the source topic, error details, original payload, and timestamp.
+
+Failed async traces are also stored in the `trace_dlq` database table with automatic retry support. Configure retry behavior:
+
+```toml
+[queue]
+dlq_retry_enabled = true      # Enable DLQ retry processor
+dlq_max_retries = 5           # Max retry attempts
+dlq_poll_interval_secs = 30   # Retry poll interval
+```
 
 ## Publishing to Kafka
 
@@ -79,3 +90,20 @@ Use the `publish_kafka` task function with optional JSONLogic for dynamic keys a
   }
 }
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `connector` | Yes | Kafka connector name |
+| `topic` | Yes | Target topic |
+| `key_logic` | No | JSONLogic expression for partition key |
+| `value_logic` | No | JSONLogic expression for message value (default: `message.data`) |
+
+## Consumer Configuration
+
+| Config | Default | Description |
+|--------|---------|-------------|
+| `kafka.brokers` | `["localhost:9092"]` | Broker addresses |
+| `kafka.group_id` | `"orion"` | Consumer group ID |
+| `kafka.processing_timeout_ms` | `60000` | Per-message processing timeout |
+| `kafka.max_inflight` | `100` | Max in-flight messages |
+| `kafka.lag_poll_interval_secs` | `30` | Consumer lag polling interval |

@@ -44,6 +44,7 @@
 | GET | `/api/v1/admin/connectors/{id}` | Get connector by ID (secrets masked) |
 | PUT | `/api/v1/admin/connectors/{id}` | Update connector |
 | DELETE | `/api/v1/admin/connectors/{id}` | Delete connector |
+| POST | `/api/v1/admin/connectors/reload` | Reload all connectors from DB |
 | GET | `/api/v1/admin/connectors/circuit-breakers` | List circuit breaker states |
 | POST | `/api/v1/admin/connectors/circuit-breakers/{key}` | Reset a circuit breaker |
 
@@ -53,6 +54,19 @@
 |--------|------|-------------|
 | GET | `/api/v1/admin/engine/status` | Engine status (version, uptime, workflows count, channels) |
 | POST | `/api/v1/admin/engine/reload` | Hot-reload channels and workflows |
+
+### Audit Logs
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/admin/audit-logs` | List audit log entries — filter with `?action=`, `?resource_type=` |
+
+### Backup & Restore
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/v1/admin/backup` | Export database backup |
+| POST | `/api/v1/admin/restore` | Restore from backup |
 
 ## Data API
 
@@ -64,6 +78,13 @@
 | `ANY` | `/api/v1/data/{path...}/async` | Async submission via REST route matching |
 | `GET` | `/api/v1/data/traces` | List traces — filter with `?status=`, `?channel=`, `?mode=` |
 | `GET` | `/api/v1/data/traces/{id}` | Poll async trace result |
+
+## API Documentation
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/openapi.json` | OpenAPI 3.0 specification |
+| GET | `/docs` | Swagger UI (requires `swagger-ui` feature flag) |
 
 ## Operational Endpoints
 
@@ -94,6 +115,20 @@ When a request arrives at `/api/v1/data/{path}`, the handler resolves the target
 2. Try REST route table match (HTTP method + path against channel `route_pattern` values)
 3. Fall back to direct channel name lookup (single path segment)
 
+## Authentication
+
+Admin API endpoints support bearer token or API key authentication when enabled:
+
+```bash
+# Bearer token
+curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/api/v1/admin/workflows
+
+# API key via custom header
+curl -H "X-API-Key: your-secret-key" http://localhost:8080/api/v1/admin/workflows
+```
+
+Configure via `[admin_auth]` in config or `ORION_ADMIN_AUTH__ENABLED=true` environment variable.
+
 ## Error Response Format
 
 All error responses follow a consistent structure:
@@ -106,3 +141,16 @@ All error responses follow a consistent structure:
   }
 }
 ```
+
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| `NOT_FOUND` | 404 | Resource not found |
+| `BAD_REQUEST` | 400 | Invalid input |
+| `UNAUTHORIZED` | 401 | Missing or invalid credentials |
+| `FORBIDDEN` | 403 | Access denied (e.g., CORS violation) |
+| `CONFLICT` | 409 | Duplicate or conflicting state |
+| `RATE_LIMITED` | 429 | Too many requests |
+| `TIMEOUT` | 504 | Workflow execution exceeded timeout |
+| `SERVICE_UNAVAILABLE` | 503 | Backpressure or circuit breaker open |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | Invalid content type |
+| `INTERNAL_ERROR` | 500 | Internal server error |

@@ -10,19 +10,19 @@
       "children": [
         {
           "name": "Structured Logging",
-          "children": ["JSON & pretty-print formats", "Configurable log levels", "Per-request context"]
+          "children": ["JSON & pretty-print formats", "Configurable log levels", "Per-request context", "Per-crate filtering"]
         },
         {
           "name": "Prometheus Metrics",
-          "children": ["Request counters & error rates", "Latency histograms", "Circuit breaker metrics"]
+          "children": ["Request counters & error rates", "Latency histograms", "Circuit breaker metrics", "Rate limit rejections"]
         },
         {
           "name": "Distributed Tracing",
-          "children": ["W3C Trace Context", "OpenTelemetry OTLP export", "Configurable sampling rate"]
+          "children": ["W3C Trace Context", "OpenTelemetry OTLP export", "Configurable sampling rate", "Per-task span tracking"]
         },
         {
           "name": "Health Monitoring",
-          "children": ["Component-level health checks", "Automatic degradation", "Request ID propagation"]
+          "children": ["Component-level health checks", "Automatic degradation", "Request ID propagation", "Kubernetes liveness & readiness probes"]
         }
       ]
     },
@@ -34,19 +34,19 @@
       "children": [
         {
           "name": "Circuit Breakers",
-          "children": ["Lock-free state machine", "Per-connector isolation", "Auto-recovery after cooldown"]
+          "children": ["Lock-free state machine", "Per-connector isolation", "Auto-recovery after cooldown", "Admin API to inspect & reset"]
         },
         {
           "name": "Retry & Backoff",
-          "children": ["Exponential backoff", "Configurable max retries", "Retryable error detection"]
+          "children": ["Exponential backoff (capped 60s)", "Configurable max retries", "Retryable error detection"]
         },
         {
           "name": "Timeouts",
-          "children": ["Per-channel enforcement", "Workflow execution limits"]
+          "children": ["Per-channel enforcement", "Workflow execution limits", "Per-connector query timeout"]
         },
         {
-          "name": "Graceful Shutdown",
-          "children": ["Signal handling (SIGTERM)", "Connection draining", "Queue flushing with timeout"]
+          "name": "Fault Tolerance",
+          "children": ["Graceful shutdown (SIGTERM/SIGINT)", "Connection draining", "Dead letter queue with retry", "Panic recovery middleware"]
         }
       ]
     },
@@ -65,12 +65,16 @@
           "children": ["Per-channel JSONLogic rules", "Payload size limits", "Header & query param access"]
         },
         {
-          "name": "Access Control",
-          "children": ["Per-channel CORS enforcement", "Origin allowlist"]
+          "name": "Network Security",
+          "children": ["SSRF protection (private IP blocking)", "TLS/HTTPS support", "Security headers (CSP, X-Frame-Options)"]
         },
         {
-          "name": "SQL Safety",
-          "children": ["Parameterized queries only", "Injection protection verified"]
+          "name": "Access Control",
+          "children": ["Admin API authentication", "Per-channel CORS enforcement", "Origin allowlist"]
+        },
+        {
+          "name": "Data Safety",
+          "children": ["Parameterized SQL queries", "Injection protection", "URL validation"]
         }
       ]
     },
@@ -82,7 +86,7 @@
       "children": [
         {
           "name": "Rate Limiting",
-          "children": ["Token bucket algorithm", "Per-client keying", "JSONLogic key extraction"]
+          "children": ["Token bucket algorithm", "Per-client keying via JSONLogic", "Platform & per-channel limits"]
         },
         {
           "name": "Backpressure",
@@ -90,11 +94,11 @@
         },
         {
           "name": "Async Processing",
-          "children": ["Multi-worker trace queue", "Bounded buffer channels"]
+          "children": ["Multi-worker trace queue", "Bounded buffer channels", "DLQ retry processor"]
         },
         {
           "name": "Horizontal Scaling",
-          "children": ["Stateless instances", "No shared state required"]
+          "children": ["Stateless instances", "Channel include/exclude filters", "Multi-database backends"]
         }
       ]
     },
@@ -115,6 +119,10 @@
         {
           "name": "Configuration",
           "children": ["TOML + env var overrides", "Sensible defaults", "Feature flags"]
+        },
+        {
+          "name": "Distribution",
+          "children": ["Homebrew tap", "Shell & PowerShell installers", "Multi-platform binaries"]
         }
       ]
     },
@@ -126,7 +134,7 @@
       "children": [
         {
           "name": "Connectors",
-          "children": ["HTTP & Webhooks", "Kafka pub/sub", "Database (SQL)", "Cache (Redis)", "Storage (S3/GCS)", "MongoDB (NoSQL)"]
+          "children": ["HTTP & Webhooks", "Kafka pub/sub", "Database (SQL)", "Cache (Memory & Redis)", "Storage (S3/GCS)", "MongoDB (NoSQL)"]
         },
         {
           "name": "Custom Functions",
@@ -134,7 +142,7 @@
         },
         {
           "name": "Channel Protocols",
-          "children": ["REST (sync)", "Simple HTTP (sync)", "Kafka (async)"]
+          "children": ["REST with route matching (sync)", "Simple HTTP (sync)", "Kafka (async)"]
         }
       ]
     },
@@ -154,7 +162,11 @@
         },
         {
           "name": "Versioning",
-          "children": ["Draft / Active / Archived lifecycle", "Multi-version execution"]
+          "children": ["Draft / Active / Archived lifecycle", "Multi-version history", "Workflow import & export"]
+        },
+        {
+          "name": "Performance",
+          "children": ["Response caching", "Request deduplication", "Connection pool caching"]
         }
       ]
     },
@@ -166,7 +178,7 @@
       "children": [
         {
           "name": "Admin APIs",
-          "children": ["Full CRUD for all entities", "Version management", "Engine control"]
+          "children": ["Full CRUD for all entities", "Version management", "Engine control", "OpenAPI / Swagger UI"]
         },
         {
           "name": "CI/CD Integration",
@@ -175,6 +187,10 @@
         {
           "name": "Testing",
           "children": ["Dry-run execution", "Workflow validation", "Step-by-step traces"]
+        },
+        {
+          "name": "Operations",
+          "children": ["Audit logging", "Database backup & restore", "Config validation CLI"]
         }
       ]
     }

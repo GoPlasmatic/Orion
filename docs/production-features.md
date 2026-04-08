@@ -141,6 +141,8 @@ Each channel can carry its own runtime configuration via `config_json`:
   "timeout_ms": 5000,
   "cors": { "allowed_origins": ["https://app.example.com"] },
   "backpressure": { "max_concurrent": 200 },
+  "deduplication": { "header": "Idempotency-Key", "retention_secs": 300 },
+  "cache": { "enabled": true, "ttl_secs": 60, "cache_key_fields": ["data.user_id"] },
   "validation_logic": { "and": [
     { "!!": [{ "var": "data.order_id" }] },
     { ">": [{ "var": "data.amount" }, 0] }
@@ -152,7 +154,40 @@ Each channel can carry its own runtime configuration via `config_json`:
 - **Timeout** — per-channel processing timeout in milliseconds
 - **CORS** — per-channel CORS settings
 - **Backpressure** — semaphore-based concurrency limit
+- **Deduplication** — idempotency key-based duplicate request prevention
+- **Caching** — response caching with TTL and configurable cache key
 - **Input validation** — JSONLogic expression evaluated against incoming data before processing
+
+## Request Deduplication
+
+Prevent duplicate processing of the same request using idempotency keys:
+
+```json
+{
+  "deduplication": {
+    "header": "Idempotency-Key",
+    "retention_secs": 300
+  }
+}
+```
+
+When enabled, the handler extracts the idempotency key from the configured header. If a request with the same key was already processed within the retention window, it returns 409 Conflict instead of re-processing.
+
+## Response Caching
+
+Cache responses for identical requests to reduce redundant workflow execution:
+
+```json
+{
+  "cache": {
+    "enabled": true,
+    "ttl_secs": 60,
+    "cache_key_fields": ["data.user_id", "data.action"]
+  }
+}
+```
+
+Cache keys are computed from the specified fields. Cached responses are returned directly without executing the workflow. The cache backend is in-memory by default; Redis-backed caching is available when using a cache connector.
 
 ## REST Route Matching
 
@@ -189,6 +224,8 @@ Use the `channel_call` task function to invoke another channel's workflow in-pro
 }
 ```
 
+Features cycle detection and configurable max call depth (default 10) to prevent infinite recursion.
+
 ## Dynamic Paths and Bodies
 
 Use `path_logic` and `body_logic` in `http_call` tasks to compute URLs and request bodies dynamically from message data:
@@ -212,10 +249,74 @@ Use `path_logic` and `body_logic` in `http_call` tasks to compute URLs and reque
 }
 ```
 
+## Admin API Authentication
+
+Protect admin endpoints with bearer token or API key authentication:
+
+```toml
+[admin_auth]
+enabled = true
+api_key = "your-secret-key"
+# header = "Authorization"      # Bearer format (default)
+# header = "X-API-Key"          # Raw key format
+```
+
+When `header` is `"Authorization"`, the key is expected as `Bearer <key>`. For any other header name, the raw key value is matched directly.
+
+## Audit Logging
+
+All admin actions are recorded in the audit log for compliance and debugging:
+
+```bash
+curl -s http://localhost:8080/api/v1/admin/audit-logs
+```
+
+Each entry captures: principal, action, resource type, resource ID, details, and timestamp.
+
+## Database Backup & Restore
+
+Export and restore the database via the admin API:
+
+```bash
+# Export backup
+curl -s -X POST http://localhost:8080/api/v1/admin/backup -o backup.json
+
+# Restore from backup
+curl -s -X POST http://localhost:8080/api/v1/admin/restore \
+  -H "Content-Type: application/json" -d @backup.json
+```
+
+## SSRF Protection
+
+HTTP connectors validate URLs to prevent Server-Side Request Forgery. By default, requests to private/internal IP addresses (RFC 1918, loopback, link-local) are blocked. Override per-connector with `allow_private_urls: true` when calling internal services.
+
 ## Request ID Propagation
 
 Every request gets a UUID `x-request-id` header — pass your own or let Orion generate one. The ID is propagated to the response for distributed tracing.
 
+## Security Headers
+
+Orion sets the following security headers on all responses:
+
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
+- `Strict-Transport-Security` (when TLS is enabled)
+
 ## CORS
 
 CORS is enabled by default with permissive settings, so browser-based admin UIs and dashboards work out of the box. Per-channel CORS can be configured via the channel's `config_json`.
+
+## Channel Loading Filters
+
+Control which channels an instance loads using include/exclude patterns:
+
+```toml
+[channels]
+include = ["orders.*", "payments.*"]    # Only load matching channels
+exclude = ["analytics.*"]               # Exclude matching channels
+```
+
+This enables topology control — run different Orion instances for different channel groups without changing channel definitions.

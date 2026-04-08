@@ -63,7 +63,7 @@ Delay doubles on each retry: 500ms → 1s → 2s → 4s → ... → capped at 60
 
 ## Secret Masking
 
-Sensitive fields (`token`, `password`, `key`, `secret`, `api_key`) are automatically masked as `"******"` in all API responses. Secrets are stored but never exposed through the API.
+Sensitive fields (`token`, `password`, `key`, `secret`, `api_key`, `connection_string`) are automatically masked as `"******"` in all API responses. Secrets are stored but never exposed through the API.
 
 Create a connector with real credentials:
 
@@ -90,6 +90,35 @@ curl -s http://localhost:8080/api/v1/admin/connectors/<id>
 
 Usernames and non-sensitive fields are returned as-is. Workflows reference connectors by name (`"connector": "bearer-auth-api"`) — they never see or embed actual credentials.
 
+## Circuit Breakers
+
+Every connector gets automatic circuit breaker protection. When failures exceed a threshold, the breaker opens and short-circuits requests to prevent cascading failures.
+
+| State | Behavior |
+|-------|----------|
+| **Closed** | Normal operation — requests flow through |
+| **Open** | Requests rejected immediately (503) after failure threshold exceeded |
+| **Half-Open** | After cooldown, one probe request allowed to test recovery |
+
+Configure globally via `[engine.circuit_breaker]` in config:
+
+```toml
+[engine.circuit_breaker]
+enabled = true
+failure_threshold = 5
+recovery_timeout_secs = 30
+```
+
+Inspect and reset breakers via the admin API:
+
+```bash
+# List all circuit breaker states
+curl -s http://localhost:8080/api/v1/admin/connectors/circuit-breakers
+
+# Reset a specific breaker
+curl -s -X POST http://localhost:8080/api/v1/admin/connectors/circuit-breakers/{key}
+```
+
 ## Connector Types
 
 ### HTTP Connector
@@ -106,7 +135,8 @@ REST API calls, webhooks, and external service integration:
     "auth": { "type": "bearer", "token": "sk-..." },
     "headers": { "x-source": "orion" },
     "retry": { "max_retries": 3, "retry_delay_ms": 1000 },
-    "max_response_size": 10485760
+    "max_response_size": 10485760,
+    "allow_private_urls": false
   }
 }
 ```
@@ -119,6 +149,7 @@ REST API calls, webhooks, and external service integration:
 | `auth` | `null` | Authentication config (bearer, basic, or apikey) |
 | `retry` | 3 retries, 1000ms | Retry with exponential backoff |
 | `max_response_size` | 10 MB | Maximum response body size to prevent OOM |
+| `allow_private_urls` | `false` | Allow requests to private/internal IPs (SSRF protection) |
 
 ### Kafka Connector
 
@@ -139,7 +170,7 @@ Produce to Kafka topics. Consumer configuration is separate (see [Kafka Integrat
 
 ### DB Connector
 
-Parameterized SQL queries against external databases. Supports PostgreSQL, MySQL, and SQLite.
+Parameterized SQL queries against external databases. Supports PostgreSQL, MySQL, and SQLite. Requires the `connectors-sql` feature flag.
 
 ```json
 {
@@ -167,11 +198,25 @@ Parameterized SQL queries against external databases. Supports PostgreSQL, MySQL
 | `auth` | `null` | Optional auth config |
 | `retry` | 3 retries, 1000ms | Retry with exponential backoff |
 
-> **Note:** The `db_read` and `db_write` function handlers are implemented but not yet registered in the engine. DB connectors can be created and managed via the admin API in preparation.
+Use `db_read` for SELECT queries (returns rows as JSON array) and `db_write` for INSERT/UPDATE/DELETE (returns affected count):
+
+```json
+{
+  "function": {
+    "name": "db_read",
+    "input": {
+      "connector": "orders-db",
+      "query": "SELECT * FROM orders WHERE customer_id = $1",
+      "params": [{ "var": "data.customer_id" }],
+      "output": "data.orders"
+    }
+  }
+}
+```
 
 ### Cache Connector
 
-Redis cache for lookups, session state, and temporary storage.
+In-memory or Redis cache for lookups, session state, and temporary storage.
 
 ```json
 {
@@ -179,6 +224,7 @@ Redis cache for lookups, session state, and temporary storage.
   "connector_type": "cache",
   "config": {
     "type": "cache",
+    "backend": "redis",
     "url": "redis://localhost:6379",
     "default_ttl_secs": 300,
     "max_connections": 10,
@@ -189,13 +235,61 @@ Redis cache for lookups, session state, and temporary storage.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `url` | required | Redis connection URL |
+| `backend` | required | `"redis"` or `"memory"` |
+| `url` | required (redis) | Redis connection URL |
 | `default_ttl_secs` | `null` | Default TTL for cache entries |
 | `max_connections` | `null` | Connection pool max size |
 | `auth` | `null` | Optional auth config |
 | `retry` | 3 retries, 1000ms | Retry with exponential backoff |
 
-> **Note:** The `cache_read` and `cache_write` function handlers are implemented but not yet registered in the engine.
+Use `cache_read` and `cache_write` in workflows:
+
+```json
+{
+  "function": {
+    "name": "cache_write",
+    "input": {
+      "connector": "session-cache",
+      "key": "session:user123",
+      "value": { "var": "data.session" },
+      "ttl_secs": 3600
+    }
+  }
+}
+```
+
+### MongoDB Connector
+
+MongoDB document queries with BSON-to-JSON conversion. Requires the `connectors-mongodb` feature flag.
+
+```json
+{
+  "name": "analytics-db",
+  "connector_type": "db",
+  "config": {
+    "type": "db",
+    "connection_string": "mongodb://localhost:27017",
+    "driver": "mongodb"
+  }
+}
+```
+
+Use `mongo_read` in workflows:
+
+```json
+{
+  "function": {
+    "name": "mongo_read",
+    "input": {
+      "connector": "analytics-db",
+      "database": "analytics",
+      "collection": "events",
+      "filter": { "user_id": { "var": "data.user_id" } },
+      "output": "data.events"
+    }
+  }
+}
+```
 
 ### Storage Connector
 

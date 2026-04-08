@@ -20,6 +20,15 @@
 | `channel_executions_total` | Counter | `channel` | Channel invocations |
 | `rate_limit_rejections_total` | Counter | `client` | Rate-limited requests |
 
+Enable metrics with `ORION_METRICS__ENABLED=true` or in config:
+
+```toml
+[metrics]
+enabled = true
+```
+
+Scrape at `GET /metrics` (Prometheus text format).
+
 ## Health Check
 
 `GET /health` returns component-level status with automatic degradation detection:
@@ -39,6 +48,30 @@
 
 The health check tests the database with `SELECT 1` and verifies engine availability with a configurable lock timeout. If either check fails, the endpoint returns `503 Service Unavailable` with `"status": "degraded"`.
 
+## Kubernetes Probes
+
+| Endpoint | Purpose | Behavior |
+|----------|---------|----------|
+| `GET /healthz` | Liveness probe | Always returns 200 — if the process is running, it's alive |
+| `GET /readyz` | Readiness probe | Returns 200 only when DB is reachable, engine is loaded, and startup is complete; 503 otherwise |
+
+Configure in your Kubernetes deployment:
+
+```yaml
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 5
+```
+
 ## Engine Status
 
 `GET /api/v1/admin/engine/status` returns a detailed breakdown:
@@ -53,6 +86,25 @@ The health check tests the database with `SELECT 1` and verifies engine availabi
 }
 ```
 
+## Distributed Tracing
+
+Enable OpenTelemetry trace export (requires the `otel` feature flag):
+
+```toml
+[tracing]
+enabled = true
+otlp_endpoint = "http://localhost:4317"
+service_name = "orion"
+sample_rate = 1.0
+```
+
+Features:
+- W3C Trace Context extraction and propagation
+- Per-request spans with channel, workflow, and task attributes
+- OTLP gRPC export to Jaeger, Tempo, or any compatible collector
+- Configurable sampling rate (0.0 to 1.0)
+- Trace context injected into outbound `http_call` requests
+
 ## Logging
 
 - Structured JSON or pretty-printed format (configurable via `logging.format`)
@@ -60,3 +112,21 @@ The health check tests the database with `SELECT 1` and verifies engine availabi
 - Request ID propagation via `x-request-id` header
 - Per-crate filtering with `RUST_LOG` (e.g., `RUST_LOG=orion=debug,tower_http=info`)
 - Optional OpenTelemetry trace export via the `otel` feature flag
+
+### Log Levels
+
+| Level | Usage |
+|-------|-------|
+| `error` | Failures that need attention |
+| `warn` | Degraded behavior (circuit breakers, retries) |
+| `info` | Request lifecycle, engine reloads, startup/shutdown |
+| `debug` | Detailed processing, SQL queries, connector calls |
+| `trace` | Fine-grained internal state |
+
+### Production Configuration
+
+```bash
+ORION_LOGGING__FORMAT=json
+ORION_LOGGING__LEVEL=info
+RUST_LOG=orion=info,tower_http=warn,sqlx=warn
+```
