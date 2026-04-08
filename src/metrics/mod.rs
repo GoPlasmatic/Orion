@@ -19,14 +19,13 @@ pub fn init_metrics() -> PrometheusHandle {
 // ---------------------------------------------------------------------------
 
 /// Increment the messages_total counter.
-pub fn record_message(channel: &str, status: &str) {
-    counter!("messages_total", "channel" => channel.to_string(), "status" => status.to_string())
-        .increment(1);
+pub fn record_message(channel: &str, status: &'static str) {
+    counter!("messages_total", "channel" => channel.to_string(), "status" => status).increment(1);
 }
 
 /// Increment the errors_total counter.
-pub fn record_error(error_type: &str) {
-    counter!("errors_total", "type" => error_type.to_string()).increment(1);
+pub fn record_error(error_type: &'static str) {
+    counter!("errors_total", "type" => error_type).increment(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -71,36 +70,37 @@ pub fn set_active_workflows(count: f64) {
 // HTTP & observability helpers
 // ---------------------------------------------------------------------------
 
-/// Record an HTTP request metric.
-pub fn record_http_request(method: &str, path: &str, status: u16) {
+/// Record HTTP request count and duration in a single call.
+///
+/// Converts label values once and reuses them for both the counter and histogram,
+/// avoiding redundant allocations.
+pub fn record_http_request(method: &str, path: &str, status: u16, duration_secs: f64) {
+    let method = method.to_string();
+    let path = path.to_string();
+    let status = status.to_string();
     counter!(
         "http_requests_total",
-        "method" => method.to_string(),
-        "path" => path.to_string(),
-        "status" => status.to_string()
+        "method" => method.clone(),
+        "path" => path.clone(),
+        "status" => status.clone()
     )
     .increment(1);
-}
-
-/// Record HTTP request duration.
-pub fn record_http_request_duration(method: &str, path: &str, status: u16, duration_secs: f64) {
     histogram!(
         "http_request_duration_seconds",
-        "method" => method.to_string(),
-        "path" => path.to_string(),
-        "status" => status.to_string()
+        "method" => method,
+        "path" => path,
+        "status" => status
     )
     .record(duration_secs);
 }
 
 /// Record DB query duration.
-pub fn record_db_query_duration(operation: &str, duration_secs: f64) {
-    histogram!("db_query_duration_seconds", "operation" => operation.to_string())
-        .record(duration_secs);
+pub fn record_db_query_duration(operation: &'static str, duration_secs: f64) {
+    histogram!("db_query_duration_seconds", "operation" => operation).record(duration_secs);
 }
 
 /// Wrap an async operation with DB query timing.
-pub async fn timed_db_op<F, T>(operation: &str, f: F) -> T
+pub async fn timed_db_op<F, T>(operation: &'static str, f: F) -> T
 where
     F: std::future::Future<Output = T>,
 {
@@ -111,8 +111,8 @@ where
 }
 
 /// Record engine lock acquisition wait time.
-pub fn record_engine_lock_wait(mode: &str, duration_secs: f64) {
-    histogram!("engine_lock_wait_seconds", "mode" => mode.to_string()).record(duration_secs);
+pub fn record_engine_lock_wait(mode: &'static str, duration_secs: f64) {
+    histogram!("engine_lock_wait_seconds", "mode" => mode).record(duration_secs);
 }
 
 /// Record engine reload duration.
@@ -121,8 +121,8 @@ pub fn record_engine_reload_duration(duration_secs: f64) {
 }
 
 /// Record engine reload event.
-pub fn record_engine_reload(status: &str) {
-    counter!("engine_reloads_total", "status" => status.to_string()).increment(1);
+pub fn record_engine_reload(status: &'static str) {
+    counter!("engine_reloads_total", "status" => status).increment(1);
 }
 
 /// Record a channel execution.
@@ -174,12 +174,12 @@ pub fn set_trace_queue_memory_bytes(bytes: f64) {
 // ---------------------------------------------------------------------------
 
 /// Record a connector request outcome.
-pub fn record_connector_request(connector: &str, channel: &str, status: &str) {
+pub fn record_connector_request(connector: &str, channel: &str, status: &'static str) {
     counter!(
         "connector_requests_total",
         "connector" => connector.to_string(),
         "channel" => channel.to_string(),
-        "status" => status.to_string()
+        "status" => status
     )
     .increment(1);
 }
@@ -283,14 +283,8 @@ mod tests {
     #[test]
     fn test_record_http_request() {
         ensure_recorder();
-        record_http_request("GET", "/health", 200);
-        record_http_request("POST", "/api/v1/data/orders", 201);
-    }
-
-    #[test]
-    fn test_record_http_request_duration() {
-        ensure_recorder();
-        record_http_request_duration("GET", "/health", 200, 0.005);
+        record_http_request("GET", "/health", 200, 0.005);
+        record_http_request("POST", "/api/v1/data/orders", 201, 0.010);
     }
 
     #[test]

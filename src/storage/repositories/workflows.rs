@@ -482,13 +482,16 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let active_versions: Vec<Workflow> = tx.fetch_all_as::<Workflow>(&sql, values).await?;
 
             if rollout_pct == 100 {
-                for active in &active_versions {
+                // Archive all active versions in a single query
+                if !active_versions.is_empty() {
                     let (sql, values) = build_sqlx(
                         Query::update()
                             .table(Workflows::Table)
                             .value(Workflows::Status, EntityStatus::Archived.as_str())
                             .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                            .and_where(Expr::col(Workflows::Version).eq(active.version)),
+                            .and_where(
+                                Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()),
+                            ),
                     );
                     tx.execute_query(&sql, values).await?;
                 }
@@ -503,20 +506,24 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 );
                 tx.execute_query(&sql, values).await?;
             } else {
-                if active_versions.len() > 1 {
-                    for active in &active_versions[1..] {
+                // Archive all active versions except the primary (highest version)
+                if let Some(primary_active) = active_versions.first() {
+                    if active_versions.len() > 1 {
                         let (sql, values) = build_sqlx(
                             Query::update()
                                 .table(Workflows::Table)
                                 .value(Workflows::Status, EntityStatus::Archived.as_str())
                                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                                .and_where(Expr::col(Workflows::Version).eq(active.version)),
+                                .and_where(
+                                    Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()),
+                                )
+                                .and_where(
+                                    Expr::col(Workflows::Version).ne(primary_active.version),
+                                ),
                         );
                         tx.execute_query(&sql, values).await?;
                     }
-                }
 
-                if let Some(primary_active) = active_versions.first() {
                     let (sql, values) = build_sqlx(
                         Query::update()
                             .table(Workflows::Table)
@@ -749,14 +756,79 @@ impl WorkflowRepository for SqlWorkflowRepository {
         &self,
         workflows: &[CreateWorkflowRequest],
     ) -> Result<Vec<Result<Workflow, OrionError>>, OrionError> {
-        let mut results = Vec::with_capacity(workflows.len());
+        crate::metrics::timed_db_op("workflows.bulk_create", async {
+            let mut tx = self.pool.begin_tx().await?;
+            let mut results = Vec::with_capacity(workflows.len());
 
-        for req in workflows {
-            let result = self.create(req).await;
-            results.push(result);
-        }
+            for req in workflows {
+                let result: Result<Workflow, OrionError> = async {
+                    let workflow_id = req
+                        .workflow_id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    let condition_json = serde_json::to_string(&req.condition)?;
+                    let tasks_json = serde_json::to_string(&req.tasks)?;
+                    let tags_json = serde_json::to_string(&req.tags)?;
+                    let description_val = optional_string_value(req.description.as_deref());
 
-        Ok(results)
+                    let (sql, values) = build_sqlx(
+                        Query::insert()
+                            .into_table(Workflows::Table)
+                            .columns([
+                                Workflows::WorkflowId,
+                                Workflows::Version,
+                                Workflows::Name,
+                                Workflows::Description,
+                                Workflows::Priority,
+                                Workflows::Status,
+                                Workflows::RolloutPercentage,
+                                Workflows::ConditionJson,
+                                Workflows::TasksJson,
+                                Workflows::Tags,
+                                Workflows::ContinueOnError,
+                            ])
+                            .values_panic([
+                                Expr::val(workflow_id.as_str()).into(),
+                                Expr::val(1i64).into(),
+                                Expr::val(req.name.as_str()).into(),
+                                Expr::val(description_val).into(),
+                                Expr::val(req.priority).into(),
+                                Expr::val(EntityStatus::Draft.as_str()).into(),
+                                Expr::val(100i64).into(),
+                                Expr::val(condition_json.as_str()).into(),
+                                Expr::val(tasks_json.as_str()).into(),
+                                Expr::val(tags_json.as_str()).into(),
+                                Expr::val(req.continue_on_error).into(),
+                            ]),
+                    );
+
+                    tx.execute_query(&sql, values).await?;
+
+                    let (sql, values) = build_sqlx(
+                        Query::select()
+                            .column(Asterisk)
+                            .from(Workflows::Table)
+                            .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id.as_str()))
+                            .and_where(Expr::col(Workflows::Version).eq(1i64)),
+                    );
+
+                    tx.fetch_optional_as::<Workflow>(&sql, values)
+                        .await?
+                        .ok_or_else(|| {
+                            OrionError::NotFound(format!(
+                                "Workflow '{}' version 1 not found after insert",
+                                workflow_id
+                            ))
+                        })
+                }
+                .await;
+                results.push(result);
+            }
+
+            tx.commit().await?;
+            Ok(results)
+        })
+        .await
     }
 
     async fn list_versions(
