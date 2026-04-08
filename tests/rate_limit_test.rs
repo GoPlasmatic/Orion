@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::needless_update)]
+
 mod common;
 
 use axum::Router;

@@ -5,90 +5,31 @@ use axum::http::{Request, StatusCode};
 use serde_json::json;
 use tower::ServiceExt;
 
-/// Helper to create a REST channel with a specific route pattern and methods.
-async fn create_rest_channel(
-    app: &axum::Router,
-    name: &str,
-    route_pattern: &str,
-    methods: Vec<&str>,
-    workflow_id: &str,
-) -> String {
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v1/admin/channels",
-            Some(json!({
-                "name": name,
-                "channel_type": "sync",
-                "protocol": "rest",
-                "methods": methods,
-                "route_pattern": route_pattern,
-                "workflow_id": workflow_id,
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let channel_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    // Activate
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", channel_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    channel_id
-}
+use common::{create_and_activate_workflow, create_rest_channel};
 
 /// Create a simple workflow that echoes input + adds a marker.
 async fn create_echo_workflow(app: &axum::Router, name: &str) -> String {
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v1/admin/workflows",
-            Some(json!({
-                "name": name,
-                "condition": true,
-                "tasks": [{
-                    "id": "echo",
-                    "name": "Echo",
-                    "function": {
-                        "name": "map",
-                        "input": {
-                            "mappings": [{
-                                "path": "data.matched",
-                                "logic": true
-                            }]
-                        }
+    create_and_activate_workflow(
+        app,
+        json!({
+            "name": name,
+            "condition": true,
+            "tasks": [{
+                "id": "echo",
+                "name": "Echo",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [{
+                            "path": "data.matched",
+                            "logic": true
+                        }]
                     }
-                }]
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = common::body_json(resp).await;
-    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // Activate
-    app.clone()
-        .oneshot(common::json_request(
-            "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", wf_id),
-            Some(json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-
-    wf_id
+                }
+            }]
+        }),
+    )
+    .await
 }
 
 #[tokio::test]

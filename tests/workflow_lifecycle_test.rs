@@ -165,7 +165,7 @@ async fn test_dry_run_unmatched_condition() {
 
     // Output should be empty (no data was produced)
     assert!(
-        body["output"].as_object().map_or(true, |o| o.is_empty()),
+        body["output"].as_object().is_none_or(|o| o.is_empty()),
         "output should be empty when workflow is skipped"
     );
 }

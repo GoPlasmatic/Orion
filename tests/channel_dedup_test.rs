@@ -1,22 +1,13 @@
 mod common;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
-use common::{body_json, create_and_activate_channel_with_config, simple_log_workflow};
-
-/// Helper: build a POST request with a custom Idempotency-Key header.
-fn post_with_idempotency_key(uri: &str, key: &str, body: serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "application/json")
-        .header("Idempotency-Key", key)
-        .body(Body::from(serde_json::to_string(&body).unwrap()))
-        .unwrap()
-}
+use common::{
+    body_json, create_and_activate_channel_with_config, post_with_idempotency_key,
+    simple_log_workflow,
+};
 
 // ============================================================
 // 1. Duplicate key within the window is rejected with 409

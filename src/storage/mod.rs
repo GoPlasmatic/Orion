@@ -413,6 +413,7 @@ async fn init_mysql_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

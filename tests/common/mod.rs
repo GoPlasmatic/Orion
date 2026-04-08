@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, dead_code)]
+
 use std::sync::Arc;
 
 use axum::Router;
@@ -28,10 +30,20 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
     // Install sqlx Any drivers for external connector pools (db_read/db_write tests)
     sqlx::any::install_default_drivers();
 
-    let storage_config = orion::config::StorageConfig {
-        url: "sqlite::memory:".to_string(),
-        max_connections: 5,
-        ..Default::default()
+    // Use storage URL from config if set, otherwise default to in-memory SQLite
+    let storage_config = if config.storage.url.is_empty()
+        || config.storage.url == orion::config::StorageConfig::default().url
+    {
+        orion::config::StorageConfig {
+            url: "sqlite::memory:".to_string(),
+            max_connections: 5,
+            ..config.storage.clone()
+        }
+    } else {
+        orion::config::StorageConfig {
+            max_connections: config.storage.max_connections.max(5),
+            ..config.storage.clone()
+        }
     };
     let pool = orion::storage::init_pool(&storage_config).await.unwrap();
 
@@ -425,6 +437,95 @@ pub async fn create_and_activate_channel_with_config(
     assert_eq!(resp.status(), axum::http::StatusCode::OK);
 
     (channel_name.to_string(), workflow_id)
+}
+
+/// Build a POST request with a custom Idempotency-Key header.
+#[allow(dead_code)]
+pub fn post_with_idempotency_key(uri: &str, key: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("Idempotency-Key", key)
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap()
+}
+
+/// Create a workflow from JSON, activate it, and return the workflow_id.
+#[allow(dead_code)]
+pub async fn create_and_activate_workflow(
+    app: &axum::Router,
+    workflow_json: serde_json::Value,
+) -> String {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(workflow_json),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    let body = body_json(resp).await;
+    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+    wf_id
+}
+
+/// Create a REST channel with a specific route pattern and methods, activate it,
+/// and return the channel_id.
+#[allow(dead_code)]
+pub async fn create_rest_channel(
+    app: &axum::Router,
+    name: &str,
+    route_pattern: &str,
+    methods: Vec<&str>,
+    workflow_id: &str,
+) -> String {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(serde_json::json!({
+                "name": name,
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": methods,
+                "route_pattern": route_pattern,
+                "workflow_id": workflow_id,
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    let body = body_json(resp).await;
+    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+    ch_id
 }
 
 /// Poll a trace until it reaches a terminal status or max iterations.

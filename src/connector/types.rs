@@ -130,6 +130,7 @@ pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "st
 pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 

@@ -1,7 +1,6 @@
 mod common;
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -182,16 +181,7 @@ async fn test_redis_cache_ttl_expiry() {
     assert!(body["data"]["val"].is_null());
 }
 
-/// Helper: build a POST request with a custom Idempotency-Key header.
-fn post_with_idempotency_key(uri: &str, key: &str, body: serde_json::Value) -> Request<Body> {
-    Request::builder()
-        .method("POST")
-        .uri(uri)
-        .header("content-type", "application/json")
-        .header("Idempotency-Key", key)
-        .body(Body::from(serde_json::to_string(&body).unwrap()))
-        .unwrap()
-}
+use common::post_with_idempotency_key;
 
 /// Channel with Redis-backed deduplication: sending the same idempotency key
 /// twice should return 200 then 409.

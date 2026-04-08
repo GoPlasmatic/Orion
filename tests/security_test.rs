@@ -385,6 +385,59 @@ async fn test_admin_auth_disabled_allows_all() {
 }
 
 // ============================================================
+// Multi-API-key authentication (key rotation)
+// ============================================================
+
+#[tokio::test]
+async fn test_admin_auth_multiple_api_keys() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_key = "primary-key".to_string();
+    config.admin_auth.api_keys = vec!["rotation-key-1".to_string(), "rotation-key-2".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    // Primary key should work
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("Authorization", "Bearer primary-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // First rotation key should work
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("Authorization", "Bearer rotation-key-1")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Second rotation key should work
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("Authorization", "Bearer rotation-key-2")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Unknown key should be rejected
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("Authorization", "Bearer unknown-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ============================================================
 // Connector secret masking
 // ============================================================
 

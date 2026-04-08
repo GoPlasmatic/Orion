@@ -47,7 +47,7 @@ async fn test_channel_call_basic() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), 201);
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let body = common::body_json(resp).await;
     let target_wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
 
@@ -78,7 +78,7 @@ async fn test_channel_call_basic() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), 201);
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let body = common::body_json(resp).await;
     let target_ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
 
@@ -116,7 +116,7 @@ async fn test_channel_call_basic() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), 201);
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let body = common::body_json(resp).await;
     let source_wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
 
@@ -147,7 +147,7 @@ async fn test_channel_call_basic() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), 201);
+    assert_eq!(resp.status(), StatusCode::CREATED);
     let body = common::body_json(resp).await;
     let source_ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
 

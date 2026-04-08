@@ -218,6 +218,7 @@ fn rate_limited_response() -> Response {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::needless_update)]
 mod tests {
     use super::*;
     use axum::body::Body;
