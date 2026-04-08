@@ -19,12 +19,7 @@ async fn test_workflows_crud_lifecycle() {
         .oneshot(json_request(
             "POST",
             "/api/v1/admin/workflows",
-            Some(json!({
-                "name": "Test Workflow",
-                "priority": 10,
-                "condition": true,
-                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
-            })),
+            Some(common::workflow_with_priority("Test Workflow", 10)),
         ))
         .await
         .unwrap();
@@ -514,11 +509,7 @@ async fn test_workflow_validate_endpoint() {
         .oneshot(json_request(
             "POST",
             "/api/v1/admin/workflows/validate",
-            Some(json!({
-                "name": "Valid Workflow",
-                "condition": true,
-                "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
-            })),
+            Some(common::simple_log_workflow("Valid Workflow")),
         ))
         .await
         .unwrap();
@@ -816,11 +807,7 @@ async fn test_engine_status_with_loaded_workflows() {
     common::create_and_activate_channel(
         &app,
         "status-ch",
-        json!({
-            "name": "Status Check Workflow",
-            "condition": true,
-            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-        }),
+        common::simple_log_workflow("Status Check Workflow"),
     )
     .await;
 

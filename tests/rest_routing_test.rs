@@ -186,18 +186,7 @@ async fn test_backward_compat_simple_http_channel() {
     common::create_and_activate_channel(
         &app,
         "events",
-        json!({
-            "name": "Events Workflow",
-            "condition": true,
-            "tasks": [{
-                "id": "e1",
-                "name": "Log",
-                "function": {
-                    "name": "log",
-                    "input": { "message": "event received" }
-                }
-            }]
-        }),
+        common::simple_log_workflow("Events Workflow"),
     )
     .await;
 

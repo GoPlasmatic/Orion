@@ -150,11 +150,7 @@ async fn test_channel_without_timeout_succeeds() {
     common::create_and_activate_channel(
         &app,
         "no-timeout-ch",
-        json!({
-            "name": "No Timeout Workflow",
-            "condition": true,
-            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "fast"}}}]
-        }),
+        common::simple_log_workflow("No Timeout Workflow"),
     )
     .await;
 
@@ -293,11 +289,7 @@ async fn test_channel_without_validation_logic_passes_any_input() {
     common::create_and_activate_channel(
         &app,
         "no-validation-ch",
-        json!({
-            "name": "No Validation WF",
-            "condition": true,
-            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-        }),
+        common::simple_log_workflow("No Validation WF"),
     )
     .await;
 
@@ -426,11 +418,7 @@ async fn test_channel_without_cors_allows_any_origin() {
     common::create_and_activate_channel(
         &app,
         "no-cors-ch",
-        json!({
-            "name": "No CORS WF",
-            "condition": true,
-            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-        }),
+        common::simple_log_workflow("No CORS WF"),
     )
     .await;
 
@@ -542,11 +530,7 @@ async fn test_channel_without_backpressure_allows_requests() {
     common::create_and_activate_channel(
         &app,
         "no-bp-ch",
-        json!({
-            "name": "No Backpressure WF",
-            "condition": true,
-            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-        }),
+        common::simple_log_workflow("No Backpressure WF"),
     )
     .await;
 

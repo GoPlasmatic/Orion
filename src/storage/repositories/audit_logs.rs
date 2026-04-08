@@ -78,9 +78,7 @@ impl AuditLogRepository for SqlAuditLogRepository {
             }
 
             let (sql, values) = query.build_sqlx(query_builder());
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
-                .await?;
+            sqlx::query_with(&sql, values).execute(&self.pool).await?;
             Ok(())
         })
         .await

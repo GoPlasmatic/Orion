@@ -10,8 +10,11 @@ use futures::TryStreamExt;
 use mongodb::bson::{self, Document};
 use serde_json::Value;
 
+use super::connector_helpers::{
+    apply_output, extract_custom_input, require_db_connector, require_str_field, resolve_connector,
+};
+use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
 
 /// Workflow function handler for reading documents from MongoDB.
 pub struct MongoReadHandler {
@@ -27,27 +30,10 @@ impl AsyncFunctionHandler for MongoReadHandler {
         config: &FunctionConfig,
         _datalogic: Arc<DataLogic>,
     ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
-        let input = match config {
-            FunctionConfig::Custom { input, .. } => input,
-            _ => {
-                return Err(DataflowError::Validation(
-                    "Expected Custom config for mongo_read".into(),
-                ));
-            }
-        };
-
-        let connector_name = input
-            .get("connector")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DataflowError::Validation("mongo_read requires 'connector'".into()))?;
-        let database = input
-            .get("database")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DataflowError::Validation("mongo_read requires 'database'".into()))?;
-        let collection = input
-            .get("collection")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DataflowError::Validation("mongo_read requires 'collection'".into()))?;
+        let input = extract_custom_input(config, "mongo_read")?;
+        let connector_name = require_str_field(input, "connector", "mongo_read")?;
+        let database = require_str_field(input, "database", "mongo_read")?;
+        let collection = require_str_field(input, "collection", "mongo_read")?;
 
         // Optional filter document (default: {} = match all)
         let filter_val = input
@@ -57,22 +43,8 @@ impl AsyncFunctionHandler for MongoReadHandler {
         let filter_doc = bson::to_document(&filter_val)
             .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {}", e)))?;
 
-        // Resolve connector
-        let connector_config = self.registry.get(connector_name).await.ok_or_else(|| {
-            DataflowError::function_execution(
-                format!("Connector '{}' not found", connector_name),
-                None,
-            )
-        })?;
-        let db_config = match connector_config.as_ref() {
-            ConnectorConfig::Db(c) => c,
-            _ => {
-                return Err(DataflowError::Validation(format!(
-                    "Connector '{}' is not a database connector",
-                    connector_name
-                )));
-            }
-        };
+        let connector_config = resolve_connector(&self.registry, connector_name).await?;
+        let db_config = require_db_connector(&connector_config, connector_name)?;
 
         let client = self
             .pool_cache
@@ -100,16 +72,7 @@ impl AsyncFunctionHandler for MongoReadHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("data");
 
-        let old_value = super::http_common::get_nested(&message.context, output_path);
-        let new_value = Value::Array(result);
-        super::http_common::set_nested(&mut message.context, output_path, new_value.clone());
-        message.invalidate_context_cache();
-
-        let changes = vec![Change {
-            path: Arc::from(output_path),
-            old_value: Arc::new(old_value),
-            new_value: Arc::new(new_value),
-        }];
+        let changes = apply_output(message, output_path, Value::Array(result));
         Ok((1, changes))
     }
 }

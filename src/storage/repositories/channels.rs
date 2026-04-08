@@ -12,6 +12,7 @@ use crate::storage::{
     schema::{Channels, CurrentChannels},
 };
 
+use super::helpers::{clamp_pagination, optional_string_value};
 use super::workflows::PaginatedResult;
 
 // -- DTOs --
@@ -156,35 +157,12 @@ impl ChannelRepository for SqlChannelRepository {
             let transport_config_json = serde_json::to_string(&req.transport_config)?;
             let config_json = serde_json::to_string(&req.config)?;
 
-            let methods_val: sea_query::Value = methods_json
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let description_val: sea_query::Value = req
-                .description
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let route_pattern_val: sea_query::Value = req
-                .route_pattern
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let topic_val: sea_query::Value = req
-                .topic
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let consumer_group_val: sea_query::Value = req
-                .consumer_group
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let workflow_id_val: sea_query::Value = req
-                .workflow_id
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
+            let methods_val = optional_string_value(methods_json.as_deref());
+            let description_val = optional_string_value(req.description.as_deref());
+            let route_pattern_val = optional_string_value(req.route_pattern.as_deref());
+            let topic_val = optional_string_value(req.topic.as_deref());
+            let consumer_group_val = optional_string_value(req.consumer_group.as_deref());
+            let workflow_id_val = optional_string_value(req.workflow_id.as_deref());
 
             let (sql, values) = Query::insert()
                 .into_table(Channels::Table)
@@ -274,8 +252,7 @@ impl ChannelRepository for SqlChannelRepository {
     ) -> Result<PaginatedResult<Channel>, OrionError> {
         crate::metrics::timed_db_op("channels.list_paginated", async {
             let cond = build_condition(filter);
-            let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
-            let offset = filter.offset.unwrap_or(0).max(0);
+            let (limit, offset) = clamp_pagination(filter.limit, filter.offset);
 
             let (count_sql, count_values) = Query::select()
                 .expr(Func::count(Expr::col(Asterisk)))
@@ -381,25 +358,12 @@ impl ChannelRepository for SqlChannelRepository {
                 None => existing.config_json.clone(),
             };
 
-            let description_val: sea_query::Value = description
-                .map(|s| s.to_string().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let methods_val: sea_query::Value = methods_json
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let route_pattern_val: sea_query::Value = route_pattern
-                .map(|s| s.to_string().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let topic_val: sea_query::Value = topic
-                .map(|s| s.to_string().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let consumer_group_val: sea_query::Value = consumer_group
-                .map(|s| s.to_string().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let workflow_id_val: sea_query::Value = workflow_id
-                .map(|s| s.to_string().into())
-                .unwrap_or(sea_query::Value::String(None));
+            let description_val = optional_string_value(description);
+            let methods_val = optional_string_value(methods_json.as_deref());
+            let route_pattern_val = optional_string_value(route_pattern);
+            let topic_val = optional_string_value(topic);
+            let consumer_group_val = optional_string_value(consumer_group);
+            let workflow_id_val = optional_string_value(workflow_id);
 
             let (sql, values) = Query::update()
                 .table(Channels::Table)
@@ -580,36 +544,12 @@ impl ChannelRepository for SqlChannelRepository {
 
             let new_version = latest.version + 1;
 
-            let description_val: sea_query::Value = latest
-                .description
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let methods_val: sea_query::Value = latest
-                .methods
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let route_pattern_val: sea_query::Value = latest
-                .route_pattern
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let topic_val: sea_query::Value = latest
-                .topic
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let consumer_group_val: sea_query::Value = latest
-                .consumer_group
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
-            let workflow_id_val: sea_query::Value = latest
-                .workflow_id
-                .as_ref()
-                .map(|s| s.as_str().into())
-                .unwrap_or(sea_query::Value::String(None));
+            let description_val = optional_string_value(latest.description.as_deref());
+            let methods_val = optional_string_value(latest.methods.as_deref());
+            let route_pattern_val = optional_string_value(latest.route_pattern.as_deref());
+            let topic_val = optional_string_value(latest.topic.as_deref());
+            let consumer_group_val = optional_string_value(latest.consumer_group.as_deref());
+            let workflow_id_val = optional_string_value(latest.workflow_id.as_deref());
 
             let (sql, values) = Query::insert()
                 .into_table(Channels::Table)

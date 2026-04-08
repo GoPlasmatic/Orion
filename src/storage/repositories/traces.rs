@@ -84,9 +84,7 @@ impl TraceRepository for SqlTraceRepository {
         crate::metrics::timed_db_op("traces.create_pending", async {
             let id = uuid::Uuid::new_v4().to_string();
 
-            let input_val: sea_query::Value = input_json
-                .map(|s| s.to_string().into())
-                .unwrap_or(sea_query::Value::String(None));
+            let input_val = super::helpers::optional_string_value(input_json);
 
             let (sql, values) = Query::insert()
                 .into_table(Traces::Table)
@@ -204,9 +202,7 @@ impl TraceRepository for SqlTraceRepository {
             let id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now().naive_utc().to_string();
 
-            let input_val: sea_query::Value = input_json
-                .map(|s| s.to_string().into())
-                .unwrap_or(sea_query::Value::String(None));
+            let input_val = super::helpers::optional_string_value(input_json);
 
             let (sql, values) = Query::insert()
                 .into_table(Traces::Table)
@@ -246,8 +242,7 @@ impl TraceRepository for SqlTraceRepository {
         filter: &TraceFilter,
     ) -> Result<PaginatedResult<Trace>, OrionError> {
         crate::metrics::timed_db_op("traces.list_paginated", async {
-            let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
-            let offset = filter.offset.unwrap_or(0).max(0);
+            let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
 
             let mut cond = Condition::all();
             if let Some(ref status) = filter.status {

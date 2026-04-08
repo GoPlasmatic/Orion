@@ -41,7 +41,9 @@ pub struct ChannelConfig {
     pub timeout_ms: Option<u64>,
 
     /// Response caching configuration.
-    /// TODO: not yet wired into the request pipeline.
+    /// NOTE: Parsed for forward-compatibility but not yet wired into the
+    /// request pipeline. Including this field in channel config is safe and
+    /// will take effect once response caching is implemented.
     #[serde(default)]
     pub cache: Option<ChannelCacheConfig>,
 
@@ -461,10 +463,7 @@ impl ChannelRegistry {
                         match connector_registry.get(connector_name).await {
                             Some(cfg) => match cfg.as_ref() {
                                 crate::connector::ConnectorConfig::Cache(cache_cfg) => {
-                                    match cache_pool
-                                        .get_backend(connector_name, cache_cfg)
-                                        .await
-                                    {
+                                    match cache_pool.get_backend(connector_name, cache_cfg).await {
                                         Ok(backend) => Some(backend),
                                         Err(e) => {
                                             tracing::warn!(

@@ -12,6 +12,8 @@ use crate::storage::{
     schema::{CurrentWorkflows, Workflows},
 };
 
+use super::helpers::{clamp_pagination, optional_string_value};
+
 #[derive(Debug, Serialize)]
 pub struct PaginatedResult<T: Serialize> {
     pub data: Vec<T>,
@@ -168,11 +170,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let tasks_json = serde_json::to_string(&req.tasks)?;
             let tags_json = serde_json::to_string(&req.tags)?;
 
-            let description_val: sea_query::Value = req
-                .description
-                .as_deref()
-                .map(|s| s.to_string().into())
-                .unwrap_or(sea_query::Value::String(None));
+            let description_val = optional_string_value(req.description.as_deref());
 
             let (sql, values) = Query::insert()
                 .into_table(Workflows::Table)
@@ -271,8 +269,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
     ) -> Result<PaginatedResult<Workflow>, OrionError> {
         crate::metrics::timed_db_op("workflows.list_paginated", async {
             let cond = build_condition(filter);
-            let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
-            let offset = filter.offset.unwrap_or(0).max(0);
+            let (limit, offset) = clamp_pagination(filter.limit, filter.offset);
 
             // Count
             let (sql, values) = Query::select()
@@ -365,9 +362,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 None => existing.tags.clone(),
             };
 
-            let description_val: sea_query::Value = description
-                .map(|s| s.to_string().into())
-                .unwrap_or(sea_query::Value::String(None));
+            let description_val = optional_string_value(description);
 
             let (sql, values) = Query::update()
                 .table(Workflows::Table)
@@ -701,11 +696,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             let new_version = latest.version + 1;
 
-            let description_val: sea_query::Value = latest
-                .description
-                .as_deref()
-                .map(|s| s.to_string().into())
-                .unwrap_or(sea_query::Value::String(None));
+            let description_val = optional_string_value(latest.description.as_deref());
 
             let (sql, values) = Query::insert()
                 .into_table(Workflows::Table)

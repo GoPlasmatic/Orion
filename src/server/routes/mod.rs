@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod data;
 pub mod openapi;
+pub mod response_helpers;
 
 use std::sync::Arc;
 
@@ -182,7 +183,10 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
         *engine_write = new_engine;
 
         // Rebuild channel registry
-        state.channel_registry.reload(&channels, &state.connector_registry, &state.cache_pool).await;
+        state
+            .channel_registry
+            .reload(&channels, &state.connector_registry, &state.cache_pool)
+            .await;
 
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);

@@ -27,11 +27,7 @@ async fn test_concurrent_data_requests_multiple_channels() {
         common::create_and_activate_channel(
             &app,
             &format!("conc-ch-{}", i),
-            json!({
-                "name": format!("Conc Workflow {}", i),
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-            }),
+            common::simple_log_workflow(&format!("Conc Workflow {}", i)),
         )
         .await;
     }
@@ -81,11 +77,7 @@ async fn test_engine_reload_under_data_load() {
     common::create_and_activate_channel(
         &app,
         "reload-ch",
-        json!({
-            "name": "Reload Test Workflow",
-            "condition": true,
-            "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
-        }),
+        common::simple_log_workflow("Reload Test Workflow"),
     )
     .await;
 
@@ -172,11 +164,7 @@ async fn test_channel_status_race_no_panics() {
         .oneshot(common::json_request(
             "POST",
             "/api/v1/admin/workflows",
-            Some(json!({
-                "name": "Race Workflow",
-                "condition": true,
-                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "race"}}}]
-            })),
+            Some(common::simple_log_workflow("Race Workflow")),
         ))
         .await
         .unwrap();
@@ -292,11 +280,7 @@ async fn test_concurrent_workflow_creation_same_name() {
                 .oneshot(common::json_request(
                     "POST",
                     "/api/v1/admin/workflows",
-                    Some(json!({
-                        "name": "duplicate-wf",
-                        "condition": true,
-                        "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "dup"}}}]
-                    })),
+                    Some(common::simple_log_workflow("duplicate-wf")),
                 ))
                 .await
                 .unwrap();

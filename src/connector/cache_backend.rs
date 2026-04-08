@@ -232,7 +232,9 @@ impl CachePool {
         Self {
             memory: MemoryCacheBackend::new(cleanup_interval_secs),
             #[cfg(feature = "connectors-redis")]
-            redis: Arc::new(super::redis_pool::RedisPoolCache::new(max_redis_pool_entries)),
+            redis: Arc::new(super::redis_pool::RedisPoolCache::new(
+                max_redis_pool_entries,
+            )),
         }
     }
 

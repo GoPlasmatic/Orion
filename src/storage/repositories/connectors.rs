@@ -146,8 +146,7 @@ impl ConnectorRepository for SqlConnectorRepository {
         filter: &ConnectorFilter,
     ) -> Result<PaginatedResult<Connector>, OrionError> {
         crate::metrics::timed_db_op("connectors.list_paginated", async {
-            let limit = filter.limit.unwrap_or(50).clamp(1, 1000);
-            let offset = filter.offset.unwrap_or(0).max(0);
+            let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
 
             let (count_sql, count_values) = Query::select()
                 .expr(Func::count(Expr::col(Asterisk)))

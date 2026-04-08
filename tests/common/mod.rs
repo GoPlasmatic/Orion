@@ -212,6 +212,60 @@ pub async fn create_and_activate_channel(
     (channel_name.to_string(), workflow_id)
 }
 
+// ============================================================
+// Common test fixtures — avoids duplicating JSON payloads across tests
+// ============================================================
+
+/// A simple workflow that just logs a message. Used by most tests that need
+/// an active workflow but don't care about its logic.
+#[allow(dead_code)]
+pub fn simple_log_workflow(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "condition": true,
+        "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+    })
+}
+
+/// A workflow with priority and optional description. For tests that exercise
+/// those specific fields.
+#[allow(dead_code)]
+pub fn workflow_with_priority(name: &str, priority: i64) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "priority": priority,
+        "condition": true,
+        "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
+    })
+}
+
+/// A sync HTTP channel pointing at the given workflow_id. Used by tests
+/// that need a channel associated with a specific route pattern.
+#[allow(dead_code)]
+pub fn sync_http_channel(name: &str, workflow_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "channel_type": "sync",
+        "protocol": "http",
+        "methods": ["POST"],
+        "route_pattern": format!("/{}", name),
+        "workflow_id": workflow_id,
+    })
+}
+
+/// A database connector fixture for tests that exercise connector CRUD.
+#[allow(dead_code)]
+pub fn db_connector(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "connector_type": "db",
+        "config": {
+            "connection_string": "sqlite::memory:",
+            "driver": "sqlite"
+        }
+    })
+}
+
 /// Poll a trace until it reaches a terminal status or max iterations.
 #[allow(dead_code)]
 pub async fn poll_trace_until_done(

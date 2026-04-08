@@ -28,6 +28,22 @@ struct Cli {
     config: Option<String>,
 }
 
+/// Initialise a plain `tracing_subscriber::fmt` subscriber (no OpenTelemetry).
+fn init_fmt_subscriber(level: &str, format: &LogFormat) {
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    match format {
+        LogFormat::Json => {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .json()
+                .init();
+        }
+        LogFormat::Pretty => {
+            tracing_subscriber::fmt().with_env_filter(env_filter).init();
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -65,36 +81,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Some(provider)
         } else {
-            match config.logging.format {
-                LogFormat::Json => {
-                    tracing_subscriber::fmt()
-                        .with_env_filter(env_filter)
-                        .json()
-                        .init();
-                }
-                LogFormat::Pretty => {
-                    tracing_subscriber::fmt().with_env_filter(env_filter).init();
-                }
-            }
+            init_fmt_subscriber(&config.logging.level, &config.logging.format);
             None
         }
     };
 
     #[cfg(not(feature = "otel"))]
     {
-        let env_filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
-        match config.logging.format {
-            LogFormat::Json => {
-                tracing_subscriber::fmt()
-                    .with_env_filter(env_filter)
-                    .json()
-                    .init();
-            }
-            LogFormat::Pretty => {
-                tracing_subscriber::fmt().with_env_filter(env_filter).init();
-            }
-        }
+        init_fmt_subscriber(&config.logging.level, &config.logging.format);
         if config.tracing.enabled {
             eprintln!(
                 "WARNING: tracing.enabled=true but Orion was compiled without the `otel` feature. \

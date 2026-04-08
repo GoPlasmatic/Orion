@@ -37,9 +37,10 @@ impl ConsumerHandle {
 
     /// Pause all assigned partitions (blocks message delivery without leaving consumer group).
     pub fn pause(&self) -> Result<(), OrionError> {
-        let assignment = self.consumer.assignment().map_err(|e| {
-            OrionError::Internal(format!("Failed to get consumer assignment: {e}"))
-        })?;
+        let assignment = self
+            .consumer
+            .assignment()
+            .map_err(|e| OrionError::Internal(format!("Failed to get consumer assignment: {e}")))?;
         if assignment.count() == 0 {
             return Ok(());
         }
@@ -51,9 +52,10 @@ impl ConsumerHandle {
 
     /// Resume all assigned partitions.
     pub fn resume(&self) -> Result<(), OrionError> {
-        let assignment = self.consumer.assignment().map_err(|e| {
-            OrionError::Internal(format!("Failed to get consumer assignment: {e}"))
-        })?;
+        let assignment = self
+            .consumer
+            .assignment()
+            .map_err(|e| OrionError::Internal(format!("Failed to get consumer assignment: {e}")))?;
         if assignment.count() == 0 {
             return Ok(());
         }
