@@ -225,6 +225,7 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use crate::config::TopicMapping;

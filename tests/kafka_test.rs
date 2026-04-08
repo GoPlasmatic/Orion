@@ -206,11 +206,11 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_secs(5), dlq_consumer.recv()).await {
             Ok(Ok(msg)) => {
-                if let Some(payload) = msg.payload() {
-                    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(payload) {
-                        dlq_payload = Some(val);
-                        break;
-                    }
+                if let Some(payload) = msg.payload()
+                    && let Ok(val) = serde_json::from_slice::<serde_json::Value>(payload)
+                {
+                    dlq_payload = Some(val);
+                    break;
                 }
             }
             Ok(Err(_)) => {

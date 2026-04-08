@@ -944,6 +944,7 @@ pub fn workflow_to_dataflow_with_rollout(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

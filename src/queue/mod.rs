@@ -85,6 +85,17 @@ pub struct TraceQueue {
 }
 
 impl TraceQueue {
+    /// Create a TraceQueue for testing. The receiver must be consumed elsewhere.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(sender: mpsc::Sender<QueueMessage>) -> Self {
+        Self {
+            sender,
+            pending_count: Arc::new(AtomicUsize::new(0)),
+            memory_bytes: Arc::new(AtomicUsize::new(0)),
+            max_memory_bytes: 100_000_000,
+        }
+    }
+
     /// Submit a trace to the queue for background processing.
     pub async fn submit(&self, msg: QueueMessage) -> Result<(), crate::errors::OrionError> {
         // Estimate payload memory (approximate — excludes struct overhead)
