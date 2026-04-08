@@ -25,6 +25,9 @@ pub async fn test_app() -> Router {
 /// Create a test app with a custom config (e.g. for rate limiting tests).
 #[allow(dead_code)]
 pub async fn test_app_with_config(config: AppConfig) -> Router {
+    // Install sqlx Any drivers for external connector pools (db_read/db_write tests)
+    sqlx::any::install_default_drivers();
+
     let storage_config = orion::config::StorageConfig {
         url: "sqlite::memory:".to_string(),
         max_connections: 5,
@@ -39,7 +42,9 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
     let audit_log_repo = Arc::new(
         orion::storage::repositories::audit_logs::SqlAuditLogRepository::new(pool.clone()),
     );
-    let connector_registry = Arc::new(ConnectorRegistry::new(Default::default()));
+    let connector_registry = Arc::new(ConnectorRegistry::new(
+        config.engine.circuit_breaker.clone(),
+    ));
     let channel_registry = Arc::new(ChannelRegistry::new());
     let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
         config.engine.max_pool_cache_entries,
@@ -275,6 +280,151 @@ pub fn db_connector(name: &str) -> serde_json::Value {
             "driver": "sqlite"
         }
     })
+}
+
+/// A SQLite database connector for integration tests.
+/// Uses a shared named in-memory DB so multiple queries share the same data.
+#[allow(dead_code)]
+pub fn db_connector_sqlite(name: &str, db_path: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": name,
+        "name": name,
+        "connector_type": "db",
+        "config": {
+            "type": "db",
+            "connection_string": db_path,
+            "driver": "sqlite",
+            "max_connections": 1,
+            "query_timeout_ms": 5000
+        }
+    })
+}
+
+/// An in-memory cache connector for integration tests.
+#[allow(dead_code)]
+pub fn cache_connector_memory(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": name,
+        "name": name,
+        "connector_type": "cache",
+        "config": {
+            "type": "cache",
+            "backend": "memory"
+        }
+    })
+}
+
+/// A Redis-backed cache connector (for #[ignore] tests).
+#[allow(dead_code)]
+pub fn cache_connector_redis(name: &str, url: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": name,
+        "name": name,
+        "connector_type": "cache",
+        "config": {
+            "type": "cache",
+            "backend": "redis",
+            "url": url
+        }
+    })
+}
+
+/// Create a connector via admin API and return the connector ID.
+#[allow(dead_code)]
+pub async fn create_connector(app: &axum::Router, connector_json: serde_json::Value) -> String {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(connector_json),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    let body = body_json(resp).await;
+    body["data"]["id"].as_str().unwrap().to_string()
+}
+
+/// A generic workflow builder that wraps a tasks array with `condition: true`.
+#[allow(dead_code)]
+pub fn workflow_with_tasks(name: &str, tasks: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "condition": true,
+        "tasks": tasks
+    })
+}
+
+/// Create and activate a channel with custom config (dedup, cache, validation, etc.).
+#[allow(dead_code)]
+pub async fn create_and_activate_channel_with_config(
+    app: &axum::Router,
+    channel_name: &str,
+    workflow_json: serde_json::Value,
+    channel_config: serde_json::Value,
+) -> (String, String) {
+    // Create workflow
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(workflow_json),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    let body = body_json(resp).await;
+    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+
+    // Activate workflow
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{}/status", workflow_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+    // Create channel with config
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(serde_json::json!({
+                "name": channel_name,
+                "channel_type": "sync",
+                "protocol": "http",
+                "methods": ["POST"],
+                "route_pattern": format!("/{}", channel_name),
+                "workflow_id": workflow_id,
+                "config": channel_config,
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    let body = body_json(resp).await;
+    let channel_id = body["data"]["channel_id"].as_str().unwrap().to_string();
+
+    // Activate channel
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{}/status", channel_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+    (channel_name.to_string(), workflow_id)
 }
 
 /// Poll a trace until it reaches a terminal status or max iterations.
