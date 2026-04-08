@@ -74,7 +74,6 @@ pub fn start_dlq_retry(
                         channel: entry.channel.clone(),
                         payload,
                         metadata,
-                        #[cfg(feature = "otel")]
                         trace_headers: std::collections::HashMap::new(),
                     })
                     .await;

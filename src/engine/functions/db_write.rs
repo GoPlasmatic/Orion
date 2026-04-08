@@ -5,7 +5,6 @@ use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::functions::config::FunctionConfig;
 use dataflow_rs::engine::message::{Change, Message};
 use datalogic_rs::DataLogic;
-use serde_json::Value;
 
 use super::connector_helpers::{
     apply_output, bind_json_params, extract_custom_input, extract_output_path,

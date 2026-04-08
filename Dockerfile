@@ -1,12 +1,6 @@
 # Build stage
 FROM rust:1.93-slim AS builder
 
-# Features to compile. Override with --build-arg to customize.
-# Examples:
-#   --build-arg FEATURES="db-postgres,kafka,otel"
-#   --build-arg FEATURES="db-sqlite,swagger-ui"
-ARG FEATURES="default"
-
 RUN apt-get update && apt-get install -y pkg-config cmake g++ curl libcurl4-openssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -17,7 +11,7 @@ COPY src/ src/
 COPY migrations/ migrations/
 COPY build.rs ./
 
-RUN cargo build --release --locked --features "${FEATURES}"
+RUN cargo build --release --locked
 
 # Runtime stage
 FROM debian:trixie-slim

@@ -3,9 +3,7 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
-#[cfg(feature = "otel")]
 use tracing_subscriber::layer::SubscriberExt;
-#[cfg(feature = "otel")]
 use tracing_subscriber::util::SubscriberInitExt;
 
 use orion::config::{self, LogFormat};
@@ -112,64 +110,91 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::ValidateConfig) => {
             println!("Configuration is valid.\n");
             println!("  environment:     {}", config.environment);
-            println!("  server:          {}:{}", config.server.host, config.server.port);
-            println!("  tls:             {}", if config.server.tls.enabled {
-                format!("enabled (cert={})", config.server.tls.cert_path)
-            } else {
-                "disabled".to_string()
-            });
+            println!(
+                "  server:          {}:{}",
+                config.server.host, config.server.port
+            );
+            println!(
+                "  tls:             {}",
+                if config.server.tls.enabled {
+                    format!("enabled (cert={})", config.server.tls.cert_path)
+                } else {
+                    "disabled".to_string()
+                }
+            );
             println!("  storage:         {}", config.storage.url);
-            println!("  logging:         level={}, format={}", config.logging.level, match config.logging.format {
-                config::LogFormat::Json => "json",
-                config::LogFormat::Pretty => "pretty",
-            });
-            println!("  admin_auth:      {}", if config.admin_auth.enabled { "enabled" } else { "disabled" });
-            println!("  cors:            {}", config.cors.allowed_origins.join(", "));
-            println!("  rate_limiting:   {}", if config.rate_limit.enabled {
-                format!("enabled (rps={}, burst={})", config.rate_limit.default_rps, config.rate_limit.default_burst)
-            } else {
-                "disabled".to_string()
-            });
-            println!("  queue:           workers={}, buffer={}", config.queue.workers, config.queue.buffer_size);
-            println!("  metrics:         {}", if config.metrics.enabled { "enabled" } else { "disabled" });
-            println!("  tracing:         {}", if config.tracing.enabled {
-                format!("enabled (endpoint={})", config.tracing.otlp_endpoint)
-            } else {
-                "disabled".to_string()
-            });
-            #[cfg(feature = "kafka")]
-            println!("  kafka:           {}", if config.kafka.enabled {
-                format!("enabled (brokers={})", config.kafka.brokers.join(","))
-            } else {
-                "disabled".to_string()
-            });
+            println!(
+                "  logging:         level={}, format={}",
+                config.logging.level,
+                match config.logging.format {
+                    config::LogFormat::Json => "json",
+                    config::LogFormat::Pretty => "pretty",
+                }
+            );
+            println!(
+                "  admin_auth:      {}",
+                if config.admin_auth.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+            println!(
+                "  cors:            {}",
+                config.cors.allowed_origins.join(", ")
+            );
+            println!(
+                "  rate_limiting:   {}",
+                if config.rate_limit.enabled {
+                    format!(
+                        "enabled (rps={}, burst={})",
+                        config.rate_limit.default_rps, config.rate_limit.default_burst
+                    )
+                } else {
+                    "disabled".to_string()
+                }
+            );
+            println!(
+                "  queue:           workers={}, buffer={}",
+                config.queue.workers, config.queue.buffer_size
+            );
+            println!(
+                "  metrics:         {}",
+                if config.metrics.enabled {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+            println!(
+                "  tracing:         {}",
+                if config.tracing.enabled {
+                    format!("enabled (endpoint={})", config.tracing.otlp_endpoint)
+                } else {
+                    "disabled".to_string()
+                }
+            );
+            println!(
+                "  kafka:           {}",
+                if config.kafka.enabled {
+                    format!("enabled (brokers={})", config.kafka.brokers.join(","))
+                } else {
+                    "disabled".to_string()
+                }
+            );
             let features: &[&str] = &[
-                #[cfg(feature = "db-sqlite")]
                 "db-sqlite",
-                #[cfg(feature = "db-postgres")]
                 "db-postgres",
-                #[cfg(feature = "db-mysql")]
                 "db-mysql",
-                #[cfg(feature = "kafka")]
                 "kafka",
-                #[cfg(feature = "tls")]
                 "tls",
-                #[cfg(feature = "otel")]
                 "otel",
-                #[cfg(feature = "swagger-ui")]
                 "swagger-ui",
-                #[cfg(feature = "connectors-sql")]
                 "connectors-sql",
-                #[cfg(feature = "connectors-mongodb")]
                 "connectors-mongodb",
-                #[cfg(feature = "connectors-redis")]
                 "connectors-redis",
             ];
-            if features.is_empty() {
-                println!("  features:        none");
-            } else {
-                println!("  features:        {}", features.join(", "));
-            }
+            println!("  features:        {}", features.join(", "));
             return Ok(());
         }
         Some(Command::Migrate { dry_run }) => {
@@ -201,11 +226,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Init tracing subscriber with optional OpenTelemetry layer.
     //
-    // When the `otel` feature is compiled in and `tracing.enabled = true`,
-    // an additional OpenTelemetry layer is added that exports all spans via
-    // OTLP. Existing `#[instrument]` annotations automatically become
-    // distributed-trace-compatible with zero changes.
-    #[cfg(feature = "otel")]
+    // When `tracing.enabled = true`, an additional OpenTelemetry layer is added
+    // that exports all spans via OTLP. Existing `#[instrument]` annotations
+    // automatically become distributed-trace-compatible with zero changes.
     let _otel_provider = {
         let env_filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
@@ -234,17 +257,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    #[cfg(not(feature = "otel"))]
-    {
-        init_fmt_subscriber(&config.logging.level, &config.logging.format);
-        if config.tracing.enabled {
-            eprintln!(
-                "WARNING: tracing.enabled=true but Orion was compiled without the `otel` feature. \
-                 Rebuild with `--features otel` to enable OpenTelemetry trace export."
-            );
-        }
-    }
-
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         git_hash = env!("GIT_HASH"),
@@ -266,7 +278,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Install sqlx Any drivers for external connector pools (must be before any pool creation)
-    #[cfg(feature = "connectors-sql")]
     sqlx::any::install_default_drivers();
 
     // Init database
@@ -310,39 +321,32 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         dataflow_rs::Engine::new(vec![], None),
     )));
 
-    // Build cache pool (memory backend always available, redis feature-gated)
+    // Build cache pool (memory backend always available, redis always compiled)
     let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
-        #[cfg(feature = "connectors-redis")]
         config.engine.max_pool_cache_entries,
         config.engine.cache_cleanup_interval_secs,
     ));
 
     // Create external connector pool caches (shared with AppState for eviction on update/delete)
-    #[cfg(feature = "connectors-sql")]
     let sql_pool_cache = Arc::new(orion::connector::pool_cache::SqlPoolCache::new(
         config.engine.max_pool_cache_entries,
     ));
-    #[cfg(feature = "connectors-mongodb")]
     let mongo_pool_cache = Arc::new(orion::connector::mongo_pool::MongoPoolCache::new(
         config.engine.max_pool_cache_entries,
     ));
 
     // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
-    #[allow(unused_mut)]
     let mut custom_functions = orion::engine::build_custom_functions(
         connector_registry.clone(),
         http_client.clone(),
         engine.clone(),
         &config.engine,
         cache_pool.clone(),
-        #[cfg(feature = "connectors-sql")]
         sql_pool_cache.clone(),
-        #[cfg(feature = "connectors-mongodb")]
         mongo_pool_cache.clone(),
     );
 
-    // Kafka producer setup (when kafka feature is enabled)
-    #[cfg(feature = "kafka")]
+    // Kafka producer setup
     let kafka_producer = if config.kafka.enabled && !config.kafka.brokers.is_empty() {
         let producer = Arc::new(orion::kafka::producer::KafkaProducer::new(
             &config.kafka.brokers.join(","),
@@ -386,9 +390,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Mark the service as ready now that the engine and channel registry are loaded
     ready.store(true, std::sync::atomic::Ordering::Release);
 
-    // Start Kafka consumer (when kafka feature is enabled and configured).
+    // Start Kafka consumer (when configured).
     // Also load async channel topic mappings from the database.
-    #[cfg(feature = "kafka")]
     let kafka_consumer_handle = if config.kafka.enabled {
         // Merge config-file topics with DB-driven async channels
         let mut all_topics = config.kafka.topics.clone();
@@ -513,7 +516,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Build state and router
     let config = Arc::new(config);
 
-    #[cfg(feature = "kafka")]
     let kafka_consumer_handle_arc = Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle));
 
     let state = AppState {
@@ -539,13 +541,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         datalogic: Arc::new(datalogic_rs::DataLogic::new()),
         rate_limit_state,
         ready,
-        #[cfg(feature = "connectors-sql")]
         sql_pool_cache,
-        #[cfg(feature = "connectors-mongodb")]
         mongo_pool_cache,
-        #[cfg(feature = "kafka")]
         kafka_consumer_handle: kafka_consumer_handle_arc.clone(),
-        #[cfg(feature = "kafka")]
         kafka_producer,
     };
 
@@ -553,16 +551,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
 
-    // Warn if TLS is configured but the feature is not compiled
-    #[cfg(not(feature = "tls"))]
-    if config.server.tls.enabled {
-        tracing::warn!(
-            "server.tls.enabled=true but Orion was compiled without the `tls` feature. \
-             Rebuild with `--features tls` to enable HTTPS. Starting in plain HTTP mode."
-        );
-    }
-
-    #[cfg(feature = "tls")]
     if config.server.tls.enabled {
         let rustls_config = orion::server::tls::load_rustls_config(
             &config.server.tls.cert_path,
@@ -599,19 +587,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     }
 
-    #[cfg(not(feature = "tls"))]
-    {
-        serve_plain_http(
-            &addr,
-            &config.storage.url,
-            config.server.shutdown_drain_secs,
-            router,
-        )
-        .await?;
-    }
-
     // Graceful shutdown
-    #[cfg(feature = "kafka")]
     if let Some(handle) = kafka_consumer_handle_arc.lock().await.take() {
         tracing::info!("Shutting down Kafka consumer...");
         handle.shutdown().await;
@@ -631,7 +607,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     worker_handle.shutdown().await;
 
     // Flush pending OTel spans before exit
-    #[cfg(feature = "otel")]
     if let Some(provider) = _otel_provider {
         tracing::info!("Flushing OpenTelemetry spans...");
         if let Err(e) = provider.shutdown() {
@@ -644,8 +619,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Bind a plain (non-TLS) HTTP listener and serve `router` with graceful
-/// shutdown.  Extracted from the duplicated `#[cfg(feature = "tls")] else` and
-/// `#[cfg(not(feature = "tls"))]` code paths.
+/// shutdown.
 async fn serve_plain_http(
     addr: &str,
     storage_url: &str,

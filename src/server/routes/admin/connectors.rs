@@ -30,15 +30,14 @@ async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
 }
 
 /// Evict cached connection pools for a connector whose config may have changed.
-#[allow(unused_variables)]
 async fn evict_connector_pools(state: &AppState, connector_name: &str) {
-    #[cfg(feature = "connectors-sql")]
     state.sql_pool_cache.evict(connector_name).await;
-    #[cfg(feature = "connectors-redis")]
     state.cache_pool.evict_pool(connector_name).await;
-    #[cfg(feature = "connectors-mongodb")]
     state.mongo_pool_cache.evict(connector_name).await;
-    tracing::debug!(connector = connector_name, "Evicted cached connection pools");
+    tracing::debug!(
+        connector = connector_name,
+        "Evicted cached connection pools"
+    );
 }
 
 #[utoipa::path(

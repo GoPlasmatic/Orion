@@ -84,7 +84,7 @@
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/openapi.json` | OpenAPI 3.0 specification |
-| GET | `/docs` | Swagger UI (requires `swagger-ui` feature flag) |
+| GET | `/docs` | Swagger UI |
 
 ## Operational Endpoints
 

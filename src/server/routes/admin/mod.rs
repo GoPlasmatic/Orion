@@ -1,5 +1,4 @@
 pub(crate) mod audit;
-#[cfg(feature = "db-sqlite")]
 pub(crate) mod backups;
 pub(crate) mod channels;
 pub(crate) mod connectors;
@@ -21,7 +20,6 @@ use crate::storage::repositories::audit_logs::AuditLogRepository;
 // Re-export all handler functions so that `super::admin::list_channels` etc. still works
 // (needed by openapi.rs and integration tests).
 pub(crate) use audit::list_audit_logs;
-#[cfg(feature = "db-sqlite")]
 pub(crate) use backups::{create_backup, list_backups};
 pub(crate) use channels::{
     change_channel_status, create_channel, create_new_channel_version, delete_channel, get_channel,
@@ -140,11 +138,8 @@ pub fn admin_routes() -> Router<AppState> {
         .nest("/engine", engine_routes)
         .nest("/audit-logs", audit_routes);
 
-    #[cfg(feature = "db-sqlite")]
-    {
-        let backup_routes = Router::new().route("/", post(create_backup).get(list_backups));
-        router = router.nest("/backups", backup_routes);
-    }
+    let backup_routes = Router::new().route("/", post(create_backup).get(list_backups));
+    router = router.nest("/backups", backup_routes);
 
     router
 }

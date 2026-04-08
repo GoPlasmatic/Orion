@@ -199,7 +199,6 @@ pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: 
 // ---------------------------------------------------------------------------
 
 /// Set the consumer lag for a specific topic-partition.
-#[cfg(feature = "kafka")]
 pub fn set_kafka_consumer_lag(topic: &str, partition: i32, lag: f64) {
     gauge!(
         "kafka_consumer_lag",

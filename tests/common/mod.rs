@@ -42,9 +42,14 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
     let connector_registry = Arc::new(ConnectorRegistry::new(Default::default()));
     let channel_registry = Arc::new(ChannelRegistry::new());
     let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
-        #[cfg(feature = "connectors-redis")]
         config.engine.max_pool_cache_entries,
         60,
+    ));
+    let sql_pool_cache = Arc::new(orion::connector::pool_cache::SqlPoolCache::new(
+        config.engine.max_pool_cache_entries,
+    ));
+    let mongo_pool_cache = Arc::new(orion::connector::mongo_pool::MongoPoolCache::new(
+        config.engine.max_pool_cache_entries,
     ));
 
     let http_client = reqwest::Client::new();
@@ -58,6 +63,8 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         engine.clone(),
         &config.engine,
         cache_pool.clone(),
+        sql_pool_cache.clone(),
+        mongo_pool_cache.clone(),
     );
     let built_engine = dataflow_rs::Engine::new(vec![], Some(custom_functions));
     *engine.write().await = Arc::new(built_engine);
@@ -118,9 +125,9 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         datalogic: Arc::new(datalogic_rs::DataLogic::new()),
         rate_limit_state,
         ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        #[cfg(feature = "kafka")]
+        sql_pool_cache,
+        mongo_pool_cache,
         kafka_consumer_handle: Arc::new(tokio::sync::Mutex::new(None)),
-        #[cfg(feature = "kafka")]
         kafka_producer: None,
     };
 

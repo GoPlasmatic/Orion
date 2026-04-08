@@ -57,11 +57,7 @@ impl<V: Clone> LruCache<V> {
     /// Uses a read-lock fast path; falls back to a write lock on miss.
     /// The `create_fn` future runs **outside** the write lock to avoid
     /// blocking other connectors during connection setup.
-    pub async fn get_or_create<F, Fut, E>(
-        &self,
-        key: &str,
-        create_fn: F,
-    ) -> Result<V, E>
+    pub async fn get_or_create<F, Fut, E>(&self, key: &str, create_fn: F) -> Result<V, E>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<V, E>>,
@@ -86,19 +82,18 @@ impl<V: Clone> LruCache<V> {
         }
 
         // LRU eviction when at capacity
-        if entries.len() >= self.max_entries {
-            if let Some(lru_key) = entries
+        if entries.len() >= self.max_entries
+            && let Some(lru_key) = entries
                 .iter()
                 .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
                 .map(|(k, _)| k.clone())
-            {
-                tracing::info!(
-                    evicted = %lru_key,
-                    cache = self.cache_label,
-                    "Pool cache at capacity, evicting least-recently-used entry"
-                );
-                entries.remove(&lru_key);
-            }
+        {
+            tracing::info!(
+                evicted = %lru_key,
+                cache = self.cache_label,
+                "Pool cache at capacity, evicting least-recently-used entry"
+            );
+            entries.remove(&lru_key);
         }
 
         entries.insert(key.to_string(), CacheEntry::new(value.clone()));

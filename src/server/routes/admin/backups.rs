@@ -29,16 +29,26 @@ pub(crate) async fn create_backup(
     let backup_path = std::path::Path::new(backup_dir).join(&filename);
     let backup_path_str = backup_path.to_string_lossy().to_string();
 
-    sqlx::query(&format!(
-        "VACUUM INTO '{}'",
-        backup_path_str.replace('\'', "''")
-    ))
-    .execute(&state.db_pool)
-    .await
-    .map_err(|e| OrionError::InternalSource {
-        context: "Failed to create database backup".to_string(),
-        source: Box::new(e),
-    })?;
+    // VACUUM INTO is SQLite-specific
+    match &state.db_pool {
+        crate::storage::DbPool::Sqlite(p) => {
+            sqlx::query(&format!(
+                "VACUUM INTO '{}'",
+                backup_path_str.replace('\'', "''")
+            ))
+            .execute(p)
+            .await
+            .map_err(|e| OrionError::InternalSource {
+                context: "Failed to create database backup".to_string(),
+                source: Box::new(e),
+            })?;
+        }
+        _ => {
+            return Err(OrionError::BadRequest(
+                "Database backup via VACUUM INTO is only supported for SQLite".to_string(),
+            ));
+        }
+    }
 
     let metadata = std::fs::metadata(&backup_path).map_err(|e| OrionError::InternalSource {
         context: "Failed to read backup file metadata".to_string(),

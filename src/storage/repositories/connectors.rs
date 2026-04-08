@@ -1,13 +1,12 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
 use sea_query::{Asterisk, Expr, Func, Order, Query};
-use sea_query_binder::SqlxBinder;
 use serde::Deserialize;
 
 use crate::errors::OrionError;
 use crate::storage::models::Connector;
 use crate::storage::repositories::workflows::PaginatedResult;
-use crate::storage::{query_builder, schema::Connectors};
+use crate::storage::{build_sqlx, schema::Connectors};
 
 // -- DTOs --
 
@@ -77,24 +76,25 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let config_json = serde_json::to_string(&req.config)?;
 
-            let (sql, values) = Query::insert()
-                .into_table(Connectors::Table)
-                .columns([
-                    Connectors::Id,
-                    Connectors::Name,
-                    Connectors::ConnectorType,
-                    Connectors::ConfigJson,
-                ])
-                .values_panic([
-                    id.as_str().into(),
-                    req.name.as_str().into(),
-                    req.connector_type.as_str().into(),
-                    config_json.as_str().into(),
-                ])
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::insert()
+                    .into_table(Connectors::Table)
+                    .columns([
+                        Connectors::Id,
+                        Connectors::Name,
+                        Connectors::ConnectorType,
+                        Connectors::ConfigJson,
+                    ])
+                    .values_panic([
+                        id.as_str().into(),
+                        req.name.as_str().into(),
+                        req.connector_type.as_str().into(),
+                        config_json.as_str().into(),
+                    ]),
+            );
 
-            sqlx::query_with(&sql, values)
-                .execute(&self.pool)
+            self.pool
+                .execute_query(&sql, values)
                 .await
                 .map_err(|e| match e {
                     sqlx::Error::Database(ref db_err)
@@ -115,14 +115,15 @@ impl ConnectorRepository for SqlConnectorRepository {
 
     async fn get_by_id(&self, id: &str) -> Result<Connector, OrionError> {
         crate::metrics::timed_db_op("connectors.get_by_id", async {
-            let (sql, values) = Query::select()
-                .column(Asterisk)
-                .from(Connectors::Table)
-                .and_where(Expr::col(Connectors::Id).eq(id))
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Connectors::Table)
+                    .and_where(Expr::col(Connectors::Id).eq(id)),
+            );
 
-            sqlx::query_as_with::<_, Connector, _>(&sql, values)
-                .fetch_optional(&self.pool)
+            self.pool
+                .fetch_optional_as::<Connector>(&sql, values)
                 .await?
                 .ok_or_else(|| OrionError::NotFound(format!("Connector '{}' not found", id)))
         })
@@ -130,15 +131,14 @@ impl ConnectorRepository for SqlConnectorRepository {
     }
 
     async fn list(&self) -> Result<Vec<Connector>, OrionError> {
-        let (sql, values) = Query::select()
-            .column(Asterisk)
-            .from(Connectors::Table)
-            .order_by(Connectors::Name, Order::Asc)
-            .build_sqlx(query_builder());
+        let (sql, values) = build_sqlx(
+            Query::select()
+                .column(Asterisk)
+                .from(Connectors::Table)
+                .order_by(Connectors::Name, Order::Asc),
+        );
 
-        Ok(sqlx::query_as_with::<_, Connector, _>(&sql, values)
-            .fetch_all(&self.pool)
-            .await?)
+        Ok(self.pool.fetch_all_as::<Connector>(&sql, values).await?)
     }
 
     async fn list_paginated(
@@ -148,26 +148,27 @@ impl ConnectorRepository for SqlConnectorRepository {
         crate::metrics::timed_db_op("connectors.list_paginated", async {
             let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
 
-            let (count_sql, count_values) = Query::select()
-                .expr(Func::count(Expr::col(Asterisk)))
-                .from(Connectors::Table)
-                .build_sqlx(query_builder());
+            let (count_sql, count_values) = build_sqlx(
+                Query::select()
+                    .expr(Func::count(Expr::col(Asterisk)))
+                    .from(Connectors::Table),
+            );
 
-            let (total,): (i64,) = sqlx::query_as_with::<_, (i64,), _>(&count_sql, count_values)
-                .fetch_one(&self.pool)
+            let (total,): (i64,) = self
+                .pool
+                .fetch_one_as::<(i64,)>(&count_sql, count_values)
                 .await?;
 
-            let (sql, values) = Query::select()
-                .column(Asterisk)
-                .from(Connectors::Table)
-                .order_by(Connectors::Name, Order::Asc)
-                .limit(limit as u64)
-                .offset(offset as u64)
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Connectors::Table)
+                    .order_by(Connectors::Name, Order::Asc)
+                    .limit(limit as u64)
+                    .offset(offset as u64),
+            );
 
-            let data = sqlx::query_as_with::<_, Connector, _>(&sql, values)
-                .fetch_all(&self.pool)
-                .await?;
+            let data = self.pool.fetch_all_as::<Connector>(&sql, values).await?;
 
             Ok(PaginatedResult {
                 data,
@@ -198,16 +199,17 @@ impl ConnectorRepository for SqlConnectorRepository {
             };
             let enabled = req.enabled.unwrap_or(existing.enabled);
 
-            let (sql, values) = Query::update()
-                .table(Connectors::Table)
-                .value(Connectors::Name, name)
-                .value(Connectors::ConnectorType, connector_type)
-                .value(Connectors::ConfigJson, &config_json)
-                .value(Connectors::Enabled, enabled)
-                .and_where(Expr::col(Connectors::Id).eq(id))
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::update()
+                    .table(Connectors::Table)
+                    .value(Connectors::Name, name)
+                    .value(Connectors::ConnectorType, connector_type)
+                    .value(Connectors::ConfigJson, &config_json)
+                    .value(Connectors::Enabled, enabled)
+                    .and_where(Expr::col(Connectors::Id).eq(id)),
+            );
 
-            sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            self.pool.execute_query(&sql, values).await?;
 
             self.get_by_id(id).await
         })
@@ -216,14 +218,15 @@ impl ConnectorRepository for SqlConnectorRepository {
 
     async fn delete(&self, id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("connectors.delete", async {
-            let (sql, values) = Query::delete()
-                .from_table(Connectors::Table)
-                .and_where(Expr::col(Connectors::Id).eq(id))
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::delete()
+                    .from_table(Connectors::Table)
+                    .and_where(Expr::col(Connectors::Id).eq(id)),
+            );
 
-            let result = sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            let rows_affected = self.pool.execute_query(&sql, values).await?;
 
-            if result.rows_affected() == 0 {
+            if rows_affected == 0 {
                 return Err(OrionError::NotFound(format!(
                     "Connector '{}' not found",
                     id
@@ -237,16 +240,15 @@ impl ConnectorRepository for SqlConnectorRepository {
 
     async fn list_enabled(&self) -> Result<Vec<Connector>, OrionError> {
         crate::metrics::timed_db_op("connectors.list_enabled", async {
-            let (sql, values) = Query::select()
-                .column(Asterisk)
-                .from(Connectors::Table)
-                .and_where(Expr::col(Connectors::Enabled).eq(true))
-                .order_by(Connectors::Name, Order::Asc)
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Connectors::Table)
+                    .and_where(Expr::col(Connectors::Enabled).eq(true))
+                    .order_by(Connectors::Name, Order::Asc),
+            );
 
-            Ok(sqlx::query_as_with::<_, Connector, _>(&sql, values)
-                .fetch_all(&self.pool)
-                .await?)
+            Ok(self.pool.fetch_all_as::<Connector>(&sql, values).await?)
         })
         .await
     }

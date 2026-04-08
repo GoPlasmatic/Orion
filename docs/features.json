@@ -118,7 +118,7 @@
         },
         {
           "name": "Configuration",
-          "children": ["TOML + env var overrides", "Sensible defaults", "Feature flags"]
+          "children": ["TOML + env var overrides", "Sensible defaults", "Runtime configuration"]
         },
         {
           "name": "Distribution",

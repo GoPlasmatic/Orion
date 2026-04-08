@@ -24,13 +24,10 @@ pub fn api_routes() -> Router<AppState> {
         .nest("/api/v1/admin", admin::admin_routes())
         .nest("/api/v1/data", data::data_routes());
 
-    #[cfg(feature = "swagger-ui")]
-    let router = router.merge(
+    router.merge(
         utoipa_swagger_ui::SwaggerUi::new("/docs")
             .url("/api/v1/openapi.json", openapi::ApiDoc::openapi()),
-    );
-
-    router
+    )
 }
 
 #[utoipa::path(
@@ -192,7 +189,6 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
         crate::metrics::set_active_workflows(active_workflows.len() as f64);
 
         // Restart Kafka consumer if async channel topics changed
-        #[cfg(feature = "kafka")]
         if state.config.kafka.enabled {
             restart_kafka_consumer_if_needed(state, &channels).await;
         }
@@ -222,7 +218,6 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
 /// Merges config-file topics with DB-driven async channel topics. If the set
 /// of topics differs from what the current consumer is subscribed to, the old
 /// consumer is shut down and a new one is started.
-#[cfg(feature = "kafka")]
 async fn restart_kafka_consumer_if_needed(
     state: &AppState,
     channels: &[crate::storage::models::Channel],

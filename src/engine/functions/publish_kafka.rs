@@ -9,60 +9,16 @@ use datalogic_rs::DataLogic;
 
 use crate::connector::ConnectorRegistry;
 
-/// Stub handler used when the `kafka` feature is not enabled.
+/// Kafka publish handler.
 ///
-/// Returns an error explaining that Kafka support is not compiled in.
-#[cfg(not(feature = "kafka"))]
+/// When `producer` is `Some`, publishes messages to Kafka topics using the
+/// shared producer. When `producer` is `None`, returns an error explaining
+/// that Kafka support is not enabled.
 pub struct PublishKafkaHandler {
     pub registry: Arc<ConnectorRegistry>,
+    pub producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
 }
 
-#[cfg(not(feature = "kafka"))]
-#[async_trait]
-impl AsyncFunctionHandler for PublishKafkaHandler {
-    async fn execute(
-        &self,
-        _message: &mut Message,
-        config: &FunctionConfig,
-        _datalogic: Arc<DataLogic>,
-    ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
-        let input = match config {
-            FunctionConfig::PublishKafka { input, .. } => input,
-            _ => {
-                return Err(DataflowError::Validation(
-                    "Expected PublishKafka config".into(),
-                ));
-            }
-        };
-
-        let _connector = self.registry.get(&input.connector).await.ok_or_else(|| {
-            DataflowError::function_execution(
-                format!("Connector '{}' not found", input.connector),
-                None,
-            )
-        })?;
-
-        Err(DataflowError::FunctionExecution {
-            context: format!(
-                "Kafka publishing to topic '{}' is not available. \
-                 Enable the 'kafka' feature to use publish_kafka.",
-                input.topic
-            ),
-            source: None,
-        })
-    }
-}
-
-/// Real handler used when the `kafka` feature is enabled.
-///
-/// Publishes messages to Kafka topics using the shared producer.
-#[cfg(feature = "kafka")]
-pub struct PublishKafkaHandler {
-    pub registry: Arc<ConnectorRegistry>,
-    pub producer: Arc<crate::kafka::producer::KafkaProducer>,
-}
-
-#[cfg(feature = "kafka")]
 #[async_trait]
 impl AsyncFunctionHandler for PublishKafkaHandler {
     async fn execute(
@@ -87,6 +43,21 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
                 None,
             )
         })?;
+
+        // If no producer is available, return an error
+        let producer = match &self.producer {
+            Some(p) => p,
+            None => {
+                return Err(DataflowError::FunctionExecution {
+                    context: format!(
+                        "Kafka publishing to topic '{}' is not available. \
+                         Enable the 'kafka' feature to use publish_kafka.",
+                        input.topic
+                    ),
+                    source: None,
+                });
+            }
+        };
 
         // Evaluate key from JSONLogic if provided
         let key = if let Some(key_logic) = &input.key_logic {
@@ -137,7 +108,7 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
         };
 
         // Publish to Kafka
-        self.producer
+        producer
             .send(&input.topic, key.as_deref(), value.as_bytes())
             .await
             .map_err(|e| {

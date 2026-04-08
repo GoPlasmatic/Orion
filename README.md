@@ -276,7 +276,7 @@ Compose services from other services. Same interface, same governance, zero netw
 | `publish_kafka` | Publish messages to [Kafka topics](docs/kafka.md) |
 | `log` | Emit structured log entries for auditing and debugging |
 
-`db_read`/`db_write` require the `connectors-sql` feature flag. `mongo_read` requires the `connectors-mongodb` feature flag. `cache_read`/`cache_write` use in-memory cache by default; Redis-backed cache requires the `connectors-redis` feature flag.
+All functions are built in. `cache_read`/`cache_write` use in-memory cache by default; configure a Redis-backed connector for distributed caching.
 
 ---
 
@@ -292,7 +292,7 @@ Compose services from other services. Same interface, same governance, zero netw
 └────────────────┘   └────────────────────┘   └────────────────┘
 ```
 
-Single binary. SQLite by default — no database to provision, no runtime dependencies. Need more scale? Swap to **PostgreSQL** or **MySQL** with a feature flag at build time.
+Single binary. SQLite by default — no database to provision, no runtime dependencies. Need more scale? Swap to **PostgreSQL** or **MySQL** by changing the `storage.url` — no rebuild needed.
 
 **Same channel definitions work in any topology** — run everything in one instance, split channels across instances with include/exclude filters, or deploy as sidecars. The definition doesn't change; only the deployment config does.
 
@@ -334,11 +334,8 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/relea
 # Windows (PowerShell)
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-installer.ps1 | iex"
 
-# From source (SQLite default)
+# From source
 cargo install --git https://github.com/GoPlasmatic/Orion.git
-
-# From source (PostgreSQL backend)
-cargo install --git https://github.com/GoPlasmatic/Orion.git --no-default-features --features db-postgres,swagger-ui
 ```
 
 Verify with `orion-server --version`. See [Configuration](docs/configuration.md#deployment) for Docker and deployment options.
@@ -348,7 +345,7 @@ Verify with `orion-server --version`. See [Configuration](docs/configuration.md#
 | Guide | Description |
 |-------|-------------|
 | [API Reference](docs/api-reference.md) | Channels, workflows, connectors, data, and operational endpoints |
-| [Configuration](docs/configuration.md) | Config file, env vars, feature flags, database backends, deployment |
+| [Configuration](docs/configuration.md) | Config file, env vars, database backends, deployment |
 | [Connectors](docs/connectors.md) | HTTP, DB, Cache, Storage, MongoDB, Kafka — auth, retry, circuit breakers |
 | [Kafka Integration](docs/kafka.md) | Topic mapping, DB-driven consumers, DLQ, and publishing |
 | [Production Features](docs/production-features.md) | Versioning, rollout, deduplication, caching, REST routing, security |
@@ -366,9 +363,8 @@ Verify with `orion-server --version`. See [Configuration](docs/configuration.md#
 Contributions welcome. [Open an issue](https://github.com/GoPlasmatic/Orion/issues) or submit a pull request.
 
 ```bash
-cargo build                              # Build (SQLite default)
-cargo build --features kafka             # Build with Kafka support
-cargo build --features connectors-sql    # Build with external SQL connectors
+cargo build                              # Build (all features included)
+cargo build --release                    # Release build
 cargo test                               # Run tests
 cargo clippy                             # Lint
 cargo fmt                                # Format

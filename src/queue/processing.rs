@@ -124,7 +124,6 @@ async fn process_trace(
 ) {
     // Restore W3C trace context from the originating request so this span
     // appears as a child in the caller's distributed trace.
-    #[cfg(feature = "otel")]
     {
         use opentelemetry::propagation::TextMapPropagator;
         use opentelemetry_sdk::propagation::TraceContextPropagator;

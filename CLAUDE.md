@@ -13,43 +13,34 @@ Orion is a declarative services runtime written in Rust. It exposes business log
 ## Build & Development Commands
 
 ```bash
-cargo build                        # Build (default: SQLite + Kafka + OTEL + Swagger)
-cargo build --features kafka       # Build with Kafka support
-cargo build --features connectors-sql       # Build with external SQL connectors
-cargo build --features connectors-redis     # Build with Redis cache backend
-cargo build --features connectors-mongodb   # Build with MongoDB connectors
-cargo build --features tls         # Build with TLS/HTTPS support
+cargo build                        # Build (all features included)
 cargo build --release              # Release build
 
 cargo run -- --config ./config.toml  # Run with config file
 
 cargo test                         # Run all tests
-cargo test --all-features          # Run tests including all feature-gated code
 cargo test <test_name>             # Run a single test by name
 
 cargo clippy                       # Lint
-cargo clippy --all-features        # Lint including all feature-gated code
 cargo fmt                          # Format code
 ```
 
-Docker: `docker build -t orion .` (multi-stage: rust:1.93-slim -> debian:trixie-slim). Supports `--build-arg FEATURES="..."` for custom feature combinations.
+Docker: `docker build -t orion .` (multi-stage: rust:1.93-slim -> debian:trixie-slim).
 
-## Feature Flags
+## Runtime Configuration
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `db-sqlite` | Yes | SQLite storage backend (pick one backend per build) |
-| `db-postgres` | No | PostgreSQL storage backend |
-| `db-mysql` | No | MySQL storage backend |
-| `kafka` | Yes | Kafka producer & consumer via rdkafka |
-| `otel` | Yes | OpenTelemetry trace export via OTLP |
-| `swagger-ui` | Yes | Swagger UI at `/docs` |
-| `tls` | No | HTTPS/TLS via axum-server + rustls |
-| `connectors-sql` | No | External SQL connectors (`db_read`, `db_write` functions) |
-| `connectors-redis` | No | Redis-backed cache connector |
-| `connectors-mongodb` | No | MongoDB connector (`mongo_read` function) |
+All capabilities are compiled into a single binary — no feature flags. Behavior is controlled at runtime:
 
-Feature gates use `#[cfg(feature = "...")]` throughout the codebase. Exactly one of `db-sqlite`, `db-postgres`, `db-mysql` must be enabled.
+| Capability | Configuration | Default |
+|-----------|--------------|---------|
+| Database backend | `storage.url` scheme (`sqlite:`, `postgres://`, `mysql://`) | SQLite |
+| Kafka | `kafka.enabled` | Disabled |
+| OpenTelemetry | `tracing.enabled` | Disabled |
+| TLS/HTTPS | `server.tls.enabled` | Disabled |
+| Swagger UI | Always at `/docs` | Enabled |
+| SQL connectors | `db_read`/`db_write` functions | Always available |
+| Redis cache | `cache_read`/`cache_write` with Redis backend | Always available |
+| MongoDB connector | `mongo_read` function | Always available |
 
 ## Architecture
 
@@ -65,7 +56,7 @@ src/
 ├── engine/              # Dataflow engine & custom function handlers
 │   └── functions/       # http_call, channel_call, db_read/write, cache_read/write, etc.
 ├── errors.rs            # OrionError enum → HTTP response mapping
-├── kafka/               # Kafka producer & consumer (feature-gated)
+├── kafka/               # Kafka producer & consumer
 ├── metrics/             # Prometheus metrics collection
 ├── queue/               # Async trace processing, DLQ retry
 ├── server/              # HTTP server, routes, middleware, state
@@ -77,7 +68,7 @@ src/
 
 ### Startup Sequence (main.rs)
 
-CLI args → config (TOML + `ORION_SECTION__KEY` env overrides) → tracing → metrics → install SQLx drivers → DB pool (WAL mode) + migrations → repositories (workflows, channels, connectors, traces, audit_logs) → ConnectorRegistry → HTTP client → engine lock (pre-created for channel_call) → cache pool → external pool caches (SQL, MongoDB) → custom functions → optional Kafka producer → load active channels + workflows → filter by include/exclude patterns → build engine → populate engine lock → reload ChannelRegistry → optional Kafka consumer (config + DB topics merged) → trace queue workers → trace cleanup → DLQ retry → rate limiter → Axum HTTP server → graceful shutdown on SIGTERM/SIGINT.
+CLI args → config (TOML + `ORION_SECTION__KEY` env overrides) → tracing → metrics → detect DB backend from URL → DB pool + migrations → repositories (workflows, channels, connectors, traces, audit_logs) → ConnectorRegistry → HTTP client → engine lock (pre-created for channel_call) → cache pool → external pool caches (SQL, MongoDB) → custom functions → Kafka producer (if enabled) → load active channels + workflows → filter by include/exclude patterns → build engine → populate engine lock → reload ChannelRegistry → Kafka consumer (if enabled, config + DB topics merged) → trace queue workers → trace cleanup → DLQ retry → rate limiter → Axum HTTP server → graceful shutdown on SIGTERM/SIGINT.
 
 ### Key Architectural Patterns
 
@@ -85,18 +76,16 @@ CLI args → config (TOML + `ORION_SECTION__KEY` env overrides) → tracing → 
 - **Repository pattern:** Trait-based (`WorkflowRepository`, `ChannelRepository`, `ConnectorRepository`, `TraceRepository`, `TraceDlqRepository`, `AuditLogRepository`) with SQL implementations. Traits use `async_trait`. All repos are stored as `Arc<dyn Trait>` in `AppState`.
 - **Engine hot-reload:** Engine is `Arc<RwLock<Arc<Engine>>>`. Double-Arc allows swapping the inner engine while readers hold the old one. Reload triggers on status changes (activate/archive), delete, and manually via `POST /api/v1/admin/engine/reload`. Draft creates/updates do not trigger reload. Also rebuilds `ChannelRegistry` and restarts Kafka consumer if topic set changed.
 - **Channel registry:** In-memory `ChannelRegistry` (`channel/registry.rs`) holds `ChannelRuntimeConfig` per active channel — parsed config, rate limiters, compiled validation logic, backpressure semaphores, dedup stores, response caches. Has a `RouteTable` for REST route matching (method + path pattern with parameter extraction). Rebuilt on engine reload.
-- **Custom async functions:** 8 handlers implement `dataflow_rs::engine::functions::AsyncFunctionHandler`, registered in `engine/mod.rs::build_custom_functions()`:
-  - **Always:** `http_call`, `channel_call`, `cache_read`, `cache_write`
-  - **Feature-gated:** `db_read`/`db_write` (`connectors-sql`), `mongo_read` (`connectors-mongodb`), `publish_kafka` (`kafka`, stub when disabled)
+- **Custom async functions:** 8 handlers implement `dataflow_rs::engine::functions::AsyncFunctionHandler`, registered in `engine/mod.rs::build_custom_functions()`: `http_call`, `channel_call`, `cache_read`, `cache_write`, `db_read`, `db_write`, `mongo_read`, `publish_kafka`
 - **Connector registry:** In-memory `RwLock<HashMap<String, Arc<ConnectorConfig>>>` with secret masking on API reads, circuit breakers per connector with LRU eviction.
 - **Trace queue:** `tokio::sync::mpsc` channel with semaphore-limited concurrency for async trace processing (`queue/mod.rs`). Failed traces go to DLQ table with automatic retry.
 - **Error handling:** `OrionError` enum in `errors.rs` implements `axum::response::IntoResponse`, mapping variants to HTTP status codes. Returns JSON `{"error": {"code": "...", "message": "..."}}`.
-- **AppState** (`server/state.rs`): Central shared state struct holding engine, all repos, connector registry, cache pool, channel registry, trace queue, config, metrics handle, HTTP client, DataLogic instance, rate limit state, readiness flag, and feature-gated fields (sql_pool_cache, mongo_pool_cache, kafka_consumer_handle, kafka_producer). Passed to all route handlers via Axum's `State` extractor.
+- **AppState** (`server/state.rs`): Central shared state struct holding engine, all repos, connector registry, cache pool, channel registry, trace queue, config, metrics handle, HTTP client, DataLogic instance, rate limit state, readiness flag, sql_pool_cache, mongo_pool_cache, kafka_consumer_handle, and kafka_producer. Passed to all route handlers via Axum's `State` extractor.
 
 ### Middleware Stack (server/mod.rs)
 
 1. CatchPanicLayer (outermost — panic recovery)
-2. OTel trace context extraction (if `otel` feature + enabled)
+2. OTel trace context extraction (if `tracing.enabled`)
 3. HTTP metrics middleware
 4. Admin auth middleware (if enabled)
 5. Rate limiting middleware (if enabled)
@@ -135,7 +124,7 @@ HTTP Request → Axum Router → Data Route Handler
 
 ### Database
 
-SQLite (default), PostgreSQL, or MySQL — selected at compile time. Migrations embedded at compile time via `sqlx::migrate!("./migrations")`. Tables: `workflows` (composite PK `(workflow_id, version)`), `channels` (composite PK `(channel_id, version)`), `connectors`, `traces`, `trace_dlq`, `audit_logs`. Views: `current_workflows`, `current_channels` (latest version per ID). Triggers enforce single-draft-per-ID and active-immutability constraints. Migrations per backend in `migrations/{sqlite,postgres,mysql}/`.
+SQLite (default), PostgreSQL, or MySQL — selected at runtime from `storage.url` scheme. All three migration sets are embedded via `sqlx::migrate!()` and the correct set is chosen at startup based on the detected backend (`DbBackend` enum in `storage/mod.rs`). `DbPool` is an enum wrapping the concrete pool types (`SqlitePool`/`PgPool`/`MySqlPool`) with dispatch helpers for query execution. Tables: `workflows` (composite PK `(workflow_id, version)`), `channels` (composite PK `(channel_id, version)`), `connectors`, `traces`, `trace_dlq`, `audit_logs`. Views: `current_workflows`, `current_channels` (latest version per ID). Triggers enforce single-draft-per-ID and active-immutability constraints. Migrations per backend in `migrations/{sqlite,postgres,mysql}/`.
 
 ## Testing
 

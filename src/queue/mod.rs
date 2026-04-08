@@ -69,7 +69,6 @@ pub struct QueueMessage {
     pub metadata: Value,
     /// Serialized W3C trace context headers captured at submission time.
     /// Used to link async processing spans back to the originating request.
-    #[cfg(feature = "otel")]
     pub trace_headers: std::collections::HashMap<String, String>,
 }
 

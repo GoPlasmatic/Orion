@@ -170,7 +170,7 @@ Produce to Kafka topics. Consumer configuration is separate (see [Kafka Integrat
 
 ### DB Connector
 
-Parameterized SQL queries against external databases. Supports PostgreSQL, MySQL, and SQLite. Requires the `connectors-sql` feature flag.
+Parameterized SQL queries against external databases. Supports PostgreSQL, MySQL, and SQLite.
 
 ```json
 {
@@ -260,7 +260,7 @@ Use `cache_read` and `cache_write` in workflows:
 
 ### MongoDB Connector
 
-MongoDB document queries with BSON-to-JSON conversion. Requires the `connectors-mongodb` feature flag.
+MongoDB document queries with BSON-to-JSON conversion.
 
 ```json
 {

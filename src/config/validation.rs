@@ -29,7 +29,10 @@ fn require_nonempty(value: &str, field: &str) -> Result<(), OrionError> {
 /// Validate configuration values.
 pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     require_nonzero(config.server.port as u64, "server.port")?;
-    require_nonzero(config.ingest.max_payload_size as u64, "ingest.max_payload_size")?;
+    require_nonzero(
+        config.ingest.max_payload_size as u64,
+        "ingest.max_payload_size",
+    )?;
     require_nonzero(config.queue.workers as u64, "queue.workers")?;
     require_nonzero(config.queue.buffer_size as u64, "queue.buffer_size")?;
     require_nonempty(&config.storage.url, "storage.url")?;
@@ -153,7 +156,6 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
             "CORS is set to permissive ('*'). For production, configure specific origins in [cors] allowed_origins"
         );
     }
-    #[cfg(feature = "kafka")]
     if config.kafka.enabled {
         if config.kafka.brokers.is_empty() {
             return Err(OrionError::Config {
@@ -263,7 +265,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "kafka")]
     fn test_validate_config_kafka_enabled_no_brokers() {
         let mut config = AppConfig::default();
         config.kafka.enabled = true;
@@ -371,7 +372,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "kafka")]
     fn test_validate_config_kafka_empty_group_id() {
         let mut config = AppConfig::default();
         config.kafka.enabled = true;
@@ -380,7 +380,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "kafka")]
     fn test_validate_config_kafka_duplicate_topics() {
         let mut config = AppConfig::default();
         config.kafka.enabled = true;
@@ -398,7 +397,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "kafka")]
     fn test_validate_config_kafka_duplicate_channels() {
         let mut config = AppConfig::default();
         config.kafka.enabled = true;

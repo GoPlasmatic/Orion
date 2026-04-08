@@ -1,11 +1,10 @@
 use async_trait::async_trait;
 use sea_query::{Asterisk, Expr, Order, Query};
-use sea_query_binder::SqlxBinder;
 
 use crate::errors::OrionError;
 use crate::storage::models::AuditLogEntry;
 use crate::storage::schema::AuditLogs;
-use crate::storage::{DbPool, query_builder};
+use crate::storage::{DbPool, build_sqlx};
 
 #[async_trait]
 pub trait AuditLogRepository: Send + Sync {
@@ -77,8 +76,8 @@ impl AuditLogRepository for SqlAuditLogRepository {
                     .values_panic([Expr::val(d).into()]);
             }
 
-            let (sql, values) = query.build_sqlx(query_builder());
-            sqlx::query_with(&sql, values).execute(&self.pool).await?;
+            let (sql, values) = build_sqlx(&mut query);
+            self.pool.execute_query(&sql, values).await?;
             Ok(())
         })
         .await
@@ -90,16 +89,17 @@ impl AuditLogRepository for SqlAuditLogRepository {
         limit: i64,
     ) -> Result<Vec<AuditLogEntry>, OrionError> {
         crate::metrics::timed_db_op("audit_logs.list", async {
-            let (sql, values) = Query::select()
-                .column(Asterisk)
-                .from(AuditLogs::Table)
-                .order_by(AuditLogs::CreatedAt, Order::Desc)
-                .offset(offset as u64)
-                .limit(limit as u64)
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(AuditLogs::Table)
+                    .order_by(AuditLogs::CreatedAt, Order::Desc)
+                    .offset(offset as u64)
+                    .limit(limit as u64),
+            );
 
-            sqlx::query_as_with::<_, AuditLogEntry, _>(&sql, values)
-                .fetch_all(&self.pool)
+            self.pool
+                .fetch_all_as::<AuditLogEntry>(&sql, values)
                 .await
                 .map_err(|e| OrionError::InternalSource {
                     context: "Failed to list audit logs".to_string(),
@@ -111,13 +111,15 @@ impl AuditLogRepository for SqlAuditLogRepository {
 
     async fn count(&self) -> Result<i64, OrionError> {
         crate::metrics::timed_db_op("audit_logs.count", async {
-            let (sql, values) = Query::select()
-                .expr(Expr::col(Asterisk).count())
-                .from(AuditLogs::Table)
-                .build_sqlx(query_builder());
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .expr(Expr::col(Asterisk).count())
+                    .from(AuditLogs::Table),
+            );
 
-            let row: (i64,) = sqlx::query_as_with(&sql, values)
-                .fetch_one(&self.pool)
+            let row: (i64,) = self
+                .pool
+                .fetch_one_as::<(i64,)>(&sql, values)
                 .await
                 .map_err(|e| OrionError::InternalSource {
                     context: "Failed to count audit logs".to_string(),

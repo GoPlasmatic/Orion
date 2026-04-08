@@ -26,7 +26,6 @@ struct ConsumeLoopContext {
     lag_poll_interval_secs: u64,
 }
 
-#[cfg(feature = "otel")]
 use rdkafka::message::Headers;
 
 /// Handle for managing the Kafka consumer lifecycle.
@@ -259,7 +258,6 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
                         };
 
                         // Extract W3C trace context from Kafka message headers
-                        #[cfg(feature = "otel")]
                         let _parent_cx = {
                             use opentelemetry::propagation::TextMapPropagator;
                             use opentelemetry_sdk::propagation::TraceContextPropagator;
