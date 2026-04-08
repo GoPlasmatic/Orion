@@ -267,6 +267,12 @@ impl CachePool {
     pub fn memory(&self) -> Arc<dyn CacheBackend> {
         self.memory.clone() as Arc<dyn CacheBackend>
     }
+
+    /// Evict a cached Redis connection pool for the named connector.
+    #[cfg(feature = "connectors-redis")]
+    pub async fn evict_pool(&self, connector_name: &str) {
+        self.redis.evict(connector_name).await;
+    }
 }
 
 #[cfg(test)]

@@ -33,7 +33,7 @@ impl Default for KafkaIngestConfig {
             topics: vec![],
             dlq: DlqConfig::default(),
             processing_timeout_ms: 60_000,
-            max_inflight: 10,
+            max_inflight: 100,
             lag_poll_interval_secs: 30,
         }
     }

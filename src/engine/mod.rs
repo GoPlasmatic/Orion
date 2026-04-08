@@ -82,6 +82,8 @@ pub fn build_custom_functions(
     engine: Arc<tokio::sync::RwLock<Arc<dataflow_rs::Engine>>>,
     engine_config: &crate::config::EngineConfig,
     cache_pool: Arc<crate::connector::cache_backend::CachePool>,
+    #[cfg(feature = "connectors-sql")] sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
+    #[cfg(feature = "connectors-mongodb")] mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
 ) -> HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> {
     let mut fns: HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> = HashMap::new();
 
@@ -114,9 +116,6 @@ pub fn build_custom_functions(
     // Register SQL database handlers (db_read, db_write)
     #[cfg(feature = "connectors-sql")]
     {
-        let sql_pool_cache = Arc::new(crate::connector::pool_cache::SqlPoolCache::new(
-            engine_config.max_pool_cache_entries,
-        ));
         fns.insert(
             "db_read".to_string(),
             Box::new(functions::db_read::DbReadHandler {
@@ -153,9 +152,6 @@ pub fn build_custom_functions(
     // Register MongoDB handler (mongo_read)
     #[cfg(feature = "connectors-mongodb")]
     {
-        let mongo_pool_cache = Arc::new(crate::connector::mongo_pool::MongoPoolCache::new(
-            engine_config.max_pool_cache_entries,
-        ));
         fns.insert(
             "mongo_read".to_string(),
             Box::new(functions::mongo_read::MongoReadHandler {

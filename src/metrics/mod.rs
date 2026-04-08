@@ -135,6 +135,16 @@ pub fn record_rate_limit_rejected(client: &str) {
     counter!("rate_limit_rejections_total", "client" => client.to_string()).increment(1);
 }
 
+/// Record a response cache hit.
+pub fn record_cache_hit(channel: &str) {
+    counter!("response_cache_hits_total", "channel" => channel.to_string()).increment(1);
+}
+
+/// Record a response cache miss.
+pub fn record_cache_miss(channel: &str) {
+    counter!("response_cache_misses_total", "channel" => channel.to_string()).increment(1);
+}
+
 // ---------------------------------------------------------------------------
 // Trace queue gauges
 // ---------------------------------------------------------------------------

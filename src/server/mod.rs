@@ -159,8 +159,20 @@ fn build_cors(config: &CorsConfig) -> CorsLayer {
             .collect();
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
+            .allow_methods([
+                axum::http::Method::GET,
+                axum::http::Method::POST,
+                axum::http::Method::PUT,
+                axum::http::Method::DELETE,
+            ])
+            .allow_headers([
+                axum::http::header::CONTENT_TYPE,
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::ACCEPT,
+                axum::http::HeaderName::from_static("x-api-key"),
+                axum::http::HeaderName::from_static("idempotency-key"),
+                axum::http::HeaderName::from_static("x-request-id"),
+            ])
     }
 }
 

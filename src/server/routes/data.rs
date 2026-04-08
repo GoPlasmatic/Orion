@@ -272,6 +272,36 @@ fn acquire_backpressure(
     }
 }
 
+/// Compute a deterministic cache key from channel name and request data.
+fn compute_cache_key(
+    channel: &str,
+    data: &Value,
+    cache_cfg: &crate::channel::ChannelCacheConfig,
+) -> String {
+    // FNV-1a hash — deterministic across processes (unlike DefaultHasher).
+    fn fnv1a(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+
+    let hash_input = if let Some(ref fields) = cache_cfg.cache_key_fields {
+        // Hash only the specified fields
+        let selected: serde_json::Map<String, Value> = fields
+            .iter()
+            .filter_map(|f| data.get(f).map(|v| (f.clone(), v.clone())))
+            .collect();
+        serde_json::to_string(&selected).unwrap_or_default()
+    } else {
+        serde_json::to_string(data).unwrap_or_default()
+    };
+
+    format!("cache:{}:{:016x}", channel, fnv1a(hash_input.as_bytes()))
+}
+
 /// Core sync processing logic shared between simple HTTP and REST routes.
 async fn process_sync_for_channel(
     state: &AppState,
@@ -287,6 +317,32 @@ async fn process_sync_for_channel(
     check_cors_origin(channel, &channel_config, headers)?;
     validate_input(channel, &channel_config, &data, &metadata, &state.datalogic)?;
     check_deduplication(&channel_config, headers).await?;
+
+    // Response cache check — return early on cache hit
+    let cache_context = if let Some(ref cfg) = channel_config
+        && let Some(ref cache_cfg) = cfg.parsed_config.cache
+        && cache_cfg.enabled
+        && let Some(ref cache) = cfg.response_cache
+    {
+        let key = compute_cache_key(channel, &data, cache_cfg);
+        match cache.get(&key).await {
+            Ok(Some(cached)) => {
+                metrics::record_cache_hit(channel);
+                if let Ok(parsed) = serde_json::from_str::<Value>(&cached) {
+                    return Ok(Json(parsed));
+                }
+                // Cache entry was corrupt — fall through to execute
+                None
+            }
+            _ => {
+                metrics::record_cache_miss(channel);
+                Some((key, cache.clone(), cache_cfg.ttl_secs.unwrap_or(300)))
+            }
+        }
+    } else {
+        None
+    };
+
     let _backpressure_permit = acquire_backpressure(channel, &channel_config)?;
 
     let start = Instant::now();
@@ -295,7 +351,7 @@ async fn process_sync_for_channel(
     merge_metadata(&mut message, &metadata);
     inject_rollout_bucket(&mut message);
 
-    let timeout_ms = channel_config.and_then(|c| c.parsed_config.timeout_ms);
+    let timeout_ms = channel_config.as_ref().and_then(|c| c.parsed_config.timeout_ms);
 
     let result = if let Some(ms) = timeout_ms {
         match tokio::time::timeout(
@@ -357,12 +413,23 @@ async fn process_sync_for_channel(
                 }
             }
 
-            Ok(Json(json!({
+            let response = json!({
                 "id": message.id,
                 "status": "ok",
                 "data": message.data(),
                 "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
-            })))
+            });
+
+            // Fire-and-forget cache store
+            if let Some((ref key, ref cache, ttl)) = cache_context {
+                if let Ok(serialized) = serde_json::to_string(&response) {
+                    if let Err(e) = cache.set_ex(key, &serialized, ttl).await {
+                        tracing::debug!(channel = channel, error = %e, "Failed to cache response");
+                    }
+                }
+            }
+
+            Ok(Json(response))
         }
         Err(e) => {
             remove_rollout_bucket(&mut message);
