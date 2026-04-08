@@ -277,27 +277,30 @@ fn compute_cache_key(
     cache_cfg: &crate::channel::ChannelCacheConfig,
 ) -> String {
     // FNV-1a hash — deterministic across processes (unlike DefaultHasher).
-    fn fnv1a(bytes: &[u8]) -> u64 {
-        let mut h: u64 = 0xcbf29ce484222325;
+    fn fnv1a_feed(h: &mut u64, bytes: &[u8]) {
         for &b in bytes {
-            h ^= b as u64;
-            h = h.wrapping_mul(0x100000001b3);
+            *h ^= b as u64;
+            *h = h.wrapping_mul(0x100000001b3);
         }
-        h
     }
 
-    let hash_input = if let Some(ref fields) = cache_cfg.cache_key_fields {
-        // Hash only the specified fields
-        let selected: serde_json::Map<String, Value> = fields
-            .iter()
-            .filter_map(|f| data.get(f).map(|v| (f.clone(), v.clone())))
-            .collect();
-        serde_json::to_string(&selected).unwrap_or_default()
+    let mut h: u64 = 0xcbf29ce484222325;
+
+    if let Some(ref fields) = cache_cfg.cache_key_fields {
+        // Hash selected fields directly — no intermediate Map or clones
+        for f in fields {
+            if let Some(v) = data.get(f) {
+                fnv1a_feed(&mut h, f.as_bytes());
+                let v_bytes = serde_json::to_vec(v).unwrap_or_default();
+                fnv1a_feed(&mut h, &v_bytes);
+            }
+        }
     } else {
-        serde_json::to_string(data).unwrap_or_default()
+        let bytes = serde_json::to_vec(data).unwrap_or_default();
+        fnv1a_feed(&mut h, &bytes);
     };
 
-    format!("cache:{}:{:016x}", channel, fnv1a(hash_input.as_bytes()))
+    format!("cache:{}:{:016x}", channel, h)
 }
 
 /// Core sync processing logic shared between simple HTTP and REST routes.
@@ -308,8 +311,6 @@ async fn process_sync_for_channel(
     metadata: Value,
     headers: &axum::http::HeaderMap,
 ) -> Result<Json<Value>, OrionError> {
-    let input_json = serde_json::to_string(&data).ok();
-
     let channel_config = state.channel_registry.get_by_name(channel).await;
 
     check_cors_origin(channel, &channel_config, headers)?;
@@ -387,32 +388,6 @@ async fn process_sync_for_channel(
             metrics::record_message_duration(channel, duration_secs);
             metrics::record_channel_execution(channel);
 
-            // Enforce result size limit
-            let max_result_size = state.config.queue.max_result_size_bytes;
-            if let Ok(result_json) = serde_json::to_string(&message) {
-                if max_result_size > 0 && result_json.len() > max_result_size {
-                    metrics::record_error("result_size_exceeded");
-                    return Err(OrionError::ResponseTooLarge(format!(
-                        "Result size {} bytes exceeds limit of {} bytes",
-                        result_json.len(),
-                        max_result_size
-                    )));
-                }
-                if let Err(e) = state
-                    .trace_repo
-                    .store_completed(
-                        channel,
-                        "sync",
-                        input_json.as_deref(),
-                        &result_json,
-                        duration_ms,
-                    )
-                    .await
-                {
-                    tracing::warn!(error = %e, "Failed to store sync processing result");
-                }
-            }
-
             let response = json!({
                 "id": message.id,
                 "status": "ok",
@@ -420,12 +395,39 @@ async fn process_sync_for_channel(
                 "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
             });
 
-            // Fire-and-forget cache store
-            if let Some((ref key, ref cache, ttl)) = cache_context
-                && let Ok(serialized) = serde_json::to_string(&response)
-                && let Err(e) = cache.set_ex(key, &serialized, ttl).await
-            {
-                tracing::debug!(channel = channel, error = %e, "Failed to cache response");
+            // Serialize response once — reused for size check, trace storage, and cache
+            if let Ok(response_json) = serde_json::to_string(&response) {
+                let max_result_size = state.config.queue.max_result_size_bytes;
+                if max_result_size > 0 && response_json.len() > max_result_size {
+                    metrics::record_error("result_size_exceeded");
+                    return Err(OrionError::ResponseTooLarge(format!(
+                        "Result size {} bytes exceeds limit of {} bytes",
+                        response_json.len(),
+                        max_result_size
+                    )));
+                }
+
+                let input_json = serde_json::to_string(&data).ok();
+                if let Err(e) = state
+                    .trace_repo
+                    .store_completed(
+                        channel,
+                        "sync",
+                        input_json.as_deref(),
+                        &response_json,
+                        duration_ms,
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %e, "Failed to store sync processing result");
+                }
+
+                // Fire-and-forget cache store
+                if let Some((ref key, ref cache, ttl)) = cache_context
+                    && let Err(e) = cache.set_ex(key, &response_json, ttl).await
+                {
+                    tracing::debug!(channel = channel, error = %e, "Failed to cache response");
+                }
             }
 
             Ok(Json(response))

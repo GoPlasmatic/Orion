@@ -41,8 +41,7 @@ pub async fn http_metrics_middleware(
         .unwrap_or("-")
         .to_string();
 
-    metrics::record_http_request(&method, &path, status);
-    metrics::record_http_request_duration(&method, &path, status, duration);
+    metrics::record_http_request(&method, &path, status, duration);
 
     tracing::info!(
         request_id = %request_id,
