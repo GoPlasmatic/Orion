@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::functions::config::FunctionConfig;
 use dataflow_rs::engine::message::{Change, Message};
@@ -9,8 +8,8 @@ use datalogic_rs::DataLogic;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, extract_custom_input, require_cache_connector, require_str_field,
-    resolve_connector,
+    apply_output, extract_custom_input, extract_output_path, require_cache_connector,
+    require_str_field, resolve_connector, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -40,12 +39,9 @@ impl AsyncFunctionHandler for CacheReadHandler {
             .cache_pool
             .get_backend(connector_name, cache_config)
             .await
-            .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
+            .map_err(to_exec_error)?;
 
-        let value = backend
-            .get(key)
-            .await
-            .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
+        let value = backend.get(key).await.map_err(to_exec_error)?;
 
         let result = match value {
             Some(v) => {
@@ -55,10 +51,7 @@ impl AsyncFunctionHandler for CacheReadHandler {
             None => Value::Null,
         };
 
-        let output_path = input
-            .get("output")
-            .and_then(|v| v.as_str())
-            .unwrap_or("data");
+        let output_path = extract_output_path(input);
 
         let changes = apply_output(message, output_path, result);
         Ok((1, changes))

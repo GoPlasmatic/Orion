@@ -11,6 +11,8 @@ use axum::routing::{get, patch, post};
 use serde::Deserialize;
 use std::sync::Arc;
 
+use axum::Extension;
+
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::routes::reload_engine;
 use crate::server::state::AppState;
@@ -47,13 +49,14 @@ pub(crate) struct VersionFilter {
 /// Persists to the database via fire-and-forget to avoid blocking the response.
 fn audit_log(
     repo: &Arc<dyn AuditLogRepository>,
-    principal: Option<&AdminPrincipal>,
+    principal: &Option<Extension<AdminPrincipal>>,
     action: &str,
     resource_type: &str,
     resource_id: &str,
 ) {
     let who = principal
-        .map(|p| p.key_prefix.as_str())
+        .as_ref()
+        .map(|e| e.0.key_prefix.as_str())
         .unwrap_or("anonymous");
     tracing::info!(
         target: "audit",

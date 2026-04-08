@@ -64,7 +64,7 @@ pub(crate) async fn engine_reload(
 ) -> Result<Json<Value>, OrionError> {
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "reload",
         "engine",
         "manual",

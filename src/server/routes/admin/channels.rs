@@ -70,7 +70,7 @@ pub(crate) async fn create_channel(
     let channel = state.channel_repo.create(&req).await?;
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "create",
         "channel",
         &channel.channel_id,
@@ -118,13 +118,7 @@ pub(crate) async fn update_channel(
     Json(req): Json<UpdateChannelRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let channel = state.channel_repo.update_draft(&id, &req).await?;
-    audit_log(
-        &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
-        "update",
-        "channel",
-        &id,
-    );
+    audit_log(&state.audit_log_repo, &principal, "update", "channel", &id);
     // No engine reload — drafts are not in the engine
     Ok(data_response(ChannelResponse::try_from(&channel)?))
 }
@@ -146,13 +140,7 @@ pub(crate) async fn delete_channel(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.channel_repo.delete(&id).await?;
-    audit_log(
-        &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
-        "delete",
-        "channel",
-        &id,
-    );
+    audit_log(&state.audit_log_repo, &principal, "delete", "channel", &id);
     reload_engine(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -180,14 +168,14 @@ pub(crate) async fn change_channel_status(
     Path(id): Path<String>,
     Json(req): Json<ChannelStatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    let action = StatusAction::parse(req.status.as_str())?;
+    let action = StatusAction::parse(req.status)?;
     let channel = match action {
         StatusAction::Activate => state.channel_repo.activate(&id).await?,
         StatusAction::Archive => state.channel_repo.archive(&id).await?,
     };
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         &format!("status_{}", req.status),
         "channel",
         &id,
@@ -257,7 +245,7 @@ pub(crate) async fn create_new_channel_version(
     let channel = state.channel_repo.create_new_version(&id).await?;
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "create_version",
         "channel",
         &id,

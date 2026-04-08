@@ -73,7 +73,7 @@ pub(crate) async fn create_workflow(
     let workflow = state.workflow_repo.create(&req).await?;
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "create",
         "workflow",
         &workflow.workflow_id,
@@ -122,13 +122,7 @@ pub(crate) async fn update_workflow(
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_workflow(&req)?;
     let workflow = state.workflow_repo.update_draft(&id, &req).await?;
-    audit_log(
-        &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
-        "update",
-        "workflow",
-        &id,
-    );
+    audit_log(&state.audit_log_repo, &principal, "update", "workflow", &id);
     // No engine reload — drafts are not in the engine
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
@@ -150,13 +144,7 @@ pub(crate) async fn delete_workflow(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.workflow_repo.delete(&id).await?;
-    audit_log(
-        &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
-        "delete",
-        "workflow",
-        &id,
-    );
+    audit_log(&state.audit_log_repo, &principal, "delete", "workflow", &id);
     reload_engine(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -184,7 +172,7 @@ pub(crate) async fn change_workflow_status(
     Path(id): Path<String>,
     Json(req): Json<StatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
-    let action = StatusAction::parse(req.status.as_str())?;
+    let action = StatusAction::parse(req.status)?;
     let workflow = match action {
         StatusAction::Activate => {
             let rollout_pct = req.rollout_percentage.unwrap_or(100);
@@ -194,7 +182,7 @@ pub(crate) async fn change_workflow_status(
     };
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         &format!("status_{}", req.status),
         "workflow",
         &id,
@@ -231,7 +219,7 @@ pub(crate) async fn update_rollout(
         .await?;
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "update_rollout",
         "workflow",
         &id,
@@ -304,7 +292,7 @@ pub(crate) async fn create_new_workflow_version(
     let workflow = state.workflow_repo.create_new_version(&id).await?;
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "create_version",
         "workflow",
         &id,
@@ -431,7 +419,7 @@ pub(crate) async fn import_workflows(
 
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "import",
         "workflow",
         &format!("{imported} imported"),
@@ -653,7 +641,9 @@ fn validate_dataflow_conversion(req: &CreateWorkflowRequest, errors: &mut Vec<Va
         description: req.description.clone(),
         priority: req.priority,
         version: 1,
-        status: "active".to_string(),
+        status: crate::storage::models::EntityStatus::Active
+            .as_str()
+            .to_string(),
         rollout_percentage: 100,
         condition_json: serde_json::to_string(&req.condition).unwrap_or_else(|e| {
             errors.push(ValidationIssue {

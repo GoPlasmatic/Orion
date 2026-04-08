@@ -179,14 +179,8 @@ async fn test_invalid_status_transition() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let body = body_json(resp).await;
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("Invalid status")
-    );
+    // With EntityStatus enum, invalid values are rejected at deserialization (422)
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 // ============================================================

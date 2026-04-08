@@ -18,6 +18,16 @@ pub fn clamp_pagination(limit: Option<i64>, offset: Option<i64>) -> (i64, i64) {
     (limit, offset)
 }
 
+/// Parses an optional sort-order string (`"asc"` or `"desc"`) into a
+/// `sea_query::Order`.  Defaults to `Desc` when the value is `None` or any
+/// unrecognised string.
+pub fn parse_sort_order(sort_order: Option<&str>) -> sea_query::Order {
+    match sort_order {
+        Some("asc") => sea_query::Order::Asc,
+        _ => sea_query::Order::Desc,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -43,5 +53,26 @@ mod tests {
     fn pagination_clamps() {
         assert_eq!(clamp_pagination(Some(0), Some(-5)), (1, 0));
         assert_eq!(clamp_pagination(Some(9999), Some(10)), (1000, 10));
+    }
+
+    #[test]
+    fn sort_order_asc() {
+        assert!(matches!(
+            parse_sort_order(Some("asc")),
+            sea_query::Order::Asc
+        ));
+    }
+
+    #[test]
+    fn sort_order_desc() {
+        assert!(matches!(
+            parse_sort_order(Some("desc")),
+            sea_query::Order::Desc
+        ));
+    }
+
+    #[test]
+    fn sort_order_none_defaults_desc() {
+        assert!(matches!(parse_sort_order(None), sea_query::Order::Desc));
     }
 }

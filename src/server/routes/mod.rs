@@ -232,7 +232,8 @@ async fn restart_kafka_consumer_if_needed(
     // Build merged topic list: config-file + DB async channels
     let mut all_topics = state.config.kafka.topics.clone();
     for ch in channels {
-        if (ch.protocol == "kafka" || ch.channel_type == "async")
+        if (ch.protocol == crate::storage::models::ChannelProtocol::Kafka.as_str()
+            || ch.channel_type == "async")
             && let Some(ref topic) = ch.topic
             && !all_topics.iter().any(|t| t.topic == *topic)
         {

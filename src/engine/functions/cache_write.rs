@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use super::connector_helpers::{
     extract_custom_input, require_cache_connector, require_str_field, resolve_connector,
+    to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -39,7 +40,7 @@ impl AsyncFunctionHandler for CacheWriteHandler {
             .cache_pool
             .get_backend(connector_name, cache_config)
             .await
-            .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
+            .map_err(to_exec_error)?;
 
         // Serialize the value to a string for storage
         let value_str = match input.get("value") {
@@ -61,12 +62,9 @@ impl AsyncFunctionHandler for CacheWriteHandler {
             backend
                 .set_ex(key, &value_str, ttl)
                 .await
-                .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
+                .map_err(to_exec_error)?;
         } else {
-            backend
-                .set(key, &value_str)
-                .await
-                .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
+            backend.set(key, &value_str).await.map_err(to_exec_error)?;
         }
 
         tracing::debug!(

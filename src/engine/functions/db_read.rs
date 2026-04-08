@@ -1,8 +1,6 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::functions::config::FunctionConfig;
 use dataflow_rs::engine::message::{Change, Message};
@@ -12,7 +10,8 @@ use sqlx::any::AnyRow;
 use sqlx::{Column, Row};
 
 use super::connector_helpers::{
-    apply_output, extract_custom_input, require_db_connector, require_str_field, resolve_connector,
+    apply_output, bind_json_params, extract_custom_input, extract_output_path,
+    require_db_connector, require_str_field, resolve_connector, timed_query, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
@@ -43,48 +42,25 @@ impl AsyncFunctionHandler for DbReadHandler {
             .pool_cache
             .get_pool(connector_name, db_config)
             .await
-            .map_err(|e| DataflowError::function_execution(e.to_string(), None))?;
+            .map_err(to_exec_error)?;
 
-        let mut sqlx_query = sqlx::query(query);
-        if let Some(params) = params {
-            for param in params {
-                sqlx_query = match param {
-                    Value::String(s) => sqlx_query.bind(s.clone()),
-                    Value::Number(n) => {
-                        if let Some(i) = n.as_i64() {
-                            sqlx_query.bind(i)
-                        } else if let Some(f) = n.as_f64() {
-                            sqlx_query.bind(f)
-                        } else {
-                            sqlx_query.bind(n.to_string())
-                        }
-                    }
-                    Value::Bool(b) => sqlx_query.bind(*b),
-                    Value::Null => sqlx_query.bind(None::<String>),
-                    _ => sqlx_query.bind(param.to_string()),
-                };
-            }
-        }
+        let sqlx_query = sqlx::query(query);
+        let sqlx_query = if let Some(params) = params {
+            bind_json_params(sqlx_query, params)
+        } else {
+            sqlx_query
+        };
 
-        let timeout_ms = db_config.query_timeout_ms.unwrap_or(30_000);
-        let rows: Vec<AnyRow> = tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
+        let rows: Vec<AnyRow> = timed_query(
+            db_config.query_timeout_ms,
+            "db_read",
             sqlx_query.fetch_all(&pool),
         )
-        .await
-        .map_err(|_| {
-            DataflowError::Timeout(format!("db_read query timed out after {}ms", timeout_ms))
-        })?
-        .map_err(|e| {
-            DataflowError::function_execution(format!("db_read query failed: {}", e), None)
-        })?;
+        .await?;
 
         let result = rows_to_json(&rows);
 
-        let output_path = input
-            .get("output")
-            .and_then(|v| v.as_str())
-            .unwrap_or("data");
+        let output_path = extract_output_path(input);
 
         let changes = apply_output(message, output_path, result);
         Ok((1, changes))

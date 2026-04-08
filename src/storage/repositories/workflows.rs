@@ -6,13 +6,13 @@ use sea_query_binder::SqlxBinder;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::OrionError;
-use crate::storage::models::Workflow;
+use crate::storage::models::{EntityStatus, Workflow};
 use crate::storage::{
     query_builder,
     schema::{CurrentWorkflows, Workflows},
 };
 
-use super::helpers::{clamp_pagination, optional_string_value};
+use super::helpers::{clamp_pagination, optional_string_value, parse_sort_order};
 
 #[derive(Debug, Serialize)]
 pub struct PaginatedResult<T: Serialize> {
@@ -57,7 +57,7 @@ pub struct UpdateWorkflowRequest {
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct StatusChangeRequest {
-    pub status: String,
+    pub status: EntityStatus,
     pub rollout_percentage: Option<i64>,
 }
 
@@ -193,7 +193,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     Expr::val(req.name.as_str()).into(),
                     Expr::val(description_val).into(),
                     Expr::val(req.priority).into(),
-                    Expr::val("draft").into(),
+                    Expr::val(EntityStatus::Draft.as_str()).into(),
                     Expr::val(100i64).into(),
                     Expr::val(condition_json.as_str()).into(),
                     Expr::val(tasks_json.as_str()).into(),
@@ -289,10 +289,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 Some("updated_at") => Workflows::UpdatedAt,
                 _ => Workflows::Priority,
             };
-            let order = match filter.sort_order.as_deref() {
-                Some("asc") => Order::Asc,
-                _ => Order::Desc,
-            };
+            let order = parse_sort_order(filter.sort_order.as_deref());
 
             // Data
             let (sql, values) = Query::select()
@@ -328,7 +325,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .column(Asterisk)
                 .from(Workflows::Table)
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Status).eq("draft"))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
                 .build_sqlx(query_builder());
 
             let existing = sqlx::query_as_with::<_, Workflow, _>(&sql, values)
@@ -374,7 +371,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .value(Workflows::Tags, tags_json.as_str())
                 .value(Workflows::ContinueOnError, continue_on_error)
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Status).eq("draft"))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
                 .build_sqlx(query_builder());
 
             sqlx::query_with(&sql, values).execute(&self.pool).await?;
@@ -410,7 +407,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let (sql, values) = Query::select()
                 .column(Asterisk)
                 .from(Workflows::Table)
-                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
                 .order_by(Workflows::Priority, Order::Desc)
                 .build_sqlx(query_builder());
 
@@ -430,7 +427,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let (sql, values) = Query::select()
                 .column(Asterisk)
                 .from(Workflows::Table)
-                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
                 .and_where(Expr::col(Workflows::WorkflowId).is_in(workflow_ids.iter().copied()))
                 .order_by(Workflows::Priority, Order::Desc)
                 .build_sqlx(query_builder());
@@ -457,7 +454,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .column(Asterisk)
                 .from(Workflows::Table)
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Status).eq("draft"))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
                 .build_sqlx(query_builder());
 
             let draft = sqlx::query_as_with::<_, Workflow, _>(&sql, values)
@@ -475,7 +472,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .column(Asterisk)
                 .from(Workflows::Table)
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
                 .order_by(Workflows::Version, Order::Desc)
                 .build_sqlx(query_builder());
 
@@ -488,7 +485,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 for active in &active_versions {
                     let (sql, values) = Query::update()
                         .table(Workflows::Table)
-                        .value(Workflows::Status, "archived")
+                        .value(Workflows::Status, EntityStatus::Archived.as_str())
                         .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                         .and_where(Expr::col(Workflows::Version).eq(active.version))
                         .build_sqlx(query_builder());
@@ -497,7 +494,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
                 let (sql, values) = Query::update()
                     .table(Workflows::Table)
-                    .value(Workflows::Status, "active")
+                    .value(Workflows::Status, EntityStatus::Active.as_str())
                     .value(Workflows::RolloutPercentage, 100i64)
                     .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                     .and_where(Expr::col(Workflows::Version).eq(draft.version))
@@ -508,7 +505,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     for active in &active_versions[1..] {
                         let (sql, values) = Query::update()
                             .table(Workflows::Table)
-                            .value(Workflows::Status, "archived")
+                            .value(Workflows::Status, EntityStatus::Archived.as_str())
                             .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                             .and_where(Expr::col(Workflows::Version).eq(active.version))
                             .build_sqlx(query_builder());
@@ -528,7 +525,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
                 let (sql, values) = Query::update()
                     .table(Workflows::Table)
-                    .value(Workflows::Status, "active")
+                    .value(Workflows::Status, EntityStatus::Active.as_str())
                     .value(Workflows::RolloutPercentage, rollout_pct)
                     .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                     .and_where(Expr::col(Workflows::Version).eq(draft.version))
@@ -550,7 +547,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .column(Asterisk)
                 .from(Workflows::Table)
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
                 .order_by(Workflows::Version, Order::Desc)
                 .limit(1)
                 .build_sqlx(query_builder());
@@ -568,9 +565,9 @@ impl WorkflowRepository for SqlWorkflowRepository {
             // Archive all active versions
             let (sql, values) = Query::update()
                 .table(Workflows::Table)
-                .value(Workflows::Status, "archived")
+                .value(Workflows::Status, EntityStatus::Archived.as_str())
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
                 .build_sqlx(query_builder());
 
             sqlx::query_with(&sql, values).execute(&self.pool).await?;
@@ -595,7 +592,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .column(Asterisk)
                 .from(Workflows::Table)
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Status).eq("active"))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
                 .order_by(Workflows::Version, Order::Desc)
                 .build_sqlx(query_builder());
 
@@ -630,7 +627,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 // Archive the older version
                 let (sql, values) = Query::update()
                     .table(Workflows::Table)
-                    .value(Workflows::Status, "archived")
+                    .value(Workflows::Status, EntityStatus::Archived.as_str())
                     .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                     .and_where(Expr::col(Workflows::Version).eq(older.version))
                     .build_sqlx(query_builder());
@@ -677,7 +674,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .column(Asterisk)
                 .from(Workflows::Table)
                 .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Status).eq("draft"))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
                 .build_sqlx(query_builder());
 
             let existing_draft = sqlx::query_as_with::<_, Workflow, _>(&sql, values)
@@ -719,7 +716,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     Expr::val(latest.name.as_str()).into(),
                     Expr::val(description_val).into(),
                     Expr::val(latest.priority).into(),
-                    Expr::val("draft").into(),
+                    Expr::val(EntityStatus::Draft.as_str()).into(),
                     Expr::val(100i64).into(),
                     Expr::val(latest.condition_json.as_str()).into(),
                     Expr::val(latest.tasks_json.as_str()).into(),
@@ -817,7 +814,7 @@ pub fn workflow_to_dataflow(
         "channel": channel_name,
         "priority": workflow.priority,
         "version": workflow.version,
-        "status": "active",
+        "status": EntityStatus::Active.as_str(),
         "condition": condition,
         "tasks": tasks,
         "tags": tags,
@@ -879,7 +876,7 @@ mod tests {
             description: Some("A test workflow".to_string()),
             priority: 10,
             version: 1,
-            status: "active".to_string(),
+            status: EntityStatus::Active.as_str().to_string(),
             rollout_percentage: 100,
             condition_json: "true".to_string(),
             tasks_json: r#"[{"id":"log_task","name":"Log","function":{"name":"log","input":{"message":"hello"}}}]"#.to_string(),
@@ -904,7 +901,7 @@ mod tests {
             description: None,
             priority: 5,
             version: 2,
-            status: "active".to_string(),
+            status: EntityStatus::Active.as_str().to_string(),
             rollout_percentage: 100,
             condition_json: r#"{"==": [{"var": "type"}, "order"]}"#.to_string(),
             tasks_json: r#"[{"id":"t1","name":"Process","function":{"name":"log","input":{}}}]"#
@@ -928,7 +925,7 @@ mod tests {
             description: None,
             priority: 1,
             version: 3,
-            status: "active".to_string(),
+            status: EntityStatus::Active.as_str().to_string(),
             rollout_percentage: 50,
             condition_json: "true".to_string(),
             tasks_json: r#"[{"id":"t1","name":"Noop","function":{"name":"log","input":{}}}]"#
@@ -969,7 +966,7 @@ mod tests {
     #[test]
     fn test_build_condition_status_filter() {
         let filter = WorkflowFilter {
-            status: Some("active".to_string()),
+            status: Some(EntityStatus::Active.as_str().to_string()),
             ..Default::default()
         };
         let cond = build_condition(&filter);
@@ -1014,7 +1011,7 @@ mod tests {
     #[test]
     fn test_build_condition_combined_filters() {
         let filter = WorkflowFilter {
-            status: Some("draft".to_string()),
+            status: Some(EntityStatus::Draft.as_str().to_string()),
             tag: Some("test".to_string()),
             limit: Some(10),
             offset: Some(0),
@@ -1059,7 +1056,7 @@ mod tests {
     fn test_status_change_request_parse() {
         let json = r#"{"status": "active", "rollout_percentage": 50}"#;
         let req: StatusChangeRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.status, "active");
+        assert_eq!(req.status, EntityStatus::Active);
         assert_eq!(req.rollout_percentage, Some(50));
     }
 
@@ -1067,7 +1064,7 @@ mod tests {
     fn test_status_change_request_no_rollout() {
         let json = r#"{"status": "archived"}"#;
         let req: StatusChangeRequest = serde_json::from_str(json).unwrap();
-        assert_eq!(req.status, "archived");
+        assert_eq!(req.status, EntityStatus::Archived);
         assert!(req.rollout_percentage.is_none());
     }
 

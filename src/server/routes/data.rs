@@ -172,22 +172,16 @@ async fn dynamic_handler(
     Ok((StatusCode::OK, result))
 }
 
-/// Core sync processing logic shared between simple HTTP and REST routes.
-async fn process_sync_for_channel(
-    state: &AppState,
+/// Check per-channel CORS: reject the request if the `Origin` header is present
+/// but not in the channel's allowed-origins list.
+fn check_cors_origin(
     channel: &str,
-    data: Value,
-    metadata: Value,
+    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
     headers: &axum::http::HeaderMap,
-) -> Result<Json<Value>, OrionError> {
-    let input_json = serde_json::to_string(&data).ok();
-
-    let channel_config = state.channel_registry.get_by_name(channel).await;
-
-    // Per-channel CORS
-    if let Some(ref cfg) = channel_config
-        && let Some(ref cors) = cfg.parsed_config.cors
-        && let Some(ref allowed_origins) = cors.allowed_origins
+) -> Result<(), OrionError> {
+    if let Some(cfg) = channel_config
+        && let Some(cors) = &cfg.parsed_config.cors
+        && let Some(allowed_origins) = &cors.allowed_origins
         && let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok())
         && !allowed_origins.iter().any(|o| o == "*" || o == origin)
     {
@@ -196,13 +190,23 @@ async fn process_sync_for_channel(
             origin, channel
         )));
     }
+    Ok(())
+}
 
-    // Per-channel input validation
-    if let Some(ref cfg) = channel_config
+/// Evaluate per-channel input validation logic (JSONLogic). Returns `Ok(())` when
+/// validation passes or no validation is configured.
+fn validate_input(
+    channel: &str,
+    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
+    data: &Value,
+    metadata: &Value,
+    datalogic: &datalogic_rs::DataLogic,
+) -> Result<(), OrionError> {
+    if let Some(cfg) = channel_config
         && let Some(ref compiled) = cfg.validation_logic
     {
-        let context = std::sync::Arc::new(json!({ "data": &data, "metadata": &metadata }));
-        match state.datalogic.evaluate(compiled, context) {
+        let context = std::sync::Arc::new(json!({ "data": data, "metadata": metadata }));
+        match datalogic.evaluate(compiled, context) {
             Ok(result) => {
                 if !is_truthy(&result) {
                     return Err(OrionError::BadRequest(
@@ -218,44 +222,72 @@ async fn process_sync_for_channel(
             }
         }
     }
+    Ok(())
+}
 
-    // Per-channel request deduplication
-    // Note: the inner `if let` cannot be collapsed into the let-chain because
-    // the body contains `.await` which is not allowed in let-chain guards.
-    #[allow(clippy::collapsible_if)]
-    if let Some(ref cfg) = channel_config
+/// Check per-channel request deduplication. Returns `Err(Conflict)` when a
+/// duplicate idempotency key is detected within the configured window.
+async fn check_deduplication(
+    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), OrionError> {
+    if let Some(cfg) = channel_config
         && let Some(ref dedup) = cfg.parsed_config.deduplication
         && let Some(ref store) = cfg.dedup_store
+        && let Some(key) = headers.get(&dedup.header).and_then(|v| v.to_str().ok())
     {
-        if let Some(key) = headers.get(&dedup.header).and_then(|v| v.to_str().ok()) {
-            let window = dedup.window_secs.unwrap_or(300);
-            let is_new = store.check_and_insert(key, window).await.unwrap_or(false);
-            if !is_new {
-                return Err(OrionError::Conflict(format!(
-                    "Duplicate request: idempotency key '{}' already seen",
-                    key
-                )));
-            }
+        let window = dedup.window_secs.unwrap_or(300);
+        let is_new = store.check_and_insert(key, window).await.unwrap_or(false);
+        if !is_new {
+            return Err(OrionError::Conflict(format!(
+                "Duplicate request: idempotency key '{}' already seen",
+                key
+            )));
         }
     }
+    Ok(())
+}
 
-    // Per-channel backpressure
-    let _backpressure_permit = if let Some(ref cfg) = channel_config
+/// Acquire a per-channel backpressure permit. Returns `Err(ServiceUnavailable)`
+/// when the channel's concurrency limit has been reached.
+fn acquire_backpressure(
+    channel: &str,
+    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
+) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, OrionError> {
+    if let Some(cfg) = channel_config
         && let Some(ref semaphore) = cfg.backpressure_semaphore
     {
         match semaphore.clone().try_acquire_owned() {
-            Ok(permit) => Some(permit),
+            Ok(permit) => Ok(Some(permit)),
             Err(_) => {
                 metrics::record_error("backpressure");
-                return Err(OrionError::ServiceUnavailable(format!(
+                Err(OrionError::ServiceUnavailable(format!(
                     "Channel '{}' is at capacity",
                     channel
-                )));
+                )))
             }
         }
     } else {
-        None
-    };
+        Ok(None)
+    }
+}
+
+/// Core sync processing logic shared between simple HTTP and REST routes.
+async fn process_sync_for_channel(
+    state: &AppState,
+    channel: &str,
+    data: Value,
+    metadata: Value,
+    headers: &axum::http::HeaderMap,
+) -> Result<Json<Value>, OrionError> {
+    let input_json = serde_json::to_string(&data).ok();
+
+    let channel_config = state.channel_registry.get_by_name(channel).await;
+
+    check_cors_origin(channel, &channel_config, headers)?;
+    validate_input(channel, &channel_config, &data, &metadata, &state.datalogic)?;
+    check_deduplication(&channel_config, headers).await?;
+    let _backpressure_permit = acquire_backpressure(channel, &channel_config)?;
 
     let start = Instant::now();
     let engine = crate::engine::acquire_engine_read(&state.engine).await;

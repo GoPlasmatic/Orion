@@ -73,7 +73,7 @@ pub(crate) async fn create_connector(
     let connector = state.connector_repo.create(&req).await?;
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "create",
         "connector",
         &connector.id,
@@ -125,7 +125,7 @@ pub(crate) async fn update_connector(
     let connector = state.connector_repo.update(&id, &req).await?;
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "update",
         "connector",
         &id,
@@ -154,7 +154,7 @@ pub(crate) async fn delete_connector(
     state.connector_repo.delete(&id).await?;
     audit_log(
         &state.audit_log_repo,
-        principal.as_ref().map(|e| &e.0),
+        &principal,
         "delete",
         "connector",
         &id,
@@ -206,7 +206,7 @@ pub(crate) async fn reset_circuit_breaker(
     if found {
         audit_log(
             &state.audit_log_repo,
-            principal.as_ref().map(|e| &e.0),
+            &principal,
             "reset",
             "circuit_breaker",
             &key,

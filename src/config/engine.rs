@@ -19,6 +19,8 @@ pub struct EngineConfig {
     /// Maximum entries in each external connector pool cache.
     /// LRU eviction removes the least-recently-used pool when exceeded.
     pub max_pool_cache_entries: usize,
+    /// Interval in seconds between cache cleanup sweeps that evict expired entries.
+    pub cache_cleanup_interval_secs: u64,
 }
 
 impl Default for EngineConfig {
@@ -31,6 +33,7 @@ impl Default for EngineConfig {
             default_channel_call_timeout_ms: 30_000,
             global_http_timeout_secs: 30,
             max_pool_cache_entries: 100,
+            cache_cleanup_interval_secs: 60,
         }
     }
 }

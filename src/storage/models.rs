@@ -17,25 +17,31 @@ fn parse_json_field<T: serde::de::DeserializeOwned>(
     })
 }
 
-// -- Workflow status constants --
-pub const WORKFLOW_STATUS_DRAFT: &str = "draft";
-pub const WORKFLOW_STATUS_ACTIVE: &str = "active";
-pub const WORKFLOW_STATUS_ARCHIVED: &str = "archived";
-pub const VALID_WORKFLOW_STATUSES: [&str; 3] = [
-    WORKFLOW_STATUS_DRAFT,
-    WORKFLOW_STATUS_ACTIVE,
-    WORKFLOW_STATUS_ARCHIVED,
-];
+// -- Entity status enum --
 
-// -- Channel status constants --
-pub const CHANNEL_STATUS_DRAFT: &str = "draft";
-pub const CHANNEL_STATUS_ACTIVE: &str = "active";
-pub const CHANNEL_STATUS_ARCHIVED: &str = "archived";
-pub const VALID_CHANNEL_STATUSES: [&str; 3] = [
-    CHANNEL_STATUS_DRAFT,
-    CHANNEL_STATUS_ACTIVE,
-    CHANNEL_STATUS_ARCHIVED,
-];
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum EntityStatus {
+    Draft,
+    Active,
+    Archived,
+}
+
+impl EntityStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::Archived => "archived",
+        }
+    }
+}
+
+impl std::fmt::Display for EntityStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// Parsed status-change action for type-safe exhaustive matching in handlers.
 #[derive(Debug)]
@@ -45,13 +51,13 @@ pub enum StatusAction {
 }
 
 impl StatusAction {
-    pub fn parse(s: &str) -> Result<Self, OrionError> {
-        match s {
-            "active" => Ok(Self::Activate),
-            "archived" => Ok(Self::Archive),
-            other => Err(OrionError::BadRequest(format!(
-                "Invalid status transition to '{other}'. Use 'active' or 'archived'"
-            ))),
+    pub fn parse(status: EntityStatus) -> Result<Self, OrionError> {
+        match status {
+            EntityStatus::Active => Ok(Self::Activate),
+            EntityStatus::Archived => Ok(Self::Archive),
+            EntityStatus::Draft => Err(OrionError::BadRequest(
+                "Invalid status transition to 'draft'. Use 'active' or 'archived'".to_string(),
+            )),
         }
     }
 }
@@ -61,15 +67,30 @@ pub const CHANNEL_TYPE_SYNC: &str = "sync";
 pub const CHANNEL_TYPE_ASYNC: &str = "async";
 pub const VALID_CHANNEL_TYPES: [&str; 2] = [CHANNEL_TYPE_SYNC, CHANNEL_TYPE_ASYNC];
 
-// -- Channel protocol constants --
-pub const CHANNEL_PROTOCOL_REST: &str = "rest";
-pub const CHANNEL_PROTOCOL_HTTP: &str = "http";
-pub const CHANNEL_PROTOCOL_KAFKA: &str = "kafka";
-pub const VALID_CHANNEL_PROTOCOLS: [&str; 3] = [
-    CHANNEL_PROTOCOL_REST,
-    CHANNEL_PROTOCOL_HTTP,
-    CHANNEL_PROTOCOL_KAFKA,
-];
+// -- Channel protocol enum --
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelProtocol {
+    Rest,
+    Http,
+    Kafka,
+}
+
+impl ChannelProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Rest => "rest",
+            Self::Http => "http",
+            Self::Kafka => "kafka",
+        }
+    }
+}
+
+impl std::fmt::Display for ChannelProtocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 // -- Trace status constants --
 pub const TRACE_STATUS_PENDING: &str = "pending";
@@ -316,7 +337,7 @@ mod tests {
             description: Some("A test workflow".to_string()),
             priority: 10,
             version: 1,
-            status: WORKFLOW_STATUS_ACTIVE.to_string(),
+            status: EntityStatus::Active.as_str().to_string(),
             rollout_percentage: 100,
             condition_json: r#"{"==": [1, 1]}"#.to_string(),
             tasks_json: r#"[{"id": "t1", "function": "http_call"}]"#.to_string(),
@@ -334,7 +355,7 @@ mod tests {
             name: "orders".to_string(),
             description: Some("Order processing channel".to_string()),
             channel_type: CHANNEL_TYPE_SYNC.to_string(),
-            protocol: CHANNEL_PROTOCOL_REST.to_string(),
+            protocol: ChannelProtocol::Rest.as_str().to_string(),
             methods: Some(r#"["POST"]"#.to_string()),
             route_pattern: Some("/orders".to_string()),
             topic: None,
@@ -342,7 +363,7 @@ mod tests {
             transport_config_json: "{}".to_string(),
             workflow_id: Some("wf-1".to_string()),
             config_json: r#"{"timeout_ms": 5000}"#.to_string(),
-            status: CHANNEL_STATUS_ACTIVE.to_string(),
+            status: EntityStatus::Active.as_str().to_string(),
             priority: 0,
             created_at: sample_datetime(),
             updated_at: sample_datetime(),
@@ -357,7 +378,7 @@ mod tests {
         assert_eq!(response.name, "Test Workflow");
         assert_eq!(response.priority, 10);
         assert_eq!(response.version, 1);
-        assert_eq!(response.status, WORKFLOW_STATUS_ACTIVE);
+        assert_eq!(response.status, EntityStatus::Active.as_str());
         assert_eq!(response.rollout_percentage, 100);
         assert_eq!(response.condition, serde_json::json!({"==": [1, 1]}));
         assert_eq!(
@@ -407,7 +428,7 @@ mod tests {
         assert_eq!(response.channel_id, "ch-1");
         assert_eq!(response.name, "orders");
         assert_eq!(response.channel_type, CHANNEL_TYPE_SYNC);
-        assert_eq!(response.protocol, CHANNEL_PROTOCOL_REST);
+        assert_eq!(response.protocol, ChannelProtocol::Rest.as_str());
         assert_eq!(response.methods, Some(serde_json::json!(["POST"])));
         assert_eq!(response.route_pattern, Some("/orders".to_string()));
         assert!(response.topic.is_none());
@@ -419,14 +440,14 @@ mod tests {
     fn test_channel_response_try_from_async() {
         let mut channel = sample_channel();
         channel.channel_type = CHANNEL_TYPE_ASYNC.to_string();
-        channel.protocol = CHANNEL_PROTOCOL_KAFKA.to_string();
+        channel.protocol = ChannelProtocol::Kafka.as_str().to_string();
         channel.methods = None;
         channel.route_pattern = None;
         channel.topic = Some("order.placed".to_string());
         channel.consumer_group = Some("orion".to_string());
         let response = ChannelResponse::try_from(&channel).unwrap();
         assert_eq!(response.channel_type, CHANNEL_TYPE_ASYNC);
-        assert_eq!(response.protocol, CHANNEL_PROTOCOL_KAFKA);
+        assert_eq!(response.protocol, ChannelProtocol::Kafka.as_str());
         assert!(response.methods.is_none());
         assert_eq!(response.topic, Some("order.placed".to_string()));
     }
@@ -440,10 +461,29 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_workflow_statuses() {
-        assert!(VALID_WORKFLOW_STATUSES.contains(&WORKFLOW_STATUS_DRAFT));
-        assert!(VALID_WORKFLOW_STATUSES.contains(&WORKFLOW_STATUS_ACTIVE));
-        assert!(VALID_WORKFLOW_STATUSES.contains(&WORKFLOW_STATUS_ARCHIVED));
+    fn test_entity_status_as_str() {
+        assert_eq!(EntityStatus::Draft.as_str(), "draft");
+        assert_eq!(EntityStatus::Active.as_str(), "active");
+        assert_eq!(EntityStatus::Archived.as_str(), "archived");
+    }
+
+    #[test]
+    fn test_entity_status_display() {
+        assert_eq!(EntityStatus::Draft.to_string(), "draft");
+        assert_eq!(EntityStatus::Active.to_string(), "active");
+        assert_eq!(EntityStatus::Archived.to_string(), "archived");
+    }
+
+    #[test]
+    fn test_entity_status_serde_roundtrip() {
+        let draft: EntityStatus = serde_json::from_str(r#""draft""#).unwrap();
+        assert_eq!(draft, EntityStatus::Draft);
+        let active: EntityStatus = serde_json::from_str(r#""active""#).unwrap();
+        assert_eq!(active, EntityStatus::Active);
+        let archived: EntityStatus = serde_json::from_str(r#""archived""#).unwrap();
+        assert_eq!(archived, EntityStatus::Archived);
+        // Invalid status should fail
+        assert!(serde_json::from_str::<EntityStatus>(r#""pending""#).is_err());
     }
 
     #[test]
@@ -453,10 +493,29 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_channel_protocols() {
-        assert!(VALID_CHANNEL_PROTOCOLS.contains(&CHANNEL_PROTOCOL_REST));
-        assert!(VALID_CHANNEL_PROTOCOLS.contains(&CHANNEL_PROTOCOL_HTTP));
-        assert!(VALID_CHANNEL_PROTOCOLS.contains(&CHANNEL_PROTOCOL_KAFKA));
+    fn test_channel_protocol_as_str() {
+        assert_eq!(ChannelProtocol::Rest.as_str(), "rest");
+        assert_eq!(ChannelProtocol::Http.as_str(), "http");
+        assert_eq!(ChannelProtocol::Kafka.as_str(), "kafka");
+    }
+
+    #[test]
+    fn test_channel_protocol_display() {
+        assert_eq!(ChannelProtocol::Rest.to_string(), "rest");
+        assert_eq!(ChannelProtocol::Http.to_string(), "http");
+        assert_eq!(ChannelProtocol::Kafka.to_string(), "kafka");
+    }
+
+    #[test]
+    fn test_channel_protocol_serde_roundtrip() {
+        let rest: ChannelProtocol = serde_json::from_str(r#""rest""#).unwrap();
+        assert_eq!(rest, ChannelProtocol::Rest);
+        let http: ChannelProtocol = serde_json::from_str(r#""http""#).unwrap();
+        assert_eq!(http, ChannelProtocol::Http);
+        let kafka: ChannelProtocol = serde_json::from_str(r#""kafka""#).unwrap();
+        assert_eq!(kafka, ChannelProtocol::Kafka);
+        // Invalid protocol should fail
+        assert!(serde_json::from_str::<ChannelProtocol>(r#""grpc""#).is_err());
     }
 
     #[test]
