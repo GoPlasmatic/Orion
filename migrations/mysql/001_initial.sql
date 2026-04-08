@@ -40,8 +40,20 @@ CREATE INDEX `idx_traces_mode` ON `traces` (`mode`);
 CREATE INDEX `idx_traces_created_at` ON `traces` (`created_at`);
 CREATE INDEX `idx_traces_channel_id` ON `traces` (`channel_id`);
 
+CREATE TABLE IF NOT EXISTS `audit_logs` (
+    `id` varchar(36) NOT NULL PRIMARY KEY,
+    `principal` varchar(255) NOT NULL,
+    `action` varchar(64) NOT NULL,
+    `resource_type` varchar(64) NOT NULL,
+    `resource_id` varchar(255) NOT NULL,
+    `details` text,
+    `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX `idx_trace_dlq_next_retry` ON `trace_dlq` (`next_retry_at`, `retry_count`);
 CREATE INDEX `idx_trace_dlq_channel` ON `trace_dlq` (`channel`);
+CREATE INDEX `idx_audit_logs_created_at` ON `audit_logs` (`created_at`);
+CREATE INDEX `idx_audit_logs_resource` ON `audit_logs` (`resource_type`, `resource_id`);
 
 -- Latest version per workflow_id
 CREATE VIEW current_workflows AS

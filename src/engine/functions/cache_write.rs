@@ -8,8 +8,11 @@ use dataflow_rs::engine::message::{Change, Message};
 use datalogic_rs::DataLogic;
 use serde_json::Value;
 
+use super::connector_helpers::{
+    extract_custom_input, require_cache_connector, require_str_field, resolve_connector,
+};
+use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
 
 /// Workflow function handler for writing values to a cache backend.
 pub struct CacheWriteHandler {
@@ -25,39 +28,12 @@ impl AsyncFunctionHandler for CacheWriteHandler {
         config: &FunctionConfig,
         _datalogic: Arc<DataLogic>,
     ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
-        let input = match config {
-            FunctionConfig::Custom { input, .. } => input,
-            _ => {
-                return Err(DataflowError::Validation(
-                    "Expected Custom config for cache_write".into(),
-                ));
-            }
-        };
+        let input = extract_custom_input(config, "cache_write")?;
+        let connector_name = require_str_field(input, "connector", "cache_write")?;
+        let key = require_str_field(input, "key", "cache_write")?;
 
-        let connector_name = input
-            .get("connector")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DataflowError::Validation("cache_write requires 'connector'".into()))?;
-        let key = input
-            .get("key")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DataflowError::Validation("cache_write requires 'key'".into()))?;
-
-        let connector_config = self.registry.get(connector_name).await.ok_or_else(|| {
-            DataflowError::function_execution(
-                format!("Connector '{}' not found", connector_name),
-                None,
-            )
-        })?;
-        let cache_config = match connector_config.as_ref() {
-            ConnectorConfig::Cache(c) => c,
-            _ => {
-                return Err(DataflowError::Validation(format!(
-                    "Connector '{}' is not a cache connector",
-                    connector_name
-                )));
-            }
-        };
+        let connector_config = resolve_connector(&self.registry, connector_name).await?;
+        let cache_config = require_cache_connector(&connector_config, connector_name)?;
 
         let backend = self
             .cache_pool

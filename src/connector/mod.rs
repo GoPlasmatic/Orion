@@ -21,7 +21,11 @@ use circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
 static BREAKER_ACCESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Shared monotonic counter for LRU tracking across connector pool caches.
-#[cfg(any(feature = "connectors-sql", feature = "connectors-redis", feature = "connectors-mongodb"))]
+#[cfg(any(
+    feature = "connectors-sql",
+    feature = "connectors-redis",
+    feature = "connectors-mongodb"
+))]
 pub(crate) static POOL_ACCESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A circuit breaker entry with LRU tracking.

@@ -11,9 +11,11 @@ use serde_json::Value;
 use sqlx::any::AnyRow;
 use sqlx::{Column, Row};
 
-use super::http_common::{get_nested, set_nested};
+use super::connector_helpers::{
+    apply_output, extract_custom_input, require_db_connector, require_str_field, resolve_connector,
+};
+use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
 
 /// Executes SQL SELECT queries against external databases configured via connectors.
 pub struct DbReadHandler {
@@ -29,45 +31,13 @@ impl AsyncFunctionHandler for DbReadHandler {
         config: &FunctionConfig,
         _datalogic: Arc<DataLogic>,
     ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
-        let input = match config {
-            FunctionConfig::Custom { input, .. } => input,
-            _ => {
-                return Err(DataflowError::Validation(
-                    "Expected Custom config for db_read".into(),
-                ));
-            }
-        };
-
-        let connector_name = input
-            .get("connector")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                DataflowError::Validation("db_read requires 'connector' field".into())
-            })?;
-
-        let query = input
-            .get("query")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DataflowError::Validation("db_read requires 'query' field".into()))?;
-
+        let input = extract_custom_input(config, "db_read")?;
+        let connector_name = require_str_field(input, "connector", "db_read")?;
+        let query = require_str_field(input, "query", "db_read")?;
         let params = input.get("params").and_then(|v| v.as_array());
 
-        let connector_config = self.registry.get(connector_name).await.ok_or_else(|| {
-            DataflowError::function_execution(
-                format!("Connector '{}' not found", connector_name),
-                None,
-            )
-        })?;
-
-        let db_config = match connector_config.as_ref() {
-            ConnectorConfig::Db(c) => c,
-            _ => {
-                return Err(DataflowError::Validation(format!(
-                    "Connector '{}' is not a database connector",
-                    connector_name
-                )));
-            }
-        };
+        let connector_config = resolve_connector(&self.registry, connector_name).await?;
+        let db_config = require_db_connector(&connector_config, connector_name)?;
 
         let pool = self
             .pool_cache
@@ -116,17 +86,7 @@ impl AsyncFunctionHandler for DbReadHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("data");
 
-        let mut changes = Vec::new();
-        let old_value = get_nested(&message.context, output_path);
-        set_nested(&mut message.context, output_path, result.clone());
-        message.invalidate_context_cache();
-
-        changes.push(Change {
-            path: Arc::from(output_path),
-            old_value: Arc::new(old_value),
-            new_value: Arc::new(result),
-        });
-
+        let changes = apply_output(message, output_path, result);
         Ok((1, changes))
     }
 }

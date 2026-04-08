@@ -8,8 +8,12 @@ use dataflow_rs::engine::message::{Change, Message};
 use datalogic_rs::DataLogic;
 use serde_json::Value;
 
+use super::connector_helpers::{
+    apply_output, extract_custom_input, require_cache_connector, require_str_field,
+    resolve_connector,
+};
+use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
 
 /// Workflow function handler for reading values from a cache backend.
 pub struct CacheReadHandler {
@@ -25,39 +29,12 @@ impl AsyncFunctionHandler for CacheReadHandler {
         config: &FunctionConfig,
         _datalogic: Arc<DataLogic>,
     ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
-        let input = match config {
-            FunctionConfig::Custom { input, .. } => input,
-            _ => {
-                return Err(DataflowError::Validation(
-                    "Expected Custom config for cache_read".into(),
-                ));
-            }
-        };
+        let input = extract_custom_input(config, "cache_read")?;
+        let connector_name = require_str_field(input, "connector", "cache_read")?;
+        let key = require_str_field(input, "key", "cache_read")?;
 
-        let connector_name = input
-            .get("connector")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DataflowError::Validation("cache_read requires 'connector'".into()))?;
-        let key = input
-            .get("key")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| DataflowError::Validation("cache_read requires 'key'".into()))?;
-
-        let connector_config = self.registry.get(connector_name).await.ok_or_else(|| {
-            DataflowError::function_execution(
-                format!("Connector '{}' not found", connector_name),
-                None,
-            )
-        })?;
-        let cache_config = match connector_config.as_ref() {
-            ConnectorConfig::Cache(c) => c,
-            _ => {
-                return Err(DataflowError::Validation(format!(
-                    "Connector '{}' is not a cache connector",
-                    connector_name
-                )));
-            }
-        };
+        let connector_config = resolve_connector(&self.registry, connector_name).await?;
+        let cache_config = require_cache_connector(&connector_config, connector_name)?;
 
         let backend = self
             .cache_pool
@@ -83,15 +60,7 @@ impl AsyncFunctionHandler for CacheReadHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("data");
 
-        let old_value = super::http_common::get_nested(&message.context, output_path);
-        super::http_common::set_nested(&mut message.context, output_path, result.clone());
-        message.invalidate_context_cache();
-
-        let changes = vec![Change {
-            path: Arc::from(output_path),
-            old_value: Arc::new(old_value),
-            new_value: Arc::new(result),
-        }];
+        let changes = apply_output(message, output_path, result);
         Ok((1, changes))
     }
 }

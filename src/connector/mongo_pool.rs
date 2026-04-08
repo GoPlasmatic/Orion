@@ -22,8 +22,10 @@ impl ClientEntry {
     }
 
     fn touch(&self) {
-        self.last_access
-            .store(POOL_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+        self.last_access.store(
+            POOL_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
     }
 }
 

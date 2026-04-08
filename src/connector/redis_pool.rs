@@ -22,8 +22,10 @@ impl ConnEntry {
     }
 
     fn touch(&self) {
-        self.last_access
-            .store(POOL_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed), Ordering::Relaxed);
+        self.last_access.store(
+            POOL_ACCESS_COUNTER.fetch_add(1, Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -64,11 +66,10 @@ impl RedisPoolCache {
                 connector_name
             ))
         })?;
-        let client =
-            redis::Client::open(url).map_err(|e| OrionError::InternalSource {
-                context: format!("Invalid Redis URL for '{}'", connector_name),
-                source: Box::new(e),
-            })?;
+        let client = redis::Client::open(url).map_err(|e| OrionError::InternalSource {
+            context: format!("Invalid Redis URL for '{}'", connector_name),
+            source: Box::new(e),
+        })?;
         let conn = client
             .get_multiplexed_tokio_connection()
             .await

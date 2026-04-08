@@ -45,8 +45,20 @@ CREATE INDEX idx_channels_topic_partial ON channels(topic) WHERE topic IS NOT NU
 CREATE INDEX idx_channels_workflow_partial ON channels(workflow_id) WHERE workflow_id IS NOT NULL;
 CREATE INDEX idx_traces_channel_id_partial ON traces(channel_id) WHERE channel_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS "audit_logs" (
+    "id" text NOT NULL PRIMARY KEY,
+    "principal" text NOT NULL,
+    "action" text NOT NULL,
+    "resource_type" text NOT NULL,
+    "resource_id" text NOT NULL,
+    "details" text,
+    "created_at" timestamp_text NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX "idx_trace_dlq_next_retry" ON "trace_dlq" ("next_retry_at") WHERE "retry_count" < "max_retries";
 CREATE INDEX "idx_trace_dlq_channel" ON "trace_dlq" ("channel");
+CREATE INDEX "idx_audit_logs_created_at" ON "audit_logs" ("created_at");
+CREATE INDEX "idx_audit_logs_resource" ON "audit_logs" ("resource_type", "resource_id");
 
 -- Latest version per workflow_id
 CREATE VIEW current_workflows AS

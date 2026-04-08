@@ -18,11 +18,7 @@ async fn test_async_submit_returns_202_with_trace_id() {
     common::create_and_activate_channel(
         &app,
         "events",
-        json!({
-            "name": "Events Workflow",
-            "condition": true,
-            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"event"}}}]
-        }),
+        common::simple_log_workflow("Events Workflow"),
     )
     .await;
 
@@ -49,11 +45,7 @@ async fn test_async_trace_completes_successfully() {
     common::create_and_activate_channel(
         &app,
         "orders",
-        json!({
-            "name": "Orders Workflow",
-            "condition": true,
-            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"order"}}}]
-        }),
+        common::simple_log_workflow("Orders Workflow"),
     )
     .await;
 
@@ -129,11 +121,7 @@ async fn test_multiple_concurrent_async_traces() {
     common::create_and_activate_channel(
         &app,
         "events",
-        json!({
-            "name": "Events Workflow",
-            "condition": true,
-            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"event"}}}]
-        }),
+        common::simple_log_workflow("Events Workflow"),
     )
     .await;
 
@@ -179,11 +167,7 @@ async fn test_trace_list_pagination() {
     common::create_and_activate_channel(
         &app,
         "orders",
-        json!({
-            "name": "Orders Workflow",
-            "condition": true,
-            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"order"}}}]
-        }),
+        common::simple_log_workflow("Orders Workflow"),
     )
     .await;
 
@@ -245,11 +229,7 @@ async fn test_trace_list_filter_by_status() {
     common::create_and_activate_channel(
         &app,
         "events",
-        json!({
-            "name": "Events Workflow",
-            "condition": true,
-            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"event"}}}]
-        }),
+        common::simple_log_workflow("Events Workflow"),
     )
     .await;
 
@@ -297,22 +277,14 @@ async fn test_trace_list_filter_by_channel() {
     common::create_and_activate_channel(
         &app,
         "channel-a",
-        json!({
-            "name": "Channel A Workflow",
-            "condition": true,
-            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"a"}}}]
-        }),
+        common::simple_log_workflow("Channel A Workflow"),
     )
     .await;
 
     common::create_and_activate_channel(
         &app,
         "channel-b",
-        json!({
-            "name": "Channel B Workflow",
-            "condition": true,
-            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"b"}}}]
-        }),
+        common::simple_log_workflow("Channel B Workflow"),
     )
     .await;
 
@@ -370,11 +342,7 @@ async fn test_get_completed_trace_with_result() {
     common::create_and_activate_channel(
         &app,
         "test-ch",
-        json!({
-            "name": "Test Workflow",
-            "condition": true,
-            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"test"}}}]
-        }),
+        common::simple_log_workflow("Test Workflow"),
     )
     .await;
 

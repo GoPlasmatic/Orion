@@ -1,3 +1,24 @@
+mod admin_auth;
+mod engine;
+mod kafka;
+mod logging;
+mod observability;
+mod queue;
+mod rate_limit;
+mod server;
+mod storage;
+
+// Re-export all types so `use crate::config::Foo` keeps working.
+pub use admin_auth::AdminAuthConfig;
+pub use engine::EngineConfig;
+pub use kafka::{DlqConfig, KafkaIngestConfig, TopicMapping};
+pub use logging::{LogFormat, LoggingConfig};
+pub use observability::{CorsConfig, MetricsConfig, TracingConfig};
+pub use queue::QueueConfig;
+pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
+pub use server::{IngestConfig, ServerConfig, TlsConfig};
+pub use storage::StorageConfig;
+
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -46,372 +67,6 @@ pub struct ChannelLoadingConfig {
     pub include: Vec<String>,
     /// Glob patterns for channels to exclude. Applied after include.
     pub exclude: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ServerConfig {
-    pub host: String,
-    pub port: u16,
-    /// Maximum time in seconds to wait for in-flight requests during graceful shutdown.
-    pub shutdown_drain_secs: u64,
-    /// TLS configuration for HTTPS support.
-    pub tls: TlsConfig,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            host: "0.0.0.0".to_string(),
-            port: 8080,
-            shutdown_drain_secs: 30,
-            tls: TlsConfig::default(),
-        }
-    }
-}
-
-/// TLS configuration for HTTPS support.
-/// When `enabled` is false (default), the server runs plain HTTP.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct TlsConfig {
-    /// Enable TLS. Requires `cert_path` and `key_path` to be set.
-    pub enabled: bool,
-    /// Path to the PEM-encoded certificate chain file.
-    pub cert_path: String,
-    /// Path to the PEM-encoded private key file.
-    pub key_path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct StorageConfig {
-    /// Database connection URL.
-    /// Examples: "sqlite:orion.db", "postgres://user:pass@host/db", "mysql://user:pass@host/db"
-    pub url: String,
-    pub max_connections: u32,
-    /// Minimum number of connections to maintain in the pool (0 = no minimum).
-    pub min_connections: u32,
-    /// SQLite busy timeout in milliseconds (ignored for other backends).
-    pub busy_timeout_ms: u64,
-    /// Connection pool acquire timeout in seconds.
-    pub acquire_timeout_secs: u64,
-    /// Maximum idle time in seconds before a connection is closed (0 = no limit).
-    pub idle_timeout_secs: u64,
-    /// Directory for database backup files (SQLite only).
-    pub backup_dir: String,
-}
-
-impl Default for StorageConfig {
-    fn default() -> Self {
-        Self {
-            url: "sqlite:orion.db".to_string(),
-            max_connections: 10,
-            min_connections: 0,
-            busy_timeout_ms: 5000,
-            acquire_timeout_secs: 5,
-            idle_timeout_secs: 300,
-            backup_dir: "./backups".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct IngestConfig {
-    pub max_payload_size: usize,
-}
-
-impl Default for IngestConfig {
-    fn default() -> Self {
-        Self {
-            max_payload_size: 1_048_576, // 1 MB
-        }
-    }
-}
-
-/// Engine configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EngineConfig {
-    pub circuit_breaker: crate::connector::circuit_breaker::CircuitBreakerConfig,
-    /// Timeout in seconds for acquiring engine read lock in health checks.
-    pub health_check_timeout_secs: u64,
-    /// Timeout in seconds for acquiring engine write lock during reload.
-    pub reload_timeout_secs: u64,
-    /// Maximum nesting depth for channel_call invocations.
-    pub max_channel_call_depth: u32,
-    /// Default timeout in milliseconds for channel_call invocations.
-    pub default_channel_call_timeout_ms: u64,
-    /// Global default timeout in seconds for all outbound HTTP requests (safety net).
-    /// Individual connector/task timeouts override this when shorter.
-    pub global_http_timeout_secs: u64,
-    /// Maximum entries in each external connector pool cache.
-    /// LRU eviction removes the least-recently-used pool when exceeded.
-    pub max_pool_cache_entries: usize,
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self {
-            circuit_breaker: Default::default(),
-            health_check_timeout_secs: 2,
-            reload_timeout_secs: 10,
-            max_channel_call_depth: 10,
-            default_channel_call_timeout_ms: 30_000,
-            global_http_timeout_secs: 30,
-            max_pool_cache_entries: 100,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct QueueConfig {
-    /// Maximum number of concurrent async trace workers.
-    pub workers: usize,
-    /// Channel buffer size for pending traces.
-    pub buffer_size: usize,
-    /// Timeout in seconds to wait for in-flight traces during shutdown.
-    pub shutdown_timeout_secs: u64,
-    /// How long to retain completed/failed traces in hours (0 = forever).
-    pub trace_retention_hours: u64,
-    /// How often to run the trace cleanup task in seconds.
-    pub trace_cleanup_interval_secs: u64,
-    /// Maximum time in milliseconds for processing a single async trace.
-    pub processing_timeout_ms: u64,
-    /// Maximum size in bytes for serialized trace results. Results exceeding
-    /// this limit are rejected (sync) or marked as failed (async). Default 1 MB.
-    pub max_result_size_bytes: usize,
-    /// Maximum total memory in bytes for queued trace payloads. New submissions
-    /// are rejected with 503 when this limit is exceeded. Default 100 MB.
-    pub max_queue_memory_bytes: usize,
-    /// Enable DLQ retry processing for failed async traces.
-    pub dlq_retry_enabled: bool,
-    /// Maximum number of retries for DLQ entries before giving up.
-    pub dlq_max_retries: i64,
-    /// How often to poll the DLQ for pending retries, in seconds.
-    pub dlq_poll_interval_secs: u64,
-}
-
-impl Default for QueueConfig {
-    fn default() -> Self {
-        Self {
-            workers: 4,
-            buffer_size: 1000,
-            shutdown_timeout_secs: 30,
-            trace_retention_hours: 72,
-            trace_cleanup_interval_secs: 3600,
-            processing_timeout_ms: 60_000,
-            max_result_size_bytes: 1_048_576,    // 1 MB
-            max_queue_memory_bytes: 104_857_600, // 100 MB
-            dlq_retry_enabled: true,
-            dlq_max_retries: 5,
-            dlq_poll_interval_secs: 30,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct KafkaIngestConfig {
-    /// Enable Kafka consumer ingestion.
-    pub enabled: bool,
-    /// Kafka broker addresses.
-    pub brokers: Vec<String>,
-    /// Consumer group ID.
-    pub group_id: String,
-    /// Topic-to-channel mappings.
-    #[serde(default)]
-    pub topics: Vec<TopicMapping>,
-    /// Dead-letter queue configuration.
-    pub dlq: DlqConfig,
-    /// Maximum time in milliseconds for processing a single Kafka message.
-    pub processing_timeout_ms: u64,
-    /// Maximum number of in-flight messages being processed concurrently.
-    /// The consumer pauses reading when this limit is reached (backpressure).
-    pub max_inflight: usize,
-    /// Interval in seconds between consumer lag metric polls.
-    /// Set to 0 to disable lag monitoring.
-    pub lag_poll_interval_secs: u64,
-}
-
-impl Default for KafkaIngestConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            brokers: vec!["localhost:9092".to_string()],
-            group_id: "orion".to_string(),
-            topics: vec![],
-            dlq: DlqConfig::default(),
-            processing_timeout_ms: 60_000,
-            max_inflight: 10,
-            lag_poll_interval_secs: 30,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TopicMapping {
-    pub topic: String,
-    pub channel: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct DlqConfig {
-    /// Enable dead-letter queue for failed messages.
-    pub enabled: bool,
-    /// DLQ topic name.
-    pub topic: String,
-}
-
-impl Default for DlqConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            topic: "orion-dlq".to_string(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct LoggingConfig {
-    pub level: String,
-    pub format: LogFormat,
-}
-
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            level: "info".to_string(),
-            format: LogFormat::Pretty,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum LogFormat {
-    Pretty,
-    Json,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct CorsConfig {
-    /// Allowed origins. Use `["*"]` (default) for permissive CORS.
-    pub allowed_origins: Vec<String>,
-}
-
-impl Default for CorsConfig {
-    fn default() -> Self {
-        Self {
-            allowed_origins: vec!["*".to_string()],
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct MetricsConfig {
-    pub enabled: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct TracingConfig {
-    /// Enable OpenTelemetry trace export. Requires the `otel` feature flag at compile time.
-    pub enabled: bool,
-    /// OTLP gRPC endpoint (e.g. Jaeger, Grafana Tempo, OTel Collector).
-    pub otlp_endpoint: String,
-    /// Service name reported in traces.
-    pub service_name: String,
-    /// Sampling rate from 0.0 (none) to 1.0 (all).
-    pub sample_rate: f64,
-}
-
-impl Default for TracingConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            otlp_endpoint: "http://localhost:4317".to_string(),
-            service_name: "orion".to_string(),
-            sample_rate: 1.0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RateLimitConfig {
-    pub enabled: bool,
-    #[serde(default = "default_rps")]
-    pub default_rps: u32,
-    #[serde(default = "default_burst")]
-    pub default_burst: u32,
-    #[serde(default)]
-    pub endpoints: EndpointRateLimits,
-}
-
-fn default_rps() -> u32 {
-    100
-}
-
-fn default_burst() -> u32 {
-    50
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct EndpointRateLimits {
-    pub admin_rps: Option<u32>,
-    pub data_rps: Option<u32>,
-}
-
-/// Admin API authentication configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct AdminAuthConfig {
-    /// Enable authentication for admin API endpoints.
-    pub enabled: bool,
-    /// Single API key (backward-compatible shorthand).
-    pub api_key: String,
-    /// Multiple API keys for zero-downtime rotation.
-    /// Both `api_key` and `api_keys` are merged — duplicates are ignored.
-    pub api_keys: Vec<String>,
-    /// Header name to extract the API key from.
-    /// When "Authorization" (default), expects `Bearer <token>` format.
-    /// For other values (e.g. "X-API-Key"), expects the raw key value.
-    pub header: String,
-}
-
-impl AdminAuthConfig {
-    /// Return the effective list of API keys (merges single key + key list).
-    pub fn effective_keys(&self) -> Vec<&str> {
-        let mut keys: Vec<&str> = self
-            .api_keys
-            .iter()
-            .filter(|k| !k.is_empty())
-            .map(|k| k.as_str())
-            .collect();
-        if !self.api_key.is_empty() && !keys.contains(&self.api_key.as_str()) {
-            keys.push(&self.api_key);
-        }
-        keys
-    }
-}
-
-impl Default for AdminAuthConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            api_key: String::new(),
-            api_keys: Vec::new(),
-            header: "Authorization".to_string(),
-        }
-    }
 }
 
 /// Load configuration from an optional TOML file path, then apply env overrides.
@@ -1459,15 +1114,7 @@ data_rps = 500
         assert!(validate_config(&config).is_err());
     }
 
-    // ---- Admin auth config tests ----
-
-    #[test]
-    fn test_admin_auth_config_default() {
-        let config = AdminAuthConfig::default();
-        assert!(!config.enabled);
-        assert!(config.api_key.is_empty());
-        assert_eq!(config.header, "Authorization");
-    }
+    // ---- Admin auth config tests (validation-level, stay in mod.rs) ----
 
     #[test]
     fn test_validate_config_admin_auth_enabled_empty_key() {
@@ -1552,68 +1199,6 @@ header = "X-Custom-Auth"
     }
 
     #[test]
-    fn test_effective_keys_single_key_only() {
-        let config = AdminAuthConfig {
-            enabled: true,
-            api_key: "key-a".to_string(),
-            api_keys: vec![],
-            header: "Authorization".to_string(),
-        };
-        assert_eq!(config.effective_keys(), vec!["key-a"]);
-    }
-
-    #[test]
-    fn test_effective_keys_multiple_keys_only() {
-        let config = AdminAuthConfig {
-            enabled: true,
-            api_key: String::new(),
-            api_keys: vec!["key-b".to_string(), "key-c".to_string()],
-            header: "Authorization".to_string(),
-        };
-        assert_eq!(config.effective_keys(), vec!["key-b", "key-c"]);
-    }
-
-    #[test]
-    fn test_effective_keys_merged_no_duplicates() {
-        let config = AdminAuthConfig {
-            enabled: true,
-            api_key: "key-a".to_string(),
-            api_keys: vec!["key-a".to_string(), "key-b".to_string()],
-            header: "Authorization".to_string(),
-        };
-        // api_key "key-a" is already in api_keys, so no duplicate
-        assert_eq!(config.effective_keys(), vec!["key-a", "key-b"]);
-    }
-
-    #[test]
-    fn test_effective_keys_merged_with_unique() {
-        let config = AdminAuthConfig {
-            enabled: true,
-            api_key: "key-c".to_string(),
-            api_keys: vec!["key-a".to_string(), "key-b".to_string()],
-            header: "Authorization".to_string(),
-        };
-        assert_eq!(config.effective_keys(), vec!["key-a", "key-b", "key-c"]);
-    }
-
-    #[test]
-    fn test_effective_keys_empty() {
-        let config = AdminAuthConfig::default();
-        assert!(config.effective_keys().is_empty());
-    }
-
-    #[test]
-    fn test_effective_keys_filters_empty_strings() {
-        let config = AdminAuthConfig {
-            enabled: true,
-            api_key: String::new(),
-            api_keys: vec!["".to_string(), "key-a".to_string(), "".to_string()],
-            header: "Authorization".to_string(),
-        };
-        assert_eq!(config.effective_keys(), vec!["key-a"]);
-    }
-
-    #[test]
     fn test_validate_config_admin_auth_enabled_via_api_keys() {
         let mut config = AppConfig::default();
         config.admin_auth.enabled = true;
@@ -1639,10 +1224,7 @@ header = "X-Custom-Auth"
         let mut config = AppConfig::default();
         apply_env_overrides_with(&mut config, make_env_reader(&env)).unwrap();
 
-        assert_eq!(
-            config.admin_auth.api_keys,
-            vec!["key-1", "key-2", "key-3"]
-        );
+        assert_eq!(config.admin_auth.api_keys, vec!["key-1", "key-2", "key-3"]);
     }
 
     #[test]
