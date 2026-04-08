@@ -14,9 +14,9 @@ pub struct ChannelConfig {
     pub timeout_ms: Option<u64>,
 
     /// Response caching configuration.
-    /// NOTE: Parsed for forward-compatibility but not yet wired into the
-    /// request pipeline. Including this field in channel config is safe and
-    /// will take effect once response caching is implemented.
+    /// When enabled, sync responses are cached using the configured (or default
+    /// in-memory) cache backend. Cache key is derived from channel name +
+    /// request data hash (optionally scoped to `cache_key_fields`).
     #[serde(default)]
     pub cache: Option<ChannelCacheConfig>,
 
@@ -33,11 +33,6 @@ pub struct ChannelConfig {
     /// duplicate submissions within the time window with 409 Conflict.
     #[serde(default)]
     pub deduplication: Option<DeduplicationConfig>,
-
-    /// Response compression configuration.
-    /// Global gzip/brotli compression is applied via tower-http CompressionLayer.
-    #[serde(default)]
-    pub compression: Option<CompressionConfig>,
 
     /// JSONLogic expression for input validation at the channel boundary.
     /// Evaluated against the request data. Returns truthy = pass, falsy = 400 reject.
@@ -113,15 +108,6 @@ pub struct DeduplicationConfig {
     pub connector: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompressionConfig {
-    /// Whether compression is enabled.
-    pub enabled: bool,
-    /// Minimum response size in bytes to trigger compression.
-    #[serde(default)]
-    pub min_bytes: Option<usize>,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,7 +120,6 @@ mod tests {
         assert!(config.cache.is_none());
         assert!(config.backpressure.is_none());
         assert!(config.deduplication.is_none());
-        assert!(config.compression.is_none());
         assert!(config.validation_logic.is_none());
     }
 
@@ -144,8 +129,7 @@ mod tests {
             "rate_limit": { "requests_per_second": 100, "burst": 20, "key_logic": { "var": "client_ip" } },
             "timeout_ms": 5000,
             "backpressure": { "max_concurrent": 200 },
-            "deduplication": { "header": "Idempotency-Key", "window_secs": 300 },
-            "compression": { "enabled": true, "min_bytes": 1024 }
+            "deduplication": { "header": "Idempotency-Key", "window_secs": 300 }
         }"#;
         let config: ChannelConfig = serde_json::from_str(json).unwrap();
         let rl = config.rate_limit.unwrap();
@@ -158,9 +142,6 @@ mod tests {
         let dedup = config.deduplication.unwrap();
         assert_eq!(dedup.header, "Idempotency-Key");
         assert_eq!(dedup.window_secs, Some(300));
-        let comp = config.compression.unwrap();
-        assert!(comp.enabled);
-        assert_eq!(comp.min_bytes, Some(1024));
     }
 
     #[test]

@@ -24,8 +24,23 @@ use orion::storage::repositories::workflows::{SqlWorkflowRepository, WorkflowRep
 )]
 struct Cli {
     /// Path to TOML configuration file
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     config: Option<String>,
+
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
+    /// Validate configuration without starting the server.
+    ValidateConfig,
+    /// Run database migrations without starting the server.
+    Migrate {
+        /// Preview pending migrations without applying them.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 /// Initialise a plain `tracing_subscriber::fmt` subscriber (no OpenTelemetry).
@@ -50,6 +65,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load configuration
     let config = config::load_config(cli.config.as_deref())?;
+
+    // Handle subcommands that exit early (before starting the server)
+    match cli.command {
+        Some(Command::ValidateConfig) => {
+            println!("Configuration is valid.");
+            println!("  environment:     {}", config.environment);
+            println!("  server:          {}:{}", config.server.host, config.server.port);
+            println!("  storage:         {}", config.storage.url);
+            println!("  admin_auth:      {}", if config.admin_auth.enabled { "enabled" } else { "disabled" });
+            println!("  rate_limiting:   {}", if config.rate_limit.enabled { "enabled" } else { "disabled" });
+            println!("  metrics:         {}", if config.metrics.enabled { "enabled" } else { "disabled" });
+            println!("  tracing:         {}", if config.tracing.enabled { "enabled" } else { "disabled" });
+            return Ok(());
+        }
+        Some(Command::Migrate { dry_run }) => {
+            let pool = orion::storage::init_pool_no_migrate(&config.storage).await?;
+            if dry_run {
+                let pending = orion::storage::pending_migrations(&pool).await?;
+                if pending.is_empty() {
+                    println!("No pending migrations.");
+                } else {
+                    println!("Pending migrations ({}):", pending.len());
+                    for (version, description) in &pending {
+                        println!("  {} — {}", version, description);
+                    }
+                }
+            } else {
+                let pending = orion::storage::pending_migrations(&pool).await?;
+                if pending.is_empty() {
+                    println!("No pending migrations.");
+                } else {
+                    println!("Applying {} migration(s)...", pending.len());
+                    orion::storage::run_migrations(&pool).await?;
+                    println!("Migrations applied successfully.");
+                }
+            }
+            return Ok(());
+        }
+        None => {} // Continue to start the server
+    }
 
     // Init tracing subscriber with optional OpenTelemetry layer.
     //
@@ -169,6 +224,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.engine.cache_cleanup_interval_secs,
     ));
 
+    // Create external connector pool caches (shared with AppState for eviction on update/delete)
+    #[cfg(feature = "connectors-sql")]
+    let sql_pool_cache = Arc::new(orion::connector::pool_cache::SqlPoolCache::new(
+        config.engine.max_pool_cache_entries,
+    ));
+    #[cfg(feature = "connectors-mongodb")]
+    let mongo_pool_cache = Arc::new(orion::connector::mongo_pool::MongoPoolCache::new(
+        config.engine.max_pool_cache_entries,
+    ));
+
     // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
     #[allow(unused_mut)]
     let mut custom_functions = orion::engine::build_custom_functions(
@@ -177,6 +242,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         engine.clone(),
         &config.engine,
         cache_pool.clone(),
+        #[cfg(feature = "connectors-sql")]
+        sql_pool_cache.clone(),
+        #[cfg(feature = "connectors-mongodb")]
+        mongo_pool_cache.clone(),
     );
 
     // Kafka producer setup (when kafka feature is enabled)
@@ -377,6 +446,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         datalogic: Arc::new(datalogic_rs::DataLogic::new()),
         rate_limit_state,
         ready,
+        #[cfg(feature = "connectors-sql")]
+        sql_pool_cache,
+        #[cfg(feature = "connectors-mongodb")]
+        mongo_pool_cache,
         #[cfg(feature = "kafka")]
         kafka_consumer_handle: kafka_consumer_handle_arc.clone(),
         #[cfg(feature = "kafka")]

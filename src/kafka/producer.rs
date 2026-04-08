@@ -18,6 +18,10 @@ impl KafkaProducer {
         let producer: FutureProducer = ClientConfig::new()
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "30000")
+            .set("acks", "all")
+            .set("compression.type", "lz4")
+            .set("linger.ms", "5")
+            .set("batch.size", "65536")
             .create()
             .map_err(|e| OrionError::InternalSource {
                 context: "Failed to create Kafka producer".to_string(),

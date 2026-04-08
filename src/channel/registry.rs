@@ -33,6 +33,9 @@ pub struct ChannelRuntimeConfig {
     /// Per-channel deduplication backend for idempotent request handling.
     /// Can be backed by in-memory DashMap or Redis, depending on channel config.
     pub dedup_store: Option<Arc<dyn CacheBackend>>,
+    /// Per-channel response cache backend.
+    /// When set, sync responses are cached with a configurable TTL.
+    pub response_cache: Option<Arc<dyn CacheBackend>>,
 }
 
 /// In-memory registry of active channels, rebuilt on engine reload.
@@ -166,6 +169,55 @@ impl ChannelRegistry {
                     None
                 };
 
+            // Resolve response cache backend (same pattern as dedup)
+            let response_cache: Option<Arc<dyn CacheBackend>> =
+                if let Some(ref cache_cfg) = parsed_config.cache
+                    && cache_cfg.enabled
+                {
+                    if let Some(ref connector_name) = cache_cfg.connector {
+                        match connector_registry.get(connector_name).await {
+                            Some(cfg) => match cfg.as_ref() {
+                                ConnectorConfig::Cache(cc) => {
+                                    match cache_pool.get_backend(connector_name, cc).await {
+                                        Ok(backend) => Some(backend),
+                                        Err(e) => {
+                                            tracing::warn!(
+                                                channel = %channel.name,
+                                                connector = %connector_name,
+                                                error = %e,
+                                                "Failed to create cache backend from connector, \
+                                                 falling back to in-memory"
+                                            );
+                                            Some(cache_pool.memory())
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    tracing::warn!(
+                                        channel = %channel.name,
+                                        connector = %connector_name,
+                                        "Cache connector is not a cache connector, \
+                                         falling back to in-memory"
+                                    );
+                                    Some(cache_pool.memory())
+                                }
+                            },
+                            None => {
+                                tracing::warn!(
+                                    channel = %channel.name,
+                                    connector = %connector_name,
+                                    "Cache connector not found, falling back to in-memory"
+                                );
+                                Some(cache_pool.memory())
+                            }
+                        }
+                    } else {
+                        Some(cache_pool.memory())
+                    }
+                } else {
+                    None
+                };
+
             let runtime = Arc::new(ChannelRuntimeConfig {
                 channel: channel.clone(),
                 parsed_config,
@@ -174,6 +226,7 @@ impl ChannelRegistry {
                 validation_logic,
                 backpressure_semaphore,
                 dedup_store,
+                response_cache,
             });
             new_map.insert(channel.name.clone(), runtime);
         }

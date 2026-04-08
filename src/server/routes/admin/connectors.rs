@@ -29,6 +29,18 @@ async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
     Ok(())
 }
 
+/// Evict cached connection pools for a connector whose config may have changed.
+#[allow(unused_variables)]
+async fn evict_connector_pools(state: &AppState, connector_name: &str) {
+    #[cfg(feature = "connectors-sql")]
+    state.sql_pool_cache.evict(connector_name).await;
+    #[cfg(feature = "connectors-redis")]
+    state.cache_pool.evict_pool(connector_name).await;
+    #[cfg(feature = "connectors-mongodb")]
+    state.mongo_pool_cache.evict(connector_name).await;
+    tracing::debug!(connector = connector_name, "Evicted cached connection pools");
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/admin/connectors",
@@ -123,6 +135,7 @@ pub(crate) async fn update_connector(
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_connector(&req)?;
     let connector = state.connector_repo.update(&id, &req).await?;
+    evict_connector_pools(&state, &connector.name).await;
     audit_log(
         &state.audit_log_repo,
         &principal,
@@ -151,7 +164,10 @@ pub(crate) async fn delete_connector(
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
+    // Fetch connector name before deletion so we can evict cached pools.
+    let connector = state.connector_repo.get_by_id(&id).await?;
     state.connector_repo.delete(&id).await?;
+    evict_connector_pools(&state, &connector.name).await;
     audit_log(
         &state.audit_log_repo,
         &principal,

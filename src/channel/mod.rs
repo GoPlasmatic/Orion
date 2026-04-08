@@ -12,7 +12,7 @@ use governor::{Quota, RateLimiter};
 // Re-export all public types so that `crate::channel::*` paths continue working.
 pub use config::{
     BackpressureConfig, ChannelCacheConfig, ChannelConfig, ChannelCorsConfig,
-    ChannelRateLimitConfig, CompressionConfig, DeduplicationConfig,
+    ChannelRateLimitConfig, DeduplicationConfig,
 };
 pub use dedup::DeduplicationStore;
 pub use registry::{ChannelRegistry, ChannelRuntimeConfig};

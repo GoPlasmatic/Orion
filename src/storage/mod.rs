@@ -55,22 +55,65 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations/mysql");
 
 /// Initialize the database connection pool and run migrations.
 pub async fn init_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
+    let pool = init_pool_no_migrate(config).await?;
+    run_migrations(&pool).await?;
+    Ok(pool)
+}
+
+/// Initialize the database connection pool without running migrations.
+pub async fn init_pool_no_migrate(config: &StorageConfig) -> Result<DbPool, OrionError> {
     #[cfg(feature = "db-sqlite")]
     {
-        init_sqlite_pool(config).await
+        init_sqlite_pool_no_migrate(config).await
     }
     #[cfg(feature = "db-postgres")]
     {
-        init_postgres_pool(config).await
+        init_postgres_pool_no_migrate(config).await
     }
     #[cfg(feature = "db-mysql")]
     {
-        init_mysql_pool(config).await
+        init_mysql_pool_no_migrate(config).await
     }
 }
 
+/// Run pending database migrations.
+pub async fn run_migrations(pool: &DbPool) -> Result<(), OrionError> {
+    MIGRATOR
+        .run(pool)
+        .await
+        .map_err(|e| OrionError::InternalSource {
+            context: "Failed to run migrations".to_string(),
+            source: Box::new(e),
+        })
+}
+
+/// List pending migrations that have not yet been applied.
+///
+/// Returns a list of `(version, description)` pairs for each pending migration.
+pub async fn pending_migrations(pool: &DbPool) -> Result<Vec<(i64, String)>, OrionError> {
+    // Query the set of already-applied migration versions.
+    // If the migrations table doesn't exist, all migrations are pending.
+    let applied: std::collections::HashSet<i64> = match sqlx::query_scalar::<_, i64>(
+        "SELECT version FROM _sqlx_migrations ORDER BY version",
+    )
+    .fetch_all(pool)
+    .await
+    {
+        Ok(versions) => versions.into_iter().collect(),
+        Err(_) => std::collections::HashSet::new(),
+    };
+
+    let pending: Vec<(i64, String)> = MIGRATOR
+        .iter()
+        .filter(|m| !applied.contains(&m.version))
+        .map(|m| (m.version, m.description.to_string()))
+        .collect();
+
+    Ok(pending)
+}
+
 #[cfg(feature = "db-sqlite")]
-async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
+async fn init_sqlite_pool_no_migrate(config: &StorageConfig) -> Result<DbPool, OrionError> {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::str::FromStr;
 
@@ -94,27 +137,17 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
     if config.idle_timeout_secs > 0 {
         pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));
     }
-    let pool = pool_opts
+    pool_opts
         .connect_with(options)
         .await
         .map_err(|e| OrionError::InternalSource {
             context: "Failed to connect to database".to_string(),
             source: Box::new(e),
-        })?;
-
-    MIGRATOR
-        .run(&pool)
-        .await
-        .map_err(|e| OrionError::InternalSource {
-            context: "Failed to run migrations".to_string(),
-            source: Box::new(e),
-        })?;
-
-    Ok(pool)
+        })
 }
 
 #[cfg(feature = "db-postgres")]
-async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
+async fn init_postgres_pool_no_migrate(config: &StorageConfig) -> Result<DbPool, OrionError> {
     use sqlx::postgres::PgPoolOptions;
 
     let mut pool_opts = PgPoolOptions::new()
@@ -124,27 +157,17 @@ async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError
     if config.idle_timeout_secs > 0 {
         pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));
     }
-    let pool = pool_opts
+    pool_opts
         .connect(&config.url)
         .await
         .map_err(|e| OrionError::InternalSource {
             context: "Failed to connect to database".to_string(),
             source: Box::new(e),
-        })?;
-
-    MIGRATOR
-        .run(&pool)
-        .await
-        .map_err(|e| OrionError::InternalSource {
-            context: "Failed to run migrations".to_string(),
-            source: Box::new(e),
-        })?;
-
-    Ok(pool)
+        })
 }
 
 #[cfg(feature = "db-mysql")]
-async fn init_mysql_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
+async fn init_mysql_pool_no_migrate(config: &StorageConfig) -> Result<DbPool, OrionError> {
     use sqlx::mysql::MySqlPoolOptions;
 
     let mut pool_opts = MySqlPoolOptions::new()
@@ -154,21 +177,11 @@ async fn init_mysql_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
     if config.idle_timeout_secs > 0 {
         pool_opts = pool_opts.idle_timeout(Duration::from_secs(config.idle_timeout_secs));
     }
-    let pool = pool_opts
+    pool_opts
         .connect(&config.url)
         .await
         .map_err(|e| OrionError::InternalSource {
             context: "Failed to connect to database".to_string(),
             source: Box::new(e),
-        })?;
-
-    MIGRATOR
-        .run(&pool)
-        .await
-        .map_err(|e| OrionError::InternalSource {
-            context: "Failed to run migrations".to_string(),
-            source: Box::new(e),
-        })?;
-
-    Ok(pool)
+        })
 }
