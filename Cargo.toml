@@ -60,6 +60,9 @@ opentelemetry_sdk = { version = "0.28", default-features = false, features = ["r
 opentelemetry-otlp = { version = "0.28", default-features = false, features = ["grpc-tonic", "trace"] }
 tracing-opentelemetry = { version = "0.29", default-features = false }
 
+# TCP socket configuration
+socket2 = "0.5"
+
 [profile.release]
 strip = true
 

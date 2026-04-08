@@ -68,12 +68,25 @@ impl AsyncFunctionHandler for DbReadHandler {
 }
 
 /// Convert AnyRow results to a JSON array of objects.
+///
+/// Column names are collected once from the first row and reused for all
+/// subsequent rows, eliminating O(rows × columns) string allocations.
 pub fn rows_to_json(rows: &[AnyRow]) -> Value {
-    let mut result = Vec::new();
+    if rows.is_empty() {
+        return Value::Array(Vec::new());
+    }
+
+    // Pre-collect column names once from the first row
+    let col_names: Vec<String> = rows[0]
+        .columns()
+        .iter()
+        .map(|col| col.name().to_string())
+        .collect();
+
+    let mut result = Vec::with_capacity(rows.len());
     for row in rows {
-        let mut obj = serde_json::Map::new();
-        for (i, col) in row.columns().iter().enumerate() {
-            let name = col.name().to_string();
+        let mut obj = serde_json::Map::with_capacity(col_names.len());
+        for (i, name) in col_names.iter().enumerate() {
             // Try to extract as various types, falling back through the chain
             let val = if let Ok(v) = row.try_get::<String, _>(i) {
                 Value::String(v)
@@ -90,7 +103,7 @@ pub fn rows_to_json(rows: &[AnyRow]) -> Value {
             } else {
                 Value::Null
             };
-            obj.insert(name, val);
+            obj.insert(name.clone(), val);
         }
         result.push(Value::Object(obj));
     }

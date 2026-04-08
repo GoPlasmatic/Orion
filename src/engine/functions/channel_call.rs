@@ -66,8 +66,10 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             }
         };
 
-        let input: ChannelCallInput = serde_json::from_value(input_value.clone())
-            .map_err(|e| DataflowError::Validation(format!("Invalid channel_call config: {e}")))?;
+        let input: ChannelCallInput =
+            serde_json::from_value(input_value.clone()).map_err(|e: serde_json::Error| {
+                DataflowError::Validation(format!("Invalid channel_call config: {e}"))
+            })?;
 
         // Resolve target channel name (static or dynamic via JSONLogic)
         let target_channel = if let Some(ref logic) = input.channel_logic {
@@ -220,6 +222,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             changes.push(Change {
                 path: Arc::from("data"),
                 old_value: Arc::new(old_value),
+                // Reuse the already-stored result_data via the cloned copy
                 new_value: Arc::new(result_data),
             });
         }

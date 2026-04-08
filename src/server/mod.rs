@@ -8,11 +8,12 @@ pub mod state;
 use axum::Router;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{HeaderValue, header};
+use axum::middleware::Next;
+use axum::response::Response;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
-use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::CorsConfig;
@@ -20,6 +21,31 @@ use crate::server::state::AppState;
 
 pub mod tls;
 pub mod trace_context;
+
+/// Single middleware that sets all security response headers in one pass,
+/// replacing 5 separate `SetResponseHeaderLayer` wrappers.
+async fn security_headers_middleware(req: axum::extract::Request, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers.insert(
+        axum::http::HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
+    );
+    response
+}
 
 /// Build the Axum router with all middleware layers.
 pub fn build_router(state: AppState) -> Router {
@@ -34,37 +60,31 @@ pub fn build_router(state: AppState) -> Router {
     let router = routes::api_routes()
         .layer(DefaultBodyLimit::max(max_body_size))
         .layer(CompressionLayer::new())
-        // Security response headers
-        .layer(SetResponseHeaderLayer::overriding(
-            header::X_CONTENT_TYPE_OPTIONS,
-            HeaderValue::from_static("nosniff"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::X_FRAME_OPTIONS,
-            HeaderValue::from_static("DENY"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::REFERRER_POLICY,
-            HeaderValue::from_static("strict-origin-when-cross-origin"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            axum::http::HeaderName::from_static("permissions-policy"),
-            HeaderValue::from_static("camera=(), microphone=(), geolocation=()"),
-        ))
+        // Single middleware replaces 5 separate SetResponseHeaderLayer wrappers
+        .layer(axum::middleware::from_fn(security_headers_middleware))
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
-        .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid))
-        .layer(TraceLayer::new_for_http())
-        .layer(cors);
+        .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid));
+
+    // Only add TraceLayer when tracing is enabled to avoid span processing overhead
+    let router = if otel_enabled {
+        router.layer(TraceLayer::new_for_http())
+    } else {
+        router
+    };
+
+    let router = router.layer(cors);
 
     // HSTS header (only when TLS is enabled)
     let router = if state.config.server.tls.enabled {
-        router.layer(SetResponseHeaderLayer::overriding(
-            header::STRICT_TRANSPORT_SECURITY,
-            HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+        router.layer(axum::middleware::from_fn(
+            |req: axum::extract::Request, next: Next| async move {
+                let mut response = next.run(req).await;
+                response.headers_mut().insert(
+                    header::STRICT_TRANSPORT_SECURITY,
+                    HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+                );
+                response
+            },
         ))
     } else {
         router

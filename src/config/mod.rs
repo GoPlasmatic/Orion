@@ -103,9 +103,9 @@ mod tests {
         assert_eq!(config.server.port, 8080);
         assert_eq!(config.server.host, "0.0.0.0");
         assert_eq!(config.storage.url, "sqlite:orion.db");
-        assert_eq!(config.storage.max_connections, 25);
+        assert_eq!(config.storage.max_connections, 50);
         assert_eq!(config.storage.busy_timeout_ms, 5000);
-        assert_eq!(config.storage.acquire_timeout_secs, 5);
+        assert_eq!(config.storage.acquire_timeout_secs, 3);
         assert_eq!(config.engine.health_check_timeout_secs, 2);
         assert_eq!(config.engine.reload_timeout_secs, 10);
         assert_eq!(config.queue.shutdown_timeout_secs, 30);

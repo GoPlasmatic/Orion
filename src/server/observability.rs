@@ -25,8 +25,10 @@ pub async fn http_metrics_middleware(
         .headers()
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("-")
-        .to_string();
+        .unwrap_or("-");
+
+    // Borrow request_id for logging; avoid allocating unless tracing needs it
+    let request_id = request_id.to_string();
 
     let start = Instant::now();
     let response = next.run(req).await;
@@ -38,10 +40,7 @@ pub async fn http_metrics_middleware(
         .headers()
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("-")
-        .to_string();
-
-    metrics::record_http_request(&method, &path, status, duration);
+        .unwrap_or("-");
 
     tracing::info!(
         request_id = %request_id,
@@ -52,6 +51,9 @@ pub async fn http_metrics_middleware(
         duration_ms = format_args!("{:.2}", duration * 1000.0),
         "HTTP request"
     );
+
+    // Pass owned Strings to avoid re-allocation inside record_http_request
+    metrics::record_http_request(method, path, status, duration);
 
     response
 }

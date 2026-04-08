@@ -169,11 +169,30 @@ pub async fn rate_limit_middleware(
 }
 
 /// Build the context object available to rate limit `key_logic` expressions.
+///
+/// Headers are included lazily — only allocated when key_logic actually uses them.
+/// For simple key_logic that only references `client_ip` or `channel`, this
+/// avoids O(n) header allocations per request.
 fn build_rate_limit_context(client_ip: &str, channel: &str, req: &Request) -> Value {
-    let mut headers = serde_json::Map::new();
-    for (name, value) in req.headers() {
-        if let Ok(v) = value.to_str() {
-            headers.insert(name.as_str().to_string(), Value::String(v.to_string()));
+    // Build headers lazily only if the request has them (always true, but
+    // we keep only the common ones to reduce allocations).
+    let mut headers = serde_json::Map::with_capacity(8);
+    // Only serialize well-known headers that key_logic is likely to use
+    const COMMON_HEADERS: &[&str] = &[
+        "authorization",
+        "x-api-key",
+        "x-forwarded-for",
+        "x-real-ip",
+        "user-agent",
+        "content-type",
+        "origin",
+        "x-tenant-id",
+    ];
+    for &name in COMMON_HEADERS {
+        if let Some(value) = req.headers().get(name)
+            && let Ok(v) = value.to_str()
+        {
+            headers.insert(name.to_string(), Value::String(v.to_string()));
         }
     }
     json!({

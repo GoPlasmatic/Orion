@@ -23,10 +23,10 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             url: "sqlite:orion.db".to_string(),
-            max_connections: 25,
-            min_connections: 0,
+            max_connections: 50,
+            min_connections: 5,
             busy_timeout_ms: 5000,
-            acquire_timeout_secs: 5,
+            acquire_timeout_secs: 3,
             idle_timeout_secs: 300,
             backup_dir: "./backups".to_string(),
         }
