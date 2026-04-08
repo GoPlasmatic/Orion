@@ -1,5 +1,11 @@
 pub mod cache_backend;
 pub mod circuit_breaker;
+#[cfg(any(
+    feature = "connectors-sql",
+    feature = "connectors-redis",
+    feature = "connectors-mongodb"
+))]
+mod lru_cache;
 mod masking;
 #[cfg(feature = "connectors-mongodb")]
 pub mod mongo_pool;

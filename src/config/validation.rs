@@ -16,33 +16,23 @@ fn require_nonzero(value: u64, field: &str) -> Result<(), OrionError> {
     Ok(())
 }
 
+/// Return a config error if `value` is empty.
+fn require_nonempty(value: &str, field: &str) -> Result<(), OrionError> {
+    if value.is_empty() {
+        return Err(OrionError::Config {
+            message: format!("{field} must not be empty"),
+        });
+    }
+    Ok(())
+}
+
 /// Validate configuration values.
 pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
-    if config.server.port == 0 {
-        return Err(OrionError::Config {
-            message: "server.port must be > 0".to_string(),
-        });
-    }
-    if config.ingest.max_payload_size == 0 {
-        return Err(OrionError::Config {
-            message: "ingest.max_payload_size must be > 0".to_string(),
-        });
-    }
-    if config.queue.workers == 0 {
-        return Err(OrionError::Config {
-            message: "queue.workers must be > 0".to_string(),
-        });
-    }
-    if config.queue.buffer_size == 0 {
-        return Err(OrionError::Config {
-            message: "queue.buffer_size must be > 0".to_string(),
-        });
-    }
-    if config.storage.url.is_empty() {
-        return Err(OrionError::Config {
-            message: "storage.url must not be empty".to_string(),
-        });
-    }
+    require_nonzero(config.server.port as u64, "server.port")?;
+    require_nonzero(config.ingest.max_payload_size as u64, "ingest.max_payload_size")?;
+    require_nonzero(config.queue.workers as u64, "queue.workers")?;
+    require_nonzero(config.queue.buffer_size as u64, "queue.buffer_size")?;
+    require_nonempty(&config.storage.url, "storage.url")?;
     if !VALID_LOG_LEVELS.contains(&config.logging.level.to_lowercase().as_str()) {
         return Err(OrionError::Config {
             message: format!(
@@ -53,19 +43,16 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
         });
     }
     if config.tracing.enabled {
-        if config.tracing.otlp_endpoint.is_empty() {
-            return Err(OrionError::Config {
-                message: "tracing.otlp_endpoint must not be empty when tracing is enabled"
-                    .to_string(),
-            });
-        }
+        require_nonempty(
+            &config.tracing.otlp_endpoint,
+            "tracing.otlp_endpoint (required when tracing is enabled)",
+        )?;
         if !(0.0..=1.0).contains(&config.tracing.sample_rate) {
             return Err(OrionError::Config {
                 message: "tracing.sample_rate must be between 0.0 and 1.0".to_string(),
             });
         }
     }
-    // Timeout validations
     // Admin auth validation
     if config.admin_auth.enabled && config.admin_auth.effective_keys().is_empty() {
         return Err(OrionError::Config {
@@ -89,16 +76,14 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     }
     // TLS validation
     if config.server.tls.enabled {
-        if config.server.tls.cert_path.is_empty() {
-            return Err(OrionError::Config {
-                message: "server.tls.cert_path must not be empty when TLS is enabled".to_string(),
-            });
-        }
-        if config.server.tls.key_path.is_empty() {
-            return Err(OrionError::Config {
-                message: "server.tls.key_path must not be empty when TLS is enabled".to_string(),
-            });
-        }
+        require_nonempty(
+            &config.server.tls.cert_path,
+            "server.tls.cert_path (required when TLS is enabled)",
+        )?;
+        require_nonempty(
+            &config.server.tls.key_path,
+            "server.tls.key_path (required when TLS is enabled)",
+        )?;
         if !Path::new(&config.server.tls.cert_path).exists() {
             return Err(OrionError::Config {
                 message: format!(
@@ -116,11 +101,10 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
             });
         }
     }
-    if config.engine.max_channel_call_depth == 0 {
-        return Err(OrionError::Config {
-            message: "engine.max_channel_call_depth must be > 0".to_string(),
-        });
-    }
+    require_nonzero(
+        config.engine.max_channel_call_depth as u64,
+        "engine.max_channel_call_depth",
+    )?;
     require_nonzero(
         config.engine.default_channel_call_timeout_ms,
         "engine.default_channel_call_timeout_ms",
@@ -147,18 +131,14 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
         "storage.acquire_timeout_secs",
     )?;
     if config.rate_limit.enabled {
-        if config.rate_limit.default_rps == 0 {
-            return Err(OrionError::Config {
-                message: "rate_limit.default_rps must be > 0 when rate limiting is enabled"
-                    .to_string(),
-            });
-        }
-        if config.rate_limit.default_burst == 0 {
-            return Err(OrionError::Config {
-                message: "rate_limit.default_burst must be > 0 when rate limiting is enabled"
-                    .to_string(),
-            });
-        }
+        require_nonzero(
+            config.rate_limit.default_rps as u64,
+            "rate_limit.default_rps (required when rate limiting is enabled)",
+        )?;
+        require_nonzero(
+            config.rate_limit.default_burst as u64,
+            "rate_limit.default_burst (required when rate limiting is enabled)",
+        )?;
     }
     // CORS: reject wildcard in production
     if config.cors.allowed_origins.len() == 1 && config.cors.allowed_origins[0] == "*" {
