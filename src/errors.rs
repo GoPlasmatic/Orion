@@ -79,14 +79,12 @@ impl OrionError {
 
 impl IntoResponse for OrionError {
     fn into_response(self) -> Response {
-        let (status, code, message) = match &self {
-            OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
-            OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
-            OrionError::Unauthorized(msg) => {
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg.clone())
-            }
-            OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
-            OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
+        let (status, code, message) = match self {
+            OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
+            OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
+            OrionError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg),
+            OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg),
+            OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
             OrionError::CircuitOpen { connector, channel } => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "CIRCUIT_OPEN",
@@ -95,18 +93,14 @@ impl IntoResponse for OrionError {
                     connector, channel
                 ),
             ),
-            OrionError::UnsupportedMediaType(msg) => (
-                StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "UNSUPPORTED_MEDIA_TYPE",
-                msg.clone(),
-            ),
-            OrionError::ServiceUnavailable(msg) => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "SERVICE_UNAVAILABLE",
-                msg.clone(),
-            ),
+            OrionError::UnsupportedMediaType(msg) => {
+                (StatusCode::UNSUPPORTED_MEDIA_TYPE, "UNSUPPORTED_MEDIA_TYPE", msg)
+            }
+            OrionError::ServiceUnavailable(msg) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", msg)
+            }
             OrionError::RateLimited(msg) => {
-                (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", msg.clone())
+                (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", msg)
             }
             OrionError::Timeout {
                 channel,
@@ -120,23 +114,15 @@ impl IntoResponse for OrionError {
                 ),
             ),
             OrionError::ResponseTooLarge(msg) => {
-                (StatusCode::BAD_GATEWAY, "RESPONSE_TOO_LARGE", msg.clone())
+                (StatusCode::BAD_GATEWAY, "RESPONSE_TOO_LARGE", msg)
             }
             OrionError::Internal(msg) => {
                 tracing::error!(error.category = "internal", error.message = %msg, "Internal error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "INTERNAL_ERROR",
-                    msg.clone(),
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", msg)
             }
             OrionError::Config { message } => {
                 tracing::error!(error.category = "config", error.message = %message, "Config error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "CONFIG_ERROR",
-                    message.clone(),
-                )
+                (StatusCode::INTERNAL_SERVER_ERROR, "CONFIG_ERROR", message)
             }
             OrionError::Queue(msg) => {
                 tracing::error!(error.category = "queue", error.message = %msg, "Queue error");
@@ -169,12 +155,12 @@ impl IntoResponse for OrionError {
             }
             OrionError::Engine(e) => {
                 tracing::error!(error.category = "engine", error = %e, "Engine error");
-                engine_error_response(e)
+                engine_error_response(&e)
             }
-            OrionError::Serialization(_) => (
+            OrionError::Serialization(e) => (
                 StatusCode::BAD_REQUEST,
                 "SERIALIZATION_ERROR",
-                self.to_string(),
+                e.to_string(),
             ),
         };
 

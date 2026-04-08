@@ -11,6 +11,7 @@ use sea_query::{
 };
 
 use super::schema::*;
+use crate::errors::OrionError;
 
 // ============================================================
 // Table definitions
@@ -664,7 +665,7 @@ CREATE INDEX `idx_trace_dlq_next_retry` ON `trace_dlq` (`next_retry_at`, `retry_
 // ============================================================
 
 /// Generate the complete migration SQL for a given backend.
-pub fn generate_migration(backend: &str) -> String {
+pub fn generate_migration(backend: &str) -> Result<String, OrionError> {
     let tables = [
         workflows_table(),
         channels_table(),
@@ -678,15 +679,24 @@ pub fn generate_migration(backend: &str) -> String {
         backend
     );
 
+    macro_rules! build_ddl {
+        ($builder_expr:expr, $backend:expr) => {
+            match $backend {
+                "sqlite" => $builder_expr.build(SqliteQueryBuilder),
+                "postgres" => $builder_expr.build(PostgresQueryBuilder),
+                "mysql" => $builder_expr.build(MysqlQueryBuilder),
+                _ => {
+                    return Err(OrionError::Config {
+                        message: format!("Unsupported migration backend: {}", $backend),
+                    })
+                }
+            }
+        };
+    }
+
     // Generate CREATE TABLE statements
     for table in &tables {
-        let ddl = match backend {
-            "sqlite" => table.build(SqliteQueryBuilder),
-            "postgres" => table.build(PostgresQueryBuilder),
-            "mysql" => table.build(MysqlQueryBuilder),
-            _ => panic!("Unsupported backend: {backend}"),
-        };
-        sql += &ddl;
+        sql += &build_ddl!(table, backend);
         sql += ";\n\n";
     }
 
@@ -702,13 +712,7 @@ pub fn generate_migration(backend: &str) -> String {
     .collect();
 
     for idx in &all_indexes {
-        let ddl = match backend {
-            "sqlite" => idx.build(SqliteQueryBuilder),
-            "postgres" => idx.build(PostgresQueryBuilder),
-            "mysql" => idx.build(MysqlQueryBuilder),
-            _ => panic!("Unsupported backend: {backend}"),
-        };
-        sql += &ddl;
+        sql += &build_ddl!(idx, backend);
         sql += ";\n";
     }
 
@@ -721,16 +725,17 @@ pub fn generate_migration(backend: &str) -> String {
     // Triggers (backend-specific raw SQL)
     sql += &triggers_sql(backend);
 
-    sql
+    Ok(sql)
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_generate_sqlite_migration() {
-        let sql = generate_migration("sqlite");
+        let sql = generate_migration("sqlite").unwrap();
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS"));
         assert!(sql.contains("workflows"));
         assert!(sql.contains("channels"));
@@ -745,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_generate_postgres_migration() {
-        let sql = generate_migration("postgres");
+        let sql = generate_migration("postgres").unwrap();
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS"));
         assert!(sql.contains("update_updated_at_column"));
         assert!(sql.contains("idx_workflows_single_draft"));
@@ -755,7 +760,7 @@ mod tests {
 
     #[test]
     fn test_generate_mysql_migration() {
-        let sql = generate_migration("mysql");
+        let sql = generate_migration("mysql").unwrap();
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS"));
         assert!(sql.contains("DELIMITER //"));
         assert!(sql.contains("SIGNAL SQLSTATE"));
@@ -766,7 +771,7 @@ mod tests {
     fn test_write_migration_files() {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         for backend in &["sqlite", "postgres", "mysql"] {
-            let sql = generate_migration(backend);
+            let sql = generate_migration(backend).unwrap();
             let dir = format!("{manifest_dir}/migrations/{backend}");
             std::fs::create_dir_all(&dir).unwrap();
             let path = format!("{dir}/001_initial.sql");
@@ -778,7 +783,7 @@ mod tests {
     #[test]
     fn test_all_backends_have_views() {
         for backend in &["sqlite", "postgres", "mysql"] {
-            let sql = generate_migration(backend);
+            let sql = generate_migration(backend).unwrap();
             assert!(
                 sql.contains("CREATE VIEW current_workflows"),
                 "{backend} missing current_workflows view"
