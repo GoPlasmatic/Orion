@@ -21,24 +21,23 @@ on:
         type: string
         required: false
 
-jobs:
-  docker:
-    name: Build & Push Docker Image
-    runs-on: ubuntu-22.04
-    env:
-      GHCR_IMAGE: ghcr.io/goplasmatic/orion
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
+env:
+  GHCR_IMAGE: ghcr.io/goplasmatic/orion
 
+jobs:
+  # Determine version once, share across jobs
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
       - name: Determine version
         id: version
         run: |
           if [ -n "${{ inputs.tag_override }}" ]; then
             VERSION="${{ inputs.tag_override }}"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
-            # Strip leading 'v' if present
             VERSION="${GITHUB_REF_NAME#v}"
           else
             VERSION="dev-${GITHUB_SHA::8}"
@@ -46,8 +45,23 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Version: ${VERSION}"
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+  # Build per-platform images natively in parallel
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-22.04
+          - platform: linux/arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -66,26 +80,91 @@ jobs:
         with:
           images: ${{ env.GHCR_IMAGE }}
           tags: |
-            type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }}
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}
             type=sha,prefix=
           flavor: |
             latest=auto
 
-      - name: Build and push Docker image
+      # Build and push by digest (no tag yet — tags are applied in the merge step)
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: ${{ matrix.platform }}
           push: ${{ !inputs.dry_run }}
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,scope=${{ matrix.platform }},mode=max
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ !inputs.dry_run }}
+
+      - name: Export digest
+        if: ${{ !inputs.dry_run }}
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: ${{ !inputs.dry_run }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Merge platform images into a multi-arch manifest
+  merge:
+    name: Merge & Push Manifest
+    needs: [prepare, build]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.GHCR_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.prepare.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.prepare.outputs.version }}
+            type=sha,prefix=
+          flavor: |
+            latest=auto
+
+      - name: Create and push multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.GHCR_IMAGE }}@sha256:%s ' *)
+
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}"
 
       # Mirror to ACR if credentials are available
       - name: Login to Azure Container Registry
-        if: ${{ !inputs.dry_run && env.ACR_URL != '' }}
+        if: ${{ env.ACR_URL != '' }}
         uses: docker/login-action@v3
         env:
           ACR_URL: ${{ secrets.ACR_URL }}
@@ -95,13 +174,12 @@ jobs:
           password: ${{ secrets.ACR_PASSWORD }}
 
       - name: Mirror to ACR
-        if: ${{ !inputs.dry_run && env.ACR_URL != '' }}
+        if: ${{ env.ACR_URL != '' }}
         env:
           ACR_URL: ${{ secrets.ACR_URL }}
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           ACR_IMAGE="${ACR_URL}/orion"
-          # Copy multi-arch manifest from GHCR to ACR
           docker buildx imagetools create \
             --tag "${ACR_IMAGE}:${VERSION}" \
             "${{ env.GHCR_IMAGE }}:${VERSION}"

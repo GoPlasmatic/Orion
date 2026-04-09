@@ -1,12 +1,25 @@
-# Build stage
+# Planner stage: generate a recipe for dependency caching
+FROM rust:1.93-slim AS planner
+RUN cargo install cargo-chef --locked
+WORKDIR /app
+COPY Cargo.toml Cargo.lock* ./
+COPY src/ src/
+RUN cargo chef prepare --recipe-path recipe.json
+
+# Builder stage: cache dependencies, then build
 FROM rust:1.93-slim AS builder
 
 RUN apt-get update && apt-get install -y pkg-config cmake g++ curl libcurl4-openssl-dev && rm -rf /var/lib/apt/lists/*
+RUN cargo install cargo-chef --locked
 
 WORKDIR /app
-COPY Cargo.toml Cargo.lock* ./
-RUN cargo fetch --locked
 
+# Cook dependencies (cached unless Cargo.toml/Cargo.lock change)
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Build application (only this layer rebuilds on source changes)
+COPY Cargo.toml Cargo.lock* ./
 COPY src/ src/
 COPY migrations/ migrations/
 COPY build.rs ./
