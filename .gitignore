@@ -38,4 +38,4 @@ target
 *.key
 
 # Local config
-config.toml
+/config.toml
