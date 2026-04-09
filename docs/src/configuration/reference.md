@@ -1,18 +1,27 @@
-# Configuration
+# Config Reference
 
-[← Back to README](../README.md)
+All settings have sensible defaults. You can run Orion with no config file at all — `orion-server` just works.
+
+## CLI Commands
+
+```bash
+orion-server                              # Start the server (default)
+orion-server -c config.toml               # Start with a config file
+orion-server validate-config              # Validate config without starting
+orion-server validate-config -c config.toml  # Validate a specific config file
+orion-server migrate                      # Run database migrations
+orion-server migrate --dry-run            # Preview pending migrations
+```
 
 ## Database Backend
 
-Orion supports three database backends, selected at **runtime** via the `storage.url` configuration:
+The database backend is selected at runtime from the `storage.url` scheme — no rebuild needed:
 
 | Backend | URL Format | Example |
 |---------|------------|---------|
 | **SQLite** | `sqlite:` | `sqlite:orion.db` or `sqlite::memory:` |
 | **PostgreSQL** | `postgres://` | `postgres://user:pass@host/db` |
 | **MySQL** | `mysql://` | `mysql://user:pass@host/db` |
-
-The backend is detected automatically from the URL scheme — no rebuild needed:
 
 ```bash
 # SQLite (default)
@@ -27,7 +36,7 @@ ORION_STORAGE__URL="mysql://user:pass@localhost/orion" orion-server
 
 Migrations for all backends are embedded in the binary and the correct set is selected automatically at startup.
 
-## Config File
+## Complete Config File
 
 ```toml
 [server]
@@ -44,8 +53,8 @@ port = 8080
 url = "sqlite:orion.db"       # Database URL (sqlite:, postgres://, mysql://)
 # max_connections = 25          # Connection pool max connections
 # min_connections = 5           # Connection pool min connections
-# busy_timeout_ms = 5000        # SQLite busy timeout in milliseconds (ignored for other backends)
-# acquire_timeout_secs = 5      # Connection pool acquire timeout in seconds
+# busy_timeout_ms = 5000        # SQLite busy timeout (ignored for other backends)
+# acquire_timeout_secs = 5      # Connection pool acquire timeout
 # idle_timeout_secs = 0         # Connection idle timeout (0 = no timeout)
 
 [ingest]
@@ -80,15 +89,13 @@ buffer_size = 1000             # Channel buffer for pending traces
 # dlq_poll_interval_secs = 30    # DLQ retry poll interval
 
 [rate_limit]
-# enabled = false               # Enable platform-level request rate limiting
+# enabled = false               # Enable platform-level rate limiting
 # default_rps = 100             # Default requests per second
 # default_burst = 50            # Default burst allowance
 
 # [rate_limit.endpoints]
 # admin_rps = 50                # Rate limit for admin routes
 # data_rps = 200                # Rate limit for data routes
-
-# Per-channel rate limits are configured via the channel's config_json in the DB.
 
 [admin_auth]
 # enabled = false               # Require authentication for admin endpoints
@@ -146,108 +153,37 @@ ORION_ADMIN_AUTH__ENABLED=true
 ORION_ADMIN_AUTH__API_KEY="your-secret-key"
 ORION_TRACING__ENABLED=true
 ORION_TRACING__OTLP_ENDPOINT="http://jaeger:4317"
+ORION_METRICS__ENABLED=true
 ```
 
-All settings have sensible defaults. You can run Orion with no config file at all — `orion-server` just works.
-
-## CLI Commands
-
-```bash
-orion-server                          # Start the server (default)
-orion-server -c config.toml           # Start with a config file
-orion-server validate-config          # Validate config without starting
-orion-server validate-config -c config.toml  # Validate a specific config file
-orion-server migrate                  # Run database migrations
-orion-server migrate --dry-run        # Preview pending migrations
-```
+Environment variables take precedence over config file values.
 
 ## Built-in Capabilities
 
-All capabilities are compiled into a single binary and controlled at runtime via configuration:
+All capabilities are compiled into a single binary and controlled at runtime:
 
 | Capability | Configuration | Default |
 |-----------|--------------|---------|
-| **Database backend** | `storage.url` scheme (`sqlite:`, `postgres://`, `mysql://`) | SQLite |
-| **Kafka** | `kafka.enabled` | Disabled |
-| **OpenTelemetry** | `tracing.enabled` | Disabled |
-| **TLS/HTTPS** | `server.tls.enabled` | Disabled |
-| **Swagger UI** | Always available at `/docs` | Enabled |
-| **SQL connectors** | Available via `db_read`/`db_write` functions | Always available |
-| **Redis cache** | Available via `cache_read`/`cache_write` with Redis backend | Always available |
-| **MongoDB connector** | Available via `mongo_read` function | Always available |
-| **Rate limiting** | `rate_limit.enabled` | Disabled |
-| **Metrics** | `metrics.enabled` | Disabled |
-
-## Deployment
-
-Orion ships as a **single binary**. With the default SQLite backend, there are no external dependencies — you're up and running immediately.
-
-- **Standalone** — run directly on a VM or bare metal
-- **Docker** — `docker build -t orion . && docker run -p 8080:8080 orion`
-- **Sidecar** — deploy alongside your application in Kubernetes
-- **Homebrew** — `brew install GoPlasmatic/tap/orion`
-
-For PostgreSQL or MySQL, point `storage.url` to your database server.
-
-### Docker with SQLite Persistence
-
-SQLite stores data in a local file. Without a persistent volume, **data is lost when the container restarts**. SQLite WAL mode also creates `.wal` and `.shm` sidecar files that must be on the same volume as the main database file.
-
-```bash
-# Named volume (recommended)
-docker run -p 8080:8080 \
-  -v orion-data:/app/data \
-  -e ORION_STORAGE__URL=sqlite:/app/data/orion.db \
-  orion
-```
-
-With Docker Compose:
-
-```yaml
-services:
-  orion:
-    image: orion
-    ports:
-      - "8080:8080"
-    environment:
-      ORION_STORAGE__URL: sqlite:/app/data/orion.db
-    volumes:
-      - orion-data:/app/data
-
-volumes:
-  orion-data:
-```
-
-### Docker Build
-
-```bash
-docker build -t orion .
-```
-
-The single binary includes all capabilities. Configure the database backend, Kafka, TLS, and other features at runtime via environment variables or config file.
-
-## Graceful Shutdown
-
-Orion handles `SIGTERM` and `SIGINT` with a controlled shutdown sequence:
-
-1. HTTP server stops accepting new connections
-2. In-flight requests drain (configurable via `shutdown_drain_secs`, default 30s)
-3. Kafka consumer (if enabled) is signaled to stop
-4. Trace cleanup task is stopped
-5. DLQ retry consumer is stopped
-6. Async trace queue drains with timeout
-7. OpenTelemetry spans are flushed (if enabled)
-8. Process exits
+| Database backend | `storage.url` scheme | SQLite |
+| Kafka | `kafka.enabled` | Disabled |
+| OpenTelemetry | `tracing.enabled` | Disabled |
+| TLS/HTTPS | `server.tls.enabled` | Disabled |
+| Swagger UI | Always at `/docs` | Enabled |
+| SQL connectors | `db_read`/`db_write` functions | Always available |
+| Redis cache | `cache_read`/`cache_write` with Redis backend | Always available |
+| MongoDB connector | `mongo_read` function | Always available |
+| Rate limiting | `rate_limit.enabled` | Disabled |
+| Metrics | `metrics.enabled` | Disabled |
 
 ## Production Checklist
 
 - Mount a persistent volume for `orion.db` (SQLite) or configure `storage.url` for PostgreSQL/MySQL
-- Enable admin API authentication with `ORION_ADMIN_AUTH__ENABLED=true`
-- Set `ORION_LOGGING__FORMAT=json` for structured log ingestion
-- Enable Prometheus metrics with `ORION_METRICS__ENABLED=true`
-- Configure `rate_limit` for traffic protection (platform-level and per-channel)
-- Use `RUST_LOG=orion=info` for per-crate log filtering
-- Enable OpenTelemetry with `ORION_TRACING__ENABLED=true` for distributed tracing
-- Enable TLS by configuring the `server.tls` section
-- Enable circuit breakers with `engine.circuit_breaker.enabled = true`
-- Set `queue.trace_retention_hours` for trace data lifecycle management
+- Enable admin API authentication: `ORION_ADMIN_AUTH__ENABLED=true`
+- Set structured logging: `ORION_LOGGING__FORMAT=json`
+- Enable Prometheus metrics: `ORION_METRICS__ENABLED=true`
+- Configure rate limiting for traffic protection (platform-level and per-channel)
+- Use per-crate filtering: `RUST_LOG=orion=info`
+- Enable OpenTelemetry: `ORION_TRACING__ENABLED=true` for distributed tracing
+- Enable TLS via the `server.tls` section
+- Enable circuit breakers: `engine.circuit_breaker.enabled = true`
+- Set trace retention: `queue.trace_retention_hours` for trace data lifecycle management

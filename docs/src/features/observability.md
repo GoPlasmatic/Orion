@@ -1,8 +1,48 @@
 # Observability
 
-[← Back to README](../README.md)
+Orion provides structured logging, Prometheus metrics, distributed tracing, and health monitoring out of the box. No sidecars, no agents — everything runs inside the single binary.
+
+## Structured Logging
+
+Orion emits structured logs in JSON or pretty-printed format, configurable at runtime:
+
+```toml
+[logging]
+level = "info"        # trace, debug, info, warn, error
+format = "pretty"     # pretty or json
+```
+
+**JSON format** is recommended for production — it integrates directly with log aggregators like Loki, Datadog, or CloudWatch:
+
+```bash
+ORION_LOGGING__FORMAT=json
+ORION_LOGGING__LEVEL=info
+```
+
+**Per-crate filtering** with `RUST_LOG` gives fine-grained control:
+
+```bash
+RUST_LOG=orion=debug,tower_http=warn,sqlx=warn
+```
+
+| Level | Usage |
+|-------|-------|
+| `error` | Failures that need attention |
+| `warn` | Degraded behavior (circuit breakers, retries) |
+| `info` | Request lifecycle, engine reloads, startup/shutdown |
+| `debug` | Detailed processing, SQL queries, connector calls |
+| `trace` | Fine-grained internal state |
+
+Every request carries a UUID `x-request-id` header — pass your own or let Orion generate one. The ID propagates through logs and responses for end-to-end correlation.
 
 ## Prometheus Metrics
+
+Enable metrics and scrape at `GET /metrics` (Prometheus text format):
+
+```toml
+[metrics]
+enabled = true
+```
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
@@ -20,18 +60,29 @@
 | `channel_executions_total` | Counter | `channel` | Channel invocations |
 | `rate_limit_rejections_total` | Counter | `client` | Rate-limited requests |
 
-Enable metrics with `ORION_METRICS__ENABLED=true` or in config:
+## Distributed Tracing
+
+Enable OpenTelemetry trace export with OTLP gRPC:
 
 ```toml
-[metrics]
+[tracing]
 enabled = true
+otlp_endpoint = "http://localhost:4317"
+service_name = "orion"
+sample_rate = 1.0    # 0.0 (none) to 1.0 (all)
 ```
 
-Scrape at `GET /metrics` (Prometheus text format).
+- **W3C Trace Context** extraction and propagation — incoming `traceparent` headers are respected
+- Per-request spans with channel, workflow, and task attributes
+- OTLP gRPC export to Jaeger, Tempo, or any compatible collector
+- Configurable sampling rate for production use
+- Trace context injected into outbound `http_call` requests for full distributed traces
 
-## Health Check
+## Health Monitoring
 
-`GET /health` returns component-level status with automatic degradation detection:
+Orion exposes three health endpoints for different operational needs.
+
+**Component health** — `GET /health` returns component-level status with automatic degradation detection:
 
 ```json
 {
@@ -48,14 +99,12 @@ Scrape at `GET /metrics` (Prometheus text format).
 
 The health check tests the database with `SELECT 1` and verifies engine availability with a configurable lock timeout. If either check fails, the endpoint returns `503 Service Unavailable` with `"status": "degraded"`.
 
-## Kubernetes Probes
+**Kubernetes probes:**
 
 | Endpoint | Purpose | Behavior |
 |----------|---------|----------|
 | `GET /healthz` | Liveness probe | Always returns 200 — if the process is running, it's alive |
 | `GET /readyz` | Readiness probe | Returns 200 only when DB is reachable, engine is loaded, and startup is complete; 503 otherwise |
-
-Configure in your Kubernetes deployment:
 
 ```yaml
 livenessProbe:
@@ -72,9 +121,7 @@ readinessProbe:
   periodSeconds: 5
 ```
 
-## Engine Status
-
-`GET /api/v1/admin/engine/status` returns a detailed breakdown:
+**Engine status** — `GET /api/v1/admin/engine/status` returns a detailed breakdown:
 
 ```json
 {
@@ -84,49 +131,4 @@ readinessProbe:
   "active_workflows": 38,
   "channels": ["orders", "events", "alerts"]
 }
-```
-
-## Distributed Tracing
-
-Enable OpenTelemetry trace export:
-
-```toml
-[tracing]
-enabled = true
-otlp_endpoint = "http://localhost:4317"
-service_name = "orion"
-sample_rate = 1.0
-```
-
-Features:
-- W3C Trace Context extraction and propagation
-- Per-request spans with channel, workflow, and task attributes
-- OTLP gRPC export to Jaeger, Tempo, or any compatible collector
-- Configurable sampling rate (0.0 to 1.0)
-- Trace context injected into outbound `http_call` requests
-
-## Logging
-
-- Structured JSON or pretty-printed format (configurable via `logging.format`)
-- Tracing spans for request lifecycle
-- Request ID propagation via `x-request-id` header
-- Per-crate filtering with `RUST_LOG` (e.g., `RUST_LOG=orion=debug,tower_http=info`)
-- Optional OpenTelemetry trace export (enable with `tracing.enabled = true`)
-
-### Log Levels
-
-| Level | Usage |
-|-------|-------|
-| `error` | Failures that need attention |
-| `warn` | Degraded behavior (circuit breakers, retries) |
-| `info` | Request lifecycle, engine reloads, startup/shutdown |
-| `debug` | Detailed processing, SQL queries, connector calls |
-| `trace` | Fine-grained internal state |
-
-### Production Configuration
-
-```bash
-ORION_LOGGING__FORMAT=json
-ORION_LOGGING__LEVEL=info
-RUST_LOG=orion=info,tower_http=warn,sqlx=warn
 ```

@@ -173,7 +173,7 @@ AI:  → generates valid workflow JSON
 
 Every AI-generated workflow gets version history, draft-before-activate, dry-run testing, rollout control, and audit trails — the same governance as hand-written ones. Roll back to any previous version instantly.
 
-See [Use Cases & Patterns](docs/use-cases.md#ai-workflow--cicd) for CI/CD integration and GitHub Actions examples.
+See [Use Cases & Patterns](docs/src/tutorials/use-cases.md#ai-workflow--cicd) for CI/CD integration and GitHub Actions examples.
 
 ---
 
@@ -241,7 +241,7 @@ Every channel gets production-grade features without writing a line of code. Con
 
 A minimal channel needs only a name and a workflow. Everything else has sensible defaults.
 
-> **Observability deep dive:** health endpoints, full Prometheus metrics list, Kubernetes probes, and OpenTelemetry tracing config — see [Observability Guide](docs/observability.md).
+> **Observability deep dive:** health endpoints, full Prometheus metrics list, Kubernetes probes, and OpenTelemetry tracing config — see [Observability Guide](docs/src/features/observability.md).
 
 ---
 
@@ -259,7 +259,7 @@ Sync channels respond immediately. Async channels return a trace ID — poll `GE
 
 **Bridging is a pattern, not a feature.** A sync workflow can `publish_kafka` and return 202. An async channel picks it up from there.
 
-REST channels support parameterized route patterns (`/orders/{order_id}`) with path, query, and header injection into the workflow context — see [Production Features](docs/production-features.md#rest-route-matching).
+REST channels support parameterized route patterns (`/orders/{order_id}`) with path, query, and header injection into the workflow context — see [Data API](docs/src/api/data.md#route-resolution).
 
 ## Service Composition
 
@@ -290,7 +290,7 @@ Connectors are named, reusable connections to external systems. Configure once, 
 | **MongoDB** | Any MongoDB instance | Document queries, BSON-to-JSON conversion, connection pooling |
 | **Kafka** | Any Kafka cluster | Publish with key/value logic, consume with DLQ routing |
 
-Every connector gets **circuit breaker protection** automatically — failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Secrets are stored in the database and masked in API responses. See [Connectors Guide](docs/connectors.md) for configuration examples and auth options.
+Every connector gets **circuit breaker protection** automatically — failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Secrets are stored in the database and masked in API responses. See [Connectors Guide](docs/src/features/extensibility.md#connectors) for configuration examples and auth options.
 
 ---
 
@@ -303,7 +303,7 @@ Every connector gets **circuit breaker protection** automatically — failures t
 | `filter` | Allow or halt processing based on JSONLogic conditions |
 | `map` | Transform and reshape JSON using JSONLogic expressions |
 | `validation` | Enforce required fields, constraints, and schema-like checks |
-| `http_call` | Invoke downstream APIs, webhooks, or services via [connectors](docs/connectors.md) |
+| `http_call` | Invoke downstream APIs, webhooks, or services via [connectors](docs/src/features/extensibility.md#connectors) |
 | `channel_call` | Invoke another channel's workflow in-process |
 | `db_read` | Execute SQL SELECT queries, return rows as JSON |
 | `db_write` | Execute SQL INSERT/UPDATE/DELETE, return affected count |
@@ -312,7 +312,7 @@ Every connector gets **circuit breaker protection** automatically — failures t
 | `mongo_read` | Query MongoDB collections, BSON-to-JSON conversion |
 | `publish_json` | Serialize data to JSON output format |
 | `publish_xml` | Serialize data to XML output format |
-| `publish_kafka` | Publish messages to [Kafka topics](docs/kafka.md) |
+| `publish_kafka` | Publish messages to [Kafka topics](docs/src/features/extensibility.md#kafka-connector) |
 | `log` | Emit structured log entries for auditing and debugging |
 
 All functions are built in. `cache_read`/`cache_write` use in-memory cache by default; configure a Redis-backed connector for distributed caching.
@@ -332,7 +332,7 @@ Production services fail. Orion handles it so you don't write retry loops and fa
 | **Task in pipeline fails** | Pipeline halts with error — or continues collecting errors if `continue_on_error: true` | Per-workflow setting |
 | **Duplicate request** | Detected via idempotency key, returns 409 | `Idempotency-Key` header + retention window |
 
-**Debugging is built in.** Every request gets a `x-request-id` propagated through the entire pipeline. Structured JSON logs show what data each task received and produced. Enable OpenTelemetry for distributed tracing across `http_call` and `channel_call` chains. Inspect circuit breakers, DLQ traces, and debug endpoints via the [API Reference](docs/api-reference.md).
+**Debugging is built in.** Every request gets a `x-request-id` propagated through the entire pipeline. Structured JSON logs show what data each task received and produced. Enable OpenTelemetry for distributed tracing across `http_call` and `channel_call` chains. Inspect circuit breakers, DLQ traces, and debug endpoints via the [API Reference](docs/src/api/admin.md).
 
 ---
 
@@ -376,7 +376,7 @@ Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mo
 - **Multi-agent orchestration** — route agent outputs to channels with coordinating workflows
 - **Protocol bridging** — REST-to-Kafka, Kafka-to-HTTP with transformation
 
-See [Use Cases & Patterns](docs/use-cases.md) for complete, tested examples.
+See [Use Cases & Patterns](docs/src/tutorials/use-cases.md) for complete, tested examples.
 
 ## Install
 
@@ -394,7 +394,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/
 cargo install --git https://github.com/GoPlasmatic/Orion.git
 ```
 
-Verify with `orion-server --version`. See [Configuration](docs/configuration.md#deployment) for Docker and deployment options.
+Verify with `orion-server --version`. See [Configuration](docs/src/configuration/reference.md) for Docker and deployment options.
 
 ### CLI Tool
 
@@ -417,14 +417,16 @@ See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full comma
 
 | Guide | Description |
 |-------|-------------|
-| [API Reference](docs/api-reference.md) | Channels, workflows, connectors, data, and operational endpoints |
-| [Configuration](docs/configuration.md) | Config file, env vars, database backends, deployment |
-| [Connectors](docs/connectors.md) | HTTP, DB, Cache, Storage, MongoDB, Kafka — auth, retry, circuit breakers |
-| [Kafka Integration](docs/kafka.md) | Topic mapping, DB-driven consumers, DLQ, and publishing |
-| [Production Features](docs/production-features.md) | Versioning, rollout, deduplication, caching, REST routing, security |
-| [Use Cases & Patterns](docs/use-cases.md) | AI prompt templates, tested examples, validation workflows, CI/CD |
-| [Observability](docs/observability.md) | Prometheus metrics, health checks, Kubernetes probes, tracing, logging |
-| [Horizontal Scaling](docs/horizontal-scaling.md) | Multi-instance deployment, topology control, database recommendations |
+| [Admin API](docs/src/api/admin.md) | Workflows, channels, connectors, engine, audit, and backup endpoints |
+| [Data API](docs/src/api/data.md) | Data routing, sync/async processing, traces, and operational endpoints |
+| [Configuration](docs/src/configuration/reference.md) | Config file, env vars, database backends, deployment |
+| [Connectors & Extensibility](docs/src/features/extensibility.md) | HTTP, DB, Cache, Storage, MongoDB, Kafka — auth, retry, circuit breakers |
+| [Observability](docs/src/features/observability.md) | Prometheus metrics, health checks, Kubernetes probes, tracing, logging |
+| [Resilience](docs/src/features/resilience.md) | Circuit breakers, timeouts, dead letter queues |
+| [Scalability](docs/src/features/scalability.md) | Rate limiting, backpressure, horizontal scaling |
+| [Security](docs/src/features/security.md) | Input validation, SSRF protection, CORS, auth |
+| [Deployability](docs/src/features/deployability.md) | Packaging, Docker, installers, distribution |
+| [Use Cases & Patterns](docs/src/tutorials/use-cases.md) | AI prompt templates, tested examples, validation workflows, CI/CD |
 | [CLI Tool](https://github.com/GoPlasmatic/Orion-cli) | Command-line tool for managing channels, workflows, and connectors |
 
 ## Built With

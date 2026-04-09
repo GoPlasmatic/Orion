@@ -1,7 +1,5 @@
 # Use Cases & Patterns
 
-[← Back to README](../README.md)
-
 Real-world examples showing how AI generates Orion workflows from natural language. Every example follows the same pattern: **describe what you need → AI generates the workflow → create a channel → send data → get results**.
 
 ## E-Commerce Order Classification
@@ -299,13 +297,13 @@ curl -s -X POST http://localhost:8080/api/v1/data/notifications \
 | high | yes | yes | yes |
 | critical | yes | yes | yes |
 
-In production, replace the `map` tasks with `http_call` tasks pointing to your email and SMS [connectors](connectors.md).
+In production, replace the `map` tasks with `http_call` tasks pointing to your email and SMS connectors.
 
 **Key patterns:** Task-level condition gating, `in` operator for set membership, progressive pipeline.
 
 ## Compliance Risk Classification
 
-Classify transactions by risk level and use [dry-run testing](api-reference.md) to verify workflows before activating them.
+Classify transactions by risk level and use dry-run testing to verify workflows before activating them.
 
 **AI prompt:**
 
@@ -364,26 +362,6 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows/<workflow-id>/test 
 }
 ```
 
-**Send data:**
-
-```bash
-curl -s -X POST http://localhost:8080/api/v1/data/compliance \
-  -H "Content-Type: application/json" \
-  -d '{ "data": { "amount": 50000, "currency": "USD", "account": "ACC-1234" } }'
-```
-
-**Response:**
-
-```json
-{
-  "status": "ok",
-  "data": {
-    "txn": { "amount": 50000, "currency": "USD", "account": "ACC-1234", "risk_level": "high", "requires_review": true }
-  },
-  "errors": []
-}
-```
-
 The trace shows exactly which tasks ran and which were skipped — verify the logic is correct before a single real transaction flows through.
 
 **Key patterns:** Dry-run verification, execution trace inspection, regulatory workflow.
@@ -409,7 +387,7 @@ You generate Orion workflows in JSON format. Workflows have:
 Output ONLY the JSON workflow. No explanation.
 ```
 
-### Validation Workflow
+### Validation Pipeline
 
 Every AI-generated workflow should go through this pipeline before reaching production:
 
@@ -525,7 +503,7 @@ Every workflow that reads input data must start with `parse_json`. Without it, t
 {
   "tasks": [
     { "id": "parse", "function": { "name": "parse_json", "input": { "source": "payload", "target": "order" } } },
-    { "id": "process", "condition": { ">": [{ "var": "data.order.total" }, 100] }, "function": { ... } }
+    { "id": "process", "condition": { ">": [{ "var": "data.order.total" }, 100] }, "function": { "..." : "..." } }
   ]
 }
 ```
@@ -539,15 +517,15 @@ Every workflow that reads input data must start with `parse_json`. Without it, t
 {
   "condition": true,
   "tasks": [
-    { "id": "always", "function": { ... } },
-    { "id": "conditional", "condition": { ">": [{ "var": "data.amount" }, 500] }, "function": { ... } }
+    { "id": "always", "function": { "..." : "..." } },
+    { "id": "conditional", "condition": { ">": [{ "var": "data.amount" }, 500] }, "function": { "..." : "..." } }
   ]
 }
 ```
 
 ### External API calls with connectors
 
-Keep credentials in [connectors](connectors.md), reference them by name in workflows:
+Keep credentials in connectors, reference them by name in workflows:
 
 ```json
 {
@@ -575,7 +553,7 @@ Invoke another channel's workflow in-process for service composition:
         "data_logic": { "var": "data.order.customer_id" },
         "response_path": "data.customer"
     }}},
-    { "id": "process", "condition": { "==": [{ "var": "data.customer.tier" }, "vip"] }, "function": { ... } }
+    { "id": "process", "condition": { "==": [{ "var": "data.customer.tier" }, "vip"] }, "function": { "..." : "..." } }
   ]
 }
 ```
