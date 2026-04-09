@@ -2,6 +2,7 @@ name: Docker Release
 
 permissions:
   contents: read
+  packages: write
 
 on:
   # Trigger on version tags (same pattern as release.yml)
@@ -45,48 +46,49 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Version: ${VERSION}"
 
-          # Detect prerelease
-          if echo "${VERSION}" | grep -qE '(alpha|beta|rc|pre)'; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to Azure Container Registry
+      - name: Login to GitHub Container Registry
         if: ${{ !inputs.dry_run }}
-        run: |
-          echo "Logging in to Azure Container Registry: ${{ secrets.ACR_URL }}"
-          echo "${{ secrets.ACR_PASSWORD }}" | docker login "${{ secrets.ACR_URL }}" \
-            --username "${{ secrets.ACR_USERNAME }}" \
-            --password-stdin
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build Docker image
+      - name: Login to Azure Container Registry
+        if: ${{ !inputs.dry_run && secrets.ACR_URL != '' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.ACR_URL }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+            ${{ secrets.ACR_URL != '' && format('{0}/{1}', secrets.ACR_URL, env.IMAGE_NAME) || '' }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }}
+            type=sha,prefix=
+          flavor: |
+            latest=auto
+
+      - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false
-          load: true
-          tags: |
-            ${{ secrets.ACR_URL }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+          platforms: linux/amd64,linux/arm64
+          push: ${{ !inputs.dry_run }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-      - name: Push Docker image
-        if: ${{ !inputs.dry_run }}
-        run: |
-          FULL_IMAGE="${{ secrets.ACR_URL }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}"
-          LATEST_IMAGE="${{ secrets.ACR_URL }}/${{ env.IMAGE_NAME }}:latest"
-
-          # Tag and push versioned image
-          docker push "${FULL_IMAGE}"
-          echo "Pushed: ${FULL_IMAGE}"
-
-          # Only tag as latest for non-prerelease versions
-          if [ "${{ steps.version.outputs.prerelease }}" = "false" ]; then
-            docker tag "${FULL_IMAGE}" "${LATEST_IMAGE}"
-            docker push "${LATEST_IMAGE}"
-            echo "Pushed: ${LATEST_IMAGE}"
-          fi
