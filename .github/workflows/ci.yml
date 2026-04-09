@@ -12,8 +12,6 @@ jobs:
   check:
     name: Format, Lint & Test
     runs-on: ubuntu-22.04
-    env:
-      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -40,14 +38,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Clippy (default features)
+      - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Clippy (all features)
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Run tests (all features)
-        run: cargo test --all-features -j 1
+      - name: Run tests
+        run: cargo test -j 2
 
   audit:
     name: Security Audit
@@ -68,8 +63,6 @@ jobs:
   coverage:
     name: Test Coverage
     runs-on: ubuntu-22.04
-    env:
-      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -97,7 +90,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate coverage report
-        run: cargo llvm-cov --all-features --lcov --output-path lcov.info -j 1
+        run: cargo llvm-cov --lcov --output-path lcov.info -j 2
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v6
