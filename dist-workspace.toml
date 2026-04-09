@@ -17,3 +17,13 @@ publish-jobs = ["homebrew"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Homebrew tap repository
 tap = "GoPlasmatic/homebrew-tap"
+
+# System dependencies for rdkafka-sys (librdkafka built from source via cmake)
+[dist.dependencies.apt]
+cmake = "*"
+"g++" = "*"
+pkg-config = "*"
+libcurl4-openssl-dev = "*"
+
+[dist.dependencies.homebrew]
+cmake = "*"
