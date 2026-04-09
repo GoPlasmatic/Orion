@@ -26,7 +26,7 @@ jobs:
     name: Build & Push Docker Image
     runs-on: ubuntu-22.04
     env:
-      IMAGE_NAME: orion
+      GHCR_IMAGE: ghcr.io/goplasmatic/orion
     steps:
       - uses: actions/checkout@v6
         with:
@@ -60,21 +60,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Login to Azure Container Registry
-        if: ${{ !inputs.dry_run && secrets.ACR_URL != '' }}
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.ACR_URL }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
-
       - name: Extract Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
-            ${{ secrets.ACR_URL != '' && format('{0}/{1}', secrets.ACR_URL, env.IMAGE_NAME) || '' }}
+          images: ${{ env.GHCR_IMAGE }}
           tags: |
             type=semver,pattern={{version}},value=${{ steps.version.outputs.version }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.version }}
@@ -92,3 +82,29 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Mirror to ACR if credentials are available
+      - name: Login to Azure Container Registry
+        if: ${{ !inputs.dry_run && env.ACR_URL != '' }}
+        uses: docker/login-action@v3
+        env:
+          ACR_URL: ${{ secrets.ACR_URL }}
+        with:
+          registry: ${{ secrets.ACR_URL }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Mirror to ACR
+        if: ${{ !inputs.dry_run && env.ACR_URL != '' }}
+        env:
+          ACR_URL: ${{ secrets.ACR_URL }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ACR_IMAGE="${ACR_URL}/orion"
+          # Copy multi-arch manifest from GHCR to ACR
+          docker buildx imagetools create \
+            --tag "${ACR_IMAGE}:${VERSION}" \
+            "${{ env.GHCR_IMAGE }}:${VERSION}"
+          docker buildx imagetools create \
+            --tag "${ACR_IMAGE}:latest" \
+            "${{ env.GHCR_IMAGE }}:${VERSION}"
