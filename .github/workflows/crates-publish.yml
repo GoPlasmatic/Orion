@@ -4,15 +4,16 @@ permissions:
   contents: read
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "**[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-22.04
-    # Skip prereleases
-    if: ${{ !github.event.release.prerelease }}
+    # Skip prereleases (tags containing alpha, beta, rc, pre)
+    if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'pre') }}
     steps:
       - uses: actions/checkout@v6
         with:
