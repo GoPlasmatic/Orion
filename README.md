@@ -381,6 +381,12 @@ See [Use Cases & Patterns](docs/src/tutorials/use-cases.md) for complete, tested
 ## Install
 
 ```bash
+# Docker (quickest way to try)
+docker run -p 8080:8080 ghcr.io/goplasmatic/orion:latest
+
+# Docker Compose (with persistent storage)
+docker compose up  # uses docker-compose.yml from this repo
+
 # macOS (Homebrew)
 brew install GoPlasmatic/tap/orion
 
@@ -390,11 +396,14 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/relea
 # Windows (PowerShell)
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-installer.ps1 | iex"
 
+# From crates.io
+cargo install orion-server
+
 # From source
 cargo install --git https://github.com/GoPlasmatic/Orion.git
 ```
 
-Verify with `orion-server --version`. See [Configuration](docs/src/configuration/reference.md) for Docker and deployment options.
+Verify with `orion-server --version`. Swagger UI available at `http://localhost:8080/docs`. See [Configuration](docs/src/configuration/reference.md) for deployment options.
 
 ### CLI Tool
 

@@ -6,6 +6,10 @@ description = "Declarative services runtime powered by dataflow-rs"
 license = "Apache-2.0"
 repository = "https://github.com/GoPlasmatic/Orion"
 homepage = "https://github.com/GoPlasmatic/Orion"
+readme = "README.md"
+keywords = ["workflow", "runtime", "declarative", "microservices", "jsonlogic"]
+categories = ["web-programming"]
+exclude = ["tests/", "docs/", ".github/", ".claude/", "docker-compose*", "Dockerfile"]
 
 [[bin]]
 name = "orion-server"
