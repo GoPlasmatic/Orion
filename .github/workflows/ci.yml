@@ -12,6 +12,8 @@ jobs:
   check:
     name: Format, Lint & Test
     runs-on: ubuntu-22.04
+    env:
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -24,7 +26,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev mold
 
       - name: Add swap space
         run: |
@@ -45,7 +47,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests (all features)
-        run: cargo test --all-features -j 2
+        run: cargo test --all-features -j 1
 
   audit:
     name: Security Audit
@@ -66,6 +68,8 @@ jobs:
   coverage:
     name: Test Coverage
     runs-on: ubuntu-22.04
+    env:
+      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -78,7 +82,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev mold
 
       - name: Add swap space
         run: |
@@ -93,7 +97,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate coverage report
-        run: cargo llvm-cov --all-features --lcov --output-path lcov.info -j 2
+        run: cargo llvm-cov --all-features --lcov --output-path lcov.info -j 1
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v6
