@@ -13,6 +13,11 @@ jobs:
     name: Format, Lint & Test
     runs-on: ubuntu-22.04
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -30,7 +35,7 @@ jobs:
         run: |
           sudo swapoff /swapfile || true
           sudo rm -f /swapfile
-          sudo fallocate -l 8G /swapfile
+          sudo fallocate -l 4G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
@@ -64,6 +69,11 @@ jobs:
     name: Test Coverage
     runs-on: ubuntu-22.04
     steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -81,7 +91,7 @@ jobs:
         run: |
           sudo swapoff /swapfile || true
           sudo rm -f /swapfile
-          sudo fallocate -l 8G /swapfile
+          sudo fallocate -l 4G /swapfile
           sudo chmod 600 /swapfile
           sudo mkswap /swapfile
           sudo swapon /swapfile
