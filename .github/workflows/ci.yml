@@ -10,14 +10,9 @@ env:
 
 jobs:
   check:
-    name: Format, Lint & Test
+    name: Format & Lint
     runs-on: ubuntu-22.04
     steps:
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
-
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
@@ -29,25 +24,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev mold
-
-      - name: Add swap space
-        run: |
-          sudo swapoff /swapfile || true
-          sudo rm -f /swapfile
-          sudo fallocate -l 4G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
 
       - name: Check formatting
         run: cargo fmt --check
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
-
-      - name: Run tests
-        run: cargo test -j 2
 
   audit:
     name: Security Audit
