@@ -9,33 +9,55 @@
   [![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)
   [![JSONLogic](https://img.shields.io/badge/JSONLogic-standard-green.svg)](https://jsonlogic.com)
   [![GitHub Release](https://img.shields.io/github/v/release/GoPlasmatic/Orion)](https://github.com/GoPlasmatic/Orion/releases)
+  [![GitHub Stars](https://img.shields.io/github/stars/GoPlasmatic/Orion?style=social)](https://github.com/GoPlasmatic/Orion)
 </div>
 
 The declarative services runtime — AI generates workflows, Orion provides the governance. Instead of writing, deploying, and operating a microservice for every piece of business logic, you **declare** what the service should do — and Orion runs it. Architectural governance — observability, rate limiting, circuit breakers, versioning, input validation, and more — is built in.
 
 ---
 
-## Quick Start
+## Is Orion Right for You?
+
+| If you need to... | Orion? | Why |
+|---|:-:|---|
+| Turn business rules into live REST/Kafka services | **Yes** | Define logic as JSON workflows, deploy with one API call |
+| Let AI generate and manage business logic | **Yes** | Built-in validation, dry-run testing, and draft-before-activate safety |
+| Replace a handful of single-purpose microservices | **Yes** | One instance handles many channels — governance included |
+| Use a rule engine like Drools | **Not quite** | Orion uses [JSONLogic](https://jsonlogic.com) via [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) for conditions and transforms — lightweight and AI-friendly, but not a full RETE-based rule engine with complex fact networks |
+| Embed a workflow engine library in your app | **No** | Orion is a standalone runtime, not a library. For an embeddable workflow engine, see [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) which Orion is built on |
+| Build a visual drag-and-drop workflow UI | No | Orion is API-first; pair it with your own UI or use the [CLI](https://github.com/GoPlasmatic/Orion-cli) |
+| Orchestrate long-running jobs (hours/days) | No | Use Temporal or Airflow — Orion is optimized for request-response and event processing |
+| Run a full API gateway with plugin ecosystem | No | Use Kong or Envoy — Orion focuses on service logic, not proxy features |
+| General-purpose compute (image processing, ML) | No | Orion's task functions operate on JSON data — use custom services or serverless for arbitrary compute |
+| Stateful workflows with human-in-the-loop approvals | No | Use [Temporal](https://temporal.io) or BPMN engines — Orion workflows are stateless request pipelines |
+
+---
+
+## Your First Service in 2 Minutes
+
+No code. No Dockerfile. No CI pipeline. Just a running service.
+
+**1. Start Orion**
 
 ```bash
 brew install GoPlasmatic/tap/orion   # or: curl installer, cargo install (see Install)
 orion-server
 ```
 
-**Tell AI what you need:**
+**2. Tell AI what you need**
 
-```
-"Flag orders over $10,000 for manual review with an alert message"
-```
+Give your LLM this prompt — or write the JSON yourself:
 
-**AI generates the workflow — deploy it with two API calls:**
+> "Flag orders over $10,000 for manual review with an alert message"
+
+**3. Deploy the workflow AI generated**
 
 ```bash
-# 1. Create the workflow
+# Create the workflow (paste the AI-generated JSON here)
 curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "high-value-order",
+    "workflow_id": "high-value-order",
     "name": "High-Value Order",
     "condition": true,
     "tasks": [
@@ -55,25 +77,26 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
     ]
   }'
 
-# 2. Activate it
+# Activate it
 curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/high-value-order/status \
   -H "Content-Type: application/json" -d '{"status": "active"}'
 ```
 
-**Create a channel (the service endpoint) and activate it:**
+**4. Create a channel (the service endpoint)**
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/admin/channels \
   -H "Content-Type: application/json" \
-  -d '{ "name": "orders", "channel_type": "sync", "protocol": "http",
+  -d '{ "channel_id": "orders", "name": "orders", "channel_type": "sync",
+        "protocol": "http", "route_pattern": "/orders",
         "methods": ["POST"], "workflow_id": "high-value-order" }'
 
-# Activate (grab the channel_id from the response above)
-curl -s -X PATCH http://localhost:8080/api/v1/admin/channels/<channel-id>/status \
+# Activate
+curl -s -X PATCH http://localhost:8080/api/v1/admin/channels/orders/status \
   -H "Content-Type: application/json" -d '{"status": "active"}'
 ```
 
-**Push data — your service is live:**
+**5. Send a request — your service is live**
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/data/orders \
@@ -95,7 +118,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders \
 }
 ```
 
-You described what you needed. AI wrote the logic. You pushed JSON — Orion handled the rest. Change the threshold? One API call. No rebuild, no redeploy, no restart.
+That's it. You described what you needed. AI wrote the logic. Orion ran it — with rate limiting, metrics, health checks, and request tracing already active. Change the threshold? One API call. No rebuild, no redeploy, no restart.
 
 ---
 
@@ -126,60 +149,78 @@ You build services in Orion with three things:
 
 When AI generates a microservice, you still need to add health checks, metrics, retries, and error handling. When AI generates an Orion workflow, **all of that is already there**. The platform guarantees it.
 
-**Give AI this system prompt:**
+**Use the [Orion CLI's MCP server](https://github.com/GoPlasmatic/Orion-cli)** to give your AI assistant full Orion context — no manual prompt engineering needed. The MCP server provides your LLM with workflow syntax, available functions, connector types, and API operations automatically.
 
 ```
-You generate Orion workflows in JSON. Workflows have:
-- name, condition (JSONLogic or true)
-- tasks: array of { id, name, condition (optional), function: { name, input } }
-- Start with parse_json: { "name": "parse_json", "input": { "source": "payload", "target": "<entity>" } }
-- Use "map" for transforms, "http_call" with "connector" for APIs, "channel_call" for service composition.
-- Task conditions: { "var": "data.<entity>.<field>" }
-Output ONLY the JSON.
+You: "Classify orders into VIP (>=500, 15% discount), Premium (100-500, 5%), and Standard tiers"
+
+AI:  → generates valid workflow JSON
+     → creates it via the API
+     → tests with dry-run
+     → activates when you approve
 ```
 
-**Then validate before going live:**
+**Safe path from AI output to production — every time:**
 
 ```
-1. Generate    → LLM produces the workflow JSON
-2. Validate    → POST /api/v1/admin/workflows/validate
-3. Create      → POST /api/v1/admin/workflows (created as draft)
-4. Dry-run     → POST /api/v1/admin/workflows/{id}/test
-5. Activate    → PATCH /api/v1/admin/workflows/{id}/status
+1. Generate    → AI produces the workflow JSON (with full context from MCP)
+2. Validate    → POST /api/v1/admin/workflows/validate     ← catches structural errors
+3. Create      → POST /api/v1/admin/workflows               ← saved as draft (not live)
+4. Dry-run     → POST /api/v1/admin/workflows/{id}/test     ← test with sample data
+5. Activate    → PATCH /api/v1/admin/workflows/{id}/status   ← goes live
+6. Rollout     → PATCH /api/v1/admin/workflows/{id}/rollout  ← gradual traffic (10% → 50% → 100%)
 ```
 
-Every AI-generated workflow gets version history, draft-before-activate, dry-run testing, and audit trails — the same governance as hand-written ones. See [Use Cases & Patterns](docs/use-cases.md#ai-workflow--cicd) for prompt templates, CI/CD integration, and GitHub Actions examples.
+Every AI-generated workflow gets version history, draft-before-activate, dry-run testing, rollout control, and audit trails — the same governance as hand-written ones. Roll back to any previous version instantly.
+
+See [Use Cases & Patterns](docs/use-cases.md#ai-workflow--cicd) for CI/CD integration and GitHub Actions examples.
 
 ---
 
 ## Before & After
 
-**Before** — every piece of business logic is a service to build, deploy, and operate:
+**Before** — every piece of business logic is its own service to build, deploy, and operate:
 
 ```
-pricing-service/      → 800 lines + Dockerfile + CI + health checks + metrics
-fraud-service/        → 600 lines + Dockerfile + CI + health checks + metrics
-routing-service/      → 400 lines + Dockerfile + CI + health checks + metrics
-notification-service/ → 500 lines + Dockerfile + CI + health checks + metrics
+                         ┌──────────────┐
+                    ┌───▶│ Pricing Svc  │───▶ DB
+                    │    └──────────────┘
+┌──────────┐        │    ┌──────────────┐
+│  API     │────────┼───▶│ Fraud Svc    │───▶ Redis
+│  Gateway │        │    └──────────────┘
+└──────────┘        │    ┌──────────────┐
+                    ├───▶│ Routing Svc  │───▶ Kafka
+                    │    └──────────────┘
+                    │    ┌──────────────┐
+                    └───▶│ Notif. Svc   │───▶ SMTP
+                         └──────────────┘
 
-4 services × (governance + deployment + monitoring) = operational burden
+4 services × (code + Dockerfile + CI + health checks + metrics + deployment)
 ```
 
-**After** — declare what each service does, Orion runs it:
+**After** — one Orion instance replaces all four:
 
 ```
-One Orion instance:
-  Channel "POST /orders"       → order processing workflow
-  Channel "POST /payments"     → payment validation workflow
-  Channel "GET /users/{id}"    → user lookup workflow
-  Channel topic:order.placed   → async fulfillment workflow
+                         ┌──────────────────────────────────┐
+                         │           Orion                  │
+                         │                                  │
+┌──────────┐             │  Channel /pricing  → workflow ───┼──▶ DB
+│ Clients  │────────────▶│  Channel /fraud    → workflow ───┼──▶ Redis
+└──────────┘             │  Channel /routing  → workflow ───┼──▶ Kafka
+                         │  Channel /notify   → workflow ───┼──▶ SMTP
+                         │                                  │
+                         │  Rate limiting, metrics, health  │
+                         │  checks, circuit breakers, logs  │
+                         └──────────────────────────────────┘
 
-Governance? Built in. Metrics? Automatic. Deploy? Already running.
+No API gateway needed. Governance is built in. One binary to deploy.
 ```
+
+**The best of both worlds:** each channel and workflow is independently versioned, testable, and deployable — the modularity of microservices with the operational simplicity of a monolith. Change one workflow without touching the others. Roll back a single channel without redeploying everything.
 
 ---
 
-## What You Get for Free
+## What's Built In
 
 Every channel gets production-grade features without writing a line of code. Configure per channel or use platform defaults:
 
@@ -200,6 +241,8 @@ Every channel gets production-grade features without writing a line of code. Con
 
 A minimal channel needs only a name and a workflow. Everything else has sensible defaults.
 
+> **Observability deep dive:** health endpoints, full Prometheus metrics list, Kubernetes probes, and OpenTelemetry tracing config — see [Observability Guide](docs/observability.md).
+
 ---
 
 ## Sync and Async
@@ -216,42 +259,38 @@ Sync channels respond immediately. Async channels return a trace ID — poll `GE
 
 **Bridging is a pattern, not a feature.** A sync workflow can `publish_kafka` and return 202. An async channel picks it up from there.
 
-## REST Route Matching
-
-Channels can define full REST route patterns with parameter extraction:
-
-```json
-{
-  "name": "order-detail",
-  "channel_type": "sync",
-  "protocol": "rest",
-  "methods": ["GET"],
-  "route_pattern": "/orders/{order_id}",
-  "workflow_id": "order-lookup"
-}
-```
-
-Path parameters (`order_id`), query parameters, and headers are injected into the workflow context — available to conditions, transforms, and validation logic.
+REST channels support parameterized route patterns (`/orders/{order_id}`) with path, query, and header injection into the workflow context — see [Production Features](docs/production-features.md#rest-route-matching).
 
 ## Service Composition
 
-Use `channel_call` to invoke another channel's workflow in-process — no HTTP round-trip:
+Most platforms require HTTP calls between services — adding latency, failure modes, and serialization overhead. Orion's `channel_call` invokes another channel's workflow **in-process** with zero network round-trip:
 
-```json
-{
-  "id": "enrich",
-  "function": {
-    "name": "channel_call",
-    "input": {
-      "channel": "customer-lookup",
-      "data_logic": { "var": "data.order.customer_id" },
-      "response_path": "data.customer"
-    }
-  }
-}
+```
+POST /orders (order-processing workflow)
+  ├── parse_json         → extract order data
+  ├── channel_call       → "inventory-check" channel (in-process)
+  ├── channel_call       → "customer-lookup" channel (in-process)
+  ├── map                → compute pricing with enriched data
+  └── publish_json       → return combined result
 ```
 
-Compose services from other services. Same interface, same governance, zero network overhead.
+Each composed channel has its own workflow, versioning, and governance — but calls between them are function calls, not network hops. Cycle detection prevents infinite recursion.
+
+---
+
+## Connect to Anything
+
+Connectors are named, reusable connections to external systems. Configure once, reference by name in any workflow — credentials stay out of your logic:
+
+| Connector type | Systems | Features |
+|---------------|---------|----------|
+| **HTTP** | Any REST API, webhook, or service | Bearer / Basic / API key auth, retry with backoff, SSRF protection |
+| **Database** | PostgreSQL, MySQL, SQLite | Parameterized queries, connection pooling, read + write operations |
+| **Cache** | In-memory (built-in) or Redis | TTL-based expiry, also powers deduplication and response caching |
+| **MongoDB** | Any MongoDB instance | Document queries, BSON-to-JSON conversion, connection pooling |
+| **Kafka** | Any Kafka cluster | Publish with key/value logic, consume with DLQ routing |
+
+Every connector gets **circuit breaker protection** automatically — failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Secrets are stored in the database and masked in API responses. See [Connectors Guide](docs/connectors.md) for configuration examples and auth options.
 
 ---
 
@@ -277,6 +316,23 @@ Compose services from other services. Same interface, same governance, zero netw
 | `log` | Emit structured log entries for auditing and debugging |
 
 All functions are built in. `cache_read`/`cache_write` use in-memory cache by default; configure a Redis-backed connector for distributed caching.
+
+---
+
+## When Things Go Wrong
+
+Production services fail. Orion handles it so you don't write retry loops and fallback logic:
+
+| Failure | What Orion does | You configure |
+|---------|----------------|---------------|
+| **External API down** | Circuit breaker trips, fast-fails subsequent calls, auto-recovers | `failure_threshold`, `recovery_timeout_secs` per connector |
+| **Slow workflow** | Timeout fires, returns 504 to caller | `timeout_ms` per channel |
+| **Traffic spike** | Rate limiter rejects excess requests (429), backpressure sheds load (503) | `requests_per_second`, `max_concurrent` per channel |
+| **Async task fails** | Moved to Dead Letter Queue, retried automatically with backoff | `dlq_max_retries`, `dlq_poll_interval_secs` |
+| **Task in pipeline fails** | Pipeline halts with error — or continues collecting errors if `continue_on_error: true` | Per-workflow setting |
+| **Duplicate request** | Detected via idempotency key, returns 409 | `Idempotency-Key` header + retention window |
+
+**Debugging is built in.** Every request gets a `x-request-id` propagated through the entire pipeline. Structured JSON logs show what data each task received and produced. Enable OpenTelemetry for distributed tracing across `http_call` and `channel_call` chains. Inspect circuit breakers, DLQ traces, and debug endpoints via the [API Reference](docs/api-reference.md).
 
 ---
 
@@ -340,6 +396,23 @@ cargo install --git https://github.com/GoPlasmatic/Orion.git
 
 Verify with `orion-server --version`. See [Configuration](docs/configuration.md#deployment) for Docker and deployment options.
 
+### CLI Tool
+
+Manage workflows, channels, and connectors without writing curl commands:
+
+```bash
+# Install
+cargo install --git https://github.com/GoPlasmatic/Orion-cli.git
+
+# Deploy a workflow from a JSON file
+orion-cli workflow create -f order-processing.json
+orion-cli workflow activate high-value-order
+orion-cli channel create -f orders-channel.json
+orion-cli channel activate orders
+```
+
+See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full command list.
+
 ## Documentation
 
 | Guide | Description |
@@ -358,9 +431,19 @@ Verify with `orion-server --version`. See [Configuration](docs/configuration.md#
 
 [Axum](https://github.com/tokio-rs/axum) (HTTP), [Tokio](https://tokio.rs) (async runtime), [SQLx](https://github.com/launchbadge/sqlx) (database), [sea-query](https://github.com/SeaQL/sea-query) (portable SQL builder), SQLite/PostgreSQL/MySQL (storage), [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) (JSONLogic), [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) (workflow orchestration).
 
+## Roadmap
+
+- **Web UI** — visual workflow builder and channel dashboard
+- **SDK clients** — Python, Go, and Node.js libraries for the admin API
+- **Workflow marketplace** — community-contributed workflow templates
+- **Scheduler** — cron-based workflow execution
+- **WASM task functions** — extend the engine with custom logic in any language
+
+Have an idea? [Open a discussion](https://github.com/GoPlasmatic/Orion/issues).
+
 ## Contributing
 
-Contributions welcome. [Open an issue](https://github.com/GoPlasmatic/Orion/issues) or submit a pull request.
+Contributions welcome! Whether it's a bug fix, new connector, documentation improvement, or feature request — we'd love to hear from you.
 
 ```bash
 cargo build                              # Build (all features included)
@@ -369,6 +452,10 @@ cargo test                               # Run tests
 cargo clippy                             # Lint
 cargo fmt                                # Format
 ```
+
+- **Report bugs:** [Open an issue](https://github.com/GoPlasmatic/Orion/issues)
+- **Ask questions:** [Start a discussion](https://github.com/GoPlasmatic/Orion/issues)
+- **Submit code:** Fork, branch, PR — all tests must pass (`cargo test && cargo clippy`)
 
 ## License
 
