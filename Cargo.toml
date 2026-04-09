@@ -74,6 +74,11 @@ codegen-units = 256
 [profile.release]
 strip = true
 
+# cargo-dist uses this profile for release builds
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
 [dev-dependencies]
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["kafka"] }
