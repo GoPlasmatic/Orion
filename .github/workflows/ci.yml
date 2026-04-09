@@ -51,9 +51,6 @@ jobs:
   coverage:
     name: Test Coverage
     runs-on: ubuntu-22.04
-    env:
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
     steps:
       - name: Free disk space
         run: |
@@ -86,7 +83,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate coverage report
-        run: cargo llvm-cov --lcov --output-path lcov.info -j 2
+        run: mold -run cargo llvm-cov --lcov --output-path lcov.info -j 2
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v6
