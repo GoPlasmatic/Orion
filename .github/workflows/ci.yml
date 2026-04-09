@@ -26,6 +26,13 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
 
+      - name: Add swap space
+        run: |
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
       - name: Check formatting
         run: cargo fmt --check
 
@@ -36,7 +43,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Run tests (all features)
-        run: cargo test --all-features
+        run: cargo test --all-features -j 2
 
   audit:
     name: Security Audit
@@ -71,11 +78,18 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
 
+      - name: Add swap space
+        run: |
+          sudo fallocate -l 8G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate coverage report
-        run: cargo llvm-cov --all-features --lcov --output-path lcov.info
+        run: cargo llvm-cov --all-features --lcov --output-path lcov.info -j 2
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v6
