@@ -6,6 +6,8 @@ Orion MCP server — manage workflows, channels, connectors, data processing, ex
 - **Channels** are service endpoints that receive data and route it to a workflow for processing
 - **Tasks** are the steps inside a workflow (parse_json -> map -> filter -> http_call -> channel_call -> publish_json, etc.)
 - **Connectors** configure external service connections (HTTP APIs, Kafka) used by tasks
+- **Audit Logs** record all admin actions (create, update, delete, activate, archive) for accountability
+- **Backups** create SQLite database snapshots for disaster recovery
 - **JSONLogic** is used for conditions and data transformations — see workflows_create for syntax
 
 ## Typical Workflow
@@ -26,3 +28,5 @@ Orion MCP server — manage workflows, channels, connectors, data processing, ex
 - Channels define how data enters the system (REST routes, HTTP endpoints, Kafka topics)
 - Workflows define what happens to the data (the processing pipeline)
 - Use `workflows_test` to validate workflows before activating them in production
+- Use `audit_logs_list` to review recent admin actions
+- Use `backups_create` to snapshot the database before major changes

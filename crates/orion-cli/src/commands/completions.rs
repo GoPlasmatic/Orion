@@ -2,8 +2,9 @@ use clap::{Args, CommandFactory};
 use clap_complete::{Shell, generate};
 
 #[derive(Args)]
+#[command(after_help = crate::help::COMPLETIONS)]
 pub struct CompletionsCmd {
-    /// Shell to generate completions for
+    /// Shell to generate completions for (bash, zsh, fish, powershell, elvish)
     shell: Shell,
 }
 

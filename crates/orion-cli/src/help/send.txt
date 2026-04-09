@@ -1,0 +1,19 @@
+Modes:
+  Sync (default)   Send data and wait for the processed result
+  Async            Submit for background processing, get a trace ID back
+
+The data payload is the business data that workflows process. For workflows
+starting with a parse_json task, this is the raw JSON object.
+
+Input Methods:
+  -f <file>    Read payload from a JSON file
+  -d '<json>'  Provide payload as an inline JSON string
+  --stdin      Read payload from standard input
+
+Examples:
+  orion-cli send my-channel -d '{"id": "order-123", "amount": 250.00}'
+  orion-cli send my-channel -f payload.json
+  cat payload.json | orion-cli send my-channel --stdin
+  orion-cli send my-channel -d '...' --async-mode
+  orion-cli send my-channel -d '...' --async-mode --wait --timeout 30
+  orion-cli send my-channel -d '...' --metadata '{"source": "cli-test"}'

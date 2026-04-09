@@ -8,6 +8,10 @@ pub struct OrionConfig {
     pub server_url: Option<String>,
     #[serde(default = "default_output")]
     pub default_output: String,
+    #[serde(default)]
+    pub api_key: Option<String>,
+    #[serde(default)]
+    pub api_key_header: Option<String>,
 }
 
 fn default_output() -> String {
@@ -46,6 +50,18 @@ impl OrionConfig {
                 "No server URL configured. Set ORION_SERVER_URL environment variable or configure server_url in ~/.orion/config.toml"
             )
         })
+    }
+
+    /// Resolve API key: env var > config file. Returns (key, optional header).
+    pub fn resolve_api_key() -> Option<(String, Option<String>)> {
+        if let Ok(key) = std::env::var("ORION_API_KEY") {
+            if !key.is_empty() {
+                let header = std::env::var("ORION_API_KEY_HEADER").ok();
+                return Some((key, header));
+            }
+        }
+        let config = Self::load().ok()?;
+        config.api_key.map(|k| (k, config.api_key_header))
     }
 
     pub fn save(&self) -> Result<()> {

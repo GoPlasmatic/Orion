@@ -9,6 +9,12 @@ use crate::output::{self, OutputFormat};
 use crate::utils;
 
 #[derive(Args)]
+#[command(
+    long_about = "View and monitor execution traces for processed data.\n\n\
+        Every data send (sync or async) creates a trace with status, timing, and result details.\n\
+        Use 'traces list' to find traces and 'traces wait' to poll until completion.\n\n\
+        With --quiet, list prints one ID per line, get prints the status."
+)]
 pub struct TracesCmd {
     #[command(subcommand)]
     command: TracesSubcommand,
@@ -16,12 +22,15 @@ pub struct TracesCmd {
 
 #[derive(Subcommand)]
 enum TracesSubcommand {
-    /// List traces
+    /// List traces with optional filters
+    #[command(
+        after_help = "Examples:\n  orion-cli traces list --status failed --channel orders\n  orion-cli traces list --mode async --sort-by created_at --sort-order desc --limit 10"
+    )]
     List {
-        /// Filter by status
+        /// Filter by status (pending, running, completed, failed)
         #[arg(long)]
         status: Option<String>,
-        /// Filter by channel
+        /// Filter by channel name
         #[arg(long)]
         channel: Option<String>,
         /// Filter by mode (sync, async)
@@ -40,12 +49,15 @@ enum TracesSubcommand {
         #[arg(long)]
         offset: Option<i64>,
     },
-    /// Get trace details
+    /// Get trace details including result or error
     Get {
         /// Trace ID
         id: String,
     },
-    /// Wait for a trace to complete
+    /// Wait for a trace to complete (polls until done or timeout)
+    #[command(
+        after_help = "Exit codes: 0 = completed, 1 = failed, 2 = timeout\n\nExamples:\n  orion-cli traces wait <trace-id>\n  orion-cli traces wait <trace-id> --timeout 120 --interval 5"
+    )]
     Wait {
         /// Trace ID
         id: String,

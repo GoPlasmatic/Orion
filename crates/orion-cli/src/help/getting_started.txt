@@ -1,0 +1,26 @@
+Getting Started:
+  orion-cli config set-server http://localhost:8080
+  orion-cli health
+  orion-cli workflows create -f workflow.json
+  orion-cli workflows activate <id>
+  orion-cli engine reload
+  orion-cli send my-channel -d '{"key": "value"}'
+
+Typical Workflow:
+  1. health          -- verify server is reachable
+  2. connectors      -- set up external service connections
+  3. workflows       -- define processing pipelines
+  4. channels        -- create endpoints that route data to workflows
+  5. activate        -- activate draft workflows and channels
+  6. engine reload   -- required to load changes into the engine
+  7. workflows test  -- dry-run with sample data
+  8. send            -- send real data for processing
+
+Environment Variables:
+  ORION_SERVER_URL      Server URL (overrides config file)
+  ORION_API_KEY         API key for admin authentication
+  ORION_API_KEY_HEADER  Custom header name for API key
+  NO_COLOR              Disable colored output when set
+
+Config File:
+  ~/.orion/config.toml  Persistent configuration (server_url, default_output, api_key)

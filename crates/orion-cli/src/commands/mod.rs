@@ -1,3 +1,5 @@
+pub mod audit_logs;
+pub mod backups;
 pub mod channels;
 pub mod completions;
 pub mod config;
@@ -14,37 +16,48 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Manage CLI configuration
+    /// Manage CLI configuration (server URL, output format, API key)
     Config(config::ConfigCmd),
 
-    /// Check server health
+    /// Check server health, version, and component status
     Health,
 
-    /// Manage workflows
+    /// Manage workflows -- processing pipelines that transform and route data
     #[command(alias = "rules")]
     Workflows(workflows::WorkflowsCmd),
 
-    /// Manage channels
+    /// Manage channels -- service endpoints that receive data and route to workflows
+    #[command(alias = "ch")]
     Channels(channels::ChannelsCmd),
 
-    /// Manage connectors
+    /// Manage connectors -- external service connections (HTTP, Kafka) used by tasks
+    #[command(alias = "conn")]
     Connectors(connectors::ConnectorsCmd),
 
-    /// Send data for processing
+    /// Send data to a channel for synchronous or asynchronous processing
     Send(data::SendCmd),
 
-    /// View and monitor traces
+    /// View and monitor execution traces for processed data
     Traces(traces::TracesCmd),
 
-    /// Engine control
+    /// Control the Orion engine -- view status and hot-reload configuration
+    #[command(alias = "eng")]
     Engine(engine::EngineCmd),
 
-    /// View server metrics
+    /// View server metrics in Prometheus exposition format
     Metrics(metrics::MetricsCmd),
 
-    /// Generate shell completions
+    /// Generate shell completions for bash, zsh, fish, or powershell
+    #[command(alias = "comp")]
     Completions(completions::CompletionsCmd),
 
-    /// MCP server for AI tool integration
+    /// View audit logs -- records of all admin actions
+    #[command(alias = "audit")]
+    AuditLogs(audit_logs::AuditLogsCmd),
+
+    /// Manage database backups (SQLite snapshots)
+    Backups(backups::BackupsCmd),
+
+    /// Start the MCP server for AI assistants (Claude Desktop, Cursor)
     Mcp(mcp::McpCmd),
 }

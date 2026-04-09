@@ -8,35 +8,43 @@ use crate::output::{self, OutputFormat};
 use crate::utils;
 
 #[derive(Args)]
+#[command(
+    long_about = "Send data to a channel for processing.\n\n\
+        By default, sends synchronously and returns the processed result.\n\
+        Use --async-mode to submit for background processing (returns a trace ID).\n\
+        Combine --async-mode with --wait to poll until the trace completes.\n\n\
+        The data payload is the business data that workflows process.",
+    after_help = crate::help::SEND,
+)]
 pub struct SendCmd {
-    /// Channel name
+    /// Channel name to send data to
     channel: String,
 
-    /// JSON file with payload
+    /// Path to JSON file with the data payload
     #[arg(short, long)]
     file: Option<String>,
 
-    /// Inline JSON data
+    /// Inline JSON string with the data payload
     #[arg(short, long)]
     data: Option<String>,
 
-    /// Read payload from stdin
+    /// Read data payload from stdin
     #[arg(long)]
     stdin: bool,
 
-    /// Submit for async processing
+    /// Submit for async processing (returns trace ID instead of result)
     #[arg(long = "async-mode", alias = "async")]
     async_mode: bool,
 
-    /// Wait for async trace to complete
+    /// Wait for async trace to complete (use with --async-mode)
     #[arg(long)]
     wait: bool,
 
-    /// Timeout for --wait (e.g., 30)
+    /// Timeout in seconds for --wait
     #[arg(long, default_value = "60")]
     timeout: u64,
 
-    /// Optional metadata JSON
+    /// Optional metadata JSON string attached to the request
     #[arg(long)]
     metadata: Option<String>,
 }

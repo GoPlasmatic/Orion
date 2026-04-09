@@ -9,6 +9,12 @@ use crate::output::{self, OutputFormat};
 use crate::utils;
 
 #[derive(Args)]
+#[command(
+    long_about = "Manage connectors -- external service connections (HTTP APIs, Kafka) used by workflow tasks.\n\n\
+        Connectors are referenced by name in http_call and publish_kafka tasks within workflows.\n\
+        They can be enabled/disabled without deletion. Circuit breakers protect against failing connectors.\n\n\
+        With --quiet, list prints one ID per line, mutating commands print the resource ID."
+)]
 pub struct ConnectorsCmd {
     #[command(subcommand)]
     command: ConnectorsSubcommand,
@@ -30,46 +36,57 @@ enum ConnectorsSubcommand {
         /// Connector ID
         id: String,
     },
-    /// Create a new connector
+    /// Create a new connector from JSON
+    #[command(after_help = crate::help::CONNECTOR_CREATE)]
     Create {
-        /// JSON file path
+        /// Path to JSON file containing the connector definition
         #[arg(short, long)]
         file: Option<String>,
-        /// Inline JSON data
+        /// Inline JSON string with the connector definition
         #[arg(short, long)]
         data: Option<String>,
+        /// Read connector definition from stdin
+        #[arg(long)]
+        stdin: bool,
     },
-    /// Update a connector
+    /// Update a connector with new JSON definition
     Update {
         /// Connector ID
         id: String,
-        /// JSON file path
+        /// Path to JSON file containing the connector definition
         #[arg(short, long)]
         file: Option<String>,
-        /// Inline JSON data
+        /// Inline JSON string with the connector definition
         #[arg(short, long)]
         data: Option<String>,
+        /// Read connector definition from stdin
+        #[arg(long)]
+        stdin: bool,
     },
-    /// Delete a connector
+    /// Delete a connector (prompts for confirmation)
     Delete {
         /// Connector ID
         id: String,
     },
-    /// Enable a connector
+    /// Enable a disabled connector
     Enable {
         /// Connector ID
         id: String,
     },
-    /// Disable a connector
+    /// Disable a connector without deleting it
     Disable {
         /// Connector ID
         id: String,
     },
-    /// List circuit breaker states
+    /// List circuit breaker states for all connectors
+    #[command(
+        after_help = "Shows the state (closed, open, half_open) of each circuit breaker.\nClosed = healthy, Open = failing (requests blocked), Half-open = testing recovery."
+    )]
     CircuitBreakers,
-    /// Reset a circuit breaker
+    /// Reset a tripped circuit breaker to closed state
+    #[command(after_help = "Examples:\n  orion-cli connectors reset-breaker my_api:orders-channel")]
     ResetBreaker {
-        /// Circuit breaker key (connector:channel)
+        /// Circuit breaker key in connector:channel format
         key: String,
     },
 }
@@ -99,12 +116,17 @@ impl ConnectorsCmd {
                 list(client, format, quiet, limit, offset).await
             }
             ConnectorsSubcommand::Get { id } => get(client, format, quiet, id).await,
-            ConnectorsSubcommand::Create { file, data } => {
-                let body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
+            ConnectorsSubcommand::Create { file, data, stdin } => {
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 create(client, format, quiet, &body).await
             }
-            ConnectorsSubcommand::Update { id, file, data } => {
-                let body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
+            ConnectorsSubcommand::Update {
+                id,
+                file,
+                data,
+                stdin,
+            } => {
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 update(client, format, quiet, id, &body).await
             }
             ConnectorsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,

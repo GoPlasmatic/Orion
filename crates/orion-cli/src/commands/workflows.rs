@@ -9,6 +9,12 @@ use crate::output::{self, OutputFormat};
 use crate::utils::{self, colorize_status, truncate};
 
 #[derive(Args)]
+#[command(
+    long_about = "Manage workflows -- processing pipelines that transform and route data.\n\n\
+        Lifecycle: draft -> activate -> engine reload -> live\n\
+        Workflows are created in draft status. Activate them, then reload the engine to apply.\n\n\
+        With --quiet, list prints one ID per line, get prints the ID, and mutating commands print the resource ID or suppress output."
+)]
 pub struct WorkflowsCmd {
     #[command(subcommand)]
     command: WorkflowsSubcommand,
@@ -17,6 +23,9 @@ pub struct WorkflowsCmd {
 #[derive(Subcommand)]
 enum WorkflowsSubcommand {
     /// List all workflows
+    #[command(
+        after_help = "Examples:\n  orion-cli workflows list\n  orion-cli workflows list --status active\n  orion-cli workflows list --status draft --tag orders"
+    )]
     List {
         /// Filter by status (draft, active, archived)
         #[arg(long)]
@@ -25,57 +34,70 @@ enum WorkflowsSubcommand {
         #[arg(long)]
         tag: Option<String>,
     },
-    /// Get a workflow by ID
+    /// Get a workflow by ID (use --verbose to see condition and tasks)
     Get {
         /// Workflow ID
         id: String,
     },
-    /// Create a new workflow
+    /// Create a new workflow from JSON
+    #[command(after_help = crate::help::WORKFLOW_CREATE)]
     Create {
-        /// Custom workflow ID
+        /// Custom workflow ID (auto-generated if omitted)
         #[arg(long)]
         id: Option<String>,
-        /// JSON file path
+        /// Path to JSON file containing the workflow definition
         #[arg(short, long)]
         file: Option<String>,
-        /// Inline JSON data
+        /// Inline JSON string with the workflow definition
         #[arg(short, long)]
         data: Option<String>,
+        /// Read workflow definition from stdin
+        #[arg(long)]
+        stdin: bool,
     },
-    /// Update a workflow
+    /// Update a workflow with new JSON definition
     Update {
         /// Workflow ID
         id: String,
-        /// JSON file path
+        /// Path to JSON file containing the workflow definition
         #[arg(short, long)]
         file: Option<String>,
-        /// Inline JSON data
+        /// Inline JSON string with the workflow definition
         #[arg(short, long)]
         data: Option<String>,
+        /// Read workflow definition from stdin
+        #[arg(long)]
+        stdin: bool,
     },
-    /// Delete a workflow
+    /// Delete a workflow (prompts for confirmation)
     Delete {
         /// Workflow ID
         id: String,
     },
-    /// Activate a workflow
+    /// Activate a draft workflow (run 'engine reload' after to apply)
     Activate {
         /// Workflow ID
         id: String,
     },
-    /// Archive a workflow
+    /// Archive an active workflow (run 'engine reload' after to apply)
     Archive {
         /// Workflow ID
         id: String,
     },
     /// Validate a workflow definition without creating it
+    #[command(
+        after_help = "Examples:\n  orion-cli workflows validate -f workflow.json\n  orion-cli workflows validate -d '{\"name\":\"test\",\"tasks\":[]}'"
+    )]
     Validate {
-        /// JSON file path
+        /// Path to JSON file containing the workflow definition
         #[arg(short, long)]
         file: Option<String>,
-        /// Inline JSON data
+        /// Inline JSON string with the workflow definition
         #[arg(short, long)]
         data: Option<String>,
+        /// Read workflow definition from stdin
+        #[arg(long)]
+        stdin: bool,
     },
     /// Update rollout percentage for a workflow
     Rollout {
@@ -95,11 +117,14 @@ enum WorkflowsSubcommand {
         /// Workflow ID
         id: String,
     },
-    /// Test/dry-run a workflow with data
+    /// Test/dry-run a workflow with sample data
+    #[command(
+        after_help = "Examples:\n  orion-cli workflows test <id> -d '{\"key\": \"value\"}'\n  orion-cli workflows test <id> -f payload.json --trace\n  cat data.json | orion-cli workflows test <id> --stdin\n  orion-cli workflows test <id> -d '...' --metadata '{\"source\": \"test\"}'"
+    )]
     Test {
         /// Workflow ID
         id: String,
-        /// JSON file with test payload
+        /// Path to JSON file with test payload
         #[arg(short, long)]
         file: Option<String>,
         /// Inline JSON test data
@@ -108,34 +133,41 @@ enum WorkflowsSubcommand {
         /// Read test data from stdin
         #[arg(long)]
         stdin: bool,
-        /// Optional metadata JSON
+        /// Optional metadata JSON string
         #[arg(long)]
         metadata: Option<String>,
-        /// Show execution trace
+        /// Show execution trace of the dry-run
         #[arg(long)]
         trace: bool,
     },
-    /// Export workflows
+    /// Export workflows as JSON (pipe to file for backup)
+    #[command(
+        after_help = "Examples:\n  orion-cli workflows export > workflows.json\n  orion-cli workflows export --status active > active-workflows.json"
+    )]
     Export {
-        /// Filter by status
+        /// Filter by status (draft, active, archived)
         #[arg(long)]
         status: Option<String>,
         /// Filter by tag
         #[arg(long)]
         tag: Option<String>,
     },
-    /// Import workflows from file
+    /// Import workflows from a JSON array file
+    #[command(
+        after_help = "Examples:\n  orion-cli workflows import -f workflows.json --dry-run\n  orion-cli workflows import -f workflows.json"
+    )]
     Import {
-        /// JSON file with workflows array
+        /// Path to JSON file containing a workflows array
         #[arg(short, long)]
         file: String,
-        /// Preview without importing
+        /// Preview what would be imported without making changes
         #[arg(long)]
         dry_run: bool,
     },
     /// Compare local file against server state
+    #[command(after_help = "Examples:\n  orion-cli workflows diff -f workflows.json")]
     Diff {
-        /// JSON file with workflows
+        /// Path to JSON file with workflows to compare
         #[arg(short, long)]
         file: String,
     },
@@ -189,15 +221,21 @@ impl WorkflowsCmd {
                 id: custom_id,
                 file,
                 data,
+                stdin,
             } => {
-                let mut body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
+                let mut body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 if let Some(wid) = custom_id {
                     body["workflow_id"] = Value::String(wid.clone());
                 }
                 create(client, format, quiet, &body).await
             }
-            WorkflowsSubcommand::Update { id, file, data } => {
-                let body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
+            WorkflowsSubcommand::Update {
+                id,
+                file,
+                data,
+                stdin,
+            } => {
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 update(client, format, quiet, id, &body).await
             }
             WorkflowsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,
@@ -207,8 +245,8 @@ impl WorkflowsCmd {
             WorkflowsSubcommand::Archive { id } => {
                 change_status(client, quiet, id, "archived").await
             }
-            WorkflowsSubcommand::Validate { file, data } => {
-                let body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
+            WorkflowsSubcommand::Validate { file, data, stdin } => {
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 validate(client, format, quiet, &body).await
             }
             WorkflowsSubcommand::Rollout { id, percentage } => {

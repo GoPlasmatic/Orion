@@ -385,6 +385,31 @@ impl OrionService {
         tools::data::send_async(&self.client, params).await
     }
 
+    // ── Audit Logs ──────────────────────────────────────────────────────
+
+    #[doc = include_str!("tools/descriptions/audit_logs_list.md")]
+    #[tool]
+    async fn audit_logs_list(
+        &self,
+        Parameters(params): Parameters<tools::audit_logs::AuditLogsListParams>,
+    ) -> Result<String, String> {
+        tools::audit_logs::list(&self.client, params).await
+    }
+
+    // ── Backups ────────────────────────────────────────────────────────
+
+    #[doc = include_str!("tools/descriptions/backups_create.md")]
+    #[tool]
+    async fn backups_create(&self) -> Result<String, String> {
+        tools::backups::create(&self.client).await
+    }
+
+    #[doc = include_str!("tools/descriptions/backups_list.md")]
+    #[tool]
+    async fn backups_list(&self) -> Result<String, String> {
+        tools::backups::list(&self.client).await
+    }
+
     // ── Traces ──────────────────────────────────────────────────────────
 
     #[tool(
@@ -420,7 +445,12 @@ impl ServerHandler for OrionService {
     }
 }
 
-pub async fn serve(server_url: String, http: bool, bind: String) -> Result<()> {
+pub async fn serve(
+    server_url: String,
+    http: bool,
+    bind: String,
+    api_key: Option<(String, Option<String>)>,
+) -> Result<()> {
     use rmcp::ServiceExt;
     use tracing_subscriber::EnvFilter;
 
@@ -430,7 +460,10 @@ pub async fn serve(server_url: String, http: bool, bind: String) -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
-    let client = OrionClient::new(&server_url)?;
+    let mut client = OrionClient::new(&server_url)?;
+    if let Some((key, header)) = api_key {
+        client = client.with_api_key(key, header);
+    }
 
     if http {
         use rmcp::transport::streamable_http_server::{

@@ -23,8 +23,10 @@ pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Re
 
     let status = resp["status"].as_str().unwrap_or("unknown");
     let version = resp["version"].as_str().unwrap_or("unknown");
+    let git_hash = resp["git_hash"].as_str().unwrap_or("");
+    let build_ts = resp["build_timestamp"].as_str().unwrap_or("");
     let uptime = resp["uptime_seconds"].as_i64().unwrap_or(0);
-    let rules = resp["rules_loaded"].as_u64().unwrap_or(0);
+    let workflows = resp["workflows_loaded"].as_u64().unwrap_or(0);
 
     let status_display = if status == "ok" {
         "OK".green().bold()
@@ -37,9 +39,15 @@ pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Re
         "Orion Server".bold(),
         format!("v{version}").dimmed()
     );
+    if !git_hash.is_empty() {
+        println!("  Git hash:     {}", utils::truncate(git_hash, 12));
+    }
+    if !build_ts.is_empty() {
+        println!("  Built:        {build_ts}");
+    }
     println!("  Status:       {status_display}");
     println!("  Uptime:       {}", utils::format_duration(uptime));
-    println!("  Rules loaded: {rules}");
+    println!("  Workflows:    {workflows}");
 
     if let Some(components) = resp.get("components").and_then(|c| c.as_object()) {
         println!("  {}", "Components:".bold());
@@ -51,6 +59,25 @@ pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Re
                 "ERROR".red()
             };
             println!("    {name:<12} {indicator}");
+        }
+    }
+
+    if let Some(cbs) = resp
+        .get("connectors")
+        .and_then(|c| c.get("circuit_breakers"))
+        .and_then(|c| c.as_object())
+    {
+        if !cbs.is_empty() {
+            println!("  {}", "Circuit Breakers:".bold());
+            for (key, val) in cbs {
+                let state = val["state"].as_str().unwrap_or("unknown");
+                let indicator = if state == "closed" {
+                    "CLOSED".green()
+                } else {
+                    state.to_uppercase().red()
+                };
+                println!("    {key:<20} {indicator}");
+            }
         }
     }
 

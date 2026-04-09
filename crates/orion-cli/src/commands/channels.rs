@@ -9,6 +9,13 @@ use crate::output::{self, OutputFormat};
 use crate::utils::{self, colorize_status, truncate};
 
 #[derive(Args)]
+#[command(
+    long_about = "Manage channels -- service endpoints that receive data and route it to a workflow.\n\n\
+        Channels define how data enters the system (REST routes, HTTP endpoints, Kafka topics).\n\
+        Each channel links to a workflow that processes the incoming data.\n\
+        Lifecycle: draft -> activate -> engine reload -> live\n\n\
+        With --quiet, list prints one ID per line, mutating commands print the resource ID."
+)]
 pub struct ChannelsCmd {
     #[command(subcommand)]
     command: ChannelsSubcommand,
@@ -17,6 +24,9 @@ pub struct ChannelsCmd {
 #[derive(Subcommand)]
 enum ChannelsSubcommand {
     /// List all channels
+    #[command(
+        after_help = "Examples:\n  orion-cli channels list\n  orion-cli channels list --status active --protocol rest"
+    )]
     List {
         /// Filter by status (draft, active, archived)
         #[arg(long)]
@@ -39,37 +49,44 @@ enum ChannelsSubcommand {
         /// Channel ID
         id: String,
     },
-    /// Create a new channel
+    /// Create a new channel from JSON
+    #[command(after_help = crate::help::CHANNEL_CREATE)]
     Create {
-        /// JSON file path
+        /// Path to JSON file containing the channel definition
         #[arg(short, long)]
         file: Option<String>,
-        /// Inline JSON data
+        /// Inline JSON string with the channel definition
         #[arg(short, long)]
         data: Option<String>,
+        /// Read channel definition from stdin
+        #[arg(long)]
+        stdin: bool,
     },
-    /// Update a channel
+    /// Update a channel with new JSON definition
     Update {
         /// Channel ID
         id: String,
-        /// JSON file path
+        /// Path to JSON file containing the channel definition
         #[arg(short, long)]
         file: Option<String>,
-        /// Inline JSON data
+        /// Inline JSON string with the channel definition
         #[arg(short, long)]
         data: Option<String>,
+        /// Read channel definition from stdin
+        #[arg(long)]
+        stdin: bool,
     },
-    /// Delete a channel
+    /// Delete a channel (prompts for confirmation)
     Delete {
         /// Channel ID
         id: String,
     },
-    /// Activate a channel
+    /// Activate a draft channel (run 'engine reload' after to apply)
     Activate {
         /// Channel ID
         id: String,
     },
-    /// Archive a channel
+    /// Archive an active channel (run 'engine reload' after to apply)
     Archive {
         /// Channel ID
         id: String,
@@ -143,12 +160,17 @@ impl ChannelsCmd {
                 .await
             }
             ChannelsSubcommand::Get { id } => get_channel(client, format, quiet, id).await,
-            ChannelsSubcommand::Create { file, data } => {
-                let body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
+            ChannelsSubcommand::Create { file, data, stdin } => {
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 create(client, format, quiet, &body).await
             }
-            ChannelsSubcommand::Update { id, file, data } => {
-                let body = utils::read_json_input(file.as_deref(), data.as_deref(), false)?;
+            ChannelsSubcommand::Update {
+                id,
+                file,
+                data,
+                stdin,
+            } => {
+                let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 update(client, format, quiet, id, &body).await
             }
             ChannelsSubcommand::Delete { id } => delete(client, quiet, yes, id).await,

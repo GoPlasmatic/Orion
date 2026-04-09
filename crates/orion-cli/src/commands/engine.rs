@@ -15,9 +15,14 @@ pub struct EngineCmd {
 
 #[derive(Subcommand)]
 enum EngineSubcommand {
-    /// Show engine status
+    /// Show engine status (version, uptime, workflow and channel counts)
     Status,
-    /// Reload engine
+    /// Hot-reload the engine to apply workflow and channel changes
+    #[command(
+        long_about = "Hot-reload the engine to apply workflow and channel changes without server restart.\n\n\
+            Required after creating, updating, activating, or archiving workflows and channels.\n\
+            Changes are not active until this command is run."
+    )]
     Reload,
 }
 

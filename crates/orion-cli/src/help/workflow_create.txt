@@ -1,0 +1,30 @@
+Workflows are created in draft status. Activate with `orion-cli workflows activate <id>`,
+then run `orion-cli engine reload` to make changes live.
+
+JSON Structure (required fields: name, tasks):
+  {
+    "name": "my-workflow",
+    "tasks": [
+      {"id": "t1", "name": "Parse", "function": {"name": "parse_json", "input": {"source": "payload", "target": "data"}}}
+    ]
+  }
+
+Optional fields: workflow_id, priority, condition (JSONLogic), description, tags, continue_on_error
+
+Built-in Task Functions:
+  parse_json    Parse raw input into a named variable
+  map           Transform data using JSONLogic expressions
+  filter        Continue pipeline only if condition is true
+  validation    Validate data with JSONLogic rules
+  http_call     Call an external HTTP API via a connector
+  channel_call  Invoke another channel's workflow in-process
+  log           Emit a structured log entry
+  publish_json  Serialize data to JSON string output
+  publish_xml   Serialize data to XML string output
+  publish_kafka Publish to a Kafka topic via a connector
+
+Examples:
+  orion-cli workflows create -f workflow.json
+  orion-cli workflows create -d '{"name":"my-wf","tasks":[...]}'
+  orion-cli workflows create --id custom-id -f workflow.json
+  cat workflow.json | orion-cli workflows create --stdin

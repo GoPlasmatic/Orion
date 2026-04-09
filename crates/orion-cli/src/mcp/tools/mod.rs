@@ -1,3 +1,5 @@
+pub mod audit_logs;
+pub mod backups;
 pub mod channels;
 pub mod circuit_breakers;
 pub mod connectors;
