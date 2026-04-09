@@ -52,7 +52,7 @@ redis = { version = "0.27", default-features = false, features = ["tokio-comp", 
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # TLS support
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 
 # OpenTelemetry
 opentelemetry = { version = "0.28", default-features = false, features = ["trace"] }
@@ -67,5 +67,5 @@ socket2 = "0.5"
 strip = true
 
 [dev-dependencies]
-testcontainers = "0.23"
-testcontainers-modules = { version = "0.11", features = ["kafka"] }
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["kafka"] }

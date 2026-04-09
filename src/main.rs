@@ -558,6 +558,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await?;
 
+        let bind_addr: std::net::SocketAddr = addr.parse()?;
         let handle = axum_server::Handle::new();
         let shutdown_handle = handle.clone();
         let drain_secs = config.server.shutdown_drain_secs;
@@ -573,7 +574,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "Orion is ready (HTTPS)"
         );
 
-        axum_server::bind_rustls(addr.parse()?, rustls_config)
+        axum_server::bind_rustls(bind_addr, rustls_config)
             .handle(handle)
             .serve(router.into_make_service())
             .await?;
