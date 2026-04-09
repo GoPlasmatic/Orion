@@ -1,0 +1,22 @@
+[book]
+title = "Orion Documentation"
+description = "The declarative services runtime for the AI era"
+authors = ["Plasmatic"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = true
+
+[output.html]
+additional-css = ["css/custom.css"]
+additional-js = ["js/extra.js"]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/GoPlasmatic/Orion"
+edit-url-template = "https://github.com/GoPlasmatic/Orion/edit/main/docs/{path}"
+
+[output.html.fold]
+enable = true
+level = 0
