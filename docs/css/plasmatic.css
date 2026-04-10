@@ -1,0 +1,673 @@
+/* ============================================================
+   Plasmatic Design System — mdBook Theme Override
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700;800&family=Inter:wght@400;700&family=DM+Sans:ital,wght@0,400;0,500;0,700;1,400&family=DM+Mono:wght@400;500&display=swap');
+
+/* ── Global root overrides ── */
+:root {
+  --content-max-width: 920px;
+  --mono-font: "DM Mono", "Source Code Pro", Consolas, "Ubuntu Mono", Menlo, monospace;
+  --code-font-size: 0.8125em;
+}
+
+/* ============================================================
+   Navy Theme → Plasmatic Dark
+   ============================================================ */
+.navy {
+  /* ── Backgrounds ── */
+  --bg: #07111A;
+  --sidebar-bg: #0B1925;
+  --theme-popup-bg: #0F2030;
+
+  /* ── Foreground / Text ── */
+  --fg: #ECF4F8;
+  --sidebar-fg: #7FAFC0;
+  --sidebar-non-existant: #3D6B7D;
+  --sidebar-active: #119FCD;
+  --sidebar-spacer: #063B4C;
+
+  --scrollbar: #3D6B7D;
+
+  /* ── Icons ── */
+  --icons: #7FAFC0;
+  --icons-hover: #ECF4F8;
+
+  /* ── Links ── */
+  --links: #119FCD;
+
+  /* ── Inline code ── */
+  --inline-code-color: #7DD3FC;
+
+  /* ── Theme popup ── */
+  --theme-popup-border: #3D6B7D;
+  --theme-hover: #152839;
+
+  /* ── Blockquotes ── */
+  --quote-bg: #0F2030;
+  --quote-border: #063B4C;
+
+  /* ── Warning ── */
+  --warning-border: #FFD167;
+
+  /* ── Tables ── */
+  --table-border-color: #063B4C;
+  --table-header-bg: #0B1925;
+  --table-alternate-bg: #0B1925;
+
+  /* ── Search ── */
+  --searchbar-border-color: #3D6B7D;
+  --searchbar-bg: #0F2030;
+  --searchbar-fg: #ECF4F8;
+  --searchbar-shadow-color: rgba(17, 159, 205, 0.3);
+  --searchresults-header-fg: #7FAFC0;
+  --searchresults-border-color: #3D6B7D;
+  --searchresults-li-bg: #152839;
+  --search-mark-bg: rgba(17, 159, 205, 0.3);
+
+  /* ── Color scheme ── */
+  --color-scheme: dark;
+
+  /* ── Copy button ── */
+  --copy-button-filter: invert(72%) sepia(14%) saturate(785%) hue-rotate(155deg) brightness(91%) contrast(88%);
+  --copy-button-filter-hover: invert(52%) sepia(83%) saturate(524%) hue-rotate(155deg) brightness(96%) contrast(92%);
+
+  /* ── Misc ── */
+  --footnote-highlight: #119FCD;
+  --overlay-bg: rgba(7, 17, 26, 0.7);
+
+  /* ── Blockquote admonitions ── */
+  --blockquote-note-color: #119FCD;
+  --blockquote-tip-color: #4CBD97;
+  --blockquote-important-color: #7DD3FC;
+  --blockquote-warning-color: #FFD167;
+  --blockquote-caution-color: #EF476F;
+
+  /* ── Sidebar header ── */
+  --sidebar-header-border-color: #119FCD;
+}
+
+/* ============================================================
+   Light Theme → Plasmatic Light
+   ============================================================ */
+.light,
+html:not(.js) {
+  --bg: #F4F8FB;
+  --fg: #07111A;
+
+  --sidebar-bg: #E8F0F5;
+  --sidebar-fg: #07111A;
+  --sidebar-non-existant: #7FAFC0;
+  --sidebar-active: #0D7FA3;
+  --sidebar-spacer: #D0DFE8;
+
+  --scrollbar: #7FAFC0;
+
+  --icons: #3D6B7D;
+  --icons-hover: #07111A;
+
+  --links: #0D7FA3;
+
+  --inline-code-color: #0B5E7D;
+
+  --theme-popup-bg: #F4F8FB;
+  --theme-popup-border: #B0CDD8;
+  --theme-hover: #E0EBF0;
+
+  --quote-bg: #E8F0F5;
+  --quote-border: #B0CDD8;
+
+  --warning-border: #D4A520;
+
+  --table-border-color: #D0DFE8;
+  --table-header-bg: #D0DFE8;
+  --table-alternate-bg: #EDF3F7;
+
+  --searchbar-border-color: #B0CDD8;
+  --searchbar-bg: #FFFFFF;
+  --searchbar-fg: #07111A;
+  --searchbar-shadow-color: rgba(17, 159, 205, 0.25);
+  --searchresults-header-fg: #3D6B7D;
+  --searchresults-border-color: #B0CDD8;
+  --searchresults-li-bg: #E0EBF0;
+  --search-mark-bg: rgba(17, 159, 205, 0.2);
+
+  --color-scheme: light;
+
+  --copy-button-filter: invert(40%) sepia(15%) saturate(700%) hue-rotate(155deg) brightness(85%) contrast(90%);
+  --copy-button-filter-hover: invert(35%) sepia(70%) saturate(600%) hue-rotate(160deg) brightness(90%) contrast(90%);
+
+  --footnote-highlight: #119FCD;
+  --overlay-bg: rgba(200, 215, 225, 0.5);
+
+  --blockquote-note-color: #0D7FA3;
+  --blockquote-tip-color: #2E9A74;
+  --blockquote-important-color: #0B5E7D;
+  --blockquote-warning-color: #D4A520;
+  --blockquote-caution-color: #D03555;
+
+  --sidebar-header-border-color: #0D7FA3;
+}
+
+/* no-JS dark fallback */
+@media (prefers-color-scheme: dark) {
+  html:not(.js) {
+    --bg: #07111A;
+    --fg: #ECF4F8;
+    --sidebar-bg: #0B1925;
+    --sidebar-fg: #7FAFC0;
+    --sidebar-non-existant: #3D6B7D;
+    --sidebar-active: #119FCD;
+    --sidebar-spacer: #063B4C;
+    --scrollbar: #3D6B7D;
+    --icons: #7FAFC0;
+    --icons-hover: #ECF4F8;
+    --links: #119FCD;
+    --inline-code-color: #7DD3FC;
+    --theme-popup-bg: #0F2030;
+    --theme-popup-border: #3D6B7D;
+    --theme-hover: #152839;
+    --quote-bg: #0F2030;
+    --quote-border: #063B4C;
+    --warning-border: #FFD167;
+    --table-border-color: #063B4C;
+    --table-header-bg: #0B1925;
+    --table-alternate-bg: #0B1925;
+    --searchbar-border-color: #3D6B7D;
+    --searchbar-bg: #0F2030;
+    --searchbar-fg: #ECF4F8;
+    --searchbar-shadow-color: rgba(17, 159, 205, 0.3);
+    --searchresults-header-fg: #7FAFC0;
+    --searchresults-border-color: #3D6B7D;
+    --searchresults-li-bg: #152839;
+    --search-mark-bg: rgba(17, 159, 205, 0.3);
+    --color-scheme: dark;
+    --footnote-highlight: #119FCD;
+    --overlay-bg: rgba(7, 17, 26, 0.7);
+    --blockquote-note-color: #119FCD;
+    --blockquote-tip-color: #4CBD97;
+    --blockquote-important-color: #7DD3FC;
+    --blockquote-warning-color: #FFD167;
+    --blockquote-caution-color: #EF476F;
+    --sidebar-header-border-color: #119FCD;
+  }
+}
+
+/* ============================================================
+   Typography
+   ============================================================ */
+html {
+  font-family: "DM Sans", "Open Sans", sans-serif;
+}
+
+/* Headings */
+.content main h1 {
+  font-family: "Montserrat", sans-serif;
+  font-weight: 800;
+  font-size: 2.8em;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+
+.content main h2 {
+  font-family: "Montserrat", sans-serif;
+  font-weight: 800;
+  font-size: 1.8em;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.content main h3 {
+  font-family: "Montserrat", sans-serif;
+  font-weight: 800;
+  font-size: 1.4em;
+  line-height: 1.3;
+}
+
+.content main h4 {
+  font-family: "Montserrat", sans-serif;
+  font-weight: 800;
+  font-size: 1.15em;
+  line-height: 1.4;
+}
+
+.content main h5,
+.content main h6 {
+  font-family: "Montserrat", sans-serif;
+  font-weight: 700;
+}
+
+/* Menu title */
+.menu-title {
+  font-family: "Inter", sans-serif;
+  font-weight: 700;
+}
+
+/* Sidebar */
+.sidebar,
+.sidebar-iframe-inner {
+  font-family: "DM Sans", sans-serif;
+}
+
+/* Code */
+code, pre code {
+  font-family: "DM Mono", var(--mono-font) !important;
+}
+
+/* ============================================================
+   Syntax Highlighting — Plasmatic Dark (navy)
+   ============================================================ */
+.navy .hljs {
+  background: #0F2030;
+  color: #ECF4F8;
+}
+
+/* Comments */
+.navy .hljs-comment,
+.navy .hljs-quote {
+  color: #3D6B7D;
+}
+
+/* Strings */
+.navy .hljs-string,
+.navy .hljs-symbol,
+.navy .hljs-bullet,
+.navy .hljs-value,
+.navy .hljs-inheritance,
+.navy .hljs-header,
+.navy .ruby .hljs-symbol,
+.navy .xml .hljs-cdata {
+  color: #FFD167;
+}
+
+/* Keywords */
+.navy .hljs-keyword,
+.navy .hljs-selector-tag,
+.navy .javascript .hljs-function {
+  color: #119FCD;
+}
+
+/* Variables, attributes, tags */
+.navy .hljs-variable,
+.navy .hljs-template-variable,
+.navy .hljs-attribute,
+.navy .hljs-attr,
+.navy .hljs-tag,
+.navy .hljs-regexp,
+.navy .hljs-link,
+.navy .hljs-name,
+.navy .hljs-selector-id,
+.navy .hljs-selector-class {
+  color: #7DD3FC;
+}
+
+/* Numbers, literals, built-ins */
+.navy .hljs-number,
+.navy .hljs-meta,
+.navy .hljs-built_in,
+.navy .hljs-builtin-name,
+.navy .hljs-literal,
+.navy .hljs-type,
+.navy .hljs-params,
+.navy .hljs-preprocessor,
+.navy .hljs-pragma,
+.navy .hljs-constant {
+  color: #4CBD97;
+}
+
+/* Function / section titles */
+.navy .hljs-title,
+.navy .hljs-section {
+  color: #7DD3FC;
+}
+
+/* Diff additions / deletions */
+.navy .hljs-addition {
+  color: #4CBD97;
+}
+
+.navy .hljs-deletion {
+  color: #EF476F;
+}
+
+/* ============================================================
+   Code Block Containers
+   ============================================================ */
+.navy pre {
+  background-color: #0F2030;
+  border: 1px solid rgba(17, 159, 205, 0.1);
+  border-radius: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Copy button — always visible (mdBook hides until hover by default) */
+pre > .buttons {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* Light theme code blocks */
+.light pre {
+  background-color: #E8F0F5;
+  border: 1px solid #D0DFE8;
+  border-radius: 8px;
+}
+
+/* ============================================================
+   Tables
+   ============================================================ */
+.navy table {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #063B4C;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.navy table thead {
+  background: #0B1925;
+}
+
+.navy table thead th {
+  font-family: "DM Sans", sans-serif;
+  font-weight: 700;
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #7FAFC0;
+  padding: 12px 20px;
+  border-bottom: 1px solid #063B4C;
+}
+
+.navy table td {
+  padding: 10px 20px;
+  border-bottom: 1px solid rgba(6, 59, 76, 0.5);
+}
+
+.navy table tbody tr:nth-child(2n) {
+  background: rgba(11, 25, 37, 0.5);
+}
+
+/* ============================================================
+   Blockquotes
+   ============================================================ */
+.navy blockquote {
+  background-color: #0F2030;
+  border: 1px solid rgba(17, 159, 205, 0.1);
+  border-radius: 8px;
+  border-left: 4px solid #119FCD;
+  padding: 16px 20px;
+}
+
+.light blockquote {
+  background-color: #E8F0F5;
+  border: 1px solid #D0DFE8;
+  border-radius: 8px;
+  border-left: 4px solid #0D7FA3;
+  padding: 16px 20px;
+}
+
+/* ============================================================
+   Sidebar
+   ============================================================ */
+
+/* Sidebar logo (injected via extra.js) */
+.sidebar-logo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-decoration: none;
+  padding: 16px 0 16px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--sidebar-spacer);
+  transition: opacity 0.15s ease;
+}
+
+.sidebar-logo:hover {
+  opacity: 0.85;
+  text-decoration: none;
+}
+
+.sidebar-logo img {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.sidebar-logo span {
+  font-family: "Inter", sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.06em;
+}
+
+.navy .sidebar-logo span {
+  color: #ECF4F8;
+}
+
+.light .sidebar-logo span {
+  color: #07111A;
+}
+
+.navy .sidebar {
+  border-right: 1px solid #063B4C;
+}
+
+.navy .chapter li.part-title {
+  color: #ECF4F8;
+  font-family: "Inter", sans-serif;
+  font-weight: 700;
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 16px;
+}
+
+.navy .chapter li a {
+  color: #7FAFC0;
+  transition: color 0.15s ease, background-color 0.15s ease;
+  border-radius: 4px;
+}
+
+.navy .chapter li a:hover {
+  color: #ECF4F8;
+  background-color: rgba(17, 159, 205, 0.08);
+}
+
+.navy .chapter li.chapter-item a.active {
+  color: #119FCD;
+  background-color: rgba(17, 159, 205, 0.12);
+}
+
+/* Light sidebar */
+.light .sidebar {
+  border-right: 1px solid #D0DFE8;
+}
+
+.light .chapter li.part-title {
+  color: #07111A;
+  font-family: "Inter", sans-serif;
+  font-weight: 700;
+  font-size: 0.75em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ============================================================
+   Theme Toggle — replace multi-theme picker with dark/light toggle
+   ============================================================ */
+#mdbook-theme-toggle {
+  display: none;
+}
+
+.theme-popup {
+  display: none !important;
+}
+
+#plasmatic-theme-toggle {
+  cursor: pointer;
+  color: var(--icons);
+  background: none;
+  border: none;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  transition: color 0.15s ease;
+}
+
+#plasmatic-theme-toggle:hover {
+  color: var(--icons-hover);
+}
+
+#plasmatic-theme-toggle svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+}
+
+/* ============================================================
+   Menu Bar
+   ============================================================ */
+.navy #mdbook-menu-bar {
+  background-color: rgba(7, 17, 26, 0.95);
+  border-bottom-color: rgba(6, 59, 76, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.navy #mdbook-menu-bar.bordered {
+  border-bottom-color: #063B4C;
+}
+
+.light #mdbook-menu-bar {
+  background-color: rgba(244, 248, 251, 0.95);
+  border-bottom-color: #D0DFE8;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* ============================================================
+   Search Bar
+   ============================================================ */
+.navy #mdbook-searchbar {
+  border-radius: 8px;
+}
+
+.navy #mdbook-searchbar:focus,
+.navy #mdbook-searchbar.active {
+  border-color: #119FCD;
+  box-shadow: 0 0 0 3px rgba(17, 159, 205, 0.2);
+}
+
+.navy #mdbook-searchbar::placeholder {
+  color: #3D6B7D;
+}
+
+/* ============================================================
+   Links
+   ============================================================ */
+.navy .content a:link,
+.navy .content a:visited {
+  color: #119FCD;
+  transition: color 0.15s ease;
+}
+
+.navy .content a:hover {
+  color: #4CBD97;
+}
+
+/* ============================================================
+   Inline Code
+   ============================================================ */
+.navy :not(pre) > code {
+  background-color: #152839;
+  border-radius: 6px;
+  padding: 0.15em 0.4em;
+  border: 1px solid rgba(6, 59, 76, 0.6);
+}
+
+.light :not(pre) > code {
+  background-color: #E0EBF0;
+  border-radius: 6px;
+  padding: 0.15em 0.4em;
+  border: 1px solid #D0DFE8;
+}
+
+/* ============================================================
+   Scrollbar
+   ============================================================ */
+.navy ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.navy ::-webkit-scrollbar-track {
+  background: #07111A;
+}
+
+.navy ::-webkit-scrollbar-thumb {
+  background: #3D6B7D;
+  border-radius: 4px;
+}
+
+.navy ::-webkit-scrollbar-thumb:hover {
+  background: #7FAFC0;
+}
+
+/* ============================================================
+   Selection
+   ============================================================ */
+.navy ::selection {
+  background-color: rgba(17, 159, 205, 0.3);
+  color: #ECF4F8;
+}
+
+.light ::selection {
+  background-color: rgba(13, 127, 163, 0.2);
+  color: #07111A;
+}
+
+/* ============================================================
+   Hero Logo (introduction page)
+   ============================================================ */
+.hero-logo {
+  text-align: center;
+  padding: 48px 0 32px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--sidebar-spacer, #063B4C);
+}
+
+.hero-logo img {
+  width: 120px;
+  height: 120px;
+  border-radius: 16px;
+  margin-bottom: 16px;
+}
+
+.hero-logo h1 {
+  font-family: "Montserrat", sans-serif;
+  font-weight: 800;
+  font-size: 3em;
+  margin: 0;
+  letter-spacing: -0.02em;
+  background: linear-gradient(135deg, #119FCD, #4CBD97);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.hero-logo p {
+  font-family: "DM Sans", sans-serif;
+  font-size: 1.15em;
+  margin: 8px 0 0;
+}
+
+.navy .hero-logo p {
+  color: #7FAFC0;
+}
+
+.light .hero-logo p {
+  color: #3D6B7D;
+}

@@ -1,4 +1,8 @@
-# Introduction
+<div class="hero-logo">
+  <img src="images/plasmatic-logo.png" alt="Plasmatic Logo">
+  <h1>Orion</h1>
+  <p>The declarative services runtime for the AI era</p>
+</div>
 
 **Orion** is a declarative services runtime written in Rust. Instead of writing, deploying, and operating a microservice for every piece of business logic, you **declare** what the service should do — and Orion runs it. Architectural governance — observability, rate limiting, circuit breakers, versioning, input validation, and more — is built in.
 

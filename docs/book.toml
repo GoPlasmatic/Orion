@@ -10,9 +10,9 @@ build-dir = "book"
 create-missing = true
 
 [output.html]
-additional-css = ["css/custom.css"]
+additional-css = ["css/plasmatic.css", "css/custom.css"]
 additional-js = ["js/extra.js"]
-default-theme = "light"
+default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/GoPlasmatic/Orion"
 edit-url-template = "https://github.com/GoPlasmatic/Orion/edit/main/docs/{path}"
