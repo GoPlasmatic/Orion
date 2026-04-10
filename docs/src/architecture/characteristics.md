@@ -92,13 +92,13 @@ Orion provides production-grade capabilities across eight architectural dimensio
     || document.documentElement.classList.contains('navy')
     || document.documentElement.classList.contains('ayu');
 
-  var TYPE_COLORS = { C: '#e17055', S: '#6c5ce7', B: '#00b894' };
+  var TYPE_COLORS = { C: '#119FCD', S: '#4CBD97', B: '#FFD167' };
 
   /* ═══ DATA — inlined from original features.json with doc links ═══ */
   var categories = [
     {
       name: 'Observability', type: 'S',
-      color: isDark ? '#2a4858' : '#81ECEC', border: '#00CEC9',
+      color: isDark ? '#102838' : '#D0EBF5', border: '#119FCD',
       children: [
         { name: 'Structured Logging', link: '../features/observability.html#structured-logging',
           children: ['JSON & pretty-print formats', 'Configurable log levels', 'Per-request context', 'Per-crate filtering'] },
@@ -112,7 +112,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
     },
     {
       name: 'Resilience', type: 'S',
-      color: isDark ? '#3e2a5e' : '#A29BFE', border: '#6C5CE7',
+      color: isDark ? '#0F2238' : '#D5EDF8', border: '#7DD3FC',
       children: [
         { name: 'Circuit Breakers', link: '../features/resilience.html#circuit-breakers',
           children: ['Lock-free state machine', 'Per-connector isolation', 'Auto-recovery after cooldown', 'Admin API to inspect & reset'] },
@@ -126,7 +126,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
     },
     {
       name: 'Security', type: 'B',
-      color: isDark ? '#5e2a2a' : '#FF7675', border: '#D63031',
+      color: isDark ? '#251520' : '#F5D5DD', border: '#EF476F',
       children: [
         { name: 'Secret Management', link: '../features/security.html#secret-management',
           children: ['Auto-masked API responses', 'Credential isolation via connectors'] },
@@ -142,7 +142,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
     },
     {
       name: 'Scalability', type: 'C',
-      color: isDark ? '#1e3a5f' : '#74B9FF', border: '#0984E3',
+      color: isDark ? '#0F2530' : '#CCE8F0', border: '#119FCD',
       children: [
         { name: 'Rate Limiting', link: '../features/scalability.html#rate-limiting',
           children: ['Token bucket algorithm', 'Per-client keying via JSONLogic', 'Platform & per-channel limits'] },
@@ -156,7 +156,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
     },
     {
       name: 'Deployability', type: 'C',
-      color: isDark ? '#5e4e1a' : '#FFEAA7', border: '#FDCB6E',
+      color: isDark ? '#201E10' : '#F5EDD0', border: '#FFD167',
       children: [
         { name: 'Packaging', link: '../features/deployability.html#packaging',
           children: ['Single binary', 'SQLite, PostgreSQL, MySQL', 'Minimal footprint'] },
@@ -170,7 +170,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
     },
     {
       name: 'Extensibility', type: 'S',
-      color: isDark ? '#4a3a1a' : '#FDCB6E', border: '#E17055',
+      color: isDark ? '#0F2822' : '#D0F0E5', border: '#4CBD97',
       children: [
         { name: 'Connectors', link: '../features/extensibility.html#connectors',
           children: ['HTTP & Webhooks', 'Kafka pub/sub', 'Database (SQL)', 'Cache (Memory & Redis)', 'Storage (S3/GCS)', 'MongoDB (NoSQL)'] },
@@ -182,7 +182,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
     },
     {
       name: 'Availability', type: 'C',
-      color: isDark ? '#1a4731' : '#55EFC4', border: '#00B894',
+      color: isDark ? '#102520' : '#D0EDE5', border: '#4CBD97',
       children: [
         { name: 'Hot-Reload', link: '../features/availability.html#hot-reload',
           children: ['Zero-downtime engine swap', 'Channel registry rebuild', 'Kafka consumer restart'] },
@@ -196,7 +196,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
     },
     {
       name: 'Maintainability', type: 'B',
-      color: isDark ? '#3e2a5e' : '#DDA0DD', border: '#BA68C8',
+      color: isDark ? '#151E28' : '#D8E5ED', border: '#7FAFC0',
       children: [
         { name: 'Admin APIs', link: '../features/maintainability.html#admin-apis',
           children: ['Full CRUD for all entities', 'Version management', 'Engine control', 'OpenAPI / Swagger UI'] },
@@ -322,7 +322,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
     var lS = gLinks.selectAll('.mm-link').data(links, function (d) { return d._id; });
     tr(lS.exit()).attr('opacity', 0).remove();
     var lE = lS.enter().append('path').attr('class', 'mm-link').attr('opacity', 0)
-      .attr('fill', 'none').attr('stroke', isDark ? '#585b70' : '#b2bec3')
+      .attr('fill', 'none').attr('stroke', isDark ? '#3D6B7D' : '#7FAFC0')
       .attr('stroke-width', 1.8).attr('stroke-linecap', 'round')
       .attr('d', function () { return linkH({ source: [0, 0], target: [0, 0] }); });
     tr(lE.merge(lS))
@@ -337,7 +337,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
     var bA = bE.merge(bS);
     bA.each(function (d) {
       var el = d3.select(this), col = TYPE_COLORS[d.type] || '#999';
-      el.select('circle').attr('r', 10).attr('fill', isDark ? '#1e1e2e' : '#fff').attr('stroke', col).attr('stroke-width', 1.5).attr('stroke-dasharray', '3 2');
+      el.select('circle').attr('r', 10).attr('fill', isDark ? '#07111A' : '#F4F8FB').attr('stroke', col).attr('stroke-width', 1.5).attr('stroke-dasharray', '3 2');
       el.select('text').attr('font-size', 8).attr('font-weight', 700).attr('fill', col).attr('font-family', "'Inter',system-ui,sans-serif").text(d.type);
     });
     tr(bA).attr('transform', function (d) { return 'translate(' + d.x + ',' + d.y + ')'; }).attr('opacity', 1);
@@ -357,7 +357,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
       var L = d.lvl;
       var fs = [15, 12, 10.5, 9.5][L];
       var fw = [700, 700, 600, 500][L];
-      var tc = L === 0 ? '#fff' : (isDark ? '#cdd6f4' : '#2d3436');
+      var tc = L === 0 ? '#ECF4F8' : (isDark ? '#ECF4F8' : '#07111A');
       var txt = el.select('text:not(.expand-hint)').attr('font-size', fs).attr('font-weight', fw).attr('fill', tc)
         .attr('font-family', "'Inter',system-ui,sans-serif").text(d.name);
       var tw = txt.node().getComputedTextLength();
@@ -382,7 +382,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
       }
 
       var fill, stroke;
-      if (L === 0) { fill = '#6C5CE7'; stroke = '#5A4BD1'; }
+      if (L === 0) { fill = '#119FCD'; stroke = '#0D7FA3'; }
       else if (L === 1) { fill = d.color; stroke = d.border; }
       else if (L === 2) { fill = isDark ? blendDark(d.color, 0.3) : blendWhite(d.color, 0.6); stroke = d.border; }
       else { fill = isDark ? blendDark(d.color, 0.5) : blendWhite(d.color, 0.78); stroke = d.border; }
@@ -401,7 +401,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
         hint.attr('x', isLeft ? -rw / 2 - 4 : rw / 2 + 4).attr('y', 1)
           .attr('text-anchor', isLeft ? 'end' : 'start')
           .attr('font-size', 12).attr('font-weight', 600)
-          .attr('fill', d.border || (isDark ? '#585b70' : '#b2bec3'))
+          .attr('fill', d.border || (isDark ? '#3D6B7D' : '#7FAFC0'))
           .attr('font-family', "'Inter',system-ui,sans-serif")
           .text(isLeft ? '\u2039' : '\u203a').attr('opacity', 0.7);
       } else {
