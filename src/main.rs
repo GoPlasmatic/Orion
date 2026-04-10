@@ -16,7 +16,7 @@ use orion::storage::repositories::workflows::{SqlWorkflowRepository, WorkflowRep
 
 #[derive(Parser)]
 #[command(
-    name = "orion",
+    name = "orion-server",
     version,
     long_version = concat!(
         env!("CARGO_PKG_VERSION"),
@@ -30,11 +30,11 @@ use orion::storage::repositories::workflows::{SqlWorkflowRepository, WorkflowRep
         Ships as a single binary with an embedded SQLite database.",
     after_help = "\
 EXAMPLES:\n    \
-    orion                              Start with default config\n    \
-    orion -c config.toml               Start with a config file\n    \
-    orion validate-config              Validate config and show summary\n    \
-    orion -c config.toml migrate       Run pending database migrations\n    \
-    orion migrate --dry-run            Preview pending migrations\n\n\
+    orion-server                              Start with default config\n    \
+    orion-server -c config.toml               Start with a config file\n    \
+    orion-server validate-config              Validate config and show summary\n    \
+    orion-server -c config.toml migrate       Run pending database migrations\n    \
+    orion-server migrate --dry-run            Preview pending migrations\n\n\
 ENVIRONMENT VARIABLES:\n    \
     All settings can be overridden via ORION_SECTION__KEY env vars:\n\n    \
     ORION_SERVER__PORT=9090            Override server port\n    \

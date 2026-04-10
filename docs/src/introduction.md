@@ -48,7 +48,7 @@ No code. No Dockerfile. No CI pipeline.
 **1. Start Orion**
 
 ```bash
-brew install GoPlasmatic/tap/orion   # or: curl installer, cargo install
+brew install GoPlasmatic/tap/orion-server   # or: curl installer, cargo install
 orion-server
 ```
 

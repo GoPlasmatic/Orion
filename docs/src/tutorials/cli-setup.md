@@ -9,19 +9,19 @@ Choose your preferred method:
 **Homebrew** (macOS and Linux):
 
 ```bash
-brew install GoPlasmatic/tap/orion
+brew install GoPlasmatic/tap/orion-server
 ```
 
 **Shell installer** (Linux/macOS):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GoPlasmatic/Orion/main/install.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh
 ```
 
 **PowerShell** (Windows):
 
 ```powershell
-irm https://raw.githubusercontent.com/GoPlasmatic/Orion/main/install.ps1 | iex
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.ps1 | iex"
 ```
 
 **Docker:**
@@ -144,7 +144,8 @@ curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/hello-world/status
 curl -s -X POST http://localhost:8080/api/v1/admin/channels \
   -H "Content-Type: application/json" \
   -d '{ "channel_id": "hello", "name": "hello", "channel_type": "sync",
-        "protocol": "http", "workflow_id": "hello-world" }'
+        "protocol": "rest", "route_pattern": "/hello",
+        "methods": ["POST"], "workflow_id": "hello-world" }'
 
 curl -s -X PATCH http://localhost:8080/api/v1/admin/channels/hello/status \
   -H "Content-Type: application/json" -d '{"status": "active"}'
@@ -165,6 +166,46 @@ curl -s -X POST http://localhost:8080/api/v1/data/hello \
   "errors": []
 }
 ```
+
+## Orion CLI
+
+The [Orion CLI](https://github.com/GoPlasmatic/Orion-cli) provides a command-line interface and MCP server for managing Orion — no curl commands needed.
+
+**Homebrew** (macOS and Linux):
+
+```bash
+brew install GoPlasmatic/tap/orion-cli
+```
+
+**Shell installer** (Linux/macOS):
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.sh | sh
+```
+
+**PowerShell** (Windows):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.ps1 | iex"
+```
+
+**From source** (requires Rust 1.85+):
+
+```bash
+cargo install --git https://github.com/GoPlasmatic/Orion-cli
+```
+
+**Usage:**
+
+```bash
+orion-cli config set-server http://localhost:8080
+orion-cli health
+orion-cli workflows list
+orion-cli channels list
+orion-cli send hello -d '{ "data": { "name": "World" } }'
+```
+
+See the [CLI reference](https://github.com/GoPlasmatic/Orion-cli) for the full command list, or set up the [MCP Server](./mcp-setup.md) for AI assistant integration.
 
 ## Next Steps
 

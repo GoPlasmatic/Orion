@@ -40,7 +40,7 @@ No code. No Dockerfile. No CI pipeline. Just a running service.
 **1. Start Orion**
 
 ```bash
-brew install GoPlasmatic/tap/orion   # or: curl installer, cargo install (see Install)
+brew install GoPlasmatic/tap/orion-server   # or: curl installer, cargo install (see Install)
 orion-server
 ```
 
@@ -388,13 +388,13 @@ docker run -p 8080:8080 ghcr.io/goplasmatic/orion:latest
 docker compose up  # uses docker-compose.yml from this repo
 
 # macOS (Homebrew)
-brew install GoPlasmatic/tap/orion
+brew install GoPlasmatic/tap/orion-server
 
 # macOS / Linux (shell installer)
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh
 
 # Windows (PowerShell)
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.ps1 | iex"
 
 # From crates.io
 cargo install orion-server
@@ -411,13 +411,15 @@ Manage workflows, channels, and connectors without writing curl commands:
 
 ```bash
 # Install
-cargo install --git https://github.com/GoPlasmatic/Orion-cli.git
+brew install GoPlasmatic/tap/orion-cli                # Homebrew
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.sh | sh  # Shell installer
+cargo install --git https://github.com/GoPlasmatic/Orion-cli.git  # From source
 
 # Deploy a workflow from a JSON file
-orion-cli workflow create -f order-processing.json
-orion-cli workflow activate high-value-order
-orion-cli channel create -f orders-channel.json
-orion-cli channel activate orders
+orion-cli workflows create -f order-processing.json
+orion-cli --yes workflows activate high-value-order
+orion-cli channels create -f orders-channel.json
+orion-cli --yes channels activate orders
 ```
 
 See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full command list.

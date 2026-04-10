@@ -17,10 +17,10 @@ Add the Orion MCP server to your MCP client configuration.
 {
   "mcpServers": {
     "orion": {
-      "command": "orion-server",
-      "args": ["mcp"],
+      "command": "orion-cli",
+      "args": ["mcp", "serve"],
       "env": {
-        "ORION_URL": "http://localhost:8080"
+        "ORION_SERVER_URL": "http://localhost:8080"
       }
     }
   }
@@ -33,10 +33,10 @@ Add the Orion MCP server to your MCP client configuration.
 {
   "mcpServers": {
     "orion": {
-      "command": "orion-server",
-      "args": ["mcp"],
+      "command": "orion-cli",
+      "args": ["mcp", "serve"],
       "env": {
-        "ORION_URL": "http://localhost:8080"
+        "ORION_SERVER_URL": "http://localhost:8080"
       }
     }
   }
@@ -48,7 +48,7 @@ If admin authentication is enabled on your Orion instance, include the API key:
 ```json
 {
   "env": {
-    "ORION_URL": "http://localhost:8080",
+    "ORION_SERVER_URL": "http://localhost:8080",
     "ORION_API_KEY": "your-secret-key"
   }
 }
@@ -95,8 +95,8 @@ The AI assistant will use the MCP tools to:
 
 **MCP server not connecting:**
 - Verify Orion is running: `curl http://localhost:8080/health`
-- Check the `ORION_URL` environment variable is set correctly
-- Ensure `orion-server` is in your PATH
+- Check the `ORION_SERVER_URL` environment variable is set correctly
+- Ensure `orion-cli` is in your PATH
 
 **Authentication errors:**
 - Verify `ORION_API_KEY` matches your Orion instance's `admin_auth.api_key`
