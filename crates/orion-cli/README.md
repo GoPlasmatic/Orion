@@ -19,7 +19,7 @@
 **1. Install the CLI:**
 
 ```bash
-cargo install --git https://github.com/GoPlasmatic/Orion-cli.git
+brew install GoPlasmatic/tap/orion-cli   # or: curl installer, cargo install (see Install)
 ```
 
 **2. Point it at your [Orion server](https://github.com/GoPlasmatic/Orion):**
@@ -399,11 +399,26 @@ orion-cli completions fish > ~/.config/fish/completions/orion-cli.fish
 ## Install
 
 ```bash
+# Docker (MCP server mode)
+docker run -p 8081:8081 ghcr.io/goplasmatic/orion-cli:latest mcp serve --http
+
+# macOS (Homebrew)
+brew install GoPlasmatic/tap/orion-cli
+
+# macOS / Linux (shell installer)
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.ps1 | iex"
+
+# From crates.io
+cargo install orion-cli
+
 # From source
 cargo install --git https://github.com/GoPlasmatic/Orion-cli.git
 ```
 
-Requires Rust 1.85+.
+Verify with `orion-cli --version`. Requires Rust 1.85+ for source builds.
 
 ---
 

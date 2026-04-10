@@ -19,6 +19,11 @@ use output::OutputFormat;
 #[command(
     name = "orion-cli",
     version,
+    long_version = concat!(
+        env!("CARGO_PKG_VERSION"),
+        "\ngit hash:  ", env!("GIT_HASH"),
+        "\nbuilt:     ", env!("BUILD_TIMESTAMP"),
+    ),
     about = "CLI tool for the Orion services runtime",
     long_about = "CLI tool for the Orion services runtime.\n\n\
         Manage workflows, channels, connectors, data processing, traces, and engine \
