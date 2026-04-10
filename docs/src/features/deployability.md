@@ -98,19 +98,19 @@ Orion is available through multiple installation methods:
 **Homebrew** (macOS and Linux):
 
 ```bash
-brew install GoPlasmatic/tap/orion
+brew install GoPlasmatic/tap/orion-server
 ```
 
 **Shell installer** (Linux/macOS):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/GoPlasmatic/Orion/main/install.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh
 ```
 
 **PowerShell installer** (Windows):
 
 ```powershell
-irm https://raw.githubusercontent.com/GoPlasmatic/Orion/main/install.ps1 | iex
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.ps1 | iex"
 ```
 
 **Docker:**
