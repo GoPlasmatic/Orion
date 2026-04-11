@@ -143,12 +143,12 @@ Every channel gets production-grade features without writing a line of code:
 
 ## Performance
 
-**100K+ requests/sec** on a single instance (Apple M2 Pro, release build, 50 concurrent connections):
+**7K+ workflow requests/sec** on a single instance (Apple M2 Pro, release build, 50 concurrent connections):
 
 | Scenario | Req/sec | Avg Latency | P99 Latency |
 |----------|--------:|------------:|------------:|
-| Simple workflow (1 task) | 100,882 | 1.50 ms | 1.30 ms |
-| Complex workflow (5 tasks) | 85,768 | 1.50 ms | 1.60 ms |
-| 12 workflows on one channel | 90,023 | 1.50 ms | 1.60 ms |
+| Simple workflow (1 task) | 7,417 | 6.70 ms | 16.80 ms |
+| Complex workflow (4 tasks) | 7,044 | 7.00 ms | 23.50 ms |
+| 12 workflows on one channel | 6,894 | 7.20 ms | 17.30 ms |
 
 Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mode, async-first on Tokio.

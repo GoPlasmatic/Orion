@@ -132,7 +132,7 @@ port = $BENCH_PORT
 workers = 4
 
 [storage]
-path = "$BENCH_DB_PATH"
+url = "sqlite:$BENCH_DB_PATH"
 max_connections = 10
 
 [queue]
