@@ -141,7 +141,7 @@ async fn process_trace(
 
         let propagator = TraceContextPropagator::new();
         let cx = propagator.extract(&MapExtractor(&msg.trace_headers));
-        tracing::Span::current().set_parent(cx);
+        let _ = tracing::Span::current().set_parent(cx);
     }
 
     let trace_id = msg.trace_id;

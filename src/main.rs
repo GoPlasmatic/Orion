@@ -642,7 +642,7 @@ async fn serve_plain_http(
         context: format!("Failed to create socket for {addr}"),
         source: Box::new(e),
     })?;
-    socket.set_nodelay(true).ok();
+    socket.set_tcp_nodelay(true).ok();
     socket.set_reuse_address(true).ok();
     socket
         .bind(
