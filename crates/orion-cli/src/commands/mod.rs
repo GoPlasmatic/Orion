@@ -1,5 +1,6 @@
 pub mod audit_logs;
 pub mod backups;
+pub mod benchmark;
 pub mod channels;
 pub mod completions;
 pub mod config;
@@ -16,6 +17,10 @@ use clap::Subcommand;
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Run a performance benchmark against the Orion server
+    #[command(alias = "bench")]
+    Benchmark(benchmark::BenchmarkCmd),
+
     /// Manage CLI configuration (server URL, output format, API key)
     Config(config::ConfigCmd),
 

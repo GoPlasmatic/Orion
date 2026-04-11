@@ -1,0 +1,19 @@
+{
+    "name": "Bench Simple Log",
+    "channel": "bench",
+    "priority": 0,
+    "condition": true,
+    "tasks": [
+        {
+            "id": "log_input",
+            "name": "Log Input",
+            "function": {
+                "name": "log",
+                "input": {
+                    "level": "debug",
+                    "message": "benchmark message"
+                }
+            }
+        }
+    ]
+}
