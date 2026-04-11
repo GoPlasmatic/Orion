@@ -6,17 +6,17 @@ Services in Orion are composed from three building blocks:
 
 | Primitive | Role | Examples |
 |-----------|------|----------|
-| **Channel** | Service endpoint — sync (REST, HTTP) or async (Kafka) | `POST /orders`, `GET /users/{id}`, Kafka topic `order.placed` |
+| **Channel** | Service endpoint: sync (REST, HTTP) or async (Kafka) | `POST /orders`, `GET /users/{id}`, Kafka topic `order.placed` |
 | **Workflow** | Pipeline of tasks that defines what the service does | Parse → validate → enrich → transform → respond |
 | **Connector** | Named connection to an external system with auth and retries | Stripe API, PostgreSQL, Redis, Kafka cluster |
 
-Channels receive traffic. Workflows process it. Connectors reach out to external systems. Everything else — rate limiting, metrics, circuit breakers, versioning — is handled by the platform.
+Channels receive traffic. Workflows process it. Connectors reach out to external systems. Everything else (rate limiting, metrics, circuit breakers, versioning) is handled by the platform.
 
 ## Deployment Topology
 
 ### Before Orion
 
-Every piece of business logic is its own service to build, deploy, and operate — each with its own infrastructure stack:
+Every piece of business logic is its own service to build, deploy, and operate, each with its own infrastructure stack:
 
 <div id="diagram-before" class="d3-diagram" style="height:700px"></div>
 
@@ -30,25 +30,25 @@ One Orion instance replaces all four:
 
 No API gateway needed. Governance is built in. One binary to deploy.
 
-**The best of both worlds:** each channel and workflow is independently versioned, testable, and deployable — the modularity of microservices with the operational simplicity of a monolith.
+**The best of both worlds:** each channel and workflow is independently versioned, testable, and deployable. The modularity of microservices with the operational simplicity of a monolith.
 
 ## Deploy Anywhere
 
 <div id="diagram-deploy" class="d3-diagram" style="height:280px"></div>
 
-Single binary. SQLite by default — no database to provision, no runtime dependencies. Need more scale? Swap to **PostgreSQL** or **MySQL** by changing `storage.url` — no rebuild needed.
+Single binary. SQLite by default, no database to provision, no runtime dependencies. Need more scale? Swap to **PostgreSQL** or **MySQL** by changing `storage.url`. No rebuild needed.
 
-Same channel definitions work in any topology — run everything in one instance, split channels across instances with include/exclude filters, or deploy as sidecars.
+Same channel definitions work in any topology: run everything in one instance, split channels across instances with include/exclude filters, or deploy as sidecars.
 
 ## Request Processing Flow
 
 <div id="diagram-flow" class="d3-diagram" style="height:200px"></div>
 
-1. **Route Resolution** — REST pattern matching finds the channel, or falls back to name lookup
-2. **Channel Registry** — enforces deduplication, rate limits, input validation, backpressure, and checks the response cache
-3. **Engine** — the workflow engine sits behind a double-Arc (`Arc<RwLock<Arc<Engine>>>`) allowing zero-downtime swaps
-4. **Workflow Matcher** — evaluates JSONLogic conditions and rollout percentages to pick the right workflow
-5. **Task Pipeline** — executes functions in order (parse, map, filter, http_call, db_read, etc.)
+1. **Route Resolution:** REST pattern matching finds the channel, or falls back to name lookup
+2. **Channel Registry:** enforces deduplication, rate limits, input validation, backpressure, and checks the response cache
+3. **Engine:** the workflow engine sits behind a double-Arc (`Arc<RwLock<Arc<Engine>>>`) allowing zero-downtime swaps
+4. **Workflow Matcher:** evaluates JSONLogic conditions and rollout percentages to pick the right workflow
+5. **Task Pipeline:** executes functions in order (parse, map, filter, http_call, db_read, etc.)
 
 ## Sync and Async
 
@@ -60,13 +60,13 @@ REST     GET /api/v1/data/orders/{id}        → matched by route pattern
 Kafka    topic: order.placed                 → consumed automatically
 ```
 
-Sync channels respond immediately. Async channels return a trace ID — poll `GET /api/v1/data/traces/{id}` for results. Kafka channels consume from topics configured in the DB or config file.
+Sync channels respond immediately. Async channels return a trace ID; poll `GET /api/v1/data/traces/{id}` for results. Kafka channels consume from topics configured in the DB or config file.
 
 **Bridging is a pattern, not a feature.** A sync workflow can `publish_kafka` and return 202. An async channel picks it up from there.
 
 ## Service Composition
 
-Most platforms require HTTP calls between services — adding latency, failure modes, and serialization overhead. Orion's `channel_call` invokes another channel's workflow **in-process** with zero network round-trip:
+Most platforms require HTTP calls between services, adding latency, failure modes, and serialization overhead. Orion's `channel_call` invokes another channel's workflow **in-process** with zero network round-trip:
 
 ```
 POST /orders (order-processing workflow)
@@ -77,7 +77,7 @@ POST /orders (order-processing workflow)
   └── publish_json       → return combined result
 ```
 
-Each composed channel has its own workflow, versioning, and governance — but calls between them are function calls, not network hops. Cycle detection prevents infinite recursion.
+Each composed channel has its own workflow, versioning, and governance, but calls between them are function calls, not network hops. Cycle detection prevents infinite recursion.
 
 ## Built-in Task Functions
 

@@ -1,6 +1,6 @@
 # Data API
 
-The data API handles runtime request processing — routing messages to channels, executing workflows, and returning results.
+The data API handles runtime request processing: routing messages to channels, executing workflows, and returning results.
 
 ## Endpoints
 
@@ -8,18 +8,18 @@ The data API handles runtime request processing — routing messages to channels
 |--------|------|-------------|
 | `POST` | `/api/v1/data/{channel}` | Process message synchronously (simple channel name) |
 | `POST` | `/api/v1/data/{channel}/async` | Submit for async processing (returns trace ID) |
-| `ANY` | `/api/v1/data/{path...}` | REST route matching — method + path matched against channel route patterns |
+| `ANY` | `/api/v1/data/{path...}` | REST route matching: method + path matched against channel route patterns |
 | `ANY` | `/api/v1/data/{path...}/async` | Async submission via REST route matching |
-| `GET` | `/api/v1/data/traces` | List traces — filter with `?status=`, `?channel=`, `?mode=` |
+| `GET` | `/api/v1/data/traces` | List traces. Filter with `?status=`, `?channel=`, `?mode=` |
 | `GET` | `/api/v1/data/traces/{id}` | Poll async trace result |
 
 ## Route Resolution
 
 When a request arrives at `/api/v1/data/{path}`, Orion resolves the target channel in this order:
 
-1. **Async check** — strip trailing `/async` suffix (switches to async mode)
-2. **REST route table** — match HTTP method + path against channel `route_pattern` values (e.g., `GET /orders/{order_id}`)
-3. **Channel name fallback** — direct lookup by single path segment (e.g., `/api/v1/data/orders` → channel named `orders`)
+1. **Async check:** strip trailing `/async` suffix (switches to async mode)
+2. **REST route table:** match HTTP method + path against channel `route_pattern` values (e.g., `GET /orders/{order_id}`)
+3. **Channel name fallback:** direct lookup by single path segment (e.g., `/api/v1/data/orders` → channel named `orders`)
 
 REST routes are matched by priority (descending) then specificity (segment count). Path parameters are extracted and injected into the message metadata.
 
@@ -59,7 +59,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders/async \
   -d '{ "data": { "order_id": "ORD-456" } }'
 ```
 
-**Response** — returns immediately with a trace ID:
+**Response:** returns immediately with a trace ID:
 
 ```json
 {
@@ -101,9 +101,9 @@ curl -s http://localhost:8080/api/v1/data/traces/{trace-id}
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Health check (200 OK / 503 degraded) — checks DB, engine, uptime |
-| GET | `/healthz` | Kubernetes liveness probe — always returns 200 |
-| GET | `/readyz` | Kubernetes readiness probe — 503 if DB, engine, or startup not ready |
+| GET | `/health` | Health check (200 OK / 503 degraded). Checks DB, engine, uptime |
+| GET | `/healthz` | Kubernetes liveness probe. Always returns 200 |
+| GET | `/readyz` | Kubernetes readiness probe. 503 if DB, engine, or startup not ready |
 | GET | `/metrics` | Prometheus metrics (when enabled) |
 | GET | `/docs` | Swagger UI |
 | GET | `/api/v1/openapi.json` | OpenAPI 3.0 specification |

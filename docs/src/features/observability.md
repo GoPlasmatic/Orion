@@ -1,6 +1,6 @@
 # Observability
 
-Orion provides structured logging, Prometheus metrics, distributed tracing, and health monitoring out of the box. No sidecars, no agents — everything runs inside the single binary.
+Orion provides structured logging, Prometheus metrics, distributed tracing, and health monitoring out of the box. No sidecars, no agents. Everything runs inside the single binary.
 
 ## Structured Logging
 
@@ -12,7 +12,7 @@ level = "info"        # trace, debug, info, warn, error
 format = "pretty"     # pretty or json
 ```
 
-**JSON format** is recommended for production — it integrates directly with log aggregators like Loki, Datadog, or CloudWatch:
+**JSON format** is recommended for production. It integrates directly with log aggregators like Loki, Datadog, or CloudWatch:
 
 ```bash
 ORION_LOGGING__FORMAT=json
@@ -33,7 +33,7 @@ RUST_LOG=orion=debug,tower_http=warn,sqlx=warn
 | `debug` | Detailed processing, SQL queries, connector calls |
 | `trace` | Fine-grained internal state |
 
-Every request carries a UUID `x-request-id` header — pass your own or let Orion generate one. The ID propagates through logs and responses for end-to-end correlation.
+Every request carries a UUID `x-request-id` header. Pass your own or let Orion generate one. The ID propagates through logs and responses for end-to-end correlation.
 
 ## Prometheus Metrics
 
@@ -72,7 +72,7 @@ service_name = "orion"
 sample_rate = 1.0    # 0.0 (none) to 1.0 (all)
 ```
 
-- **W3C Trace Context** extraction and propagation — incoming `traceparent` headers are respected
+- **W3C Trace Context** extraction and propagation: incoming `traceparent` headers are respected
 - Per-request spans with channel, workflow, and task attributes
 - OTLP gRPC export to Jaeger, Tempo, or any compatible collector
 - Configurable sampling rate for production use
@@ -82,7 +82,7 @@ sample_rate = 1.0    # 0.0 (none) to 1.0 (all)
 
 Orion exposes three health endpoints for different operational needs.
 
-**Component health** — `GET /health` returns component-level status with automatic degradation detection:
+**Component health:** `GET /health` returns component-level status with automatic degradation detection:
 
 ```json
 {
@@ -103,7 +103,7 @@ The health check tests the database with `SELECT 1` and verifies engine availabi
 
 | Endpoint | Purpose | Behavior |
 |----------|---------|----------|
-| `GET /healthz` | Liveness probe | Always returns 200 — if the process is running, it's alive |
+| `GET /healthz` | Liveness probe | Always returns 200. If the process is running, it's alive |
 | `GET /readyz` | Readiness probe | Returns 200 only when DB is reachable, engine is loaded, and startup is complete; 503 otherwise |
 
 ```yaml
@@ -121,7 +121,7 @@ readinessProbe:
   periodSeconds: 5
 ```
 
-**Engine status** — `GET /api/v1/admin/engine/status` returns a detailed breakdown:
+**Engine status:** `GET /api/v1/admin/engine/status` returns a detailed breakdown:
 
 ```json
 {

@@ -1,6 +1,6 @@
 # Resilience
 
-Orion protects your services from cascading failures, transient errors, and overload with circuit breakers, automatic retries, timeouts, and graceful degradation — all built into the runtime.
+Orion protects your services from cascading failures, transient errors, and overload with circuit breakers, automatic retries, timeouts, and graceful degradation, all built into the runtime.
 
 ## Circuit Breakers
 
@@ -8,7 +8,7 @@ Every connector gets automatic circuit breaker protection. When failures exceed 
 
 | State | Behavior |
 |-------|----------|
-| **Closed** | Normal operation — requests flow through |
+| **Closed** | Normal operation; requests flow through |
 | **Open** | Requests rejected immediately (503) after failure threshold exceeded |
 | **Half-Open** | After cooldown, one probe request allowed to test recovery |
 
@@ -49,13 +49,13 @@ Delay doubles on each retry: 500ms → 1s → 2s → 4s → ... → capped at 60
 
 Retries are configured per-connector, so each external service can have its own retry policy. The mechanism automatically detects retryable errors (network failures, 5xx responses) and skips non-retryable ones (4xx client errors).
 
-All connector types — HTTP, DB, Cache, MongoDB, Storage — support the same retry configuration.
+All connector types (HTTP, DB, Cache, MongoDB, Storage) support the same retry configuration.
 
 ## Timeouts
 
 Timeouts are enforced at multiple levels to prevent runaway requests:
 
-**Per-channel timeout** — set in the channel's `config_json` to limit workflow execution time:
+**Per-channel timeout:** set in the channel's `config_json` to limit workflow execution time:
 
 ```json
 {
@@ -65,7 +65,7 @@ Timeouts are enforced at multiple levels to prevent runaway requests:
 
 If the workflow exceeds this limit, the request returns `504 Gateway Timeout`.
 
-**Per-connector query timeout** — for database connectors:
+**Per-connector query timeout:** for database connectors:
 
 ```json
 {
@@ -74,14 +74,14 @@ If the workflow exceeds this limit, the request returns `504 Gateway Timeout`.
 }
 ```
 
-**Global HTTP timeout** — for the shared HTTP client used by `http_call`:
+**Global HTTP timeout:** for the shared HTTP client used by `http_call`:
 
 ```toml
 [engine]
 global_http_timeout_secs = 30
 ```
 
-**Engine lock timeouts** — prevent health checks and reloads from blocking indefinitely:
+**Engine lock timeouts:** prevent health checks and reloads from blocking indefinitely:
 
 ```toml
 [engine]
@@ -91,7 +91,7 @@ reload_timeout_secs = 10
 
 ## Fault Tolerance
 
-**Graceful shutdown** — Orion handles `SIGTERM` and `SIGINT` with a controlled shutdown sequence:
+**Graceful shutdown:** Orion handles `SIGTERM` and `SIGINT` with a controlled shutdown sequence:
 
 1. HTTP server stops accepting new connections
 2. In-flight requests drain (configurable via `shutdown_drain_secs`, default 30s)
@@ -102,7 +102,7 @@ reload_timeout_secs = 10
 7. OpenTelemetry spans are flushed (if enabled)
 8. Process exits
 
-**Dead letter queue** — failed async traces are stored in the `trace_dlq` database table with automatic retry:
+**Dead letter queue:** failed async traces are stored in the `trace_dlq` database table with automatic retry:
 
 ```toml
 [queue]
@@ -119,7 +119,7 @@ enabled = true
 topic = "orion-dlq"
 ```
 
-**Fault-tolerant pipelines** — set `continue_on_error: true` on a workflow to keep the task pipeline running even if individual tasks fail. Errors are collected in the response rather than halting execution:
+**Fault-tolerant pipelines:** set `continue_on_error: true` on a workflow to keep the task pipeline running even if individual tasks fail. Errors are collected in the response rather than halting execution:
 
 ```json
 {
@@ -131,4 +131,4 @@ topic = "orion-dlq"
 }
 ```
 
-**Panic recovery** — the outermost middleware layer (`CatchPanicLayer`) catches panics in any handler, returning a 500 response instead of crashing the process.
+**Panic recovery:** the outermost middleware layer (`CatchPanicLayer`) catches panics in any handler, returning a 500 response instead of crashing the process.

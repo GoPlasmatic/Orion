@@ -221,7 +221,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/webhooks \
 }
 ```
 
-Missing optional fields produce `null` — no errors. This makes the pipeline safe for partial payloads from different webhook providers.
+Missing optional fields produce `null`, no errors. This makes the pipeline safe for partial payloads from different webhook providers.
 
 **Key patterns:** Schema mapping with `var`, null-safe field access, static enrichment.
 
@@ -362,13 +362,13 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows/<workflow-id>/test 
 }
 ```
 
-The trace shows exactly which tasks ran and which were skipped — verify the logic is correct before a single real transaction flows through.
+The trace shows exactly which tasks ran and which were skipped. Verify the logic is correct before a single real transaction flows through.
 
 **Key patterns:** Dry-run verification, execution trace inspection, regulatory workflow.
 
 ## AI Workflow & CI/CD
 
-AI writes workflows, not services. Instead of generating microservices that need their own governance, LLMs generate Orion workflows — constrained JSON that the platform validates, versions, and monitors automatically.
+AI writes workflows, not services. Instead of generating microservices that need their own governance, LLMs generate Orion workflows: constrained JSON that the platform validates, versions, and monitors automatically.
 
 ### Prompt Templates
 
@@ -391,16 +391,16 @@ Output ONLY the JSON workflow. No explanation.
 
 Every AI-generated workflow should go through this pipeline before reaching production:
 
-1. **Generate** — use your LLM with the prompt template above
-2. **Validate** — `POST /api/v1/admin/workflows/validate` to check structure
-3. **Create as draft** — `POST /api/v1/admin/workflows` (workflows are created as drafts by default, not loaded into the engine)
-4. **Dry-run** — `POST /api/v1/admin/workflows/{id}/test` with representative test data
-5. **Check the trace** — verify the right tasks ran, the right ones were skipped, and output matches expectations
-6. **Activate** — `PATCH /api/v1/admin/workflows/{id}/status` with `"status": "active"`
+1. **Generate:** use your LLM with the prompt template above
+2. **Validate:** `POST /api/v1/admin/workflows/validate` to check structure
+3. **Create as draft:** `POST /api/v1/admin/workflows` (workflows are created as drafts by default, not loaded into the engine)
+4. **Dry-run:** `POST /api/v1/admin/workflows/{id}/test` with representative test data
+5. **Check the trace:** verify the right tasks ran, the right ones were skipped, and output matches expectations
+6. **Activate:** `PATCH /api/v1/admin/workflows/{id}/status` with `"status": "active"`
 
 ### CI/CD Pipeline
 
-Integrate AI workflow generation into your deployment pipeline. Workflows are JSON files — they version, diff, and review like any other config.
+Integrate AI workflow generation into your deployment pipeline. Workflows are JSON files that version, diff, and review like any other config.
 
 ```
 AI generates workflow → commit as JSON → CI runs dry-run → review → import
@@ -463,7 +463,7 @@ jobs:
           done
 ```
 
-**Test case format** — store test cases alongside workflows:
+**Test case format:** store test cases alongside workflows:
 
 ```
 workflows/
@@ -487,11 +487,11 @@ Each test case:
 
 AI-generated workflows get the same governance as hand-written ones:
 
-- **Version history** — every workflow change is recorded. Roll back if an AI-generated workflow misbehaves.
-- **Draft status** — workflows are created as `draft` by default and are not loaded into the engine until explicitly activated.
-- **Dry-run before activate** — test with representative data and inspect the full execution trace.
-- **Audit trail** — every workflow version is recorded in the `workflows` table with incrementing version numbers.
-- **Connectors isolate secrets** — AI generates workflows that reference connector names, never credentials.
+- **Version history:** every workflow change is recorded. Roll back if an AI-generated workflow misbehaves.
+- **Draft status:** workflows are created as `draft` by default and are not loaded into the engine until explicitly activated.
+- **Dry-run before activate:** test with representative data and inspect the full execution trace.
+- **Audit trail:** every workflow version is recorded in the `workflows` table with incrementing version numbers.
+- **Connectors isolate secrets:** AI generates workflows that reference connector names, never credentials.
 
 ## Common Workflow Patterns
 
@@ -510,8 +510,8 @@ Every workflow that reads input data must start with `parse_json`. Without it, t
 
 ### Task-level vs workflow-level conditions
 
-- **Workflow-level condition** — determines whether the entire workflow matches. Set to `true` for workflows that always run.
-- **Task-level condition** — determines whether a specific task within a matched workflow executes. Use for branching logic within a pipeline.
+- **Workflow-level condition:** determines whether the entire workflow matches. Set to `true` for workflows that always run.
+- **Task-level condition:** determines whether a specific task within a matched workflow executes. Use for branching logic within a pipeline.
 
 ```json
 {

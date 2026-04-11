@@ -7,7 +7,7 @@ All admin endpoints are under `/api/v1/admin/`. When admin authentication is ena
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/v1/admin/channels` | Create channel (as draft) |
-| GET | `/api/v1/admin/channels` | List channels — filter with `?status=`, `?channel_type=`, `?protocol=` |
+| GET | `/api/v1/admin/channels` | List channels. Filter with `?status=`, `?channel_type=`, `?protocol=` |
 | GET | `/api/v1/admin/channels/{id}` | Get channel by ID |
 | PUT | `/api/v1/admin/channels/{id}` | Update draft channel |
 | DELETE | `/api/v1/admin/channels/{id}` | Delete channel (all versions) |
@@ -20,7 +20,7 @@ All admin endpoints are under `/api/v1/admin/`. When admin authentication is ena
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/v1/admin/workflows` | Create workflow (as draft; optional `id` field for custom IDs) |
-| GET | `/api/v1/admin/workflows` | List workflows — filter with `?tag=`, `?status=` |
+| GET | `/api/v1/admin/workflows` | List workflows. Filter with `?tag=`, `?status=` |
 | GET | `/api/v1/admin/workflows/{id}` | Get workflow by ID |
 | PUT | `/api/v1/admin/workflows/{id}` | Update draft workflow |
 | DELETE | `/api/v1/admin/workflows/{id}` | Delete workflow (all versions) |
@@ -30,7 +30,7 @@ All admin endpoints are under `/api/v1/admin/`. When admin authentication is ena
 | PATCH | `/api/v1/admin/workflows/{id}/rollout` | Update rollout percentage |
 | POST | `/api/v1/admin/workflows/{id}/test` | Dry-run on sample payload |
 | POST | `/api/v1/admin/workflows/import` | Bulk import workflows (as drafts) |
-| GET | `/api/v1/admin/workflows/export` | Export workflows — filter with `?tag=`, `?status=` |
+| GET | `/api/v1/admin/workflows/export` | Export workflows. Filter with `?tag=`, `?status=` |
 | POST | `/api/v1/admin/workflows/validate` | Validate workflow definition |
 
 ## Connectors
@@ -57,7 +57,7 @@ All admin endpoints are under `/api/v1/admin/`. When admin authentication is ena
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/admin/audit-logs` | List audit log entries — filter with `?action=`, `?resource_type=` |
+| GET | `/api/v1/admin/audit-logs` | List audit log entries. Filter with `?action=`, `?resource_type=` |
 
 ## Backup & Restore
 
@@ -70,11 +70,11 @@ All admin endpoints are under `/api/v1/admin/`. When admin authentication is ena
 
 Both channels and workflows follow a **draft → active → archived** lifecycle:
 
-1. **Create** — entities are created as `draft` (not loaded into the engine)
-2. **Update** — only draft versions can be updated via `PUT`
-3. **Activate** — `PATCH /status` with `{"status": "active"}` loads the entity into the engine
-4. **New version** — `POST /versions` creates a new draft version from the active entity
-5. **Archive** — `PATCH /status` with `{"status": "archived"}` removes from the engine
+1. **Create:** entities are created as `draft` (not loaded into the engine)
+2. **Update:** only draft versions can be updated via `PUT`
+3. **Activate:** `PATCH /status` with `{"status": "active"}` loads the entity into the engine
+4. **New version:** `POST /versions` creates a new draft version from the active entity
+5. **Archive:** `PATCH /status` with `{"status": "archived"}` removes from the engine
 
 A channel links to a workflow via `workflow_id`. Activating a channel makes it available for data processing; activating a workflow makes its logic available to the engine.
 

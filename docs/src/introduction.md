@@ -4,9 +4,9 @@
   <p>The declarative services runtime for the AI era</p>
 </div>
 
-**Orion** is a declarative services runtime written in Rust. Instead of writing, deploying, and operating a microservice for every piece of business logic, you **declare** what the service should do — and Orion runs it. Architectural governance — observability, rate limiting, circuit breakers, versioning, input validation, and more — is built in.
+**Orion** is a declarative services runtime written in Rust. Instead of writing, deploying, and operating a microservice for every piece of business logic, you **declare** what the service should do, and Orion runs it. Architectural governance — observability, rate limiting, circuit breakers, versioning, input validation, and more — is built in.
 
-AI generates workflows, Orion provides the governance. The platform guarantees that every service gets health checks, metrics, retries, and error handling — regardless of how the workflow was created.
+AI generates workflows, Orion provides the governance. The platform guarantees that every service gets health checks, metrics, retries, and error handling, regardless of how the workflow was created.
 
 ## Is Orion Right for You?
 
@@ -14,11 +14,11 @@ AI generates workflows, Orion provides the governance. The platform guarantees t
 |---|:-:|---|
 | Turn business rules into live REST/Kafka services | **Yes** | Define logic as JSON workflows, deploy with one API call |
 | Let AI generate and manage business logic | **Yes** | Built-in validation, dry-run testing, and draft-before-activate safety |
-| Replace a handful of single-purpose microservices | **Yes** | One instance handles many channels — governance included |
-| Use a rule engine like Drools | Not quite | Orion uses [JSONLogic](https://jsonlogic.com) — lightweight and AI-friendly, but not a full RETE-based rule engine |
+| Replace a handful of single-purpose microservices | **Yes** | One instance handles many channels, governance included |
+| Use a rule engine like Drools | Not quite | Orion uses [JSONLogic](https://jsonlogic.com). Lightweight and AI-friendly, but not a full RETE-based rule engine |
 | Embed a workflow engine library in your app | No | Orion is a standalone runtime. For an embeddable engine, see [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) |
-| Orchestrate long-running jobs (hours/days) | No | Use Temporal or Airflow — Orion is optimized for request-response and event processing |
-| Run a full API gateway with plugin ecosystem | No | Use Kong or Envoy — Orion focuses on service logic, not proxy features |
+| Orchestrate long-running jobs (hours/days) | No | Use Temporal or Airflow. Orion is optimized for request-response and event processing |
+| Run a full API gateway with plugin ecosystem | No | Use Kong or Envoy. Orion focuses on service logic, not proxy features |
 
 ## Three Primitives
 
@@ -33,13 +33,13 @@ You build services in Orion with three things:
 
 | Primitive | What it is | Example |
 |-----------|-----------|---------|
-| **Channel** | A service endpoint — sync (REST, HTTP) or async (Kafka) | `POST /orders`, `GET /users/{id}`, Kafka topic `order.placed` |
+| **Channel** | A service endpoint: sync (REST, HTTP) or async (Kafka) | `POST /orders`, `GET /users/{id}`, Kafka topic `order.placed` |
 | **Workflow** | A pipeline of tasks that defines what the service does | Parse → validate → enrich → transform → respond |
 | **Connector** | A named connection to an external system, with auth and retries | Stripe API, PostgreSQL, Redis, Kafka cluster |
 
-**Design-time:** define channels, build workflows, configure connectors, test with dry-run, manage versions — all through the admin API.
+**Design-time:** define channels, build workflows, configure connectors, test with dry-run, manage versions, all through the admin API.
 
-**Runtime:** Orion routes traffic to channels, executes workflows, calls connectors, and handles observability — automatically.
+**Runtime:** Orion routes traffic to channels, executes workflows, calls connectors, and handles observability automatically.
 
 ## Your First Service in 2 Minutes
 
@@ -136,8 +136,8 @@ Every channel gets production-grade features without writing a line of code:
 | **CORS** | Control browser cross-origin access | `allowed_origins` per channel |
 | **Circuit breakers** | Stop cascading failures to external services | Automatic per connector, admin API to inspect/reset |
 | **Versioning** | Draft → active → archived lifecycle | Automatic version history, rollout percentages |
-| **Observability** | Prometheus metrics, structured logs, distributed tracing | Always on — zero configuration |
-| **Health checks** | Component-level status with degradation detection | `GET /health` — automatic |
+| **Observability** | Prometheus metrics, structured logs, distributed tracing | Always on, zero configuration |
+| **Health checks** | Component-level status with degradation detection | `GET /health`, automatic |
 | **Deduplication** | Prevent duplicate processing via idempotency keys | `Idempotency-Key` header, configurable window |
 | **Response caching** | Cache responses for identical requests | TTL-based, configurable cache key fields |
 

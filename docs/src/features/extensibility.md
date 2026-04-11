@@ -4,7 +4,7 @@ Orion integrates with external systems through connectors, exposes custom logic 
 
 ## Connectors
 
-Connectors are named external service configurations. Secrets stay in connectors — out of your workflows.
+Connectors are named external service configurations. Secrets stay in connectors, out of your workflows.
 
 ### Authentication
 
@@ -18,7 +18,7 @@ Three auth schemes are supported:
 
 ### Header Precedence
 
-When `http_call` builds a request, headers are applied in this order — later layers override earlier ones:
+When `http_call` builds a request, headers are applied in this order (later layers override earlier ones):
 
 | Priority | Source | Example |
 |----------|--------|---------|
@@ -31,7 +31,7 @@ Task-level headers always win. This means a workflow developer can override `con
 
 ### Secret Masking
 
-Sensitive fields (`token`, `password`, `key`, `secret`, `api_key`, `connection_string`) are automatically masked as `"******"` in all API responses. Secrets are stored but never exposed through the API. Workflows reference connectors by name — they never see or embed actual credentials.
+Sensitive fields (`token`, `password`, `key`, `secret`, `api_key`, `connection_string`) are automatically masked as `"******"` in all API responses. Secrets are stored but never exposed through the API. Workflows reference connectors by name; they never see or embed actual credentials.
 
 ### HTTP Connector
 
@@ -102,7 +102,7 @@ Use the `publish_kafka` task function with optional JSONLogic for dynamic keys a
 | `key_logic` | No | JSONLogic expression for partition key |
 | `value_logic` | No | JSONLogic expression for message value (default: `message.data`) |
 
-**Kafka consumer configuration** — map topics to channels in your config file:
+**Kafka consumer configuration:** map topics to channels in your config file:
 
 ```toml
 [kafka]
@@ -115,9 +115,9 @@ topic = "incoming-orders"
 channel = "orders"
 ```
 
-Async channels with `protocol: "kafka"` can also register topics via the API (DB-driven). Config-file and DB-driven topics are merged — duplicates are deduplicated with config-file entries taking precedence. The consumer restarts automatically on engine reload when the topic set changes.
+Async channels with `protocol: "kafka"` can also register topics via the API (DB-driven). Config-file and DB-driven topics are merged; duplicates are deduplicated with config-file entries taking precedence. The consumer restarts automatically on engine reload when the topic set changes.
 
-**Metadata injection** — Kafka metadata is automatically injected into every message:
+**Metadata injection:** Kafka metadata is automatically injected into every message:
 
 | Field | Description |
 |-------|-------------|
@@ -128,7 +128,7 @@ Async channels with `protocol: "kafka"` can also register topics via the API (DB
 
 Access these in workflows via `{ "var": "metadata.kafka_topic" }`.
 
-**Dead letter queue** — failed messages are routed to a configurable DLQ topic:
+**Dead letter queue:** failed messages are routed to a configurable DLQ topic:
 
 ```toml
 [kafka.dlq]
@@ -315,7 +315,7 @@ In addition to async functions, Orion includes a **built-in function library** f
 | `validation` | Validate data against JSONLogic rules |
 | `log` | Log data at a specified level |
 
-**JSONLogic expressions** power all conditions and dynamic values — use `{ "var": "data.field" }` to reference data, `{ "cat": [...] }` for string concatenation, arithmetic operators, and more. Dynamic paths (`path_logic`) and bodies (`body_logic`) let you compute URLs and request payloads from message data.
+**JSONLogic expressions** power all conditions and dynamic values. Use `{ "var": "data.field" }` to reference data, `{ "cat": [...] }` for string concatenation, arithmetic operators, and more. Dynamic paths (`path_logic`) and bodies (`body_logic`) let you compute URLs and request payloads from message data.
 
 ## Channel Protocols
 
@@ -340,7 +340,7 @@ Path parameters are extracted and injected into the message metadata. Routes are
 
 ### Simple HTTP (Sync)
 
-Simple HTTP channels are matched by channel name — requests to `/api/v1/data/{channel-name}` are routed directly:
+Simple HTTP channels are matched by channel name. Requests to `/api/v1/data/{channel-name}` are routed directly:
 
 ```json
 {
@@ -366,4 +366,4 @@ Kafka channels consume from topics and process messages asynchronously:
 }
 ```
 
-DB-driven Kafka channels are automatically registered as consumers at startup and on engine reload — add Kafka ingestion via the API without restarting Orion.
+DB-driven Kafka channels are automatically registered as consumers at startup and on engine reload. Add Kafka ingestion via the API without restarting Orion.

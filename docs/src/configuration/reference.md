@@ -1,6 +1,6 @@
 # Config Reference
 
-All settings have sensible defaults. You can run Orion with no config file at all — `orion-server` just works.
+All settings have sensible defaults. You can run Orion with no config file at all. `orion-server` just works.
 
 ## CLI Commands
 
@@ -15,7 +15,7 @@ orion-server migrate --dry-run            # Preview pending migrations
 
 ## Database Backend
 
-The database backend is selected at runtime from the `storage.url` scheme — no rebuild needed:
+The database backend is selected at runtime from the `storage.url` scheme. No rebuild needed:
 
 | Backend | URL Format | Example |
 |---------|------------|---------|

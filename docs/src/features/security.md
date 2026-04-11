@@ -1,10 +1,10 @@
 # Security
 
-Orion enforces security at every layer — secrets are isolated in connectors, inputs are validated before processing, network requests are checked for SSRF, and admin endpoints are protected by authentication.
+Orion enforces security at every layer: secrets are isolated in connectors, inputs are validated before processing, network requests are checked for SSRF, and admin endpoints are protected by authentication.
 
 ## Secret Management
 
-Sensitive fields are automatically masked in all API responses. Fields named `token`, `password`, `key`, `secret`, `api_key`, and `connection_string` are returned as `"******"` — secrets are stored but never exposed through the API.
+Sensitive fields are automatically masked in all API responses. Fields named `token`, `password`, `key`, `secret`, `api_key`, and `connection_string` are returned as `"******"`. Secrets are stored but never exposed through the API.
 
 ```bash
 # Create a connector with real credentials
@@ -20,12 +20,12 @@ curl -s -X POST http://localhost:8080/api/v1/admin/connectors \
     }
   }'
 
-# Read it back — secrets are masked
+# Read it back (secrets are masked)
 curl -s http://localhost:8080/api/v1/admin/connectors/<id>
 # auth.token → "******"
 ```
 
-Workflows reference connectors by name (`"connector": "payments-api"`) — they never see or embed actual credentials. This means AI-generated workflows can be safely created and shared without risk of credential exposure.
+Workflows reference connectors by name (`"connector": "payments-api"`). They never see or embed actual credentials. This means AI-generated workflows can be safely created and shared without risk of credential exposure.
 
 ## Input Validation
 
@@ -46,10 +46,10 @@ If validation fails, the request is rejected with `400 Bad Request` before any w
 
 Validation rules have access to:
 
-- `data.*` — request body fields
-- `headers.*` — HTTP headers
-- `query.*` — query string parameters
-- `path.*` — path parameters (for REST channels)
+- `data.*`: request body fields
+- `headers.*`: HTTP headers
+- `query.*`: query string parameters
+- `path.*`: path parameters (for REST channels)
 
 **Payload size limits** are enforced globally to prevent oversized requests:
 
@@ -60,7 +60,7 @@ max_payload_size = 1048576   # 1 MB
 
 ## Network Security
 
-**SSRF protection** — HTTP connectors validate URLs to prevent Server-Side Request Forgery. By default, requests to private/internal IP addresses (RFC 1918, loopback, link-local) are blocked:
+**SSRF protection:** HTTP connectors validate URLs to prevent Server-Side Request Forgery. By default, requests to private/internal IP addresses (RFC 1918, loopback, link-local) are blocked:
 
 ```json
 {
@@ -76,7 +76,7 @@ max_payload_size = 1048576   # 1 MB
 
 Set `allow_private_urls: true` only when calling internal services.
 
-**TLS/HTTPS** — enable TLS termination in the server:
+**TLS/HTTPS:** enable TLS termination in the server:
 
 ```toml
 [server.tls]
@@ -85,7 +85,7 @@ cert_path = "cert.pem"
 key_path = "key.pem"
 ```
 
-**Security headers** — set on all responses:
+**Security headers:** set on all responses:
 
 | Header | Value |
 |--------|-------|
@@ -98,7 +98,7 @@ key_path = "key.pem"
 
 ## Access Control
 
-**Admin API authentication** — protect admin endpoints with bearer token or API key:
+**Admin API authentication:** protect admin endpoints with bearer token or API key:
 
 ```toml
 [admin_auth]
@@ -120,7 +120,7 @@ curl -H "X-API-Key: your-secret-key" \
   http://localhost:8080/api/v1/admin/workflows
 ```
 
-**Per-channel CORS** — configure allowed origins per channel in `config_json`:
+**Per-channel CORS:** configure allowed origins per channel in `config_json`:
 
 ```json
 {
@@ -139,7 +139,7 @@ allowed_origins = ["*"]    # Global default
 
 ## Data Safety
 
-**Parameterized SQL queries** — the `db_read` and `db_write` functions use parameterized queries to prevent SQL injection:
+**Parameterized SQL queries:** the `db_read` and `db_write` functions use parameterized queries to prevent SQL injection:
 
 ```json
 {
@@ -155,8 +155,8 @@ allowed_origins = ["*"]    # Global default
 }
 ```
 
-Values are always passed as parameters — never interpolated into SQL strings.
+Values are always passed as parameters, never interpolated into SQL strings.
 
-**URL validation** — connector URLs are validated at creation time. Combined with SSRF protection, this prevents workflows from making requests to unexpected destinations.
+**URL validation:** connector URLs are validated at creation time. Combined with SSRF protection, this prevents workflows from making requests to unexpected destinations.
 
-**Injection protection** — JSONLogic expressions are evaluated in a sandboxed environment. User-supplied data cannot escape the data context or execute arbitrary code.
+**Injection protection:** JSONLogic expressions are evaluated in a sandboxed environment. User-supplied data cannot escape the data context or execute arbitrary code.
