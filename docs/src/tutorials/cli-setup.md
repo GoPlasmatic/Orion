@@ -169,7 +169,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/hello \
 
 ## Orion CLI
 
-The [Orion CLI](https://github.com/GoPlasmatic/Orion-cli) provides a command-line interface and MCP server for managing Orion — no curl commands needed.
+The [Orion CLI](https://github.com/GoPlasmatic/Orion-cli) provides a command-line interface and MCP server for managing Orion. No curl commands needed.
 
 **Homebrew** (macOS and Linux):
 

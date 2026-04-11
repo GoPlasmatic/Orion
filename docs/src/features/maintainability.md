@@ -15,7 +15,7 @@ Full CRUD operations for all entities through a RESTful admin API:
 | **Audit logs** | List with filtering by action and resource type |
 | **Backup** | Database export and restore |
 
-**Version management** — both workflows and channels support the draft → active → archived lifecycle. Filter by status:
+**Version management:** both workflows and channels support the draft → active → archived lifecycle. Filter by status:
 
 ```bash
 curl -s "http://localhost:8080/api/v1/admin/workflows?status=active"
@@ -32,11 +32,11 @@ curl -s http://localhost:8080/api/v1/admin/engine/status
 curl -s -X POST http://localhost:8080/api/v1/admin/engine/reload
 ```
 
-**OpenAPI / Swagger UI** — interactive API documentation is always available at `/docs`, and the OpenAPI 3.0 spec at `/api/v1/openapi.json`.
+**OpenAPI / Swagger UI:** interactive API documentation is always available at `/docs`, and the OpenAPI 3.0 spec at `/api/v1/openapi.json`.
 
 ## CI/CD Integration
 
-Orion workflows are JSON files — they version, diff, and review like any other config.
+Orion workflows are JSON files that version, diff, and review like any other config.
 
 **Bulk import and export:**
 
@@ -49,14 +49,14 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows/import \
   -H "Content-Type: application/json" -d @workflows.json
 ```
 
-**Pre-deploy validation** — validate workflow structure without creating:
+**Pre-deploy validation:** validate workflow structure without creating:
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/admin/workflows/validate \
   -H "Content-Type: application/json" -d @workflow.json
 ```
 
-**GitOps pipeline** — a typical CI/CD flow:
+**GitOps pipeline:** a typical CI/CD flow:
 
 ```
 AI generates workflow → commit as JSON → CI validates & dry-runs → review → import → activate
@@ -87,7 +87,7 @@ jobs:
           done
 ```
 
-**Tag-based organization** — tag workflows for filtering:
+**Tag-based organization:** tag workflows for filtering:
 
 ```json
 { "tags": ["fraud", "high-priority", "v2"] }
@@ -99,7 +99,7 @@ curl -s "http://localhost:8080/api/v1/admin/workflows?tag=fraud"
 
 ## Testing
 
-**Dry-run execution** — test a workflow against sample data without activating it:
+**Dry-run execution:** test a workflow against sample data without activating it:
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/admin/workflows/<id>/test \
@@ -125,14 +125,14 @@ The response includes a full execution trace showing which tasks ran and which w
 }
 ```
 
-**Workflow validation** — check that a workflow definition is structurally valid:
+**Workflow validation:** check that a workflow definition is structurally valid:
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/admin/workflows/validate \
   -H "Content-Type: application/json" -d @workflow.json
 ```
 
-**Step-by-step traces** — async traces record the full execution path and can be retrieved for debugging:
+**Step-by-step traces:** async traces record the full execution path and can be retrieved for debugging:
 
 ```bash
 # Submit async request
@@ -145,7 +145,7 @@ curl -s http://localhost:8080/api/v1/data/traces/{trace-id}
 
 ## Operations
 
-**Audit logging** — all admin actions are recorded for compliance and debugging:
+**Audit logging:** all admin actions are recorded for compliance and debugging:
 
 ```bash
 curl -s http://localhost:8080/api/v1/admin/audit-logs
@@ -165,14 +165,14 @@ curl -s -X POST http://localhost:8080/api/v1/admin/restore \
   -H "Content-Type: application/json" -d @backup.json
 ```
 
-**Config validation CLI** — validate your configuration without starting the server:
+**Config validation CLI:** validate your configuration without starting the server:
 
 ```bash
 orion-server validate-config
 orion-server validate-config -c config.toml
 ```
 
-**Database migrations** — run or preview pending migrations:
+**Database migrations:** run or preview pending migrations:
 
 ```bash
 orion-server migrate              # Run migrations

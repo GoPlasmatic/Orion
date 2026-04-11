@@ -11,7 +11,7 @@ Orion includes an MCP (Model Context Protocol) server that lets AI assistants li
 
 Add the Orion MCP server to your MCP client configuration.
 
-**Claude Code** — add to your `.claude/settings.json` or project-level `.mcp.json`:
+**Claude Code:** add to your `.claude/settings.json` or project-level `.mcp.json`:
 
 ```json
 {
@@ -27,7 +27,7 @@ Add the Orion MCP server to your MCP client configuration.
 }
 ```
 
-**Claude Desktop** — add to your Claude Desktop configuration file:
+**Claude Desktop:** add to your Claude Desktop configuration file:
 
 ```json
 {

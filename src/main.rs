@@ -615,6 +615,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    eprintln!("Orion shut down cleanly");
     tracing::info!("Orion shut down cleanly");
     Ok(())
 }
