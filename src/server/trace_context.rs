@@ -58,7 +58,7 @@ pub async fn extract_trace_context(req: Request<Body>, next: Next) -> Response {
     };
 
     // Set the extracted context as the parent of the current span
-    span.set_parent(parent_cx);
+    let _ = span.set_parent(parent_cx);
 
     // Run the rest of the middleware/handler inside this span
     let _guard = span.enter();

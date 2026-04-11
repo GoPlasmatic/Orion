@@ -39,7 +39,7 @@ impl RedisPoolCache {
                         source: Box::new(e),
                     })?;
                 client
-                    .get_multiplexed_tokio_connection()
+                    .get_multiplexed_async_connection()
                     .await
                     .map_err(|e| OrionError::InternalSource {
                         context: format!("Failed to connect to Redis '{}'", connector_name),

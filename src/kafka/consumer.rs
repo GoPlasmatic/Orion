@@ -287,7 +287,7 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
 
                             // Set extracted context as parent of the current span
                             use tracing_opentelemetry::OpenTelemetrySpanExt;
-                            tracing::Span::current().set_parent(cx.clone());
+                            let _ = tracing::Span::current().set_parent(cx.clone());
                             cx
                         };
 
