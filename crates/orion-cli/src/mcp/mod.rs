@@ -436,12 +436,12 @@ impl OrionService {
 #[tool_handler]
 impl ServerHandler for OrionService {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation::from_build_env(),
-            instructions: Some(include_str!("tools/descriptions/instructions.md").to_string()),
-        }
+        let mut info = ServerInfo::default();
+        info.protocol_version = ProtocolVersion::V_2024_11_05;
+        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.server_info = Implementation::from_build_env();
+        info.instructions = Some(include_str!("tools/descriptions/instructions.md").to_string());
+        info
     }
 }
 
@@ -476,10 +476,11 @@ pub async fn serve(
             StreamableHttpService::new(
                 move || Ok(OrionService::new(client.clone())),
                 Default::default(),
-                StreamableHttpServerConfig {
-                    stateful_mode: true,
-                    cancellation_token: ct.child_token(),
-                    ..Default::default()
+                {
+                    let mut config = StreamableHttpServerConfig::default();
+                    config.stateful_mode = true;
+                    config.cancellation_token = ct.child_token();
+                    config
                 },
             );
 
