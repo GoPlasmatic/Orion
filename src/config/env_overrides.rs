@@ -195,6 +195,88 @@ where
         f64
     );
 
+    // Tracing — trace persistence (DB-backed `traces` table)
+    if let Ok(v) = env_var("ORION_TRACING__STORAGE__MODE") {
+        match v.to_lowercase().as_str() {
+            "sync" => config.tracing.storage.mode = crate::config::TraceStorageMode::Sync,
+            "async" => config.tracing.storage.mode = crate::config::TraceStorageMode::Async,
+            "batch" => config.tracing.storage.mode = crate::config::TraceStorageMode::Batch,
+            "off" => config.tracing.storage.mode = crate::config::TraceStorageMode::Off,
+            _ => {
+                return Err(OrionError::Config {
+                    message: format!(
+                        "ORION_TRACING__STORAGE__MODE: invalid value '{}', \
+                         expected 'sync', 'async', 'batch', or 'off'",
+                        v
+                    ),
+                });
+            }
+        }
+    }
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__STORAGE__SAMPLE_RATE",
+        config.tracing.storage.sample_rate,
+        f64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__STORAGE__ERRORS_ONLY",
+        config.tracing.storage.errors_only,
+        bool
+    );
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__STORAGE__MAX_PENDING",
+        config.tracing.storage.max_pending,
+        usize
+    );
+    if let Ok(v) = env_var("ORION_TRACING__STORAGE__ASYNC_ON_OVERFLOW") {
+        match v.to_lowercase().as_str() {
+            "drop" => config.tracing.storage.async_on_overflow = crate::config::AsyncOnOverflow::Drop,
+            "block" => config.tracing.storage.async_on_overflow = crate::config::AsyncOnOverflow::Block,
+            _ => {
+                return Err(OrionError::Config {
+                    message: format!(
+                        "ORION_TRACING__STORAGE__ASYNC_ON_OVERFLOW: invalid value '{}', \
+                         expected 'drop' or 'block'",
+                        v
+                    ),
+                });
+            }
+        }
+    }
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__STORAGE__OVERFLOW_BLOCK_TIMEOUT_MS",
+        config.tracing.storage.overflow_block_timeout_ms,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__STORAGE__ASYNC_WORKERS",
+        config.tracing.storage.async_workers,
+        usize
+    );
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__STORAGE__BATCH_SIZE",
+        config.tracing.storage.batch_size,
+        usize
+    );
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__STORAGE__BATCH_FLUSH_INTERVAL_MS",
+        config.tracing.storage.batch_flush_interval_ms,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__STORAGE__BATCH_WORKERS",
+        config.tracing.storage.batch_workers,
+        usize
+    );
+
     // Engine
     env_parsed!(
         env_var,

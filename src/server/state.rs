@@ -49,4 +49,6 @@ pub struct AppState {
     pub kafka_consumer_handle: Arc<Mutex<Option<crate::kafka::consumer::ConsumerHandle>>>,
     /// Kafka producer — needed to restart consumer with DLQ support.
     pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
+    /// Background queue for trace-storage writes. A no-op handle in sync/off modes.
+    pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
 }

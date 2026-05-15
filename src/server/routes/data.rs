@@ -8,14 +8,73 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::channel::registry::EffectiveTraceConfig;
+use crate::config::TraceStorageMode;
 use crate::errors::OrionError;
 use crate::metrics;
+use crate::queue::{TracePersistenceQueue, TracePersistenceTask};
 use crate::server::state::AppState;
-use crate::storage::repositories::traces::TraceFilter;
+use crate::storage::repositories::traces::{TraceCompletedRow, TraceFilter};
 
 // Re-export from engine utils for backward compatibility
 pub(crate) use crate::engine::utils::merge_metadata;
 use crate::engine::utils::{inject_rollout_bucket, remove_rollout_bucket};
+
+/// Apply the per-channel/global filters to decide whether this trace should
+/// be persisted at all. Returns `Some(reason)` to drop (caller records metric).
+fn filter_should_drop(cfg: &EffectiveTraceConfig, has_errors: bool) -> Option<&'static str> {
+    if matches!(cfg.mode, TraceStorageMode::Off) {
+        return Some("off");
+    }
+    if cfg.errors_only && !has_errors {
+        return Some("errors_only");
+    }
+    if cfg.sample_rate < 1.0 {
+        // Inclusive 0.0 → always drop, 1.0 → never drop.
+        if rand::random::<f64>() >= cfg.sample_rate {
+            return Some("sampled_out");
+        }
+    }
+    None
+}
+
+/// Route a completed sync trace through the chosen persistence mode.
+async fn route_store_completed(
+    cfg: &EffectiveTraceConfig,
+    trace_repo: &std::sync::Arc<dyn crate::storage::repositories::traces::TraceRepository>,
+    persistence_queue: &TracePersistenceQueue,
+    channel: &str,
+    input_json: Option<&str>,
+    response_json: &str,
+    duration_ms: f64,
+    has_errors: bool,
+) {
+    if let Some(reason) = filter_should_drop(cfg, has_errors) {
+        metrics::record_trace_dropped(reason);
+        return;
+    }
+    match cfg.mode {
+        TraceStorageMode::Sync => {
+            if let Err(e) = trace_repo
+                .store_completed(channel, "sync", input_json, response_json, duration_ms)
+                .await
+            {
+                tracing::warn!(error = %e, "Failed to store sync processing result");
+            }
+        }
+        TraceStorageMode::Async | TraceStorageMode::Batch => {
+            let task = TracePersistenceTask::StoreCompleted(TraceCompletedRow {
+                channel: channel.to_string(),
+                mode: "sync".to_string(),
+                input_json: input_json.map(str::to_string),
+                result_json: response_json.to_string(),
+                duration_ms,
+            });
+            persistence_queue.submit(task).await;
+        }
+        TraceStorageMode::Off => unreachable!("filtered above"),
+    }
+}
 
 /// JSONLogic truthiness: false, null, 0, "", and [] are falsy; everything else is truthy.
 fn is_truthy(val: &serde_json::Value) -> bool {
@@ -139,17 +198,53 @@ async fn dynamic_handler(
     metadata["headers"] = Value::Object(header_map);
 
     if is_async {
-        let input_json = serde_json::to_string(&req.data).ok();
-        let trace = state
-            .trace_repo
-            .create_pending(&channel, "async", input_json.as_deref())
-            .await?;
-        let trace_id = trace.id.clone();
+        // Resolve the effective trace config (channel override > global default).
+        let channel_runtime = state.channel_registry.get_by_name(&channel).await;
+        let effective_trace = channel_runtime
+            .as_ref()
+            .map(|c| c.trace_storage)
+            .unwrap_or_else(|| {
+                crate::channel::registry::EffectiveTraceConfig::resolve(
+                    &state.config.tracing.storage,
+                    None,
+                )
+            });
 
         let trace_headers = {
             let mut h = std::collections::HashMap::new();
             crate::server::trace_context::inject_trace_context(&mut h);
             h
+        };
+
+        // In `off` mode skip the `create_pending` INSERT — emit a synthetic
+        // trace_id so the worker can still process, but return null to the
+        // caller along with a Warning header so polling clients know there's
+        // nothing to fetch.
+        let (trace_id, response): (String, Response) = if matches!(
+            effective_trace.mode,
+            crate::config::TraceStorageMode::Off
+        ) {
+            metrics::record_trace_dropped("off");
+            let id = uuid::Uuid::new_v4().to_string();
+            let mut resp = (StatusCode::ACCEPTED, Json(json!({ "trace_id": null })))
+                .into_response();
+            if let Ok(value) = axum::http::HeaderValue::from_str(&format!(
+                "299 - \"Trace persistence disabled for channel '{}'\"",
+                channel
+            )) {
+                resp.headers_mut().insert("warning", value);
+            }
+            (id, resp)
+        } else {
+            let input_json = serde_json::to_string(&req.data).ok();
+            let trace = state
+                .trace_repo
+                .create_pending(&channel, "async", input_json.as_deref())
+                .await?;
+            let id = trace.id.clone();
+            let resp =
+                (StatusCode::ACCEPTED, Json(json!({ "trace_id": trace.id }))).into_response();
+            (id, resp)
         };
 
         state
@@ -163,7 +258,7 @@ async fn dynamic_handler(
             })
             .await?;
 
-        return Ok((StatusCode::ACCEPTED, Json(json!({ "trace_id": trace.id }))).into_response());
+        return Ok(response);
     }
 
     process_sync_for_channel(&state, &channel, req.data, metadata, &headers).await
@@ -423,19 +518,27 @@ async fn process_sync_for_channel(
             }
 
             let input_json = serde_json::to_string(&data).ok();
-            if let Err(e) = state
-                .trace_repo
-                .store_completed(
-                    channel,
-                    "sync",
-                    input_json.as_deref(),
-                    &response_json,
-                    duration_ms,
-                )
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to store sync processing result");
-            }
+            let has_errors = message.has_errors();
+            let effective_trace = channel_config
+                .as_ref()
+                .map(|c| c.trace_storage)
+                .unwrap_or_else(|| {
+                    crate::channel::registry::EffectiveTraceConfig::resolve(
+                        &state.config.tracing.storage,
+                        None,
+                    )
+                });
+            route_store_completed(
+                &effective_trace,
+                &state.trace_repo,
+                &state.trace_persistence_queue,
+                channel,
+                input_json.as_deref(),
+                &response_json,
+                duration_ms,
+                has_errors,
+            )
+            .await;
 
             // Fire-and-forget cache store
             if let Some((ref key, ref cache, ttl)) = cache_context

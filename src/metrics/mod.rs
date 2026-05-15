@@ -168,6 +168,26 @@ pub fn set_trace_queue_memory_bytes(bytes: f64) {
 }
 
 // ---------------------------------------------------------------------------
+// Trace persistence queue metrics
+// ---------------------------------------------------------------------------
+
+/// Increment the dropped-trace counter. `reason` is one of:
+/// `"overflow"`, `"sampled_out"`, `"errors_only"`, `"off"`.
+pub fn record_trace_dropped(reason: &'static str) {
+    counter!("trace_dropped_total", "reason" => reason).increment(1);
+}
+
+/// Set the persistence queue depth.
+pub fn set_trace_persistence_queue_depth(depth: f64) {
+    gauge!("trace_persistence_queue_depth").set(depth);
+}
+
+/// Record a batch flush size (number of rows committed in one batch).
+pub fn record_trace_persistence_batch_size(size: usize) {
+    histogram!("trace_persistence_batch_size").record(size as f64);
+}
+
+// ---------------------------------------------------------------------------
 // Connector request metrics
 // ---------------------------------------------------------------------------
 

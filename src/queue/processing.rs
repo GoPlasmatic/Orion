@@ -29,6 +29,9 @@ pub(super) struct DispatcherContext {
     pub(super) trace_repo: Arc<dyn TraceRepository>,
     pub(super) dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     pub(super) counters: QueueCounters,
+    pub(super) channel_registry: Arc<crate::channel::ChannelRegistry>,
+    pub(super) persistence_queue: crate::queue::TracePersistenceQueue,
+    pub(super) global_trace_storage: crate::config::TracingStorageConfig,
 }
 
 /// Main dispatcher loop: receives traces from the channel and spawns processing
@@ -63,6 +66,9 @@ pub(super) async fn dispatcher_loop(mut rx: mpsc::Receiver<QueueMessage>, ctx: D
         let memory_counter = ctx.counters.memory_bytes.clone();
         let processing_timeout_ms = ctx.processing_timeout_ms;
         let max_result_size_bytes = ctx.max_result_size_bytes;
+        let channel_registry = ctx.channel_registry.clone();
+        let persistence_queue = ctx.persistence_queue.clone();
+        let global_trace_storage = ctx.global_trace_storage.clone();
 
         tokio::spawn(async move {
             let _permit = permit; // guard: dropped on scope exit, even on panic
@@ -73,6 +79,9 @@ pub(super) async fn dispatcher_loop(mut rx: mpsc::Receiver<QueueMessage>, ctx: D
                 dlq_repo,
                 processing_timeout_ms,
                 max_result_size_bytes,
+                channel_registry,
+                persistence_queue,
+                global_trace_storage,
             )
             .await;
             let active = active_counter
@@ -112,8 +121,63 @@ async fn set_trace_status(
     }
 }
 
+/// Mode-aware variant of `set_trace_status`. Sync mode writes inline; async
+/// and batch modes enqueue to the persistence queue; off mode is a no-op.
+async fn route_set_trace_status(
+    mode: crate::config::TraceStorageMode,
+    trace_repo: &dyn TraceRepository,
+    persistence_queue: &crate::queue::TracePersistenceQueue,
+    trace_id: &str,
+    status: &str,
+    message: Option<&str>,
+) {
+    match mode {
+        crate::config::TraceStorageMode::Sync => {
+            set_trace_status(trace_repo, trace_id, status, message).await;
+        }
+        crate::config::TraceStorageMode::Async | crate::config::TraceStorageMode::Batch => {
+            persistence_queue
+                .submit(crate::queue::TracePersistenceTask::UpdateStatus {
+                    id: trace_id.to_string(),
+                    status: status.to_string(),
+                    error_message: message.map(str::to_string),
+                })
+                .await;
+        }
+        crate::config::TraceStorageMode::Off => {}
+    }
+}
+
+/// Mode-aware result write. `Sync` writes inline (with retries kept by the
+/// caller); `Async`/`Batch` enqueue; `Off` skips.
+async fn route_set_result(
+    mode: crate::config::TraceStorageMode,
+    persistence_queue: &crate::queue::TracePersistenceQueue,
+    trace_id: &str,
+    result_json: String,
+    duration_ms: f64,
+) -> bool {
+    match mode {
+        crate::config::TraceStorageMode::Sync => false, // caller handles inline write
+        crate::config::TraceStorageMode::Async | crate::config::TraceStorageMode::Batch => {
+            persistence_queue
+                .submit(crate::queue::TracePersistenceTask::SetResult(
+                    crate::storage::repositories::traces::TraceResultRow {
+                        id: trace_id.to_string(),
+                        result_json,
+                        duration_ms,
+                    },
+                ))
+                .await;
+            true
+        }
+        crate::config::TraceStorageMode::Off => true,
+    }
+}
+
 /// Process a single queued trace.
-#[tracing::instrument(skip(msg, engine, trace_repo, dlq_repo, processing_timeout_ms, max_result_size_bytes), fields(trace_id = %msg.trace_id, channel = %msg.channel))]
+#[allow(clippy::too_many_arguments)]
+#[tracing::instrument(skip_all, fields(trace_id = %msg.trace_id, channel = %msg.channel))]
 async fn process_trace(
     msg: QueueMessage,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
@@ -121,7 +185,21 @@ async fn process_trace(
     dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     processing_timeout_ms: u64,
     max_result_size_bytes: usize,
+    channel_registry: Arc<crate::channel::ChannelRegistry>,
+    persistence_queue: crate::queue::TracePersistenceQueue,
+    global_trace_storage: crate::config::TracingStorageConfig,
 ) {
+    // Resolve effective trace-storage config for this channel (channel
+    // override > global default). In `Off` mode skip all trace writes; the
+    // workflow still runs but no DB rows are touched.
+    let effective_trace = match channel_registry.get_by_name(&msg.channel).await {
+        Some(c) => c.trace_storage,
+        None => crate::channel::registry::EffectiveTraceConfig::resolve(
+            &global_trace_storage,
+            None,
+        ),
+    };
+    let trace_mode = effective_trace.mode;
     // Restore W3C trace context from the originating request so this span
     // appears as a child in the caller's distributed trace.
     {
@@ -152,13 +230,27 @@ async fn process_trace(
     let payload_json_for_dlq = serde_json::to_string(&msg.payload).ok();
     let metadata_json_for_dlq = serde_json::to_string(&msg.metadata).ok();
 
-    // Mark as running
-    if let Err(e) = trace_repo
-        .update_status(&trace_id, models::TRACE_STATUS_RUNNING, None)
-        .await
-    {
-        tracing::error!(trace_id = %trace_id, error = %e, "Failed to update trace status to running");
-        return;
+    // Mark as running. In sync mode this blocks; in async/batch it enqueues;
+    // in off mode it's a no-op since no DB row exists.
+    if matches!(trace_mode, crate::config::TraceStorageMode::Sync) {
+        if let Err(e) = trace_repo
+            .update_status(&trace_id, models::TRACE_STATUS_RUNNING, None)
+            .await
+        {
+            tracing::error!(trace_id = %trace_id, error = %e, "Failed to update trace status to running");
+            return;
+        }
+    } else if matches!(
+        trace_mode,
+        crate::config::TraceStorageMode::Async | crate::config::TraceStorageMode::Batch
+    ) {
+        persistence_queue
+            .submit(crate::queue::TracePersistenceTask::UpdateStatus {
+                id: trace_id.clone(),
+                status: models::TRACE_STATUS_RUNNING.to_string(),
+                error_message: None,
+            })
+            .await;
     }
 
     // Build message
@@ -221,8 +313,10 @@ async fn process_trace(
                 Ok(json) => json,
                 Err(e) => {
                     tracing::error!(trace_id = %trace_id, error = %e, "Failed to serialize trace result");
-                    set_trace_status(
+                    route_set_trace_status(
+                        trace_mode,
                         trace_repo.as_ref(),
+                        &persistence_queue,
                         &trace_id,
                         models::TRACE_STATUS_FAILED,
                         Some(&format!("Result serialization failed: {e}")),
@@ -241,8 +335,10 @@ async fn process_trace(
                     "Trace result exceeds size limit"
                 );
                 metrics::record_error("result_size_exceeded");
-                set_trace_status(
+                route_set_trace_status(
+                    trace_mode,
                     trace_repo.as_ref(),
+                    &persistence_queue,
                     &trace_id,
                     models::TRACE_STATUS_FAILED,
                     Some(&format!(
@@ -255,29 +351,64 @@ async fn process_trace(
                 return;
             }
 
-            let mut result_saved = false;
-            for attempt in 0..3 {
-                match trace_repo
-                    .set_result(&trace_id, &result_json, duration_ms)
-                    .await
-                {
-                    Ok(_) => {
-                        result_saved = true;
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            trace_id = %trace_id, error = %e, attempt = attempt + 1,
-                            "Failed to save trace result, retrying"
-                        );
-                        tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
-                    }
-                }
+            // Apply filters: errors_only (we know now: succeeded → drop) +
+            // sample_rate (random per-trace).
+            let mut should_persist_result = true;
+            if effective_trace.errors_only {
+                // success branch → no errors → drop
+                metrics::record_trace_dropped("errors_only");
+                should_persist_result = false;
+            } else if effective_trace.sample_rate < 1.0
+                && rand::random::<f64>() >= effective_trace.sample_rate
+            {
+                metrics::record_trace_dropped("sampled_out");
+                should_persist_result = false;
             }
 
+            let result_saved = if !should_persist_result {
+                // Treat as saved for state-machine purposes — we won't write,
+                // but we also don't want to mark FAILED.
+                true
+            } else if route_set_result(
+                trace_mode,
+                &persistence_queue,
+                &trace_id,
+                result_json.clone(),
+                duration_ms,
+            )
+            .await
+            {
+                // Async / batch / off: the queue accepted (or off mode skipped).
+                true
+            } else {
+                // Sync mode: retry inline with backoff.
+                let mut ok = false;
+                for attempt in 0..3 {
+                    match trace_repo
+                        .set_result(&trace_id, &result_json, duration_ms)
+                        .await
+                    {
+                        Ok(_) => {
+                            ok = true;
+                            break;
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                trace_id = %trace_id, error = %e, attempt = attempt + 1,
+                                "Failed to save trace result, retrying"
+                            );
+                            tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
+                        }
+                    }
+                }
+                ok
+            };
+
             if result_saved {
-                set_trace_status(
+                route_set_trace_status(
+                    trace_mode,
                     trace_repo.as_ref(),
+                    &persistence_queue,
                     &trace_id,
                     models::TRACE_STATUS_COMPLETED,
                     None,
@@ -285,8 +416,10 @@ async fn process_trace(
                 .await;
             } else {
                 tracing::error!(trace_id = %trace_id, "Failed to save trace result after 3 attempts, marking as failed");
-                set_trace_status(
+                route_set_trace_status(
+                    trace_mode,
                     trace_repo.as_ref(),
+                    &persistence_queue,
                     &trace_id,
                     models::TRACE_STATUS_FAILED,
                     Some("Result persistence failed after retries"),
@@ -299,8 +432,10 @@ async fn process_trace(
             metrics::record_error("engine");
 
             let error_str = e.to_string();
-            set_trace_status(
+            route_set_trace_status(
+                trace_mode,
                 trace_repo.as_ref(),
+                &persistence_queue,
                 &trace_id,
                 models::TRACE_STATUS_FAILED,
                 Some(&error_str),
