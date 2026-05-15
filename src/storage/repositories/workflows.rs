@@ -984,7 +984,7 @@ mod tests {
             status: EntityStatus::Active.as_str().to_string(),
             rollout_percentage: 100,
             condition_json: r#"{"==": [{"var": "type"}, "order"]}"#.to_string(),
-            tasks_json: r#"[{"id":"t1","name":"Process","function":{"name":"log","input":{}}}]"#
+            tasks_json: r#"[{"id":"t1","name":"Process","function":{"name":"log","input":{"message":"test"}}}]"#
                 .to_string(),
             tags: r#"["orders"]"#.to_string(),
             continue_on_error: true,
@@ -1008,7 +1008,7 @@ mod tests {
             status: EntityStatus::Active.as_str().to_string(),
             rollout_percentage: 50,
             condition_json: "true".to_string(),
-            tasks_json: r#"[{"id":"t1","name":"Noop","function":{"name":"log","input":{}}}]"#
+            tasks_json: r#"[{"id":"t1","name":"Noop","function":{"name":"log","input":{"message":"test"}}}]"#
                 .to_string(),
             tags: "[]".to_string(),
             continue_on_error: false,

@@ -165,7 +165,11 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
         // Build the new engine outside the write lock to minimize lock hold time.
         // Clone the current engine Arc, build new workflows, then swap atomically.
         let current_engine = crate::engine::acquire_engine_read(&state.engine).await;
-        let new_engine = Arc::new(current_engine.with_new_workflows(workflows));
+        let new_engine = Arc::new(
+            current_engine
+                .with_new_workflows(workflows)
+                .map_err(crate::errors::OrionError::Engine)?,
+        );
 
         let mut engine_write = tokio::time::timeout(
             std::time::Duration::from_secs(state.config.engine.reload_timeout_secs),
@@ -182,7 +186,12 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
         // Rebuild channel registry
         state
             .channel_registry
-            .reload(&channels, &state.connector_registry, &state.cache_pool)
+            .reload(
+                &channels,
+                &state.connector_registry,
+                &state.cache_pool,
+                &state.datalogic,
+            )
             .await;
 
         // Update active workflows gauge

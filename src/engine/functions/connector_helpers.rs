@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use dataflow_rs::engine::error::DataflowError;
-use dataflow_rs::engine::functions::config::FunctionConfig;
-use dataflow_rs::engine::message::{Change, Message};
+use dataflow_rs::engine::task_context::TaskContext;
 use serde_json::Value;
 
 use crate::connector::{
@@ -20,20 +19,6 @@ pub fn extract_output_path(input: &Value) -> &str {
 /// Converts any `Display`-able error into a `DataflowError::FunctionExecution`.
 pub fn to_exec_error(e: impl std::fmt::Display) -> DataflowError {
     DataflowError::function_execution(e.to_string(), None)
-}
-
-/// Extracts the `input` value from a `FunctionConfig::Custom` variant.
-/// Returns a validation error if the config is any other variant.
-pub fn extract_custom_input<'a>(
-    config: &'a FunctionConfig,
-    handler_name: &str,
-) -> Result<&'a Value, DataflowError> {
-    match config {
-        FunctionConfig::Custom { input, .. } => Ok(input),
-        _ => Err(DataflowError::Validation(format!(
-            "Expected Custom config for {handler_name}"
-        ))),
-    }
 }
 
 /// Extracts a required string field from a JSON value, returning a validation
@@ -87,18 +72,10 @@ pub fn require_cache_connector<'a>(
     }
 }
 
-/// Sets a value at `output_path` in the message context and returns the
-/// corresponding `Change` record.  Consolidates the repeated
-/// get_nested → set_nested → invalidate_context_cache → Change pattern.
-pub fn apply_output(message: &mut Message, output_path: &str, new_value: Value) -> Vec<Change> {
-    let old_value = super::http_common::get_nested(&message.context, output_path);
-    super::http_common::set_nested(&mut message.context, output_path, new_value.clone());
-    message.invalidate_context_cache();
-    vec![Change {
-        path: Arc::from(output_path),
-        old_value: Arc::new(old_value),
-        new_value: Arc::new(new_value),
-    }]
+/// Writes a value at `output_path` in the message context via `TaskContext::set_json`,
+/// which auto-records a `Change` on the audit trail when `capture_changes` is on.
+pub fn apply_output(ctx: &mut TaskContext<'_>, output_path: &str, new_value: Value) {
+    ctx.set_json(output_path, &new_value);
 }
 
 /// Bind a slice of JSON values to a sqlx query, matching each value type to

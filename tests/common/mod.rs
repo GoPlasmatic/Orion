@@ -70,10 +70,9 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
     ));
 
     let http_client = reqwest::Client::new();
-    let engine = Arc::new(RwLock::new(Arc::new(dataflow_rs::Engine::new(
-        vec![],
-        None,
-    ))));
+    let engine = Arc::new(RwLock::new(Arc::new(
+        dataflow_rs::Engine::builder().build().unwrap(),
+    )));
     let custom_functions = orion::engine::build_custom_functions(
         connector_registry.clone(),
         http_client.clone(),
@@ -83,7 +82,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         sql_pool_cache.clone(),
         mongo_pool_cache.clone(),
     );
-    let built_engine = dataflow_rs::Engine::new(vec![], Some(custom_functions));
+    let built_engine = dataflow_rs::Engine::new(vec![], custom_functions).unwrap();
     *engine.write().await = Arc::new(built_engine);
 
     // Start a small worker pool for async trace tests
@@ -139,7 +138,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         start_time: chrono::Utc::now(),
         metrics_handle,
         http_client,
-        datalogic: Arc::new(datalogic_rs::DataLogic::new()),
+        datalogic: Arc::new(datalogic_rs::Engine::new()),
         rate_limit_state,
         ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         sql_pool_cache,

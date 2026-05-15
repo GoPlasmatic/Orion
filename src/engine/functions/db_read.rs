@@ -2,16 +2,15 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::functions::config::FunctionConfig;
-use dataflow_rs::engine::message::{Change, Message};
-use datalogic_rs::DataLogic;
+use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 use sqlx::any::AnyRow;
 use sqlx::{Column, Row};
 
 use super::connector_helpers::{
-    apply_output, bind_json_params, extract_custom_input, extract_output_path,
-    require_db_connector, require_str_field, resolve_connector, timed_query, to_exec_error,
+    apply_output, bind_json_params, extract_output_path, require_db_connector, require_str_field,
+    resolve_connector, timed_query, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
@@ -24,13 +23,13 @@ pub struct DbReadHandler {
 
 #[async_trait]
 impl AsyncFunctionHandler for DbReadHandler {
+    type Input = Value;
+
     async fn execute(
         &self,
-        message: &mut Message,
-        config: &FunctionConfig,
-        _datalogic: Arc<DataLogic>,
-    ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
-        let input = extract_custom_input(config, "db_read")?;
+        ctx: &mut TaskContext<'_>,
+        input: &Value,
+    ) -> dataflow_rs::Result<TaskOutcome> {
         let connector_name = require_str_field(input, "connector", "db_read")?;
         let query = require_str_field(input, "query", "db_read")?;
         let params = input.get("params").and_then(|v| v.as_array());
@@ -61,9 +60,8 @@ impl AsyncFunctionHandler for DbReadHandler {
         let result = rows_to_json(&rows);
 
         let output_path = extract_output_path(input);
-
-        let changes = apply_output(message, output_path, result);
-        Ok((1, changes))
+        apply_output(ctx, output_path, result);
+        Ok(TaskOutcome::Success)
     }
 }
 
@@ -76,7 +74,6 @@ pub fn rows_to_json(rows: &[AnyRow]) -> Value {
         return Value::Array(Vec::new());
     }
 
-    // Pre-collect column names once from the first row
     let col_names: Vec<String> = rows[0]
         .columns()
         .iter()
@@ -87,7 +84,6 @@ pub fn rows_to_json(rows: &[AnyRow]) -> Value {
     for row in rows {
         let mut obj = serde_json::Map::with_capacity(col_names.len());
         for (i, name) in col_names.iter().enumerate() {
-            // Try to extract as various types, falling back through the chain
             let val = if let Ok(v) = row.try_get::<String, _>(i) {
                 Value::String(v)
             } else if let Ok(v) = row.try_get::<i64, _>(i) {

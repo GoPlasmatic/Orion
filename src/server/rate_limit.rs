@@ -128,7 +128,11 @@ pub async fn rate_limit_middleware(
             // Compute rate limit key from key_logic or default to client_ip
             let key = if let Some(ref compiled) = channel_config.rate_limit_key_logic {
                 let context = build_rate_limit_context(&client_ip, channel, &req);
-                match state.datalogic.evaluate(compiled, Arc::new(context)) {
+                match state
+                    .datalogic
+                    .session()
+                    .eval_into::<serde_json::Value, _>(compiled, &context)
+                {
                     Ok(val) => val.as_str().map(|s| s.to_string()).unwrap_or_else(|| {
                         serde_json::to_string(&val).unwrap_or_else(|_| client_ip.clone())
                     }),

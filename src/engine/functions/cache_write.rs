@@ -3,14 +3,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::functions::config::FunctionConfig;
-use dataflow_rs::engine::message::{Change, Message};
-use datalogic_rs::DataLogic;
+use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    extract_custom_input, require_cache_connector, require_str_field, resolve_connector,
-    to_exec_error,
+    require_cache_connector, require_str_field, resolve_connector, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -23,13 +21,13 @@ pub struct CacheWriteHandler {
 
 #[async_trait]
 impl AsyncFunctionHandler for CacheWriteHandler {
+    type Input = Value;
+
     async fn execute(
         &self,
-        _message: &mut Message,
-        config: &FunctionConfig,
-        _datalogic: Arc<DataLogic>,
-    ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
-        let input = extract_custom_input(config, "cache_write")?;
+        _ctx: &mut TaskContext<'_>,
+        input: &Value,
+    ) -> dataflow_rs::Result<TaskOutcome> {
         let connector_name = require_str_field(input, "connector", "cache_write")?;
         let key = require_str_field(input, "key", "cache_write")?;
 
@@ -42,7 +40,6 @@ impl AsyncFunctionHandler for CacheWriteHandler {
             .await
             .map_err(to_exec_error)?;
 
-        // Serialize the value to a string for storage
         let value_str = match input.get("value") {
             Some(Value::String(s)) => s.clone(),
             Some(v) => serde_json::to_string(v).map_err(|e| {
@@ -55,7 +52,6 @@ impl AsyncFunctionHandler for CacheWriteHandler {
             }
         };
 
-        // Optional TTL in seconds
         let ttl = input.get("ttl_secs").and_then(|v| v.as_u64());
 
         if let Some(ttl) = ttl {
@@ -73,6 +69,6 @@ impl AsyncFunctionHandler for CacheWriteHandler {
             "Wrote value to cache"
         );
 
-        Ok((1, vec![]))
+        Ok(TaskOutcome::Success)
     }
 }
