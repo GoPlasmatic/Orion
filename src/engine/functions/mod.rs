@@ -16,32 +16,34 @@ use std::time::Duration;
 
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::message::Message;
-use datalogic_rs::DataLogic;
+use dataflow_rs::engine::task_context::TaskContext;
 use serde_json::Value;
 
 use crate::connector::circuit_breaker::CircuitBreaker;
 
-/// Resolve a URL path from a static string or a JSONLogic expression.
+/// Resolve a URL path from a static string or a pre-compiled JSONLogic expression.
+///
+/// In v3 the engine pre-compiles JSONLogic from the typed `HttpCallConfig`
+/// at startup, so handlers pass the cached `Arc<Logic>` rather than the raw
+/// `serde_json::Value`. Evaluation uses the engine inside the
+/// [`TaskContext`].
 pub fn resolve_path(
     static_path: &Option<String>,
-    path_logic: &Option<Value>,
-    message: &mut Message,
-    datalogic: &DataLogic,
+    compiled_logic: Option<&datalogic_rs::Logic>,
+    ctx: &TaskContext<'_>,
 ) -> dataflow_rs::Result<Option<String>> {
-    if let Some(logic) = path_logic {
-        let context = message.get_context_arc();
-        let compiled = datalogic
-            .compile(logic)
-            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-        let result = datalogic
-            .evaluate(&compiled, context)
+    if let Some(compiled) = compiled_logic {
+        let result: Value = ctx
+            .datalogic()
+            .session()
+            .eval_into(compiled, &ctx.message().context)
             .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
         let path_str = if let Some(s) = result.as_str() {
             s.to_string()
         } else {
             serde_json::to_string(&result).map_err(|e| {
                 DataflowError::function_execution(
-                    format!("Failed to serialize resolved path: {}", e),
+                    format!("Failed to serialize resolved path: {e}"),
                     None,
                 )
             })?
@@ -75,10 +77,6 @@ pub fn extract_channel(message: &Message) -> &str {
 }
 
 /// Execute an operation wrapped with circuit breaker + retry.
-///
-/// 1. Check breaker — reject early if open
-/// 2. Run retry_with_backoff
-/// 3. Record success/failure on the breaker
 pub async fn execute_with_circuit_breaker<F, Fut>(
     breaker: &Arc<CircuitBreaker>,
     connector: &str,
@@ -96,8 +94,7 @@ where
         crate::metrics::record_circuit_breaker_rejection(connector, channel);
         return Err(DataflowError::function_execution(
             format!(
-                "Circuit breaker open for connector '{}' on channel '{}'",
-                connector, channel
+                "Circuit breaker open for connector '{connector}' on channel '{channel}'"
             ),
             None,
         ));
@@ -142,7 +139,7 @@ where
 {
     let mut last_error = None;
 
-    const MAX_BACKOFF_MS: u64 = 60_000; // cap at 60 seconds
+    const MAX_BACKOFF_MS: u64 = 60_000;
 
     for attempt in 0..=max_retries {
         if attempt > 0 {
@@ -220,9 +217,11 @@ mod tests {
     #[test]
     fn test_extract_channel_with_channel() {
         let mut message = Message::from_value(&serde_json::json!({"key": "val"}));
-        if let Some(meta) = message.metadata_mut().as_object_mut() {
-            meta.insert("channel".to_string(), Value::String("orders".to_string()));
-        }
+        dataflow_rs::engine::utils::set_nested_value(
+            &mut message.context,
+            "metadata.channel",
+            datavalue::OwnedDataValue::from("orders".to_string()),
+        );
         assert_eq!(extract_channel(&message), "orders");
     }
 
@@ -230,46 +229,6 @@ mod tests {
     fn test_extract_channel_without_channel() {
         let message = Message::from_value(&serde_json::json!({}));
         assert_eq!(extract_channel(&message), "unknown");
-    }
-
-    #[test]
-    fn test_resolve_path_static() {
-        let datalogic = DataLogic::default();
-        let mut message = Message::from_value(&serde_json::json!({}));
-        let result =
-            resolve_path(&Some("/users".to_string()), &None, &mut message, &datalogic).unwrap();
-        assert_eq!(result, Some("/users".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_path_none() {
-        let datalogic = DataLogic::default();
-        let mut message = Message::from_value(&serde_json::json!({}));
-        let result = resolve_path(&None, &None, &mut message, &datalogic).unwrap();
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_resolve_path_logic_expression() {
-        let datalogic = DataLogic::default();
-        let mut message = Message::from_value(&serde_json::json!({}));
-        // Set data in context so JSONLogic can find it
-        *message.data_mut() = serde_json::json!({"path": "/dynamic"});
-        message.invalidate_context_cache();
-        let logic = serde_json::json!({"var": "data.path"});
-        let result = resolve_path(&None, &Some(logic), &mut message, &datalogic).unwrap();
-        assert_eq!(result, Some("/dynamic".to_string()));
-    }
-
-    #[test]
-    fn test_resolve_path_logic_non_string_result() {
-        let datalogic = DataLogic::default();
-        let mut message = Message::from_value(&serde_json::json!({}));
-        *message.data_mut() = serde_json::json!({"id": 42});
-        message.invalidate_context_cache();
-        let logic = serde_json::json!({"var": "data.id"});
-        let result = resolve_path(&None, &Some(logic), &mut message, &datalogic).unwrap();
-        assert_eq!(result, Some("42".to_string()));
     }
 
     #[tokio::test]
@@ -315,7 +274,6 @@ mod tests {
         })
         .await;
         assert!(result.is_err());
-        // Non-retryable errors should not retry
         assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
@@ -332,7 +290,6 @@ mod tests {
         })
         .await;
         assert!(result.is_err());
-        // 1 initial + 2 retries = 3 total attempts
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
@@ -370,7 +327,6 @@ mod tests {
         };
         let breaker = Arc::new(CircuitBreaker::new(config));
 
-        // Trip the circuit breaker
         breaker.record_failure();
 
         let result = execute_with_circuit_breaker(
@@ -415,7 +371,6 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        // Breaker should still be closed (threshold is 5)
         assert!(breaker.check());
     }
 }

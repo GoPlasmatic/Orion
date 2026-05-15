@@ -344,7 +344,8 @@ pub(crate) async fn test_workflow(
         state.sql_pool_cache.clone(),
         state.mongo_pool_cache.clone(),
     );
-    let test_engine = dataflow_rs::Engine::new(vec![df_workflow], Some(custom_fns));
+    let test_engine = dataflow_rs::Engine::new(vec![df_workflow], custom_fns)
+        .map_err(OrionError::Engine)?;
 
     let mut payload = json!({});
     if let Some(obj) = req.data.as_object() {
@@ -377,7 +378,7 @@ pub(crate) async fn test_workflow(
         "matched": matched,
         "trace": trace_value,
         "output": message.data(),
-        "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
+        "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
     })))
 }
 
@@ -503,7 +504,7 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
 
     validate_basic_fields(req, &mut errors);
 
-    let dl = datalogic_rs::DataLogic::new();
+    let dl = datalogic_rs::Engine::new();
 
     if let Some(tasks) = req.tasks.as_array() {
         validate_tasks(tasks, &dl, state, &mut errors, &mut warnings).await;
@@ -539,7 +540,7 @@ fn validate_basic_fields(req: &CreateWorkflowRequest, errors: &mut Vec<Validatio
 /// Validate individual tasks: required fields, unique IDs, conditions, function names, connector refs.
 async fn validate_tasks(
     tasks: &[Value],
-    dl: &datalogic_rs::DataLogic,
+    dl: &datalogic_rs::Engine,
     state: &AppState,
     errors: &mut Vec<ValidationIssue>,
     warnings: &mut Vec<ValidationIssue>,
@@ -622,7 +623,7 @@ async fn validate_tasks(
 /// Validate workflow-level JSONLogic condition.
 fn validate_workflow_condition(
     condition: &Value,
-    dl: &datalogic_rs::DataLogic,
+    dl: &datalogic_rs::Engine,
     errors: &mut Vec<ValidationIssue>,
 ) {
     if let Err(e) = dl.compile(condition) {

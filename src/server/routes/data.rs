@@ -197,13 +197,16 @@ fn validate_input(
     channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
     data: &Value,
     metadata: &Value,
-    datalogic: &datalogic_rs::DataLogic,
+    datalogic: &datalogic_rs::Engine,
 ) -> Result<(), OrionError> {
     if let Some(cfg) = channel_config
         && let Some(ref compiled) = cfg.validation_logic
     {
-        let context = std::sync::Arc::new(json!({ "data": data, "metadata": metadata }));
-        match datalogic.evaluate(compiled, context) {
+        let context = json!({ "data": data, "metadata": metadata });
+        match datalogic
+            .session()
+            .eval_into::<serde_json::Value, _>(compiled, &context)
+        {
             Ok(result) => {
                 if !is_truthy(&result) {
                     return Err(OrionError::BadRequest(
@@ -398,10 +401,10 @@ async fn process_sync_for_channel(
             metrics::record_channel_execution(channel);
 
             let response = json!({
-                "id": message.id,
+                "id": message.id(),
                 "status": "ok",
                 "data": message.data(),
-                "errors": message.errors.iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
+                "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
             });
 
             // Serialize response exactly once — reused for size check, trace storage,

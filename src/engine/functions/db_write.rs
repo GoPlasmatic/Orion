@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::functions::config::FunctionConfig;
-use dataflow_rs::engine::message::{Change, Message};
-use datalogic_rs::DataLogic;
+use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs::engine::task_outcome::TaskOutcome;
+use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, bind_json_params, extract_custom_input, extract_output_path,
-    require_db_connector, require_str_field, resolve_connector, timed_query, to_exec_error,
+    apply_output, bind_json_params, extract_output_path, require_db_connector, require_str_field,
+    resolve_connector, timed_query, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
@@ -22,13 +22,13 @@ pub struct DbWriteHandler {
 
 #[async_trait]
 impl AsyncFunctionHandler for DbWriteHandler {
+    type Input = Value;
+
     async fn execute(
         &self,
-        message: &mut Message,
-        config: &FunctionConfig,
-        _datalogic: Arc<DataLogic>,
-    ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
-        let input = extract_custom_input(config, "db_write")?;
+        ctx: &mut TaskContext<'_>,
+        input: &Value,
+    ) -> dataflow_rs::Result<TaskOutcome> {
         let connector_name = require_str_field(input, "connector", "db_write")?;
         let query = require_str_field(input, "query", "db_write")?;
         let params = input.get("params").and_then(|v| v.as_array());
@@ -61,8 +61,7 @@ impl AsyncFunctionHandler for DbWriteHandler {
         });
 
         let output_path = extract_output_path(input);
-
-        let changes = apply_output(message, output_path, output);
-        Ok((1, changes))
+        apply_output(ctx, output_path, output);
+        Ok(TaskOutcome::Success)
     }
 }

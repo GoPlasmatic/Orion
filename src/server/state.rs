@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use datalogic_rs::DataLogic;
+use datalogic_rs::Engine as DatalogicEngine;
 use metrics_exporter_prometheus::PrometheusHandle;
 use tokio::sync::{Mutex, RwLock};
 
@@ -36,7 +36,7 @@ pub struct AppState {
     pub start_time: chrono::DateTime<chrono::Utc>,
     pub metrics_handle: PrometheusHandle,
     pub http_client: reqwest::Client,
-    pub datalogic: Arc<DataLogic>,
+    pub datalogic: Arc<DatalogicEngine>,
     pub rate_limit_state: Option<Arc<RateLimitState>>,
     /// Startup readiness flag — set to true after engine is fully loaded.
     pub ready: Arc<AtomicBool>,
