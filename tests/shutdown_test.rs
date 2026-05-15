@@ -39,11 +39,18 @@ async fn test_worker_shutdown_empty_queue() {
         max_queue_memory_bytes: 104_857_600,
         ..Default::default()
     };
+    let channel_registry = std::sync::Arc::new(orion::channel::ChannelRegistry::new());
+    let global_trace_storage = orion::config::TracingStorageConfig::default();
+    let (persistence_queue, _persistence_handle) =
+        orion::queue::trace_persistence::start(&global_trace_storage, trace_repo.clone());
     let (queue, worker_handle) = orion::queue::start_workers(
         &test_queue_config,
         engine,
         trace_repo,
         None, // no DLQ for this test
+        channel_registry,
+        persistence_queue,
+        global_trace_storage,
     );
 
     // Drop the queue sender so the dispatcher loop exits when WorkerHandle

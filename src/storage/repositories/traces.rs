@@ -21,6 +21,24 @@ pub struct TraceFilter {
     pub sort_order: Option<String>,
 }
 
+/// Owned payload for a batched `store_completed` write.
+#[derive(Debug, Clone)]
+pub struct TraceCompletedRow {
+    pub channel: String,
+    pub mode: String,
+    pub input_json: Option<String>,
+    pub result_json: String,
+    pub duration_ms: f64,
+}
+
+/// Owned payload for a batched `set_result` write.
+#[derive(Debug, Clone)]
+pub struct TraceResultRow {
+    pub id: String,
+    pub result_json: String,
+    pub duration_ms: f64,
+}
+
 // -- Repository trait --
 
 #[async_trait]
@@ -52,6 +70,41 @@ pub trait TraceRepository: Send + Sync {
         result_json: &str,
         duration_ms: f64,
     ) -> Result<String, OrionError>;
+
+    /// Batched variant of [`store_completed`]. Default impl loops the singular
+    /// method; backend implementations can override with a single multi-row
+    /// INSERT inside one transaction (huge win on WAL-mode SQLite where each
+    /// individual commit is a fsync).
+    async fn store_completed_batch(
+        &self,
+        rows: &[TraceCompletedRow],
+    ) -> Result<Vec<String>, OrionError> {
+        let mut ids = Vec::with_capacity(rows.len());
+        for row in rows {
+            ids.push(
+                self.store_completed(
+                    &row.channel,
+                    &row.mode,
+                    row.input_json.as_deref(),
+                    &row.result_json,
+                    row.duration_ms,
+                )
+                .await?,
+            );
+        }
+        Ok(ids)
+    }
+
+    /// Batched variant of [`set_result`]. Default impl loops the singular
+    /// method; backend implementations can override using one transaction.
+    async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
+        for row in rows {
+            self.set_result(&row.id, &row.result_json, row.duration_ms)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn list_paginated(
         &self,
         filter: &TraceFilter,
@@ -236,6 +289,81 @@ impl TraceRepository for SqlTraceRepository {
             self.pool.execute_query(&sql, values).await?;
 
             Ok(id)
+        })
+        .await
+    }
+
+    async fn store_completed_batch(
+        &self,
+        rows: &[TraceCompletedRow],
+    ) -> Result<Vec<String>, OrionError> {
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        crate::metrics::timed_db_op("traces.store_completed_batch", async {
+            let now = chrono::Utc::now().naive_utc().to_string();
+            let mut ids = Vec::with_capacity(rows.len());
+            let mut insert = Query::insert();
+            insert.into_table(Traces::Table).columns([
+                Traces::Id,
+                Traces::Status,
+                Traces::Channel,
+                Traces::Mode,
+                Traces::InputJson,
+                Traces::ResultJson,
+                Traces::DurationMs,
+                Traces::StartedAt,
+                Traces::CompletedAt,
+            ]);
+            for row in rows {
+                let id = uuid::Uuid::new_v4().to_string();
+                let input_val = super::helpers::optional_string_value(row.input_json.as_deref());
+                insert.values_panic([
+                    Expr::val(id.as_str()).into(),
+                    Expr::val("completed").into(),
+                    Expr::val(row.channel.as_str()).into(),
+                    Expr::val(row.mode.as_str()).into(),
+                    Expr::val(input_val).into(),
+                    Expr::val(row.result_json.as_str()).into(),
+                    Expr::val(row.duration_ms).into(),
+                    Expr::val(now.as_str()).into(),
+                    Expr::val(now.as_str()).into(),
+                ]);
+                ids.push(id);
+            }
+            let (sql, values) = build_sqlx(&mut insert);
+            self.pool.execute_query(&sql, values).await?;
+            crate::metrics::record_trace_persistence_batch_size(rows.len());
+            Ok(ids)
+        })
+        .await
+    }
+
+    async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        crate::metrics::timed_db_op("traces.set_result_batch", async {
+            let mut tx = self
+                .pool
+                .begin_tx()
+                .await
+                .map_err(OrionError::Storage)?;
+            for row in rows {
+                let (sql, values) = build_sqlx(
+                    Query::update()
+                        .table(Traces::Table)
+                        .value(Traces::ResultJson, row.result_json.as_str())
+                        .value(Traces::DurationMs, row.duration_ms)
+                        .and_where(Expr::col(Traces::Id).eq(row.id.as_str())),
+                );
+                tx.execute_query(&sql, values).await?;
+            }
+            tx.commit()
+                .await
+                .map_err(OrionError::Storage)?;
+            crate::metrics::record_trace_persistence_batch_size(rows.len());
+            Ok(())
         })
         .await
     }

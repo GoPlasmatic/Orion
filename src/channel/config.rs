@@ -39,6 +39,25 @@ pub struct ChannelConfig {
     /// Example: `{ "and": [{ "!!": { "var": "data.order_id" } }, { ">": [{ "var": "data.quantity" }, 0] }] }`
     #[serde(default)]
     pub validation_logic: Option<Value>,
+
+    /// Per-channel override of `[tracing.storage]`. Each field is independently
+    /// optional; unset fields fall back to the global setting.
+    #[serde(default)]
+    pub tracing: Option<ChannelTracingConfig>,
+}
+
+/// Per-channel override for the trace-storage policy. Each field overrides
+/// the corresponding global value when set; otherwise the global default
+/// applies. The resolved `EffectiveTraceConfig` lives on `ChannelRuntimeConfig`
+/// so the request path doesn't merge per request.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ChannelTracingConfig {
+    #[serde(default)]
+    pub mode: Option<crate::config::TraceStorageMode>,
+    #[serde(default)]
+    pub sample_rate: Option<f64>,
+    #[serde(default)]
+    pub errors_only: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

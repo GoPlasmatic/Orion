@@ -99,11 +99,19 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         max_queue_memory_bytes: 104_857_600, // 100 MB
         ..Default::default()
     };
+    let (trace_persistence_queue_for_workers, _trace_persistence_handle) =
+        orion::queue::trace_persistence::start(
+            &config.tracing.storage,
+            trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+        );
     let (trace_queue, _worker_handle) = orion::queue::start_workers(
         &test_queue_config,
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
         dlq_repo,
+        channel_registry.clone(),
+        trace_persistence_queue_for_workers.clone(),
+        config.tracing.storage.clone(),
     );
 
     // Init metrics recorder (use try — may already be initialized by another test)
@@ -145,6 +153,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         mongo_pool_cache,
         kafka_consumer_handle: Arc::new(tokio::sync::Mutex::new(None)),
         kafka_producer: None,
+        trace_persistence_queue: trace_persistence_queue_for_workers,
     };
 
     orion::server::build_router(state)

@@ -11,8 +11,45 @@ use super::routing::{RouteMatch, RouteTable};
 
 use crate::connector::ConnectorConfig;
 use crate::connector::ConnectorRegistry;
+use crate::config::{TraceStorageMode, TracingStorageConfig};
 use crate::connector::cache_backend::{CacheBackend, CachePool};
 use crate::storage::models::Channel;
+
+/// Trace-storage policy resolved for a single channel.
+///
+/// Produced by merging the global `[tracing.storage]` config with the
+/// channel-level `tracing` override (`ChannelTracingConfig`). Lives on
+/// `ChannelRuntimeConfig` so the request hot path looks up exactly one
+/// `Arc<ChannelRuntimeConfig>` and reads pre-resolved values.
+#[derive(Debug, Clone, Copy)]
+pub struct EffectiveTraceConfig {
+    pub mode: TraceStorageMode,
+    pub sample_rate: f64,
+    pub errors_only: bool,
+}
+
+impl EffectiveTraceConfig {
+    /// Compute the effective config by overlaying a channel-level
+    /// override on top of the global storage config.
+    pub fn resolve(
+        global: &TracingStorageConfig,
+        channel: Option<&super::config::ChannelTracingConfig>,
+    ) -> Self {
+        let (mode, sample_rate, errors_only) = match channel {
+            Some(c) => (
+                c.mode.unwrap_or(global.mode),
+                c.sample_rate.unwrap_or(global.sample_rate),
+                c.errors_only.unwrap_or(global.errors_only),
+            ),
+            None => (global.mode, global.sample_rate, global.errors_only),
+        };
+        Self {
+            mode,
+            sample_rate,
+            errors_only,
+        }
+    }
+}
 
 /// Runtime state for a single active channel.
 pub struct ChannelRuntimeConfig {
@@ -36,6 +73,8 @@ pub struct ChannelRuntimeConfig {
     /// Per-channel response cache backend.
     /// When set, sync responses are cached with a configurable TTL.
     pub response_cache: Option<Arc<dyn CacheBackend>>,
+    /// Trace storage policy after merging the global and per-channel config.
+    pub trace_storage: EffectiveTraceConfig,
 }
 
 /// In-memory registry of active channels, rebuilt on engine reload.
@@ -78,6 +117,7 @@ impl ChannelRegistry {
         connector_registry: &ConnectorRegistry,
         cache_pool: &CachePool,
         datalogic: &DatalogicEngine,
+        global_trace_storage: &TracingStorageConfig,
     ) {
         let mut new_map = HashMap::new();
         for channel in channels {
@@ -221,6 +261,10 @@ impl ChannelRegistry {
                 None
             };
 
+            let trace_storage = EffectiveTraceConfig::resolve(
+                global_trace_storage,
+                parsed_config.tracing.as_ref(),
+            );
             let runtime = Arc::new(ChannelRuntimeConfig {
                 channel: channel.clone(),
                 parsed_config,
@@ -230,6 +274,7 @@ impl ChannelRegistry {
                 backpressure_semaphore,
                 dedup_store,
                 response_cache,
+                trace_storage,
             });
             new_map.insert(channel.name.clone(), runtime);
         }

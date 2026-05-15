@@ -191,6 +191,7 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
                 &state.connector_registry,
                 &state.cache_pool,
                 &state.datalogic,
+                &state.config.tracing.storage,
             )
             .await;
 

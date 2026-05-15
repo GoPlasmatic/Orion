@@ -17,6 +17,10 @@ pub struct TracingConfig {
     pub service_name: String,
     /// Sampling rate from 0.0 (none) to 1.0 (all).
     pub sample_rate: f64,
+    /// Persistence policy for engine traces (rows written to the `traces` table).
+    /// Unrelated to OpenTelemetry export above — this controls Orion's own
+    /// per-request trace records that admins inspect via `/api/v1/data/traces`.
+    pub storage: TracingStorageConfig,
 }
 
 impl Default for TracingConfig {
@@ -26,6 +30,109 @@ impl Default for TracingConfig {
             otlp_endpoint: "http://localhost:4317".to_string(),
             service_name: "orion".to_string(),
             sample_rate: 1.0,
+            storage: TracingStorageConfig::default(),
+        }
+    }
+}
+
+/// Persistence mode for engine traces.
+///
+/// `Sync` writes inside the request path (default — strongest durability,
+/// throughput capped by single-writer DB contention). `Async` enqueues to a
+/// bounded background queue. `Batch` is the throughput-optimised path:
+/// background workers accumulate writes and commit in one transaction.
+/// `Off` disables persistence entirely.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceStorageMode {
+    Sync,
+    Async,
+    Batch,
+    Off,
+}
+
+impl Default for TraceStorageMode {
+    fn default() -> Self {
+        // Backwards-compatible: existing deployments behave exactly as before.
+        Self::Sync
+    }
+}
+
+/// Policy for the persistence queue when full.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AsyncOnOverflow {
+    /// Drop the trace; increment `trace_dropped_total{reason="overflow"}`.
+    Drop,
+    /// Wait up to `overflow_block_timeout_ms` for capacity, then drop.
+    Block,
+}
+
+impl Default for AsyncOnOverflow {
+    fn default() -> Self {
+        Self::Drop
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TracingStorageConfig {
+    /// Persistence policy. Applies to `store_completed` (sync result write)
+    /// and `set_result` / `update_status` (async result writes). The async
+    /// endpoint's `create_pending` step is always synchronous so the
+    /// `GET /traces/{id}` contract is preserved after a 202.
+    pub mode: TraceStorageMode,
+
+    // ---- Filters (compose with mode; applied per trace) ----
+    /// Fraction of traces to persist, 0.0–1.0. Roll a coin per trace; on a
+    /// failed roll the trace is treated as `Off` and recorded in
+    /// `trace_dropped_total{reason="sampled_out"}`.
+    pub sample_rate: f64,
+
+    /// When true, only persist traces that ended with errors
+    /// (`message.has_errors()` for sync, `error_message.is_some()` for async).
+    /// Successful traces are dropped with `reason="errors_only"`.
+    pub errors_only: bool,
+
+    // ---- Async / batch queue knobs ----
+    /// Bounded mpsc capacity for the persistence queue.
+    pub max_pending: usize,
+
+    /// Behaviour when the queue is full (`async` and `batch` modes only).
+    pub async_on_overflow: AsyncOnOverflow,
+
+    /// When `async_on_overflow = "block"`, the producer waits at most this
+    /// many milliseconds for capacity before dropping the trace.
+    pub overflow_block_timeout_ms: u64,
+
+    // ---- Async-mode-specific ----
+    /// Worker count for `async` mode (one DB write per worker iteration).
+    pub async_workers: usize,
+
+    // ---- Batch-mode-specific ----
+    /// Maximum entries accumulated before forcing a batch flush.
+    pub batch_size: usize,
+
+    /// Maximum time to wait before flushing a non-full batch (milliseconds).
+    pub batch_flush_interval_ms: u64,
+
+    /// Worker count for `batch` mode (each worker owns an independent batch).
+    pub batch_workers: usize,
+}
+
+impl Default for TracingStorageConfig {
+    fn default() -> Self {
+        Self {
+            mode: TraceStorageMode::Sync,
+            sample_rate: 1.0,
+            errors_only: false,
+            max_pending: 10_000,
+            async_on_overflow: AsyncOnOverflow::Drop,
+            overflow_block_timeout_ms: 100,
+            async_workers: 4,
+            batch_size: 100,
+            batch_flush_interval_ms: 100,
+            batch_workers: 4,
         }
     }
 }
