@@ -195,6 +195,22 @@ async fn process_trace(
     let duration_secs = duration.as_secs_f64();
     let duration_ms = duration.as_secs_f64() * 1000.0;
 
+    // v3 contract: process_message_for_channel returns Ok(()) even when
+    // individual workflows fail — failures are pushed into message.errors().
+    // Treat any captured error as a processing failure so it routes to the DLQ.
+    let result = match result {
+        Ok(()) if message.has_errors() => {
+            let summary = message
+                .errors()
+                .iter()
+                .map(|e| format!("{}: {}", e.code, e.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            Err(dataflow_rs::DataflowError::Workflow(summary))
+        }
+        other => other,
+    };
+
     match result {
         Ok(()) => {
             metrics::record_message(&channel, "ok");

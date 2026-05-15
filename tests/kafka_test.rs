@@ -32,10 +32,9 @@ async fn start_kafka() -> (testcontainers::ContainerAsync<Kafka>, String) {
 
 /// Create a simple test engine with no workflows.
 fn empty_engine() -> Arc<RwLock<Arc<dataflow_rs::Engine>>> {
-    Arc::new(RwLock::new(Arc::new(dataflow_rs::Engine::new(
-        vec![],
-        None,
-    ))))
+    Arc::new(RwLock::new(Arc::new(
+        dataflow_rs::Engine::builder().build().unwrap(),
+    )))
 }
 
 /// Build a test Kafka config for the given broker.

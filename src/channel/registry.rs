@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use datalogic_rs::CompiledLogic;
+use datalogic_rs::{Engine as DatalogicEngine, Logic};
 use tokio::sync::{RwLock, Semaphore};
 
 use super::KeyedLimiter;
@@ -23,10 +23,10 @@ pub struct ChannelRuntimeConfig {
     /// Per-channel rate limiter, built from `parsed_config.rate_limit` if configured.
     pub rate_limiter: Option<Arc<KeyedLimiter>>,
     /// Pre-compiled JSONLogic expression for computing the rate limit key.
-    pub rate_limit_key_logic: Option<CompiledLogic>,
+    pub rate_limit_key_logic: Option<Logic>,
     /// Pre-compiled JSONLogic expression for input validation.
     /// Evaluated against request data — truthy = pass, falsy = 400 reject.
-    pub validation_logic: Option<CompiledLogic>,
+    pub validation_logic: Option<Logic>,
     /// Per-channel concurrency limiter for backpressure.
     /// Limits max in-flight requests — returns 503 when exhausted.
     pub backpressure_semaphore: Option<Arc<Semaphore>>,
@@ -77,6 +77,7 @@ impl ChannelRegistry {
         channels: &[Channel],
         connector_registry: &ConnectorRegistry,
         cache_pool: &CachePool,
+        datalogic: &DatalogicEngine,
     ) {
         let mut new_map = HashMap::new();
         for channel in channels {
@@ -93,7 +94,8 @@ impl ChannelRegistry {
                 .as_ref()
                 .and_then(|rl| rl.key_logic.as_ref())
                 .and_then(|logic| {
-                    CompiledLogic::compile(logic)
+                    datalogic
+                        .compile(logic)
                         .map_err(|e| {
                             tracing::warn!(
                                 channel = %channel.name,
@@ -105,7 +107,8 @@ impl ChannelRegistry {
                 });
 
             let validation_logic = parsed_config.validation_logic.as_ref().and_then(|logic| {
-                CompiledLogic::compile(logic)
+                datalogic
+                    .compile(logic)
                     .map_err(|e| {
                         tracing::warn!(
                             channel = %channel.name,

@@ -4,8 +4,6 @@ pub mod utils;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dataflow_rs::engine::functions::AsyncFunctionHandler;
-
 use tokio::sync::RwLock;
 
 use crate::connector::ConnectorRegistry;
@@ -84,8 +82,8 @@ pub fn build_custom_functions(
     cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
-) -> HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> {
-    let mut fns: HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>> = HashMap::new();
+) -> HashMap<String, dataflow_rs::BoxedFunctionHandler> {
+    let mut fns: HashMap<String, dataflow_rs::BoxedFunctionHandler> = HashMap::new();
 
     fns.insert(
         "http_call".to_string(),
@@ -162,7 +160,7 @@ pub fn build_custom_functions(
 ///
 /// Replaces the stub handler (or adds the handler if not yet registered).
 pub fn register_kafka_publisher(
-    fns: &mut HashMap<String, Box<dyn AsyncFunctionHandler + Send + Sync>>,
+    fns: &mut HashMap<String, dataflow_rs::BoxedFunctionHandler>,
     registry: Arc<ConnectorRegistry>,
     producer: Arc<crate::kafka::producer::KafkaProducer>,
 ) {

@@ -3,17 +3,14 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
-use dataflow_rs::engine::functions::config::FunctionConfig;
-use dataflow_rs::engine::message::{Change, Message};
-use datalogic_rs::DataLogic;
+use dataflow_rs::engine::functions::PublishKafkaConfig;
+use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs::engine::task_outcome::TaskOutcome;
+use serde_json::Value;
 
 use crate::connector::ConnectorRegistry;
 
 /// Kafka publish handler.
-///
-/// When `producer` is `Some`, publishes messages to Kafka topics using the
-/// shared producer. When `producer` is `None`, returns an error explaining
-/// that Kafka support is not enabled.
 pub struct PublishKafkaHandler {
     pub registry: Arc<ConnectorRegistry>,
     pub producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
@@ -21,22 +18,14 @@ pub struct PublishKafkaHandler {
 
 #[async_trait]
 impl AsyncFunctionHandler for PublishKafkaHandler {
+    type Input = PublishKafkaConfig;
+
     async fn execute(
         &self,
-        message: &mut Message,
-        config: &FunctionConfig,
-        datalogic: Arc<DataLogic>,
-    ) -> dataflow_rs::Result<(usize, Vec<Change>)> {
-        let input = match config {
-            FunctionConfig::PublishKafka { input, .. } => input,
-            _ => {
-                return Err(DataflowError::Validation(
-                    "Expected PublishKafka config".into(),
-                ));
-            }
-        };
-
-        // Verify connector exists
+        ctx: &mut TaskContext<'_>,
+        input: &PublishKafkaConfig,
+    ) -> dataflow_rs::Result<TaskOutcome> {
+        // Verify connector exists.
         let _connector = self.registry.get(&input.connector).await.ok_or_else(|| {
             DataflowError::function_execution(
                 format!("Connector '{}' not found", input.connector),
@@ -44,14 +33,13 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
             )
         })?;
 
-        // If no producer is available, return an error
         let producer = match &self.producer {
             Some(p) => p,
             None => {
                 return Err(DataflowError::FunctionExecution {
                     context: format!(
                         "Kafka publishing to topic '{}' is not available. \
-                         Enable the 'kafka' feature to use publish_kafka.",
+                         Enable Kafka in configuration to use publish_kafka.",
                         input.topic
                     ),
                     source: None,
@@ -59,21 +47,18 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
             }
         };
 
-        // Evaluate key from JSONLogic if provided
-        let key = if let Some(key_logic) = &input.key_logic {
-            let context = message.get_context_arc();
-            let compiled = datalogic
-                .compile(key_logic)
-                .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-            let result = datalogic
-                .evaluate(&compiled, context)
+        let key = if let Some(compiled) = input.compiled_key_logic.as_deref() {
+            let result: Value = ctx
+                .datalogic()
+                .session()
+                .eval_into(compiled, &ctx.message().context)
                 .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
             let key_str = if let Some(s) = result.as_str() {
                 s.to_string()
             } else {
                 serde_json::to_string(&result).map_err(|e| {
                     DataflowError::function_execution(
-                        format!("Failed to serialize Kafka message key: {}", e),
+                        format!("Failed to serialize Kafka message key: {e}"),
                         None,
                     )
                 })?
@@ -83,37 +68,34 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
             None
         };
 
-        // Evaluate value from JSONLogic or default to message data
-        let value = if let Some(value_logic) = &input.value_logic {
-            let context = message.get_context_arc();
-            let compiled = datalogic
-                .compile(value_logic)
-                .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-            let result = datalogic
-                .evaluate(&compiled, context)
+        let value = if let Some(compiled) = input.compiled_value_logic.as_deref() {
+            let result: Value = ctx
+                .datalogic()
+                .session()
+                .eval_into(compiled, &ctx.message().context)
                 .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
             serde_json::to_string(&result).map_err(|e| {
                 DataflowError::function_execution(
-                    format!("Failed to serialize Kafka message value: {}", e),
+                    format!("Failed to serialize Kafka message value: {e}"),
                     None,
                 )
             })?
         } else {
-            serde_json::to_string(message.data()).map_err(|e| {
+            let data_json: Value = ctx.data().into();
+            serde_json::to_string(&data_json).map_err(|e| {
                 DataflowError::function_execution(
-                    format!("Failed to serialize Kafka message value: {}", e),
+                    format!("Failed to serialize Kafka message value: {e}"),
                     None,
                 )
             })?
         };
 
-        // Publish to Kafka
         producer
             .send(&input.topic, key.as_deref(), value.as_bytes())
             .await
             .map_err(|e| {
                 DataflowError::function_execution(
-                    format!("Kafka publish to '{}' failed: {}", input.topic, e),
+                    format!("Kafka publish to '{}' failed: {e}", input.topic),
                     None,
                 )
             })?;
@@ -123,6 +105,6 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
             "Published message to Kafka"
         );
 
-        Ok((200, vec![]))
+        Ok(TaskOutcome::Success)
     }
 }

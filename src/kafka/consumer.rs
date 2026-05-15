@@ -342,6 +342,32 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
                                     &format!("Processing error: {}", e),
                                 ).await;
                             }
+                            Ok(Ok(())) if message.has_errors() => {
+                                // v3 contract: workflow failures are pushed to
+                                // message.errors() while the outer Result stays Ok.
+                                let summary = message
+                                    .errors()
+                                    .iter()
+                                    .map(|e| format!("{}: {}", e.code, e.message))
+                                    .collect::<Vec<_>>()
+                                    .join("; ");
+                                metrics::record_message(&channel, "error");
+                                metrics::record_error("kafka_processing");
+                                tracing::error!(
+                                    topic = %topic,
+                                    channel = %channel,
+                                    errors = %summary,
+                                    "Kafka message processed with workflow errors"
+                                );
+                                send_to_dlq(
+                                    &ctx.dlq_producer,
+                                    &ctx.dlq_topic,
+                                    &topic,
+                                    payload.as_bytes(),
+                                    &format!("Workflow errors: {summary}"),
+                                )
+                                .await;
+                            }
                             Ok(Ok(())) => {
                                 let duration = start.elapsed().as_secs_f64();
                                 metrics::record_message(&channel, "ok");
@@ -388,13 +414,32 @@ fn inject_kafka_metadata(
     topic: &str,
     msg: &rdkafka::message::BorrowedMessage<'_>,
 ) {
+    use dataflow_rs::engine::utils::set_nested_value;
+    use datavalue::OwnedDataValue;
     use rdkafka::Message as KafkaMsg;
-    message.metadata_mut()["kafka_topic"] = serde_json::Value::String(topic.to_string());
+
+    set_nested_value(
+        &mut message.context,
+        "metadata.kafka_topic",
+        OwnedDataValue::from(topic.to_string()),
+    );
     if let Some(key) = msg.key().and_then(|k| std::str::from_utf8(k).ok()) {
-        message.metadata_mut()["kafka_key"] = serde_json::Value::String(key.to_string());
+        set_nested_value(
+            &mut message.context,
+            "metadata.kafka_key",
+            OwnedDataValue::from(key.to_string()),
+        );
     }
-    message.metadata_mut()["kafka_partition"] = serde_json::json!(msg.partition());
-    message.metadata_mut()["kafka_offset"] = serde_json::json!(msg.offset());
+    set_nested_value(
+        &mut message.context,
+        "metadata.kafka_partition",
+        OwnedDataValue::from_i64(msg.partition() as i64),
+    );
+    set_nested_value(
+        &mut message.context,
+        "metadata.kafka_offset",
+        OwnedDataValue::from_i64(msg.offset()),
+    );
 }
 
 /// Periodically poll committed offsets and high watermarks to compute consumer lag.

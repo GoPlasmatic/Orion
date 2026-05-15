@@ -27,7 +27,7 @@ async fn test_worker_shutdown_empty_queue() {
         );
 
     let engine = std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(
-        dataflow_rs::Engine::new(vec![], None),
+        dataflow_rs::Engine::builder().build().unwrap(),
     )));
 
     let test_queue_config = orion::config::QueueConfig {

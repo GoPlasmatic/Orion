@@ -315,11 +315,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             orion::errors::OrionError::Internal(format!("Failed to build HTTP client: {e}"))
         })?;
 
+    // Shared datalogic engine — used by handlers for template evaluation and
+    // by the channel registry to pre-compile per-channel JSONLogic.
+    let datalogic_engine = Arc::new(datalogic_rs::Engine::new());
+
     // Create the engine lock early so channel_call handler can reference it.
     // We'll populate it with the real engine after building workflows.
-    let engine: Arc<RwLock<Arc<dataflow_rs::Engine>>> = Arc::new(RwLock::new(Arc::new(
-        dataflow_rs::Engine::new(vec![], None),
-    )));
+    let engine: Arc<RwLock<Arc<dataflow_rs::Engine>>> =
+        Arc::new(RwLock::new(Arc::new(dataflow_rs::Engine::builder().build()?)));
 
     // Build cache pool (memory backend always available, redis always compiled)
     let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
@@ -368,7 +371,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let active_workflows = workflow_repo.list_active().await?;
     let workflows = orion::engine::build_engine_workflows(&channels, &active_workflows);
     channel_registry
-        .reload(&channels, &connector_registry, &cache_pool)
+        .reload(&channels, &connector_registry, &cache_pool, &datalogic_engine)
         .await;
 
     let channel_names: std::collections::HashSet<&str> =
@@ -384,7 +387,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Populate the pre-created engine lock with the real engine
-    let built_engine = dataflow_rs::Engine::new(workflows, Some(custom_functions));
+    let built_engine = dataflow_rs::Engine::new(workflows, custom_functions)?;
     *orion::engine::acquire_engine_write(&engine).await = Arc::new(built_engine);
 
     // Mark the service as ready now that the engine and channel registry are loaded
@@ -538,7 +541,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         start_time: chrono::Utc::now(),
         metrics_handle,
         http_client,
-        datalogic: Arc::new(datalogic_rs::DataLogic::new()),
+        datalogic: datalogic_engine,
         rate_limit_state,
         ready,
         sql_pool_cache,
