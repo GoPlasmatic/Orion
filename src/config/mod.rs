@@ -15,7 +15,10 @@ pub use admin_auth::AdminAuthConfig;
 pub use engine::EngineConfig;
 pub use kafka::{DlqConfig, KafkaIngestConfig, TopicMapping};
 pub use logging::{LogFormat, LoggingConfig};
-pub use observability::{CorsConfig, MetricsConfig, TracingConfig};
+pub use observability::{
+    AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageMode, TracingConfig,
+    TracingStorageConfig,
+};
 pub use queue::QueueConfig;
 pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
 pub use server::{IngestConfig, ServerConfig, TlsConfig};

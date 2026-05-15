@@ -75,6 +75,13 @@ codegen-units = 256
 [profile.release]
 strip = true
 
+# Inherits release optimizations but keeps debug symbols so samply / Instruments
+# can resolve function names. Use with `cargo build --profile=profiling`.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = "line-tables-only"
+
 # cargo-dist uses this profile for release builds
 [profile.dist]
 inherits = "release"

@@ -54,3 +54,37 @@
 # otlp_endpoint = "http://localhost:4317"  # OTLP gRPC endpoint
 # service_name = "orion"            # Service name in traces
 # sample_rate = 1.0                 # 0.0 (none) to 1.0 (all)
+
+[tracing.storage]
+# Persistence policy for engine traces (rows in the `traces` table that admins
+# inspect via /api/v1/data/traces). Unrelated to the OpenTelemetry export above.
+#
+#   sync   — write inline before responding (default; strongest durability,
+#            throughput capped by single-writer SQLite under load)
+#   async  — enqueue to a bounded background queue; one DB write per task
+#   batch  — bounded queue; workers commit `batch_size` rows in one TX (highest
+#            throughput on WAL-mode SQLite)
+#   off    — skip persistence entirely; POST /{channel}/async returns
+#            trace_id: null plus a `Warning` response header
+# mode = "sync"
+#
+# Filters (compose with mode; applied per trace):
+# sample_rate = 1.0                 # 0.0–1.0. Fraction of traces persisted
+# errors_only = false               # Only persist traces that ended with errors
+#
+# Backpressure (async + batch modes):
+# max_pending = 10000               # Bounded channel capacity
+# async_on_overflow = "drop"        # `drop` or `block`
+# overflow_block_timeout_ms = 100   # Used when `block` is selected
+#
+# Async-mode workers (one DB write per worker iteration):
+# async_workers = 4
+#
+# Batch-mode workers:
+# batch_size = 100
+# batch_flush_interval_ms = 100
+# batch_workers = 4
+#
+# Per-channel override is supported via the channel's `config.tracing` field:
+#   { "tracing": { "mode": "off", "errors_only": true } }
+# Unset per-channel fields fall back to the global default above.

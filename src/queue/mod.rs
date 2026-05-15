@@ -10,6 +10,11 @@ use tokio::sync::{RwLock, mpsc};
 
 use crate::metrics;
 use crate::storage::repositories::trace_dlq::TraceDlqRepository;
+
+pub mod trace_persistence;
+pub use trace_persistence::{
+    PersistenceWorkerHandle, TracePersistenceQueue, TracePersistenceTask,
+};
 use crate::storage::repositories::traces::TraceRepository;
 
 pub use dlq_retry::start_dlq_retry;
@@ -161,11 +166,15 @@ impl WorkerHandle {
 /// Scalar config parameters (workers, buffer_size, timeouts, limits) are read
 /// from `config`. The Arc dependencies (engine, repos) are passed separately
 /// because they have independent lifetimes.
+#[allow(clippy::too_many_arguments)]
 pub fn start_workers(
     config: &crate::config::QueueConfig,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     trace_repo: Arc<dyn TraceRepository>,
     dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
+    channel_registry: Arc<crate::channel::ChannelRegistry>,
+    persistence_queue: TracePersistenceQueue,
+    global_trace_storage: crate::config::TracingStorageConfig,
 ) -> (TraceQueue, WorkerHandle) {
     let max_workers = config.workers;
     let buffer_size = config.buffer_size;
@@ -192,6 +201,9 @@ pub fn start_workers(
             active: active_workers,
             memory_bytes: memory_bytes.clone(),
         },
+        channel_registry,
+        persistence_queue,
+        global_trace_storage,
     };
 
     let handle = tokio::spawn(processing::dispatcher_loop(rx, dispatcher_ctx));

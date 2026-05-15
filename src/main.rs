@@ -371,7 +371,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let active_workflows = workflow_repo.list_active().await?;
     let workflows = orion::engine::build_engine_workflows(&channels, &active_workflows);
     channel_registry
-        .reload(&channels, &connector_registry, &cache_pool, &datalogic_engine)
+        .reload(
+            &channels,
+            &connector_registry,
+            &cache_pool,
+            &datalogic_engine,
+            &config.tracing.storage,
+        )
         .await;
 
     let channel_names: std::collections::HashSet<&str> =
@@ -453,7 +459,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    // Start trace queue worker pool (with DLQ for failed async traces)
+    // Start trace persistence queue (async/batch modes). A no-op queue is
+    // returned for `sync` / `off`, so callers can submit unconditionally.
+    let (trace_persistence_queue, trace_persistence_handle) =
+        orion::queue::trace_persistence::start(
+            &config.tracing.storage,
+            trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+        );
+    tracing::info!(
+        mode = ?config.tracing.storage.mode,
+        max_pending = config.tracing.storage.max_pending,
+        "Trace persistence queue started"
+    );
+
+    // Start trace queue worker pool (with DLQ for failed async traces).
+    // The pool needs the persistence queue + channel registry so it can route
+    // status / result writes through the configured mode.
     let dlq_repo: Option<Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository>> =
         Some(Arc::new(
             orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
@@ -463,6 +484,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
         dlq_repo,
+        channel_registry.clone(),
+        trace_persistence_queue.clone(),
+        config.tracing.storage.clone(),
     );
 
     tracing::info!(
@@ -548,6 +572,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         mongo_pool_cache,
         kafka_consumer_handle: kafka_consumer_handle_arc.clone(),
         kafka_producer,
+        trace_persistence_queue,
     };
 
     let router = orion::server::build_router(state);
@@ -609,6 +634,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("Shutting down trace queue workers...");
     worker_handle.shutdown().await;
+
+    tracing::info!("Draining trace persistence queue...");
+    trace_persistence_handle.shutdown().await;
 
     // Flush pending OTel spans before exit
     if let Some(provider) = _otel_provider {

@@ -56,6 +56,32 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
             });
         }
     }
+    // Trace persistence (DB-backed `traces` table) validation
+    {
+        use crate::config::TraceStorageMode;
+        let storage = &config.tracing.storage;
+        if !(0.0..=1.0).contains(&storage.sample_rate) {
+            return Err(OrionError::Config {
+                message: "tracing.storage.sample_rate must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        match storage.mode {
+            TraceStorageMode::Async => {
+                require_nonzero(storage.max_pending as u64, "tracing.storage.max_pending")?;
+                require_nonzero(storage.async_workers as u64, "tracing.storage.async_workers")?;
+            }
+            TraceStorageMode::Batch => {
+                require_nonzero(storage.max_pending as u64, "tracing.storage.max_pending")?;
+                require_nonzero(storage.batch_size as u64, "tracing.storage.batch_size")?;
+                require_nonzero(
+                    storage.batch_flush_interval_ms,
+                    "tracing.storage.batch_flush_interval_ms",
+                )?;
+                require_nonzero(storage.batch_workers as u64, "tracing.storage.batch_workers")?;
+            }
+            TraceStorageMode::Sync | TraceStorageMode::Off => {}
+        }
+    }
     // Admin auth validation
     if config.admin_auth.enabled && config.admin_auth.effective_keys().is_empty() {
         return Err(OrionError::Config {
