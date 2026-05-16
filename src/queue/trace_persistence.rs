@@ -25,9 +25,7 @@ use tokio::sync::mpsc;
 
 use crate::config::{AsyncOnOverflow, TraceStorageMode, TracingStorageConfig};
 use crate::metrics;
-use crate::storage::repositories::traces::{
-    TraceCompletedRow, TraceRepository, TraceResultRow,
-};
+use crate::storage::repositories::traces::{TraceCompletedRow, TraceRepository, TraceResultRow};
 
 /// A unit of trace-persistence work to run on a background worker.
 #[derive(Debug)]
@@ -149,7 +147,10 @@ pub fn start(
         TraceStorageMode::Async => (config.async_workers.max(1), false),
         TraceStorageMode::Batch => (config.batch_workers.max(1), true),
         TraceStorageMode::Sync | TraceStorageMode::Off => {
-            return (TracePersistenceQueue::disabled(), PersistenceWorkerHandle::noop());
+            return (
+                TracePersistenceQueue::disabled(),
+                PersistenceWorkerHandle::noop(),
+            );
         }
     };
 

@@ -321,8 +321,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create the engine lock early so channel_call handler can reference it.
     // We'll populate it with the real engine after building workflows.
-    let engine: Arc<RwLock<Arc<dataflow_rs::Engine>>> =
-        Arc::new(RwLock::new(Arc::new(dataflow_rs::Engine::builder().build()?)));
+    let engine: Arc<RwLock<Arc<dataflow_rs::Engine>>> = Arc::new(RwLock::new(Arc::new(
+        dataflow_rs::Engine::builder().build()?,
+    )));
 
     // Build cache pool (memory backend always available, redis always compiled)
     let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(

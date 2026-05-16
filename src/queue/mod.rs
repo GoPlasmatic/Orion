@@ -12,10 +12,8 @@ use crate::metrics;
 use crate::storage::repositories::trace_dlq::TraceDlqRepository;
 
 pub mod trace_persistence;
-pub use trace_persistence::{
-    PersistenceWorkerHandle, TracePersistenceQueue, TracePersistenceTask,
-};
 use crate::storage::repositories::traces::TraceRepository;
+pub use trace_persistence::{PersistenceWorkerHandle, TracePersistenceQueue, TracePersistenceTask};
 
 pub use dlq_retry::start_dlq_retry;
 

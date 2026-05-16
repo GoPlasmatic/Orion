@@ -56,12 +56,9 @@ async fn submit_sync(app: &axum::Router, channel: &str) -> StatusCode {
 #[tokio::test]
 async fn sync_mode_persists_traces_inline() {
     let app = common::test_app().await; // default = sync
-    let (_, _) = common::create_and_activate_channel(
-        &app,
-        "ch_sync",
-        common::simple_log_workflow("Log"),
-    )
-    .await;
+    let (_, _) =
+        common::create_and_activate_channel(&app, "ch_sync", common::simple_log_workflow("Log"))
+            .await;
 
     assert_eq!(submit_sync(&app, "ch_sync").await, StatusCode::OK);
     // Sync mode: trace is committed before the response returns, so it must
@@ -76,18 +73,19 @@ async fn sync_mode_persists_traces_inline() {
 #[tokio::test]
 async fn off_mode_skips_persistence() {
     let app = common::test_app_with_config(cfg_with_storage(TraceStorageMode::Off)).await;
-    let (_, _) = common::create_and_activate_channel(
-        &app,
-        "ch_off",
-        common::simple_log_workflow("Log"),
-    )
-    .await;
+    let (_, _) =
+        common::create_and_activate_channel(&app, "ch_off", common::simple_log_workflow("Log"))
+            .await;
 
     let before = list_total(&app).await;
     assert_eq!(submit_sync(&app, "ch_off").await, StatusCode::OK);
     assert_eq!(submit_sync(&app, "ch_off").await, StatusCode::OK);
     assert_eq!(submit_sync(&app, "ch_off").await, StatusCode::OK);
-    assert_eq!(list_total(&app).await, before, "no rows should be persisted");
+    assert_eq!(
+        list_total(&app).await,
+        before,
+        "no rows should be persisted"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -110,12 +108,9 @@ async fn assert_eventually_persisted(app: &axum::Router, expected_at_least: u64)
 #[tokio::test]
 async fn async_mode_persists_eventually() {
     let app = common::test_app_with_config(cfg_with_storage(TraceStorageMode::Async)).await;
-    let (_, _) = common::create_and_activate_channel(
-        &app,
-        "ch_async",
-        common::simple_log_workflow("Log"),
-    )
-    .await;
+    let (_, _) =
+        common::create_and_activate_channel(&app, "ch_async", common::simple_log_workflow("Log"))
+            .await;
     let before = list_total(&app).await;
     assert_eq!(submit_sync(&app, "ch_async").await, StatusCode::OK);
     assert_eventually_persisted(&app, before + 1).await;
@@ -124,12 +119,9 @@ async fn async_mode_persists_eventually() {
 #[tokio::test]
 async fn batch_mode_persists_eventually() {
     let app = common::test_app_with_config(cfg_with_storage(TraceStorageMode::Batch)).await;
-    let (_, _) = common::create_and_activate_channel(
-        &app,
-        "ch_batch",
-        common::simple_log_workflow("Log"),
-    )
-    .await;
+    let (_, _) =
+        common::create_and_activate_channel(&app, "ch_batch", common::simple_log_workflow("Log"))
+            .await;
     let before = list_total(&app).await;
     for _ in 0..5 {
         assert_eq!(submit_sync(&app, "ch_batch").await, StatusCode::OK);
@@ -189,12 +181,9 @@ async fn errors_only_filter_drops_successful_sync_traces() {
         ..TracingStorageConfig::default()
     };
     let app = common::test_app_with_config(c).await;
-    let (_, _) = common::create_and_activate_channel(
-        &app,
-        "ch_errs",
-        common::simple_log_workflow("Log"),
-    )
-    .await;
+    let (_, _) =
+        common::create_and_activate_channel(&app, "ch_errs", common::simple_log_workflow("Log"))
+            .await;
 
     let before = list_total(&app).await;
     assert_eq!(submit_sync(&app, "ch_errs").await, StatusCode::OK);

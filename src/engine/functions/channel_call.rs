@@ -158,7 +158,10 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             OwnedDataValue::from_i64(child_depth as i64),
         );
         let chain_value: Value = serde_json::Value::Array(
-            child_chain.iter().map(|s| Value::String(s.clone())).collect(),
+            child_chain
+                .iter()
+                .map(|s| Value::String(s.clone()))
+                .collect(),
         );
         set_nested_value(
             &mut child_message.context,
