@@ -9,9 +9,9 @@ use super::build_keyed_limiter;
 use super::config::ChannelConfig;
 use super::routing::{RouteMatch, RouteTable};
 
+use crate::config::{TraceStorageMode, TracingStorageConfig};
 use crate::connector::ConnectorConfig;
 use crate::connector::ConnectorRegistry;
-use crate::config::{TraceStorageMode, TracingStorageConfig};
 use crate::connector::cache_backend::{CacheBackend, CachePool};
 use crate::storage::models::Channel;
 
@@ -261,10 +261,8 @@ impl ChannelRegistry {
                 None
             };
 
-            let trace_storage = EffectiveTraceConfig::resolve(
-                global_trace_storage,
-                parsed_config.tracing.as_ref(),
-            );
+            let trace_storage =
+                EffectiveTraceConfig::resolve(global_trace_storage, parsed_config.tracing.as_ref());
             let runtime = Arc::new(ChannelRuntimeConfig {
                 channel: channel.clone(),
                 parsed_config,

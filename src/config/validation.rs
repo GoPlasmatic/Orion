@@ -68,7 +68,10 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
         match storage.mode {
             TraceStorageMode::Async => {
                 require_nonzero(storage.max_pending as u64, "tracing.storage.max_pending")?;
-                require_nonzero(storage.async_workers as u64, "tracing.storage.async_workers")?;
+                require_nonzero(
+                    storage.async_workers as u64,
+                    "tracing.storage.async_workers",
+                )?;
             }
             TraceStorageMode::Batch => {
                 require_nonzero(storage.max_pending as u64, "tracing.storage.max_pending")?;
@@ -77,7 +80,10 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
                     storage.batch_flush_interval_ms,
                     "tracing.storage.batch_flush_interval_ms",
                 )?;
-                require_nonzero(storage.batch_workers as u64, "tracing.storage.batch_workers")?;
+                require_nonzero(
+                    storage.batch_workers as u64,
+                    "tracing.storage.batch_workers",
+                )?;
             }
             TraceStorageMode::Sync | TraceStorageMode::Off => {}
         }
