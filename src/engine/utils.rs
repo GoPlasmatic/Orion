@@ -51,8 +51,14 @@ mod tests {
         let metadata = json!({"source": "test", "version": 2});
         merge_metadata(&mut msg, &metadata);
 
-        assert_eq!(msg.metadata().get("source").and_then(|v| v.as_str()), Some("test"));
-        assert_eq!(msg.metadata().get("version").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(
+            msg.metadata().get("source").and_then(|v| v.as_str()),
+            Some("test")
+        );
+        assert_eq!(
+            msg.metadata().get("version").and_then(|v| v.as_i64()),
+            Some(2)
+        );
     }
 
     #[test]
@@ -60,8 +66,15 @@ mod tests {
         let mut msg = make_message(json!({}));
         inject_rollout_bucket(&mut msg);
 
-        let bucket = msg.data().get("_rollout_bucket").and_then(|v| v.as_i64()).unwrap();
-        assert!((0..100).contains(&bucket), "bucket should be 0–99, got {bucket}");
+        let bucket = msg
+            .data()
+            .get("_rollout_bucket")
+            .and_then(|v| v.as_i64())
+            .unwrap();
+        assert!(
+            (0..100).contains(&bucket),
+            "bucket should be 0–99, got {bucket}"
+        );
     }
 
     #[test]

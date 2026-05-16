@@ -194,10 +194,9 @@ async fn process_trace(
     // workflow still runs but no DB rows are touched.
     let effective_trace = match channel_registry.get_by_name(&msg.channel).await {
         Some(c) => c.trace_storage,
-        None => crate::channel::registry::EffectiveTraceConfig::resolve(
-            &global_trace_storage,
-            None,
-        ),
+        None => {
+            crate::channel::registry::EffectiveTraceConfig::resolve(&global_trace_storage, None)
+        }
     };
     let trace_mode = effective_trace.mode;
     // Restore W3C trace context from the originating request so this span

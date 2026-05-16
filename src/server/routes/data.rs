@@ -39,6 +39,7 @@ fn filter_should_drop(cfg: &EffectiveTraceConfig, has_errors: bool) -> Option<&'
 }
 
 /// Route a completed sync trace through the chosen persistence mode.
+#[allow(clippy::too_many_arguments)]
 async fn route_store_completed(
     cfg: &EffectiveTraceConfig,
     trace_repo: &std::sync::Arc<dyn crate::storage::repositories::traces::TraceRepository>,
@@ -220,32 +221,30 @@ async fn dynamic_handler(
         // trace_id so the worker can still process, but return null to the
         // caller along with a Warning header so polling clients know there's
         // nothing to fetch.
-        let (trace_id, response): (String, Response) = if matches!(
-            effective_trace.mode,
-            crate::config::TraceStorageMode::Off
-        ) {
-            metrics::record_trace_dropped("off");
-            let id = uuid::Uuid::new_v4().to_string();
-            let mut resp = (StatusCode::ACCEPTED, Json(json!({ "trace_id": null })))
-                .into_response();
-            if let Ok(value) = axum::http::HeaderValue::from_str(&format!(
-                "299 - \"Trace persistence disabled for channel '{}'\"",
-                channel
-            )) {
-                resp.headers_mut().insert("warning", value);
-            }
-            (id, resp)
-        } else {
-            let input_json = serde_json::to_string(&req.data).ok();
-            let trace = state
-                .trace_repo
-                .create_pending(&channel, "async", input_json.as_deref())
-                .await?;
-            let id = trace.id.clone();
-            let resp =
-                (StatusCode::ACCEPTED, Json(json!({ "trace_id": trace.id }))).into_response();
-            (id, resp)
-        };
+        let (trace_id, response): (String, Response) =
+            if matches!(effective_trace.mode, crate::config::TraceStorageMode::Off) {
+                metrics::record_trace_dropped("off");
+                let id = uuid::Uuid::new_v4().to_string();
+                let mut resp =
+                    (StatusCode::ACCEPTED, Json(json!({ "trace_id": null }))).into_response();
+                if let Ok(value) = axum::http::HeaderValue::from_str(&format!(
+                    "299 - \"Trace persistence disabled for channel '{}'\"",
+                    channel
+                )) {
+                    resp.headers_mut().insert("warning", value);
+                }
+                (id, resp)
+            } else {
+                let input_json = serde_json::to_string(&req.data).ok();
+                let trace = state
+                    .trace_repo
+                    .create_pending(&channel, "async", input_json.as_deref())
+                    .await?;
+                let id = trace.id.clone();
+                let resp =
+                    (StatusCode::ACCEPTED, Json(json!({ "trace_id": trace.id }))).into_response();
+                (id, resp)
+            };
 
         state
             .trace_queue

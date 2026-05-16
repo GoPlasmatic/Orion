@@ -42,36 +42,26 @@ impl Default for TracingConfig {
 /// bounded background queue. `Batch` is the throughput-optimised path:
 /// background workers accumulate writes and commit in one transaction.
 /// `Off` disables persistence entirely.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TraceStorageMode {
+    /// Backwards-compatible default — existing deployments behave exactly as before.
+    #[default]
     Sync,
     Async,
     Batch,
     Off,
 }
 
-impl Default for TraceStorageMode {
-    fn default() -> Self {
-        // Backwards-compatible: existing deployments behave exactly as before.
-        Self::Sync
-    }
-}
-
 /// Policy for the persistence queue when full.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AsyncOnOverflow {
     /// Drop the trace; increment `trace_dropped_total{reason="overflow"}`.
+    #[default]
     Drop,
     /// Wait up to `overflow_block_timeout_ms` for capacity, then drop.
     Block,
-}
-
-impl Default for AsyncOnOverflow {
-    fn default() -> Self {
-        Self::Drop
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

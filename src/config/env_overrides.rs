@@ -233,8 +233,12 @@ where
     );
     if let Ok(v) = env_var("ORION_TRACING__STORAGE__ASYNC_ON_OVERFLOW") {
         match v.to_lowercase().as_str() {
-            "drop" => config.tracing.storage.async_on_overflow = crate::config::AsyncOnOverflow::Drop,
-            "block" => config.tracing.storage.async_on_overflow = crate::config::AsyncOnOverflow::Block,
+            "drop" => {
+                config.tracing.storage.async_on_overflow = crate::config::AsyncOnOverflow::Drop
+            }
+            "block" => {
+                config.tracing.storage.async_on_overflow = crate::config::AsyncOnOverflow::Block
+            }
             _ => {
                 return Err(OrionError::Config {
                     message: format!(

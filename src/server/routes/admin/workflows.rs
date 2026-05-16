@@ -344,8 +344,8 @@ pub(crate) async fn test_workflow(
         state.sql_pool_cache.clone(),
         state.mongo_pool_cache.clone(),
     );
-    let test_engine = dataflow_rs::Engine::new(vec![df_workflow], custom_fns)
-        .map_err(OrionError::Engine)?;
+    let test_engine =
+        dataflow_rs::Engine::new(vec![df_workflow], custom_fns).map_err(OrionError::Engine)?;
 
     let mut payload = json!({});
     if let Some(obj) = req.data.as_object() {

@@ -93,9 +93,7 @@ where
     if !breaker.check() {
         crate::metrics::record_circuit_breaker_rejection(connector, channel);
         return Err(DataflowError::function_execution(
-            format!(
-                "Circuit breaker open for connector '{connector}' on channel '{channel}'"
-            ),
+            format!("Circuit breaker open for connector '{connector}' on channel '{channel}'"),
             None,
         ));
     }

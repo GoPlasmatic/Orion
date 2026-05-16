@@ -344,11 +344,7 @@ impl TraceRepository for SqlTraceRepository {
             return Ok(());
         }
         crate::metrics::timed_db_op("traces.set_result_batch", async {
-            let mut tx = self
-                .pool
-                .begin_tx()
-                .await
-                .map_err(OrionError::Storage)?;
+            let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
             for row in rows {
                 let (sql, values) = build_sqlx(
                     Query::update()
@@ -359,9 +355,7 @@ impl TraceRepository for SqlTraceRepository {
                 );
                 tx.execute_query(&sql, values).await?;
             }
-            tx.commit()
-                .await
-                .map_err(OrionError::Storage)?;
+            tx.commit().await.map_err(OrionError::Storage)?;
             crate::metrics::record_trace_persistence_batch_size(rows.len());
             Ok(())
         })

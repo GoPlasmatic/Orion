@@ -286,7 +286,7 @@ pub fn build_engine_workflows(
         } else {
             // Multiple versions or partial rollout — wrap with bucket ranges
             let mut sorted: Vec<&&Workflow> = wf_versions.iter().collect();
-            sorted.sort_by(|a, b| b.version.cmp(&a.version));
+            sorted.sort_by_key(|b| std::cmp::Reverse(b.version));
 
             let mut bucket_offset = 0i64;
             for wf in &sorted {
