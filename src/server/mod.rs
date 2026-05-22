@@ -59,11 +59,19 @@ pub fn build_router(state: AppState) -> Router {
 
     let router = routes::api_routes()
         .layer(DefaultBodyLimit::max(max_body_size))
-        .layer(CompressionLayer::new())
         // Single middleware replaces 5 separate SetResponseHeaderLayer wrappers
         .layer(axum::middleware::from_fn(security_headers_middleware))
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid));
+
+    // Response compression (gzip/br/zstd via tower-http). Disabled by default —
+    // for small JSON responses the DEFLATE cost outweighs any bandwidth saving.
+    // Operators serving large responses should opt in.
+    let router = if state.config.server.compression.enabled {
+        router.layer(CompressionLayer::new())
+    } else {
+        router
+    };
 
     // Only add TraceLayer when tracing is enabled to avoid span processing overhead
     let router = if otel_enabled {
@@ -110,10 +118,16 @@ pub fn build_router(state: AppState) -> Router {
         router
     };
 
-    // HTTP metrics layer (unconditional, outermost to capture 429s)
-    let router = router.layer(axum::middleware::from_fn(
-        observability::http_metrics_middleware,
-    ));
+    // HTTP metrics layer (gated by metrics.enabled — when disabled the no-op
+    // recorder still costs label hashing + indexmap lookups per request via the
+    // metrics crate's macros, so we skip the layer entirely).
+    let router = if state.config.metrics.enabled {
+        router.layer(axum::middleware::from_fn(
+            observability::http_metrics_middleware,
+        ))
+    } else {
+        router
+    };
 
     // When OTel is enabled, add trace context extraction middleware
     let router = if otel_enabled {

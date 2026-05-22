@@ -9,6 +9,8 @@ pub struct ServerConfig {
     pub shutdown_drain_secs: u64,
     /// TLS configuration for HTTPS support.
     pub tls: TlsConfig,
+    /// Response compression configuration.
+    pub compression: CompressionConfig,
 }
 
 impl Default for ServerConfig {
@@ -18,8 +20,22 @@ impl Default for ServerConfig {
             port: 8080,
             shutdown_drain_secs: 30,
             tls: TlsConfig::default(),
+            compression: CompressionConfig::default(),
         }
     }
+}
+
+/// Response compression (gzip/br/zstd) configuration.
+///
+/// Disabled by default: tower-http's `CompressionLayer` is unconditional once
+/// inserted and runs DEFLATE per response regardless of payload size, which
+/// for small JSON responses costs CPU without saving bytes (a ~100 B response
+/// can grow slightly after gzip overhead). Operators serving large responses
+/// should opt in.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CompressionConfig {
+    pub enabled: bool,
 }
 
 /// TLS configuration for HTTPS support.

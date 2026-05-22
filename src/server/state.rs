@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -18,9 +19,12 @@ use crate::storage::repositories::connectors::ConnectorRepository;
 use crate::storage::repositories::traces::TraceRepository;
 use crate::storage::repositories::workflows::WorkflowRepository;
 
-/// Shared application state accessible from all route handlers.
-#[derive(Clone)]
-pub struct AppState {
+/// Owned fields shared across all route handlers.
+///
+/// Wrapped in an outer `Arc` via [`AppState`] so the per-request clone Axum
+/// performs on `State<AppState>` is a single atomic refcount bump rather than
+/// one per `Arc` field (~20+).
+pub struct AppStateInner {
     pub engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     pub channel_repo: Arc<dyn ChannelRepository>,
     pub workflow_repo: Arc<dyn WorkflowRepository>,
@@ -51,4 +55,32 @@ pub struct AppState {
     pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
     /// Background queue for trace-storage writes. A no-op handle in sync/off modes.
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
+}
+
+/// Shared application state accessible from all route handlers.
+///
+/// Cloning is O(1) — one atomic refcount bump on the inner `Arc`. Field access
+/// goes through [`Deref`], so existing call sites (`state.engine`,
+/// `state.config`, …) keep working unchanged.
+#[derive(Clone)]
+pub struct AppState(Arc<AppStateInner>);
+
+impl AppState {
+    pub fn new(inner: AppStateInner) -> Self {
+        Self(Arc::new(inner))
+    }
+}
+
+impl From<AppStateInner> for AppState {
+    fn from(inner: AppStateInner) -> Self {
+        Self::new(inner)
+    }
+}
+
+impl Deref for AppState {
+    type Target = AppStateInner;
+
+    fn deref(&self) -> &AppStateInner {
+        &self.0
+    }
 }

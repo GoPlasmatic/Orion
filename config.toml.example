@@ -7,6 +7,12 @@
 # port = 8080
 # workers = <num_cpus>        # Defaults to number of CPU cores
 
+# [server.compression]
+# Response compression (gzip/br/zstd). Disabled by default — DEFLATE cost
+# outweighs bandwidth savings on small JSON responses (a ~100 B body can grow
+# slightly after gzip overhead). Enable when responses are typically large.
+# enabled = false
+
 [storage]
 # url = "sqlite:orion.db"       # Database URL (sqlite:, postgres://, mysql://)
 # max_connections = 10          # Connection pool max connections

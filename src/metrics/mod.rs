@@ -1,11 +1,31 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
+
+/// Global enable flag for metric recording. When false, every `record_*` helper
+/// short-circuits before touching the `metrics` crate — this avoids ~2 % of
+/// per-request CPU spent hashing labels and walking the recorder's indexmap
+/// even when no real recorder is installed.
+static METRICS_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Enable or disable metric recording globally. Call once at startup based on
+/// `config.metrics.enabled`. Safe to call again later (e.g., from tests).
+pub fn set_enabled(enabled: bool) {
+    METRICS_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+#[inline(always)]
+fn is_enabled() -> bool {
+    METRICS_ENABLED.load(Ordering::Relaxed)
+}
 
 /// Initialize the Prometheus metrics recorder and return a handle for rendering.
 ///
 /// Must be called once at startup before any metrics are recorded.
 /// Falls back to a local recorder handle if the global recorder is already installed.
 pub fn init_metrics() -> PrometheusHandle {
+    set_enabled(true);
     PrometheusBuilder::new()
         .install_recorder()
         .unwrap_or_else(|_| {
@@ -20,11 +40,17 @@ pub fn init_metrics() -> PrometheusHandle {
 
 /// Increment the messages_total counter.
 pub fn record_message(channel: &str, status: &'static str) {
+    if !is_enabled() {
+        return;
+    }
     counter!("messages_total", "channel" => channel.to_owned(), "status" => status).increment(1);
 }
 
 /// Increment the errors_total counter.
 pub fn record_error(error_type: &'static str) {
+    if !is_enabled() {
+        return;
+    }
     counter!("errors_total", "type" => error_type).increment(1);
 }
 
@@ -34,6 +60,9 @@ pub fn record_error(error_type: &'static str) {
 
 /// Record message processing duration.
 pub fn record_message_duration(channel: &str, duration_secs: f64) {
+    if !is_enabled() {
+        return;
+    }
     histogram!("message_duration_seconds", "channel" => channel.to_owned()).record(duration_secs);
 }
 
@@ -43,6 +72,9 @@ pub fn record_message_duration(channel: &str, duration_secs: f64) {
 
 /// Record a circuit breaker trip event.
 pub fn record_circuit_breaker_trip(connector: &str, channel: &str) {
+    if !is_enabled() {
+        return;
+    }
     counter!(
         "circuit_breaker_trips_total",
         "connector" => connector.to_owned(),
@@ -53,6 +85,9 @@ pub fn record_circuit_breaker_trip(connector: &str, channel: &str) {
 
 /// Record a request rejected by an open circuit breaker.
 pub fn record_circuit_breaker_rejection(connector: &str, channel: &str) {
+    if !is_enabled() {
+        return;
+    }
     counter!(
         "circuit_breaker_rejections_total",
         "connector" => connector.to_owned(),
@@ -63,6 +98,9 @@ pub fn record_circuit_breaker_rejection(connector: &str, channel: &str) {
 
 /// Set the active_workflows gauge.
 pub fn set_active_workflows(count: f64) {
+    if !is_enabled() {
+        return;
+    }
     gauge!("active_workflows").set(count);
 }
 
@@ -75,6 +113,9 @@ pub fn set_active_workflows(count: f64) {
 /// Accepts owned `String` labels so callers can pass values they already
 /// allocated without a redundant re-allocation.
 pub fn record_http_request(method: String, path: String, status: u16, duration_secs: f64) {
+    if !is_enabled() {
+        return;
+    }
     let status = status.to_string();
     counter!(
         "http_requests_total",
@@ -94,6 +135,9 @@ pub fn record_http_request(method: String, path: String, status: u16, duration_s
 
 /// Record DB query duration.
 pub fn record_db_query_duration(operation: &'static str, duration_secs: f64) {
+    if !is_enabled() {
+        return;
+    }
     histogram!("db_query_duration_seconds", "operation" => operation).record(duration_secs);
 }
 
@@ -110,36 +154,57 @@ where
 
 /// Record engine lock acquisition wait time.
 pub fn record_engine_lock_wait(mode: &'static str, duration_secs: f64) {
+    if !is_enabled() {
+        return;
+    }
     histogram!("engine_lock_wait_seconds", "mode" => mode).record(duration_secs);
 }
 
 /// Record engine reload duration.
 pub fn record_engine_reload_duration(duration_secs: f64) {
+    if !is_enabled() {
+        return;
+    }
     histogram!("engine_reload_duration_seconds").record(duration_secs);
 }
 
 /// Record engine reload event.
 pub fn record_engine_reload(status: &'static str) {
+    if !is_enabled() {
+        return;
+    }
     counter!("engine_reloads_total", "status" => status).increment(1);
 }
 
 /// Record a channel execution.
 pub fn record_channel_execution(channel: &str) {
+    if !is_enabled() {
+        return;
+    }
     counter!("channel_executions_total", "channel" => channel.to_owned()).increment(1);
 }
 
 /// Record a rate-limit rejection.
 pub fn record_rate_limit_rejected(client: &str) {
+    if !is_enabled() {
+        return;
+    }
     counter!("rate_limit_rejections_total", "client" => client.to_owned()).increment(1);
 }
 
 /// Record a response cache hit.
 pub fn record_cache_hit(channel: &str) {
+    if !is_enabled() {
+        return;
+    }
     counter!("response_cache_hits_total", "channel" => channel.to_owned()).increment(1);
 }
 
 /// Record a response cache miss.
 pub fn record_cache_miss(channel: &str) {
+    if !is_enabled() {
+        return;
+    }
     counter!("response_cache_misses_total", "channel" => channel.to_owned()).increment(1);
 }
 
@@ -149,21 +214,33 @@ pub fn record_cache_miss(channel: &str) {
 
 /// Set the trace queue pending depth gauge.
 pub fn set_trace_queue_depth(depth: f64) {
+    if !is_enabled() {
+        return;
+    }
     gauge!("trace_queue_depth").set(depth);
 }
 
 /// Set the number of active trace worker tasks.
 pub fn set_trace_workers_active(count: f64) {
+    if !is_enabled() {
+        return;
+    }
     gauge!("trace_workers_active").set(count);
 }
 
 /// Set the total (max) trace worker capacity.
 pub fn set_trace_workers_total(count: f64) {
+    if !is_enabled() {
+        return;
+    }
     gauge!("trace_workers_total").set(count);
 }
 
 /// Set the approximate memory usage of queued trace payloads.
 pub fn set_trace_queue_memory_bytes(bytes: f64) {
+    if !is_enabled() {
+        return;
+    }
     gauge!("trace_queue_memory_bytes").set(bytes);
 }
 
@@ -174,16 +251,25 @@ pub fn set_trace_queue_memory_bytes(bytes: f64) {
 /// Increment the dropped-trace counter. `reason` is one of:
 /// `"overflow"`, `"sampled_out"`, `"errors_only"`, `"off"`.
 pub fn record_trace_dropped(reason: &'static str) {
+    if !is_enabled() {
+        return;
+    }
     counter!("trace_dropped_total", "reason" => reason).increment(1);
 }
 
 /// Set the persistence queue depth.
 pub fn set_trace_persistence_queue_depth(depth: f64) {
+    if !is_enabled() {
+        return;
+    }
     gauge!("trace_persistence_queue_depth").set(depth);
 }
 
 /// Record a batch flush size (number of rows committed in one batch).
 pub fn record_trace_persistence_batch_size(size: usize) {
+    if !is_enabled() {
+        return;
+    }
     histogram!("trace_persistence_batch_size").record(size as f64);
 }
 
@@ -193,6 +279,9 @@ pub fn record_trace_persistence_batch_size(size: usize) {
 
 /// Record a connector request outcome.
 pub fn record_connector_request(connector: &str, channel: &str, status: &'static str) {
+    if !is_enabled() {
+        return;
+    }
     counter!(
         "connector_requests_total",
         "connector" => connector.to_owned(),
@@ -204,6 +293,9 @@ pub fn record_connector_request(connector: &str, channel: &str, status: &'static
 
 /// Record connector request duration.
 pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: f64) {
+    if !is_enabled() {
+        return;
+    }
     histogram!(
         "connector_request_duration_seconds",
         "connector" => connector.to_owned(),
@@ -218,6 +310,9 @@ pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: 
 
 /// Set the consumer lag for a specific topic-partition.
 pub fn set_kafka_consumer_lag(topic: &str, partition: i32, lag: f64) {
+    if !is_enabled() {
+        return;
+    }
     gauge!(
         "kafka_consumer_lag",
         "topic" => topic.to_owned(),
@@ -232,16 +327,25 @@ pub fn set_kafka_consumer_lag(topic: &str, partition: i32, lag: f64) {
 
 /// Set the database connection pool size (total connections).
 pub fn set_db_pool_size(size: f64) {
+    if !is_enabled() {
+        return;
+    }
     gauge!("db_pool_size").set(size);
 }
 
 /// Set the number of idle database connections.
 pub fn set_db_pool_idle(idle: f64) {
+    if !is_enabled() {
+        return;
+    }
     gauge!("db_pool_idle").set(idle);
 }
 
 /// Record an admin audit event.
 pub fn record_admin_audit(action: &str, resource_type: &str) {
+    if !is_enabled() {
+        return;
+    }
     counter!(
         "admin_audit_events_total",
         "action" => action.to_owned(),
@@ -256,6 +360,8 @@ mod tests {
 
     fn ensure_recorder() {
         let _ = PrometheusBuilder::new().install_recorder();
+        // Tests exercise the recording path directly; opt in to the runtime gate.
+        set_enabled(true);
     }
 
     #[test]

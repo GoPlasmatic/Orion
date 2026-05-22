@@ -546,7 +546,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let kafka_consumer_handle_arc = Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle));
 
-    let state = AppState {
+    let state = AppState::new(orion::server::state::AppStateInner {
         engine,
         channel_repo: channel_repo
             as Arc<dyn orion::storage::repositories::channels::ChannelRepository>,
@@ -574,7 +574,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         kafka_consumer_handle: kafka_consumer_handle_arc.clone(),
         kafka_producer,
         trace_persistence_queue,
-    };
+    });
 
     let router = orion::server::build_router(state);
 
