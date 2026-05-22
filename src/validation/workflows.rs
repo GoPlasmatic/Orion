@@ -5,23 +5,30 @@ use super::common::{validate_description, validate_id, validate_name};
 
 pub fn validate_create_workflow(req: &CreateWorkflowRequest) -> Result<(), OrionError> {
     if let Some(ref id) = req.workflow_id {
-        validate_id(id)?;
+        validate_id(id).map_err(|e| remap_to_field(e, "workflow.workflow_id"))?;
     }
-    validate_name(&req.name, "Name")?;
+    validate_name(&req.name, "Name").map_err(|e| remap_to_field(e, "workflow.name"))?;
     if let Some(ref desc) = req.description {
-        validate_description(desc)?;
+        validate_description(desc).map_err(|e| remap_to_field(e, "workflow.description"))?;
     }
     Ok(())
 }
 
 pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), OrionError> {
     if let Some(ref name) = req.name {
-        validate_name(name, "Name")?;
+        validate_name(name, "Name").map_err(|e| remap_to_field(e, "workflow.name"))?;
     }
     if let Some(ref desc) = req.description {
-        validate_description(desc)?;
+        validate_description(desc).map_err(|e| remap_to_field(e, "workflow.description"))?;
     }
     Ok(())
+}
+
+fn remap_to_field(err: OrionError, path: &'static str) -> OrionError {
+    match err {
+        OrionError::BadRequest(msg) => OrionError::invalid_field(path, "INVALID", msg),
+        other => other,
+    }
 }
 
 pub fn validate_workflow_id(id: &str) -> Result<(), OrionError> {

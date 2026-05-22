@@ -2,6 +2,7 @@ pub mod admin_auth;
 pub mod observability;
 pub mod otel;
 pub mod rate_limit;
+pub mod request_context;
 pub mod routes;
 pub mod state;
 
@@ -61,6 +62,11 @@ pub fn build_router(state: AppState) -> Router {
         .layer(DefaultBodyLimit::max(max_body_size))
         // Single middleware replaces 5 separate SetResponseHeaderLayer wrappers
         .layer(axum::middleware::from_fn(security_headers_middleware))
+        // Scope per-request task-local REQUEST_ID so OrionError responses
+        // can embed it in the JSON body (clients then don't need to read
+        // both header and body to correlate). Must run inside SetRequestIdLayer
+        // so the header is populated before we read it.
+        .layer(axum::middleware::from_fn(request_context::request_id_scope))
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid));
 
