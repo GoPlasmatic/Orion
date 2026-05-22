@@ -6,11 +6,27 @@ use super::common::{validate_id, validate_name};
 
 fn validate_connector_type(ct: &str) -> Result<(), OrionError> {
     if !VALID_CONNECTOR_TYPES.contains(&ct) {
-        return Err(OrionError::BadRequest(format!(
-            "Invalid connector type '{}'. Must be one of: {}",
-            ct,
-            VALID_CONNECTOR_TYPES.join(", ")
-        )));
+        let allowed: Vec<serde_json::Value> = VALID_CONNECTOR_TYPES
+            .iter()
+            .map(|s| serde_json::Value::String((*s).to_string()))
+            .collect();
+        return Err(OrionError::Validation {
+            code: "VALIDATION_ERROR",
+            message: format!(
+                "Invalid connector type '{}'. Must be one of: {}",
+                ct,
+                VALID_CONNECTOR_TYPES.join(", ")
+            ),
+            details: vec![
+                crate::errors::FieldError::new(
+                    "connector.connector_type",
+                    "ENUM_MISMATCH",
+                    format!("unknown connector type '{ct}'"),
+                )
+                .with_expected(serde_json::Value::Array(allowed))
+                .with_got(serde_json::Value::String(ct.to_string())),
+            ],
+        });
     }
     Ok(())
 }

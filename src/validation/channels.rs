@@ -6,19 +6,24 @@ use super::common::{validate_description, validate_id, validate_name};
 
 pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionError> {
     if let Some(ref id) = req.channel_id {
-        validate_id(id)?;
+        validate_id(id).map_err(|e| remap_to_field(e, "channel.channel_id"))?;
     }
-    validate_name(&req.name, "Name")?;
+    validate_name(&req.name, "Name").map_err(|e| remap_to_field(e, "channel.name"))?;
     if let Some(ref desc) = req.description {
-        validate_description(desc)?;
+        validate_description(desc).map_err(|e| remap_to_field(e, "channel.description"))?;
     }
     // REST/HTTP channels need methods + route_pattern
     if req.protocol == ChannelProtocol::Rest.as_str()
         || req.protocol == ChannelProtocol::Http.as_str()
     {
         if req.methods.as_ref().is_none_or(|m| m.is_empty()) {
-            return Err(OrionError::BadRequest(
-                "REST/HTTP channels must specify at least one HTTP method".to_string(),
+            return Err(OrionError::invalid_field(
+                "channel.methods",
+                "REQUIRED",
+                format!(
+                    "REST/HTTP channels must specify at least one HTTP method (protocol=\"{}\")",
+                    req.protocol
+                ),
             ));
         }
         if req
@@ -26,8 +31,13 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
             .as_ref()
             .is_none_or(|r| r.trim().is_empty())
         {
-            return Err(OrionError::BadRequest(
-                "REST/HTTP channels must specify a route_pattern".to_string(),
+            return Err(OrionError::invalid_field(
+                "channel.route_pattern",
+                "REQUIRED",
+                format!(
+                    "REST/HTTP channels must specify a route_pattern (protocol=\"{}\")",
+                    req.protocol
+                ),
             ));
         }
     }
@@ -35,11 +45,22 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
     if req.protocol == ChannelProtocol::Kafka.as_str()
         && req.topic.as_ref().is_none_or(|t| t.trim().is_empty())
     {
-        return Err(OrionError::BadRequest(
-            "Kafka channels must specify a topic".to_string(),
+        return Err(OrionError::invalid_field(
+            "channel.topic",
+            "REQUIRED",
+            "Kafka channels must specify a topic",
         ));
     }
     Ok(())
+}
+
+/// Promote a `BadRequest` returned by a shared `common::*` validator to a
+/// `Validation` error with the caller's field path. Other variants pass through.
+fn remap_to_field(err: OrionError, path: &'static str) -> OrionError {
+    match err {
+        OrionError::BadRequest(msg) => OrionError::invalid_field(path, "INVALID", msg),
+        other => other,
+    }
 }
 
 pub fn validate_channel_id(id: &str) -> Result<(), OrionError> {
