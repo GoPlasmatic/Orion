@@ -1,6 +1,46 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde_json::json;
+use serde::Serialize;
+use serde_json::{Value, json};
+
+/// Per-field validation detail returned in the `error.details[]` array.
+///
+/// `path` is a dotted/indexed pointer into the offending request body
+/// (e.g. `channel.protocol`, `tasks[2].function.input.connector`).
+/// `code` is a stable machine-readable identifier such as `REQUIRED`,
+/// `ENUM_MISMATCH`, or `INVALID_FORMAT`.
+#[derive(Debug, Clone, Serialize)]
+pub struct FieldError {
+    pub path: String,
+    pub code: &'static str,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub got: Option<Value>,
+}
+
+impl FieldError {
+    pub fn new(path: impl Into<String>, code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            code,
+            message: message.into(),
+            expected: None,
+            got: None,
+        }
+    }
+
+    pub fn with_expected(mut self, expected: impl Into<Value>) -> Self {
+        self.expected = Some(expected.into());
+        self
+    }
+
+    pub fn with_got(mut self, got: impl Into<Value>) -> Self {
+        self.got = Some(got.into());
+        self
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrionError {
@@ -9,6 +49,17 @@ pub enum OrionError {
 
     #[error("Bad request: {0}")]
     BadRequest(String),
+
+    /// A validation failure with structured per-field details.
+    /// Maps to HTTP 400 with `code` defaulting to `VALIDATION_ERROR`.
+    /// `details` is omitted from the response body when empty so clients
+    /// expecting only the v0.1 `{code, message}` envelope still work.
+    #[error("Validation failed: {message}")]
+    Validation {
+        code: &'static str,
+        message: String,
+        details: Vec<FieldError>,
+    },
 
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
@@ -75,13 +126,61 @@ impl OrionError {
             _ => false,
         }
     }
+
+    /// Construct a `Validation` error with no field details yet — use
+    /// `.field(...)` or `.with_details(...)` to populate.
+    pub fn validation(message: impl Into<String>) -> Self {
+        OrionError::Validation {
+            code: "VALIDATION_ERROR",
+            message: message.into(),
+            details: Vec::new(),
+        }
+    }
+
+    /// Append a `FieldError` to a `Validation` variant. No-op on other variants.
+    pub fn field(
+        mut self,
+        path: impl Into<String>,
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        if let OrionError::Validation { details, .. } = &mut self {
+            details.push(FieldError::new(path, code, message));
+        }
+        self
+    }
+
+    /// Build a single-field validation error in one call. Most validators
+    /// only fail on one field at a time — this keeps the call site tight.
+    pub fn invalid_field(
+        path: impl Into<String>,
+        code: &'static str,
+        message: impl Into<String>,
+    ) -> Self {
+        let message = message.into();
+        OrionError::Validation {
+            code: "VALIDATION_ERROR",
+            message: message.clone(),
+            details: vec![FieldError::new(path, code, message)],
+        }
+    }
 }
 
 impl IntoResponse for OrionError {
     fn into_response(self) -> Response {
+        // Pull the validation details out before consuming `self` in the match,
+        // since the response body needs them as a separate JSON field.
+        let validation_details = match &self {
+            OrionError::Validation { details, .. } if !details.is_empty() => Some(details.clone()),
+            _ => None,
+        };
+
         let (status, code, message) = match self {
             OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
             OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
+            OrionError::Validation { code, message, .. } => {
+                (StatusCode::BAD_REQUEST, code, message)
+            }
             OrionError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg),
             OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg),
             OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
@@ -164,12 +263,27 @@ impl IntoResponse for OrionError {
             ),
         };
 
-        let body = json!({
-            "error": {
-                "code": code,
-                "message": message,
-            }
-        });
+        let mut error_obj = serde_json::Map::new();
+        error_obj.insert("code".to_string(), Value::String(code.to_string()));
+        error_obj.insert("message".to_string(), Value::String(message));
+
+        if let Some(details) = validation_details
+            && let Ok(details_value) = serde_json::to_value(&details)
+        {
+            error_obj.insert("details".to_string(), details_value);
+        }
+
+        // Best-effort embed of the request_id set by the per-request scope
+        // middleware. Omitted when the task-local isn't in scope (e.g. unit
+        // tests calling IntoResponse directly) or when the inbound request
+        // had no x-request-id header for the SetRequestIdLayer to populate.
+        if let Ok(rid) = crate::server::request_context::REQUEST_ID.try_with(|id| id.clone())
+            && !rid.is_empty()
+        {
+            error_obj.insert("request_id".to_string(), Value::String(rid));
+        }
+
+        let body = json!({ "error": Value::Object(error_obj) });
 
         (status, axum::Json(body)).into_response()
     }
@@ -444,5 +558,130 @@ mod tests {
                 .to_string()
                 .contains("big")
         );
+    }
+
+    async fn body_to_value(response: Response) -> Value {
+        let body_bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body_bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_validation_variant_status_is_400() {
+        let err = OrionError::validation("invalid request");
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_validation_no_details_omits_details_key() {
+        let err = OrionError::validation("invalid request");
+        let response = err.into_response();
+        let body = body_to_value(response).await;
+        let error = &body["error"];
+        assert_eq!(error["code"], "VALIDATION_ERROR");
+        assert_eq!(error["message"], "invalid request");
+        assert!(
+            error.get("details").is_none(),
+            "details must be omitted when empty (v0.1 compat)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validation_with_field_emits_details_array() {
+        let err = OrionError::validation("body invalid").field(
+            "channel.protocol",
+            "ENUM_MISMATCH",
+            "unknown protocol 'REST'",
+        );
+        let response = err.into_response();
+        let body = body_to_value(response).await;
+        let details = &body["error"]["details"];
+        assert!(details.is_array(), "details should be an array");
+        let arr = details.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["path"], "channel.protocol");
+        assert_eq!(arr[0]["code"], "ENUM_MISMATCH");
+        assert_eq!(arr[0]["message"], "unknown protocol 'REST'");
+    }
+
+    #[tokio::test]
+    async fn test_invalid_field_one_shot_constructor() {
+        let err = OrionError::invalid_field(
+            "channel.route_pattern",
+            "REQUIRED",
+            "required when protocol=\"rest\"",
+        );
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_to_value(response).await;
+        let arr = body["error"]["details"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["path"], "channel.route_pattern");
+        assert_eq!(arr[0]["code"], "REQUIRED");
+    }
+
+    #[tokio::test]
+    async fn test_field_error_with_expected_and_got() {
+        let err = OrionError::Validation {
+            code: "VALIDATION_ERROR",
+            message: "bad enum".to_string(),
+            details: vec![
+                FieldError::new("channel.protocol", "ENUM_MISMATCH", "unknown protocol")
+                    .with_expected(serde_json::json!(["rest", "http", "kafka"]))
+                    .with_got(Value::String("REST".to_string())),
+            ],
+        };
+        let response = err.into_response();
+        let body = body_to_value(response).await;
+        let detail = &body["error"]["details"][0];
+        assert_eq!(
+            detail["expected"],
+            serde_json::json!(["rest", "http", "kafka"])
+        );
+        assert_eq!(detail["got"], "REST");
+    }
+
+    #[tokio::test]
+    async fn test_v01_envelope_unchanged_for_non_validation_errors() {
+        // BadRequest must produce the v0.1 envelope: code+message, no details key.
+        let err = OrionError::BadRequest("classic v0.1 message".to_string());
+        let response = err.into_response();
+        let body = body_to_value(response).await;
+        let error = &body["error"];
+        assert_eq!(error["code"], "BAD_REQUEST");
+        assert_eq!(error["message"], "classic v0.1 message");
+        assert!(error.get("details").is_none());
+    }
+
+    #[test]
+    fn test_validation_not_retryable() {
+        let err = OrionError::validation("x").field("y", "REQUIRED", "z");
+        assert!(!err.is_retryable());
+    }
+
+    #[tokio::test]
+    async fn test_request_id_embedded_when_scoped() {
+        use crate::server::request_context::REQUEST_ID;
+        let response = REQUEST_ID
+            .scope("req-abc-123".to_string(), async {
+                OrionError::BadRequest("x".to_string()).into_response()
+            })
+            .await;
+        let body = body_to_value(response).await;
+        assert_eq!(body["error"]["request_id"], "req-abc-123");
+    }
+
+    #[tokio::test]
+    async fn test_request_id_absent_when_empty() {
+        use crate::server::request_context::REQUEST_ID;
+        let response = REQUEST_ID
+            .scope(String::new(), async {
+                OrionError::BadRequest("x".to_string()).into_response()
+            })
+            .await;
+        let body = body_to_value(response).await;
+        assert!(body["error"].get("request_id").is_none());
     }
 }
