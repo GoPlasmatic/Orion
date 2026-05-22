@@ -1,4 +1,5 @@
 pub mod admin_auth;
+pub mod extract;
 pub mod observability;
 pub mod otel;
 pub mod rate_limit;

@@ -67,8 +67,48 @@ pub const CHANNEL_TYPE_SYNC: &str = "sync";
 pub const CHANNEL_TYPE_ASYNC: &str = "async";
 pub const VALID_CHANNEL_TYPES: [&str; 2] = [CHANNEL_TYPE_SYNC, CHANNEL_TYPE_ASYNC];
 
+// -- Channel type enum (used by typed DTOs) --
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChannelType {
+    Sync,
+    Async,
+}
+
+impl ChannelType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Sync => CHANNEL_TYPE_SYNC,
+            Self::Async => CHANNEL_TYPE_ASYNC,
+        }
+    }
+}
+
+impl std::fmt::Display for ChannelType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+// Custom case-insensitive deserialize so v0.1 lowercase wire values still
+// parse while broader inputs like "SYNC" or "Async" now succeed too —
+// strictly additive on the v0.1 acceptance set.
+impl<'de> Deserialize<'de> for ChannelType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        match s.to_ascii_lowercase().as_str() {
+            CHANNEL_TYPE_SYNC => Ok(Self::Sync),
+            CHANNEL_TYPE_ASYNC => Ok(Self::Async),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &[CHANNEL_TYPE_SYNC, CHANNEL_TYPE_ASYNC],
+            )),
+        }
+    }
+}
+
 // -- Channel protocol enum --
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ChannelProtocol {
     Rest,
@@ -89,6 +129,22 @@ impl ChannelProtocol {
 impl std::fmt::Display for ChannelProtocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+// Case-insensitive deserialize matching ChannelType's behavior.
+impl<'de> Deserialize<'de> for ChannelProtocol {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        match s.to_ascii_lowercase().as_str() {
+            "rest" => Ok(Self::Rest),
+            "http" => Ok(Self::Http),
+            "kafka" => Ok(Self::Kafka),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["rest", "http", "kafka"],
+            )),
+        }
     }
 }
 

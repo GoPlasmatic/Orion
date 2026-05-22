@@ -13,9 +13,9 @@ pub(crate) use pool_access_counter::POOL_ACCESS_COUNTER;
 pub use masking::{mask_connector, mask_connector_secrets};
 pub use registry::ConnectorRegistry;
 pub use types::{
-    AuthConfig, CacheConnectorConfig, ConnectorConfig, DbConnectorConfig, HttpConnectorConfig,
-    KafkaConnectorConfig, RetryConfig, StorageConnectorConfig, VALID_CACHE_BACKENDS,
-    VALID_CONNECTOR_TYPES,
+    AuthConfig, CacheConnectorConfig, ConnectorConfig, ConnectorType, DbConnectorConfig,
+    HttpConnectorConfig, KafkaConnectorConfig, RetryConfig, StorageConnectorConfig,
+    VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES,
 };
 
 mod pool_access_counter {

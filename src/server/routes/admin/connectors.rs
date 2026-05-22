@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use crate::connector::mask_connector;
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
+use crate::server::extract::OrionJson;
 use crate::server::routes::response_helpers::{
     created_response, data_response, paginated_response,
 };
@@ -78,7 +79,7 @@ pub(crate) async fn list_connectors(
 pub(crate) async fn create_connector(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Json(req): Json<CreateConnectorRequest>,
+    OrionJson(req): OrionJson<CreateConnectorRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_connector(&req)?;
     let connector = state.connector_repo.create(&req).await?;
@@ -130,7 +131,7 @@ pub(crate) async fn update_connector(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-    Json(req): Json<UpdateConnectorRequest>,
+    OrionJson(req): OrionJson<UpdateConnectorRequest>,
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_connector(&req)?;
     let connector = state.connector_repo.update(&id, &req).await?;
