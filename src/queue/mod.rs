@@ -73,6 +73,11 @@ pub struct QueueMessage {
     /// Serialized W3C trace context headers captured at submission time.
     /// Used to link async processing spans back to the originating request.
     pub trace_headers: std::collections::HashMap<String, String>,
+    /// `true` when the original request asked for profile data (header or
+    /// query). The worker creates a per-request `ProfileCollector` and
+    /// embeds the result under `metadata._orion_profile` before persisting
+    /// the trace's `result_json`.
+    pub profile_requested: bool,
 }
 
 /// In-memory trace queue backed by a tokio mpsc channel.

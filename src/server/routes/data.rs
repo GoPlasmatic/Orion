@@ -77,6 +77,55 @@ async fn route_store_completed(
     }
 }
 
+/// Internal error type for `run_engine_optionally_profiled`. The outer error
+/// from `engine.process_message_for_channel` is propagated through the
+/// `dataflow_rs::Result` carried in the `Ok` arm; this enum just distinguishes
+/// "timeout vs engine call returned".
+enum EngineRunError {
+    Timeout(u64),
+}
+
+/// Run the engine for `channel`, optionally scoped inside a per-request
+/// `ProfileCollector`. Honors `timeout_ms` when provided.
+async fn run_engine_optionally_profiled(
+    engine: &std::sync::Arc<dataflow_rs::Engine>,
+    channel: &str,
+    message: &mut dataflow_rs::Message,
+    timeout_ms: Option<u64>,
+    profile: Option<&std::sync::Arc<crate::engine::profile::ProfileCollector>>,
+) -> Result<dataflow_rs::Result<()>, EngineRunError> {
+    use crate::engine::profile::ORION_PROFILE;
+
+    async fn run_inner(
+        engine: &std::sync::Arc<dataflow_rs::Engine>,
+        channel: &str,
+        message: &mut dataflow_rs::Message,
+        timeout_ms: Option<u64>,
+    ) -> Result<dataflow_rs::Result<()>, EngineRunError> {
+        if let Some(ms) = timeout_ms {
+            match tokio::time::timeout(
+                Duration::from_millis(ms),
+                engine.process_message_for_channel(channel, message),
+            )
+            .await
+            {
+                Ok(inner) => Ok(inner),
+                Err(_) => Err(EngineRunError::Timeout(ms)),
+            }
+        } else {
+            Ok(engine.process_message_for_channel(channel, message).await)
+        }
+    }
+
+    if let Some(p) = profile {
+        ORION_PROFILE
+            .scope(p.clone(), run_inner(engine, channel, message, timeout_ms))
+            .await
+    } else {
+        run_inner(engine, channel, message, timeout_ms).await
+    }
+}
+
 /// JSONLogic truthiness: false, null, 0, "", and [] are falsy; everything else is truthy.
 fn is_truthy(val: &serde_json::Value) -> bool {
     match val {
@@ -172,6 +221,10 @@ async fn dynamic_handler(
             .map_err(|e| OrionError::BadRequest(format!("Invalid JSON body: {e}")))?
     };
 
+    // Profile mode: opt-in via header OR ?profile=1 query, gated by global config flag.
+    let profile_requested = state.config.tracing.debug_profile_enabled
+        && (header_or_query_truthy(&headers, &query_params, "x-orion-profile", "profile"));
+
     // Build metadata with all request context available for validation_logic
     let mut metadata = if req.metadata.is_object() {
         req.metadata.clone()
@@ -254,13 +307,49 @@ async fn dynamic_handler(
                 payload: req.data,
                 metadata,
                 trace_headers,
+                profile_requested,
             })
             .await?;
 
         return Ok(response);
     }
 
-    process_sync_for_channel(&state, &channel, req.data, metadata, &headers).await
+    process_sync_for_channel(
+        &state,
+        &channel,
+        req.data,
+        metadata,
+        &headers,
+        profile_requested,
+    )
+    .await
+}
+
+/// True when `header_name` or `query_name` is set to a truthy value
+/// (`1`, `true`, `yes`, `on`). Case-insensitive.
+fn header_or_query_truthy(
+    headers: &axum::http::HeaderMap,
+    query: &std::collections::HashMap<String, String>,
+    header_name: &str,
+    query_name: &str,
+) -> bool {
+    fn is_truthy_str(s: &str) -> bool {
+        matches!(
+            s.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    }
+    if let Some(v) = headers.get(header_name).and_then(|v| v.to_str().ok())
+        && is_truthy_str(v)
+    {
+        return true;
+    }
+    if let Some(v) = query.get(query_name)
+        && is_truthy_str(v)
+    {
+        return true;
+    }
+    false
 }
 
 /// Check per-channel CORS: reject the request if the `Origin` header is present
@@ -419,12 +508,15 @@ async fn process_sync_for_channel(
     data: Value,
     metadata: Value,
     headers: &axum::http::HeaderMap,
+    profile_requested: bool,
 ) -> Result<Response, OrionError> {
     let channel_config = state.channel_registry.get_by_name(channel).await;
 
     check_cors_origin(channel, &channel_config, headers)?;
     validate_input(channel, &channel_config, &data, &metadata, &state.datalogic)?;
     check_deduplication(&channel_config, headers).await?;
+
+    let profile = profile_requested.then(crate::engine::profile::ProfileCollector::new);
 
     // Response cache check — return early on cache hit (zero serialization)
     let cache_context = if let Some(ref cfg) = channel_config
@@ -460,28 +552,30 @@ async fn process_sync_for_channel(
         .as_ref()
         .and_then(|c| c.parsed_config.timeout_ms);
 
-    let result = if let Some(ms) = timeout_ms {
-        match tokio::time::timeout(
-            Duration::from_millis(ms),
-            engine.process_message_for_channel(channel, &mut message),
-        )
-        .await
-        {
-            Ok(inner) => inner,
-            Err(_) => {
-                remove_rollout_bucket(&mut message);
-                metrics::record_message(channel, "timeout");
-                metrics::record_error("timeout");
-                return Err(OrionError::Timeout {
-                    channel: channel.to_string(),
-                    timeout_ms: ms,
-                });
-            }
+    let workflow_start = Instant::now();
+    let result = run_engine_optionally_profiled(
+        &engine,
+        channel,
+        &mut message,
+        timeout_ms,
+        profile.as_ref(),
+    )
+    .await;
+    if let Some(ref p) = profile {
+        p.set_workflow_total(workflow_start.elapsed());
+    }
+
+    let result = match result {
+        Ok(inner) => inner,
+        Err(EngineRunError::Timeout(ms)) => {
+            remove_rollout_bucket(&mut message);
+            metrics::record_message(channel, "timeout");
+            metrics::record_error("timeout");
+            return Err(OrionError::Timeout {
+                channel: channel.to_string(),
+                timeout_ms: ms,
+            });
         }
-    } else {
-        engine
-            .process_message_for_channel(channel, &mut message)
-            .await
     };
 
     match result {
@@ -527,6 +621,7 @@ async fn process_sync_for_channel(
                         None,
                     )
                 });
+            let trace_store_start = Instant::now();
             route_store_completed(
                 &effective_trace,
                 &state.trace_repo,
@@ -538,12 +633,26 @@ async fn process_sync_for_channel(
                 has_errors,
             )
             .await;
+            if let Some(ref p) = profile {
+                p.set_trace_store(trace_store_start.elapsed());
+            }
 
             // Fire-and-forget cache store
             if let Some((ref key, ref cache, ttl)) = cache_context
                 && let Err(e) = cache.set_ex(key, &response_json, ttl).await
             {
                 tracing::debug!(channel = channel, error = %e, "Failed to cache response");
+            }
+
+            // Profile mode: rebuild the response with the `profile` field appended
+            // and re-serialize. Only paid when profiling is on.
+            if let Some(ref p) = profile {
+                let mut response_with_profile = response;
+                response_with_profile["profile"] = p.to_json();
+                let body = serde_json::to_string(&response_with_profile).map_err(|e| {
+                    OrionError::Internal(format!("Failed to serialize response: {e}"))
+                })?;
+                return Ok(json_response(StatusCode::OK, body));
             }
 
             Ok(json_response(StatusCode::OK, response_json))

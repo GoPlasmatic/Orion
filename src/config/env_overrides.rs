@@ -194,6 +194,12 @@ where
         config.tracing.sample_rate,
         f64
     );
+    env_parsed!(
+        env_var,
+        "ORION_TRACING__DEBUG_PROFILE_ENABLED",
+        config.tracing.debug_profile_enabled,
+        bool
+    );
 
     // Tracing — trace persistence (DB-backed `traces` table)
     if let Ok(v) = env_var("ORION_TRACING__STORAGE__MODE") {

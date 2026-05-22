@@ -11,6 +11,22 @@ use crate::storage::repositories::traces::TraceRepository;
 
 use super::QueueMessage;
 
+/// Serialize a finished message to JSON, embedding the per-request profile
+/// JSON at the top level under `_orion_profile` when one is provided.
+fn serialize_result_with_profile(
+    message: &dataflow_rs::Message,
+    profile: Option<&Arc<crate::engine::profile::ProfileCollector>>,
+) -> Result<String, serde_json::Error> {
+    let Some(p) = profile else {
+        return serde_json::to_string(message);
+    };
+    let mut v = serde_json::to_value(message)?;
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("_orion_profile".to_string(), p.to_json());
+    }
+    serde_json::to_string(&v)
+}
+
 /// Shared counters for queue observability metrics.
 pub(super) struct QueueCounters {
     pub(super) pending: Arc<AtomicUsize>,
@@ -223,6 +239,9 @@ async fn process_trace(
 
     let trace_id = msg.trace_id;
     let channel = msg.channel;
+    let profile = msg
+        .profile_requested
+        .then(crate::engine::profile::ProfileCollector::new);
     let start = Instant::now();
 
     // Capture payload/metadata for potential DLQ enqueue before consuming
@@ -259,12 +278,24 @@ async fn process_trace(
 
     // Clone the inner Arc<Engine> and release the lock immediately
     let engine_ref = crate::engine::acquire_engine_read(&engine).await;
-    let result = match tokio::time::timeout(
-        Duration::from_millis(processing_timeout_ms),
-        engine_ref.process_message_for_channel(&channel, &mut message),
-    )
-    .await
-    {
+    let workflow_start = Instant::now();
+    let engine_fut = async {
+        tokio::time::timeout(
+            Duration::from_millis(processing_timeout_ms),
+            engine_ref.process_message_for_channel(&channel, &mut message),
+        )
+        .await
+    };
+    let timeout_outcome = if let Some(ref p) = profile {
+        use crate::engine::profile::ORION_PROFILE;
+        ORION_PROFILE.scope(p.clone(), engine_fut).await
+    } else {
+        engine_fut.await
+    };
+    if let Some(ref p) = profile {
+        p.set_workflow_total(workflow_start.elapsed());
+    }
+    let result = match timeout_outcome {
         Ok(inner) => inner,
         Err(_) => {
             tracing::warn!(
@@ -308,7 +339,7 @@ async fn process_trace(
             metrics::record_message_duration(&channel, duration_secs);
             metrics::record_channel_execution(&channel);
 
-            let result_json = match serde_json::to_string(&message) {
+            let result_json = match serialize_result_with_profile(&message, profile.as_ref()) {
                 Ok(json) => json,
                 Err(e) => {
                     tracing::error!(trace_id = %trace_id, error = %e, "Failed to serialize trace result");

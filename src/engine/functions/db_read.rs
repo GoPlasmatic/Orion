@@ -30,38 +30,42 @@ impl AsyncFunctionHandler for DbReadHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        let connector_name = require_str_field(input, "connector", "db_read")?;
-        let query = require_str_field(input, "query", "db_read")?;
-        let params = input.get("params").and_then(|v| v.as_array());
+        let connector_peek = input.get("connector").and_then(|v| v.as_str());
+        crate::engine::profile::record("db_read", connector_peek, async move {
+            let connector_name = require_str_field(input, "connector", "db_read")?;
+            let query = require_str_field(input, "query", "db_read")?;
+            let params = input.get("params").and_then(|v| v.as_array());
 
-        let connector_config = resolve_connector(&self.registry, connector_name).await?;
-        let db_config = require_db_connector(&connector_config, connector_name)?;
+            let connector_config = resolve_connector(&self.registry, connector_name).await?;
+            let db_config = require_db_connector(&connector_config, connector_name)?;
 
-        let pool = self
-            .pool_cache
-            .get_pool(connector_name, db_config)
-            .await
-            .map_err(to_exec_error)?;
+            let pool = self
+                .pool_cache
+                .get_pool(connector_name, db_config)
+                .await
+                .map_err(to_exec_error)?;
 
-        let sqlx_query = sqlx::query(query);
-        let sqlx_query = if let Some(params) = params {
-            bind_json_params(sqlx_query, params)
-        } else {
-            sqlx_query
-        };
+            let sqlx_query = sqlx::query(query);
+            let sqlx_query = if let Some(params) = params {
+                bind_json_params(sqlx_query, params)
+            } else {
+                sqlx_query
+            };
 
-        let rows: Vec<AnyRow> = timed_query(
-            db_config.query_timeout_ms,
-            "db_read",
-            sqlx_query.fetch_all(&pool),
-        )
-        .await?;
+            let rows: Vec<AnyRow> = timed_query(
+                db_config.query_timeout_ms,
+                "db_read",
+                sqlx_query.fetch_all(&pool),
+            )
+            .await?;
 
-        let result = rows_to_json(&rows);
+            let result = rows_to_json(&rows);
 
-        let output_path = extract_output_path(input);
-        apply_output(ctx, output_path, result);
-        Ok(TaskOutcome::Success)
+            let output_path = extract_output_path(input);
+            apply_output(ctx, output_path, result);
+            Ok(TaskOutcome::Success)
+        })
+        .await
     }
 }
 

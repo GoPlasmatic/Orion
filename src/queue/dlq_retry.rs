@@ -75,6 +75,7 @@ pub fn start_dlq_retry(
                         payload,
                         metadata,
                         trace_headers: std::collections::HashMap::new(),
+                        profile_requested: false,
                     })
                     .await;
 
