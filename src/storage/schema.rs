@@ -84,6 +84,7 @@ pub enum Traces {
     CompletedAt,
     CreatedAt,
     UpdatedAt,
+    TaskTraceJson,
 }
 
 // ============================================================

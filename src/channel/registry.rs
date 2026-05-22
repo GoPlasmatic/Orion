@@ -26,6 +26,10 @@ pub struct EffectiveTraceConfig {
     pub mode: TraceStorageMode,
     pub sample_rate: f64,
     pub errors_only: bool,
+    /// When `true`, the engine should capture per-task execution traces
+    /// and persist them. No global default — only enabled per-channel
+    /// because the storage cost scales with task count and payload size.
+    pub task_details: bool,
 }
 
 impl EffectiveTraceConfig {
@@ -35,18 +39,20 @@ impl EffectiveTraceConfig {
         global: &TracingStorageConfig,
         channel: Option<&super::config::ChannelTracingConfig>,
     ) -> Self {
-        let (mode, sample_rate, errors_only) = match channel {
+        let (mode, sample_rate, errors_only, task_details) = match channel {
             Some(c) => (
                 c.mode.unwrap_or(global.mode),
                 c.sample_rate.unwrap_or(global.sample_rate),
                 c.errors_only.unwrap_or(global.errors_only),
+                c.task_details.unwrap_or(false),
             ),
-            None => (global.mode, global.sample_rate, global.errors_only),
+            None => (global.mode, global.sample_rate, global.errors_only, false),
         };
         Self {
             mode,
             sample_rate,
             errors_only,
+            task_details,
         }
     }
 }
