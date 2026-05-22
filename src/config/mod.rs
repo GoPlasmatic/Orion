@@ -21,7 +21,7 @@ pub use observability::{
 };
 pub use queue::QueueConfig;
 pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
-pub use server::{IngestConfig, ServerConfig, TlsConfig};
+pub use server::{CompressionConfig, IngestConfig, ServerConfig, TlsConfig};
 pub use storage::StorageConfig;
 
 use serde::{Deserialize, Serialize};
