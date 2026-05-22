@@ -273,6 +273,7 @@ async fn dispatch_one(trace_repo: &Arc<dyn TraceRepository>, task: TracePersiste
                 row.input_json.as_deref(),
                 &row.result_json,
                 row.duration_ms,
+                row.task_trace_json.as_deref(),
             )
             .await
             .map(|_| ()),

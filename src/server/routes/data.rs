@@ -49,6 +49,7 @@ async fn route_store_completed(
     response_json: &str,
     duration_ms: f64,
     has_errors: bool,
+    task_trace_json: Option<&str>,
 ) {
     if let Some(reason) = filter_should_drop(cfg, has_errors) {
         metrics::record_trace_dropped(reason);
@@ -57,7 +58,14 @@ async fn route_store_completed(
     match cfg.mode {
         TraceStorageMode::Sync => {
             if let Err(e) = trace_repo
-                .store_completed(channel, "sync", input_json, response_json, duration_ms)
+                .store_completed(
+                    channel,
+                    "sync",
+                    input_json,
+                    response_json,
+                    duration_ms,
+                    task_trace_json,
+                )
                 .await
             {
                 tracing::warn!(error = %e, "Failed to store sync processing result");
@@ -70,6 +78,7 @@ async fn route_store_completed(
                 input_json: input_json.map(str::to_string),
                 result_json: response_json.to_string(),
                 duration_ms,
+                task_trace_json: task_trace_json.map(str::to_string),
             });
             persistence_queue.submit(task).await;
         }
@@ -85,15 +94,24 @@ enum EngineRunError {
     Timeout(u64),
 }
 
+/// Result tuple returned from the engine call: the engine's own `Result<()>`,
+/// and an optional captured per-task `ExecutionTrace` populated when the
+/// channel opted into `task_details` (A2).
+type EngineCallResult = (dataflow_rs::Result<()>, Option<dataflow_rs::ExecutionTrace>);
+
 /// Run the engine for `channel`, optionally scoped inside a per-request
-/// `ProfileCollector`. Honors `timeout_ms` when provided.
+/// `ProfileCollector`. Honors `timeout_ms` when provided. When
+/// `capture_trace` is true, uses the with-trace engine entry point and
+/// returns the resulting `ExecutionTrace` for persistence.
+#[allow(clippy::too_many_arguments)]
 async fn run_engine_optionally_profiled(
     engine: &std::sync::Arc<dataflow_rs::Engine>,
     channel: &str,
     message: &mut dataflow_rs::Message,
     timeout_ms: Option<u64>,
     profile: Option<&std::sync::Arc<crate::engine::profile::ProfileCollector>>,
-) -> Result<dataflow_rs::Result<()>, EngineRunError> {
+    capture_trace: bool,
+) -> Result<EngineCallResult, EngineRunError> {
     use crate::engine::profile::ORION_PROFILE;
 
     async fn run_inner(
@@ -101,28 +119,49 @@ async fn run_engine_optionally_profiled(
         channel: &str,
         message: &mut dataflow_rs::Message,
         timeout_ms: Option<u64>,
-    ) -> Result<dataflow_rs::Result<()>, EngineRunError> {
-        if let Some(ms) = timeout_ms {
+        capture_trace: bool,
+    ) -> Result<EngineCallResult, EngineRunError> {
+        if capture_trace {
+            let fut = engine.process_message_for_channel_with_trace(channel, message);
+            let inner = if let Some(ms) = timeout_ms {
+                match tokio::time::timeout(Duration::from_millis(ms), fut).await {
+                    Ok(r) => r,
+                    Err(_) => return Err(EngineRunError::Timeout(ms)),
+                }
+            } else {
+                fut.await
+            };
+            match inner {
+                Ok(trace) => Ok((Ok(()), Some(trace))),
+                Err(e) => Ok((Err(e), None)),
+            }
+        } else if let Some(ms) = timeout_ms {
             match tokio::time::timeout(
                 Duration::from_millis(ms),
                 engine.process_message_for_channel(channel, message),
             )
             .await
             {
-                Ok(inner) => Ok(inner),
+                Ok(inner) => Ok((inner, None)),
                 Err(_) => Err(EngineRunError::Timeout(ms)),
             }
         } else {
-            Ok(engine.process_message_for_channel(channel, message).await)
+            Ok((
+                engine.process_message_for_channel(channel, message).await,
+                None,
+            ))
         }
     }
 
     if let Some(p) = profile {
         ORION_PROFILE
-            .scope(p.clone(), run_inner(engine, channel, message, timeout_ms))
+            .scope(
+                p.clone(),
+                run_inner(engine, channel, message, timeout_ms, capture_trace),
+            )
             .await
     } else {
-        run_inner(engine, channel, message, timeout_ms).await
+        run_inner(engine, channel, message, timeout_ms, capture_trace).await
     }
 }
 
@@ -552,6 +591,14 @@ async fn process_sync_for_channel(
         .as_ref()
         .and_then(|c| c.parsed_config.timeout_ms);
 
+    // A2: when the channel opted in via `config.tracing.task_details = true`,
+    // use the with-trace engine entry point so per-step inputs/outputs are
+    // captured for persistence.
+    let capture_trace = channel_config
+        .as_ref()
+        .map(|c| c.trace_storage.task_details)
+        .unwrap_or(false);
+
     let workflow_start = Instant::now();
     let result = run_engine_optionally_profiled(
         &engine,
@@ -559,13 +606,14 @@ async fn process_sync_for_channel(
         &mut message,
         timeout_ms,
         profile.as_ref(),
+        capture_trace,
     )
     .await;
     if let Some(ref p) = profile {
         p.set_workflow_total(workflow_start.elapsed());
     }
 
-    let result = match result {
+    let (result, task_trace) = match result {
         Ok(inner) => inner,
         Err(EngineRunError::Timeout(ms)) => {
             remove_rollout_bucket(&mut message);
@@ -621,6 +669,9 @@ async fn process_sync_for_channel(
                         None,
                     )
                 });
+            let task_trace_json = task_trace
+                .as_ref()
+                .and_then(|t| serde_json::to_string(t).ok());
             let trace_store_start = Instant::now();
             route_store_completed(
                 &effective_trace,
@@ -631,6 +682,7 @@ async fn process_sync_for_channel(
                 &response_json,
                 duration_ms,
                 has_errors,
+                task_trace_json.as_deref(),
             )
             .await;
             if let Some(ref p) = profile {
