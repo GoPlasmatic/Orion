@@ -3,6 +3,7 @@ pub mod connector_helpers;
 pub mod http_call;
 pub mod http_common;
 pub mod publish_kafka;
+pub mod schema;
 
 pub mod cache_read;
 pub mod cache_write;

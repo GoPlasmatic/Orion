@@ -604,6 +604,24 @@ async fn validate_tasks(
             });
         }
 
+        // Schema check the function input (A1). Same registry is used by
+        // workflow create — surfacing it here so the /validate endpoint
+        // gives the same answer offline.
+        if !fn_name.is_empty() {
+            let input = function
+                .and_then(|f| f.get("input"))
+                .cloned()
+                .unwrap_or(Value::Object(Default::default()));
+            let task_path = format!("tasks[{i}]");
+            for fe in crate::engine::functions::schema::validate_input(fn_name, &input, &task_path)
+            {
+                errors.push(ValidationIssue {
+                    field: fe.path,
+                    message: fe.message,
+                });
+            }
+        }
+
         if !fn_name.is_empty()
             && crate::engine::CONNECTOR_FUNCTIONS.contains(&fn_name)
             && let Some(connector_name) = function
