@@ -130,7 +130,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         None
     };
 
-    let state = AppState {
+    let state = AppState::new(orion::server::state::AppStateInner {
         engine,
         channel_repo,
         workflow_repo,
@@ -154,7 +154,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         kafka_consumer_handle: Arc::new(tokio::sync::Mutex::new(None)),
         kafka_producer: None,
         trace_persistence_queue: trace_persistence_queue_for_workers,
-    };
+    });
 
     orion::server::build_router(state)
 }
