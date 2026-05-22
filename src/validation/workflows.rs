@@ -1,4 +1,4 @@
-use crate::errors::OrionError;
+use crate::errors::{FieldError, OrionError};
 use crate::storage::repositories::workflows::{CreateWorkflowRequest, UpdateWorkflowRequest};
 
 use super::common::{validate_description, validate_id, validate_name};
@@ -11,6 +11,13 @@ pub fn validate_create_workflow(req: &CreateWorkflowRequest) -> Result<(), Orion
     if let Some(ref desc) = req.description {
         validate_description(desc).map_err(|e| remap_to_field(e, "workflow.description"))?;
     }
+    let task_errors = validate_workflow_tasks_schema(&req.tasks);
+    if !task_errors.is_empty() {
+        return Err(validation_with_details(
+            "Workflow tasks contain invalid function inputs",
+            task_errors,
+        ));
+    }
     Ok(())
 }
 
@@ -21,7 +28,56 @@ pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), Orion
     if let Some(ref desc) = req.description {
         validate_description(desc).map_err(|e| remap_to_field(e, "workflow.description"))?;
     }
+    if let Some(ref tasks) = req.tasks {
+        let task_errors = validate_workflow_tasks_schema(tasks);
+        if !task_errors.is_empty() {
+            return Err(validation_with_details(
+                "Workflow tasks contain invalid function inputs",
+                task_errors,
+            ));
+        }
+    }
     Ok(())
+}
+
+/// Walk the `tasks` array and collect schema-validation errors for each task's
+/// `function.input` against the schema registered for `function.name`. Tasks
+/// whose function has no registered schema are skipped (unknown functions
+/// remain a warning, not a hard error, to leave room for plugins).
+///
+/// Public so the `/api/v1/admin/workflows/validate` endpoint can reuse it.
+pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldError> {
+    let Some(arr) = tasks.as_array() else {
+        return Vec::new();
+    };
+    let mut errors = Vec::new();
+    for (i, task) in arr.iter().enumerate() {
+        let function = task.get("function");
+        let fn_name = function
+            .and_then(|f| f.get("name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+        if fn_name.is_empty() {
+            continue;
+        }
+        let input = function
+            .and_then(|f| f.get("input"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Object(Default::default()));
+        let task_path = format!("tasks[{i}]");
+        errors.extend(crate::engine::functions::schema::validate_input(
+            fn_name, &input, &task_path,
+        ));
+    }
+    errors
+}
+
+fn validation_with_details(message: &str, details: Vec<FieldError>) -> OrionError {
+    OrionError::Validation {
+        code: "VALIDATION_ERROR",
+        message: message.to_string(),
+        details,
+    }
 }
 
 fn remap_to_field(err: OrionError, path: &'static str) -> OrionError {

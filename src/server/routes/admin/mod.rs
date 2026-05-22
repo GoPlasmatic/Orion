@@ -3,6 +3,7 @@ pub(crate) mod backups;
 pub(crate) mod channels;
 pub(crate) mod connectors;
 pub(crate) mod engine;
+pub(crate) mod functions;
 pub(crate) mod workflows;
 
 use axum::Router;
@@ -30,6 +31,7 @@ pub(crate) use connectors::{
     reset_circuit_breaker, update_connector,
 };
 pub(crate) use engine::{engine_reload, engine_status};
+pub(crate) use functions::list_functions;
 pub(crate) use workflows::{
     change_workflow_status, create_new_workflow_version, create_workflow, delete_workflow,
     export_workflows, get_workflow, import_workflows, list_workflow_versions, list_workflows,
@@ -131,11 +133,14 @@ pub fn admin_routes() -> Router<AppState> {
 
     let audit_routes = Router::new().route("/", get(list_audit_logs));
 
+    let function_routes = Router::new().route("/", get(list_functions));
+
     let mut router = Router::new()
         .nest("/channels", channel_routes)
         .nest("/workflows", workflow_routes)
         .nest("/connectors", connector_routes)
         .nest("/engine", engine_routes)
+        .nest("/functions", function_routes)
         .nest("/audit-logs", audit_routes);
 
     let backup_routes = Router::new().route("/", post(create_backup).get(list_backups));
