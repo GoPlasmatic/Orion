@@ -1,4 +1,5 @@
 pub mod functions;
+pub mod profile;
 pub mod utils;
 
 use std::collections::HashMap;
@@ -21,7 +22,9 @@ pub async fn acquire_engine_read(
 ) -> Arc<dataflow_rs::Engine> {
     let start = std::time::Instant::now();
     let guard = lock.read().await;
-    crate::metrics::record_engine_lock_wait("read", start.elapsed().as_secs_f64());
+    let elapsed = start.elapsed();
+    crate::metrics::record_engine_lock_wait("read", elapsed.as_secs_f64());
+    profile::record_engine_lock_wait(elapsed);
     guard.clone()
 }
 

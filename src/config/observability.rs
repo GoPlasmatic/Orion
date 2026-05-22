@@ -21,6 +21,14 @@ pub struct TracingConfig {
     /// Unrelated to OpenTelemetry export above — this controls Orion's own
     /// per-request trace records that admins inspect via `/api/v1/data/traces`.
     pub storage: TracingStorageConfig,
+    /// Allow per-request workflow profiling. When `true`, requests carrying
+    /// `X-Orion-Profile: 1` (or `?profile=1`) receive a `profile` object in
+    /// the response that breaks the request down by phase (engine lock,
+    /// per-handler durations, trace store, residual workflow logic).
+    ///
+    /// Default `false` — the header is ignored in production until this is
+    /// switched on, so attackers cannot probe internal timing.
+    pub debug_profile_enabled: bool,
 }
 
 impl Default for TracingConfig {
@@ -31,6 +39,7 @@ impl Default for TracingConfig {
             service_name: "orion".to_string(),
             sample_rate: 1.0,
             storage: TracingStorageConfig::default(),
+            debug_profile_enabled: false,
         }
     }
 }

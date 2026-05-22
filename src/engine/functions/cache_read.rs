@@ -28,27 +28,31 @@ impl AsyncFunctionHandler for CacheReadHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        let connector_name = require_str_field(input, "connector", "cache_read")?;
-        let key = require_str_field(input, "key", "cache_read")?;
+        let connector_peek = input.get("connector").and_then(|v| v.as_str());
+        crate::engine::profile::record("cache_read", connector_peek, async move {
+            let connector_name = require_str_field(input, "connector", "cache_read")?;
+            let key = require_str_field(input, "key", "cache_read")?;
 
-        let connector_config = resolve_connector(&self.registry, connector_name).await?;
-        let cache_config = require_cache_connector(&connector_config, connector_name)?;
+            let connector_config = resolve_connector(&self.registry, connector_name).await?;
+            let cache_config = require_cache_connector(&connector_config, connector_name)?;
 
-        let backend = self
-            .cache_pool
-            .get_backend(connector_name, cache_config)
-            .await
-            .map_err(to_exec_error)?;
+            let backend = self
+                .cache_pool
+                .get_backend(connector_name, cache_config)
+                .await
+                .map_err(to_exec_error)?;
 
-        let value = backend.get(key).await.map_err(to_exec_error)?;
+            let value = backend.get(key).await.map_err(to_exec_error)?;
 
-        let result = match value {
-            Some(v) => serde_json::from_str::<Value>(&v).unwrap_or(Value::String(v)),
-            None => Value::Null,
-        };
+            let result = match value {
+                Some(v) => serde_json::from_str::<Value>(&v).unwrap_or(Value::String(v)),
+                None => Value::Null,
+            };
 
-        let output_path = extract_output_path(input);
-        apply_output(ctx, output_path, result);
-        Ok(TaskOutcome::Success)
+            let output_path = extract_output_path(input);
+            apply_output(ctx, output_path, result);
+            Ok(TaskOutcome::Success)
+        })
+        .await
     }
 }

@@ -31,37 +31,41 @@ impl AsyncFunctionHandler for MongoReadHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        let connector_name = require_str_field(input, "connector", "mongo_read")?;
-        let database = require_str_field(input, "database", "mongo_read")?;
-        let collection = require_str_field(input, "collection", "mongo_read")?;
+        let connector_peek = input.get("connector").and_then(|v| v.as_str());
+        crate::engine::profile::record("mongo_read", connector_peek, async move {
+            let connector_name = require_str_field(input, "connector", "mongo_read")?;
+            let database = require_str_field(input, "database", "mongo_read")?;
+            let collection = require_str_field(input, "collection", "mongo_read")?;
 
-        let filter_val = input
-            .get("filter")
-            .cloned()
-            .unwrap_or(Value::Object(serde_json::Map::new()));
-        let filter_doc = bson::to_document(&filter_val)
-            .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {}", e)))?;
+            let filter_val = input
+                .get("filter")
+                .cloned()
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            let filter_doc = bson::to_document(&filter_val)
+                .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {}", e)))?;
 
-        let connector_config = resolve_connector(&self.registry, connector_name).await?;
-        let db_config = require_db_connector(&connector_config, connector_name)?;
+            let connector_config = resolve_connector(&self.registry, connector_name).await?;
+            let db_config = require_db_connector(&connector_config, connector_name)?;
 
-        let client = self
-            .pool_cache
-            .get_client(connector_name, db_config)
-            .await
-            .map_err(to_exec_error)?;
+            let client = self
+                .pool_cache
+                .get_client(connector_name, db_config)
+                .await
+                .map_err(to_exec_error)?;
 
-        let coll = client.database(database).collection::<Document>(collection);
-        let cursor = coll.find(filter_doc).await.map_err(to_exec_error)?;
-        let docs: Vec<Document> = cursor.try_collect().await.map_err(to_exec_error)?;
+            let coll = client.database(database).collection::<Document>(collection);
+            let cursor = coll.find(filter_doc).await.map_err(to_exec_error)?;
+            let docs: Vec<Document> = cursor.try_collect().await.map_err(to_exec_error)?;
 
-        let result: Vec<Value> = docs
-            .iter()
-            .filter_map(|doc| serde_json::to_value(doc).ok())
-            .collect();
+            let result: Vec<Value> = docs
+                .iter()
+                .filter_map(|doc| serde_json::to_value(doc).ok())
+                .collect();
 
-        let output_path = extract_output_path(input);
-        apply_output(ctx, output_path, Value::Array(result));
-        Ok(TaskOutcome::Success)
+            let output_path = extract_output_path(input);
+            apply_output(ctx, output_path, Value::Array(result));
+            Ok(TaskOutcome::Success)
+        })
+        .await
     }
 }
