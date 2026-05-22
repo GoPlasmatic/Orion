@@ -29,6 +29,9 @@ pub struct TraceCompletedRow {
     pub input_json: Option<String>,
     pub result_json: String,
     pub duration_ms: f64,
+    /// Optional per-task execution trace JSON. Populated only when the
+    /// channel has `config.tracing.task_details = true` (A2).
+    pub task_trace_json: Option<String>,
 }
 
 /// Owned payload for a batched `set_result` write.
@@ -69,6 +72,7 @@ pub trait TraceRepository: Send + Sync {
         input_json: Option<&str>,
         result_json: &str,
         duration_ms: f64,
+        task_trace_json: Option<&str>,
     ) -> Result<String, OrionError>;
 
     /// Batched variant of [`store_completed`]. Default impl loops the singular
@@ -88,6 +92,7 @@ pub trait TraceRepository: Send + Sync {
                     row.input_json.as_deref(),
                     &row.result_json,
                     row.duration_ms,
+                    row.task_trace_json.as_deref(),
                 )
                 .await?,
             );
@@ -252,12 +257,14 @@ impl TraceRepository for SqlTraceRepository {
         input_json: Option<&str>,
         result_json: &str,
         duration_ms: f64,
+        task_trace_json: Option<&str>,
     ) -> Result<String, OrionError> {
         crate::metrics::timed_db_op("traces.store_completed", async {
             let id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now().naive_utc().to_string();
 
             let input_val = super::helpers::optional_string_value(input_json);
+            let task_trace_val = super::helpers::optional_string_value(task_trace_json);
 
             let (sql, values) = build_sqlx(
                 Query::insert()
@@ -272,6 +279,7 @@ impl TraceRepository for SqlTraceRepository {
                         Traces::DurationMs,
                         Traces::StartedAt,
                         Traces::CompletedAt,
+                        Traces::TaskTraceJson,
                     ])
                     .values_panic([
                         Expr::val(id.as_str()).into(),
@@ -283,6 +291,7 @@ impl TraceRepository for SqlTraceRepository {
                         Expr::val(duration_ms).into(),
                         Expr::val(now.as_str()).into(),
                         Expr::val(now.as_str()).into(),
+                        Expr::val(task_trace_val).into(),
                     ]),
             );
 
@@ -314,10 +323,13 @@ impl TraceRepository for SqlTraceRepository {
                 Traces::DurationMs,
                 Traces::StartedAt,
                 Traces::CompletedAt,
+                Traces::TaskTraceJson,
             ]);
             for row in rows {
                 let id = uuid::Uuid::new_v4().to_string();
                 let input_val = super::helpers::optional_string_value(row.input_json.as_deref());
+                let task_trace_val =
+                    super::helpers::optional_string_value(row.task_trace_json.as_deref());
                 insert.values_panic([
                     Expr::val(id.as_str()).into(),
                     Expr::val("completed").into(),
@@ -328,6 +340,7 @@ impl TraceRepository for SqlTraceRepository {
                     Expr::val(row.duration_ms).into(),
                     Expr::val(now.as_str()).into(),
                     Expr::val(now.as_str()).into(),
+                    Expr::val(task_trace_val).into(),
                 ]);
                 ids.push(id);
             }
@@ -466,7 +479,7 @@ mod tests {
 
         // Create a completed trace
         let id = repo
-            .store_completed("orders", "sync", None, r#"{"ok":true}"#, 10.0)
+            .store_completed("orders", "sync", None, r#"{"ok":true}"#, 10.0, None)
             .await
             .unwrap();
 
@@ -490,7 +503,7 @@ mod tests {
 
         // Create a recent trace that should NOT be deleted
         let _recent_id = repo
-            .store_completed("orders", "sync", None, r#"{"ok":true}"#, 5.0)
+            .store_completed("orders", "sync", None, r#"{"ok":true}"#, 5.0, None)
             .await
             .unwrap();
 

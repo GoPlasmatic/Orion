@@ -235,6 +235,7 @@ mod tests {
             completed_at: None,
             created_at: now,
             updated_at: now,
+            task_trace_json: None,
         }
     }
 
@@ -274,6 +275,7 @@ mod tests {
             _input_json: Option<&str>,
             _result_json: &str,
             _duration_ms: f64,
+            _task_trace_json: Option<&str>,
         ) -> Result<String, OrionError> {
             unimplemented!()
         }
