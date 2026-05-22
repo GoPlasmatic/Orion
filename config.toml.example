@@ -1,6 +1,15 @@
 # Orion Configuration
 # All values shown are defaults. Uncomment and modify as needed.
 # Environment variables override file values using ORION_SECTION__KEY format.
+#
+# Env-var substitution: values in this file may reference process
+# environment variables with `${VAR}` (required, fails fast if unset)
+# or `${VAR:-default}` (optional with a fallback). Use `$$` to escape
+# a literal `$`. The same substitution also runs on connector
+# `config_json` blobs at startup, so secrets can stay out of the
+# database — e.g.:
+#   [storage]
+#   url = "${ORION_DB_URL:-sqlite:orion.db}"
 
 [server]
 # host = "0.0.0.0"

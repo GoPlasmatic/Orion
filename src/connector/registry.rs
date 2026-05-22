@@ -135,7 +135,28 @@ impl ConnectorRegistry {
         // Build new map outside the lock to avoid holding it during deserialization
         let mut new_configs = HashMap::new();
         for connector in &connectors {
-            match serde_json::from_str::<ConnectorConfig>(&connector.config_json) {
+            // Resolve ${VAR} / ${VAR:-default} placeholders against the process
+            // environment so connector configs can reference secrets without
+            // storing them in the database. Substitution failures (missing
+            // required var, malformed syntax) skip the connector and log —
+            // matching how an unparseable config_json is handled below.
+            let source_label = format!("connector '{}' config_json", connector.name);
+            let resolved = match crate::config::env_substitute::substitute(
+                &connector.config_json,
+                &source_label,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!(
+                        connector_id = %connector.id,
+                        connector_name = %connector.name,
+                        error = %e,
+                        "Failed to resolve env vars in connector config, skipping"
+                    );
+                    continue;
+                }
+            };
+            match serde_json::from_str::<ConnectorConfig>(&resolved) {
                 Ok(config) => {
                     new_configs.insert(connector.name.clone(), Arc::new(config));
                 }
