@@ -21,8 +21,8 @@ pub struct CreateChannelRequest {
     pub channel_id: Option<String>,
     pub name: String,
     pub description: Option<String>,
-    pub channel_type: String,
-    pub protocol: String,
+    pub channel_type: crate::storage::models::ChannelType,
+    pub protocol: crate::storage::models::ChannelProtocol,
     pub methods: Option<Vec<String>>,
     pub route_pattern: Option<String>,
     pub topic: Option<String>,
@@ -805,11 +805,12 @@ mod tests {
 
     #[test]
     fn test_create_channel_request_defaults() {
+        use crate::storage::models::{ChannelProtocol, ChannelType};
         let json = r#"{"name":"orders","channel_type":"sync","protocol":"rest"}"#;
         let req: CreateChannelRequest = serde_json::from_str(json).unwrap();
         assert_eq!(req.name, "orders");
-        assert_eq!(req.channel_type, "sync");
-        assert_eq!(req.protocol, "rest");
+        assert_eq!(req.channel_type, ChannelType::Sync);
+        assert_eq!(req.protocol, ChannelProtocol::Rest);
         assert!(req.channel_id.is_none());
         assert!(req.description.is_none());
         assert!(req.methods.is_none());

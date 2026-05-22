@@ -13,9 +13,7 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
         validate_description(desc).map_err(|e| remap_to_field(e, "channel.description"))?;
     }
     // REST/HTTP channels need methods + route_pattern
-    if req.protocol == ChannelProtocol::Rest.as_str()
-        || req.protocol == ChannelProtocol::Http.as_str()
-    {
+    if matches!(req.protocol, ChannelProtocol::Rest | ChannelProtocol::Http) {
         if req.methods.as_ref().is_none_or(|m| m.is_empty()) {
             return Err(OrionError::invalid_field(
                 "channel.methods",
@@ -42,7 +40,7 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
         }
     }
     // Kafka channels need a topic
-    if req.protocol == ChannelProtocol::Kafka.as_str()
+    if req.protocol == ChannelProtocol::Kafka
         && req.topic.as_ref().is_none_or(|t| t.trim().is_empty())
     {
         return Err(OrionError::invalid_field(
@@ -98,8 +96,8 @@ mod tests {
             channel_id: Some("orders-sync".to_string()),
             name: "Orders Sync".to_string(),
             description: None,
-            channel_type: "sync".to_string(),
-            protocol: "rest".to_string(),
+            channel_type: crate::storage::models::ChannelType::Sync,
+            protocol: ChannelProtocol::Rest,
             methods: Some(vec!["POST".to_string()]),
             route_pattern: Some("/orders".to_string()),
             topic: None,
@@ -118,8 +116,8 @@ mod tests {
             channel_id: None,
             name: "Bad Sync".to_string(),
             description: None,
-            channel_type: "sync".to_string(),
-            protocol: "rest".to_string(),
+            channel_type: crate::storage::models::ChannelType::Sync,
+            protocol: ChannelProtocol::Rest,
             methods: None,
             route_pattern: Some("/orders".to_string()),
             topic: None,
@@ -138,8 +136,8 @@ mod tests {
             channel_id: None,
             name: "Bad Sync".to_string(),
             description: None,
-            channel_type: "sync".to_string(),
-            protocol: "rest".to_string(),
+            channel_type: crate::storage::models::ChannelType::Sync,
+            protocol: ChannelProtocol::Rest,
             methods: Some(vec!["POST".to_string()]),
             route_pattern: None,
             topic: None,
@@ -158,8 +156,8 @@ mod tests {
             channel_id: None,
             name: "Orders Async".to_string(),
             description: None,
-            channel_type: "async".to_string(),
-            protocol: "kafka".to_string(),
+            channel_type: crate::storage::models::ChannelType::Async,
+            protocol: ChannelProtocol::Kafka,
             methods: None,
             route_pattern: None,
             topic: Some("orders-topic".to_string()),
@@ -178,8 +176,8 @@ mod tests {
             channel_id: None,
             name: "Bad Async".to_string(),
             description: None,
-            channel_type: "async".to_string(),
-            protocol: "kafka".to_string(),
+            channel_type: crate::storage::models::ChannelType::Async,
+            protocol: ChannelProtocol::Kafka,
             methods: None,
             route_pattern: None,
             topic: None,
@@ -198,8 +196,8 @@ mod tests {
             channel_id: None,
             name: "Kafka Channel".to_string(),
             description: None,
-            channel_type: "async".to_string(),
-            protocol: "kafka".to_string(),
+            channel_type: crate::storage::models::ChannelType::Async,
+            protocol: ChannelProtocol::Kafka,
             methods: None,
             route_pattern: None,
             topic: Some("kafka-topic".to_string()),

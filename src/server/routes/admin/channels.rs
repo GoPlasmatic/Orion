@@ -5,6 +5,7 @@ use serde_json::Value;
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
+use crate::server::extract::OrionJson;
 use crate::server::routes::response_helpers::{
     created_response, data_response, paginated_response,
 };
@@ -64,7 +65,7 @@ pub(crate) async fn list_channels(
 pub(crate) async fn create_channel(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Json(req): Json<CreateChannelRequest>,
+    OrionJson(req): OrionJson<CreateChannelRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_channel(&req)?;
     let channel = state.channel_repo.create(&req).await?;
@@ -115,7 +116,7 @@ pub(crate) async fn update_channel(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-    Json(req): Json<UpdateChannelRequest>,
+    OrionJson(req): OrionJson<UpdateChannelRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let channel = state.channel_repo.update_draft(&id, &req).await?;
     audit_log(&state.audit_log_repo, &principal, "update", "channel", &id);
@@ -166,7 +167,7 @@ pub(crate) async fn change_channel_status(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-    Json(req): Json<ChannelStatusChangeRequest>,
+    OrionJson(req): OrionJson<ChannelStatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let action = StatusAction::parse(req.status)?;
     let channel = match action {
