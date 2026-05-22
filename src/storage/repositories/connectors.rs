@@ -14,7 +14,7 @@ use crate::storage::{build_sqlx, schema::Connectors};
 pub struct CreateConnectorRequest {
     pub id: Option<String>,
     pub name: String,
-    pub connector_type: String,
+    pub connector_type: crate::connector::ConnectorType,
     #[serde(default = "default_config")]
     pub config: serde_json::Value,
 }
@@ -26,7 +26,7 @@ fn default_config() -> serde_json::Value {
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct UpdateConnectorRequest {
     pub name: Option<String>,
-    pub connector_type: Option<String>,
+    pub connector_type: Option<crate::connector::ConnectorType>,
     pub config: Option<serde_json::Value>,
     pub enabled: Option<bool>,
 }
@@ -189,10 +189,11 @@ impl ConnectorRepository for SqlConnectorRepository {
             let existing = self.get_by_id(id).await?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
-            let connector_type = req
+            let connector_type: &str = req
                 .connector_type
-                .as_deref()
-                .unwrap_or(&existing.connector_type);
+                .as_ref()
+                .map(|c| c.as_str())
+                .unwrap_or(existing.connector_type.as_str());
             let config_json = match &req.config {
                 Some(c) => serde_json::to_string(c)?,
                 None => existing.config_json.clone(),

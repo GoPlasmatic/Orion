@@ -129,6 +129,55 @@ pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "st
 /// Allowed cache backend values.
 pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
 
+/// Typed enum for the connector `type` field on create/update requests.
+/// Wire format is lowercase ("http", "kafka", "db", "cache", "storage");
+/// deserialization is case-insensitive so "HTTP" or "Kafka" also parse —
+/// strictly additive on v0.1's accepted set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ConnectorType {
+    Http,
+    Kafka,
+    Db,
+    Cache,
+    Storage,
+}
+
+impl ConnectorType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Kafka => "kafka",
+            Self::Db => "db",
+            Self::Cache => "cache",
+            Self::Storage => "storage",
+        }
+    }
+}
+
+impl std::fmt::Display for ConnectorType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ConnectorType {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        match s.to_ascii_lowercase().as_str() {
+            "http" => Ok(Self::Http),
+            "kafka" => Ok(Self::Kafka),
+            "db" => Ok(Self::Db),
+            "cache" => Ok(Self::Cache),
+            "storage" => Ok(Self::Storage),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                VALID_CONNECTOR_TYPES,
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {

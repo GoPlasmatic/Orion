@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
+use crate::server::extract::OrionJson;
 use crate::server::routes::response_helpers::{
     created_response, data_response, paginated_response,
 };
@@ -67,7 +68,7 @@ pub(crate) async fn list_workflows(
 pub(crate) async fn create_workflow(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
-    Json(req): Json<CreateWorkflowRequest>,
+    OrionJson(req): OrionJson<CreateWorkflowRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_workflow(&req)?;
     let workflow = state.workflow_repo.create(&req).await?;
@@ -118,7 +119,7 @@ pub(crate) async fn update_workflow(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-    Json(req): Json<UpdateWorkflowRequest>,
+    OrionJson(req): OrionJson<UpdateWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_workflow(&req)?;
     let workflow = state.workflow_repo.update_draft(&id, &req).await?;
@@ -488,7 +489,7 @@ pub(crate) struct ValidationResponse {
 #[tracing::instrument(skip(state, req))]
 pub(crate) async fn validate_workflow(
     State(state): State<AppState>,
-    Json(req): Json<CreateWorkflowRequest>,
+    OrionJson(req): OrionJson<CreateWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let result = run_validation(&req, &state).await;
     Ok(Json(json!({

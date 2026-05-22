@@ -1,46 +1,20 @@
-use crate::connector::{ConnectorConfig, VALID_CONNECTOR_TYPES};
+use crate::connector::{ConnectorConfig, ConnectorType};
 use crate::errors::OrionError;
 use crate::storage::repositories::connectors::{CreateConnectorRequest, UpdateConnectorRequest};
 
 use super::common::{validate_id, validate_name};
 
-fn validate_connector_type(ct: &str) -> Result<(), OrionError> {
-    if !VALID_CONNECTOR_TYPES.contains(&ct) {
-        let allowed: Vec<serde_json::Value> = VALID_CONNECTOR_TYPES
-            .iter()
-            .map(|s| serde_json::Value::String((*s).to_string()))
-            .collect();
-        return Err(OrionError::Validation {
-            code: "VALIDATION_ERROR",
-            message: format!(
-                "Invalid connector type '{}'. Must be one of: {}",
-                ct,
-                VALID_CONNECTOR_TYPES.join(", ")
-            ),
-            details: vec![
-                crate::errors::FieldError::new(
-                    "connector.connector_type",
-                    "ENUM_MISMATCH",
-                    format!("unknown connector type '{ct}'"),
-                )
-                .with_expected(serde_json::Value::Array(allowed))
-                .with_got(serde_json::Value::String(ct.to_string())),
-            ],
-        });
-    }
-    Ok(())
-}
-
 fn validate_connector_config(
-    connector_type: &str,
+    connector_type: ConnectorType,
     config: &serde_json::Value,
 ) -> Result<(), OrionError> {
+    let type_str = connector_type.as_str();
     // Inject the type field so we can deserialize as the tagged enum
     let mut config_with_type = config.clone();
     if let Some(obj) = config_with_type.as_object_mut() {
         obj.insert(
             "type".to_string(),
-            serde_json::Value::String(connector_type.to_string()),
+            serde_json::Value::String(type_str.to_string()),
         );
     } else {
         return Err(OrionError::BadRequest(
@@ -50,7 +24,7 @@ fn validate_connector_config(
 
     let parsed: ConnectorConfig = serde_json::from_value(config_with_type).map_err(|e| {
         OrionError::BadRequest(format!(
-            "Invalid connector config for type '{connector_type}': {e}"
+            "Invalid connector config for type '{type_str}': {e}"
         ))
     })?;
 
@@ -98,8 +72,9 @@ pub fn validate_create_connector(req: &CreateConnectorRequest) -> Result<(), Ori
         validate_id(id)?;
     }
     validate_name(&req.name, "Name")?;
-    validate_connector_type(&req.connector_type)?;
-    validate_connector_config(&req.connector_type, &req.config)?;
+    // connector_type itself is now validated by serde at deserialization —
+    // unknown values like "grpc" produce a 400 before this function runs.
+    validate_connector_config(req.connector_type, &req.config)?;
     Ok(())
 }
 
@@ -107,13 +82,8 @@ pub fn validate_update_connector(req: &UpdateConnectorRequest) -> Result<(), Ori
     if let Some(ref name) = req.name {
         validate_name(name, "Name")?;
     }
-    if let Some(ref ct) = req.connector_type {
-        validate_connector_type(ct)?;
-    }
     // If both type and config are provided, validate config against the new type
-    if let Some(ref ct) = req.connector_type
-        && let Some(ref config) = req.config
-    {
+    if let (Some(ct), Some(config)) = (req.connector_type, req.config.as_ref()) {
         validate_connector_config(ct, config)?;
     }
     Ok(())
@@ -124,17 +94,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn test_connector_type_valid() {
-        assert!(validate_connector_type("http").is_ok());
-        assert!(validate_connector_type("kafka").is_ok());
-    }
-
-    #[test]
-    fn test_connector_type_invalid() {
-        assert!(validate_connector_type("grpc").is_err());
-        assert!(validate_connector_type("").is_err());
-    }
+    // Note: connector_type string validation (rejecting "grpc", "" etc.) is
+    // now enforced at serde deserialization time on the DTO (A4). The
+    // previous `validate_connector_type` helper and its tests have been
+    // removed because constructing the typed `ConnectorType` enum directly
+    // bypasses the wire-format check that the test was exercising. The
+    // integration test `invalid_connector_type_emits_enum_mismatch_with_expected_got`
+    // in tests/error_envelope_test.rs covers the end-to-end behavior.
 
     #[test]
     fn test_connector_config_http_valid() {
@@ -142,7 +108,7 @@ mod tests {
             "url": "https://example.com/api",
             "method": "POST"
         });
-        assert!(validate_connector_config("http", &config).is_ok());
+        assert!(validate_connector_config(ConnectorType::Http, &config).is_ok());
     }
 
     #[test]
@@ -151,26 +117,26 @@ mod tests {
             "url": "ftp://example.com/api",
             "method": "POST"
         });
-        assert!(validate_connector_config("http", &config).is_err());
+        assert!(validate_connector_config(ConnectorType::Http, &config).is_err());
     }
 
     #[test]
     fn test_connector_config_invalid_structure() {
         let config = json!("not an object");
-        assert!(validate_connector_config("http", &config).is_err());
+        assert!(validate_connector_config(ConnectorType::Http, &config).is_err());
     }
 
     #[test]
     fn test_connector_config_http_empty_url() {
         let config = json!({"url": ""});
         // Empty URL should be fine (passes URL validation skip)
-        assert!(validate_connector_config("http", &config).is_ok());
+        assert!(validate_connector_config(ConnectorType::Http, &config).is_ok());
     }
 
     #[test]
     fn test_connector_config_http_invalid_url() {
         let config = json!({"url": "not a valid url"});
-        assert!(validate_connector_config("http", &config).is_err());
+        assert!(validate_connector_config(ConnectorType::Http, &config).is_err());
     }
 
     #[test]
@@ -178,7 +144,7 @@ mod tests {
         let req = CreateConnectorRequest {
             id: Some("my-conn-1".to_string()),
             name: "My Connector".to_string(),
-            connector_type: "http".to_string(),
+            connector_type: ConnectorType::Http,
             config: json!({"url": "https://example.com"}),
         };
         assert!(validate_create_connector(&req).is_ok());
@@ -189,7 +155,7 @@ mod tests {
         let req = CreateConnectorRequest {
             id: Some("bad id!".to_string()),
             name: "My Connector".to_string(),
-            connector_type: "http".to_string(),
+            connector_type: ConnectorType::Http,
             config: json!({"url": "https://example.com"}),
         };
         assert!(validate_create_connector(&req).is_err());
@@ -200,18 +166,7 @@ mod tests {
         let req = CreateConnectorRequest {
             id: None,
             name: "".to_string(),
-            connector_type: "http".to_string(),
-            config: json!({"url": "https://example.com"}),
-        };
-        assert!(validate_create_connector(&req).is_err());
-    }
-
-    #[test]
-    fn test_validate_create_connector_invalid_type() {
-        let req = CreateConnectorRequest {
-            id: None,
-            name: "Test".to_string(),
-            connector_type: "grpc".to_string(),
+            connector_type: ConnectorType::Http,
             config: json!({"url": "https://example.com"}),
         };
         assert!(validate_create_connector(&req).is_err());
@@ -243,7 +198,7 @@ mod tests {
     fn test_validate_update_connector_type_only() {
         let req = UpdateConnectorRequest {
             name: None,
-            connector_type: Some("http".to_string()),
+            connector_type: Some(ConnectorType::Http),
             config: None,
             enabled: None,
         };
@@ -251,21 +206,10 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_update_connector_invalid_type() {
-        let req = UpdateConnectorRequest {
-            name: None,
-            connector_type: Some("invalid".to_string()),
-            config: None,
-            enabled: None,
-        };
-        assert!(validate_update_connector(&req).is_err());
-    }
-
-    #[test]
     fn test_validate_update_connector_type_and_config() {
         let req = UpdateConnectorRequest {
             name: None,
-            connector_type: Some("http".to_string()),
+            connector_type: Some(ConnectorType::Http),
             config: Some(json!({"url": "https://example.com"})),
             enabled: None,
         };
@@ -276,7 +220,7 @@ mod tests {
     fn test_validate_update_connector_type_and_invalid_config() {
         let req = UpdateConnectorRequest {
             name: None,
-            connector_type: Some("http".to_string()),
+            connector_type: Some(ConnectorType::Http),
             config: Some(json!("not an object")),
             enabled: None,
         };
