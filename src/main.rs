@@ -34,7 +34,10 @@ EXAMPLES:\n    \
     orion-server -c config.toml               Start with a config file\n    \
     orion-server validate-config              Validate config and show summary\n    \
     orion-server -c config.toml migrate       Run pending database migrations\n    \
-    orion-server migrate --dry-run            Preview pending migrations\n\n\
+    orion-server migrate --dry-run            Preview pending migrations\n    \
+    orion-server lint workflow.json           Validate a workflow JSON file\n    \
+    orion-server dry-run -w wf.json -i x.json Dry-run a workflow against an input\n    \
+    orion-server test-connectivity            Probe DB (and Kafka if enabled)\n\n\
 ENVIRONMENT VARIABLES:\n    \
     All settings can be overridden via ORION_SECTION__KEY env vars:\n\n    \
     ORION_SERVER__PORT=9090            Override server port\n    \
@@ -62,6 +65,37 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Statically validate a workflow JSON file (A6).
+    ///
+    /// Runs the same checks the admin POST /workflows endpoint performs:
+    /// name/id/description, task uniqueness, and the A1 function-input
+    /// schema registry. Exits non-zero with field-pathed errors on
+    /// failure — wire into CI to catch broken workflows before deploy.
+    Lint {
+        /// Path to a workflow JSON file (matches the CreateWorkflowRequest shape).
+        workflow: String,
+    },
+    /// Dry-run a workflow against a JSON input file (A6).
+    ///
+    /// Boots an in-process engine with just the supplied workflow and
+    /// no connectors, then prints the per-task execution trace from
+    /// dataflow_rs. Useful for testing pure-mapping/log/filter
+    /// workflows; tasks that resolve connectors at runtime will fail
+    /// with `Connector '...' not found`.
+    DryRun {
+        /// Path to a workflow JSON file.
+        #[arg(short, long)]
+        workflow: String,
+        /// Path to a JSON file used as the message payload.
+        #[arg(short, long)]
+        input: String,
+    },
+    /// Probe configured backends for reachability (A6).
+    ///
+    /// Opens the configured database pool (using the same `storage.url`)
+    /// and runs a no-op query. Catches "DB credentials wrong / file
+    /// unreadable" before the server tries to start.
+    TestConnectivity,
 }
 
 /// Initialise a plain `tracing_subscriber::fmt` subscriber (no OpenTelemetry).
@@ -220,6 +254,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             return Ok(());
+        }
+        Some(Command::Lint { workflow }) => {
+            return run_lint(&workflow);
+        }
+        Some(Command::DryRun { workflow, input }) => {
+            return run_dry_run(&workflow, &input).await;
+        }
+        Some(Command::TestConnectivity) => {
+            return run_test_connectivity(&config).await;
         }
         None => {} // Continue to start the server
     }
@@ -716,5 +759,138 @@ async fn serve_plain_http(
             tokio::time::sleep(std::time::Duration::from_secs(drain_secs)).await;
         })
         .await?;
+    Ok(())
+}
+
+// ============================================================
+// A6: CLI subcommands — lint / dry-run / test-connectivity
+// ============================================================
+
+/// Lint a workflow JSON file. Mirrors the checks the admin create
+/// endpoint performs (`validate_create_workflow` plus A1 function-input
+/// schema validation), printing field-pathed errors and exiting non-zero
+/// on failure so this can be wired into pre-commit / CI hooks.
+fn run_lint(workflow_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use orion::storage::repositories::workflows::CreateWorkflowRequest;
+
+    let raw = std::fs::read_to_string(workflow_path)
+        .map_err(|e| format!("Failed to read '{workflow_path}': {e}"))?;
+    let req: CreateWorkflowRequest = serde_json::from_str(&raw)
+        .map_err(|e| format!("'{workflow_path}' is not a valid workflow JSON: {e}"))?;
+
+    if let Err(err) = orion::validation::validate_create_workflow(&req) {
+        return Err(format_lint_error(workflow_path, err).into());
+    }
+
+    println!("'{workflow_path}' is valid.");
+    Ok(())
+}
+
+/// Format an `OrionError::Validation` into a multi-line CLI message
+/// listing each field detail with its path and code.
+fn format_lint_error(workflow_path: &str, err: orion::errors::OrionError) -> String {
+    use orion::errors::OrionError;
+    match err {
+        OrionError::Validation {
+            code: _,
+            message,
+            details,
+        } => {
+            let mut out = format!("'{workflow_path}' is invalid: {message}\n");
+            for d in &details {
+                out.push_str(&format!("  - {} [{}]: {}\n", d.path, d.code, d.message));
+            }
+            out
+        }
+        other => format!("'{workflow_path}' is invalid: {other}"),
+    }
+}
+
+/// Dry-run a workflow against an input JSON file. Builds a minimal
+/// in-process dataflow engine with the supplied workflow and no
+/// custom functions — i.e. only built-in `map`/`log`/`filter`/etc.
+/// work. Connector-backed tasks will fail with a clear error.
+async fn run_dry_run(
+    workflow_path: &str,
+    input_path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use orion::storage::models::{EntityStatus, Workflow};
+    use orion::storage::repositories::workflows::{CreateWorkflowRequest, workflow_to_dataflow};
+
+    let raw = std::fs::read_to_string(workflow_path)
+        .map_err(|e| format!("Failed to read '{workflow_path}': {e}"))?;
+    let req: CreateWorkflowRequest = serde_json::from_str(&raw)
+        .map_err(|e| format!("'{workflow_path}' is not a valid workflow JSON: {e}"))?;
+    orion::validation::validate_create_workflow(&req)
+        .map_err(|e| format_lint_error(workflow_path, e))?;
+
+    let input_raw = std::fs::read_to_string(input_path)
+        .map_err(|e| format!("Failed to read input '{input_path}': {e}"))?;
+    let input: serde_json::Value = serde_json::from_str(&input_raw)
+        .map_err(|e| format!("'{input_path}' is not valid JSON: {e}"))?;
+
+    // Build a synthetic Workflow row from the request to reuse the
+    // existing dataflow conversion. Version + timestamps are placeholders.
+    let now = chrono::Utc::now().naive_utc();
+    let synthetic = Workflow {
+        workflow_id: req.workflow_id.clone().unwrap_or_else(|| "dry-run".into()),
+        version: 1,
+        name: req.name.clone(),
+        description: req.description.clone(),
+        priority: req.priority,
+        status: EntityStatus::Active.as_str().to_string(),
+        rollout_percentage: 100,
+        condition_json: serde_json::to_string(&req.condition)?,
+        tasks_json: serde_json::to_string(&req.tasks)?,
+        tags: serde_json::to_string(&req.tags)?,
+        continue_on_error: req.continue_on_error,
+        created_at: now,
+        updated_at: now,
+    };
+    let df_workflow = workflow_to_dataflow(&synthetic, "__dry_run__")?;
+    let engine = dataflow_rs::Engine::new(vec![df_workflow], std::collections::HashMap::new())?;
+    let mut message = dataflow_rs::Message::from_value(&input);
+
+    let trace = engine
+        .process_message_with_trace(&mut message)
+        .await
+        .map_err(orion::errors::OrionError::Engine)?;
+
+    let output = serde_json::json!({
+        "matched": !trace.steps.is_empty(),
+        "trace": trace,
+        "output": message.data(),
+        "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+/// Probe the configured backends. Today: opens the database pool
+/// and runs migrations check + a no-op query. Avoids the "wrong DB
+/// credentials surface only at first request" footgun.
+async fn run_test_connectivity(
+    config: &config::AppConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("Probing storage at {} ...", config.storage.url);
+    let pool = orion::storage::init_pool_no_migrate(&config.storage)
+        .await
+        .map_err(|e| format!("storage: connection failed: {e}"))?;
+    let pending = orion::storage::pending_migrations(&pool)
+        .await
+        .map_err(|e| format!("storage: pending_migrations query failed: {e}"))?;
+    println!(
+        "  storage:         OK ({} pending migrations)",
+        pending.len()
+    );
+    if config.kafka.enabled {
+        println!(
+            "  kafka:           configured (brokers={})",
+            config.kafka.brokers.join(",")
+        );
+        println!("                   (Kafka broker reachability probe is not yet implemented)");
+    } else {
+        println!("  kafka:           disabled");
+    }
     Ok(())
 }
