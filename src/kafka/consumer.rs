@@ -524,14 +524,10 @@ async fn send_to_dlq(
     if let (Some(producer), Some(topic)) = (producer, dlq_topic) {
         let dlq_message = build_dlq_message(source_topic, payload, error);
 
-        let dlq_payload = serde_json::to_string(&dlq_message).unwrap_or_else(|e| {
-            tracing::error!(error = %e, "Failed to serialize DLQ message");
-            format!(
-                r#"{{"source_topic":"{}","error":"serialization failed","timestamp":"{}"}}"#,
-                source_topic,
-                chrono::Utc::now().to_rfc3339()
-            )
-        });
+        // Infallible: the envelope is a `serde_json::Value` built from
+        // string-keyed literals via `json!`, which cannot fail to serialise.
+        let dlq_payload = serde_json::to_string(&dlq_message)
+            .expect("DLQ envelope is always serialisable");
         if let Err(e) = producer
             .send(topic, Some(source_topic), dlq_payload.as_bytes())
             .await
