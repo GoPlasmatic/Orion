@@ -1,7 +1,7 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
 use dataflow_rs::Workflow as DataflowWorkflow;
-use sea_query::{Asterisk, Condition, Expr, Func, Order, Query};
+use sea_query::{Asterisk, Condition, Expr, Order, Query};
 use serde::{Deserialize, Serialize};
 
 use crate::errors::OrionError;
@@ -11,10 +11,13 @@ use crate::storage::{
     schema::{CurrentWorkflows, Workflows},
 };
 
-use super::helpers::{clamp_pagination, optional_string_value, parse_sort_order};
+use super::helpers::{
+    clamp_pagination, count_where, ensure_absent, fetch_required, fetch_required_tx,
+    optional_string_value, parse_sort_order,
+};
 
 #[derive(Debug, Serialize)]
-pub struct PaginatedResult<T: Serialize> {
+pub struct PaginatedResult<T> {
     pub data: Vec<T>,
     pub total: i64,
     pub limit: i64,
@@ -142,6 +145,74 @@ impl SqlWorkflowRepository {
     }
 }
 
+/// Build the INSERT query for a workflow row.
+///
+/// Used by `create` (new draft v1), `create_new_version` (draft copy of latest),
+/// and `bulk_create` (batch draft v1) to eliminate the repeated 11-column
+/// column/value list.
+#[allow(clippy::too_many_arguments)]
+fn build_workflow_insert(
+    workflow_id: &str,
+    version: i64,
+    name: &str,
+    description_val: sea_query::Value,
+    priority: i64,
+    status: &str,
+    rollout_pct: i64,
+    condition_json: &str,
+    tasks_json: &str,
+    tags_json: &str,
+    continue_on_error: bool,
+) -> (String, sea_query_binder::SqlxValues) {
+    let mut q = Query::insert();
+    q.into_table(Workflows::Table)
+        .columns([
+            Workflows::WorkflowId,
+            Workflows::Version,
+            Workflows::Name,
+            Workflows::Description,
+            Workflows::Priority,
+            Workflows::Status,
+            Workflows::RolloutPercentage,
+            Workflows::ConditionJson,
+            Workflows::TasksJson,
+            Workflows::Tags,
+            Workflows::ContinueOnError,
+        ])
+        .values_panic([
+            Expr::val(workflow_id).into(),
+            Expr::val(version).into(),
+            Expr::val(name).into(),
+            Expr::val(description_val).into(),
+            Expr::val(priority).into(),
+            Expr::val(status).into(),
+            Expr::val(rollout_pct).into(),
+            Expr::val(condition_json).into(),
+            Expr::val(tasks_json).into(),
+            Expr::val(tags_json).into(),
+            Expr::val(continue_on_error).into(),
+        ]);
+    build_sqlx(&mut q)
+}
+
+/// Build the UPDATE query that archives all active versions of a workflow.
+/// `exclude_version`, when set, leaves that specific version untouched
+/// (used by partial-rollout activation to preserve the primary active row).
+fn archive_active_workflows_query(
+    workflow_id: &str,
+    exclude_version: Option<i64>,
+) -> (String, sea_query_binder::SqlxValues) {
+    let mut q = Query::update();
+    q.table(Workflows::Table)
+        .value(Workflows::Status, EntityStatus::Archived.as_str())
+        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+        .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()));
+    if let Some(v) = exclude_version {
+        q.and_where(Expr::col(Workflows::Version).ne(v));
+    }
+    build_sqlx(&mut q)
+}
+
 fn build_condition(filter: &WorkflowFilter) -> Condition {
     let mut cond = Condition::all();
     if let Some(ref status) = filter.status {
@@ -152,7 +223,7 @@ fn build_condition(filter: &WorkflowFilter) -> Condition {
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
-        cond = cond.add(Expr::col(Workflows::Tags).like(format!("%\"{}\"%", escaped)));
+        cond = cond.add(Expr::col(Workflows::Tags).like(format!("%\"{escaped}\"%")));
     }
     cond
 }
@@ -171,35 +242,18 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             let description_val = optional_string_value(req.description.as_deref());
 
-            let (sql, values) = build_sqlx(
-                Query::insert()
-                    .into_table(Workflows::Table)
-                    .columns([
-                        Workflows::WorkflowId,
-                        Workflows::Version,
-                        Workflows::Name,
-                        Workflows::Description,
-                        Workflows::Priority,
-                        Workflows::Status,
-                        Workflows::RolloutPercentage,
-                        Workflows::ConditionJson,
-                        Workflows::TasksJson,
-                        Workflows::Tags,
-                        Workflows::ContinueOnError,
-                    ])
-                    .values_panic([
-                        Expr::val(workflow_id.as_str()).into(),
-                        Expr::val(1i64).into(),
-                        Expr::val(req.name.as_str()).into(),
-                        Expr::val(description_val).into(),
-                        Expr::val(req.priority).into(),
-                        Expr::val(EntityStatus::Draft.as_str()).into(),
-                        Expr::val(100i64).into(),
-                        Expr::val(condition_json.as_str()).into(),
-                        Expr::val(tasks_json.as_str()).into(),
-                        Expr::val(tags_json.as_str()).into(),
-                        Expr::val(req.continue_on_error).into(),
-                    ]),
+            let (sql, values) = build_workflow_insert(
+                workflow_id.as_str(),
+                1,
+                req.name.as_str(),
+                description_val,
+                req.priority,
+                EntityStatus::Draft.as_str(),
+                100,
+                condition_json.as_str(),
+                tasks_json.as_str(),
+                tags_json.as_str(),
+                req.continue_on_error,
             );
 
             self.pool.execute_query(&sql, values).await?;
@@ -224,7 +278,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .fetch_optional_as::<Workflow>(&sql, values)
                 .await?
                 .ok_or_else(|| {
-                    OrionError::NotFound(format!("Workflow '{}' not found", workflow_id))
+                    OrionError::NotFound(format!("Workflow '{workflow_id}' not found"))
                 })
         })
         .await
@@ -244,8 +298,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             .await?
             .ok_or_else(|| {
                 OrionError::NotFound(format!(
-                    "Workflow '{}' version {} not found",
-                    workflow_id, version
+                    "Workflow '{workflow_id}' version {version} not found"
                 ))
             })
     }
@@ -272,14 +325,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let cond = build_condition(filter);
             let (limit, offset) = clamp_pagination(filter.limit, filter.offset);
 
-            // Count
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .expr(Func::count(Expr::col(Asterisk)))
-                    .from(CurrentWorkflows::Table)
-                    .cond_where(cond.clone()),
-            );
-            let (total,): (i64,) = self.pool.fetch_one_as::<(i64,)>(&sql, values).await?;
+            let total = count_where(&self.pool, CurrentWorkflows::Table, cond.clone()).await?;
 
             // Sort column mapping
             let sort_iden = match filter.sort_by.as_deref() {
@@ -328,16 +374,12 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str())),
             );
 
-            let existing = self
-                .pool
-                .fetch_optional_as::<Workflow>(&sql, values)
-                .await?
-                .ok_or_else(|| {
-                    OrionError::BadRequest(format!(
-                        "No draft version found for workflow '{}'",
-                        workflow_id
-                    ))
-                })?;
+            let existing: Workflow = fetch_required(&self.pool, &sql, values, || {
+                OrionError::BadRequest(format!(
+                    "No draft version found for workflow '{workflow_id}'"
+                ))
+            })
+            .await?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let description = req
@@ -395,8 +437,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             if rows_affected == 0 {
                 return Err(OrionError::NotFound(format!(
-                    "Workflow '{}' not found",
-                    workflow_id
+                    "Workflow '{workflow_id}' not found"
                 )));
             }
 
@@ -459,15 +500,12 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str())),
             );
 
-            let draft = tx
-                .fetch_optional_as::<Workflow>(&sql, values)
-                .await?
-                .ok_or_else(|| {
-                    OrionError::BadRequest(format!(
-                        "No draft version found for workflow '{}'",
-                        workflow_id
-                    ))
-                })?;
+            let draft: Workflow = fetch_required_tx(&mut tx, &sql, values, || {
+                OrionError::BadRequest(format!(
+                    "No draft version found for workflow '{workflow_id}'"
+                ))
+            })
+            .await?;
 
             // Fetch active versions
             let (sql, values) = build_sqlx(
@@ -484,15 +522,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             if rollout_pct == 100 {
                 // Archive all active versions in a single query
                 if !active_versions.is_empty() {
-                    let (sql, values) = build_sqlx(
-                        Query::update()
-                            .table(Workflows::Table)
-                            .value(Workflows::Status, EntityStatus::Archived.as_str())
-                            .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                            .and_where(
-                                Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()),
-                            ),
-                    );
+                    let (sql, values) = archive_active_workflows_query(workflow_id, None);
                     tx.execute_query(&sql, values).await?;
                 }
 
@@ -509,17 +539,9 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 // Archive all active versions except the primary (highest version)
                 if let Some(primary_active) = active_versions.first() {
                     if active_versions.len() > 1 {
-                        let (sql, values) = build_sqlx(
-                            Query::update()
-                                .table(Workflows::Table)
-                                .value(Workflows::Status, EntityStatus::Archived.as_str())
-                                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                                .and_where(
-                                    Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()),
-                                )
-                                .and_where(
-                                    Expr::col(Workflows::Version).ne(primary_active.version),
-                                ),
+                        let (sql, values) = archive_active_workflows_query(
+                            workflow_id,
+                            Some(primary_active.version),
                         );
                         tx.execute_query(&sql, values).await?;
                     }
@@ -565,25 +587,15 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .limit(1),
             );
 
-            let active = self
-                .pool
-                .fetch_optional_as::<Workflow>(&sql, values)
-                .await?
-                .ok_or_else(|| {
-                    OrionError::BadRequest(format!(
-                        "No active version found for workflow '{}'",
-                        workflow_id
-                    ))
-                })?;
+            let active: Workflow = fetch_required(&self.pool, &sql, values, || {
+                OrionError::BadRequest(format!(
+                    "No active version found for workflow '{workflow_id}'"
+                ))
+            })
+            .await?;
 
             // Archive all active versions
-            let (sql, values) = build_sqlx(
-                Query::update()
-                    .table(Workflows::Table)
-                    .value(Workflows::Status, EntityStatus::Archived.as_str())
-                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                    .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str())),
-            );
+            let (sql, values) = archive_active_workflows_query(workflow_id, None);
 
             self.pool.execute_query(&sql, values).await?;
 
@@ -616,8 +628,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             if active_versions.is_empty() {
                 return Err(OrionError::BadRequest(format!(
-                    "No active versions found for workflow '{}'",
-                    workflow_id
+                    "No active versions found for workflow '{workflow_id}'"
                 )));
             }
 
@@ -695,17 +706,12 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str())),
             );
 
-            let existing_draft = self
-                .pool
-                .fetch_optional_as::<Workflow>(&sql, values)
-                .await?;
-
-            if existing_draft.is_some() {
-                return Err(OrionError::Conflict(format!(
-                    "Workflow '{}' already has a draft version",
-                    workflow_id
-                )));
-            }
+            ensure_absent::<Workflow>(&self.pool, &sql, values, || {
+                OrionError::Conflict(format!(
+                    "Workflow '{workflow_id}' already has a draft version"
+                ))
+            })
+            .await?;
 
             // Find the latest version to copy from
             let latest = self.get_by_id(workflow_id).await?;
@@ -714,35 +720,18 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             let description_val = optional_string_value(latest.description.as_deref());
 
-            let (sql, values) = build_sqlx(
-                Query::insert()
-                    .into_table(Workflows::Table)
-                    .columns([
-                        Workflows::WorkflowId,
-                        Workflows::Version,
-                        Workflows::Name,
-                        Workflows::Description,
-                        Workflows::Priority,
-                        Workflows::Status,
-                        Workflows::RolloutPercentage,
-                        Workflows::ConditionJson,
-                        Workflows::TasksJson,
-                        Workflows::Tags,
-                        Workflows::ContinueOnError,
-                    ])
-                    .values_panic([
-                        Expr::val(workflow_id).into(),
-                        Expr::val(new_version).into(),
-                        Expr::val(latest.name.as_str()).into(),
-                        Expr::val(description_val).into(),
-                        Expr::val(latest.priority).into(),
-                        Expr::val(EntityStatus::Draft.as_str()).into(),
-                        Expr::val(100i64).into(),
-                        Expr::val(latest.condition_json.as_str()).into(),
-                        Expr::val(latest.tasks_json.as_str()).into(),
-                        Expr::val(latest.tags.as_str()).into(),
-                        Expr::val(latest.continue_on_error).into(),
-                    ]),
+            let (sql, values) = build_workflow_insert(
+                workflow_id,
+                new_version,
+                latest.name.as_str(),
+                description_val,
+                latest.priority,
+                EntityStatus::Draft.as_str(),
+                100,
+                latest.condition_json.as_str(),
+                latest.tasks_json.as_str(),
+                latest.tags.as_str(),
+                latest.continue_on_error,
             );
 
             self.pool.execute_query(&sql, values).await?;
@@ -771,35 +760,18 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     let tags_json = serde_json::to_string(&req.tags)?;
                     let description_val = optional_string_value(req.description.as_deref());
 
-                    let (sql, values) = build_sqlx(
-                        Query::insert()
-                            .into_table(Workflows::Table)
-                            .columns([
-                                Workflows::WorkflowId,
-                                Workflows::Version,
-                                Workflows::Name,
-                                Workflows::Description,
-                                Workflows::Priority,
-                                Workflows::Status,
-                                Workflows::RolloutPercentage,
-                                Workflows::ConditionJson,
-                                Workflows::TasksJson,
-                                Workflows::Tags,
-                                Workflows::ContinueOnError,
-                            ])
-                            .values_panic([
-                                Expr::val(workflow_id.as_str()).into(),
-                                Expr::val(1i64).into(),
-                                Expr::val(req.name.as_str()).into(),
-                                Expr::val(description_val).into(),
-                                Expr::val(req.priority).into(),
-                                Expr::val(EntityStatus::Draft.as_str()).into(),
-                                Expr::val(100i64).into(),
-                                Expr::val(condition_json.as_str()).into(),
-                                Expr::val(tasks_json.as_str()).into(),
-                                Expr::val(tags_json.as_str()).into(),
-                                Expr::val(req.continue_on_error).into(),
-                            ]),
+                    let (sql, values) = build_workflow_insert(
+                        workflow_id.as_str(),
+                        1,
+                        req.name.as_str(),
+                        description_val,
+                        req.priority,
+                        EntityStatus::Draft.as_str(),
+                        100,
+                        condition_json.as_str(),
+                        tasks_json.as_str(),
+                        tags_json.as_str(),
+                        req.continue_on_error,
                     );
 
                     tx.execute_query(&sql, values).await?;
@@ -816,8 +788,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                         .await?
                         .ok_or_else(|| {
                             OrionError::NotFound(format!(
-                                "Workflow '{}' version 1 not found after insert",
-                                workflow_id
+                                "Workflow '{workflow_id}' version 1 not found after insert"
                             ))
                         })
                 }
@@ -840,14 +811,12 @@ impl WorkflowRepository for SqlWorkflowRepository {
         let limit = limit.clamp(1, 1000);
         let offset = offset.max(0);
 
-        // Count
-        let (sql, values) = build_sqlx(
-            Query::select()
-                .expr(Func::count(Expr::col(Asterisk)))
-                .from(Workflows::Table)
-                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id)),
-        );
-        let (total,): (i64,) = self.pool.fetch_one_as::<(i64,)>(&sql, values).await?;
+        let total = count_where(
+            &self.pool,
+            Workflows::Table,
+            Condition::all().add(Expr::col(Workflows::WorkflowId).eq(workflow_id)),
+        )
+        .await?;
 
         // Data
         let (sql, values) = build_sqlx(
