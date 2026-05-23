@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::validation::require_nonzero;
+use crate::errors::OrionError;
+
 /// Engine configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -35,5 +38,24 @@ impl Default for EngineConfig {
             max_pool_cache_entries: 100,
             cache_cleanup_interval_secs: 60,
         }
+    }
+}
+
+impl EngineConfig {
+    pub(crate) fn validate(&self) -> Result<(), OrionError> {
+        require_nonzero(
+            u64::from(self.max_channel_call_depth),
+            "engine.max_channel_call_depth",
+        )?;
+        require_nonzero(
+            self.default_channel_call_timeout_ms,
+            "engine.default_channel_call_timeout_ms",
+        )?;
+        require_nonzero(
+            self.health_check_timeout_secs,
+            "engine.health_check_timeout_secs",
+        )?;
+        require_nonzero(self.reload_timeout_secs, "engine.reload_timeout_secs")?;
+        Ok(())
     }
 }

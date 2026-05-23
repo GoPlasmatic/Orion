@@ -1,13 +1,9 @@
-use std::path::Path;
-
 use crate::config::AppConfig;
 use crate::errors::OrionError;
 
-/// Valid tracing log levels.
-const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
-
-/// Return a config error if `value` is zero.
-fn require_nonzero(value: u64, field: &str) -> Result<(), OrionError> {
+/// Return a config error if `value` is zero. Shared helper for per-struct
+/// `validate()` implementations in sibling config modules.
+pub(super) fn require_nonzero(value: u64, field: &str) -> Result<(), OrionError> {
     if value == 0 {
         return Err(OrionError::Config {
             message: format!("{field} must be > 0"),
@@ -17,7 +13,7 @@ fn require_nonzero(value: u64, field: &str) -> Result<(), OrionError> {
 }
 
 /// Return a config error if `value` is empty.
-fn require_nonempty(value: &str, field: &str) -> Result<(), OrionError> {
+pub(super) fn require_nonempty(value: &str, field: &str) -> Result<(), OrionError> {
     if value.is_empty() {
         return Err(OrionError::Config {
             message: format!("{field} must not be empty"),
@@ -26,232 +22,21 @@ fn require_nonempty(value: &str, field: &str) -> Result<(), OrionError> {
     Ok(())
 }
 
-/// Validate configuration values.
+/// Orchestrate validation across config sub-structs. Each `validate()`
+/// method is defined next to its struct; this function only sequences them.
 pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
-    require_nonzero(config.server.port as u64, "server.port")?;
-    require_nonzero(
-        config.ingest.max_payload_size as u64,
-        "ingest.max_payload_size",
-    )?;
-    require_nonzero(config.queue.workers as u64, "queue.workers")?;
-    require_nonzero(config.queue.buffer_size as u64, "queue.buffer_size")?;
-    require_nonempty(&config.storage.url, "storage.url")?;
-    if !VALID_LOG_LEVELS.contains(&config.logging.level.to_lowercase().as_str()) {
-        return Err(OrionError::Config {
-            message: format!(
-                "logging.level '{}' is invalid. Must be one of: {}",
-                config.logging.level,
-                VALID_LOG_LEVELS.join(", ")
-            ),
-        });
-    }
-    if config.tracing.enabled {
-        require_nonempty(
-            &config.tracing.otlp_endpoint,
-            "tracing.otlp_endpoint (required when tracing is enabled)",
-        )?;
-        if !(0.0..=1.0).contains(&config.tracing.sample_rate) {
-            return Err(OrionError::Config {
-                message: "tracing.sample_rate must be between 0.0 and 1.0".to_string(),
-            });
-        }
-    }
-    // Trace persistence (DB-backed `traces` table) validation
-    {
-        use crate::config::TraceStorageMode;
-        let storage = &config.tracing.storage;
-        if !(0.0..=1.0).contains(&storage.sample_rate) {
-            return Err(OrionError::Config {
-                message: "tracing.storage.sample_rate must be between 0.0 and 1.0".to_string(),
-            });
-        }
-        match storage.mode {
-            TraceStorageMode::Async => {
-                require_nonzero(storage.max_pending as u64, "tracing.storage.max_pending")?;
-                require_nonzero(
-                    storage.async_workers as u64,
-                    "tracing.storage.async_workers",
-                )?;
-            }
-            TraceStorageMode::Batch => {
-                require_nonzero(storage.max_pending as u64, "tracing.storage.max_pending")?;
-                require_nonzero(storage.batch_size as u64, "tracing.storage.batch_size")?;
-                require_nonzero(
-                    storage.batch_flush_interval_ms,
-                    "tracing.storage.batch_flush_interval_ms",
-                )?;
-                require_nonzero(
-                    storage.batch_workers as u64,
-                    "tracing.storage.batch_workers",
-                )?;
-            }
-            TraceStorageMode::Sync | TraceStorageMode::Off => {}
-        }
-    }
-    // Admin auth validation
-    if config.admin_auth.enabled && config.admin_auth.effective_keys().is_empty() {
-        return Err(OrionError::Config {
-            message: "At least one admin API key must be configured when admin auth is enabled. \
-                      Set admin_auth.api_keys"
-                .to_string(),
-        });
-    }
-    // Admin auth must be enabled in production
-    if !config.admin_auth.enabled {
-        if config.is_production() {
-            return Err(OrionError::Config {
-                message: "admin_auth must be enabled when environment starts with 'prod'. \
-                          Set admin_auth.enabled = true and configure admin_auth.api_keys"
-                    .to_string(),
-            });
-        }
-        tracing::warn!(
-            "Admin auth is disabled. For production, enable admin_auth with a strong API key"
-        );
-    }
-    // TLS validation
-    if config.server.tls.enabled {
-        require_nonempty(
-            &config.server.tls.cert_path,
-            "server.tls.cert_path (required when TLS is enabled)",
-        )?;
-        require_nonempty(
-            &config.server.tls.key_path,
-            "server.tls.key_path (required when TLS is enabled)",
-        )?;
-        if !Path::new(&config.server.tls.cert_path).exists() {
-            return Err(OrionError::Config {
-                message: format!(
-                    "TLS certificate file not found: '{}'",
-                    config.server.tls.cert_path
-                ),
-            });
-        }
-        if !Path::new(&config.server.tls.key_path).exists() {
-            return Err(OrionError::Config {
-                message: format!(
-                    "TLS private key file not found: '{}'",
-                    config.server.tls.key_path
-                ),
-            });
-        }
-    }
-    require_nonzero(
-        config.engine.max_channel_call_depth as u64,
-        "engine.max_channel_call_depth",
-    )?;
-    require_nonzero(
-        config.engine.default_channel_call_timeout_ms,
-        "engine.default_channel_call_timeout_ms",
-    )?;
-    require_nonzero(
-        config.queue.processing_timeout_ms,
-        "queue.processing_timeout_ms",
-    )?;
-    require_nonzero(
-        config.engine.health_check_timeout_secs,
-        "engine.health_check_timeout_secs",
-    )?;
-    require_nonzero(
-        config.engine.reload_timeout_secs,
-        "engine.reload_timeout_secs",
-    )?;
-    require_nonzero(
-        config.queue.shutdown_timeout_secs,
-        "queue.shutdown_timeout_secs",
-    )?;
-    require_nonzero(config.storage.busy_timeout_ms, "storage.busy_timeout_ms")?;
-    require_nonzero(
-        config.storage.acquire_timeout_secs,
-        "storage.acquire_timeout_secs",
-    )?;
-    if config.rate_limit.enabled {
-        require_nonzero(
-            config.rate_limit.default_rps as u64,
-            "rate_limit.default_rps (required when rate limiting is enabled)",
-        )?;
-        require_nonzero(
-            config.rate_limit.default_burst as u64,
-            "rate_limit.default_burst (required when rate limiting is enabled)",
-        )?;
-    }
-    // CORS: reject wildcard in production
-    if config.cors.allowed_origins.len() == 1 && config.cors.allowed_origins[0] == "*" {
-        if config.is_production() {
-            return Err(OrionError::Config {
-                message: "CORS wildcard '*' is not allowed when environment starts with 'prod'. \
-                          Set explicit origins in [cors] allowed_origins"
-                    .to_string(),
-            });
-        }
-        tracing::warn!(
-            "CORS is set to permissive ('*'). For production, configure specific origins in [cors] allowed_origins"
-        );
-    }
-    if config.kafka.enabled {
-        if config.kafka.brokers.is_empty() {
-            return Err(OrionError::Config {
-                message: "kafka.brokers must not be empty when Kafka is enabled".to_string(),
-            });
-        }
-        if config.kafka.group_id.is_empty() {
-            return Err(OrionError::Config {
-                message: "kafka.group_id must not be empty when Kafka is enabled".to_string(),
-            });
-        }
-        // Validate broker address format (host:port)
-        for (i, broker) in config.kafka.brokers.iter().enumerate() {
-            let broker = broker.trim();
-            if broker.is_empty() {
-                return Err(OrionError::Config {
-                    message: format!("kafka.brokers[{i}] must not be empty"),
-                });
-            }
-            if !broker.contains(':') {
-                return Err(OrionError::Config {
-                    message: format!(
-                        "kafka.brokers[{i}] '{broker}' must be in host:port format"
-                    ),
-                });
-            }
-            let port_str = broker.rsplit(':').next().unwrap_or("");
-            if port_str.parse::<u16>().is_err() {
-                return Err(OrionError::Config {
-                    message: format!("kafka.brokers[{i}] '{broker}' has invalid port"),
-                });
-            }
-        }
-        if config.kafka.max_inflight == 0 {
-            return Err(OrionError::Config {
-                message: "kafka.max_inflight must be > 0".to_string(),
-            });
-        }
-        // Topics can be empty in config when async channels provide them from DB
-        let mut seen_topics = std::collections::HashSet::new();
-        let mut seen_channels = std::collections::HashSet::new();
-        for (i, mapping) in config.kafka.topics.iter().enumerate() {
-            if mapping.topic.trim().is_empty() {
-                return Err(OrionError::Config {
-                    message: format!("kafka.topics[{i}].topic must not be empty"),
-                });
-            }
-            if mapping.channel.trim().is_empty() {
-                return Err(OrionError::Config {
-                    message: format!("kafka.topics[{i}].channel must not be empty"),
-                });
-            }
-            if !seen_topics.insert(&mapping.topic) {
-                return Err(OrionError::Config {
-                    message: format!("kafka.topics: duplicate topic '{}'", mapping.topic),
-                });
-            }
-            if !seen_channels.insert(&mapping.channel) {
-                return Err(OrionError::Config {
-                    message: format!("kafka.topics: duplicate channel '{}'", mapping.channel),
-                });
-            }
-        }
-    }
+    let is_prod = config.is_production();
+    config.server.validate()?;
+    config.ingest.validate()?;
+    config.storage.validate()?;
+    config.logging.validate()?;
+    config.tracing.validate()?;
+    config.admin_auth.validate(is_prod)?;
+    config.cors.validate(is_prod)?;
+    config.engine.validate()?;
+    config.queue.validate()?;
+    config.rate_limit.validate()?;
+    config.kafka.validate()?;
     Ok(())
 }
 

@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::validation::require_nonzero;
+use crate::errors::OrionError;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QueueConfig {
@@ -44,5 +47,15 @@ impl Default for QueueConfig {
             dlq_max_retries: 5,
             dlq_poll_interval_secs: 30,
         }
+    }
+}
+
+impl QueueConfig {
+    pub(crate) fn validate(&self) -> Result<(), OrionError> {
+        require_nonzero(self.workers as u64, "queue.workers")?;
+        require_nonzero(self.buffer_size as u64, "queue.buffer_size")?;
+        require_nonzero(self.processing_timeout_ms, "queue.processing_timeout_ms")?;
+        require_nonzero(self.shutdown_timeout_secs, "queue.shutdown_timeout_secs")?;
+        Ok(())
     }
 }

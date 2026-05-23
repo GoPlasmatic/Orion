@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::validation::{require_nonempty, require_nonzero};
+use crate::errors::OrionError;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MetricsConfig {
@@ -41,6 +44,50 @@ impl Default for TracingConfig {
             storage: TracingStorageConfig::default(),
             debug_profile_enabled: false,
         }
+    }
+}
+
+impl TracingConfig {
+    pub(crate) fn validate(&self) -> Result<(), OrionError> {
+        if self.enabled {
+            require_nonempty(
+                &self.otlp_endpoint,
+                "tracing.otlp_endpoint (required when tracing is enabled)",
+            )?;
+            if !(0.0..=1.0).contains(&self.sample_rate) {
+                return Err(OrionError::Config {
+                    message: "tracing.sample_rate must be between 0.0 and 1.0".to_string(),
+                });
+            }
+        }
+        self.storage.validate()
+    }
+}
+
+impl TracingStorageConfig {
+    pub(crate) fn validate(&self) -> Result<(), OrionError> {
+        if !(0.0..=1.0).contains(&self.sample_rate) {
+            return Err(OrionError::Config {
+                message: "tracing.storage.sample_rate must be between 0.0 and 1.0".to_string(),
+            });
+        }
+        match self.mode {
+            TraceStorageMode::Async => {
+                require_nonzero(self.max_pending as u64, "tracing.storage.max_pending")?;
+                require_nonzero(self.async_workers as u64, "tracing.storage.async_workers")?;
+            }
+            TraceStorageMode::Batch => {
+                require_nonzero(self.max_pending as u64, "tracing.storage.max_pending")?;
+                require_nonzero(self.batch_size as u64, "tracing.storage.batch_size")?;
+                require_nonzero(
+                    self.batch_flush_interval_ms,
+                    "tracing.storage.batch_flush_interval_ms",
+                )?;
+                require_nonzero(self.batch_workers as u64, "tracing.storage.batch_workers")?;
+            }
+            TraceStorageMode::Sync | TraceStorageMode::Off => {}
+        }
+        Ok(())
     }
 }
 
@@ -148,5 +195,24 @@ impl Default for CorsConfig {
         Self {
             allowed_origins: vec!["*".to_string()],
         }
+    }
+}
+
+impl CorsConfig {
+    pub(crate) fn validate(&self, is_production: bool) -> Result<(), OrionError> {
+        if self.allowed_origins.len() == 1 && self.allowed_origins[0] == "*" {
+            if is_production {
+                return Err(OrionError::Config {
+                    message:
+                        "CORS wildcard '*' is not allowed when environment starts with 'prod'. \
+                         Set explicit origins in [cors] allowed_origins"
+                            .to_string(),
+                });
+            }
+            tracing::warn!(
+                "CORS is set to permissive ('*'). For production, configure specific origins in [cors] allowed_origins"
+            );
+        }
+        Ok(())
     }
 }
