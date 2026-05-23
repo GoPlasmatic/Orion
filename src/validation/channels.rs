@@ -12,42 +12,20 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
     if let Some(ref desc) = req.description {
         validate_description(desc).map_err(|e| remap_to_field(e, "channel.description"))?;
     }
-    // REST/HTTP channels need methods + route_pattern
-    if matches!(req.protocol, ChannelProtocol::Rest | ChannelProtocol::Http) {
-        if req.methods.as_ref().is_none_or(|m| m.is_empty()) {
-            return Err(OrionError::invalid_field(
-                "channel.methods",
-                "REQUIRED",
-                format!(
-                    "REST/HTTP channels must specify at least one HTTP method (protocol=\"{}\")",
-                    req.protocol
-                ),
-            ));
-        }
-        if req
-            .route_pattern
-            .as_ref()
-            .is_none_or(|r| r.trim().is_empty())
-        {
-            return Err(OrionError::invalid_field(
-                "channel.route_pattern",
-                "REQUIRED",
-                format!(
-                    "REST/HTTP channels must specify a route_pattern (protocol=\"{}\")",
-                    req.protocol
-                ),
-            ));
-        }
-    }
-    // Kafka channels need a topic
-    if req.protocol == ChannelProtocol::Kafka
-        && req.topic.as_ref().is_none_or(|t| t.trim().is_empty())
-    {
-        return Err(OrionError::invalid_field(
-            "channel.topic",
-            "REQUIRED",
-            "Kafka channels must specify a topic",
-        ));
+    // B1: collect all protocol-conditional missing-field errors in one
+    // response (instead of failing on the first). Channel authors get
+    // the full list of what to fix instead of one round-trip per issue.
+    let protocol_details = collect_protocol_required_fields(req);
+    if !protocol_details.is_empty() {
+        return Err(OrionError::Validation {
+            code: "VALIDATION_ERROR",
+            message: format!(
+                "Channel with protocol=\"{}\" is missing {} required field(s)",
+                req.protocol,
+                protocol_details.len()
+            ),
+            details: protocol_details,
+        });
     }
     // B2: strict-validate the per-channel `config` blob at create time.
     // The channel registry stays tolerant at runtime (so an already-active
@@ -56,6 +34,63 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
     // CRUD boundary, not at first request.
     validate_channel_config_blob(&req.config)?;
     Ok(())
+}
+
+/// Per-protocol required-field check. Returns one `FieldError` per missing
+/// field, all with `code = "REQUIRED_FOR_PROTOCOL"` so clients can
+/// distinguish "this field is conditionally required" from a generic
+/// missing-field error.
+fn collect_protocol_required_fields(req: &CreateChannelRequest) -> Vec<crate::errors::FieldError> {
+    use crate::errors::FieldError;
+    let mut out = Vec::new();
+    match req.protocol {
+        ChannelProtocol::Rest | ChannelProtocol::Http => {
+            if req.methods.as_ref().is_none_or(|m| m.is_empty()) {
+                out.push(
+                    FieldError::new(
+                        "channel.methods",
+                        "REQUIRED_FOR_PROTOCOL",
+                        format!(
+                            "REST/HTTP channels must specify at least one HTTP method (protocol=\"{}\")",
+                            req.protocol
+                        ),
+                    )
+                    .with_expected(serde_json::Value::String(
+                        "non-empty array of method names".to_string(),
+                    )),
+                );
+            }
+            if req
+                .route_pattern
+                .as_ref()
+                .is_none_or(|r| r.trim().is_empty())
+            {
+                out.push(
+                    FieldError::new(
+                        "channel.route_pattern",
+                        "REQUIRED_FOR_PROTOCOL",
+                        format!(
+                            "REST/HTTP channels must specify a route_pattern (protocol=\"{}\")",
+                            req.protocol
+                        ),
+                    )
+                    .with_expected(serde_json::Value::String(
+                        "URL path pattern (e.g. \"/orders/{id}\")".to_string(),
+                    )),
+                );
+            }
+        }
+        ChannelProtocol::Kafka => {
+            if req.topic.as_ref().is_none_or(|t| t.trim().is_empty()) {
+                out.push(FieldError::new(
+                    "channel.topic",
+                    "REQUIRED_FOR_PROTOCOL",
+                    "Kafka channels must specify a topic",
+                ));
+            }
+        }
+    }
+    out
 }
 
 /// Strict-validate the channel `config` Value: parses to `ChannelConfig` to
