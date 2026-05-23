@@ -26,6 +26,9 @@ pub(crate) struct ErrorDetail {
         (name = "Workflows", description = "Workflow management"),
         (name = "Connectors", description = "Connector management"),
         (name = "Engine", description = "Engine control"),
+        (name = "Functions", description = "Engine function schemas"),
+        (name = "Audit", description = "Admin audit-log history"),
+        (name = "Backups", description = "Database backup management (SQLite only)"),
         (name = "Data", description = "Data processing"),
         (name = "Operational", description = "Health and metrics"),
     ),
@@ -64,6 +67,13 @@ pub(crate) struct ErrorDetail {
         // Engine
         super::admin::engine::engine_status,
         super::admin::engine::engine_reload,
+        // Functions (A1: input-schema registry surfaced for tooling)
+        super::admin::functions::list_functions,
+        // Audit logs
+        super::admin::audit::list_audit_logs,
+        // Backups
+        super::admin::backups::create_backup,
+        super::admin::backups::list_backups,
         // Data
         super::data::list_traces,
         super::data::get_trace,
