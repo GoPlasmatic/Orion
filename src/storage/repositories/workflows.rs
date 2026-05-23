@@ -195,6 +195,93 @@ fn build_workflow_insert(
     build_sqlx(&mut q)
 }
 
+/// Activate the draft version at 100% rollout: archive any existing active
+/// versions, then promote the draft.
+async fn activate_full_rollout(
+    tx: &mut crate::storage::DbTransaction,
+    workflow_id: &str,
+    draft_version: i64,
+    active_versions: &[Workflow],
+) -> Result<(), OrionError> {
+    if !active_versions.is_empty() {
+        let (sql, values) = archive_active_workflows_query(workflow_id, None);
+        tx.execute_query(&sql, values).await?;
+    }
+    let (sql, values) = activate_workflow_version_query(workflow_id, draft_version, 100);
+    tx.execute_query(&sql, values).await?;
+    Ok(())
+}
+
+/// Activate the draft version at a partial rollout: keep the primary active
+/// (highest version) at `100 - rollout_pct`, archive everything else, and
+/// promote the draft to `rollout_pct`.
+async fn activate_partial_rollout(
+    tx: &mut crate::storage::DbTransaction,
+    workflow_id: &str,
+    draft_version: i64,
+    active_versions: &[Workflow],
+    rollout_pct: i64,
+) -> Result<(), OrionError> {
+    if let Some(primary_active) = active_versions.first() {
+        if active_versions.len() > 1 {
+            let (sql, values) =
+                archive_active_workflows_query(workflow_id, Some(primary_active.version));
+            tx.execute_query(&sql, values).await?;
+        }
+        let (sql, values) =
+            set_workflow_rollout_query(workflow_id, primary_active.version, 100 - rollout_pct);
+        tx.execute_query(&sql, values).await?;
+    }
+    let (sql, values) = activate_workflow_version_query(workflow_id, draft_version, rollout_pct);
+    tx.execute_query(&sql, values).await?;
+    Ok(())
+}
+
+/// Build the UPDATE query that sets `Status = Archived` for one specific
+/// version of a workflow.
+fn set_workflow_archived_query(
+    workflow_id: &str,
+    version: i64,
+) -> (String, sea_query_binder::SqlxValues) {
+    let mut q = Query::update();
+    q.table(Workflows::Table)
+        .value(Workflows::Status, EntityStatus::Archived.as_str())
+        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+        .and_where(Expr::col(Workflows::Version).eq(version));
+    build_sqlx(&mut q)
+}
+
+/// Build the UPDATE query that sets `RolloutPercentage` for one specific
+/// version of a workflow.
+fn set_workflow_rollout_query(
+    workflow_id: &str,
+    version: i64,
+    pct: i64,
+) -> (String, sea_query_binder::SqlxValues) {
+    let mut q = Query::update();
+    q.table(Workflows::Table)
+        .value(Workflows::RolloutPercentage, pct)
+        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+        .and_where(Expr::col(Workflows::Version).eq(version));
+    build_sqlx(&mut q)
+}
+
+/// Build the UPDATE query that promotes a draft version to `Active` with
+/// the given rollout percentage.
+fn activate_workflow_version_query(
+    workflow_id: &str,
+    version: i64,
+    pct: i64,
+) -> (String, sea_query_binder::SqlxValues) {
+    let mut q = Query::update();
+    q.table(Workflows::Table)
+        .value(Workflows::Status, EntityStatus::Active.as_str())
+        .value(Workflows::RolloutPercentage, pct)
+        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+        .and_where(Expr::col(Workflows::Version).eq(version));
+    build_sqlx(&mut q)
+}
+
 /// Build the UPDATE query that archives all active versions of a workflow.
 /// `exclude_version`, when set, leaves that specific version untouched
 /// (used by partial-rollout activation to preserve the primary active row).
@@ -520,51 +607,17 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let active_versions: Vec<Workflow> = tx.fetch_all_as::<Workflow>(&sql, values).await?;
 
             if rollout_pct == 100 {
-                // Archive all active versions in a single query
-                if !active_versions.is_empty() {
-                    let (sql, values) = archive_active_workflows_query(workflow_id, None);
-                    tx.execute_query(&sql, values).await?;
-                }
-
-                let (sql, values) = build_sqlx(
-                    Query::update()
-                        .table(Workflows::Table)
-                        .value(Workflows::Status, EntityStatus::Active.as_str())
-                        .value(Workflows::RolloutPercentage, 100i64)
-                        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                        .and_where(Expr::col(Workflows::Version).eq(draft.version)),
-                );
-                tx.execute_query(&sql, values).await?;
+                activate_full_rollout(&mut tx, workflow_id, draft.version, &active_versions)
+                    .await?;
             } else {
-                // Archive all active versions except the primary (highest version)
-                if let Some(primary_active) = active_versions.first() {
-                    if active_versions.len() > 1 {
-                        let (sql, values) = archive_active_workflows_query(
-                            workflow_id,
-                            Some(primary_active.version),
-                        );
-                        tx.execute_query(&sql, values).await?;
-                    }
-
-                    let (sql, values) = build_sqlx(
-                        Query::update()
-                            .table(Workflows::Table)
-                            .value(Workflows::RolloutPercentage, 100 - rollout_pct)
-                            .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                            .and_where(Expr::col(Workflows::Version).eq(primary_active.version)),
-                    );
-                    tx.execute_query(&sql, values).await?;
-                }
-
-                let (sql, values) = build_sqlx(
-                    Query::update()
-                        .table(Workflows::Table)
-                        .value(Workflows::Status, EntityStatus::Active.as_str())
-                        .value(Workflows::RolloutPercentage, rollout_pct)
-                        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                        .and_where(Expr::col(Workflows::Version).eq(draft.version)),
-                );
-                tx.execute_query(&sql, values).await?;
+                activate_partial_rollout(
+                    &mut tx,
+                    workflow_id,
+                    draft.version,
+                    &active_versions,
+                    rollout_pct,
+                )
+                .await?;
             }
 
             tx.commit().await?;
@@ -648,43 +701,17 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let older = &active_versions[1];
 
             if pct == 100 {
-                // Archive the older version
-                let (sql, values) = build_sqlx(
-                    Query::update()
-                        .table(Workflows::Table)
-                        .value(Workflows::Status, EntityStatus::Archived.as_str())
-                        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                        .and_where(Expr::col(Workflows::Version).eq(older.version)),
-                );
+                // Promote the newer version: archive the older and set newer to 100%.
+                let (sql, values) = set_workflow_archived_query(workflow_id, older.version);
                 tx.execute_query(&sql, values).await?;
-
-                // Set newer to 100%
-                let (sql, values) = build_sqlx(
-                    Query::update()
-                        .table(Workflows::Table)
-                        .value(Workflows::RolloutPercentage, 100i64)
-                        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                        .and_where(Expr::col(Workflows::Version).eq(newer.version)),
-                );
+                let (sql, values) = set_workflow_rollout_query(workflow_id, newer.version, 100);
                 tx.execute_query(&sql, values).await?;
             } else {
-                // Update both percentages
-                let (sql, values) = build_sqlx(
-                    Query::update()
-                        .table(Workflows::Table)
-                        .value(Workflows::RolloutPercentage, pct)
-                        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                        .and_where(Expr::col(Workflows::Version).eq(newer.version)),
-                );
+                // Split traffic: newer = pct, older = 100 - pct.
+                let (sql, values) = set_workflow_rollout_query(workflow_id, newer.version, pct);
                 tx.execute_query(&sql, values).await?;
-
-                let (sql, values) = build_sqlx(
-                    Query::update()
-                        .table(Workflows::Table)
-                        .value(Workflows::RolloutPercentage, 100 - pct)
-                        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                        .and_where(Expr::col(Workflows::Version).eq(older.version)),
-                );
+                let (sql, values) =
+                    set_workflow_rollout_query(workflow_id, older.version, 100 - pct);
                 tx.execute_query(&sql, values).await?;
             }
 
