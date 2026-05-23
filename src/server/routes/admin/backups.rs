@@ -13,6 +13,16 @@ use super::audit_log;
 // Backups (SQLite only)
 // ============================================================
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/backups",
+    tag = "Backups",
+    responses(
+        (status = 200, description = "Backup created (SQLite only — VACUUM INTO a timestamped file)"),
+        (status = 400, description = "Backup unavailable (non-SQLite backend)"),
+    )
+)]
+#[tracing::instrument(skip(state, principal))]
 pub(crate) async fn create_backup(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
@@ -82,6 +92,15 @@ pub(crate) async fn create_backup(
     })))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/backups",
+    tag = "Backups",
+    responses(
+        (status = 200, description = "List of backup files in the configured backup directory"),
+    )
+)]
+#[tracing::instrument(skip(state))]
 pub(crate) async fn list_backups(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
     let backup_dir = state.config.storage.backup_dir.clone();
 
