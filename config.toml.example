@@ -71,10 +71,12 @@
 # sample_rate = 1.0                 # 0.0 (none) to 1.0 (all)
 #
 # Per-request profile mode (developer-facing). When `true`, requests with
-# `X-Orion-Profile: 1` (or `?profile=1`) get a `profile` object on the
-# response that breaks the request down by phase: engine lock wait,
-# per-handler call times, trace store, and a workflow-overhead residual.
-# Defaults to `false` — leave off in production.
+# `X-Orion-Profile: 1` (or `?profile=1`) get an `_orion.profile` object on
+# the response with `version: 1`, a top-level `totals_ms`, an iterable
+# `phases[]` array (engine_lock_wait, handlers, workflow_overhead,
+# trace_store), and per-handler / per-connector breakdowns. The
+# `_orion` namespace is reserved for debug surfaces. Defaults to
+# `false` — leave off in production.
 # debug_profile_enabled = false
 
 [tracing.storage]
