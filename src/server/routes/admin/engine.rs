@@ -6,8 +6,7 @@ use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::state::AppState;
 
-use super::audit_log;
-use super::reload_engine;
+use super::audit_and_reload;
 
 // ============================================================
 // Engine Control
@@ -62,14 +61,7 @@ pub(crate) async fn engine_reload(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
 ) -> Result<Json<Value>, OrionError> {
-    audit_log(
-        &state.audit_log_repo,
-        &principal,
-        "reload",
-        "engine",
-        "manual",
-    );
-    reload_engine(&state).await?;
+    audit_and_reload(&state, &principal, "reload", "engine", "manual").await?;
 
     let engine = crate::engine::acquire_engine_read(&state.engine).await;
     let workflows_count = engine.workflows().len();

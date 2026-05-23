@@ -16,8 +16,8 @@ use crate::storage::repositories::channels::{
 };
 
 use super::VersionFilter;
+use super::audit_and_reload;
 use super::audit_log;
-use super::reload_engine;
 
 // ============================================================
 // Channels CRUD
@@ -141,8 +141,7 @@ pub(crate) async fn delete_channel(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.channel_repo.delete(&id).await?;
-    audit_log(&state.audit_log_repo, &principal, "delete", "channel", &id);
-    reload_engine(&state).await?;
+    audit_and_reload(&state, &principal, "delete", "channel", &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -174,14 +173,14 @@ pub(crate) async fn change_channel_status(
         StatusAction::Activate => state.channel_repo.activate(&id).await?,
         StatusAction::Archive => state.channel_repo.archive(&id).await?,
     };
-    audit_log(
-        &state.audit_log_repo,
+    audit_and_reload(
+        &state,
         &principal,
         &format!("status_{}", req.status),
         "channel",
         &id,
-    );
-    reload_engine(&state).await?;
+    )
+    .await?;
     Ok(data_response(ChannelResponse::try_from(&channel)?))
 }
 

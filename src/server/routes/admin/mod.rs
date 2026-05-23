@@ -84,6 +84,27 @@ fn audit_log(
     });
 }
 
+/// Record an audit-log event and trigger an engine reload. The standard
+/// post-mutation sequence for admin operations that change the active set
+/// (activate / archive / delete / update-rollout). Drafts do NOT reload —
+/// keep using [`audit_log`] directly in those code paths.
+async fn audit_and_reload(
+    state: &AppState,
+    principal: &Option<Extension<AdminPrincipal>>,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+) -> Result<(), crate::errors::OrionError> {
+    audit_log(
+        &state.audit_log_repo,
+        principal,
+        action,
+        resource_type,
+        resource_id,
+    );
+    reload_engine(state).await
+}
+
 pub fn admin_routes() -> Router<AppState> {
     let channel_routes = Router::new()
         .route("/", get(list_channels).post(create_channel))
