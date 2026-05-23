@@ -19,8 +19,8 @@ use crate::storage::repositories::workflows::{
 };
 
 use super::VersionFilter;
+use super::audit_and_reload;
 use super::audit_log;
-use super::reload_engine;
 
 // ============================================================
 // Workflows CRUD
@@ -145,8 +145,7 @@ pub(crate) async fn delete_workflow(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.workflow_repo.delete(&id).await?;
-    audit_log(&state.audit_log_repo, &principal, "delete", "workflow", &id);
-    reload_engine(&state).await?;
+    audit_and_reload(&state, &principal, "delete", "workflow", &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -181,14 +180,14 @@ pub(crate) async fn change_workflow_status(
         }
         StatusAction::Archive => state.workflow_repo.archive(&id).await?,
     };
-    audit_log(
-        &state.audit_log_repo,
+    audit_and_reload(
+        &state,
         &principal,
         &format!("status_{}", req.status),
         "workflow",
         &id,
-    );
-    reload_engine(&state).await?;
+    )
+    .await?;
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 
@@ -218,14 +217,7 @@ pub(crate) async fn update_rollout(
         .workflow_repo
         .update_rollout(&id, req.rollout_percentage)
         .await?;
-    audit_log(
-        &state.audit_log_repo,
-        &principal,
-        "update_rollout",
-        "workflow",
-        &id,
-    );
-    reload_engine(&state).await?;
+    audit_and_reload(&state, &principal, "update_rollout", "workflow", &id).await?;
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 

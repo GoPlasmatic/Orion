@@ -712,6 +712,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Create a bound TCP listener with `TCP_NODELAY` enabled (avoids Nagle's
+/// 40 ms latency on small responses) and `SO_REUSEADDR` set.
+fn create_tcp_listener(addr: &str) -> Result<tokio::net::TcpListener, orion::errors::OrionError> {
+    let socket_addr = addr.parse::<std::net::SocketAddr>().map_err(|e| {
+        orion::errors::OrionError::Internal(format!("Invalid address '{addr}': {e}"))
+    })?;
+    let domain = if socket_addr.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let map_err = |stage: &str, e: std::io::Error| orion::errors::OrionError::InternalSource {
+        context: format!("Failed to {stage} for {addr}"),
+        source: Box::new(e),
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))
+        .map_err(|e| map_err("create socket", e))?;
+    socket.set_tcp_nodelay(true).ok();
+    socket.set_reuse_address(true).ok();
+    socket
+        .bind(&socket_addr.into())
+        .map_err(|e| map_err("bind", e))?;
+    socket.listen(1024).map_err(|e| map_err("listen", e))?;
+    socket.set_nonblocking(true).ok();
+    tokio::net::TcpListener::from_std(socket.into()).map_err(|e| map_err("create async listener", e))
+}
+
 /// Bind a plain (non-TLS) HTTP listener and serve `router` with graceful
 /// shutdown.
 async fn serve_plain_http(
@@ -720,49 +747,7 @@ async fn serve_plain_http(
     drain_secs: u64,
     router: axum::Router,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Create a TCP socket with TCP_NODELAY enabled to avoid Nagle's algorithm
-    // latency (up to 40ms per small response).
-    let socket = socket2::Socket::new(
-        if addr.contains(':') && !addr.starts_with('[') {
-            socket2::Domain::IPV4
-        } else {
-            socket2::Domain::IPV6
-        },
-        socket2::Type::STREAM,
-        Some(socket2::Protocol::TCP),
-    )
-    .map_err(|e| orion::errors::OrionError::InternalSource {
-        context: format!("Failed to create socket for {addr}"),
-        source: Box::new(e),
-    })?;
-    socket.set_tcp_nodelay(true).ok();
-    socket.set_reuse_address(true).ok();
-    socket
-        .bind(
-            &addr
-                .parse::<std::net::SocketAddr>()
-                .map_err(|e| {
-                    orion::errors::OrionError::Internal(format!("Invalid address '{addr}': {e}"))
-                })?
-                .into(),
-        )
-        .map_err(|e| orion::errors::OrionError::InternalSource {
-            context: format!("Failed to bind to {addr}"),
-            source: Box::new(e),
-        })?;
-    socket
-        .listen(1024)
-        .map_err(|e| orion::errors::OrionError::InternalSource {
-            context: format!("Failed to listen on {addr}"),
-            source: Box::new(e),
-        })?;
-    socket.set_nonblocking(true).ok();
-    let listener = tokio::net::TcpListener::from_std(socket.into()).map_err(|e| {
-        orion::errors::OrionError::InternalSource {
-            context: format!("Failed to create async listener for {addr}"),
-            source: Box::new(e),
-        }
-    })?;
+    let listener = create_tcp_listener(addr)?;
     tracing::info!(
         address = %addr,
         storage = %storage_url,

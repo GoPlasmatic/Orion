@@ -22,22 +22,6 @@ use crate::engine::utils::{inject_rollout_bucket, remove_rollout_bucket};
 
 /// Apply the per-channel/global filters to decide whether this trace should
 /// be persisted at all. Returns `Some(reason)` to drop (caller records metric).
-fn filter_should_drop(cfg: &EffectiveTraceConfig, has_errors: bool) -> Option<&'static str> {
-    if matches!(cfg.mode, TraceStorageMode::Off) {
-        return Some("off");
-    }
-    if cfg.errors_only && !has_errors {
-        return Some("errors_only");
-    }
-    if cfg.sample_rate < 1.0 {
-        // Inclusive 0.0 → always drop, 1.0 → never drop.
-        if rand::random::<f64>() >= cfg.sample_rate {
-            return Some("sampled_out");
-        }
-    }
-    None
-}
-
 /// Route a completed sync trace through the chosen persistence mode.
 #[allow(clippy::too_many_arguments)]
 async fn route_store_completed(
@@ -51,38 +35,35 @@ async fn route_store_completed(
     has_errors: bool,
     task_trace_json: Option<&str>,
 ) {
-    if let Some(reason) = filter_should_drop(cfg, has_errors) {
+    if let Some(reason) = cfg.should_drop(has_errors) {
         metrics::record_trace_dropped(reason);
         return;
     }
-    match cfg.mode {
-        TraceStorageMode::Sync => {
-            if let Err(e) = trace_repo
-                .store_completed(
-                    channel,
-                    "sync",
-                    input_json,
-                    response_json,
-                    duration_ms,
-                    task_trace_json,
-                )
-                .await
-            {
-                tracing::warn!(error = %e, "Failed to store sync processing result");
-            }
-        }
-        TraceStorageMode::Async | TraceStorageMode::Batch => {
-            let task = TracePersistenceTask::StoreCompleted(TraceCompletedRow {
-                channel: channel.to_string(),
-                mode: "sync".to_string(),
-                input_json: input_json.map(str::to_string),
-                result_json: response_json.to_string(),
+    // `should_drop` already returned for `Off`; remaining modes are Sync / Async / Batch.
+    if matches!(cfg.mode, TraceStorageMode::Sync) {
+        if let Err(e) = trace_repo
+            .store_completed(
+                channel,
+                "sync",
+                input_json,
+                response_json,
                 duration_ms,
-                task_trace_json: task_trace_json.map(str::to_string),
-            });
-            persistence_queue.submit(task).await;
+                task_trace_json,
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to store sync processing result");
         }
-        TraceStorageMode::Off => unreachable!("filtered above"),
+    } else {
+        let task = TracePersistenceTask::StoreCompleted(TraceCompletedRow {
+            channel: channel.to_string(),
+            mode: "sync".to_string(),
+            input_json: input_json.map(str::to_string),
+            result_json: response_json.to_string(),
+            duration_ms,
+            task_trace_json: task_trace_json.map(str::to_string),
+        });
+        persistence_queue.submit(task).await;
     }
 }
 
@@ -99,11 +80,51 @@ enum EngineRunError {
 /// channel opted into `task_details` (A2).
 type EngineCallResult = (dataflow_rs::Result<()>, Option<dataflow_rs::ExecutionTrace>);
 
+/// Run the engine for `channel`, with optional timeout and optional
+/// trace capture. Used by both profiled and non-profiled paths.
+async fn run_engine_inner(
+    engine: &std::sync::Arc<dataflow_rs::Engine>,
+    channel: &str,
+    message: &mut dataflow_rs::Message,
+    timeout_ms: Option<u64>,
+    capture_trace: bool,
+) -> Result<EngineCallResult, EngineRunError> {
+    if capture_trace {
+        let fut = engine.process_message_for_channel_with_trace(channel, message);
+        let inner = if let Some(ms) = timeout_ms {
+            match tokio::time::timeout(Duration::from_millis(ms), fut).await {
+                Ok(r) => r,
+                Err(_) => return Err(EngineRunError::Timeout(ms)),
+            }
+        } else {
+            fut.await
+        };
+        match inner {
+            Ok(trace) => Ok((Ok(()), Some(trace))),
+            Err(e) => Ok((Err(e), None)),
+        }
+    } else if let Some(ms) = timeout_ms {
+        match tokio::time::timeout(
+            Duration::from_millis(ms),
+            engine.process_message_for_channel(channel, message),
+        )
+        .await
+        {
+            Ok(inner) => Ok((inner, None)),
+            Err(_) => Err(EngineRunError::Timeout(ms)),
+        }
+    } else {
+        Ok((
+            engine.process_message_for_channel(channel, message).await,
+            None,
+        ))
+    }
+}
+
 /// Run the engine for `channel`, optionally scoped inside a per-request
 /// `ProfileCollector`. Honors `timeout_ms` when provided. When
 /// `capture_trace` is true, uses the with-trace engine entry point and
 /// returns the resulting `ExecutionTrace` for persistence.
-#[allow(clippy::too_many_arguments)]
 async fn run_engine_optionally_profiled(
     engine: &std::sync::Arc<dataflow_rs::Engine>,
     channel: &str,
@@ -114,54 +135,15 @@ async fn run_engine_optionally_profiled(
 ) -> Result<EngineCallResult, EngineRunError> {
     use crate::engine::profile::ORION_PROFILE;
 
-    async fn run_inner(
-        engine: &std::sync::Arc<dataflow_rs::Engine>,
-        channel: &str,
-        message: &mut dataflow_rs::Message,
-        timeout_ms: Option<u64>,
-        capture_trace: bool,
-    ) -> Result<EngineCallResult, EngineRunError> {
-        if capture_trace {
-            let fut = engine.process_message_for_channel_with_trace(channel, message);
-            let inner = if let Some(ms) = timeout_ms {
-                match tokio::time::timeout(Duration::from_millis(ms), fut).await {
-                    Ok(r) => r,
-                    Err(_) => return Err(EngineRunError::Timeout(ms)),
-                }
-            } else {
-                fut.await
-            };
-            match inner {
-                Ok(trace) => Ok((Ok(()), Some(trace))),
-                Err(e) => Ok((Err(e), None)),
-            }
-        } else if let Some(ms) = timeout_ms {
-            match tokio::time::timeout(
-                Duration::from_millis(ms),
-                engine.process_message_for_channel(channel, message),
-            )
-            .await
-            {
-                Ok(inner) => Ok((inner, None)),
-                Err(_) => Err(EngineRunError::Timeout(ms)),
-            }
-        } else {
-            Ok((
-                engine.process_message_for_channel(channel, message).await,
-                None,
-            ))
-        }
-    }
-
     if let Some(p) = profile {
         ORION_PROFILE
             .scope(
                 p.clone(),
-                run_inner(engine, channel, message, timeout_ms, capture_trace),
+                run_engine_inner(engine, channel, message, timeout_ms, capture_trace),
             )
             .await
     } else {
-        run_inner(engine, channel, message, timeout_ms, capture_trace).await
+        run_engine_inner(engine, channel, message, timeout_ms, capture_trace).await
     }
 }
 
@@ -491,6 +473,15 @@ fn acquire_backpressure(
     }
 }
 
+/// FNV-1a 64-bit hash mixin. Unkeyed, deterministic — used by
+/// [`compute_cache_key`] for shared-cache key stability across processes.
+fn fnv1a_feed(h: &mut u64, bytes: &[u8]) {
+    for &b in bytes {
+        *h ^= b as u64;
+        *h = h.wrapping_mul(0x100000001b3);
+    }
+}
+
 /// Compute a deterministic cache key from channel name and request data.
 ///
 /// Uses FNV-1a (64-bit) rather than `std::collections::hash_map::DefaultHasher`
@@ -504,13 +495,6 @@ fn compute_cache_key(
     data: &Value,
     cache_cfg: &crate::channel::ChannelCacheConfig,
 ) -> String {
-    fn fnv1a_feed(h: &mut u64, bytes: &[u8]) {
-        for &b in bytes {
-            *h ^= b as u64;
-            *h = h.wrapping_mul(0x100000001b3);
-        }
-    }
-
     let mut h: u64 = 0xcbf29ce484222325;
 
     if let Some(ref fields) = cache_cfg.cache_key_fields {
