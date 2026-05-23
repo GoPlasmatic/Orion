@@ -307,40 +307,33 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
 
                         match process_result {
                             Err(_) => {
-                                metrics::record_message(&channel, "timeout");
-                                metrics::record_error("kafka_timeout");
-
-                                tracing::error!(
-                                    topic = %topic,
-                                    channel = %channel,
-                                    timeout_ms = ctx.processing_timeout_ms,
-                                    "Kafka message processing timed out"
-                                );
-                                send_to_dlq(
-                                    &ctx.dlq_producer,
-                                    &ctx.dlq_topic,
+                                report_failure_and_dlq(
+                                    &ctx,
+                                    &channel,
                                     &topic,
                                     payload.as_bytes(),
-                                    &format!("Processing timed out after {}ms", ctx.processing_timeout_ms),
-                                ).await;
+                                    "timeout",
+                                    "kafka_timeout",
+                                    "Kafka message processing timed out",
+                                    &format!(
+                                        "Processing timed out after {}ms",
+                                        ctx.processing_timeout_ms
+                                    ),
+                                )
+                                .await;
                             }
                             Ok(Err(e)) => {
-                                metrics::record_message(&channel, "error");
-                                metrics::record_error("kafka_processing");
-
-                                tracing::error!(
-                                    topic = %topic,
-                                    channel = %channel,
-                                    error = %e,
-                                    "Failed to process Kafka message"
-                                );
-                                send_to_dlq(
-                                    &ctx.dlq_producer,
-                                    &ctx.dlq_topic,
+                                report_failure_and_dlq(
+                                    &ctx,
+                                    &channel,
                                     &topic,
                                     payload.as_bytes(),
+                                    "error",
+                                    "kafka_processing",
+                                    "Failed to process Kafka message",
                                     &format!("Processing error: {e}"),
-                                ).await;
+                                )
+                                .await;
                             }
                             Ok(Ok(())) if message.has_errors() => {
                                 // v3 contract: workflow failures are pushed to
@@ -351,19 +344,14 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
                                     .map(|e| format!("{}: {}", e.code, e.message))
                                     .collect::<Vec<_>>()
                                     .join("; ");
-                                metrics::record_message(&channel, "error");
-                                metrics::record_error("kafka_processing");
-                                tracing::error!(
-                                    topic = %topic,
-                                    channel = %channel,
-                                    errors = %summary,
-                                    "Kafka message processed with workflow errors"
-                                );
-                                send_to_dlq(
-                                    &ctx.dlq_producer,
-                                    &ctx.dlq_topic,
+                                report_failure_and_dlq(
+                                    &ctx,
+                                    &channel,
                                     &topic,
                                     payload.as_bytes(),
+                                    "error",
+                                    "kafka_processing",
+                                    "Kafka message processed with workflow errors",
                                     &format!("Workflow errors: {summary}"),
                                 )
                                 .await;
@@ -501,6 +489,26 @@ fn report_lag_for_partitions(consumer: &StreamConsumer, committed: &TopicPartiti
             }
         }
     }
+}
+
+/// Record failure metrics and ship the original payload to the DLQ.
+/// Used by the 4 failure branches in the consume loop (UTF-8 decode,
+/// JSON parse, processing timeout, workflow error) to keep metric / log /
+/// DLQ behaviour consistent.
+async fn report_failure_and_dlq(
+    ctx: &ConsumeLoopContext,
+    channel: &str,
+    topic: &str,
+    payload: &[u8],
+    message_status: &'static str,
+    error_kind: &'static str,
+    log_msg: &str,
+    dlq_reason: &str,
+) {
+    metrics::record_message(channel, message_status);
+    metrics::record_error(error_kind);
+    tracing::error!(topic = %topic, channel = %channel, error = %dlq_reason, "{log_msg}");
+    send_to_dlq(&ctx.dlq_producer, &ctx.dlq_topic, topic, payload, dlq_reason).await;
 }
 
 /// Build a DLQ envelope message from error context.
