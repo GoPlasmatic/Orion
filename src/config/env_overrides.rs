@@ -402,11 +402,6 @@ where
     );
     env_str!(
         env_var,
-        "ORION_ADMIN_AUTH__API_KEY",
-        config.admin_auth.api_key
-    );
-    env_str!(
-        env_var,
         "ORION_ADMIN_AUTH__HEADER",
         config.admin_auth.header
     );
@@ -587,14 +582,12 @@ mod tests {
     fn test_env_override_admin_auth() {
         let mut env = HashMap::new();
         env.insert("ORION_ADMIN_AUTH__ENABLED", "true");
-        env.insert("ORION_ADMIN_AUTH__API_KEY", "secret-123");
         env.insert("ORION_ADMIN_AUTH__HEADER", "X-API-Key");
 
         let mut config = AppConfig::default();
         apply_env_overrides_with(&mut config, make_env_reader(&env)).unwrap();
 
         assert!(config.admin_auth.enabled);
-        assert_eq!(config.admin_auth.api_key, "secret-123");
         assert_eq!(config.admin_auth.header, "X-API-Key");
     }
 

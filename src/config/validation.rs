@@ -92,7 +92,7 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     if config.admin_auth.enabled && config.admin_auth.effective_keys().is_empty() {
         return Err(OrionError::Config {
             message: "At least one admin API key must be configured when admin auth is enabled. \
-                      Set admin_auth.api_key or admin_auth.api_keys"
+                      Set admin_auth.api_keys"
                 .to_string(),
         });
     }
@@ -101,7 +101,7 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
         if config.is_production() {
             return Err(OrionError::Config {
                 message: "admin_auth must be enabled when environment starts with 'prod'. \
-                          Set admin_auth.enabled = true and configure an api_key"
+                          Set admin_auth.enabled = true and configure admin_auth.api_keys"
                     .to_string(),
             });
         }
@@ -458,7 +458,7 @@ mod tests {
     fn test_validate_config_admin_auth_enabled_empty_key() {
         let mut config = AppConfig::default();
         config.admin_auth.enabled = true;
-        config.admin_auth.api_key = String::new();
+        config.admin_auth.api_keys = vec![];
         assert!(validate_config(&config).is_err());
     }
 
@@ -466,7 +466,7 @@ mod tests {
     fn test_validate_config_admin_auth_enabled_valid() {
         let mut config = AppConfig::default();
         config.admin_auth.enabled = true;
-        config.admin_auth.api_key = "my-secret-key".to_string();
+        config.admin_auth.api_keys = vec!["my-secret-key".to_string()];
         assert!(validate_config(&config).is_ok());
     }
 
@@ -494,7 +494,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.environment = "production".to_string();
         config.admin_auth.enabled = true;
-        config.admin_auth.api_key = "secret-key-12345".to_string();
+        config.admin_auth.api_keys = vec!["secret-key-12345".to_string()];
         // Must also fix CORS for production
         config.cors.allowed_origins = vec!["https://example.com".to_string()];
         assert!(validate_config(&config).is_ok());
@@ -508,19 +508,10 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_config_admin_auth_enabled_via_api_keys() {
-        let mut config = AppConfig::default();
-        config.admin_auth.enabled = true;
-        config.admin_auth.api_keys = vec!["key-a".to_string()];
-        // api_key is empty but api_keys has a value — should be valid
-        assert!(validate_config(&config).is_ok());
-    }
-
-    #[test]
     fn test_validate_config_admin_auth_enabled_all_empty() {
         let mut config = AppConfig::default();
         config.admin_auth.enabled = true;
-        // Both api_key and api_keys are empty
+        // api_keys is empty
         let result = validate_config(&config);
         assert!(result.is_err());
     }
