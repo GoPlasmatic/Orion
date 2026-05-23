@@ -2,8 +2,9 @@
 //!
 //! Lightweight, opt-in profiler that breaks a request down by phase
 //! (engine lock wait, workflow logic, individual handler calls, trace
-//! persistence) and ships the result back as a `profile` field on the
-//! response.
+//! persistence) and ships the result back as `_orion.profile` on the
+//! response (B3 shape lock — the `_orion` top-level namespace is
+//! reserved for debug surfaces and never collides with workflow output).
 //!
 //! Activated by either an `X-Orion-Profile: 1` header or `?profile=1`
 //! query parameter, gated globally by `tracing.debug_profile_enabled`.
@@ -78,7 +79,34 @@ impl ProfileCollector {
         *self.trace_store.lock().expect("profile mutex") = Some(d);
     }
 
+    /// Stable shape version for the response/trace `profile` JSON object.
+    ///
+    /// Bump this when the rendered structure changes in a way that would
+    /// break existing consumers. Clients should branch on `version` to
+    /// tolerate future shape changes. v0.2.0 ships with v1.
+    pub const PROFILE_VERSION: u32 = 1;
+
     /// Render the collector as the response/trace `profile` JSON object.
+    ///
+    /// **Shape (v1):**
+    /// ```text
+    /// {
+    ///   "version":            1,
+    ///   "totals_ms":          1.2,           // wall-clock request duration
+    ///   "phases":             [{name, ms, pct}, ...],
+    ///   // detail fields (kept for richer drill-down):
+    ///   "request_total_ms":   1.2,
+    ///   "handlers_total_ms":  0.8,
+    ///   "handlers":           [{function, duration_ms, pct_of_workflow, ...}],
+    ///   "by_function":        {fn_name: {count, total_ms}, ...},
+    ///   "by_connector":       {connector: {count, total_ms}, ...},
+    ///   "breakdown_pct":      {external_io, workflow_overhead, trace_store, engine_lock_wait},
+    ///   "workflow_total_ms":  optional,
+    ///   "workflow_overhead_ms": optional,
+    ///   "engine_lock_wait_ms": optional,
+    ///   "trace_store_ms":      optional
+    /// }
+    /// ```
     pub fn to_json(&self) -> Value {
         let samples = self.samples.lock().expect("profile mutex").clone();
         let engine_lock_wait = self.engine_lock_wait.lock().expect("profile mutex").take();
@@ -213,7 +241,39 @@ impl ProfileCollector {
             json!({})
         };
 
+        // Normalized `phases[]` view — same numbers as the per-phase
+        // *_ms fields below, but iterable by clients that don't want to
+        // hard-code each key. Each entry: { name, ms, pct } (pct
+        // relative to `totals_ms` / `request_total_ms`).
+        let basis_for_phase_pct = request_total_ms.max(0.0);
+        let mut phases: Vec<Value> = Vec::with_capacity(4);
+        let mut push_phase = |name: &'static str, ms: f64| {
+            let pct = if basis_for_phase_pct > 0.0 {
+                (ms / basis_for_phase_pct) * 100.0
+            } else {
+                0.0
+            };
+            phases.push(json!({
+                "name": name,
+                "ms": round2(ms),
+                "pct": round2(pct),
+            }));
+        };
+        if let Some(v) = engine_lock_wait_ms {
+            push_phase("engine_lock_wait", v);
+        }
+        push_phase("handlers", handlers_total_ms);
+        if let Some(v) = workflow_overhead_ms {
+            push_phase("workflow_overhead", v);
+        }
+        if let Some(v) = trace_store_ms {
+            push_phase("trace_store", v);
+        }
+
         let mut out = json!({
+            "version": Self::PROFILE_VERSION,
+            "totals_ms": round2(request_total_ms),
+            "phases": Value::Array(phases),
             "request_total_ms": round2(request_total_ms),
             "handlers_total_ms": round2(handlers_total_ms),
             "handlers": handlers_json,
@@ -356,6 +416,17 @@ mod tests {
         collector.set_trace_store(Duration::from_millis(1));
 
         let v = collector.to_json();
+        // B3 shape lock: top-level version + totals_ms + iterable phases[].
+        assert_eq!(v["version"], 1);
+        assert!(v["totals_ms"].as_f64().unwrap() > 0.0);
+        let phases = v["phases"].as_array().expect("phases must be an array");
+        let phase_names: Vec<&str> = phases.iter().filter_map(|p| p["name"].as_str()).collect();
+        // All four phases (set above) should appear in order.
+        assert!(phase_names.contains(&"engine_lock_wait"));
+        assert!(phase_names.contains(&"handlers"));
+        assert!(phase_names.contains(&"workflow_overhead"));
+        assert!(phase_names.contains(&"trace_store"));
+        // Detail fields preserved.
         assert!(v["handlers"].is_array());
         assert_eq!(v["handlers"].as_array().unwrap().len(), 2);
         assert!(v["by_function"]["http_call"]["count"].as_u64().unwrap() >= 1);

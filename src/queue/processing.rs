@@ -12,7 +12,8 @@ use crate::storage::repositories::traces::TraceRepository;
 use super::QueueMessage;
 
 /// Serialize a finished message to JSON, embedding the per-request profile
-/// JSON at the top level under `_orion_profile` when one is provided.
+/// JSON under `_orion.profile` when one is provided (B3 shape lock —
+/// matches the sync response envelope).
 fn serialize_result_with_profile(
     message: &dataflow_rs::Message,
     profile: Option<&Arc<crate::engine::profile::ProfileCollector>>,
@@ -22,7 +23,10 @@ fn serialize_result_with_profile(
     };
     let mut v = serde_json::to_value(message)?;
     if let Some(obj) = v.as_object_mut() {
-        obj.insert("_orion_profile".to_string(), p.to_json());
+        obj.insert(
+            "_orion".to_string(),
+            serde_json::json!({ "profile": p.to_json() }),
+        );
     }
     serde_json::to_string(&v)
 }
