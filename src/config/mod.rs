@@ -285,12 +285,12 @@ data_rps = 500
         let toml_str = r#"
 [admin_auth]
 enabled = true
-api_key = "my-key"
+api_keys = ["my-key"]
 header = "X-Custom-Auth"
 "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(config.admin_auth.enabled);
-        assert_eq!(config.admin_auth.api_key, "my-key");
+        assert_eq!(config.admin_auth.api_keys, vec!["my-key".to_string()]);
         assert_eq!(config.admin_auth.header, "X-Custom-Auth");
     }
 
