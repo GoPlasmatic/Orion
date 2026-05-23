@@ -579,7 +579,8 @@ fn validate_basic_fields(req: &CreateWorkflowRequest, errors: &mut Vec<Validatio
     }
 }
 
-/// Validate individual tasks: required fields, unique IDs, conditions, function names, connector refs.
+/// Validate all tasks. Walks the task list once, delegating per-task checks
+/// to [`errors_for_task`] and tracking cross-task duplicate IDs here.
 async fn validate_tasks(
     tasks: &[Value],
     dl: &datalogic_rs::Engine,
@@ -587,97 +588,116 @@ async fn validate_tasks(
     errors: &mut Vec<ValidationIssue>,
     warnings: &mut Vec<ValidationIssue>,
 ) {
-    let mut seen_ids = HashSet::new();
+    let mut seen_ids: HashSet<&str> = HashSet::new();
 
     for (i, task) in tasks.iter().enumerate() {
+        let (task_errors, task_warnings) = errors_for_task(i, task, dl, state).await;
+        errors.extend(task_errors);
+        warnings.extend(task_warnings);
+
+        // Cross-task check: duplicate task IDs.
         let task_id = task.get("id").and_then(|v| v.as_str()).unwrap_or("");
-        if task_id.is_empty() {
-            errors.push(ValidationIssue {
-                field: format!("tasks[{i}].id"),
-                message: format!("Task at index {i} is missing 'id'"),
-            });
-        }
-
-        if task
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .is_empty()
-        {
-            errors.push(ValidationIssue {
-                field: format!("tasks[{i}].name"),
-                message: format!("Task at index {i} is missing 'name'"),
-            });
-        }
-
-        let function = task.get("function");
-        let fn_name = function
-            .and_then(|f| f.get("name"))
-            .and_then(|n| n.as_str())
-            .unwrap_or("");
-
-        if fn_name.is_empty() {
-            errors.push(ValidationIssue {
-                field: format!("tasks[{i}].function.name"),
-                message: format!("Task at index {i} is missing 'function.name'"),
-            });
-        }
-
         if !task_id.is_empty() && !seen_ids.insert(task_id) {
             errors.push(ValidationIssue {
                 field: "tasks".to_string(),
                 message: format!("Duplicate task id '{task_id}'"),
             });
         }
+    }
+}
 
-        if let Some(condition) = task.get("condition")
-            && let Err(e) = dl.compile(condition)
-        {
+/// All per-task validations (required fields, condition, function name,
+/// schema, connector reference). Returns `(errors, warnings)`.
+async fn errors_for_task(
+    i: usize,
+    task: &Value,
+    dl: &datalogic_rs::Engine,
+    state: &AppState,
+) -> (Vec<ValidationIssue>, Vec<ValidationIssue>) {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    let task_id = task.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    if task_id.is_empty() {
+        errors.push(ValidationIssue {
+            field: format!("tasks[{i}].id"),
+            message: format!("Task at index {i} is missing 'id'"),
+        });
+    }
+
+    if task
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .is_empty()
+    {
+        errors.push(ValidationIssue {
+            field: format!("tasks[{i}].name"),
+            message: format!("Task at index {i} is missing 'name'"),
+        });
+    }
+
+    let function = task.get("function");
+    let fn_name = function
+        .and_then(|f| f.get("name"))
+        .and_then(|n| n.as_str())
+        .unwrap_or("");
+
+    if fn_name.is_empty() {
+        errors.push(ValidationIssue {
+            field: format!("tasks[{i}].function.name"),
+            message: format!("Task at index {i} is missing 'function.name'"),
+        });
+    }
+
+    if let Some(condition) = task.get("condition")
+        && let Err(e) = dl.compile(condition)
+    {
+        errors.push(ValidationIssue {
+            field: format!("tasks[{i}].condition"),
+            message: format!("Invalid JSONLogic in task condition: {e}"),
+        });
+    }
+
+    if !fn_name.is_empty() && !crate::engine::KNOWN_FUNCTIONS.contains(&fn_name) {
+        warnings.push(ValidationIssue {
+            field: format!("tasks[{i}].function.name"),
+            message: format!("Unknown function '{fn_name}'"),
+        });
+    }
+
+    // Schema check the function input (A1). Same registry is used by
+    // workflow create — surfacing it here so the /validate endpoint
+    // gives the same answer offline.
+    if !fn_name.is_empty() {
+        let input = function
+            .and_then(|f| f.get("input"))
+            .cloned()
+            .unwrap_or(Value::Object(Default::default()));
+        let task_path = format!("tasks[{i}]");
+        for fe in crate::engine::functions::schema::validate_input(fn_name, &input, &task_path) {
             errors.push(ValidationIssue {
-                field: format!("tasks[{i}].condition"),
-                message: format!("Invalid JSONLogic in task condition: {e}"),
-            });
-        }
-
-        if !fn_name.is_empty() && !crate::engine::KNOWN_FUNCTIONS.contains(&fn_name) {
-            warnings.push(ValidationIssue {
-                field: format!("tasks[{i}].function.name"),
-                message: format!("Unknown function '{fn_name}'"),
-            });
-        }
-
-        // Schema check the function input (A1). Same registry is used by
-        // workflow create — surfacing it here so the /validate endpoint
-        // gives the same answer offline.
-        if !fn_name.is_empty() {
-            let input = function
-                .and_then(|f| f.get("input"))
-                .cloned()
-                .unwrap_or(Value::Object(Default::default()));
-            let task_path = format!("tasks[{i}]");
-            for fe in crate::engine::functions::schema::validate_input(fn_name, &input, &task_path)
-            {
-                errors.push(ValidationIssue {
-                    field: fe.path,
-                    message: fe.message,
-                });
-            }
-        }
-
-        if !fn_name.is_empty()
-            && crate::engine::CONNECTOR_FUNCTIONS.contains(&fn_name)
-            && let Some(connector_name) = function
-                .and_then(|f| f.get("input"))
-                .and_then(|input| input.get("connector"))
-                .and_then(|c| c.as_str())
-            && state.connector_registry.get(connector_name).await.is_none()
-        {
-            warnings.push(ValidationIssue {
-                field: format!("tasks[{i}].function.input.connector"),
-                message: format!("Connector '{connector_name}' not found in registry"),
+                field: fe.path,
+                message: fe.message,
             });
         }
     }
+
+    if !fn_name.is_empty()
+        && crate::engine::CONNECTOR_FUNCTIONS.contains(&fn_name)
+        && let Some(connector_name) = function
+            .and_then(|f| f.get("input"))
+            .and_then(|input| input.get("connector"))
+            .and_then(|c| c.as_str())
+        && state.connector_registry.get(connector_name).await.is_none()
+    {
+        warnings.push(ValidationIssue {
+            field: format!("tasks[{i}].function.input.connector"),
+            message: format!("Connector '{connector_name}' not found in registry"),
+        });
+    }
+
+    (errors, warnings)
 }
 
 /// Validate workflow-level JSONLogic condition.

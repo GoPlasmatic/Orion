@@ -362,6 +362,14 @@ async fn dynamic_handler(
     .await
 }
 
+/// Values considered truthy in header/query string flags.
+const TRUTHY_VALUES: &[&str] = &["1", "true", "yes", "on"];
+
+fn is_truthy_str(s: &str) -> bool {
+    let trimmed = s.trim().to_ascii_lowercase();
+    TRUTHY_VALUES.contains(&trimmed.as_str())
+}
+
 /// True when `header_name` or `query_name` is set to a truthy value
 /// (`1`, `true`, `yes`, `on`). Case-insensitive.
 fn header_or_query_truthy(
@@ -370,12 +378,6 @@ fn header_or_query_truthy(
     header_name: &str,
     query_name: &str,
 ) -> bool {
-    fn is_truthy_str(s: &str) -> bool {
-        matches!(
-            s.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    }
     if let Some(v) = headers.get(header_name).and_then(|v| v.to_str().ok())
         && is_truthy_str(v)
     {
@@ -490,12 +492,18 @@ fn acquire_backpressure(
 }
 
 /// Compute a deterministic cache key from channel name and request data.
+///
+/// Uses FNV-1a (64-bit) rather than `std::collections::hash_map::DefaultHasher`
+/// because the cache key must be **stable across processes** (multiple
+/// orion-server instances sharing a Redis cache must agree on the key for the
+/// same request). `DefaultHasher` is `SipHash` keyed by a per-process random
+/// seed and would produce different keys per process. `ahash` likewise
+/// randomises its seed on construction. FNV-1a is unkeyed and deterministic.
 fn compute_cache_key(
     channel: &str,
     data: &Value,
     cache_cfg: &crate::channel::ChannelCacheConfig,
 ) -> String {
-    // FNV-1a hash — deterministic across processes (unlike DefaultHasher).
     fn fnv1a_feed(h: &mut u64, bytes: &[u8]) {
         for &b in bytes {
             *h ^= b as u64;

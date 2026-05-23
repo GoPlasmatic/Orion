@@ -295,11 +295,18 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
             (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone())
         }
         DataflowError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, "TIMEOUT_ERROR", msg.clone()),
-        _ => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "ENGINE_ERROR",
-            "An internal engine error occurred".to_string(),
-        ),
+        other => {
+            // Surface unhandled DataflowError variants so a dataflow-rs upgrade
+            // that adds new variants doesn't silently degrade them to a generic
+            // 500. Add an explicit arm above if a variant deserves its own
+            // status/code.
+            tracing::error!(error = ?other, "unhandled DataflowError variant; mapped to 500");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ENGINE_ERROR",
+                "An internal engine error occurred".to_string(),
+            )
+        }
     }
 }
 
