@@ -69,7 +69,7 @@ async fn profile_header_disabled_by_default() {
     let body = common::body_json(resp).await;
     assert_eq!(body["status"], "ok");
     assert!(
-        body.get("profile").is_none(),
+        body.get("_orion").is_none(),
         "profile field should be absent when debug_profile_enabled=false; got {body:?}"
     );
 }
@@ -114,9 +114,18 @@ async fn profile_header_enabled() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = common::body_json(resp).await;
 
-    let profile = body.get("profile").unwrap_or_else(|| {
-        panic!("expected `profile` field on response; got {body:?}");
+    // B3: profile lives under `_orion.profile` (top-level `_orion`
+    // namespace reserved for debug surfaces).
+    let orion = body.get("_orion").unwrap_or_else(|| {
+        panic!("expected `_orion` field on response; got {body:?}");
     });
+    let profile = orion.get("profile").unwrap_or_else(|| {
+        panic!("expected `_orion.profile` field on response; got {body:?}");
+    });
+    // Locked shape (v1): version + iterable phases.
+    assert_eq!(profile["version"], 1);
+    assert!(profile["totals_ms"].as_f64().unwrap() > 0.0);
+    assert!(profile["phases"].is_array());
     assert!(profile["handlers"].is_array());
     let handlers = profile["handlers"].as_array().unwrap();
     assert!(
@@ -179,8 +188,8 @@ async fn profile_query_param() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = common::body_json(resp).await;
     assert!(
-        body.get("profile").is_some(),
-        "expected profile field via ?profile=1; got {body:?}"
+        body.get("_orion").and_then(|o| o.get("profile")).is_some(),
+        "expected _orion.profile via ?profile=1; got {body:?}"
     );
 }
 
@@ -214,7 +223,7 @@ async fn profile_overhead_residual_nonnegative() {
         .await
         .unwrap();
     let body = common::body_json(resp).await;
-    let profile = &body["profile"];
+    let profile = &body["_orion"]["profile"];
 
     let overhead = profile["workflow_overhead_ms"].as_f64().unwrap_or(0.0);
     assert!(
@@ -271,12 +280,14 @@ async fn profile_async_embedded_in_trace() {
     assert_eq!(final_trace["status"], "completed");
 
     // result_json is exposed under the `message` key by the trace polling
-    // endpoint; the embedded profile lives at `message._orion_profile`.
-    let profile = &final_trace["message"]["_orion_profile"];
+    // endpoint; the embedded profile lives at `message._orion.profile`
+    // (B3 shape lock — same envelope as the sync response).
+    let profile = &final_trace["message"]["_orion"]["profile"];
     assert!(
         profile.is_object(),
-        "expected _orion_profile inside trace.message; got {final_trace}"
+        "expected _orion.profile inside trace.message; got {final_trace}"
     );
+    assert_eq!(profile["version"], 1);
     assert!(profile["handlers"].is_array());
 }
 
@@ -314,7 +325,7 @@ async fn profile_falsy_header_ignored() {
     let resp = app.clone().oneshot(req).await.unwrap();
     let body = common::body_json(resp).await;
     assert!(
-        body.get("profile").is_none(),
+        body.get("_orion").is_none(),
         "falsy header value should not enable profile; got {body:?}"
     );
 }

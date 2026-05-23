@@ -696,11 +696,16 @@ async fn process_sync_for_channel(
                 tracing::debug!(channel = channel, error = %e, "Failed to cache response");
             }
 
-            // Profile mode: rebuild the response with the `profile` field appended
-            // and re-serialize. Only paid when profiling is on.
+            // Profile mode: rebuild the response with `_orion.profile`
+            // appended and re-serialize. Only paid when profiling is on.
+            //
+            // B3 v0.2.0 shape lock: the debug surface lives under a single
+            // top-level `_orion` namespace so future debug fields (e.g.
+            // `_orion.task_trace`) can be added without colliding with
+            // workflow-level output keys that callers control.
             if let Some(ref p) = profile {
                 let mut response_with_profile = response;
-                response_with_profile["profile"] = p.to_json();
+                response_with_profile["_orion"] = json!({ "profile": p.to_json() });
                 let body = serde_json::to_string(&response_with_profile).map_err(|e| {
                     OrionError::Internal(format!("Failed to serialize response: {e}"))
                 })?;
