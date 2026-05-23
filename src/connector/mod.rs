@@ -6,6 +6,7 @@ pub mod mongo_pool;
 pub mod pool_cache;
 pub mod redis_pool;
 mod registry;
+pub mod secrets;
 mod types;
 
 pub(crate) use pool_access_counter::POOL_ACCESS_COUNTER;

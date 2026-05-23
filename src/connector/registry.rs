@@ -156,7 +156,34 @@ impl ConnectorRegistry {
                     continue;
                 }
             };
-            match serde_json::from_str::<ConnectorConfig>(&resolved) {
+            // Parse to Value, walk and resolve any `scheme://reference`
+            // secret references (B5), then deserialize into the typed
+            // `ConnectorConfig`. Errors at this stage skip the connector
+            // and warn — matching how unparseable config_json is handled.
+            let mut value: serde_json::Value = match serde_json::from_str(&resolved) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(
+                        connector_id = %connector.id,
+                        connector_name = %connector.name,
+                        error = %e,
+                        "Failed to parse connector config JSON, skipping"
+                    );
+                    continue;
+                }
+            };
+            let resolvers = super::secrets::default_resolvers();
+            if let Err(e) = super::secrets::resolve_in_place(&mut value, &resolvers, &source_label)
+            {
+                tracing::warn!(
+                    connector_id = %connector.id,
+                    connector_name = %connector.name,
+                    error = %e,
+                    "Failed to resolve secret reference in connector config, skipping"
+                );
+                continue;
+            }
+            match serde_json::from_value::<ConnectorConfig>(value) {
                 Ok(config) => {
                     new_configs.insert(connector.name.clone(), Arc::new(config));
                 }
