@@ -6,9 +6,7 @@ use serde_json::Value;
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::OrionJson;
-use crate::server::routes::response_helpers::{
-    created_response, data_response, paginated_response,
-};
+use crate::server::routes::response_helpers::{created_response, data_response, paginated_into};
 use crate::server::state::AppState;
 use crate::storage::models::{ChannelResponse, StatusAction};
 use crate::storage::repositories::channels::{
@@ -38,17 +36,7 @@ pub(crate) async fn list_channels(
     Query(filter): Query<ChannelFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state.channel_repo.list_paginated(&filter).await?;
-    let data: Vec<ChannelResponse> = result
-        .data
-        .iter()
-        .map(ChannelResponse::try_from)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(paginated_response(
-        data,
-        result.total,
-        result.limit,
-        result.offset,
-    ))
+    paginated_into(result, |c| ChannelResponse::try_from(c))
 }
 
 #[utoipa::path(
@@ -212,18 +200,7 @@ pub(crate) async fn list_channel_versions(
     let limit = filter.limit.unwrap_or(50);
     let offset = filter.offset.unwrap_or(0);
     let result = state.channel_repo.list_versions(&id, limit, offset).await?;
-    let data: Vec<ChannelResponse> = result
-        .data
-        .iter()
-        .map(ChannelResponse::try_from)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(paginated_response(
-        data,
-        result.total,
-        result.limit,
-        result.offset,
-    ))
+    paginated_into(result, |c| ChannelResponse::try_from(c))
 }
 
 #[utoipa::path(

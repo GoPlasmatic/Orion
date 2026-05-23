@@ -27,3 +27,24 @@ pub fn paginated_response<T: Serialize>(
         "offset": offset,
     }))
 }
+
+/// Map a `PaginatedResult<T>` from the repository into a JSON response by
+/// converting each row via `map_fn`. Replaces the recurring 5-line block
+/// `let data: Vec<R> = result.data.iter().map(...).collect::<Result<_, _>>()?;
+///  Ok(paginated_response(data, result.total, result.limit, result.offset))`
+/// in admin list handlers.
+pub fn paginated_into<T, R, E>(
+    result: crate::storage::repositories::workflows::PaginatedResult<T>,
+    map_fn: impl Fn(&T) -> Result<R, E>,
+) -> Result<Json<Value>, E>
+where
+    R: Serialize,
+{
+    let data: Vec<R> = result.data.iter().map(map_fn).collect::<Result<_, _>>()?;
+    Ok(paginated_response(
+        data,
+        result.total,
+        result.limit,
+        result.offset,
+    ))
+}
