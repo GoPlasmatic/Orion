@@ -1,3 +1,6 @@
+use crate::errors::OrionError;
+use crate::storage::{DbPool, DbTransaction};
+
 /// Converts an `Option<&str>` to a `sea_query::Value::String`, mapping `None`
 /// to a SQL NULL string.  Replaces the repetitive
 /// `.as_ref().map(|s| s.as_str().into()).unwrap_or(sea_query::Value::String(None))`
@@ -5,6 +8,85 @@
 pub fn optional_string_value(opt: Option<&str>) -> sea_query::Value {
     opt.map(|s| s.to_string().into())
         .unwrap_or(sea_query::Value::String(None))
+}
+
+/// Fetch a single required row from the pool. Maps a missing row to the
+/// `OrionError` returned by `err`. Replaces the
+/// `.fetch_optional_as(...).await?.ok_or_else(...)` pattern repeated across
+/// repository read paths.
+pub async fn fetch_required<T>(
+    pool: &DbPool,
+    sql: &str,
+    values: sea_query_binder::SqlxValues,
+    err: impl FnOnce() -> OrionError,
+) -> Result<T, OrionError>
+where
+    T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
+    T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
+    T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
+{
+    pool.fetch_optional_as::<T>(sql, values)
+        .await?
+        .ok_or_else(err)
+}
+
+/// Count rows in `table` matching `cond`. Replaces the `Query::select() ...
+/// .expr(Func::count(...)).from(table).cond_where(cond)` boilerplate used by
+/// every paginated list path.
+pub async fn count_where<I>(
+    pool: &DbPool,
+    table: I,
+    cond: sea_query::Condition,
+) -> Result<i64, OrionError>
+where
+    I: sea_query::IntoTableRef,
+{
+    use sea_query::{Asterisk, Expr, Func, Query};
+    let (sql, values) = crate::storage::build_sqlx(
+        Query::select()
+            .expr(Func::count(Expr::col(Asterisk)))
+            .from(table)
+            .cond_where(cond),
+    );
+    let (total,): (i64,) = pool.fetch_one_as::<(i64,)>(&sql, values).await?;
+    Ok(total)
+}
+
+/// Ensure no row matches the given query; returns the `OrionError` from `err`
+/// if a row is found. The inverse of [`fetch_required`] — used by
+/// `create_new_version` paths to reject duplicate drafts.
+pub async fn ensure_absent<T>(
+    pool: &DbPool,
+    sql: &str,
+    values: sea_query_binder::SqlxValues,
+    err: impl FnOnce() -> OrionError,
+) -> Result<(), OrionError>
+where
+    T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
+    T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
+    T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
+{
+    if pool.fetch_optional_as::<T>(sql, values).await?.is_some() {
+        return Err(err());
+    }
+    Ok(())
+}
+
+/// Transaction-scoped variant of [`fetch_required`].
+pub async fn fetch_required_tx<T>(
+    tx: &mut DbTransaction,
+    sql: &str,
+    values: sea_query_binder::SqlxValues,
+    err: impl FnOnce() -> OrionError,
+) -> Result<T, OrionError>
+where
+    T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
+    T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
+    T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
+{
+    tx.fetch_optional_as::<T>(sql, values)
+        .await?
+        .ok_or_else(err)
 }
 
 /// Normalises the `limit` / `offset` pagination parameters coming from filter
