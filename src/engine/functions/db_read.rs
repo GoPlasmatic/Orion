@@ -9,8 +9,8 @@ use sqlx::any::AnyRow;
 use sqlx::{Column, Row};
 
 use super::connector_helpers::{
-    apply_output, bind_json_params, extract_output_path, require_db_connector, require_str_field,
-    resolve_connector, timed_query, to_exec_error,
+    apply_output, bind_json_params, extract_output_path, profile_handler, require_db_connector,
+    require_str_field, resolve_connector, timed_query, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
@@ -30,8 +30,7 @@ impl AsyncFunctionHandler for DbReadHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        let connector_peek = input.get("connector").and_then(|v| v.as_str());
-        crate::engine::profile::record("db_read", connector_peek, async move {
+        profile_handler("db_read", input, async move {
             let connector_name = require_str_field(input, "connector", "db_read")?;
             let query = require_str_field(input, "query", "db_read")?;
             let params = input.get("params").and_then(|v| v.as_array());
