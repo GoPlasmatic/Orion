@@ -30,19 +30,42 @@ async fn test_openapi_spec_all_endpoints() {
     let body = common::body_json(response).await;
     let paths = body["paths"].as_object().unwrap();
 
-    // Only paths explicitly listed in the ApiDoc paths() macro are present.
     // Data channel routes use a dynamic handler (not in OpenAPI spec).
-    // Admin routes have utoipa annotations but are NOT yet registered in ApiDoc.
+    // B4 closed the gap on admin routes — backups, audit, and the new
+    // functions endpoint are now decorated and registered.
     let expected = [
         "/api/v1/data/traces",
         "/api/v1/data/traces/{id}",
         "/health",
         "/metrics",
+        // B4 additions:
+        "/api/v1/admin/functions",
+        "/api/v1/admin/audit-logs",
+        "/api/v1/admin/backups",
     ];
 
     for path in &expected {
         assert!(paths.contains_key(*path), "Missing path: {}", path);
     }
+}
+
+#[tokio::test]
+async fn openapi_documents_new_b4_tags() {
+    let app = common::test_app().await;
+    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let response = app.oneshot(req).await.unwrap();
+    let body = common::body_json(response).await;
+    // The `tags` block surfaces in the spec so Swagger UI groups
+    // endpoints; B4 added Functions, Audit, Backups.
+    let tag_names: Vec<&str> = body["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(tag_names.contains(&"Functions"));
+    assert!(tag_names.contains(&"Audit"));
+    assert!(tag_names.contains(&"Backups"));
 }
 
 #[tokio::test]
