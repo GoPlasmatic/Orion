@@ -42,6 +42,7 @@ pub(crate) struct ErrorDetail {
         super::admin::channels::change_channel_status,
         super::admin::channels::list_channel_versions,
         super::admin::channels::create_new_channel_version,
+        super::admin::channels::import_channels,
         // Workflows
         super::admin::workflows::list_workflows,
         super::admin::workflows::create_workflow,
@@ -64,6 +65,7 @@ pub(crate) struct ErrorDetail {
         super::admin::connectors::delete_connector,
         super::admin::connectors::list_circuit_breakers,
         super::admin::connectors::reset_circuit_breaker,
+        super::admin::connectors::import_connectors,
         // Engine
         super::admin::engine::engine_status,
         super::admin::engine::engine_reload,
