@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+use crate::config::validation::{require_nonempty, require_nonzero};
+use crate::errors::OrionError;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct StorageConfig {
@@ -30,5 +33,14 @@ impl Default for StorageConfig {
             idle_timeout_secs: 300,
             backup_dir: "./backups".to_string(),
         }
+    }
+}
+
+impl StorageConfig {
+    pub(crate) fn validate(&self) -> Result<(), OrionError> {
+        require_nonempty(&self.url, "storage.url")?;
+        require_nonzero(self.busy_timeout_ms, "storage.busy_timeout_ms")?;
+        require_nonzero(self.acquire_timeout_secs, "storage.acquire_timeout_secs")?;
+        Ok(())
     }
 }

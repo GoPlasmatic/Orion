@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::errors::OrionError;
+
 /// Admin API authentication configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -23,6 +25,30 @@ impl AdminAuthConfig {
             .filter(|k| !k.is_empty())
             .map(String::as_str)
             .collect()
+    }
+
+    pub(crate) fn validate(&self, is_production: bool) -> Result<(), OrionError> {
+        if self.enabled && self.effective_keys().is_empty() {
+            return Err(OrionError::Config {
+                message:
+                    "At least one admin API key must be configured when admin auth is enabled. \
+                     Set admin_auth.api_keys"
+                        .to_string(),
+            });
+        }
+        if !self.enabled {
+            if is_production {
+                return Err(OrionError::Config {
+                    message: "admin_auth must be enabled when environment starts with 'prod'. \
+                              Set admin_auth.enabled = true and configure admin_auth.api_keys"
+                        .to_string(),
+                });
+            }
+            tracing::warn!(
+                "Admin auth is disabled. For production, enable admin_auth with a strong API key"
+            );
+        }
+        Ok(())
     }
 }
 
