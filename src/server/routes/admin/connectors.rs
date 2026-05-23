@@ -180,6 +180,84 @@ pub(crate) async fn delete_connector(
 }
 
 // ============================================================
+// Connector Bulk Import (B6)
+// ============================================================
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/connectors/import",
+    tag = "Connectors",
+    request_body = Vec<CreateConnectorRequest>,
+    params(super::workflows::ImportQuery),
+    responses(
+        (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true)"),
+    )
+)]
+#[tracing::instrument(skip(state, connectors, principal), fields(count = connectors.len()))]
+pub(crate) async fn import_connectors(
+    State(state): State<AppState>,
+    Query(query): Query<super::workflows::ImportQuery>,
+    principal: Option<Extension<AdminPrincipal>>,
+    OrionJson(connectors): OrionJson<Vec<CreateConnectorRequest>>,
+) -> Result<Json<Value>, OrionError> {
+    if query.dry_run {
+        let mut would_create = 0u64;
+        let mut would_fail = 0u64;
+        let mut errors = Vec::new();
+        for (i, c) in connectors.iter().enumerate() {
+            match crate::validation::validate_create_connector(c) {
+                Ok(()) => would_create += 1,
+                Err(e) => {
+                    would_fail += 1;
+                    errors.push(json!({"index": i, "error": e.to_string()}));
+                }
+            }
+        }
+        return Ok(Json(json!({
+            "dry_run": true,
+            "would_create": would_create,
+            "would_fail": would_fail,
+            "imported": 0,
+            "failed": would_fail,
+            "errors": errors,
+        })));
+    }
+    let mut imported = 0u64;
+    let mut failed = 0u64;
+    let mut errors = Vec::new();
+    for (i, c) in connectors.iter().enumerate() {
+        if let Err(e) = crate::validation::validate_create_connector(c) {
+            failed += 1;
+            errors.push(json!({"index": i, "error": e.to_string()}));
+            continue;
+        }
+        match state.connector_repo.create(c).await {
+            Ok(_) => imported += 1,
+            Err(e) => {
+                failed += 1;
+                errors.push(json!({"index": i, "error": e.to_string()}));
+            }
+        }
+    }
+    audit_log(
+        &state.audit_log_repo,
+        &principal,
+        "import",
+        "connector",
+        &format!("{imported} imported"),
+    );
+    // Reload registry once at the end if anything succeeded.
+    if imported > 0 {
+        reload_connectors(&state).await?;
+    }
+    Ok(Json(json!({
+        "imported": imported,
+        "failed": failed,
+        "errors": errors,
+    })))
+}
+
+// ============================================================
 // Circuit Breakers
 // ============================================================
 

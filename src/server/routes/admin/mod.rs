@@ -24,11 +24,11 @@ pub(crate) use audit::list_audit_logs;
 pub(crate) use backups::{create_backup, list_backups};
 pub(crate) use channels::{
     change_channel_status, create_channel, create_new_channel_version, delete_channel, get_channel,
-    list_channel_versions, list_channels, update_channel,
+    import_channels, list_channel_versions, list_channels, update_channel,
 };
 pub(crate) use connectors::{
-    create_connector, delete_connector, get_connector, list_circuit_breakers, list_connectors,
-    reset_circuit_breaker, update_connector,
+    create_connector, delete_connector, get_connector, import_connectors, list_circuit_breakers,
+    list_connectors, reset_circuit_breaker, update_connector,
 };
 pub(crate) use engine::{engine_reload, engine_status};
 pub(crate) use functions::list_functions;
@@ -87,6 +87,7 @@ fn audit_log(
 pub fn admin_routes() -> Router<AppState> {
     let channel_routes = Router::new()
         .route("/", get(list_channels).post(create_channel))
+        .route("/import", post(import_channels))
         .route(
             "/{id}",
             get(get_channel).put(update_channel).delete(delete_channel),
@@ -118,6 +119,7 @@ pub fn admin_routes() -> Router<AppState> {
 
     let connector_routes = Router::new()
         .route("/", get(list_connectors).post(create_connector))
+        .route("/import", post(import_connectors))
         .route(
             "/{id}",
             get(get_connector)

@@ -387,21 +387,62 @@ pub(crate) async fn test_workflow(
 // Workflow Import / Export
 // ============================================================
 
+/// Query parameters accepted by all three /import endpoints (B6).
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+pub(crate) struct ImportQuery {
+    /// When true, validates each item and reports what would happen
+    /// without writing to the database. The response shape mirrors
+    /// a real import but `imported` is always 0.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
 #[utoipa::path(
     post,
     path = "/api/v1/admin/workflows/import",
     tag = "Workflows",
     request_body = Vec<CreateWorkflowRequest>,
+    params(ImportQuery),
     responses(
-        (status = 200, description = "Import results with counts"),
+        (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true)"),
     )
 )]
 #[tracing::instrument(skip(state, workflows, principal), fields(count = workflows.len()))]
 pub(crate) async fn import_workflows(
     State(state): State<AppState>,
+    Query(query): Query<ImportQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     Json(workflows): Json<Vec<CreateWorkflowRequest>>,
 ) -> Result<Json<Value>, OrionError> {
+    if query.dry_run {
+        // Validate each item against the same checks the create endpoint
+        // would run; never touch the DB. Useful for CI: check that a
+        // bulk export still loads cleanly without mutating state.
+        let mut would_create = 0u64;
+        let mut would_fail = 0u64;
+        let mut errors = Vec::new();
+        for (i, wf) in workflows.iter().enumerate() {
+            match crate::validation::validate_create_workflow(wf) {
+                Ok(()) => would_create += 1,
+                Err(e) => {
+                    would_fail += 1;
+                    errors.push(json!({
+                        "index": i,
+                        "error": e.to_string(),
+                    }));
+                }
+            }
+        }
+        return Ok(Json(json!({
+            "dry_run": true,
+            "would_create": would_create,
+            "would_fail": would_fail,
+            "imported": 0,
+            "failed": would_fail,
+            "errors": errors,
+        })));
+    }
+
     let results = state.workflow_repo.bulk_create(&workflows).await?;
 
     let mut imported = 0u64;
