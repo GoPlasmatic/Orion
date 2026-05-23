@@ -1,6 +1,6 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
-use sea_query::{Asterisk, Expr, Func, Order, Query};
+use sea_query::{Asterisk, Expr, Order, Query};
 use serde::Deserialize;
 
 use crate::errors::OrionError;
@@ -125,7 +125,7 @@ impl ConnectorRepository for SqlConnectorRepository {
             self.pool
                 .fetch_optional_as::<Connector>(&sql, values)
                 .await?
-                .ok_or_else(|| OrionError::NotFound(format!("Connector '{}' not found", id)))
+                .ok_or_else(|| OrionError::NotFound(format!("Connector '{id}' not found")))
         })
         .await
     }
@@ -148,16 +148,12 @@ impl ConnectorRepository for SqlConnectorRepository {
         crate::metrics::timed_db_op("connectors.list_paginated", async {
             let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
 
-            let (count_sql, count_values) = build_sqlx(
-                Query::select()
-                    .expr(Func::count(Expr::col(Asterisk)))
-                    .from(Connectors::Table),
-            );
-
-            let (total,): (i64,) = self
-                .pool
-                .fetch_one_as::<(i64,)>(&count_sql, count_values)
-                .await?;
+            let total = super::helpers::count_where(
+                &self.pool,
+                Connectors::Table,
+                sea_query::Condition::all(),
+            )
+            .await?;
 
             let (sql, values) = build_sqlx(
                 Query::select()
@@ -229,8 +225,7 @@ impl ConnectorRepository for SqlConnectorRepository {
 
             if rows_affected == 0 {
                 return Err(OrionError::NotFound(format!(
-                    "Connector '{}' not found",
-                    id
+                    "Connector '{id}' not found"
                 )));
             }
 
