@@ -49,6 +49,56 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
             "Kafka channels must specify a topic",
         ));
     }
+    // B2: strict-validate the per-channel `config` blob at create time.
+    // The channel registry stays tolerant at runtime (so an already-active
+    // channel with a corrupt row doesn't crash engine reload), but new
+    // creates fail fast with field-pathed errors so authors learn at the
+    // CRUD boundary, not at first request.
+    validate_channel_config_blob(&req.config)?;
+    Ok(())
+}
+
+/// Strict-validate the channel `config` Value: parses to `ChannelConfig` to
+/// catch shape errors and compiles every embedded JSONLogic expression
+/// (`validation_logic`, `rate_limit.key_logic`) so typos surface here
+/// rather than at engine reload (where they downgrade to warnings).
+fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionError> {
+    // Empty object is the documented default for "no config" — skip parsing.
+    if let Some(obj) = config.as_object()
+        && obj.is_empty()
+    {
+        return Ok(());
+    }
+    let parsed: crate::channel::ChannelConfig =
+        serde_json::from_value(config.clone()).map_err(|e| {
+            OrionError::invalid_field(
+                "channel.config",
+                "INVALID",
+                format!("channel.config does not match the ChannelConfig shape: {e}"),
+            )
+        })?;
+
+    let dl = datalogic_rs::Engine::new();
+    if let Some(ref logic) = parsed.validation_logic {
+        dl.compile(logic).map_err(|e| {
+            OrionError::invalid_field(
+                "channel.config.validation_logic",
+                "INVALID",
+                format!("validation_logic is not a valid JSONLogic expression: {e}"),
+            )
+        })?;
+    }
+    if let Some(ref rl) = parsed.rate_limit
+        && let Some(ref logic) = rl.key_logic
+    {
+        dl.compile(logic).map_err(|e| {
+            OrionError::invalid_field(
+                "channel.config.rate_limit.key_logic",
+                "INVALID",
+                format!("rate_limit.key_logic is not a valid JSONLogic expression: {e}"),
+            )
+        })?;
+    }
     Ok(())
 }
 
