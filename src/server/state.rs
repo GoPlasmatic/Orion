@@ -1,4 +1,3 @@
-use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -21,9 +20,9 @@ use crate::storage::repositories::workflows::WorkflowRepository;
 
 /// Owned fields shared across all route handlers.
 ///
-/// Wrapped in an outer `Arc` via [`AppState`] so the per-request clone Axum
-/// performs on `State<AppState>` is a single atomic refcount bump rather than
-/// one per `Arc` field (~20+).
+/// Wrapped in an `Arc` (via the [`AppState`] type alias) so the per-request
+/// clone Axum performs on `State<AppState>` is a single atomic refcount bump
+/// rather than one per `Arc` field (~20+).
 pub struct AppStateInner {
     pub engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     pub channel_repo: Arc<dyn ChannelRepository>,
@@ -59,28 +58,8 @@ pub struct AppStateInner {
 
 /// Shared application state accessible from all route handlers.
 ///
-/// Cloning is O(1) — one atomic refcount bump on the inner `Arc`. Field access
-/// goes through [`Deref`], so existing call sites (`state.engine`,
-/// `state.config`, …) keep working unchanged.
-#[derive(Clone)]
-pub struct AppState(Arc<AppStateInner>);
-
-impl AppState {
-    pub fn new(inner: AppStateInner) -> Self {
-        Self(Arc::new(inner))
-    }
-}
-
-impl From<AppStateInner> for AppState {
-    fn from(inner: AppStateInner) -> Self {
-        Self::new(inner)
-    }
-}
-
-impl Deref for AppState {
-    type Target = AppStateInner;
-
-    fn deref(&self) -> &AppStateInner {
-        &self.0
-    }
-}
+/// Cloning is O(1) — one atomic refcount bump on the `Arc`. Field access goes
+/// through `Arc<T>`'s built-in `Deref` so existing call sites (`state.engine`,
+/// `state.config`, …) keep working unchanged. The previous newtype wrapper
+/// added no functional benefit and is collapsed here (item 4.4).
+pub type AppState = Arc<AppStateInner>;
