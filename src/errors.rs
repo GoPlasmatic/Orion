@@ -166,6 +166,44 @@ impl OrionError {
     }
 }
 
+/// Log a 5xx-category error with the user-facing message exposed to the
+/// caller (the existing behaviour for `Internal` / `Config`), then return the
+/// response tuple. Used by variants whose internal message is safe to surface.
+fn log_internal_5xx(
+    category: &'static str,
+    code: &'static str,
+    message: String,
+) -> (StatusCode, &'static str, String) {
+    tracing::error!(
+        error.category = category,
+        error.message = %message,
+        "{category} error"
+    );
+    (StatusCode::INTERNAL_SERVER_ERROR, code, message)
+}
+
+/// Log a 5xx-category error with full internal detail, but return a
+/// sanitised generic message to the caller. Used by variants whose
+/// internal error string may leak sensitive data (DB driver errors, queue
+/// internals).
+fn sanitised_5xx(
+    category: &'static str,
+    code: &'static str,
+    log_detail: impl std::fmt::Display,
+    user_message: &'static str,
+) -> (StatusCode, &'static str, String) {
+    tracing::error!(
+        error.category = category,
+        error = %log_detail,
+        "{category} error"
+    );
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        code,
+        user_message.to_string(),
+    )
+}
+
 impl IntoResponse for OrionError {
     fn into_response(self) -> Response {
         // Pull the validation details out before consuming `self` in the match,
@@ -213,21 +251,10 @@ impl IntoResponse for OrionError {
             OrionError::ResponseTooLarge(msg) => {
                 (StatusCode::BAD_GATEWAY, "RESPONSE_TOO_LARGE", msg)
             }
-            OrionError::Internal(msg) => {
-                tracing::error!(error.category = "internal", error.message = %msg, "Internal error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", msg)
-            }
-            OrionError::Config { message } => {
-                tracing::error!(error.category = "config", error.message = %message, "Config error");
-                (StatusCode::INTERNAL_SERVER_ERROR, "CONFIG_ERROR", message)
-            }
+            OrionError::Internal(msg) => log_internal_5xx("internal", "INTERNAL_ERROR", msg),
+            OrionError::Config { message } => log_internal_5xx("config", "CONFIG_ERROR", message),
             OrionError::Queue(msg) => {
-                tracing::error!(error.category = "queue", error.message = %msg, "Queue error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "QUEUE_ERROR",
-                    "An internal queue error occurred".to_string(),
-                )
+                sanitised_5xx("queue", "QUEUE_ERROR", msg, "An internal queue error occurred")
             }
             OrionError::InternalSource { context, source } => {
                 tracing::error!(
@@ -242,14 +269,12 @@ impl IntoResponse for OrionError {
                     "An internal error occurred".to_string(),
                 )
             }
-            OrionError::Storage(e) => {
-                tracing::error!(error.category = "storage", error = %e, "Storage error");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "STORAGE_ERROR",
-                    "An internal storage error occurred".to_string(),
-                )
-            }
+            OrionError::Storage(e) => sanitised_5xx(
+                "storage",
+                "STORAGE_ERROR",
+                e,
+                "An internal storage error occurred",
+            ),
             OrionError::Engine(e) => {
                 tracing::error!(error.category = "engine", error = %e, "Engine error");
                 engine_error_response(&e)
