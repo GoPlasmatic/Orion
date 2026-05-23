@@ -258,7 +258,7 @@ async fn test_null_bytes_in_string_fields() {
 async fn test_admin_auth_missing_token_returns_401() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
-    config.admin_auth.api_key = "test-secret-key".to_string();
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
     let app = common::test_app_with_config(config).await;
 
     let resp = app
@@ -274,7 +274,7 @@ async fn test_admin_auth_missing_token_returns_401() {
 async fn test_admin_auth_wrong_token_returns_401() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
-    config.admin_auth.api_key = "test-secret-key".to_string();
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
     let app = common::test_app_with_config(config).await;
 
     let req = Request::builder()
@@ -294,7 +294,7 @@ async fn test_admin_auth_wrong_token_returns_401() {
 async fn test_admin_auth_correct_token_returns_200() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
-    config.admin_auth.api_key = "test-secret-key".to_string();
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
     let app = common::test_app_with_config(config).await;
 
     let req = Request::builder()
@@ -312,7 +312,7 @@ async fn test_admin_auth_correct_token_returns_200() {
 async fn test_admin_auth_custom_header() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
-    config.admin_auth.api_key = "my-api-key".to_string();
+    config.admin_auth.api_keys = vec!["my-api-key".to_string()];
     config.admin_auth.header = "X-API-Key".to_string();
     let app = common::test_app_with_config(config).await;
 
@@ -341,7 +341,7 @@ async fn test_admin_auth_custom_header() {
 async fn test_admin_auth_data_routes_not_protected() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
-    config.admin_auth.api_key = "test-secret-key".to_string();
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
     let app = common::test_app_with_config(config).await;
 
     // Data endpoint should work without auth
@@ -362,7 +362,7 @@ async fn test_admin_auth_data_routes_not_protected() {
 async fn test_admin_auth_health_not_protected() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
-    config.admin_auth.api_key = "test-secret-key".to_string();
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
     let app = common::test_app_with_config(config).await;
 
     let resp = app
@@ -392,8 +392,11 @@ async fn test_admin_auth_disabled_allows_all() {
 async fn test_admin_auth_multiple_api_keys() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
-    config.admin_auth.api_key = "primary-key".to_string();
-    config.admin_auth.api_keys = vec!["rotation-key-1".to_string(), "rotation-key-2".to_string()];
+    config.admin_auth.api_keys = vec![
+        "primary-key".to_string(),
+        "rotation-key-1".to_string(),
+        "rotation-key-2".to_string(),
+    ];
     let app = common::test_app_with_config(config).await;
 
     // Primary key should work
@@ -505,7 +508,7 @@ async fn test_connector_secret_masking() {
 async fn test_metrics_endpoint_protected_when_auth_enabled() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
-    config.admin_auth.api_key = "test-secret-key".to_string();
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
     config.metrics.enabled = true;
     let app = common::test_app_with_config(config).await;
 
