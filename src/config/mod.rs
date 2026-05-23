@@ -9,7 +9,7 @@ mod queue;
 mod rate_limit;
 mod server;
 mod storage;
-mod validation;
+pub(super) mod validation;
 
 // Re-export all types so `use crate::config::Foo` keeps working.
 pub use admin_auth::AdminAuthConfig;

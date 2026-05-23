@@ -1,4 +1,9 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
+
+use crate::config::validation::{require_nonempty, require_nonzero};
+use crate::errors::OrionError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -22,6 +27,39 @@ impl Default for ServerConfig {
             tls: TlsConfig::default(),
             compression: CompressionConfig::default(),
         }
+    }
+}
+
+impl ServerConfig {
+    pub(crate) fn validate(&self) -> Result<(), OrionError> {
+        require_nonzero(u64::from(self.port), "server.port")?;
+        if self.tls.enabled {
+            require_nonempty(
+                &self.tls.cert_path,
+                "server.tls.cert_path (required when TLS is enabled)",
+            )?;
+            require_nonempty(
+                &self.tls.key_path,
+                "server.tls.key_path (required when TLS is enabled)",
+            )?;
+            if !Path::new(&self.tls.cert_path).exists() {
+                return Err(OrionError::Config {
+                    message: format!("TLS certificate file not found: '{}'", self.tls.cert_path),
+                });
+            }
+            if !Path::new(&self.tls.key_path).exists() {
+                return Err(OrionError::Config {
+                    message: format!("TLS private key file not found: '{}'", self.tls.key_path),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+impl IngestConfig {
+    pub(crate) fn validate(&self) -> Result<(), OrionError> {
+        require_nonzero(self.max_payload_size as u64, "ingest.max_payload_size")
     }
 }
 
