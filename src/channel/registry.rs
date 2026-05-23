@@ -33,6 +33,23 @@ pub struct EffectiveTraceConfig {
 }
 
 impl EffectiveTraceConfig {
+    /// Returns `Some(reason)` if a trace with the given error state should be
+    /// dropped per this config (off / errors_only / sampled out), or `None`
+    /// to persist. Used by both the sync request path and the async-queue
+    /// post-processing path so filter semantics stay consistent.
+    pub fn should_drop(&self, has_errors: bool) -> Option<&'static str> {
+        if matches!(self.mode, TraceStorageMode::Off) {
+            return Some("off");
+        }
+        if self.errors_only && !has_errors {
+            return Some("errors_only");
+        }
+        if self.sample_rate < 1.0 && rand::random::<f64>() >= self.sample_rate {
+            return Some("sampled_out");
+        }
+        None
+    }
+
     /// Compute the effective config by overlaying a channel-level
     /// override on top of the global storage config.
     pub fn resolve(

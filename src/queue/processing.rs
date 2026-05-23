@@ -384,19 +384,15 @@ async fn process_trace(
                 return;
             }
 
-            // Apply filters: errors_only (we know now: succeeded → drop) +
-            // sample_rate (random per-trace).
-            let mut should_persist_result = true;
-            if effective_trace.errors_only {
-                // success branch → no errors → drop
-                metrics::record_trace_dropped("errors_only");
-                should_persist_result = false;
-            } else if effective_trace.sample_rate < 1.0
-                && rand::random::<f64>() >= effective_trace.sample_rate
-            {
-                metrics::record_trace_dropped("sampled_out");
-                should_persist_result = false;
-            }
+            // Apply filters via the shared `EffectiveTraceConfig::should_drop`.
+            // This branch handles the success path → no errors.
+            let should_persist_result = match effective_trace.should_drop(false) {
+                Some(reason) => {
+                    metrics::record_trace_dropped(reason);
+                    false
+                }
+                None => true,
+            };
 
             let result_saved = if !should_persist_result {
                 // Treat as saved for state-machine purposes — we won't write,
