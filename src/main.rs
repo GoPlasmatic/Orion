@@ -240,7 +240,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     println!("Pending migrations ({}):", pending.len());
                     for (version, description) in &pending {
-                        println!("  {} — {}", version, description);
+                        println!("  {version} — {description}");
                     }
                 }
             } else {

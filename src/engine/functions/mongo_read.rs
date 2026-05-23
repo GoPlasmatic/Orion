@@ -42,7 +42,7 @@ impl AsyncFunctionHandler for MongoReadHandler {
                 .cloned()
                 .unwrap_or(Value::Object(serde_json::Map::new()));
             let filter_doc = bson::to_document(&filter_val)
-                .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {}", e)))?;
+                .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {e}")))?;
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
             let db_config = require_db_connector(&connector_config, connector_name)?;

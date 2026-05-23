@@ -102,8 +102,7 @@ where
             _ => {
                 return Err(OrionError::Config {
                     message: format!(
-                        "ORION_LOGGING__FORMAT: invalid value '{}', expected 'json' or 'pretty'",
-                        v
+                        "ORION_LOGGING__FORMAT: invalid value '{v}', expected 'json' or 'pretty'"
                     ),
                 });
             }
@@ -211,9 +210,8 @@ where
             _ => {
                 return Err(OrionError::Config {
                     message: format!(
-                        "ORION_TRACING__STORAGE__MODE: invalid value '{}', \
-                         expected 'sync', 'async', 'batch', or 'off'",
-                        v
+                        "ORION_TRACING__STORAGE__MODE: invalid value '{v}', \
+                         expected 'sync', 'async', 'batch', or 'off'"
                     ),
                 });
             }
@@ -248,9 +246,8 @@ where
             _ => {
                 return Err(OrionError::Config {
                     message: format!(
-                        "ORION_TRACING__STORAGE__ASYNC_ON_OVERFLOW: invalid value '{}', \
-                         expected 'drop' or 'block'",
-                        v
+                        "ORION_TRACING__STORAGE__ASYNC_ON_OVERFLOW: invalid value '{v}', \
+                         expected 'drop' or 'block'"
                     ),
                 });
             }
