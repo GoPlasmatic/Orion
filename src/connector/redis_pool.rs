@@ -25,8 +25,7 @@ impl RedisPoolCache {
             .as_deref()
             .ok_or_else(|| {
                 OrionError::BadRequest(format!(
-                    "Cache connector '{}' with backend='redis' requires a 'url'",
-                    connector_name
+                    "Cache connector '{connector_name}' with backend='redis' requires a 'url'"
                 ))
             })?
             .to_string();
@@ -35,14 +34,14 @@ impl RedisPoolCache {
             .get_or_create(connector_name, || async move {
                 let client =
                     redis::Client::open(url.as_str()).map_err(|e| OrionError::InternalSource {
-                        context: format!("Invalid Redis URL for '{}'", connector_name),
+                        context: format!("Invalid Redis URL for '{connector_name}'"),
                         source: Box::new(e),
                     })?;
                 client
                     .get_multiplexed_async_connection()
                     .await
                     .map_err(|e| OrionError::InternalSource {
-                        context: format!("Failed to connect to Redis '{}'", connector_name),
+                        context: format!("Failed to connect to Redis '{connector_name}'"),
                         source: Box::new(e),
                     })
             })

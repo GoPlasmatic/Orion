@@ -204,21 +204,20 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
             let broker = broker.trim();
             if broker.is_empty() {
                 return Err(OrionError::Config {
-                    message: format!("kafka.brokers[{}] must not be empty", i),
+                    message: format!("kafka.brokers[{i}] must not be empty"),
                 });
             }
             if !broker.contains(':') {
                 return Err(OrionError::Config {
                     message: format!(
-                        "kafka.brokers[{}] '{}' must be in host:port format",
-                        i, broker
+                        "kafka.brokers[{i}] '{broker}' must be in host:port format"
                     ),
                 });
             }
             let port_str = broker.rsplit(':').next().unwrap_or("");
             if port_str.parse::<u16>().is_err() {
                 return Err(OrionError::Config {
-                    message: format!("kafka.brokers[{}] '{}' has invalid port", i, broker),
+                    message: format!("kafka.brokers[{i}] '{broker}' has invalid port"),
                 });
             }
         }
@@ -233,12 +232,12 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
         for (i, mapping) in config.kafka.topics.iter().enumerate() {
             if mapping.topic.trim().is_empty() {
                 return Err(OrionError::Config {
-                    message: format!("kafka.topics[{}].topic must not be empty", i),
+                    message: format!("kafka.topics[{i}].topic must not be empty"),
                 });
             }
             if mapping.channel.trim().is_empty() {
                 return Err(OrionError::Config {
-                    message: format!("kafka.topics[{}].channel must not be empty", i),
+                    message: format!("kafka.topics[{i}].channel must not be empty"),
                 });
             }
             if !seen_topics.insert(&mapping.topic) {

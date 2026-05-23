@@ -11,7 +11,7 @@ pub fn build_url(base: &str, path: Option<&str>) -> String {
         Some(p) if !p.is_empty() => {
             let base = base.trim_end_matches('/');
             let path = p.trim_start_matches('/');
-            format!("{}/{}", base, path)
+            format!("{base}/{path}")
         }
         _ => base.to_string(),
     }
@@ -20,7 +20,7 @@ pub fn build_url(base: &str, path: Option<&str>) -> String {
 /// Apply authentication to a request builder.
 pub fn apply_auth(req: reqwest::RequestBuilder, auth: &AuthConfig) -> reqwest::RequestBuilder {
     match auth {
-        AuthConfig::Bearer { token } => req.header("authorization", format!("Bearer {}", token)),
+        AuthConfig::Bearer { token } => req.header("authorization", format!("Bearer {token}")),
         AuthConfig::Basic { username, password } => req.basic_auth(username, Some(password)),
         AuthConfig::ApiKey { header, key } => req.header(header, key),
     }
@@ -113,9 +113,9 @@ pub async fn execute_request(
 
     let response = req.send().await.map_err(|e| {
         if e.is_timeout() {
-            DataflowError::Timeout(format!("HTTP request to {} timed out", url))
+            DataflowError::Timeout(format!("HTTP request to {url} timed out"))
         } else {
-            DataflowError::Io(format!("HTTP request to {} failed: {}", url, e))
+            DataflowError::Io(format!("HTTP request to {url} failed: {e}"))
         }
     })?;
 
@@ -128,8 +128,7 @@ pub async fn execute_request(
     {
         return Err(DataflowError::function_execution(
             format!(
-                "Response from {} declared Content-Length {} exceeds limit of {} bytes",
-                url, content_length, max_size
+                "Response from {url} declared Content-Length {content_length} exceeds limit of {max_size} bytes"
             ),
             None,
         ));
@@ -141,13 +140,13 @@ pub async fn execute_request(
         let body_text = String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(max_size)]);
         return Err(DataflowError::http(
             status.as_u16(),
-            format!("HTTP {} from {}: {}", status, url, body_text),
+            format!("HTTP {status} from {url}: {body_text}"),
         ));
     }
 
     let body_bytes = response.bytes().await.map_err(|e| {
         DataflowError::function_execution(
-            format!("Failed to read response body from {}: {}", url, e),
+            format!("Failed to read response body from {url}: {e}"),
             None,
         )
     })?;
@@ -166,7 +165,7 @@ pub async fn execute_request(
 
     let response_body: Value = serde_json::from_slice(&body_bytes).map_err(|e| {
         DataflowError::function_execution(
-            format!("Failed to parse response from {} as JSON: {}", url, e),
+            format!("Failed to parse response from {url} as JSON: {e}"),
             None,
         )
     })?;

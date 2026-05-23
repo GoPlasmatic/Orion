@@ -181,7 +181,7 @@ impl TraceRepository for SqlTraceRepository {
             self.pool
                 .fetch_optional_as::<Trace>(&sql, values)
                 .await?
-                .ok_or_else(|| OrionError::NotFound(format!("Trace '{}' not found", id)))
+                .ok_or_else(|| OrionError::NotFound(format!("Trace '{id}' not found")))
         })
         .await
     }

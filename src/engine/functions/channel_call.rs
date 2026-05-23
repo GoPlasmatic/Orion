@@ -13,8 +13,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
-/// Metadata key prefix for internal Orion tracking fields.
-const ORION_META_PREFIX: &str = "_orion_";
 /// Metadata key for current call depth.
 const META_CALL_DEPTH: &str = "_orion_call_depth";
 /// Metadata key for the call chain (array of channel names).
@@ -220,6 +218,3 @@ fn format_chain(chain: &[String], target: &str) -> String {
     parts.join(" -> ")
 }
 
-// Silence the unused-constant warning while we don't yet strip parent metadata in v3.
-#[allow(dead_code)]
-const _: &str = ORION_META_PREFIX;

@@ -229,8 +229,7 @@ async fn dynamic_handler(
         (route_path.to_string(), std::collections::HashMap::new())
     } else {
         return Err(OrionError::NotFound(format!(
-            "No channel matches {} /{}",
-            method, route_path
+            "No channel matches {method} /{route_path}"
         )));
     };
 
@@ -320,8 +319,7 @@ async fn dynamic_handler(
                 let mut resp =
                     (StatusCode::ACCEPTED, Json(json!({ "trace_id": null }))).into_response();
                 if let Ok(value) = axum::http::HeaderValue::from_str(&format!(
-                    "299 - \"Trace persistence disabled for channel '{}'\"",
-                    channel
+                    "299 - \"Trace persistence disabled for channel '{channel}'\""
                 )) {
                     resp.headers_mut().insert("warning", value);
                 }
@@ -405,8 +403,7 @@ fn check_cors_origin(
         && !allowed_origins.iter().any(|o| o == "*" || o == origin)
     {
         return Err(OrionError::Forbidden(format!(
-            "Origin '{}' is not allowed for channel '{}'",
-            origin, channel
+            "Origin '{origin}' is not allowed for channel '{channel}'"
         )));
     }
     Ok(())
@@ -462,8 +459,7 @@ async fn check_deduplication(
         let is_new = store.check_and_insert(key, window).await.unwrap_or(false);
         if !is_new {
             return Err(OrionError::Conflict(format!(
-                "Duplicate request: idempotency key '{}' already seen",
-                key
+                "Duplicate request: idempotency key '{key}' already seen"
             )));
         }
     }
@@ -484,8 +480,7 @@ fn acquire_backpressure(
             Err(_) => {
                 metrics::record_error("backpressure");
                 Err(OrionError::ServiceUnavailable(format!(
-                    "Channel '{}' is at capacity",
-                    channel
+                    "Channel '{channel}' is at capacity"
                 )))
             }
         }
@@ -524,7 +519,7 @@ fn compute_cache_key(
         fnv1a_feed(&mut h, &bytes);
     };
 
-    format!("cache:{}:{:016x}", channel, h)
+    format!("cache:{channel}:{h:016x}")
 }
 
 /// Build an HTTP response from a pre-serialized JSON string, avoiding
