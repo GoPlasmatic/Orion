@@ -766,7 +766,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Run manually with: cargo test test_write_migration -- --ignored
+    #[ignore = "Run manually with: cargo test test_write_migration -- --ignored"]
     fn test_write_migration_files() {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         for backend in &["sqlite", "postgres", "mysql"] {

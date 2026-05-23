@@ -98,6 +98,208 @@ enum Command {
     TestConnectivity,
 }
 
+/// Construct the Kafka producer and wire it into the engine's
+/// `publish_kafka` handler. Returns `None` when Kafka is disabled or no
+/// brokers are configured.
+fn setup_kafka_producer(
+    kafka_config: &config::KafkaIngestConfig,
+    custom_functions: &mut std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    connector_registry: Arc<ConnectorRegistry>,
+) -> Result<Option<Arc<orion::kafka::producer::KafkaProducer>>, Box<dyn std::error::Error>> {
+    if !kafka_config.enabled || kafka_config.brokers.is_empty() {
+        return Ok(None);
+    }
+    let producer = Arc::new(orion::kafka::producer::KafkaProducer::new(
+        &kafka_config.brokers.join(","),
+    )?);
+    orion::engine::register_kafka_publisher(
+        custom_functions,
+        connector_registry,
+        producer.clone(),
+    );
+    tracing::info!("Kafka producer initialized");
+    Ok(Some(producer))
+}
+
+/// Start the Kafka consumer in a background task. Merges config-file topic
+/// mappings with DB-driven async-channel topics. Returns `None` when Kafka
+/// is disabled or the merged topic list is empty.
+fn start_kafka_ingest(
+    kafka_config: &config::KafkaIngestConfig,
+    channels: &[orion::storage::models::Channel],
+    engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    kafka_producer: Option<Arc<orion::kafka::producer::KafkaProducer>>,
+) -> Result<Option<orion::kafka::consumer::ConsumerHandle>, Box<dyn std::error::Error>> {
+    if !kafka_config.enabled {
+        return Ok(None);
+    }
+
+    // Merge config-file topics with DB-driven async channels.
+    let mut all_topics = kafka_config.topics.clone();
+    for ch in channels {
+        if (ch.protocol == orion::storage::models::ChannelProtocol::Kafka.as_str()
+            || ch.channel_type == "async")
+            && let Some(ref topic) = ch.topic
+            && !all_topics.iter().any(|t| t.topic == *topic)
+        {
+            all_topics.push(orion::config::TopicMapping {
+                topic: topic.clone(),
+                channel: ch.name.clone(),
+            });
+        }
+    }
+
+    if all_topics.is_empty() {
+        return Ok(None);
+    }
+
+    let merged_config = orion::config::KafkaIngestConfig {
+        topics: all_topics,
+        ..kafka_config.clone()
+    };
+
+    let (dlq_producer, dlq_topic) = if kafka_config.dlq.enabled {
+        (kafka_producer, Some(kafka_config.dlq.topic.clone()))
+    } else {
+        (None, None)
+    };
+
+    let handle = orion::kafka::consumer::start_consumer(
+        &merged_config,
+        engine,
+        dlq_producer,
+        dlq_topic,
+    )?;
+
+    tracing::info!(
+        config_topics = kafka_config.topics.len(),
+        db_topics = merged_config.topics.len() - kafka_config.topics.len(),
+        total_topics = merged_config.topics.len(),
+        group_id = %kafka_config.group_id,
+        "Kafka consumer started"
+    );
+
+    Ok(Some(handle))
+}
+
+/// `validate-config` subcommand: report parsed configuration and exit.
+fn handle_validate_config(config: &config::AppConfig) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Configuration is valid.\n");
+    println!("  environment:     {}", config.environment);
+    println!(
+        "  server:          {}:{}",
+        config.server.host, config.server.port
+    );
+    println!(
+        "  tls:             {}",
+        if config.server.tls.enabled {
+            format!("enabled (cert={})", config.server.tls.cert_path)
+        } else {
+            "disabled".to_string()
+        }
+    );
+    println!("  storage:         {}", config.storage.url);
+    println!(
+        "  logging:         level={}, format={}",
+        config.logging.level,
+        match config.logging.format {
+            config::LogFormat::Json => "json",
+            config::LogFormat::Pretty => "pretty",
+        }
+    );
+    println!(
+        "  admin_auth:      {}",
+        if config.admin_auth.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
+        "  cors:            {}",
+        config.cors.allowed_origins.join(", ")
+    );
+    println!(
+        "  rate_limiting:   {}",
+        if config.rate_limit.enabled {
+            format!(
+                "enabled (rps={}, burst={})",
+                config.rate_limit.default_rps, config.rate_limit.default_burst
+            )
+        } else {
+            "disabled".to_string()
+        }
+    );
+    println!(
+        "  queue:           workers={}, buffer={}",
+        config.queue.workers, config.queue.buffer_size
+    );
+    println!(
+        "  metrics:         {}",
+        if config.metrics.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
+        "  tracing:         {}",
+        if config.tracing.enabled {
+            format!("enabled (endpoint={})", config.tracing.otlp_endpoint)
+        } else {
+            "disabled".to_string()
+        }
+    );
+    println!(
+        "  kafka:           {}",
+        if config.kafka.enabled {
+            format!("enabled (brokers={})", config.kafka.brokers.join(","))
+        } else {
+            "disabled".to_string()
+        }
+    );
+    let features: &[&str] = &[
+        "db-sqlite",
+        "db-postgres",
+        "db-mysql",
+        "kafka",
+        "tls",
+        "otel",
+        "swagger-ui",
+        "connectors-sql",
+        "connectors-mongodb",
+        "connectors-redis",
+    ];
+    println!("  features:        {}", features.join(", "));
+    Ok(())
+}
+
+/// `migrate [--dry-run]` subcommand: list or apply pending DB migrations.
+async fn handle_migrate(
+    config: &config::AppConfig,
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pool = orion::storage::init_pool_no_migrate(&config.storage).await?;
+    let pending = orion::storage::pending_migrations(&pool).await?;
+
+    if pending.is_empty() {
+        println!("No pending migrations.");
+        return Ok(());
+    }
+
+    if dry_run {
+        println!("Pending migrations ({}):", pending.len());
+        for (version, description) in &pending {
+            println!("  {version} — {description}");
+        }
+    } else {
+        println!("Applying {} migration(s)...", pending.len());
+        orion::storage::run_migrations(&pool).await?;
+        println!("Migrations applied successfully.");
+    }
+    Ok(())
+}
+
 /// Initialise a plain `tracing_subscriber::fmt` subscriber (no OpenTelemetry).
 fn init_fmt_subscriber(level: &str, format: &LogFormat) {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
@@ -141,129 +343,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Handle subcommands that exit early (before starting the server)
     match cli.command {
-        Some(Command::ValidateConfig) => {
-            println!("Configuration is valid.\n");
-            println!("  environment:     {}", config.environment);
-            println!(
-                "  server:          {}:{}",
-                config.server.host, config.server.port
-            );
-            println!(
-                "  tls:             {}",
-                if config.server.tls.enabled {
-                    format!("enabled (cert={})", config.server.tls.cert_path)
-                } else {
-                    "disabled".to_string()
-                }
-            );
-            println!("  storage:         {}", config.storage.url);
-            println!(
-                "  logging:         level={}, format={}",
-                config.logging.level,
-                match config.logging.format {
-                    config::LogFormat::Json => "json",
-                    config::LogFormat::Pretty => "pretty",
-                }
-            );
-            println!(
-                "  admin_auth:      {}",
-                if config.admin_auth.enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            );
-            println!(
-                "  cors:            {}",
-                config.cors.allowed_origins.join(", ")
-            );
-            println!(
-                "  rate_limiting:   {}",
-                if config.rate_limit.enabled {
-                    format!(
-                        "enabled (rps={}, burst={})",
-                        config.rate_limit.default_rps, config.rate_limit.default_burst
-                    )
-                } else {
-                    "disabled".to_string()
-                }
-            );
-            println!(
-                "  queue:           workers={}, buffer={}",
-                config.queue.workers, config.queue.buffer_size
-            );
-            println!(
-                "  metrics:         {}",
-                if config.metrics.enabled {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
-            );
-            println!(
-                "  tracing:         {}",
-                if config.tracing.enabled {
-                    format!("enabled (endpoint={})", config.tracing.otlp_endpoint)
-                } else {
-                    "disabled".to_string()
-                }
-            );
-            println!(
-                "  kafka:           {}",
-                if config.kafka.enabled {
-                    format!("enabled (brokers={})", config.kafka.brokers.join(","))
-                } else {
-                    "disabled".to_string()
-                }
-            );
-            let features: &[&str] = &[
-                "db-sqlite",
-                "db-postgres",
-                "db-mysql",
-                "kafka",
-                "tls",
-                "otel",
-                "swagger-ui",
-                "connectors-sql",
-                "connectors-mongodb",
-                "connectors-redis",
-            ];
-            println!("  features:        {}", features.join(", "));
-            return Ok(());
-        }
-        Some(Command::Migrate { dry_run }) => {
-            let pool = orion::storage::init_pool_no_migrate(&config.storage).await?;
-            if dry_run {
-                let pending = orion::storage::pending_migrations(&pool).await?;
-                if pending.is_empty() {
-                    println!("No pending migrations.");
-                } else {
-                    println!("Pending migrations ({}):", pending.len());
-                    for (version, description) in &pending {
-                        println!("  {version} — {description}");
-                    }
-                }
-            } else {
-                let pending = orion::storage::pending_migrations(&pool).await?;
-                if pending.is_empty() {
-                    println!("No pending migrations.");
-                } else {
-                    println!("Applying {} migration(s)...", pending.len());
-                    orion::storage::run_migrations(&pool).await?;
-                    println!("Migrations applied successfully.");
-                }
-            }
-            return Ok(());
-        }
-        Some(Command::Lint { workflow }) => {
-            return run_lint(&workflow);
-        }
-        Some(Command::DryRun { workflow, input }) => {
-            return run_dry_run(&workflow, &input).await;
-        }
-        Some(Command::TestConnectivity) => {
-            return run_test_connectivity(&config).await;
-        }
+        Some(Command::ValidateConfig) => return handle_validate_config(&config),
+        Some(Command::Migrate { dry_run }) => return handle_migrate(&config, dry_run).await,
+        Some(Command::Lint { workflow }) => return run_lint(&workflow),
+        Some(Command::DryRun { workflow, input }) => return run_dry_run(&workflow, &input).await,
+        Some(Command::TestConnectivity) => return run_test_connectivity(&config).await,
         None => {} // Continue to start the server
     }
 
@@ -393,21 +477,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         mongo_pool_cache.clone(),
     );
 
-    // Kafka producer setup
-    let kafka_producer = if config.kafka.enabled && !config.kafka.brokers.is_empty() {
-        let producer = Arc::new(orion::kafka::producer::KafkaProducer::new(
-            &config.kafka.brokers.join(","),
-        )?);
-        orion::engine::register_kafka_publisher(
-            &mut custom_functions,
-            connector_registry.clone(),
-            producer.clone(),
-        );
-        tracing::info!("Kafka producer initialized");
-        Some(producer)
-    } else {
-        None
-    };
+    let kafka_producer = setup_kafka_producer(
+        &config.kafka,
+        &mut custom_functions,
+        connector_registry.clone(),
+    )?;
 
     // Load active channels and workflows, build engine
     let channels = channel_repo.list_active().await?;
@@ -443,65 +517,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Mark the service as ready now that the engine and channel registry are loaded
     ready.store(true, std::sync::atomic::Ordering::Release);
 
-    // Start Kafka consumer (when configured).
-    // Also load async channel topic mappings from the database.
-    let kafka_consumer_handle = if config.kafka.enabled {
-        // Merge config-file topics with DB-driven async channels
-        let mut all_topics = config.kafka.topics.clone();
-        for ch in &channels {
-            if (ch.protocol == orion::storage::models::ChannelProtocol::Kafka.as_str()
-                || ch.channel_type == "async")
-                && let Some(ref topic) = ch.topic
-            {
-                // Only add if not already mapped from config file
-                if !all_topics.iter().any(|t| t.topic == *topic) {
-                    all_topics.push(orion::config::TopicMapping {
-                        topic: topic.clone(),
-                        channel: ch.name.clone(),
-                    });
-                }
-            }
-        }
-
-        if !all_topics.is_empty() {
-            let merged_config = orion::config::KafkaIngestConfig {
-                topics: all_topics,
-                ..config.kafka.clone()
-            };
-
-            let dlq_producer = if config.kafka.dlq.enabled {
-                kafka_producer.clone()
-            } else {
-                None
-            };
-            let dlq_topic = if config.kafka.dlq.enabled {
-                Some(config.kafka.dlq.topic.clone())
-            } else {
-                None
-            };
-
-            let handle = orion::kafka::consumer::start_consumer(
-                &merged_config,
-                engine.clone(),
-                dlq_producer,
-                dlq_topic,
-            )?;
-
-            tracing::info!(
-                config_topics = config.kafka.topics.len(),
-                db_topics = merged_config.topics.len() - config.kafka.topics.len(),
-                total_topics = merged_config.topics.len(),
-                group_id = %config.kafka.group_id,
-                "Kafka consumer started"
-            );
-
-            Some(handle)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let kafka_consumer_handle =
+        start_kafka_ingest(&config.kafka, &channels, engine.clone(), kafka_producer.clone())?;
 
     // Start trace persistence queue (async/batch modes). A no-op queue is
     // returned for `sync` / `off`, so callers can submit unconditionally.
