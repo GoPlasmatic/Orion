@@ -8,9 +8,7 @@ use std::collections::HashSet;
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::OrionJson;
-use crate::server::routes::response_helpers::{
-    created_response, data_response, paginated_response,
-};
+use crate::server::routes::response_helpers::{created_response, data_response, paginated_into};
 use crate::server::state::AppState;
 use crate::storage::models::{StatusAction, WorkflowResponse};
 use crate::storage::repositories::workflows::{
@@ -41,17 +39,7 @@ pub(crate) async fn list_workflows(
     Query(filter): Query<WorkflowFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state.workflow_repo.list_paginated(&filter).await?;
-    let data: Vec<WorkflowResponse> = result
-        .data
-        .iter()
-        .map(WorkflowResponse::try_from)
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(paginated_response(
-        data,
-        result.total,
-        result.limit,
-        result.offset,
-    ))
+    paginated_into(result, |w| WorkflowResponse::try_from(w))
 }
 
 #[utoipa::path(
@@ -252,18 +240,7 @@ pub(crate) async fn list_workflow_versions(
         .workflow_repo
         .list_versions(&id, limit, offset)
         .await?;
-    let data: Vec<WorkflowResponse> = result
-        .data
-        .iter()
-        .map(WorkflowResponse::try_from)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(paginated_response(
-        data,
-        result.total,
-        result.limit,
-        result.offset,
-    ))
+    paginated_into(result, |w| WorkflowResponse::try_from(w))
 }
 
 #[utoipa::path(

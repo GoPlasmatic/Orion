@@ -166,6 +166,179 @@ pub fn start_consumer(
     })
 }
 
+/// Decode + parse + dispatch a single Kafka message. Wraps the entire
+/// per-message lifecycle: payload UTF-8 decode (skips on failure), topic →
+/// channel lookup (skips unmapped topics), JSON parse (DLQ on failure),
+/// W3C trace context extraction, engine dispatch with timeout, and the
+/// 4-way match on the processing outcome (timeout / engine error /
+/// workflow errors / success). The outer `consume_loop` is responsible
+/// for backpressure, shutdown, and offset commit after this returns.
+async fn process_one_kafka_message(
+    ctx: &ConsumeLoopContext,
+    msg: &rdkafka::message::BorrowedMessage<'_>,
+) {
+    let topic = msg.topic().to_string();
+    let channel = match ctx.topic_map.get(&topic) {
+        Some(ch) => ch.clone(),
+        None => {
+            tracing::warn!(topic = %topic, "No channel mapping for topic, skipping");
+            return;
+        }
+    };
+
+    let payload = match msg.payload_view::<str>() {
+        Some(Ok(text)) => text,
+        Some(Err(e)) => {
+            tracing::warn!(
+                topic = %topic,
+                error = %e,
+                "Failed to decode Kafka message payload as UTF-8, skipping"
+            );
+            return;
+        }
+        None => {
+            tracing::warn!(topic = %topic, "Empty Kafka message, skipping");
+            return;
+        }
+    };
+
+    let data: serde_json::Value = match serde_json::from_str(payload) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                topic = %topic,
+                error = %e,
+                "Failed to parse Kafka message as JSON, skipping"
+            );
+            send_to_dlq(
+                &ctx.dlq_producer,
+                &ctx.dlq_topic,
+                &topic,
+                payload.as_bytes(),
+                &format!("JSON parse error: {e}"),
+            )
+            .await;
+            return;
+        }
+    };
+
+    // Extract W3C trace context from Kafka message headers and attach it as
+    // parent of the current tracing span (held for the rest of this scope).
+    let _parent_cx = extract_kafka_trace_context(msg);
+
+    let start = Instant::now();
+    let mut message = dataflow_rs::Message::from_value(&data);
+    inject_kafka_metadata(&mut message, &topic, msg);
+
+    // Clone the inner Arc<Engine> and release the lock immediately.
+    let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
+    let process_result = tokio::time::timeout(
+        std::time::Duration::from_millis(ctx.processing_timeout_ms),
+        engine_ref.process_message_for_channel(&channel, &mut message),
+    )
+    .await;
+
+    match process_result {
+        Err(_) => {
+            report_failure_and_dlq(
+                ctx,
+                &channel,
+                &topic,
+                payload.as_bytes(),
+                "timeout",
+                "kafka_timeout",
+                "Kafka message processing timed out",
+                &format!(
+                    "Processing timed out after {}ms",
+                    ctx.processing_timeout_ms
+                ),
+            )
+            .await;
+        }
+        Ok(Err(e)) => {
+            report_failure_and_dlq(
+                ctx,
+                &channel,
+                &topic,
+                payload.as_bytes(),
+                "error",
+                "kafka_processing",
+                "Failed to process Kafka message",
+                &format!("Processing error: {e}"),
+            )
+            .await;
+        }
+        Ok(Ok(())) if message.has_errors() => {
+            // v3 contract: workflow failures are pushed to
+            // message.errors() while the outer Result stays Ok.
+            let summary = message
+                .errors()
+                .iter()
+                .map(|e| format!("{}: {}", e.code, e.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            report_failure_and_dlq(
+                ctx,
+                &channel,
+                &topic,
+                payload.as_bytes(),
+                "error",
+                "kafka_processing",
+                "Kafka message processed with workflow errors",
+                &format!("Workflow errors: {summary}"),
+            )
+            .await;
+        }
+        Ok(Ok(())) => {
+            let duration = start.elapsed().as_secs_f64();
+            metrics::record_message(&channel, "ok");
+            metrics::record_message_duration(&channel, duration);
+            tracing::debug!(
+                topic = %topic,
+                channel = %channel,
+                "Kafka message processed successfully"
+            );
+        }
+    }
+}
+
+/// Extract a W3C trace context from a Kafka message's headers and attach
+/// it as the parent of the current tracing span. Returns the propagated
+/// `opentelemetry::Context` so the caller can keep it in scope.
+fn extract_kafka_trace_context(
+    msg: &rdkafka::message::BorrowedMessage<'_>,
+) -> opentelemetry::Context {
+    use opentelemetry::propagation::TextMapPropagator;
+    use opentelemetry_sdk::propagation::TraceContextPropagator;
+    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+    struct KafkaHeaderExtractor(HashMap<String, String>);
+    impl opentelemetry::propagation::Extractor for KafkaHeaderExtractor {
+        fn get(&self, key: &str) -> Option<&str> {
+            self.0.get(key).map(|v| v.as_str())
+        }
+        fn keys(&self) -> Vec<&str> {
+            self.0.keys().map(|k| k.as_str()).collect()
+        }
+    }
+
+    let mut header_map = HashMap::new();
+    if let Some(headers) = msg.headers() {
+        for idx in 0..headers.count() {
+            if let Ok(header) = headers.get_as::<str>(idx)
+                && let Some(value) = header.value
+            {
+                header_map.insert(header.key.to_string(), value.to_string());
+            }
+        }
+    }
+
+    let propagator = TraceContextPropagator::new();
+    let cx = propagator.extract(&KafkaHeaderExtractor(header_map));
+    let _ = tracing::Span::current().set_parent(cx.clone());
+    cx
+}
+
 async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<bool>) {
     let backpressure = Arc::new(tokio::sync::Semaphore::new(ctx.max_inflight));
 
@@ -207,169 +380,7 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
             msg_result = ctx.consumer.recv() => {
                 match msg_result {
                     Ok(msg) => {
-                        let topic = msg.topic().to_string();
-                        let channel = match ctx.topic_map.get(&topic) {
-                            Some(ch) => ch.clone(),
-                            None => {
-                                tracing::warn!(topic = %topic, "No channel mapping for topic, skipping");
-                                commit_offset(&ctx.consumer, &msg);
-                                continue;
-                            }
-                        };
-
-                        // Deserialize payload
-                        let payload = match msg.payload_view::<str>() {
-                            Some(Ok(text)) => text,
-                            Some(Err(e)) => {
-                                tracing::warn!(
-                                    topic = %topic,
-                                    error = %e,
-                                    "Failed to decode Kafka message payload as UTF-8, skipping"
-                                );
-                                commit_offset(&ctx.consumer, &msg);
-                                continue;
-                            }
-                            None => {
-                                tracing::warn!(topic = %topic, "Empty Kafka message, skipping");
-                                commit_offset(&ctx.consumer, &msg);
-                                continue;
-                            }
-                        };
-
-                        let data: serde_json::Value = match serde_json::from_str(payload) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                tracing::warn!(
-                                    topic = %topic,
-                                    error = %e,
-                                    "Failed to parse Kafka message as JSON, skipping"
-                                );
-                                // Send to DLQ if enabled
-                                send_to_dlq(
-                                    &ctx.dlq_producer,
-                                    &ctx.dlq_topic,
-                                    &topic,
-                                    payload.as_bytes(),
-                                    &format!("JSON parse error: {e}"),
-                                ).await;
-                                commit_offset(&ctx.consumer, &msg);
-                                continue;
-                            }
-                        };
-
-                        // Extract W3C trace context from Kafka message headers
-                        let _parent_cx = {
-                            use opentelemetry::propagation::TextMapPropagator;
-                            use opentelemetry_sdk::propagation::TraceContextPropagator;
-
-                            struct KafkaHeaderExtractor(HashMap<String, String>);
-                            impl opentelemetry::propagation::Extractor for KafkaHeaderExtractor {
-                                fn get(&self, key: &str) -> Option<&str> {
-                                    self.0.get(key).map(|v| v.as_str())
-                                }
-                                fn keys(&self) -> Vec<&str> {
-                                    self.0.keys().map(|k| k.as_str()).collect()
-                                }
-                            }
-
-                            let mut header_map = HashMap::new();
-                            if let Some(headers) = msg.headers() {
-                                for idx in 0..headers.count() {
-                                    if let Ok(header) = headers.get_as::<str>(idx)
-                                        && let Some(value) = header.value {
-                                            header_map.insert(header.key.to_string(), value.to_string());
-                                        }
-                                }
-                            }
-
-                            let propagator = TraceContextPropagator::new();
-                            let cx = propagator.extract(&KafkaHeaderExtractor(header_map));
-
-                            // Set extracted context as parent of the current span
-                            use tracing_opentelemetry::OpenTelemetrySpanExt;
-                            let _ = tracing::Span::current().set_parent(cx.clone());
-                            cx
-                        };
-
-                        // Process through engine
-                        let start = Instant::now();
-                        let mut message = dataflow_rs::Message::from_value(&data);
-
-                        inject_kafka_metadata(&mut message, &topic, &msg);
-
-                        // Clone the inner Arc<Engine> and release the lock immediately
-                        let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
-                        let process_result = tokio::time::timeout(
-                            std::time::Duration::from_millis(ctx.processing_timeout_ms),
-                            engine_ref.process_message_for_channel(&channel, &mut message),
-                        )
-                        .await;
-
-                        match process_result {
-                            Err(_) => {
-                                report_failure_and_dlq(
-                                    &ctx,
-                                    &channel,
-                                    &topic,
-                                    payload.as_bytes(),
-                                    "timeout",
-                                    "kafka_timeout",
-                                    "Kafka message processing timed out",
-                                    &format!(
-                                        "Processing timed out after {}ms",
-                                        ctx.processing_timeout_ms
-                                    ),
-                                )
-                                .await;
-                            }
-                            Ok(Err(e)) => {
-                                report_failure_and_dlq(
-                                    &ctx,
-                                    &channel,
-                                    &topic,
-                                    payload.as_bytes(),
-                                    "error",
-                                    "kafka_processing",
-                                    "Failed to process Kafka message",
-                                    &format!("Processing error: {e}"),
-                                )
-                                .await;
-                            }
-                            Ok(Ok(())) if message.has_errors() => {
-                                // v3 contract: workflow failures are pushed to
-                                // message.errors() while the outer Result stays Ok.
-                                let summary = message
-                                    .errors()
-                                    .iter()
-                                    .map(|e| format!("{}: {}", e.code, e.message))
-                                    .collect::<Vec<_>>()
-                                    .join("; ");
-                                report_failure_and_dlq(
-                                    &ctx,
-                                    &channel,
-                                    &topic,
-                                    payload.as_bytes(),
-                                    "error",
-                                    "kafka_processing",
-                                    "Kafka message processed with workflow errors",
-                                    &format!("Workflow errors: {summary}"),
-                                )
-                                .await;
-                            }
-                            Ok(Ok(())) => {
-                                let duration = start.elapsed().as_secs_f64();
-                                metrics::record_message(&channel, "ok");
-                                metrics::record_message_duration(&channel, duration);
-
-                                tracing::debug!(
-                                    topic = %topic,
-                                    channel = %channel,
-                                    "Kafka message processed successfully"
-                                );
-                            }
-                        }
-
-                        // Commit offset after processing
+                        process_one_kafka_message(&ctx, &msg).await;
                         commit_offset(&ctx.consumer, &msg);
                     }
                     Err(e) => {
