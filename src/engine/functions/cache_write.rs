@@ -8,7 +8,7 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    require_cache_connector, require_str_field, resolve_connector, to_exec_error,
+    profile_handler, require_cache_connector, require_str_field, resolve_connector, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -28,8 +28,7 @@ impl AsyncFunctionHandler for CacheWriteHandler {
         _ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        let connector_peek = input.get("connector").and_then(|v| v.as_str());
-        crate::engine::profile::record("cache_write", connector_peek, async move {
+        profile_handler("cache_write", input, async move {
             let connector_name = require_str_field(input, "connector", "cache_write")?;
             let key = require_str_field(input, "key", "cache_write")?;
 
