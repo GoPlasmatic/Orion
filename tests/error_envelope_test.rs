@@ -46,8 +46,14 @@ async fn create_channel_missing_route_pattern_returns_field_pathed_details() {
         .as_array()
         .expect("details must be a JSON array on a field-validation error");
     assert!(!details.is_empty());
-    assert_eq!(details[0]["path"], "channel.route_pattern");
-    assert_eq!(details[0]["code"], "REQUIRED");
+    // B1: protocol-conditional required fields use REQUIRED_FOR_PROTOCOL
+    // so clients can distinguish them from generic missing-field errors.
+    assert!(
+        details
+            .iter()
+            .any(|d| d["path"] == "channel.route_pattern" && d["code"] == "REQUIRED_FOR_PROTOCOL"),
+        "expected channel.route_pattern with REQUIRED_FOR_PROTOCOL, got {body:?}"
+    );
 }
 
 #[tokio::test]
@@ -71,7 +77,7 @@ async fn create_channel_missing_topic_for_kafka_returns_field_details() {
         .as_array()
         .expect("details required");
     assert_eq!(details[0]["path"], "channel.topic");
-    assert_eq!(details[0]["code"], "REQUIRED");
+    assert_eq!(details[0]["code"], "REQUIRED_FOR_PROTOCOL");
 }
 
 #[tokio::test]
