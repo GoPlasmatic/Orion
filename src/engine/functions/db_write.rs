@@ -7,8 +7,8 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, bind_json_params, extract_output_path, require_db_connector, require_str_field,
-    resolve_connector, timed_query, to_exec_error,
+    apply_output, bind_json_params, extract_output_path, profile_handler, require_db_connector,
+    require_str_field, resolve_connector, timed_query, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
@@ -29,8 +29,7 @@ impl AsyncFunctionHandler for DbWriteHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        let connector_peek = input.get("connector").and_then(|v| v.as_str());
-        crate::engine::profile::record("db_write", connector_peek, async move {
+        profile_handler("db_write", input, async move {
             let connector_name = require_str_field(input, "connector", "db_write")?;
             let query = require_str_field(input, "query", "db_write")?;
             let params = input.get("params").and_then(|v| v.as_array());

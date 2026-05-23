@@ -8,6 +8,19 @@ use crate::connector::{
     CacheConnectorConfig, ConnectorConfig, ConnectorRegistry, DbConnectorConfig,
 };
 
+/// Wrap a handler body with profile recording, peeking the `connector`
+/// field from `input` to label the sample. Replaces the
+/// `let connector_peek = input.get("connector").and_then(...);
+///  crate::engine::profile::record(fn_name, connector_peek, async move {...})`
+/// preamble repeated by every `AsyncFunctionHandler::execute` in this module.
+pub async fn profile_handler<F, T>(fn_name: &'static str, input: &Value, fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    let connector_peek = input.get("connector").and_then(|v| v.as_str());
+    crate::engine::profile::record(fn_name, connector_peek, fut).await
+}
+
 /// Extracts the `output` field from the input JSON, defaulting to `"data"`.
 pub fn extract_output_path(input: &Value) -> &str {
     input

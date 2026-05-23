@@ -10,8 +10,8 @@ use mongodb::bson::{self, Document};
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, extract_output_path, require_db_connector, require_str_field, resolve_connector,
-    to_exec_error,
+    apply_output, extract_output_path, profile_handler, require_db_connector, require_str_field,
+    resolve_connector, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -31,8 +31,7 @@ impl AsyncFunctionHandler for MongoReadHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        let connector_peek = input.get("connector").and_then(|v| v.as_str());
-        crate::engine::profile::record("mongo_read", connector_peek, async move {
+        profile_handler("mongo_read", input, async move {
             let connector_name = require_str_field(input, "connector", "mongo_read")?;
             let database = require_str_field(input, "database", "mongo_read")?;
             let collection = require_str_field(input, "collection", "mongo_read")?;
