@@ -309,8 +309,7 @@ async fn process_trace(
                 "Async trace processing timed out"
             );
             Err(dataflow_rs::DataflowError::Timeout(format!(
-                "Processing timed out after {}ms",
-                processing_timeout_ms
+                "Processing timed out after {processing_timeout_ms}ms"
             )))
         }
     };

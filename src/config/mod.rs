@@ -86,12 +86,12 @@ pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
     let mut config = if let Some(p) = path {
         let raw =
             std::fs::read_to_string(Path::new(p)).map_err(|e| OrionError::InternalSource {
-                context: format!("Failed to read config file '{}'", p),
+                context: format!("Failed to read config file '{p}'"),
                 source: Box::new(e),
             })?;
         let content = env_substitute::substitute(&raw, p)?;
         toml::from_str::<AppConfig>(&content).map_err(|e| OrionError::InternalSource {
-            context: format!("Failed to parse config file '{}'", p),
+            context: format!("Failed to parse config file '{p}'"),
             source: Box::new(e),
         })?
     } else {

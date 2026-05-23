@@ -23,19 +23,18 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
 /// Validate that a URL does not target private/internal IP addresses (SSRF protection).
 /// Resolves the hostname and checks all resolved addresses.
 pub async fn validate_url_not_private(url: &str) -> Result<(), String> {
-    let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL '{}': {}", url, e))?;
+    let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL '{url}': {e}"))?;
 
     let host = match parsed.host_str() {
         Some(h) => h,
-        None => return Err(format!("URL '{}' has no host", url)),
+        None => return Err(format!("URL '{url}' has no host")),
     };
 
     // Direct IP address check
     if let Ok(ip) = host.parse::<IpAddr>() {
         if is_private_ip(&ip) {
             return Err(format!(
-                "URL '{}' targets private/internal IP address {}",
-                url, ip
+                "URL '{url}' targets private/internal IP address {ip}"
             ));
         }
         return Ok(());
@@ -43,7 +42,7 @@ pub async fn validate_url_not_private(url: &str) -> Result<(), String> {
 
     // DNS resolution check
     let port = parsed.port_or_known_default().unwrap_or(80);
-    let addr = format!("{}:{}", host, port);
+    let addr = format!("{host}:{port}");
     match tokio::net::lookup_host(&addr).await {
         Ok(addrs) => {
             for socket_addr in addrs {

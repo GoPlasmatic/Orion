@@ -188,8 +188,7 @@ impl IntoResponse for OrionError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "CIRCUIT_OPEN",
                 format!(
-                    "Circuit breaker open for connector '{}' on channel '{}'",
-                    connector, channel
+                    "Circuit breaker open for connector '{connector}' on channel '{channel}'"
                 ),
             ),
             OrionError::UnsupportedMediaType(msg) => (
@@ -208,8 +207,7 @@ impl IntoResponse for OrionError {
                 StatusCode::GATEWAY_TIMEOUT,
                 "TIMEOUT",
                 format!(
-                    "Workflow execution on channel '{}' exceeded {}ms timeout",
-                    channel, timeout_ms
+                    "Workflow execution on channel '{channel}' exceeded {timeout_ms}ms timeout"
                 ),
             ),
             OrionError::ResponseTooLarge(msg) => {

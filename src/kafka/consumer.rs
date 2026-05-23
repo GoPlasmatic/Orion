@@ -250,7 +250,7 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
                                     &ctx.dlq_topic,
                                     &topic,
                                     payload.as_bytes(),
-                                    &format!("JSON parse error: {}", e),
+                                    &format!("JSON parse error: {e}"),
                                 ).await;
                                 commit_offset(&ctx.consumer, &msg);
                                 continue;
@@ -339,7 +339,7 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
                                     &ctx.dlq_topic,
                                     &topic,
                                     payload.as_bytes(),
-                                    &format!("Processing error: {}", e),
+                                    &format!("Processing error: {e}"),
                                 ).await;
                             }
                             Ok(Ok(())) if message.has_errors() => {

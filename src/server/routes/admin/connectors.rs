@@ -308,8 +308,7 @@ pub(crate) async fn reset_circuit_breaker(
         Ok(Json(json!({ "reset": true, "key": key })))
     } else {
         Err(OrionError::NotFound(format!(
-            "Circuit breaker '{}' not found",
-            key
+            "Circuit breaker '{key}' not found"
         )))
     }
 }

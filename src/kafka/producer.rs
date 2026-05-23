@@ -65,7 +65,7 @@ impl KafkaProducer {
             .send(record, Duration::from_secs(30))
             .await
             .map_err(|(e, _)| OrionError::InternalSource {
-                context: format!("Kafka send to '{}' failed", topic),
+                context: format!("Kafka send to '{topic}' failed"),
                 source: Box::new(e),
             })?;
 

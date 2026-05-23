@@ -13,9 +13,8 @@ pub async fn load_rustls_config(
         .await
         .map_err(|e| OrionError::InternalSource {
             context: format!(
-                "Failed to initialize TLS from cert='{}' key='{}'. \
-                 Verify that both are valid PEM-encoded files.",
-                cert_path, key_path
+                "Failed to initialize TLS from cert='{cert_path}' key='{key_path}'. \
+                 Verify that both are valid PEM-encoded files."
             ),
             source: Box::new(e),
         })

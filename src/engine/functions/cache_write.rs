@@ -45,7 +45,7 @@ impl AsyncFunctionHandler for CacheWriteHandler {
             let value_str = match input.get("value") {
                 Some(Value::String(s)) => s.clone(),
                 Some(v) => serde_json::to_string(v).map_err(|e| {
-                    DataflowError::Validation(format!("Failed to serialize value for cache: {}", e))
+                    DataflowError::Validation(format!("Failed to serialize value for cache: {e}"))
                 })?,
                 None => {
                     return Err(DataflowError::Validation(
