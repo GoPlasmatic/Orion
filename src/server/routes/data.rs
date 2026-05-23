@@ -524,6 +524,109 @@ fn json_response(status: StatusCode, body: String) -> Response {
         .expect("valid HTTP response builder with static header")
 }
 
+/// Context carried from cache pre-check to post-success cache store.
+type CacheStoreCtx = (
+    String,
+    std::sync::Arc<dyn crate::connector::cache_backend::CacheBackend>,
+    u64,
+);
+
+/// Outcome of the response-cache pre-check.
+enum CachePrecheck {
+    /// Cache hit — caller should return this response immediately.
+    Hit(Response),
+    /// No cache hit. Carries the (key, backend, ttl) needed to store the
+    /// computed response on success, or `None` if caching is disabled.
+    Miss(Option<CacheStoreCtx>),
+}
+
+/// Check the response cache; return a hit or the context needed to store
+/// the eventual response on success.
+async fn check_response_cache(
+    channel: &str,
+    data: &Value,
+    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
+) -> CachePrecheck {
+    let Some(cfg) = channel_config else {
+        return CachePrecheck::Miss(None);
+    };
+    let Some(ref cache_cfg) = cfg.parsed_config.cache else {
+        return CachePrecheck::Miss(None);
+    };
+    if !cache_cfg.enabled {
+        return CachePrecheck::Miss(None);
+    }
+    let Some(ref cache) = cfg.response_cache else {
+        return CachePrecheck::Miss(None);
+    };
+    let key = compute_cache_key(channel, data, cache_cfg);
+    match cache.get(&key).await {
+        Ok(Some(cached)) => {
+            metrics::record_cache_hit(channel);
+            CachePrecheck::Hit(json_response(StatusCode::OK, cached))
+        }
+        _ => {
+            metrics::record_cache_miss(channel);
+            CachePrecheck::Miss(Some((
+                key,
+                cache.clone(),
+                cache_cfg.ttl_secs.unwrap_or(300),
+            )))
+        }
+    }
+}
+
+/// Persist the completed trace through the configured storage mode and
+/// fire-and-forget cache the serialized response if a cache context was
+/// produced by [`check_response_cache`]. Records the trace-store phase in
+/// the per-request profile when one is in scope.
+#[allow(clippy::too_many_arguments)]
+async fn persist_trace_and_cache(
+    state: &AppState,
+    channel: &str,
+    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
+    input_json: Option<&str>,
+    response_json: &str,
+    duration_ms: f64,
+    has_errors: bool,
+    task_trace_json: Option<&str>,
+    cache_context: &Option<CacheStoreCtx>,
+    profile: Option<&std::sync::Arc<crate::engine::profile::ProfileCollector>>,
+) {
+    let effective_trace = channel_config
+        .as_ref()
+        .map(|c| c.trace_storage)
+        .unwrap_or_else(|| {
+            crate::channel::registry::EffectiveTraceConfig::resolve(
+                &state.config.tracing.storage,
+                None,
+            )
+        });
+    let trace_store_start = Instant::now();
+    route_store_completed(
+        &effective_trace,
+        &state.trace_repo,
+        &state.trace_persistence_queue,
+        channel,
+        input_json,
+        response_json,
+        duration_ms,
+        has_errors,
+        task_trace_json,
+    )
+    .await;
+    if let Some(p) = profile {
+        p.set_trace_store(trace_store_start.elapsed());
+    }
+
+    // Fire-and-forget cache store
+    if let Some((key, cache, ttl)) = cache_context
+        && let Err(e) = cache.set_ex(key, response_json, *ttl).await
+    {
+        tracing::debug!(channel = channel, error = %e, "Failed to cache response");
+    }
+}
+
 /// Core sync processing logic shared between simple HTTP and REST routes.
 ///
 /// Returns a pre-serialized `Response` so the JSON is serialized exactly once
@@ -545,25 +648,9 @@ async fn process_sync_for_channel(
     let profile = profile_requested.then(crate::engine::profile::ProfileCollector::new);
 
     // Response cache check — return early on cache hit (zero serialization)
-    let cache_context = if let Some(ref cfg) = channel_config
-        && let Some(ref cache_cfg) = cfg.parsed_config.cache
-        && cache_cfg.enabled
-        && let Some(ref cache) = cfg.response_cache
-    {
-        let key = compute_cache_key(channel, &data, cache_cfg);
-        match cache.get(&key).await {
-            Ok(Some(cached)) => {
-                metrics::record_cache_hit(channel);
-                // Return the cached JSON string directly — no deserialization needed
-                return Ok(json_response(StatusCode::OK, cached));
-            }
-            _ => {
-                metrics::record_cache_miss(channel);
-                Some((key, cache.clone(), cache_cfg.ttl_secs.unwrap_or(300)))
-            }
-        }
-    } else {
-        None
+    let cache_context = match check_response_cache(channel, &data, &channel_config).await {
+        CachePrecheck::Hit(response) => return Ok(response),
+        CachePrecheck::Miss(ctx) => ctx,
     };
 
     let _backpressure_permit = acquire_backpressure(channel, &channel_config)?;
@@ -647,41 +734,22 @@ async fn process_sync_for_channel(
 
             let input_json = serde_json::to_string(&data).ok();
             let has_errors = message.has_errors();
-            let effective_trace = channel_config
-                .as_ref()
-                .map(|c| c.trace_storage)
-                .unwrap_or_else(|| {
-                    crate::channel::registry::EffectiveTraceConfig::resolve(
-                        &state.config.tracing.storage,
-                        None,
-                    )
-                });
             let task_trace_json = task_trace
                 .as_ref()
                 .and_then(|t| serde_json::to_string(t).ok());
-            let trace_store_start = Instant::now();
-            route_store_completed(
-                &effective_trace,
-                &state.trace_repo,
-                &state.trace_persistence_queue,
+            persist_trace_and_cache(
+                state,
                 channel,
+                &channel_config,
                 input_json.as_deref(),
                 &response_json,
                 duration_ms,
                 has_errors,
                 task_trace_json.as_deref(),
+                &cache_context,
+                profile.as_ref(),
             )
             .await;
-            if let Some(ref p) = profile {
-                p.set_trace_store(trace_store_start.elapsed());
-            }
-
-            // Fire-and-forget cache store
-            if let Some((ref key, ref cache, ttl)) = cache_context
-                && let Err(e) = cache.set_ex(key, &response_json, ttl).await
-            {
-                tracing::debug!(channel = channel, error = %e, "Failed to cache response");
-            }
 
             // Profile mode: rebuild the response with `_orion.profile`
             // appended and re-serialize. Only paid when profiling is on.
