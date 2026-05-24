@@ -112,11 +112,7 @@ fn setup_kafka_producer(
     let producer = Arc::new(orion::kafka::producer::KafkaProducer::new(
         &kafka_config.brokers.join(","),
     )?);
-    orion::engine::register_kafka_publisher(
-        custom_functions,
-        connector_registry,
-        producer.clone(),
-    );
+    orion::engine::register_kafka_publisher(custom_functions, connector_registry, producer.clone());
     tracing::info!("Kafka producer initialized");
     Ok(Some(producer))
 }
@@ -164,12 +160,8 @@ fn start_kafka_ingest(
         (None, None)
     };
 
-    let handle = orion::kafka::consumer::start_consumer(
-        &merged_config,
-        engine,
-        dlq_producer,
-        dlq_topic,
-    )?;
+    let handle =
+        orion::kafka::consumer::start_consumer(&merged_config, engine, dlq_producer, dlq_topic)?;
 
     tracing::info!(
         config_topics = kafka_config.topics.len(),
@@ -517,8 +509,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Mark the service as ready now that the engine and channel registry are loaded
     ready.store(true, std::sync::atomic::Ordering::Release);
 
-    let kafka_consumer_handle =
-        start_kafka_ingest(&config.kafka, &channels, engine.clone(), kafka_producer.clone())?;
+    let kafka_consumer_handle = start_kafka_ingest(
+        &config.kafka,
+        &channels,
+        engine.clone(),
+        kafka_producer.clone(),
+    )?;
 
     // Start trace persistence queue (async/batch modes). A no-op queue is
     // returned for `sync` / `off`, so callers can submit unconditionally.
@@ -736,7 +732,8 @@ fn create_tcp_listener(addr: &str) -> Result<tokio::net::TcpListener, orion::err
         .map_err(|e| map_err("bind", e))?;
     socket.listen(1024).map_err(|e| map_err("listen", e))?;
     socket.set_nonblocking(true).ok();
-    tokio::net::TcpListener::from_std(socket.into()).map_err(|e| map_err("create async listener", e))
+    tokio::net::TcpListener::from_std(socket.into())
+        .map_err(|e| map_err("create async listener", e))
 }
 
 /// Bind a plain (non-TLS) HTTP listener and serve `router` with graceful

@@ -364,9 +364,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             self.pool
                 .fetch_optional_as::<Workflow>(&sql, values)
                 .await?
-                .ok_or_else(|| {
-                    OrionError::NotFound(format!("Workflow '{workflow_id}' not found"))
-                })
+                .ok_or_else(|| OrionError::NotFound(format!("Workflow '{workflow_id}' not found")))
         })
         .await
     }

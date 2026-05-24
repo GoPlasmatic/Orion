@@ -65,9 +65,7 @@ impl KafkaIngestConfig {
             }
             if !broker.contains(':') {
                 return Err(OrionError::Config {
-                    message: format!(
-                        "kafka.brokers[{i}] '{broker}' must be in host:port format"
-                    ),
+                    message: format!("kafka.brokers[{i}] '{broker}' must be in host:port format"),
                 });
             }
             let port_str = broker.rsplit(':').next().unwrap_or("");

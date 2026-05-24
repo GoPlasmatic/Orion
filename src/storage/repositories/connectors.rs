@@ -224,9 +224,7 @@ impl ConnectorRepository for SqlConnectorRepository {
             let rows_affected = self.pool.execute_query(&sql, values).await?;
 
             if rows_affected == 0 {
-                return Err(OrionError::NotFound(format!(
-                    "Connector '{id}' not found"
-                )));
+                return Err(OrionError::NotFound(format!("Connector '{id}' not found")));
             }
 
             Ok(())

@@ -1,11 +1,11 @@
 pub mod cache_backend;
 pub mod circuit_breaker;
+mod config;
 mod lru_cache;
 mod masking;
 pub mod mongo_pool;
 pub mod pool_cache;
 pub mod redis_pool;
-mod config;
 mod registry;
 pub mod secrets;
 
