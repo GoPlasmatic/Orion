@@ -225,9 +225,7 @@ impl IntoResponse for OrionError {
             OrionError::CircuitOpen { connector, channel } => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "CIRCUIT_OPEN",
-                format!(
-                    "Circuit breaker open for connector '{connector}' on channel '{channel}'"
-                ),
+                format!("Circuit breaker open for connector '{connector}' on channel '{channel}'"),
             ),
             OrionError::UnsupportedMediaType(msg) => (
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -253,9 +251,12 @@ impl IntoResponse for OrionError {
             }
             OrionError::Internal(msg) => log_internal_5xx("internal", "INTERNAL_ERROR", msg),
             OrionError::Config { message } => log_internal_5xx("config", "CONFIG_ERROR", message),
-            OrionError::Queue(msg) => {
-                sanitised_5xx("queue", "QUEUE_ERROR", msg, "An internal queue error occurred")
-            }
+            OrionError::Queue(msg) => sanitised_5xx(
+                "queue",
+                "QUEUE_ERROR",
+                msg,
+                "An internal queue error occurred",
+            ),
             OrionError::InternalSource { context, source } => {
                 tracing::error!(
                     error.category = "internal",

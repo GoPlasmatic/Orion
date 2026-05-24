@@ -130,9 +130,7 @@ impl SqlChannelRepository {
 }
 
 /// Build the UPDATE query that archives all active versions of a channel.
-fn archive_active_channels_query(
-    channel_id: &str,
-) -> (String, sea_query_binder::SqlxValues) {
+fn archive_active_channels_query(channel_id: &str) -> (String, sea_query_binder::SqlxValues) {
     let mut q = Query::update();
     q.table(Channels::Table)
         .value(Channels::Status, EntityStatus::Archived.as_str())
@@ -361,13 +359,10 @@ impl ChannelRepository for SqlChannelRepository {
                     .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str())),
             );
 
-            let existing: Channel =
-                fetch_required(&self.pool, &draft_sql, draft_values, || {
-                    OrionError::BadRequest(format!(
-                        "No draft version found for channel '{channel_id}'"
-                    ))
-                })
-                .await?;
+            let existing: Channel = fetch_required(&self.pool, &draft_sql, draft_values, || {
+                OrionError::BadRequest(format!("No draft version found for channel '{channel_id}'"))
+            })
+            .await?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let description = req
@@ -486,9 +481,7 @@ impl ChannelRepository for SqlChannelRepository {
             );
 
             let draft: Channel = fetch_required_tx(&mut tx, &draft_sql, draft_values, || {
-                OrionError::BadRequest(format!(
-                    "No draft version found for channel '{channel_id}'"
-                ))
+                OrionError::BadRequest(format!("No draft version found for channel '{channel_id}'"))
             })
             .await?;
 
@@ -526,13 +519,12 @@ impl ChannelRepository for SqlChannelRepository {
                     .limit(1),
             );
 
-            let active: Channel =
-                fetch_required(&self.pool, &active_sql, active_values, || {
-                    OrionError::BadRequest(format!(
-                        "No active version found for channel '{channel_id}'"
-                    ))
-                })
-                .await?;
+            let active: Channel = fetch_required(&self.pool, &active_sql, active_values, || {
+                OrionError::BadRequest(format!(
+                    "No active version found for channel '{channel_id}'"
+                ))
+            })
+            .await?;
 
             let (archive_sql, archive_values) = archive_active_channels_query(channel_id);
             self.pool

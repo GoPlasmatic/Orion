@@ -568,8 +568,8 @@ async fn send_to_dlq(
 
         // Infallible: the envelope is a `serde_json::Value` built from
         // string-keyed literals via `json!`, which cannot fail to serialise.
-        let dlq_payload = serde_json::to_string(&dlq_message)
-            .expect("DLQ envelope is always serialisable");
+        let dlq_payload =
+            serde_json::to_string(&dlq_message).expect("DLQ envelope is always serialisable");
         if let Err(e) = producer
             .send(topic, Some(source_topic), dlq_payload.as_bytes())
             .await
