@@ -69,48 +69,48 @@ mod tests {
 
     #[test]
     fn test_is_private_ip_loopback() {
-        assert!(is_private_ip(&"127.0.0.1".parse().unwrap()));
-        assert!(is_private_ip(&"127.0.0.2".parse().unwrap()));
-        assert!(is_private_ip(&"::1".parse().unwrap()));
+        assert!(is_private_ip(&"127.0.0.1".parse().expect("test")));
+        assert!(is_private_ip(&"127.0.0.2".parse().expect("test")));
+        assert!(is_private_ip(&"::1".parse().expect("test")));
     }
 
     #[test]
     fn test_is_private_ip_rfc1918() {
-        assert!(is_private_ip(&"10.0.0.1".parse().unwrap()));
-        assert!(is_private_ip(&"10.255.255.255".parse().unwrap()));
-        assert!(is_private_ip(&"172.16.0.1".parse().unwrap()));
-        assert!(is_private_ip(&"172.31.255.255".parse().unwrap()));
-        assert!(is_private_ip(&"192.168.0.1".parse().unwrap()));
-        assert!(is_private_ip(&"192.168.255.255".parse().unwrap()));
+        assert!(is_private_ip(&"10.0.0.1".parse().expect("test")));
+        assert!(is_private_ip(&"10.255.255.255".parse().expect("test")));
+        assert!(is_private_ip(&"172.16.0.1".parse().expect("test")));
+        assert!(is_private_ip(&"172.31.255.255".parse().expect("test")));
+        assert!(is_private_ip(&"192.168.0.1".parse().expect("test")));
+        assert!(is_private_ip(&"192.168.255.255".parse().expect("test")));
     }
 
     #[test]
     fn test_is_private_ip_link_local() {
-        assert!(is_private_ip(&"169.254.0.1".parse().unwrap()));
-        assert!(is_private_ip(&"169.254.169.254".parse().unwrap())); // Cloud metadata
+        assert!(is_private_ip(&"169.254.0.1".parse().expect("test")));
+        assert!(is_private_ip(&"169.254.169.254".parse().expect("test"))); // Cloud metadata
     }
 
     #[test]
     fn test_is_private_ip_cgnat() {
-        assert!(is_private_ip(&"100.64.0.1".parse().unwrap()));
-        assert!(is_private_ip(&"100.127.255.255".parse().unwrap()));
+        assert!(is_private_ip(&"100.64.0.1".parse().expect("test")));
+        assert!(is_private_ip(&"100.127.255.255".parse().expect("test")));
     }
 
     #[test]
     fn test_is_private_ip_public() {
-        assert!(!is_private_ip(&"8.8.8.8".parse().unwrap()));
-        assert!(!is_private_ip(&"1.1.1.1".parse().unwrap()));
-        assert!(!is_private_ip(&"203.0.113.1".parse().unwrap()));
+        assert!(!is_private_ip(&"8.8.8.8".parse().expect("test")));
+        assert!(!is_private_ip(&"1.1.1.1".parse().expect("test")));
+        assert!(!is_private_ip(&"203.0.113.1".parse().expect("test")));
     }
 
     #[test]
     fn test_is_private_ip_v4_mapped_v6() {
         // ::ffff:127.0.0.1
-        assert!(is_private_ip(&"::ffff:127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip(&"::ffff:127.0.0.1".parse().expect("test")));
         // ::ffff:10.0.0.1
-        assert!(is_private_ip(&"::ffff:10.0.0.1".parse().unwrap()));
+        assert!(is_private_ip(&"::ffff:10.0.0.1".parse().expect("test")));
         // ::ffff:8.8.8.8 (public)
-        assert!(!is_private_ip(&"::ffff:8.8.8.8".parse().unwrap()));
+        assert!(!is_private_ip(&"::ffff:8.8.8.8".parse().expect("test")));
     }
 
     #[tokio::test]

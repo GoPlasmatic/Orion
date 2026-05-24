@@ -1,3 +1,7 @@
+// Helpers in this module are shared across many test binaries; any given
+// binary uses only a subset, so `dead_code` would fire for every other
+// helper. Allow at the module level so individual functions don't each
+// need their own marker.
 #![allow(dead_code)]
 
 use std::sync::Arc;

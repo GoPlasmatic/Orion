@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn resolve_in_place_replaces_string() {
         let mut v = json!({ "token": "env://API_TOKEN" });
-        resolve_in_place(&mut v, &stub(&[("API_TOKEN", "s3cret")]), "test").unwrap();
+        resolve_in_place(&mut v, &stub(&[("API_TOKEN", "s3cret")]), "test").expect("test");
         assert_eq!(v["token"], "s3cret");
     }
 
@@ -190,7 +190,7 @@ mod tests {
     fn resolve_in_place_leaves_unknown_schemes_alone() {
         // https:// has no resolver — must pass through unchanged.
         let mut v = json!({ "url": "https://example.com/api" });
-        resolve_in_place(&mut v, &stub(&[]), "test").unwrap();
+        resolve_in_place(&mut v, &stub(&[]), "test").expect("test");
         assert_eq!(v["url"], "https://example.com/api");
     }
 
@@ -200,7 +200,7 @@ mod tests {
             "auth": { "type": "bearer", "token": "env://TOK" },
             "max_retries": 3
         });
-        resolve_in_place(&mut v, &stub(&[("TOK", "abc")]), "test").unwrap();
+        resolve_in_place(&mut v, &stub(&[("TOK", "abc")]), "test").expect("test");
         assert_eq!(v["auth"]["token"], "abc");
         assert_eq!(v["max_retries"], 3);
     }
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn resolve_in_place_recurses_into_arrays() {
         let mut v = json!({ "brokers": ["env://B1", "literal:9092"] });
-        resolve_in_place(&mut v, &stub(&[("B1", "broker.local:9092")]), "test").unwrap();
+        resolve_in_place(&mut v, &stub(&[("B1", "broker.local:9092")]), "test").expect("test");
         assert_eq!(v["brokers"][0], "broker.local:9092");
         assert_eq!(v["brokers"][1], "literal:9092");
     }
@@ -216,9 +216,9 @@ mod tests {
     #[test]
     fn missing_env_var_errors_with_source_label() {
         let mut v = json!({ "token": "env://NOPE" });
-        let err = resolve_in_place(&mut v, &stub(&[]), "connector 'foo'").unwrap_err();
+        let err = resolve_in_place(&mut v, &stub(&[]), "connector 'foo'").expect_err("test");
         let OrionError::Config { message } = err else {
-            panic!("expected Config error");
+            unreachable!("expected Config error");
         };
         assert!(message.contains("NOPE"));
         assert!(message.contains("connector 'foo'"));

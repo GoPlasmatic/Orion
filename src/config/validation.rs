@@ -43,7 +43,7 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::TopicMapping;
+    use crate::config::{AdminAuthConfig, CorsConfig, TopicMapping};
 
     #[test]
     fn test_validate_config_invalid_port() {
@@ -263,24 +263,36 @@ mod tests {
 
     #[test]
     fn test_validate_config_production_admin_auth_disabled_error() {
-        let mut config = AppConfig::default();
-        config.environment = "production".to_string();
-        config.admin_auth.enabled = false;
+        let config = AppConfig {
+            environment: "production".to_string(),
+            admin_auth: AdminAuthConfig {
+                enabled: false,
+                ..AppConfig::default().admin_auth
+            },
+            ..AppConfig::default()
+        };
         // Production + disabled admin auth should fail
         let result = validate_config(&config);
         assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
+        let err = result.expect_err("test").to_string();
         assert!(err.contains("admin_auth must be enabled"));
     }
 
     #[test]
     fn test_validate_config_production_admin_auth_enabled_ok() {
-        let mut config = AppConfig::default();
-        config.environment = "production".to_string();
-        config.admin_auth.enabled = true;
-        config.admin_auth.api_keys = vec!["secret-key-12345".to_string()];
-        // Must also fix CORS for production
-        config.cors.allowed_origins = vec!["https://example.com".to_string()];
+        let config = AppConfig {
+            environment: "production".to_string(),
+            admin_auth: AdminAuthConfig {
+                enabled: true,
+                api_keys: vec!["secret-key-12345".to_string()],
+                ..AppConfig::default().admin_auth
+            },
+            // Must also fix CORS for production
+            cors: CorsConfig {
+                allowed_origins: vec!["https://example.com".to_string()],
+            },
+            ..AppConfig::default()
+        };
         assert!(validate_config(&config).is_ok());
     }
 

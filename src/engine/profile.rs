@@ -373,7 +373,7 @@ mod tests {
                 .await;
             })
             .await;
-        let samples = collector.samples.lock().unwrap().clone();
+        let samples = collector.samples.lock().expect("test").clone();
         assert_eq!(samples.len(), 1);
         assert_eq!(samples[0].function, "http_call");
         assert_eq!(samples[0].connector.as_deref(), Some("svc_a"));
@@ -391,7 +391,7 @@ mod tests {
                 .await;
             })
             .await;
-        let samples = collector.samples.lock().unwrap().clone();
+        let samples = collector.samples.lock().expect("test").clone();
         assert_eq!(samples.len(), 2);
         // db_read finished first (inner), pushed first; depth=1
         assert_eq!(samples[0].function, "db_read");
@@ -417,7 +417,7 @@ mod tests {
         let v = collector.to_json();
         // B3 shape lock: top-level version + totals_ms + iterable phases[].
         assert_eq!(v["version"], 1);
-        assert!(v["totals_ms"].as_f64().unwrap() > 0.0);
+        assert!(v["totals_ms"].as_f64().expect("test") > 0.0);
         let phases = v["phases"].as_array().expect("phases must be an array");
         let phase_names: Vec<&str> = phases.iter().filter_map(|p| p["name"].as_str()).collect();
         // All four phases (set above) should appear in order.
@@ -427,10 +427,15 @@ mod tests {
         assert!(phase_names.contains(&"trace_store"));
         // Detail fields preserved.
         assert!(v["handlers"].is_array());
-        assert_eq!(v["handlers"].as_array().unwrap().len(), 2);
-        assert!(v["by_function"]["http_call"]["count"].as_u64().unwrap() >= 1);
-        assert!(v["by_connector"]["svc_a"]["count"].as_u64().unwrap() >= 1);
-        assert!(v["workflow_total_ms"].as_f64().unwrap() > 0.0);
-        assert!(v["workflow_overhead_ms"].as_f64().unwrap() >= 0.0);
+        assert_eq!(v["handlers"].as_array().expect("test").len(), 2);
+        assert!(
+            v["by_function"]["http_call"]["count"]
+                .as_u64()
+                .expect("test")
+                >= 1
+        );
+        assert!(v["by_connector"]["svc_a"]["count"].as_u64().expect("test") >= 1);
+        assert!(v["workflow_total_ms"].as_f64().expect("test") > 0.0);
+        assert!(v["workflow_overhead_ms"].as_f64().expect("test") >= 0.0);
     }
 }

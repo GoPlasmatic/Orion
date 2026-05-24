@@ -447,7 +447,7 @@ mod tests {
                 .map(|v| v.to_string())
                 .ok_or(std::env::VarError::NotPresent)
         })
-        .unwrap();
+        .expect("test");
         assert_eq!(config.server.port, 9090);
         assert_eq!(config.storage.url, "postgres://localhost/orion");
         assert_eq!(config.logging.level, "debug");
@@ -486,7 +486,7 @@ mod tests {
         env.insert("ORION_KAFKA__GROUP_ID", "my-group");
 
         let mut config = AppConfig::default();
-        apply_env_overrides_with(&mut config, make_env_reader(&env)).unwrap();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
 
         assert_eq!(config.server.host, "localhost");
         assert_eq!(config.server.port, 3000);
@@ -524,7 +524,7 @@ mod tests {
 
         let mut config = AppConfig::default();
         config.logging.format = LogFormat::Json;
-        apply_env_overrides_with(&mut config, make_env_reader(&env)).unwrap();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
 
         assert!(matches!(config.logging.format, LogFormat::Pretty));
     }
@@ -539,7 +539,7 @@ mod tests {
         assert!(result.is_err());
         assert!(
             result
-                .unwrap_err()
+                .expect_err("test")
                 .to_string()
                 .contains("ORION_LOGGING__FORMAT")
         );
@@ -555,7 +555,7 @@ mod tests {
         assert!(result.is_err());
         assert!(
             result
-                .unwrap_err()
+                .expect_err("test")
                 .to_string()
                 .contains("ORION_SERVER__PORT")
         );
@@ -571,7 +571,7 @@ mod tests {
         assert!(result.is_err());
         assert!(
             result
-                .unwrap_err()
+                .expect_err("test")
                 .to_string()
                 .contains("ORION_METRICS__ENABLED")
         );
@@ -584,7 +584,7 @@ mod tests {
         env.insert("ORION_ADMIN_AUTH__HEADER", "X-API-Key");
 
         let mut config = AppConfig::default();
-        apply_env_overrides_with(&mut config, make_env_reader(&env)).unwrap();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
 
         assert!(config.admin_auth.enabled);
         assert_eq!(config.admin_auth.header, "X-API-Key");
@@ -596,7 +596,7 @@ mod tests {
         env.insert("ORION_ADMIN_AUTH__API_KEYS", "key-1, key-2, key-3");
 
         let mut config = AppConfig::default();
-        apply_env_overrides_with(&mut config, make_env_reader(&env)).unwrap();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
 
         assert_eq!(config.admin_auth.api_keys, vec!["key-1", "key-2", "key-3"]);
     }
