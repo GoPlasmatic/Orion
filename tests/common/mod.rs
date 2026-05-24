@@ -25,7 +25,6 @@ pub async fn test_app() -> Router {
 }
 
 /// Create a test app with a custom config (e.g. for rate limiting tests).
-#[allow(dead_code)]
 pub async fn test_app_with_config(config: AppConfig) -> Router {
     // Install sqlx Any drivers for external connector pools (db_read/db_write tests)
     sqlx::any::install_default_drivers();
@@ -180,7 +179,6 @@ pub async fn body_json(response: axum::http::Response<Body>) -> Value {
 
 /// Create a workflow and a channel, activate both, and return (channel_name, workflow_id).
 /// Use this helper in tests that need an active channel for data processing.
-#[allow(dead_code)]
 pub async fn create_and_activate_channel(
     app: &axum::Router,
     channel_name: &str,
@@ -254,7 +252,6 @@ pub async fn create_and_activate_channel(
 
 /// A simple workflow that just logs a message. Used by most tests that need
 /// an active workflow but don't care about its logic.
-#[allow(dead_code)]
 pub fn simple_log_workflow(name: &str) -> serde_json::Value {
     serde_json::json!({
         "name": name,
@@ -265,7 +262,6 @@ pub fn simple_log_workflow(name: &str) -> serde_json::Value {
 
 /// A workflow with priority and optional description. For tests that exercise
 /// those specific fields.
-#[allow(dead_code)]
 pub fn workflow_with_priority(name: &str, priority: i64) -> serde_json::Value {
     serde_json::json!({
         "name": name,
@@ -277,7 +273,6 @@ pub fn workflow_with_priority(name: &str, priority: i64) -> serde_json::Value {
 
 /// A sync HTTP channel pointing at the given workflow_id. Used by tests
 /// that need a channel associated with a specific route pattern.
-#[allow(dead_code)]
 pub fn sync_http_channel(name: &str, workflow_id: &str) -> serde_json::Value {
     serde_json::json!({
         "name": name,
@@ -290,7 +285,6 @@ pub fn sync_http_channel(name: &str, workflow_id: &str) -> serde_json::Value {
 }
 
 /// A database connector fixture for tests that exercise connector CRUD.
-#[allow(dead_code)]
 pub fn db_connector(name: &str) -> serde_json::Value {
     serde_json::json!({
         "name": name,
@@ -304,7 +298,6 @@ pub fn db_connector(name: &str) -> serde_json::Value {
 
 /// A SQLite database connector for integration tests.
 /// Uses a shared named in-memory DB so multiple queries share the same data.
-#[allow(dead_code)]
 pub fn db_connector_sqlite(name: &str, db_path: &str) -> serde_json::Value {
     serde_json::json!({
         "id": name,
@@ -321,7 +314,6 @@ pub fn db_connector_sqlite(name: &str, db_path: &str) -> serde_json::Value {
 }
 
 /// An in-memory cache connector for integration tests.
-#[allow(dead_code)]
 pub fn cache_connector_memory(name: &str) -> serde_json::Value {
     serde_json::json!({
         "id": name,
@@ -335,7 +327,6 @@ pub fn cache_connector_memory(name: &str) -> serde_json::Value {
 }
 
 /// A Redis-backed cache connector (for #[ignore] tests).
-#[allow(dead_code)]
 pub fn cache_connector_redis(name: &str, url: &str) -> serde_json::Value {
     serde_json::json!({
         "id": name,
@@ -350,7 +341,6 @@ pub fn cache_connector_redis(name: &str, url: &str) -> serde_json::Value {
 }
 
 /// Create a connector via admin API and return the connector ID.
-#[allow(dead_code)]
 pub async fn create_connector(app: &axum::Router, connector_json: serde_json::Value) -> String {
     let resp = app
         .clone()
@@ -367,7 +357,6 @@ pub async fn create_connector(app: &axum::Router, connector_json: serde_json::Va
 }
 
 /// A generic workflow builder that wraps a tasks array with `condition: true`.
-#[allow(dead_code)]
 pub fn workflow_with_tasks(name: &str, tasks: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "name": name,
@@ -377,7 +366,6 @@ pub fn workflow_with_tasks(name: &str, tasks: serde_json::Value) -> serde_json::
 }
 
 /// Create and activate a channel with custom config (dedup, cache, validation, etc.).
-#[allow(dead_code)]
 pub async fn create_and_activate_channel_with_config(
     app: &axum::Router,
     channel_name: &str,
@@ -448,7 +436,6 @@ pub async fn create_and_activate_channel_with_config(
 }
 
 /// Build a POST request with a custom Idempotency-Key header.
-#[allow(dead_code)]
 pub fn post_with_idempotency_key(uri: &str, key: &str, body: serde_json::Value) -> Request<Body> {
     Request::builder()
         .method("POST")
@@ -460,7 +447,6 @@ pub fn post_with_idempotency_key(uri: &str, key: &str, body: serde_json::Value) 
 }
 
 /// Create a workflow from JSON, activate it, and return the workflow_id.
-#[allow(dead_code)]
 pub async fn create_and_activate_workflow(
     app: &axum::Router,
     workflow_json: serde_json::Value,
@@ -494,7 +480,6 @@ pub async fn create_and_activate_workflow(
 
 /// Create a REST channel with a specific route pattern and methods, activate it,
 /// and return the channel_id.
-#[allow(dead_code)]
 pub async fn create_rest_channel(
     app: &axum::Router,
     name: &str,
@@ -537,7 +522,6 @@ pub async fn create_rest_channel(
 }
 
 /// Poll a trace until it reaches a terminal status or max iterations.
-#[allow(dead_code)]
 pub async fn poll_trace_until_done(
     app: &axum::Router,
     trace_id: &str,
