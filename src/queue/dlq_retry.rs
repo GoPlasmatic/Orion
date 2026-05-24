@@ -182,7 +182,7 @@ mod tests {
         }
 
         async fn list_pending(&self, _limit: i64) -> Result<Vec<TraceDlqEntry>, OrionError> {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().expect("test");
             // Return entries once, then empty (simulates consumption)
             let entries = std::mem::take(&mut state.entries_to_return);
             Ok(entries)
@@ -191,21 +191,25 @@ mod tests {
         async fn record_retry(&self, id: &str, next_retry_at: &str) -> Result<(), OrionError> {
             self.state
                 .lock()
-                .unwrap()
+                .expect("test")
                 .retried
                 .push((id.to_string(), next_retry_at.to_string()));
             Ok(())
         }
 
         async fn remove(&self, id: &str) -> Result<(), OrionError> {
-            self.state.lock().unwrap().removed_ids.push(id.to_string());
+            self.state
+                .lock()
+                .expect("test")
+                .removed_ids
+                .push(id.to_string());
             Ok(())
         }
 
         async fn mark_exhausted(&self, id: &str) -> Result<(), OrionError> {
             self.state
                 .lock()
-                .unwrap()
+                .expect("test")
                 .exhausted_ids
                 .push(id.to_string());
             Ok(())
@@ -367,7 +371,7 @@ mod tests {
 
         handle.abort();
 
-        let state = dlq_repo.state.lock().unwrap();
+        let state = dlq_repo.state.lock().expect("test");
         assert!(
             state.removed_ids.contains(&"e1".to_string()),
             "entry should be removed after successful retry, removed: {:?}",
@@ -390,7 +394,7 @@ mod tests {
 
         handle.abort();
 
-        let state = dlq_repo.state.lock().unwrap();
+        let state = dlq_repo.state.lock().expect("test");
         assert!(
             state.exhausted_ids.contains(&"e2".to_string()),
             "corrupt payload should mark entry as exhausted, exhausted: {:?}",
@@ -414,7 +418,7 @@ mod tests {
 
         handle.abort();
 
-        let state = dlq_repo.state.lock().unwrap();
+        let state = dlq_repo.state.lock().expect("test");
         assert!(
             state.exhausted_ids.contains(&"e3".to_string()),
             "entry at max retries should be marked exhausted, exhausted: {:?}",
@@ -438,7 +442,7 @@ mod tests {
 
         handle.abort();
 
-        let state = dlq_repo.state.lock().unwrap();
+        let state = dlq_repo.state.lock().expect("test");
         assert_eq!(
             state.retried.len(),
             1,

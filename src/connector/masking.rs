@@ -63,7 +63,7 @@ mod tests {
     fn test_mask_connector_secrets_bearer_token() {
         let config = r#"{"type":"http","url":"https://api.example.com","auth":{"type":"bearer","token":"secret123"}}"#;
         let masked = mask_connector_secrets(config);
-        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["auth"]["token"], "******");
     }
 
@@ -71,7 +71,7 @@ mod tests {
     fn test_mask_connector_secrets_basic_password() {
         let config = r#"{"type":"http","url":"https://api.example.com","auth":{"type":"basic","username":"user","password":"secret"}}"#;
         let masked = mask_connector_secrets(config);
-        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["auth"]["password"], "******");
         // Username should NOT be masked
         assert_eq!(val["auth"]["username"], "user");
@@ -81,7 +81,7 @@ mod tests {
     fn test_mask_connector_secrets_api_key() {
         let config = r#"{"type":"http","url":"https://api.example.com","auth":{"type":"apikey","key":"mysecretkey"}}"#;
         let masked = mask_connector_secrets(config);
-        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["auth"]["key"], "******");
     }
 
@@ -89,7 +89,7 @@ mod tests {
     fn test_mask_connector_secrets_top_level_fields() {
         let config = r#"{"type":"http","url":"https://api.example.com","password":"top_secret","api_key":"ak123","token":"tk456","secret":"shhh"}"#;
         let masked = mask_connector_secrets(config);
-        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["password"], "******");
         assert_eq!(val["api_key"], "******");
         assert_eq!(val["token"], "******");
@@ -102,7 +102,7 @@ mod tests {
     fn test_mask_connector_secrets_no_auth() {
         let config = r#"{"type":"http","url":"https://api.example.com"}"#;
         let masked = mask_connector_secrets(config);
-        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["url"], "https://api.example.com");
     }
 
@@ -123,17 +123,17 @@ mod tests {
             config_json: r#"{"type":"http","url":"https://api.example.com","auth":{"type":"bearer","token":"secret"}}"#.to_string(),
             enabled: true,
             created_at: NaiveDate::from_ymd_opt(2025, 1, 1)
-                .unwrap()
+                .expect("test")
                 .and_hms_opt(0, 0, 0)
-                .unwrap(),
+                .expect("test"),
             updated_at: NaiveDate::from_ymd_opt(2025, 1, 1)
-                .unwrap()
+                .expect("test")
                 .and_hms_opt(0, 0, 0)
-                .unwrap(),
+                .expect("test"),
         };
         let masked = mask_connector(&connector);
         assert_eq!(masked.id, "c1");
-        let val: serde_json::Value = serde_json::from_str(&masked.config_json).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&masked.config_json).expect("test");
         assert_eq!(val["auth"]["token"], "******");
     }
 
@@ -141,7 +141,7 @@ mod tests {
     fn test_mask_connector_secrets_connection_string() {
         let config = r#"{"type":"db","connection_string":"postgres://user:pass@host/db","driver":"postgres"}"#;
         let masked = mask_connector_secrets(config);
-        let val: serde_json::Value = serde_json::from_str(&masked).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["connection_string"], "******");
         assert_eq!(val["driver"], "postgres");
     }

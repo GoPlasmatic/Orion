@@ -468,7 +468,7 @@ mod tests {
             ..Default::default()
         })
         .await
-        .unwrap()
+        .expect("test")
     }
 
     #[tokio::test]
@@ -480,13 +480,13 @@ mod tests {
         let id = repo
             .store_completed("orders", "sync", None, r#"{"ok":true}"#, 10.0, None)
             .await
-            .unwrap();
+            .expect("test");
 
         // Backdate it to 100 hours ago
         let old_time = chrono::Utc::now()
             .naive_utc()
             .checked_sub_signed(chrono::Duration::hours(100))
-            .unwrap()
+            .expect("test")
             .to_string();
         match &pool {
             crate::storage::DbPool::Sqlite(p) => {
@@ -495,23 +495,26 @@ mod tests {
                     .bind(&id)
                     .execute(p)
                     .await
-                    .unwrap();
+                    .expect("test");
             }
-            _ => panic!("Test requires SQLite"),
+            _ => unreachable!("Test requires SQLite"),
         }
 
         // Create a recent trace that should NOT be deleted
         let _recent_id = repo
             .store_completed("orders", "sync", None, r#"{"ok":true}"#, 5.0, None)
             .await
-            .unwrap();
+            .expect("test");
 
         // Delete traces older than 72 hours
-        let deleted = repo.delete_older_than(72).await.unwrap();
+        let deleted = repo.delete_older_than(72).await.expect("test");
         assert_eq!(deleted, 1);
 
         // Verify the recent trace still exists
-        let remaining = repo.list_paginated(&TraceFilter::default()).await.unwrap();
+        let remaining = repo
+            .list_paginated(&TraceFilter::default())
+            .await
+            .expect("test");
         assert_eq!(remaining.total, 1);
     }
 
@@ -521,13 +524,16 @@ mod tests {
         let repo = SqlTraceRepository::new(pool.clone());
 
         // Create a pending trace
-        let trace = repo.create_pending("orders", "async", None).await.unwrap();
+        let trace = repo
+            .create_pending("orders", "async", None)
+            .await
+            .expect("test");
 
         // Backdate it
         let old_time = chrono::Utc::now()
             .naive_utc()
             .checked_sub_signed(chrono::Duration::hours(200))
-            .unwrap()
+            .expect("test")
             .to_string();
         match &pool {
             crate::storage::DbPool::Sqlite(p) => {
@@ -536,13 +542,13 @@ mod tests {
                     .bind(&trace.id)
                     .execute(p)
                     .await
-                    .unwrap();
+                    .expect("test");
             }
-            _ => panic!("Test requires SQLite"),
+            _ => unreachable!("Test requires SQLite"),
         }
 
         // Cleanup should NOT delete pending traces
-        let deleted = repo.delete_older_than(72).await.unwrap();
+        let deleted = repo.delete_older_than(72).await.expect("test");
         assert_eq!(deleted, 0);
     }
 }

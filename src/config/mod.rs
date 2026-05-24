@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_load_config_no_file() {
-        let config = load_config(None).unwrap();
+        let config = load_config(None).expect("test");
         // Port may be overridden by env vars in parallel tests, just check it loaded
         assert!(config.server.port > 0);
         assert!(!config.server.host.is_empty());
@@ -144,7 +144,7 @@ url = "sqlite:test.db"
 level = "debug"
 format = "json"
 "#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let config: AppConfig = toml::from_str(toml_str).expect("test");
         assert_eq!(config.server.host, "127.0.0.1");
         assert_eq!(config.server.port, 3000);
         assert_eq!(config.storage.url, "sqlite:test.db");
@@ -166,7 +166,7 @@ format = "json"
             suffix,
             uuid::Uuid::new_v4()
         ));
-        std::fs::write(&path, content).unwrap();
+        std::fs::write(&path, content).expect("test");
         path.to_string_lossy().into_owned()
     }
 
@@ -189,7 +189,7 @@ url = "${{{var_name}}}"
 "#
         );
         let path = write_temp_toml(&toml, "subst");
-        let config = load_config(Some(&path)).unwrap();
+        let config = load_config(Some(&path)).expect("test");
         assert_eq!(config.storage.url, "postgres://test-host/db");
         unsafe {
             std::env::remove_var(var_name);
@@ -207,7 +207,7 @@ port = 8080
 url = "${ORION_TEST_NEVER_SET_VAR:-sqlite:fallback.db}"
 "#;
         let path = write_temp_toml(toml, "default");
-        let config = load_config(Some(&path)).unwrap();
+        let config = load_config(Some(&path)).expect("test");
         assert_eq!(config.storage.url, "sqlite:fallback.db");
         let _ = std::fs::remove_file(&path);
     }
@@ -225,7 +225,7 @@ url = "${ORION_TEST_REQUIRED_BUT_UNSET_xyz}"
             OrionError::Config { message } => {
                 assert!(message.contains("ORION_TEST_REQUIRED_BUT_UNSET_xyz"));
             }
-            other => panic!("expected Config error, got {other:?}"),
+            other => unreachable!("expected Config error, got {other:?}"),
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -245,7 +245,7 @@ default_burst = 100
 admin_rps = 50
 data_rps = 500
 "#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let config: AppConfig = toml::from_str(toml_str).expect("test");
         assert!(config.rate_limit.enabled);
         assert_eq!(config.rate_limit.default_rps, 200);
         assert_eq!(config.rate_limit.default_burst, 100);
@@ -287,7 +287,7 @@ enabled = true
 api_keys = ["my-key"]
 header = "X-Custom-Auth"
 "#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let config: AppConfig = toml::from_str(toml_str).expect("test");
         assert!(config.admin_auth.enabled);
         assert_eq!(config.admin_auth.api_keys, vec!["my-key".to_string()]);
         assert_eq!(config.admin_auth.header, "X-Custom-Auth");
@@ -301,7 +301,7 @@ enabled = true
 api_keys = ["key-a", "key-b"]
 header = "Authorization"
 "#;
-        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let config: AppConfig = toml::from_str(toml_str).expect("test");
         assert!(config.admin_auth.enabled);
         assert_eq!(
             config.admin_auth.api_keys,

@@ -419,11 +419,11 @@ mod tests {
     #[test]
     fn test_detect_backend_sqlite() {
         assert_eq!(
-            detect_backend("sqlite:orion.db").unwrap(),
+            detect_backend("sqlite:orion.db").expect("test"),
             DbBackend::Sqlite
         );
         assert_eq!(
-            detect_backend("sqlite::memory:").unwrap(),
+            detect_backend("sqlite::memory:").expect("test"),
             DbBackend::Sqlite
         );
     }
@@ -431,11 +431,11 @@ mod tests {
     #[test]
     fn test_detect_backend_postgres() {
         assert_eq!(
-            detect_backend("postgres://user:pass@localhost/db").unwrap(),
+            detect_backend("postgres://user:pass@localhost/db").expect("test"),
             DbBackend::Postgres
         );
         assert_eq!(
-            detect_backend("postgresql://user:pass@localhost/db").unwrap(),
+            detect_backend("postgresql://user:pass@localhost/db").expect("test"),
             DbBackend::Postgres
         );
     }
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn test_detect_backend_mysql() {
         assert_eq!(
-            detect_backend("mysql://user:pass@localhost/db").unwrap(),
+            detect_backend("mysql://user:pass@localhost/db").expect("test"),
             DbBackend::Mysql
         );
     }

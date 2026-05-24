@@ -266,58 +266,82 @@ mod tests {
     #[tokio::test]
     async fn test_memory_get_set() {
         let backend = MemoryCacheBackend::new(60);
-        assert!(backend.get("k1").await.unwrap().is_none());
-        backend.set("k1", "v1").await.unwrap();
-        assert_eq!(backend.get("k1").await.unwrap(), Some("v1".to_string()));
+        assert!(backend.get("k1").await.expect("test").is_none());
+        backend.set("k1", "v1").await.expect("test");
+        assert_eq!(
+            backend.get("k1").await.expect("test"),
+            Some("v1".to_string())
+        );
     }
 
     #[tokio::test]
     async fn test_memory_set_ex_expires() {
         let backend = MemoryCacheBackend::new(60);
-        backend.set_ex("k1", "v1", 1).await.unwrap();
-        assert_eq!(backend.get("k1").await.unwrap(), Some("v1".to_string()));
+        backend.set_ex("k1", "v1", 1).await.expect("test");
+        assert_eq!(
+            backend.get("k1").await.expect("test"),
+            Some("v1".to_string())
+        );
         tokio::time::sleep(Duration::from_secs(2)).await;
-        assert!(backend.get("k1").await.unwrap().is_none());
+        assert!(backend.get("k1").await.expect("test").is_none());
     }
 
     #[tokio::test]
     async fn test_memory_check_and_insert_new() {
         let backend = MemoryCacheBackend::new(60);
-        assert!(backend.check_and_insert("dedup-1", 300).await.unwrap());
+        assert!(
+            backend
+                .check_and_insert("dedup-1", 300)
+                .await
+                .expect("test")
+        );
     }
 
     #[tokio::test]
     async fn test_memory_check_and_insert_duplicate() {
         let backend = MemoryCacheBackend::new(60);
-        assert!(backend.check_and_insert("dedup-1", 300).await.unwrap());
-        assert!(!backend.check_and_insert("dedup-1", 300).await.unwrap());
+        assert!(
+            backend
+                .check_and_insert("dedup-1", 300)
+                .await
+                .expect("test")
+        );
+        assert!(
+            !backend
+                .check_and_insert("dedup-1", 300)
+                .await
+                .expect("test")
+        );
     }
 
     #[tokio::test]
     async fn test_memory_check_and_insert_expired() {
         let backend = MemoryCacheBackend::new(60);
-        assert!(backend.check_and_insert("k", 1).await.unwrap());
+        assert!(backend.check_and_insert("k", 1).await.expect("test"));
         tokio::time::sleep(Duration::from_secs(2)).await;
         // After expiry, key is treated as new
-        assert!(backend.check_and_insert("k", 1).await.unwrap());
+        assert!(backend.check_and_insert("k", 1).await.expect("test"));
     }
 
     #[tokio::test]
     async fn test_memory_purge_expired() {
         let backend = MemoryCacheBackend::new(60);
-        backend.set_ex("keep", "val", 3600).await.unwrap();
-        backend.set_ex("expire", "val", 1).await.unwrap();
+        backend.set_ex("keep", "val", 3600).await.expect("test");
+        backend.set_ex("expire", "val", 1).await.expect("test");
         tokio::time::sleep(Duration::from_secs(2)).await;
         backend.purge_expired();
-        assert!(backend.get("keep").await.unwrap().is_some());
-        assert!(backend.get("expire").await.unwrap().is_none());
+        assert!(backend.get("keep").await.expect("test").is_some());
+        assert!(backend.get("expire").await.expect("test").is_none());
     }
 
     #[tokio::test]
     async fn test_memory_set_overwrites() {
         let backend = MemoryCacheBackend::new(60);
-        backend.set("k", "v1").await.unwrap();
-        backend.set("k", "v2").await.unwrap();
-        assert_eq!(backend.get("k").await.unwrap(), Some("v2".to_string()));
+        backend.set("k", "v1").await.expect("test");
+        backend.set("k", "v2").await.expect("test");
+        assert_eq!(
+            backend.get("k").await.expect("test"),
+            Some("v2".to_string())
+        );
     }
 }

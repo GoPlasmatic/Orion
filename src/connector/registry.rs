@@ -270,7 +270,7 @@ mod tests {
         let _ = registry.get_or_create_breaker("key1").await;
         let states = registry.circuit_breaker_states().await;
         assert_eq!(states.len(), 1);
-        assert_eq!(states.get("key1").unwrap(), "closed");
+        assert_eq!(states.get("key1").expect("test"), "closed");
     }
 
     #[tokio::test]

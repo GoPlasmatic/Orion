@@ -175,7 +175,7 @@ mod tests {
         let segments = parse_route_pattern("/orders/{id}");
         let params = match_segments(&segments, &["orders", "123"]);
         assert!(params.is_some());
-        assert_eq!(params.unwrap().get("id").unwrap(), "123");
+        assert_eq!(params.expect("test").get("id").expect("test"), "123");
     }
 
     #[test]
@@ -198,9 +198,9 @@ mod tests {
         };
         let result = table.match_route("GET", "orders/42");
         assert!(result.is_some());
-        let rm = result.unwrap();
+        let rm = result.expect("test");
         assert_eq!(rm.channel_name, "orders.get");
-        assert_eq!(rm.params.get("id").unwrap(), "42");
+        assert_eq!(rm.params.get("id").expect("test"), "42");
     }
 
     #[test]
@@ -238,7 +238,10 @@ mod tests {
         // But since we build the entries manually without sorting here,
         // let's test via RouteTable::build instead
         assert_eq!(
-            table.match_route("GET", "items/1").unwrap().channel_name,
+            table
+                .match_route("GET", "items/1")
+                .expect("test")
+                .channel_name,
             "low"
         );
     }

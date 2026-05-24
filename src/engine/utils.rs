@@ -69,7 +69,7 @@ mod tests {
             .data()
             .get("_rollout_bucket")
             .and_then(|v| v.as_i64())
-            .unwrap();
+            .expect("test");
         assert!(
             (0..100).contains(&bucket),
             "bucket should be 0–99, got {bucket}"

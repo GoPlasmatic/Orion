@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn test_connector_config_deserialization_http() {
         let json = r#"{"type":"http","url":"https://api.example.com","headers":{},"retry":{"max_retries":2,"retry_delay_ms":500}}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
             ConnectorConfig::Http(http) => {
                 assert_eq!(http.url, "https://api.example.com");
@@ -207,63 +207,63 @@ mod tests {
                 assert_eq!(http.retry.retry_delay_ms, 500);
                 assert_eq!(http.max_response_size, 10 * 1024 * 1024);
             }
-            _ => panic!("Expected Http config"),
+            _ => unreachable!("Expected Http config"),
         }
     }
 
     #[test]
     fn test_connector_config_deserialization_kafka() {
         let json = r#"{"type":"kafka","brokers":["localhost:9092"],"topic":"test-topic","group_id":"test-group"}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
             ConnectorConfig::Kafka(kafka) => {
                 assert_eq!(kafka.brokers, vec!["localhost:9092"]);
                 assert_eq!(kafka.topic, "test-topic");
                 assert_eq!(kafka.group_id, Some("test-group".to_string()));
             }
-            _ => panic!("Expected Kafka config"),
+            _ => unreachable!("Expected Kafka config"),
         }
     }
 
     #[test]
     fn test_connector_config_deserialization_db() {
         let json = r#"{"type":"db","connection_string":"postgres://localhost/mydb","driver":"postgres","max_connections":5}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
             ConnectorConfig::Db(db) => {
                 assert_eq!(db.connection_string, "postgres://localhost/mydb");
                 assert_eq!(db.driver, "postgres");
                 assert_eq!(db.max_connections, Some(5));
             }
-            _ => panic!("Expected Db config"),
+            _ => unreachable!("Expected Db config"),
         }
     }
 
     #[test]
     fn test_connector_config_deserialization_cache_redis() {
         let json = r#"{"type":"cache","backend":"redis","url":"redis://localhost:6379","default_ttl_secs":300}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
             ConnectorConfig::Cache(cache) => {
                 assert_eq!(cache.backend, "redis");
                 assert_eq!(cache.url, Some("redis://localhost:6379".to_string()));
                 assert_eq!(cache.default_ttl_secs, Some(300));
             }
-            _ => panic!("Expected Cache config"),
+            _ => unreachable!("Expected Cache config"),
         }
     }
 
     #[test]
     fn test_connector_config_deserialization_cache_memory() {
         let json = r#"{"type":"cache","backend":"memory","default_ttl_secs":60}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
             ConnectorConfig::Cache(cache) => {
                 assert_eq!(cache.backend, "memory");
                 assert!(cache.url.is_none());
                 assert_eq!(cache.default_ttl_secs, Some(60));
             }
-            _ => panic!("Expected Cache config"),
+            _ => unreachable!("Expected Cache config"),
         }
     }
 
@@ -279,14 +279,14 @@ mod tests {
     fn test_connector_config_deserialization_storage() {
         let json =
             r#"{"type":"storage","provider":"s3","bucket":"my-bucket","region":"us-east-1"}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
             ConnectorConfig::Storage(storage) => {
                 assert_eq!(storage.provider, "s3");
                 assert_eq!(storage.bucket, Some("my-bucket".to_string()));
                 assert_eq!(storage.region, Some("us-east-1".to_string()));
             }
-            _ => panic!("Expected Storage config"),
+            _ => unreachable!("Expected Storage config"),
         }
     }
 
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn test_http_connector_config_defaults() {
         let json = r#"{"type":"http","url":"https://example.com"}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).unwrap();
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
             ConnectorConfig::Http(http) => {
                 assert!(http.headers.is_empty());
@@ -312,7 +312,7 @@ mod tests {
                 assert_eq!(http.retry.retry_delay_ms, 1000);
                 assert_eq!(http.max_response_size, 10 * 1024 * 1024);
             }
-            _ => panic!("Expected Http config"),
+            _ => unreachable!("Expected Http config"),
         }
     }
 }

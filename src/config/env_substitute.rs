@@ -133,37 +133,37 @@ mod tests {
             "test",
             env(&[("DB_URL", "postgres://x")]),
         )
-        .unwrap();
+        .expect("test");
         assert_eq!(out, "url = postgres://x");
     }
 
     #[test]
     fn default_used_when_unset() {
-        let out = substitute_with("port = ${PORT:-8080}", "test", env(&[])).unwrap();
+        let out = substitute_with("port = ${PORT:-8080}", "test", env(&[])).expect("test");
         assert_eq!(out, "port = 8080");
     }
 
     #[test]
     fn empty_default_is_allowed() {
-        let out = substitute_with("v = '${EMPTY:-}'", "test", env(&[])).unwrap();
+        let out = substitute_with("v = '${EMPTY:-}'", "test", env(&[])).expect("test");
         assert_eq!(out, "v = ''");
     }
 
     #[test]
     fn missing_required_var_errors() {
-        let err = substitute_with("v = ${NOPE}", "test", env(&[])).unwrap_err();
+        let err = substitute_with("v = ${NOPE}", "test", env(&[])).expect_err("test");
         match err {
             OrionError::Config { message } => {
                 assert!(message.contains("NOPE"));
                 assert!(message.contains("test"));
             }
-            other => panic!("expected Config error, got {other:?}"),
+            other => unreachable!("expected Config error, got {other:?}"),
         }
     }
 
     #[test]
     fn dollar_dollar_escapes_to_single_dollar() {
-        let out = substitute_with("price = $$5", "test", env(&[])).unwrap();
+        let out = substitute_with("price = $$5", "test", env(&[])).expect("test");
         assert_eq!(out, "price = $5");
     }
 
@@ -174,32 +174,32 @@ mod tests {
             "test",
             env(&[("A", "x"), ("B", "y")]),
         )
-        .unwrap();
+        .expect("test");
         assert_eq!(out, "x/y/fallback");
     }
 
     #[test]
     fn unterminated_brace_errors() {
-        let err = substitute_with("v = ${OOPS", "test", env(&[])).unwrap_err();
+        let err = substitute_with("v = ${OOPS", "test", env(&[])).expect_err("test");
         assert!(matches!(err, OrionError::Config { .. }));
     }
 
     #[test]
     fn invalid_var_name_errors() {
-        let err =
-            substitute_with("v = ${bad-name}", "test", env(&[("bad-name", "x")])).unwrap_err();
+        let err = substitute_with("v = ${bad-name}", "test", env(&[("bad-name", "x")]))
+            .expect_err("test");
         assert!(matches!(err, OrionError::Config { .. }));
     }
 
     #[test]
     fn no_substitution_when_no_dollar() {
-        let out = substitute_with("plain text", "test", env(&[])).unwrap();
+        let out = substitute_with("plain text", "test", env(&[])).expect("test");
         assert_eq!(out, "plain text");
     }
 
     #[test]
     fn dollar_not_followed_by_brace_is_literal() {
-        let out = substitute_with("amount: $5", "test", env(&[])).unwrap();
+        let out = substitute_with("amount: $5", "test", env(&[])).expect("test");
         assert_eq!(out, "amount: $5");
     }
 
@@ -212,13 +212,13 @@ mod tests {
             "test",
             env(&[("A", "literal-${B}"), ("B", "secret")]),
         )
-        .unwrap();
+        .expect("test");
         assert_eq!(out, "v = literal-${B}");
     }
 
     #[test]
     fn unicode_pass_through() {
-        let out = substitute_with("π = ${PI}", "test", env(&[("PI", "3.14")])).unwrap();
+        let out = substitute_with("π = ${PI}", "test", env(&[("PI", "3.14")])).expect("test");
         assert_eq!(out, "π = 3.14");
     }
 }

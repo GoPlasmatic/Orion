@@ -498,8 +498,8 @@ mod tests {
         assert_eq!(errs.len(), 1);
         assert_eq!(errs[0].code, "TYPE_MISMATCH");
         assert_eq!(errs[0].path, "tasks[1].function.input.connector");
-        assert_eq!(errs[0].expected.as_ref().unwrap(), &json!("string"));
-        assert_eq!(errs[0].got.as_ref().unwrap(), &json!(42));
+        assert_eq!(errs[0].expected.as_ref().expect("test"), &json!("string"));
+        assert_eq!(errs[0].got.as_ref().expect("test"), &json!(42));
     }
 
     #[test]

@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn test_serialization_error_status() {
         let serde_err: serde_json::Error =
-            serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+            serde_json::from_str::<serde_json::Value>("invalid").expect_err("test");
         let err = OrionError::Serialization(serde_err);
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn test_serialization_not_retryable() {
         let serde_err: serde_json::Error =
-            serde_json::from_str::<serde_json::Value>("invalid").unwrap_err();
+            serde_json::from_str::<serde_json::Value>("invalid").expect_err("test");
         assert!(!OrionError::Serialization(serde_err).is_retryable());
     }
 
@@ -593,8 +593,8 @@ mod tests {
     async fn body_to_value(response: Response) -> Value {
         let body_bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
             .await
-            .unwrap();
-        serde_json::from_slice(&body_bytes).unwrap()
+            .expect("test");
+        serde_json::from_slice(&body_bytes).expect("test")
     }
 
     #[tokio::test]
@@ -629,7 +629,7 @@ mod tests {
         let body = body_to_value(response).await;
         let details = &body["error"]["details"];
         assert!(details.is_array(), "details should be an array");
-        let arr = details.as_array().unwrap();
+        let arr = details.as_array().expect("test");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["path"], "channel.protocol");
         assert_eq!(arr[0]["code"], "ENUM_MISMATCH");
@@ -646,7 +646,7 @@ mod tests {
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = body_to_value(response).await;
-        let arr = body["error"]["details"].as_array().unwrap();
+        let arr = body["error"]["details"].as_array().expect("test");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["path"], "channel.route_pattern");
         assert_eq!(arr[0]["code"], "REQUIRED");

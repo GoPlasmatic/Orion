@@ -263,14 +263,14 @@ mod tests {
             token: "tok123".to_string(),
         };
         let req = apply_auth(client.get("http://localhost"), &auth);
-        let built = req.build().unwrap();
+        let built = req.build().expect("test");
         assert_eq!(
             built
                 .headers()
                 .get("authorization")
-                .unwrap()
+                .expect("test")
                 .to_str()
-                .unwrap(),
+                .expect("test"),
             "Bearer tok123"
         );
     }
@@ -283,9 +283,14 @@ mod tests {
             key: "secret123".to_string(),
         };
         let req = apply_auth(client.get("http://localhost"), &auth);
-        let built = req.build().unwrap();
+        let built = req.build().expect("test");
         assert_eq!(
-            built.headers().get("x-api-key").unwrap().to_str().unwrap(),
+            built
+                .headers()
+                .get("x-api-key")
+                .expect("test")
+                .to_str()
+                .expect("test"),
             "secret123"
         );
     }
@@ -297,10 +302,12 @@ mod tests {
             "/test",
             axum::routing::get(|| async { axum::Json(serde_json::json!({"result": "success"})) }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test");
+        let addr = listener.local_addr().expect("test");
         tokio::spawn(async move {
-            axum::serve(listener, mock_app).await.unwrap();
+            axum::serve(listener, mock_app).await.expect("test");
         });
 
         let client = reqwest::Client::new();
@@ -326,7 +333,7 @@ mod tests {
         .await;
 
         assert!(result.is_ok());
-        let val = result.unwrap();
+        let val = result.expect("test");
         assert_eq!(val["result"], "success");
     }
 
@@ -336,10 +343,12 @@ mod tests {
             "/post-test",
             axum::routing::post(|| async { axum::Json(serde_json::json!({"received": true})) }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test");
+        let addr = listener.local_addr().expect("test");
         tokio::spawn(async move {
-            axum::serve(listener, mock_app).await.unwrap();
+            axum::serve(listener, mock_app).await.expect("test");
         });
 
         let client = reqwest::Client::new();
@@ -383,10 +392,12 @@ mod tests {
             "/error",
             axum::routing::get(|| async { (axum::http::StatusCode::BAD_REQUEST, "Bad Request") }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test");
+        let addr = listener.local_addr().expect("test");
         tokio::spawn(async move {
-            axum::serve(listener, mock_app).await.unwrap();
+            axum::serve(listener, mock_app).await.expect("test");
         });
 
         let client = reqwest::Client::new();
@@ -412,7 +423,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        let err = result.unwrap_err();
+        let err = result.expect_err("test");
         assert!(err.to_string().contains("400"));
     }
 
@@ -422,10 +433,12 @@ mod tests {
             "/text",
             axum::routing::get(|| async { "plain text response" }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test");
+        let addr = listener.local_addr().expect("test");
         tokio::spawn(async move {
-            axum::serve(listener, mock_app).await.unwrap();
+            axum::serve(listener, mock_app).await.expect("test");
         });
 
         let client = reqwest::Client::new();
@@ -452,7 +465,7 @@ mod tests {
 
         // Should fail to parse as JSON
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("parse"));
+        assert!(result.expect_err("test").to_string().contains("parse"));
     }
 
     #[tokio::test]
@@ -463,10 +476,12 @@ mod tests {
                 axum::Json(serde_json::json!({"data": "x".repeat(200)}))
             }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test");
+        let addr = listener.local_addr().expect("test");
         tokio::spawn(async move {
-            axum::serve(listener, mock_app).await.unwrap();
+            axum::serve(listener, mock_app).await.expect("test");
         });
 
         let client = reqwest::Client::new();
@@ -492,7 +507,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("exceed"));
+        assert!(result.expect_err("test").to_string().contains("exceed"));
     }
 
     #[tokio::test]
@@ -504,10 +519,12 @@ mod tests {
                 axum::Json(serde_json::json!({"slow": true}))
             }),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test");
+        let addr = listener.local_addr().expect("test");
         tokio::spawn(async move {
-            axum::serve(listener, mock_app).await.unwrap();
+            axum::serve(listener, mock_app).await.expect("test");
         });
 
         let client = reqwest::Client::new();
@@ -533,7 +550,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert!(result.expect_err("test").to_string().contains("timed out"));
     }
 
     #[tokio::test]
@@ -561,7 +578,7 @@ mod tests {
         .await;
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("failed"));
+        assert!(result.expect_err("test").to_string().contains("failed"));
     }
 
     #[test]
@@ -572,13 +589,13 @@ mod tests {
             password: "pass".to_string(),
         };
         let req = apply_auth(client.get("http://localhost"), &auth);
-        let built = req.build().unwrap();
+        let built = req.build().expect("test");
         let auth_header = built
             .headers()
             .get("authorization")
-            .unwrap()
+            .expect("test")
             .to_str()
-            .unwrap();
+            .expect("test");
         assert!(auth_header.starts_with("Basic "));
     }
 }
