@@ -15,7 +15,7 @@ use crate::storage::repositories::channels::{
 
 use super::VersionFilter;
 use super::audit_and_reload;
-use super::audit_log;
+use super::audit_log_draft_only;
 
 // ============================================================
 // Channels CRUD
@@ -57,14 +57,13 @@ pub(crate) async fn create_channel(
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_channel(&req)?;
     let channel = state.channel_repo.create(&req).await?;
-    audit_log(
+    audit_log_draft_only(
         &state.audit_log_repo,
         &principal,
         "create",
         "channel",
         &channel.channel_id,
     );
-    // No engine reload — drafts are not in the engine
     Ok(created_response(ChannelResponse::try_from(&channel)?))
 }
 
@@ -107,8 +106,7 @@ pub(crate) async fn update_channel(
     OrionJson(req): OrionJson<UpdateChannelRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let channel = state.channel_repo.update_draft(&id, &req).await?;
-    audit_log(&state.audit_log_repo, &principal, "update", "channel", &id);
-    // No engine reload — drafts are not in the engine
+    audit_log_draft_only(&state.audit_log_repo, &principal, "update", "channel", &id);
     Ok(data_response(ChannelResponse::try_from(&channel)?))
 }
 
@@ -220,7 +218,7 @@ pub(crate) async fn create_new_channel_version(
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let channel = state.channel_repo.create_new_version(&id).await?;
-    audit_log(
+    audit_log_draft_only(
         &state.audit_log_repo,
         &principal,
         "create_version",
@@ -297,7 +295,7 @@ pub(crate) async fn import_channels(
             }
         }
     }
-    audit_log(
+    audit_log_draft_only(
         &state.audit_log_repo,
         &principal,
         "import",

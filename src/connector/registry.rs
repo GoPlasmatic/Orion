@@ -7,7 +7,7 @@ use crate::errors::OrionError;
 use crate::storage::repositories::connectors::ConnectorRepository;
 
 use super::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
-use super::types::ConnectorConfig;
+use super::config::ConnectorConfig;
 
 /// Monotonic counter for LRU tracking of circuit breaker access.
 static BREAKER_ACCESS_COUNTER: AtomicU64 = AtomicU64::new(0);
