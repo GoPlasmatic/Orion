@@ -2,6 +2,7 @@
 name = "orion-server"
 version = "0.2.0"
 edition = "2024"
+rust-version = "1.85"
 description = "Declarative services runtime powered by dataflow-rs"
 license = "Apache-2.0"
 repository = "https://github.com/GoPlasmatic/Orion"
@@ -60,10 +61,10 @@ futures = { version = "0.3", default-features = false, features = ["alloc"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 
 # OpenTelemetry
-opentelemetry = { version = "0.31", default-features = false, features = ["trace"] }
-opentelemetry_sdk = { version = "0.31", default-features = false, features = ["rt-tokio", "trace"] }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["grpc-tonic", "trace"] }
-tracing-opentelemetry = { version = "0.32", default-features = false }
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "trace"] }
+tracing-opentelemetry = { version = "0.33", default-features = false }
 
 # TCP socket configuration
 socket2 = "0.6"
