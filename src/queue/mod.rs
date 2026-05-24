@@ -169,7 +169,6 @@ impl WorkerHandle {
 /// Scalar config parameters (workers, buffer_size, timeouts, limits) are read
 /// from `config`. The Arc dependencies (engine, repos) are passed separately
 /// because they have independent lifetimes.
-#[allow(clippy::too_many_arguments)]
 pub fn start_workers(
     config: &crate::config::QueueConfig,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
@@ -194,19 +193,21 @@ pub fn start_workers(
     let dispatcher_ctx = processing::DispatcherContext {
         max_workers,
         shutdown_timeout_secs,
-        processing_timeout_ms: config.processing_timeout_ms,
-        max_result_size_bytes: config.max_result_size_bytes,
-        engine,
-        trace_repo,
-        dlq_repo,
         counters: processing::QueueCounters {
             pending: pending_count.clone(),
             active: active_workers,
             memory_bytes: memory_bytes.clone(),
         },
-        channel_registry,
-        persistence_queue,
-        global_trace_storage,
+        processing: processing::ProcessingContext {
+            engine,
+            trace_repo,
+            dlq_repo,
+            processing_timeout_ms: config.processing_timeout_ms,
+            max_result_size_bytes: config.max_result_size_bytes,
+            channel_registry,
+            persistence_queue,
+            global_trace_storage,
+        },
     };
 
     let handle = tokio::spawn(processing::dispatcher_loop(rx, dispatcher_ctx));

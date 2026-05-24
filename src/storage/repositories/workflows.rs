@@ -145,25 +145,25 @@ impl SqlWorkflowRepository {
     }
 }
 
-/// Build the INSERT query for a workflow row.
-///
-/// Used by `create` (new draft v1), `create_new_version` (draft copy of latest),
-/// and `bulk_create` (batch draft v1) to eliminate the repeated 11-column
-/// column/value list.
-#[allow(clippy::too_many_arguments)]
-fn build_workflow_insert(
-    workflow_id: &str,
+/// Fields needed to materialise one row of the `workflows` table — used by
+/// `build_workflow_insert` to avoid an 11-argument positional signature
+/// across `create`, `create_new_version`, and `bulk_create`.
+struct WorkflowInsertRow<'a> {
+    workflow_id: &'a str,
     version: i64,
-    name: &str,
-    description_val: sea_query::Value,
+    name: &'a str,
+    description: sea_query::Value,
     priority: i64,
-    status: &str,
+    status: &'a str,
     rollout_pct: i64,
-    condition_json: &str,
-    tasks_json: &str,
-    tags_json: &str,
+    condition_json: &'a str,
+    tasks_json: &'a str,
+    tags_json: &'a str,
     continue_on_error: bool,
-) -> (String, sea_query_binder::SqlxValues) {
+}
+
+/// Build the INSERT query for a workflow row.
+fn build_workflow_insert(row: WorkflowInsertRow<'_>) -> (String, sea_query_binder::SqlxValues) {
     let mut q = Query::insert();
     q.into_table(Workflows::Table)
         .columns([
@@ -180,17 +180,17 @@ fn build_workflow_insert(
             Workflows::ContinueOnError,
         ])
         .values_panic([
-            Expr::val(workflow_id).into(),
-            Expr::val(version).into(),
-            Expr::val(name).into(),
-            Expr::val(description_val).into(),
-            Expr::val(priority).into(),
-            Expr::val(status).into(),
-            Expr::val(rollout_pct).into(),
-            Expr::val(condition_json).into(),
-            Expr::val(tasks_json).into(),
-            Expr::val(tags_json).into(),
-            Expr::val(continue_on_error).into(),
+            Expr::val(row.workflow_id).into(),
+            Expr::val(row.version).into(),
+            Expr::val(row.name).into(),
+            Expr::val(row.description).into(),
+            Expr::val(row.priority).into(),
+            Expr::val(row.status).into(),
+            Expr::val(row.rollout_pct).into(),
+            Expr::val(row.condition_json).into(),
+            Expr::val(row.tasks_json).into(),
+            Expr::val(row.tags_json).into(),
+            Expr::val(row.continue_on_error).into(),
         ]);
     build_sqlx(&mut q)
 }
@@ -329,19 +329,19 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             let description_val = optional_string_value(req.description.as_deref());
 
-            let (sql, values) = build_workflow_insert(
-                workflow_id.as_str(),
-                1,
-                req.name.as_str(),
-                description_val,
-                req.priority,
-                EntityStatus::Draft.as_str(),
-                100,
-                condition_json.as_str(),
-                tasks_json.as_str(),
-                tags_json.as_str(),
-                req.continue_on_error,
-            );
+            let (sql, values) = build_workflow_insert(WorkflowInsertRow {
+                workflow_id: workflow_id.as_str(),
+                version: 1,
+                name: req.name.as_str(),
+                description: description_val,
+                priority: req.priority,
+                status: EntityStatus::Draft.as_str(),
+                rollout_pct: 100,
+                condition_json: condition_json.as_str(),
+                tasks_json: tasks_json.as_str(),
+                tags_json: tags_json.as_str(),
+                continue_on_error: req.continue_on_error,
+            });
 
             self.pool.execute_query(&sql, values).await?;
 
@@ -747,19 +747,19 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             let description_val = optional_string_value(latest.description.as_deref());
 
-            let (sql, values) = build_workflow_insert(
+            let (sql, values) = build_workflow_insert(WorkflowInsertRow {
                 workflow_id,
-                new_version,
-                latest.name.as_str(),
-                description_val,
-                latest.priority,
-                EntityStatus::Draft.as_str(),
-                100,
-                latest.condition_json.as_str(),
-                latest.tasks_json.as_str(),
-                latest.tags.as_str(),
-                latest.continue_on_error,
-            );
+                version: new_version,
+                name: latest.name.as_str(),
+                description: description_val,
+                priority: latest.priority,
+                status: EntityStatus::Draft.as_str(),
+                rollout_pct: 100,
+                condition_json: latest.condition_json.as_str(),
+                tasks_json: latest.tasks_json.as_str(),
+                tags_json: latest.tags.as_str(),
+                continue_on_error: latest.continue_on_error,
+            });
 
             self.pool.execute_query(&sql, values).await?;
 
@@ -787,19 +787,19 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     let tags_json = serde_json::to_string(&req.tags)?;
                     let description_val = optional_string_value(req.description.as_deref());
 
-                    let (sql, values) = build_workflow_insert(
-                        workflow_id.as_str(),
-                        1,
-                        req.name.as_str(),
-                        description_val,
-                        req.priority,
-                        EntityStatus::Draft.as_str(),
-                        100,
-                        condition_json.as_str(),
-                        tasks_json.as_str(),
-                        tags_json.as_str(),
-                        req.continue_on_error,
-                    );
+                    let (sql, values) = build_workflow_insert(WorkflowInsertRow {
+                        workflow_id: workflow_id.as_str(),
+                        version: 1,
+                        name: req.name.as_str(),
+                        description: description_val,
+                        priority: req.priority,
+                        status: EntityStatus::Draft.as_str(),
+                        rollout_pct: 100,
+                        condition_json: condition_json.as_str(),
+                        tasks_json: tasks_json.as_str(),
+                        tags_json: tags_json.as_str(),
+                        continue_on_error: req.continue_on_error,
+                    });
 
                     tx.execute_query(&sql, values).await?;
 

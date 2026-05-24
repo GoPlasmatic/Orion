@@ -43,12 +43,20 @@ pub(super) struct QueueCounters {
 pub(super) struct DispatcherContext {
     pub(super) max_workers: usize,
     pub(super) shutdown_timeout_secs: u64,
-    pub(super) processing_timeout_ms: u64,
-    pub(super) max_result_size_bytes: usize,
+    pub(super) counters: QueueCounters,
+    pub(super) processing: ProcessingContext,
+}
+
+/// Per-task subset of [`DispatcherContext`] — everything `process_trace`
+/// needs to execute one queued message. Cloned once per spawn so each task
+/// owns its own handles.
+#[derive(Clone)]
+pub(super) struct ProcessingContext {
     pub(super) engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     pub(super) trace_repo: Arc<dyn TraceRepository>,
     pub(super) dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
-    pub(super) counters: QueueCounters,
+    pub(super) processing_timeout_ms: u64,
+    pub(super) max_result_size_bytes: usize,
     pub(super) channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub(super) persistence_queue: crate::queue::TracePersistenceQueue,
     pub(super) global_trace_storage: crate::config::TracingStorageConfig,
@@ -79,31 +87,13 @@ pub(super) async fn dispatcher_loop(mut rx: mpsc::Receiver<QueueMessage>, ctx: D
         let active = ctx.counters.active.fetch_add(1, Ordering::Relaxed) + 1;
         metrics::set_trace_workers_active(active as f64);
 
-        let engine = ctx.engine.clone();
-        let trace_repo = ctx.trace_repo.clone();
-        let dlq_repo = ctx.dlq_repo.clone();
+        let processing = ctx.processing.clone();
         let active_counter = ctx.counters.active.clone();
         let memory_counter = ctx.counters.memory_bytes.clone();
-        let processing_timeout_ms = ctx.processing_timeout_ms;
-        let max_result_size_bytes = ctx.max_result_size_bytes;
-        let channel_registry = ctx.channel_registry.clone();
-        let persistence_queue = ctx.persistence_queue.clone();
-        let global_trace_storage = ctx.global_trace_storage.clone();
 
         tokio::spawn(async move {
             let _permit = permit; // guard: dropped on scope exit, even on panic
-            process_trace(
-                msg,
-                engine,
-                trace_repo,
-                dlq_repo,
-                processing_timeout_ms,
-                max_result_size_bytes,
-                channel_registry,
-                persistence_queue,
-                global_trace_storage,
-            )
-            .await;
+            process_trace(msg, processing).await;
             let active = active_counter
                 .fetch_sub(1, Ordering::Relaxed)
                 .saturating_sub(1);
@@ -196,19 +186,19 @@ async fn route_set_result(
 }
 
 /// Process a single queued trace.
-#[allow(clippy::too_many_arguments)]
 #[tracing::instrument(skip_all, fields(trace_id = %msg.trace_id, channel = %msg.channel))]
-async fn process_trace(
-    msg: QueueMessage,
-    engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
-    trace_repo: Arc<dyn TraceRepository>,
-    dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
-    processing_timeout_ms: u64,
-    max_result_size_bytes: usize,
-    channel_registry: Arc<crate::channel::ChannelRegistry>,
-    persistence_queue: crate::queue::TracePersistenceQueue,
-    global_trace_storage: crate::config::TracingStorageConfig,
-) {
+async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
+    let ProcessingContext {
+        engine,
+        trace_repo,
+        dlq_repo,
+        processing_timeout_ms,
+        max_result_size_bytes,
+        channel_registry,
+        persistence_queue,
+        global_trace_storage,
+    } = ctx;
+
     // Resolve effective trace-storage config for this channel (channel
     // override > global default). In `Off` mode skip all trace writes; the
     // workflow still runs but no DB rows are touched.
