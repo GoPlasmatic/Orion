@@ -74,9 +74,10 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
 
 /// Build the custom function handlers for the dataflow-rs engine.
 ///
-/// Registers http_call, channel_call, and (when kafka feature is disabled) a
-/// stub publish_kafka handler. Use [`register_kafka_publisher`] to register the
-/// real Kafka-backed handler when the feature is enabled.
+/// Registers the seven Orion-specific handlers (`http_call`, `channel_call`,
+/// `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`) plus a
+/// stub `publish_kafka`. Call [`register_kafka_publisher`] afterwards to swap
+/// the stub for the real Kafka-backed handler once the producer is initialised.
 pub fn build_custom_functions(
     registry: Arc<ConnectorRegistry>,
     client: reqwest::Client,
@@ -130,8 +131,8 @@ pub fn build_custom_functions(
         }),
     );
 
-    // Register cache handlers (cache_read, cache_write)
-    // Memory backend is always available; Redis backend is feature-gated inside CachePool.
+    // Register cache handlers (cache_read, cache_write).
+    // CachePool routes to the in-memory or Redis backend per connector config.
     fns.insert(
         "cache_read".to_string(),
         Box::new(functions::cache_read::CacheReadHandler {

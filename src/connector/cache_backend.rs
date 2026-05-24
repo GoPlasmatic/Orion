@@ -1,10 +1,11 @@
 //! Unified cache backend abstraction.
 //!
 //! Provides a [`CacheBackend`] trait with two implementations:
-//! - [`MemoryCacheBackend`] — in-process DashMap, always available
-//! - [`RedisCacheBackend`] — Redis via multiplexed connection (feature-gated)
+//! - [`MemoryCacheBackend`] — in-process DashMap, used when no Redis connector is configured
+//! - [`RedisCacheBackend`] — Redis via multiplexed connection, selected per connector config
 //!
-//! [`CachePool`] dispatches to the correct backend based on connector config.
+//! Both backends are always compiled in. [`CachePool`] dispatches to the
+//! correct one based on the connector referenced by each cache call.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -38,7 +39,7 @@ struct MemoryEntry {
     expires_at: Option<Instant>,
 }
 
-/// In-process cache backed by [`DashMap`]. Always available (no feature flag).
+/// In-process cache backed by [`DashMap`].
 pub struct MemoryCacheBackend {
     entries: DashMap<String, MemoryEntry>,
 }
@@ -144,7 +145,7 @@ impl CacheBackend for MemoryCacheBackend {
 }
 
 // ============================================================
-// Redis backend (feature-gated)
+// Redis backend
 // ============================================================
 
 pub struct RedisCacheBackend {

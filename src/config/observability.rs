@@ -12,7 +12,7 @@ pub struct MetricsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TracingConfig {
-    /// Enable OpenTelemetry trace export. Requires the `otel` feature flag at compile time.
+    /// Enable OpenTelemetry trace export at runtime. Compiled into every build.
     pub enabled: bool,
     /// OTLP gRPC endpoint (e.g. Jaeger, Grafana Tempo, OTel Collector).
     pub otlp_endpoint: String,
