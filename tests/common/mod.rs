@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used, dead_code)]
+#![allow(dead_code)]
 
 use std::sync::Arc;
 
