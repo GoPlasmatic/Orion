@@ -20,22 +20,29 @@ use crate::storage::repositories::traces::{TraceCompletedRow, TraceFilter};
 pub(crate) use crate::engine::utils::merge_metadata;
 use crate::engine::utils::{inject_rollout_bucket, remove_rollout_bucket};
 
-/// Apply the per-channel/global filters to decide whether this trace should
-/// be persisted at all. Returns `Some(reason)` to drop (caller records metric).
+/// One completed sync trace, ready for persistence and (optionally) caching.
+/// Shared by [`route_store_completed`] and [`persist_trace_and_cache`] so
+/// the trace fields are passed as a single borrow instead of 6 positional
+/// arguments at each callsite.
+struct CompletedTrace<'a> {
+    channel: &'a str,
+    input_json: Option<&'a str>,
+    response_json: &'a str,
+    duration_ms: f64,
+    has_errors: bool,
+    task_trace_json: Option<&'a str>,
+}
+
 /// Route a completed sync trace through the chosen persistence mode.
-#[allow(clippy::too_many_arguments)]
+/// Returns early via [`EffectiveTraceConfig::should_drop`] when the
+/// per-channel/global filters say this trace should not be persisted.
 async fn route_store_completed(
     cfg: &EffectiveTraceConfig,
     trace_repo: &std::sync::Arc<dyn crate::storage::repositories::traces::TraceRepository>,
     persistence_queue: &TracePersistenceQueue,
-    channel: &str,
-    input_json: Option<&str>,
-    response_json: &str,
-    duration_ms: f64,
-    has_errors: bool,
-    task_trace_json: Option<&str>,
+    trace: &CompletedTrace<'_>,
 ) {
-    if let Some(reason) = cfg.should_drop(has_errors) {
+    if let Some(reason) = cfg.should_drop(trace.has_errors) {
         metrics::record_trace_dropped(reason);
         return;
     }
@@ -43,12 +50,12 @@ async fn route_store_completed(
     if matches!(cfg.mode, TraceStorageMode::Sync) {
         if let Err(e) = trace_repo
             .store_completed(
-                channel,
+                trace.channel,
                 "sync",
-                input_json,
-                response_json,
-                duration_ms,
-                task_trace_json,
+                trace.input_json,
+                trace.response_json,
+                trace.duration_ms,
+                trace.task_trace_json,
             )
             .await
         {
@@ -56,12 +63,12 @@ async fn route_store_completed(
         }
     } else {
         let task = TracePersistenceTask::StoreCompleted(TraceCompletedRow {
-            channel: channel.to_string(),
+            channel: trace.channel.to_string(),
             mode: "sync".to_string(),
-            input_json: input_json.map(str::to_string),
-            result_json: response_json.to_string(),
-            duration_ms,
-            task_trace_json: task_trace_json.map(str::to_string),
+            input_json: trace.input_json.map(str::to_string),
+            result_json: trace.response_json.to_string(),
+            duration_ms: trace.duration_ms,
+            task_trace_json: trace.task_trace_json.map(str::to_string),
         });
         persistence_queue.submit(task).await;
     }
@@ -580,16 +587,10 @@ async fn check_response_cache(
 /// fire-and-forget cache the serialized response if a cache context was
 /// produced by [`check_response_cache`]. Records the trace-store phase in
 /// the per-request profile when one is in scope.
-#[allow(clippy::too_many_arguments)]
 async fn persist_trace_and_cache(
     state: &AppState,
-    channel: &str,
     channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
-    input_json: Option<&str>,
-    response_json: &str,
-    duration_ms: f64,
-    has_errors: bool,
-    task_trace_json: Option<&str>,
+    trace: &CompletedTrace<'_>,
     cache_context: &Option<CacheStoreCtx>,
     profile: Option<&std::sync::Arc<crate::engine::profile::ProfileCollector>>,
 ) {
@@ -607,12 +608,7 @@ async fn persist_trace_and_cache(
         &effective_trace,
         &state.trace_repo,
         &state.trace_persistence_queue,
-        channel,
-        input_json,
-        response_json,
-        duration_ms,
-        has_errors,
-        task_trace_json,
+        trace,
     )
     .await;
     if let Some(p) = profile {
@@ -621,9 +617,9 @@ async fn persist_trace_and_cache(
 
     // Fire-and-forget cache store
     if let Some((key, cache, ttl)) = cache_context
-        && let Err(e) = cache.set_ex(key, response_json, *ttl).await
+        && let Err(e) = cache.set_ex(key, trace.response_json, *ttl).await
     {
-        tracing::debug!(channel = channel, error = %e, "Failed to cache response");
+        tracing::debug!(channel = trace.channel, error = %e, "Failed to cache response");
     }
 }
 
@@ -739,13 +735,15 @@ async fn process_sync_for_channel(
                 .and_then(|t| serde_json::to_string(t).ok());
             persist_trace_and_cache(
                 state,
-                channel,
                 &channel_config,
-                input_json.as_deref(),
-                &response_json,
-                duration_ms,
-                has_errors,
-                task_trace_json.as_deref(),
+                &CompletedTrace {
+                    channel,
+                    input_json: input_json.as_deref(),
+                    response_json: &response_json,
+                    duration_ms,
+                    has_errors,
+                    task_trace_json: task_trace_json.as_deref(),
+                },
                 &cache_context,
                 profile.as_ref(),
             )
