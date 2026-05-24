@@ -242,29 +242,33 @@ async fn process_one_kafka_message(
         Err(_) => {
             report_failure_and_dlq(
                 ctx,
-                &channel,
-                &topic,
-                payload.as_bytes(),
-                "timeout",
-                "kafka_timeout",
-                "Kafka message processing timed out",
-                &format!(
-                    "Processing timed out after {}ms",
-                    ctx.processing_timeout_ms
-                ),
+                FailureReport {
+                    channel: &channel,
+                    topic: &topic,
+                    payload: payload.as_bytes(),
+                    message_status: "timeout",
+                    error_kind: "kafka_timeout",
+                    log_msg: "Kafka message processing timed out",
+                    dlq_reason: &format!(
+                        "Processing timed out after {}ms",
+                        ctx.processing_timeout_ms
+                    ),
+                },
             )
             .await;
         }
         Ok(Err(e)) => {
             report_failure_and_dlq(
                 ctx,
-                &channel,
-                &topic,
-                payload.as_bytes(),
-                "error",
-                "kafka_processing",
-                "Failed to process Kafka message",
-                &format!("Processing error: {e}"),
+                FailureReport {
+                    channel: &channel,
+                    topic: &topic,
+                    payload: payload.as_bytes(),
+                    message_status: "error",
+                    error_kind: "kafka_processing",
+                    log_msg: "Failed to process Kafka message",
+                    dlq_reason: &format!("Processing error: {e}"),
+                },
             )
             .await;
         }
@@ -279,13 +283,15 @@ async fn process_one_kafka_message(
                 .join("; ");
             report_failure_and_dlq(
                 ctx,
-                &channel,
-                &topic,
-                payload.as_bytes(),
-                "error",
-                "kafka_processing",
-                "Kafka message processed with workflow errors",
-                &format!("Workflow errors: {summary}"),
+                FailureReport {
+                    channel: &channel,
+                    topic: &topic,
+                    payload: payload.as_bytes(),
+                    message_status: "error",
+                    error_kind: "kafka_processing",
+                    log_msg: "Kafka message processed with workflow errors",
+                    dlq_reason: &format!("Workflow errors: {summary}"),
+                },
             )
             .await;
         }
@@ -502,24 +508,41 @@ fn report_lag_for_partitions(consumer: &StreamConsumer, committed: &TopicPartiti
     }
 }
 
+/// Per-failure descriptor for [`report_failure_and_dlq`]. Bundles the
+/// message identity (channel/topic/payload) with the metric and log
+/// labels for one of the consume loop's failure branches.
+struct FailureReport<'a> {
+    channel: &'a str,
+    topic: &'a str,
+    payload: &'a [u8],
+    message_status: &'static str,
+    error_kind: &'static str,
+    log_msg: &'a str,
+    dlq_reason: &'a str,
+}
+
 /// Record failure metrics and ship the original payload to the DLQ.
 /// Used by the 4 failure branches in the consume loop (UTF-8 decode,
 /// JSON parse, processing timeout, workflow error) to keep metric / log /
 /// DLQ behaviour consistent.
-async fn report_failure_and_dlq(
-    ctx: &ConsumeLoopContext,
-    channel: &str,
-    topic: &str,
-    payload: &[u8],
-    message_status: &'static str,
-    error_kind: &'static str,
-    log_msg: &str,
-    dlq_reason: &str,
-) {
-    metrics::record_message(channel, message_status);
-    metrics::record_error(error_kind);
-    tracing::error!(topic = %topic, channel = %channel, error = %dlq_reason, "{log_msg}");
-    send_to_dlq(&ctx.dlq_producer, &ctx.dlq_topic, topic, payload, dlq_reason).await;
+async fn report_failure_and_dlq(ctx: &ConsumeLoopContext, failure: FailureReport<'_>) {
+    metrics::record_message(failure.channel, failure.message_status);
+    metrics::record_error(failure.error_kind);
+    tracing::error!(
+        topic = %failure.topic,
+        channel = %failure.channel,
+        error = %failure.dlq_reason,
+        "{}",
+        failure.log_msg
+    );
+    send_to_dlq(
+        &ctx.dlq_producer,
+        &ctx.dlq_topic,
+        failure.topic,
+        failure.payload,
+        failure.dlq_reason,
+    )
+    .await;
 }
 
 /// Build a DLQ envelope message from error context.

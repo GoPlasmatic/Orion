@@ -141,28 +141,29 @@ fn archive_active_channels_query(
     build_sqlx(&mut q)
 }
 
-/// Build the INSERT query for a channel row.
-///
-/// Used by `create` (new draft v1) and `create_new_version` (draft copy of
-/// latest) to eliminate the repeated 15-column column/value list.
-#[allow(clippy::too_many_arguments)]
-fn build_channel_insert(
-    channel_id: &str,
+/// Fields needed to materialise one row of the `channels` table — used by
+/// `build_channel_insert` to avoid a 15-argument positional signature across
+/// `create` and `create_new_version`.
+struct ChannelInsertRow<'a> {
+    channel_id: &'a str,
     version: i64,
-    name: &str,
-    description_val: sea_query::Value,
-    channel_type: &str,
-    protocol: &str,
-    methods_val: sea_query::Value,
-    route_pattern_val: sea_query::Value,
-    topic_val: sea_query::Value,
-    consumer_group_val: sea_query::Value,
-    transport_config_json: &str,
-    workflow_id_val: sea_query::Value,
-    config_json: &str,
-    status: &str,
+    name: &'a str,
+    description: sea_query::Value,
+    channel_type: &'a str,
+    protocol: &'a str,
+    methods: sea_query::Value,
+    route_pattern: sea_query::Value,
+    topic: sea_query::Value,
+    consumer_group: sea_query::Value,
+    transport_config_json: &'a str,
+    workflow_id: sea_query::Value,
+    config_json: &'a str,
+    status: &'a str,
     priority: i64,
-) -> (String, sea_query_binder::SqlxValues) {
+}
+
+/// Build the INSERT query for a channel row.
+fn build_channel_insert(row: ChannelInsertRow<'_>) -> (String, sea_query_binder::SqlxValues) {
     let mut q = Query::insert();
     q.into_table(Channels::Table)
         .columns([
@@ -183,21 +184,21 @@ fn build_channel_insert(
             Channels::Priority,
         ])
         .values_panic([
-            Expr::val(channel_id).into(),
-            Expr::val(version).into(),
-            Expr::val(name).into(),
-            Expr::val(description_val).into(),
-            Expr::val(channel_type).into(),
-            Expr::val(protocol).into(),
-            Expr::val(methods_val).into(),
-            Expr::val(route_pattern_val).into(),
-            Expr::val(topic_val).into(),
-            Expr::val(consumer_group_val).into(),
-            Expr::val(transport_config_json).into(),
-            Expr::val(workflow_id_val).into(),
-            Expr::val(config_json).into(),
-            Expr::val(status).into(),
-            Expr::val(priority).into(),
+            Expr::val(row.channel_id).into(),
+            Expr::val(row.version).into(),
+            Expr::val(row.name).into(),
+            Expr::val(row.description).into(),
+            Expr::val(row.channel_type).into(),
+            Expr::val(row.protocol).into(),
+            Expr::val(row.methods).into(),
+            Expr::val(row.route_pattern).into(),
+            Expr::val(row.topic).into(),
+            Expr::val(row.consumer_group).into(),
+            Expr::val(row.transport_config_json).into(),
+            Expr::val(row.workflow_id).into(),
+            Expr::val(row.config_json).into(),
+            Expr::val(row.status).into(),
+            Expr::val(row.priority).into(),
         ]);
     build_sqlx(&mut q)
 }
@@ -239,23 +240,23 @@ impl ChannelRepository for SqlChannelRepository {
             let consumer_group_val = optional_string_value(req.consumer_group.as_deref());
             let workflow_id_val = optional_string_value(req.workflow_id.as_deref());
 
-            let (sql, values) = build_channel_insert(
-                channel_id.as_str(),
-                1,
-                req.name.as_str(),
-                description_val,
-                req.channel_type.as_str(),
-                req.protocol.as_str(),
-                methods_val,
-                route_pattern_val,
-                topic_val,
-                consumer_group_val,
-                transport_config_json.as_str(),
-                workflow_id_val,
-                config_json.as_str(),
-                EntityStatus::Draft.as_str(),
-                req.priority,
-            );
+            let (sql, values) = build_channel_insert(ChannelInsertRow {
+                channel_id: channel_id.as_str(),
+                version: 1,
+                name: req.name.as_str(),
+                description: description_val,
+                channel_type: req.channel_type.as_str(),
+                protocol: req.protocol.as_str(),
+                methods: methods_val,
+                route_pattern: route_pattern_val,
+                topic: topic_val,
+                consumer_group: consumer_group_val,
+                transport_config_json: transport_config_json.as_str(),
+                workflow_id: workflow_id_val,
+                config_json: config_json.as_str(),
+                status: EntityStatus::Draft.as_str(),
+                priority: req.priority,
+            });
 
             self.pool.execute_query(&sql, values).await?;
 
@@ -573,23 +574,23 @@ impl ChannelRepository for SqlChannelRepository {
             let consumer_group_val = optional_string_value(latest.consumer_group.as_deref());
             let workflow_id_val = optional_string_value(latest.workflow_id.as_deref());
 
-            let (sql, values) = build_channel_insert(
+            let (sql, values) = build_channel_insert(ChannelInsertRow {
                 channel_id,
-                new_version,
-                latest.name.as_str(),
-                description_val,
-                latest.channel_type.as_str(),
-                latest.protocol.as_str(),
-                methods_val,
-                route_pattern_val,
-                topic_val,
-                consumer_group_val,
-                latest.transport_config_json.as_str(),
-                workflow_id_val,
-                latest.config_json.as_str(),
-                EntityStatus::Draft.as_str(),
-                latest.priority,
-            );
+                version: new_version,
+                name: latest.name.as_str(),
+                description: description_val,
+                channel_type: latest.channel_type.as_str(),
+                protocol: latest.protocol.as_str(),
+                methods: methods_val,
+                route_pattern: route_pattern_val,
+                topic: topic_val,
+                consumer_group: consumer_group_val,
+                transport_config_json: latest.transport_config_json.as_str(),
+                workflow_id: workflow_id_val,
+                config_json: latest.config_json.as_str(),
+                status: EntityStatus::Draft.as_str(),
+                priority: latest.priority,
+            });
 
             self.pool.execute_query(&sql, values).await?;
 
