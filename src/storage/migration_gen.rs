@@ -728,7 +728,6 @@ pub fn generate_migration(backend: &str) -> Result<String, OrionError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

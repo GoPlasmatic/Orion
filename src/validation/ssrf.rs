@@ -64,7 +64,6 @@ pub async fn validate_url_not_private(url: &str) -> Result<(), String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

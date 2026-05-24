@@ -114,7 +114,6 @@ fn next_char_boundary(bytes: &[u8], i: usize) -> usize {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
     use std::collections::HashMap;

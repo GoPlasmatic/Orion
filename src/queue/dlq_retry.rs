@@ -130,7 +130,6 @@ pub fn start_dlq_retry(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::errors::OrionError;

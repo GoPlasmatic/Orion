@@ -107,7 +107,6 @@ impl<V: Clone> LruCache<V> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::sync::Arc;
