@@ -32,8 +32,9 @@ impl KafkaProducer {
 
     /// Send a message to a Kafka topic with optional key.
     ///
-    /// Waits for delivery confirmation with a 30-second timeout.
-    /// Automatically injects W3C trace context headers when the `otel` feature is enabled.
+    /// Waits for delivery confirmation with a 30-second timeout. Always injects
+    /// the current span's W3C trace context as Kafka message headers; receivers
+    /// can stitch the trace if `tracing.enabled` is on at both ends.
     pub async fn send(
         &self,
         topic: &str,
