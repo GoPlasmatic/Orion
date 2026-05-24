@@ -74,7 +74,6 @@ fn extract_path_from_serde_message(msg: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

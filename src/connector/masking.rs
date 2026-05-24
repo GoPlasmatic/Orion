@@ -56,7 +56,6 @@ pub fn mask_connector(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

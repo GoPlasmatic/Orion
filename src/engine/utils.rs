@@ -36,7 +36,6 @@ pub fn remove_rollout_bucket(message: &mut dataflow_rs::Message) {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use serde_json::json;

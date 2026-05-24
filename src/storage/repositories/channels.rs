@@ -659,7 +659,6 @@ impl ChannelRepository for SqlChannelRepository {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

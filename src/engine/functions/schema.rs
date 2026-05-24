@@ -458,7 +458,6 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use serde_json::json;
