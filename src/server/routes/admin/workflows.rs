@@ -18,7 +18,7 @@ use crate::storage::repositories::workflows::{
 
 use super::VersionFilter;
 use super::audit_and_reload;
-use super::audit_log;
+use super::audit_log_draft_only;
 
 // ============================================================
 // Workflows CRUD
@@ -60,14 +60,13 @@ pub(crate) async fn create_workflow(
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_workflow(&req)?;
     let workflow = state.workflow_repo.create(&req).await?;
-    audit_log(
+    audit_log_draft_only(
         &state.audit_log_repo,
         &principal,
         "create",
         "workflow",
         &workflow.workflow_id,
     );
-    // No engine reload — drafts are not in the engine
     Ok(created_response(WorkflowResponse::try_from(&workflow)?))
 }
 
@@ -111,8 +110,7 @@ pub(crate) async fn update_workflow(
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_workflow(&req)?;
     let workflow = state.workflow_repo.update_draft(&id, &req).await?;
-    audit_log(&state.audit_log_repo, &principal, "update", "workflow", &id);
-    // No engine reload — drafts are not in the engine
+    audit_log_draft_only(&state.audit_log_repo, &principal, "update", "workflow", &id);
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 
@@ -260,7 +258,7 @@ pub(crate) async fn create_new_workflow_version(
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let workflow = state.workflow_repo.create_new_version(&id).await?;
-    audit_log(
+    audit_log_draft_only(
         &state.audit_log_repo,
         &principal,
         "create_version",
@@ -431,15 +429,13 @@ pub(crate) async fn import_workflows(
         }
     }
 
-    audit_log(
+    audit_log_draft_only(
         &state.audit_log_repo,
         &principal,
         "import",
         "workflow",
         &format!("{imported} imported"),
     );
-
-    // No engine reload — imported workflows are drafts
 
     Ok(Json(json!({
         "imported": imported,
