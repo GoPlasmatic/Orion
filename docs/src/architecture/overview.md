@@ -81,6 +81,10 @@ Each composed channel has its own workflow, versioning, and governance, but call
 
 ## Built-in Task Functions
 
+Two sources contribute task functions, all compiled into every binary:
+
+**From dataflow-rs 3.0 (workflow primitives):**
+
 | Function | Description |
 |----------|-------------|
 | `parse_json` | Parse payload into the data context |
@@ -88,14 +92,21 @@ Each composed channel has its own workflow, versioning, and governance, but call
 | `filter` | Allow or halt processing based on JSONLogic conditions |
 | `map` | Transform and reshape JSON using JSONLogic expressions |
 | `validation` | Enforce required fields and constraints |
-| `http_call` | Invoke downstream APIs via connectors |
-| `channel_call` | Invoke another channel's workflow in-process |
-| `db_read` / `db_write` | Execute SQL queries, return rows/affected count |
-| `cache_read` / `cache_write` | Read/write to in-memory or Redis cache |
-| `mongo_read` | Query MongoDB collections |
 | `publish_json` / `publish_xml` | Serialize data to JSON or XML output |
-| `publish_kafka` | Publish messages to Kafka topics |
 | `log` | Emit structured log entries |
+
+**From Orion (connector- and channel-backed handlers):**
+
+| Function | Description |
+|----------|-------------|
+| `http_call` | Invoke downstream APIs via an HTTP connector |
+| `channel_call` | Invoke another channel's workflow in-process |
+| `db_read` / `db_write` | Execute SQL queries against a SQL connector, return rows / affected count |
+| `cache_read` / `cache_write` | Read/write to an in-memory or Redis cache connector |
+| `mongo_read` | Query MongoDB collections via a MongoDB connector |
+| `publish_kafka` | Publish messages via a Kafka connector |
+
+The Orion handlers have machine-readable input schemas surfaced at `GET /api/v1/admin/functions`, and workflow create/update calls validate `function.input` against those schemas with field-pathed `FieldError`s before the workflow can be activated.
 
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@dagrejs/dagre@1.1.4/dist/dagre.min.js"></script>

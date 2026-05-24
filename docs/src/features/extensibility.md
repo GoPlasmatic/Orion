@@ -33,6 +33,24 @@ Task-level headers always win. This means a workflow developer can override `con
 
 Sensitive fields (`token`, `password`, `key`, `secret`, `api_key`, `connection_string`) are automatically masked as `"******"` in all API responses. Secrets are stored but never exposed through the API. Workflows reference connectors by name; they never see or embed actual credentials.
 
+### Pulling Secrets from the Environment
+
+Any string field inside a connector's `config` may use an `env://VAR_NAME` reference instead of a literal value. The resolver runs once when the connector is loaded:
+
+```json
+{
+  "name": "payments-api",
+  "connector_type": "http",
+  "config": {
+    "type": "http",
+    "url": "https://api.stripe.com/v1",
+    "auth": { "type": "bearer", "token": "env://STRIPE_API_KEY" }
+  }
+}
+```
+
+If `STRIPE_API_KEY` is not set in the process environment, startup (or the create/update call) fails with a structured error pointing at the field — production credentials never have to be POSTed into the admin API or stored in the database. The same `env://` scheme works on every string field in every connector type.
+
 ### HTTP Connector
 
 REST API calls, webhooks, and external service integration:
@@ -304,7 +322,7 @@ Orion provides 8 async function handlers that can be used in workflow tasks:
 | `mongo_read` | Query MongoDB collections |
 | `publish_kafka` | Produce messages to Kafka topics |
 
-In addition to async functions, Orion includes a **built-in function library** for data transformation:
+In addition to the Orion-specific handlers, the dataflow-rs 3.0 engine contributes a **built-in function library** for parsing, transformation, and output:
 
 | Function | Description |
 |----------|-------------|
@@ -313,9 +331,13 @@ In addition to async functions, Orion includes a **built-in function library** f
 | `filter` | Filter arrays using JSONLogic conditions |
 | `map` | Transform data with field mappings |
 | `validation` | Validate data against JSONLogic rules |
+| `publish_json` | Serialize the data context into a JSON response body |
+| `publish_xml` | Serialize the data context into an XML response body |
 | `log` | Log data at a specified level |
 
-**JSONLogic expressions** power all conditions and dynamic values. Use `{ "var": "data.field" }` to reference data, `{ "cat": [...] }` for string concatenation, arithmetic operators, and more. Dynamic paths (`path_logic`) and bodies (`body_logic`) let you compute URLs and request payloads from message data.
+The Orion-specific handlers have machine-readable input schemas surfaced at `GET /api/v1/admin/functions`; workflow create/update calls validate `function.input` against those schemas with field-pathed errors before the workflow can be activated.
+
+**JSONLogic expressions** power all conditions and dynamic values. Use `{ "var": "data.field" }` to reference data, `{ "cat": [...] }` for string concatenation, arithmetic operators, and more. Dynamic paths (`path_logic`) and bodies (`body_logic`) let you compute URLs and request payloads from message data. Under the hood, datalogic-rs 5 compiles each JSONLogic expression once at engine-construction time and evaluates it via arena-mode dispatch, so per-request cost is constant regardless of expression complexity.
 
 ## Channel Protocols
 

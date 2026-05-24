@@ -103,9 +103,9 @@ key_path = "key.pem"
 ```toml
 [admin_auth]
 enabled = true
-api_key = "your-secret-key"
-# header = "Authorization"      # Bearer format (default)
-# header = "X-API-Key"          # Raw key format
+api_keys = ["your-secret-key"]   # Any number of accepted keys; any match authorises a request
+# header = "Authorization"       # Bearer format (default)
+# header = "X-API-Key"           # Raw key format
 ```
 
 When `header` is `"Authorization"`, the key is expected as `Bearer <key>`. For any other header name, the raw key value is matched directly.
