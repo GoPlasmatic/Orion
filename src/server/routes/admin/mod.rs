@@ -84,10 +84,25 @@ fn audit_log(
     });
 }
 
+/// Record an audit-log event for a mutation that intentionally does NOT
+/// trigger an engine reload because the target is a draft (drafts are not
+/// in the engine). Use at draft create/update/import call sites so the
+/// no-reload choice is explicit at the call site rather than implied by
+/// the absence of [`audit_and_reload`].
+fn audit_log_draft_only(
+    repo: &Arc<dyn AuditLogRepository>,
+    principal: &Option<Extension<AdminPrincipal>>,
+    action: &str,
+    resource_type: &str,
+    resource_id: &str,
+) {
+    audit_log(repo, principal, action, resource_type, resource_id);
+}
+
 /// Record an audit-log event and trigger an engine reload. The standard
 /// post-mutation sequence for admin operations that change the active set
 /// (activate / archive / delete / update-rollout). Drafts do NOT reload —
-/// keep using [`audit_log`] directly in those code paths.
+/// use [`audit_log_draft_only`] in those code paths.
 async fn audit_and_reload(
     state: &AppState,
     principal: &Option<Extension<AdminPrincipal>>,
