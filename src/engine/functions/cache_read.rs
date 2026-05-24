@@ -7,8 +7,8 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, extract_output_path, profile_handler, require_cache_connector,
-    require_str_field, resolve_connector, to_exec_error,
+    apply_output, extract_output_path, profile_handler, require_cache_connector, require_str_field,
+    resolve_connector, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;

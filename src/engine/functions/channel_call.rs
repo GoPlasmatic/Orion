@@ -217,4 +217,3 @@ fn format_chain(chain: &[String], target: &str) -> String {
     parts.push(target);
     parts.join(" -> ")
 }
-
