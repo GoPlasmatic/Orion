@@ -8,7 +8,33 @@ Run all standard tests (no external services required):
 cargo test
 ```
 
-These tests use an in-memory SQLite database and require no additional setup.
+Tests run against an in-memory SQLite database constructed by `tests/common::test_app()`, so no additional setup is needed for the default suite.
+
+### What's Covered
+
+Integration tests at the top of `tests/` exercise every public-facing surface of Orion:
+
+- **Admin API** — `admin_workflows_test`, `admin_connectors_test`, `bulk_import_test`,
+  `workflow_lifecycle_test`, `typed_enum_dtos_test`, `audit_log_test`, `backup_restore_test`
+- **Data path & routing** — `rest_routing_test`, `channel_call_test`, `channel_config_test`,
+  `channel_config_validation_test`, `pipeline_test`
+- **Resilience / scaling** — `rate_limit_test`, `concurrency_test`, `circuit_breaker_test`,
+  `pool_exhaustion_test`, `channel_dedup_test`, `channel_response_cache_test`
+- **Async + tracing** — `async_traces_test`, `async_trace_edge_test`, `task_trace_test`,
+  `trace_storage_test`, `trace_dlq_repo_test`, `profile_test`
+- **Connectors** — `connector_db_test`, `connector_cache_test`, `connector_redis_test`,
+  `mongodb_test`, `mysql_test`, `postgres_test`, `kafka_test`
+- **CLI subcommands** — `cli_subcommands_test` covers `lint`, `dry-run`,
+  `test-connectivity`, and `validate-config`
+- **Errors & security** — `error_envelope_test`, `error_paths_test`,
+  `protocol_required_fields_test`, `secret_references_test` (env:// resolver),
+  `security_test`, `shutdown_test`
+- **Scenarios** — `scenario_api_gateway_test`, `scenario_ecommerce_test`,
+  `scenario_webhook_test` walk multi-step user journeys end-to-end
+- **OpenAPI** — `openapi_test` snapshots the generated spec to catch accidental breaks
+- **Function schemas** — `function_schema_test` verifies every workflow input schema
+
+Most tests use `tower::ServiceExt::oneshot()` against the in-memory router; no HTTP listener is started.
 
 ## External Service Tests
 
@@ -64,3 +90,22 @@ docker compose -f docker-compose.test.yml down
 | MySQL      | 3306  | root / test                  |
 | Redis      | 6379  | (no auth)                    |
 | MongoDB    | 27017 | (no auth)                    |
+
+## Benchmarks
+
+Performance scenarios live in `tests/benchmark/` and use the [`hey`](https://github.com/rakyll/hey) HTTP load generator. Run all scenarios:
+
+```bash
+BENCH_RELEASE=1 ./tests/benchmark/bench.sh
+```
+
+Captured runs live alongside the script under `tests/benchmark/results/`:
+
+| Directory       | What it captures                                                               |
+|-----------------|---------------------------------------------------------------------------------|
+| `v2.1.5/`       | v0.1.x baseline (dataflow-rs 2.1.5 + datalogic-rs 4)                            |
+| `v0.2.0/`       | v0.2.0 release (dataflow-rs 3.0 + datalogic-rs 5) — current default            |
+| `v3.0.0/`       | First dataflow-rs 3.0 upgrade snapshot, kept for historical comparison         |
+| `trace-modes/`  | sync vs async vs batch vs off trace-persistence cost on a steady workload      |
+
+Each result directory contains a `SUMMARY.md` (Markdown table) plus the raw per-scenario `hey` output for reproducibility.
