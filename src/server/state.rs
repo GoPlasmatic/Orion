@@ -59,7 +59,6 @@ pub struct AppStateInner {
 /// Shared application state accessible from all route handlers.
 ///
 /// Cloning is O(1) — one atomic refcount bump on the `Arc`. Field access goes
-/// through `Arc<T>`'s built-in `Deref` so existing call sites (`state.engine`,
-/// `state.config`, …) keep working unchanged. The previous newtype wrapper
-/// added no functional benefit and is collapsed here (item 4.4).
+/// through `Arc<T>`'s built-in `Deref` so call sites (`state.engine`,
+/// `state.config`, …) work directly against the inner struct.
 pub type AppState = Arc<AppStateInner>;
