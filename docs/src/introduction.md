@@ -140,15 +140,19 @@ Every channel gets production-grade features without writing a line of code:
 | **Health checks** | Component-level status with degradation detection | `GET /health`, automatic |
 | **Deduplication** | Prevent duplicate processing via idempotency keys | `Idempotency-Key` header, configurable window |
 | **Response caching** | Cache responses for identical requests | TTL-based, configurable cache key fields |
+| **Per-request profiling** | Break a single request down by phase (lock, run, tasks) | `X-Orion-Profile: 1` header, response under `_orion.profile` |
+| **Per-task tracing** | Record each task's input/output for replay and debugging | Channel `config.tracing.per_task`, stored on the trace row |
 
 ## Performance
 
-**7K+ workflow requests/sec** on a single instance (Apple M2 Pro, release build, 50 concurrent connections):
+**6K–7K workflow requests/sec** on a single instance (Apple M-series, release build, 50 concurrent connections, v0.2.0 release):
 
 | Scenario | Req/sec | Avg Latency | P99 Latency |
 |----------|--------:|------------:|------------:|
-| Simple workflow (1 task) | 7,417 | 6.70 ms | 16.80 ms |
-| Complex workflow (4 tasks) | 7,044 | 7.00 ms | 23.50 ms |
-| 12 workflows on one channel | 6,894 | 7.20 ms | 17.30 ms |
+| Simple workflow (1 task) | 7,446 | 6.7 ms | 16.7 ms |
+| Complex workflow (4 tasks) | 6,053 | 8.2 ms | 25.5 ms |
+| 12 workflows on one channel | 6,912 | 7.2 ms | 16.6 ms |
+
+v0.2.0 ships on dataflow-rs 3.0 / datalogic-rs 5, which moves JSONLogic compilation to engine-construction time. Compared to the v0.1.x baseline, complex and multi-workflow scenarios pick up roughly +48% and +120% req/s respectively, and P99 latency improves on every scenario. Per-version benchmark folders live under `tests/benchmark/results/`.
 
 Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mode, async-first on Tokio.

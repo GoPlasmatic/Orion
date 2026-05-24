@@ -5,13 +5,18 @@ All settings have sensible defaults. You can run Orion with no config file at al
 ## CLI Commands
 
 ```bash
-orion-server                              # Start the server (default)
-orion-server -c config.toml               # Start with a config file
-orion-server validate-config              # Validate config without starting
-orion-server validate-config -c config.toml  # Validate a specific config file
-orion-server migrate                      # Run database migrations
-orion-server migrate --dry-run            # Preview pending migrations
+orion-server                                       # Start the server (default)
+orion-server -c config.toml                        # Start with a config file
+orion-server validate-config                       # Validate config without starting
+orion-server validate-config -c config.toml        # Validate a specific config file
+orion-server migrate                               # Run database migrations
+orion-server migrate --dry-run                     # Preview pending migrations
+orion-server lint path/to/workflow.json            # Strict-validate a workflow JSON file
+orion-server dry-run -w workflow.json -i input.json # Execute a workflow against a sample payload
+orion-server test-connectivity                     # Probe DB (and Kafka if enabled)
 ```
+
+All subcommands honour `${VAR}` / `${VAR:-default}` substitution in the loaded config file, so the same `config.toml` can be reused across environments.
 
 ## Database Backend
 
@@ -56,6 +61,7 @@ url = "sqlite:orion.db"       # Database URL (sqlite:, postgres://, mysql://)
 # busy_timeout_ms = 5000        # SQLite busy timeout (ignored for other backends)
 # acquire_timeout_secs = 5      # Connection pool acquire timeout
 # idle_timeout_secs = 0         # Connection idle timeout (0 = no timeout)
+# backup_dir = "./backups"      # Directory where POST /api/v1/admin/backups writes files (SQLite only)
 
 [ingest]
 max_payload_size = 1048576     # Maximum payload size in bytes (1 MB)
@@ -98,9 +104,9 @@ buffer_size = 1000             # Channel buffer for pending traces
 # data_rps = 200                # Rate limit for data routes
 
 [admin_auth]
-# enabled = false               # Require authentication for admin endpoints
-# api_key = "your-secret-key"   # The API key or bearer token
-# header = "Authorization"      # "Authorization" = Bearer format, other = raw key
+# enabled = false                          # Require authentication for admin endpoints
+# api_keys = ["key-1", "key-2"]            # Accepted bearer tokens / API keys (any matching key authorises a request)
+# header = "Authorization"                 # "Authorization" = Bearer format, other = raw key
 
 [cors]
 # allowed_origins = ["*"]       # Global CORS allowed origins
@@ -133,11 +139,28 @@ enabled = false
 # otlp_endpoint = "http://localhost:4317"  # OTLP gRPC endpoint
 # service_name = "orion"            # Service name in traces
 # sample_rate = 1.0                 # 0.0 (none) to 1.0 (all)
+# debug_profile_enabled = false     # Allow per-request `X-Orion-Profile: 1` to attach `_orion.profile` to responses
+
+[tracing.storage]
+# Persistence policy for engine traces (rows in the `traces` table, surfaced via /api/v1/data/traces).
+# Unrelated to the OpenTelemetry export above. Per-channel `config.tracing` overrides this default.
+#   sync   — write inline before responding (strongest durability)
+#   async  — enqueue to a bounded background queue (one DB write per task)
+#   batch  — bounded queue, workers commit batch_size rows in one TX (highest throughput)
+#   off    — skip persistence entirely
+# mode = "sync"
+# sample_rate = 1.0                  # 0.0–1.0 fraction of traces persisted
+# errors_only = false                # Only persist traces that ended in an error
+# max_pending = 10000                # Queue depth (async + batch modes)
 
 [channels]                          # Control which channels this instance loads
 # include = ["orders.*", "payments.*"]   # Glob patterns to include (empty = all)
 # exclude = ["analytics.*"]              # Glob patterns to exclude
 ```
+
+### Environment Variable Substitution
+
+Values in `config.toml` may reference process environment variables with `${VAR}` (required, fails fast if unset) or `${VAR:-default}` (optional with a fallback). Use `$$` to escape a literal `$`. The same substitution also runs against connector `config_json` blobs at startup, so secrets can stay out of the database. The complementary `env://VAR_NAME` resolver kicks in **after** JSON parsing on connector string fields — `${VAR}` rewrites text, `env://` rewrites parsed values.
 
 ## Environment Variable Overrides
 
@@ -150,7 +173,7 @@ ORION_KAFKA__ENABLED=true
 ORION_LOGGING__FORMAT=json
 ORION_RATE_LIMIT__ENABLED=true
 ORION_ADMIN_AUTH__ENABLED=true
-ORION_ADMIN_AUTH__API_KEY="your-secret-key"
+ORION_ADMIN_AUTH__API_KEYS="key-1,key-2"   # comma-separated; merged into admin_auth.api_keys
 ORION_TRACING__ENABLED=true
 ORION_TRACING__OTLP_ENDPOINT="http://jaeger:4317"
 ORION_METRICS__ENABLED=true
