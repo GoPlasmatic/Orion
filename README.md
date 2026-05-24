@@ -164,14 +164,16 @@ AI:  → generates valid workflow JSON
 
 ```
 1. Generate    → AI produces the workflow JSON (with full context from MCP)
-2. Validate    → POST /api/v1/admin/workflows/validate     ← catches structural errors
-3. Create      → POST /api/v1/admin/workflows               ← saved as draft (not live)
-4. Dry-run     → POST /api/v1/admin/workflows/{id}/test     ← test with sample data
-5. Activate    → PATCH /api/v1/admin/workflows/{id}/status   ← goes live
-6. Rollout     → PATCH /api/v1/admin/workflows/{id}/rollout  ← gradual traffic (10% → 50% → 100%)
+2. Validate    → POST /api/v1/admin/workflows/validate         ← catches structural errors
+3. Create      → POST /api/v1/admin/workflows                  ← saved as draft (not live)
+4. Dry-run     → POST /api/v1/admin/workflows/{id}/test        ← test with sample data
+5. Activate    → PATCH /api/v1/admin/workflows/{id}/status     ← goes live
+6. Rollout     → PATCH /api/v1/admin/workflows/{id}/rollout    ← gradual traffic (10% → 50% → 100%)
 ```
 
-Every AI-generated workflow gets version history, draft-before-activate, dry-run testing, rollout control, and audit trails, the same governance as hand-written ones. Roll back to any previous version instantly.
+Every AI-generated workflow gets version history, draft-before-activate, dry-run testing, rollout control, structured `FieldError` validation feedback, and audit trails — the same governance as hand-written ones. Roll back to any previous version instantly.
+
+Need to ship a bundle of workflows, channels, or connectors at once (e.g. promoting from staging)? Use the bulk import endpoints — `POST /api/v1/admin/{workflows,channels,connectors}/import?dry_run=true` validates the whole batch first; drop `dry_run` to commit.
 
 See [Use Cases & Patterns](docs/src/tutorials/use-cases.md#ai-workflow--cicd) for CI/CD integration and GitHub Actions examples.
 
@@ -238,6 +240,8 @@ Every channel gets production-grade features without writing a line of code. Con
 | **Request IDs** | UUID propagated through the entire pipeline | `x-request-id` header, automatic |
 | **Deduplication** | Prevent duplicate processing via idempotency keys | `Idempotency-Key` header, configurable retention window |
 | **Response caching** | Cache responses for identical requests | TTL-based, configurable cache key fields |
+| **Per-request profiling** | Break a single request down by phase (engine lock, workflow run, tasks) | Opt in with `X-Orion-Profile: 1` or `?profile=1`; surfaces under `_orion.profile` |
+| **Per-task tracing** | Capture each task's input/output for replay and debugging | Channel-level `config.tracing.per_task = true`; stored on the trace row |
 
 A minimal channel needs only a name and a workflow. Everything else has sensible defaults.
 
@@ -290,7 +294,7 @@ Connectors are named, reusable connections to external systems. Configure once, 
 | **MongoDB** | Any MongoDB instance | Document queries, BSON-to-JSON conversion, connection pooling |
 | **Kafka** | Any Kafka cluster | Publish with key/value logic, consume with DLQ routing |
 
-Every connector gets **circuit breaker protection** automatically: failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Secrets are stored in the database and masked in API responses. See [Connectors Guide](docs/src/features/extensibility.md#connectors) for configuration examples and auth options.
+Every connector gets **circuit breaker protection** automatically: failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Secrets are stored in the database and masked in API responses, and any string field can use an `env://VAR_NAME` reference to pull the value from the process environment at startup so production credentials never sit in the saved config. See [Connectors Guide](docs/src/features/extensibility.md#connectors) for configuration examples and auth options.
 
 ---
 
@@ -315,7 +319,7 @@ Every connector gets **circuit breaker protection** automatically: failures trip
 | `publish_kafka` | Publish messages to [Kafka topics](docs/src/features/extensibility.md#kafka-connector) |
 | `log` | Emit structured log entries for auditing and debugging |
 
-All functions are built in. `cache_read`/`cache_write` use in-memory cache by default; configure a Redis-backed connector for distributed caching.
+All functions are built into every binary. The dataflow-rs runtime contributes `parse_json`/`parse_xml`/`filter`/`map`/`validation`/`publish_json`/`publish_xml`/`log`; Orion adds the connector-backed handlers (`http_call`, `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`, `publish_kafka`) and the in-process `channel_call`. `cache_read`/`cache_write` use the in-memory backend by default; reference a Redis connector for distributed caching. Browse the input-field schemas at runtime via `GET /api/v1/admin/functions`.
 
 ---
 
@@ -354,15 +358,17 @@ Single binary. SQLite by default, no database to provision, no runtime dependenc
 
 ## Performance
 
-**7K+ workflow requests/sec** on a single instance (Apple M2 Pro, release build, 50 concurrent connections):
+**6K–7K workflow requests/sec** on a single instance (Apple M-series, release build, 50 concurrent connections, v0.2.0 release):
 
 | Scenario | Req/sec | Avg Latency | P99 Latency |
 |----------|--------:|------------:|------------:|
-| Simple workflow (1 task) | 7,417 | 6.70 ms | 16.80 ms |
-| Complex workflow (4 tasks) | 7,044 | 7.00 ms | 23.50 ms |
-| 12 workflows on one channel | 6,894 | 7.20 ms | 17.30 ms |
+| Simple workflow (1 task) | 7,446 | 6.7 ms | 16.7 ms |
+| Complex workflow (4 tasks) | 6,053 | 8.2 ms | 25.5 ms |
+| 12 workflows on one channel | 6,912 | 7.2 ms | 16.6 ms |
 
-Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mode, async-first on Tokio. Run `./tests/benchmark/bench.sh` to reproduce.
+v0.2.0 upgrades dataflow-rs to 3.0 and datalogic-rs to 5, which moved JSONLogic compilation to engine-construction time. Compared to the v0.1.x baseline (dataflow-rs 2.1.5), complex and multi-workflow scenarios pick up large gains (+48% and +120% req/s respectively) and P99 latency drops materially on every scenario. See [`tests/benchmark/results/`](tests/benchmark/results/) for the full v0.1 (`v2.1.5`) baseline, v0.2 (`v0.2.0`) release, and the per-scenario `hey` output. Run `./tests/benchmark/bench.sh` to reproduce.
+
+Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mode, async-first on Tokio.
 
 ---
 
@@ -404,6 +410,19 @@ cargo install --git https://github.com/GoPlasmatic/Orion.git
 ```
 
 Verify with `orion-server --version`. Swagger UI available at `http://localhost:8080/docs`. See [Configuration](docs/src/configuration/reference.md) for deployment options.
+
+The server binary also ships diagnostic subcommands you can run without booting the HTTP listener:
+
+```bash
+orion-server validate-config -c config.toml         # Parse + validate the config file
+orion-server migrate                                # Run pending DB migrations
+orion-server migrate --dry-run                      # Preview pending migrations
+orion-server lint path/to/workflow.json             # Strict-validate a workflow JSON file
+orion-server dry-run -w workflow.json -i input.json # Execute a workflow against a sample payload
+orion-server test-connectivity                      # Probe DB (and Kafka if enabled)
+```
+
+`${VAR}` / `${VAR:-default}` placeholders inside `config.toml` are substituted from the environment when any of these subcommands load the config, so the same file works across dev, staging, and prod without templating.
 
 ### CLI Tool
 
