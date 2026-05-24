@@ -336,7 +336,6 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

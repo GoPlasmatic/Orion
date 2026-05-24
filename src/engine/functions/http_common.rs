@@ -173,7 +173,6 @@ pub async fn execute_request(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

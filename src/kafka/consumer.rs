@@ -590,7 +590,6 @@ async fn send_to_dlq(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::unnecessary_get_then_check)]
 mod tests {
     use super::*;
 

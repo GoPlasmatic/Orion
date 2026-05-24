@@ -353,7 +353,6 @@ pub fn is_active() -> bool {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
