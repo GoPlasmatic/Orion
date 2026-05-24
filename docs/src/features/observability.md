@@ -87,7 +87,7 @@ Orion exposes three health endpoints for different operational needs.
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "uptime_seconds": 3600,
   "workflows_loaded": 42,
   "components": {
@@ -125,7 +125,7 @@ readinessProbe:
 
 ```json
 {
-  "version": "0.1.0",
+  "version": "0.2.0",
   "uptime_seconds": 3600,
   "workflows_count": 42,
   "active_workflows": 38,

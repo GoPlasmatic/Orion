@@ -49,6 +49,30 @@ curl -s -X GET http://localhost:8080/api/v1/data/orders/ORD-123/items/ITEM-1
 }
 ```
 
+### Per-request profiling
+
+Add `X-Orion-Profile: 1` (or `?profile=1`) to the request and the response gains a `_orion.profile` block that breaks the request down by phase. The header is opt-in so you only pay the cost on the requests you care about, and `tracing.profile_enabled` in config gates the surface entirely. The debug surface always sits under the `_orion` namespace so workflow-produced output keys can never collide with future debug fields.
+
+```json
+{
+  "status": "ok",
+  "data": { ... },
+  "errors": [],
+  "_orion": {
+    "profile": {
+      "version": 1,
+      "engine_lock_ms": 0.04,
+      "workflow_ms": 6.71,
+      "tasks": [
+        { "id": "parse",    "ms": 0.18 },
+        { "id": "validate", "ms": 0.42 },
+        { "id": "enrich",   "ms": 4.91 }
+      ]
+    }
+  }
+}
+```
+
 ## Asynchronous Processing
 
 Append `/async` to submit for background processing:

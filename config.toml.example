@@ -40,7 +40,7 @@
 # buffer_size = 1000           # Channel buffer for pending jobs
 # shutdown_timeout_secs = 30   # Timeout for in-flight jobs during shutdown
 
-[kafka]                         # Requires the `kafka` feature flag
+[kafka]                         # Kafka producer + consumer (compiled into every binary)
 # enabled = false
 # brokers = ["localhost:9092"]
 # group_id = "orion"
@@ -64,7 +64,7 @@
 [metrics]
 # enabled = false
 
-[tracing]                           # Requires the `otel` feature flag
+[tracing]                           # OpenTelemetry export (compiled into every binary; gated at runtime by `enabled`)
 # enabled = false                   # Enable OpenTelemetry trace export
 # otlp_endpoint = "http://localhost:4317"  # OTLP gRPC endpoint
 # service_name = "orion"            # Service name in traces

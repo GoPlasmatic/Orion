@@ -14,6 +14,7 @@ All admin endpoints are under `/api/v1/admin/`. When admin authentication is ena
 | PATCH | `/api/v1/admin/channels/{id}/status` | Change status (active/archived) |
 | GET | `/api/v1/admin/channels/{id}/versions` | List channel version history |
 | POST | `/api/v1/admin/channels/{id}/versions` | Create new draft version from active channel |
+| POST | `/api/v1/admin/channels/import` | Bulk import channels (as drafts). `?dry_run=true` validates without writing |
 
 ## Workflows
 
@@ -29,7 +30,7 @@ All admin endpoints are under `/api/v1/admin/`. When admin authentication is ena
 | POST | `/api/v1/admin/workflows/{id}/versions` | Create new draft version from active workflow |
 | PATCH | `/api/v1/admin/workflows/{id}/rollout` | Update rollout percentage |
 | POST | `/api/v1/admin/workflows/{id}/test` | Dry-run on sample payload |
-| POST | `/api/v1/admin/workflows/import` | Bulk import workflows (as drafts) |
+| POST | `/api/v1/admin/workflows/import` | Bulk import workflows (as drafts). `?dry_run=true` validates without writing |
 | GET | `/api/v1/admin/workflows/export` | Export workflows. Filter with `?tag=`, `?status=` |
 | POST | `/api/v1/admin/workflows/validate` | Validate workflow definition |
 
@@ -37,11 +38,12 @@ All admin endpoints are under `/api/v1/admin/`. When admin authentication is ena
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/connectors` | Create connector |
+| POST | `/api/v1/admin/connectors` | Create connector. String fields may use `env://VAR_NAME` to pull values from the process environment |
 | GET | `/api/v1/admin/connectors` | List connectors (secrets masked) |
 | GET | `/api/v1/admin/connectors/{id}` | Get connector by ID (secrets masked) |
 | PUT | `/api/v1/admin/connectors/{id}` | Update connector |
 | DELETE | `/api/v1/admin/connectors/{id}` | Delete connector |
+| POST | `/api/v1/admin/connectors/import` | Bulk import connectors. `?dry_run=true` validates without writing |
 | POST | `/api/v1/admin/connectors/reload` | Reload all connectors from DB |
 | GET | `/api/v1/admin/connectors/circuit-breakers` | List circuit breaker states |
 | POST | `/api/v1/admin/connectors/circuit-breakers/{key}` | Reset a circuit breaker |
@@ -53,18 +55,24 @@ All admin endpoints are under `/api/v1/admin/`. When admin authentication is ena
 | GET | `/api/v1/admin/engine/status` | Engine status (version, uptime, workflows count, channels) |
 | POST | `/api/v1/admin/engine/reload` | Hot-reload channels and workflows |
 
+## Functions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/admin/functions` | List every task function with its input-field schema (category, type, required flag, description). Used by CLI tools and IDEs for autocompletion and by workflow validators to give field-pathed errors |
+
 ## Audit Logs
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/v1/admin/audit-logs` | List audit log entries. Filter with `?action=`, `?resource_type=` |
 
-## Backup & Restore
+## Backups
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/backup` | Export database backup |
-| POST | `/api/v1/admin/restore` | Restore from backup |
+| POST | `/api/v1/admin/backups` | Create a database backup (SQLite only — `VACUUM INTO` a timestamped file in `storage.backup_dir`) |
+| GET | `/api/v1/admin/backups` | List backup files currently in `storage.backup_dir` |
 
 ## Lifecycle
 
@@ -119,3 +127,20 @@ All error responses follow a consistent structure:
 | `SERVICE_UNAVAILABLE` | 503 | Backpressure or circuit breaker open |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | Invalid content type |
 | `INTERNAL_ERROR` | 500 | Internal server error |
+
+When a workflow, channel, or connector fails strict validation on create/update, the envelope is extended with a `details` array of field-pathed errors (kept omitted for single-message errors so v0.1 clients aren't broken):
+
+```json
+{
+  "error": {
+    "code": "BAD_REQUEST",
+    "message": "Workflow validation failed",
+    "details": [
+      { "field": "tasks[0].function.input.connector", "message": "is required" },
+      { "field": "tasks[2].function.input.method",    "message": "expected string, got number" }
+    ]
+  }
+}
+```
+
+The `field` path mirrors the JSON structure the API received, so editors can jump straight to the failing key. The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{id}/test`, and the `orion-server lint` / `dry-run` CLI subcommands.
