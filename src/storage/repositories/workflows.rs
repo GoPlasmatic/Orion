@@ -959,7 +959,7 @@ mod tests {
             updated_at: chrono::NaiveDateTime::default(),
         };
 
-        let df_workflow = workflow_to_dataflow(&workflow, "default").unwrap();
+        let df_workflow = workflow_to_dataflow(&workflow, "default").expect("test");
         assert_eq!(df_workflow.id, "test-workflow");
         assert_eq!(df_workflow.name, "Test Workflow");
         assert_eq!(df_workflow.channel, "default");
@@ -985,7 +985,7 @@ mod tests {
             updated_at: chrono::NaiveDateTime::default(),
         };
 
-        let df_workflow = workflow_to_dataflow(&workflow, "orders").unwrap();
+        let df_workflow = workflow_to_dataflow(&workflow, "orders").expect("test");
         assert_eq!(df_workflow.channel, "orders");
         assert_eq!(df_workflow.id, "wf-orders");
     }
@@ -1009,7 +1009,8 @@ mod tests {
             updated_at: chrono::NaiveDateTime::default(),
         };
 
-        let df_workflow = workflow_to_dataflow_with_rollout(&workflow, "default", 0, 50).unwrap();
+        let df_workflow =
+            workflow_to_dataflow_with_rollout(&workflow, "default", 0, 50).expect("test");
         assert_eq!(df_workflow.id, "rollout-wf:v3");
         assert_eq!(df_workflow.channel, "default");
 
@@ -1019,7 +1020,7 @@ mod tests {
             cond.get("and").is_some(),
             "condition should be wrapped in 'and'"
         );
-        let and_arr = cond.get("and").unwrap().as_array().unwrap();
+        let and_arr = cond.get("and").expect("test").as_array().expect("test");
         assert_eq!(and_arr.len(), 3);
     }
 
@@ -1103,7 +1104,7 @@ mod tests {
     #[test]
     fn test_create_workflow_request_defaults() {
         let json = r#"{"name": "Test", "tasks": []}"#;
-        let req: CreateWorkflowRequest = serde_json::from_str(json).unwrap();
+        let req: CreateWorkflowRequest = serde_json::from_str(json).expect("test");
         assert!(req.workflow_id.is_none());
         assert_eq!(req.name, "Test");
         assert_eq!(req.priority, 0);
@@ -1115,7 +1116,7 @@ mod tests {
     #[test]
     fn test_update_workflow_request_all_none() {
         let json = r#"{}"#;
-        let req: UpdateWorkflowRequest = serde_json::from_str(json).unwrap();
+        let req: UpdateWorkflowRequest = serde_json::from_str(json).expect("test");
         assert!(req.name.is_none());
         assert!(req.description.is_none());
         assert!(req.priority.is_none());
@@ -1128,7 +1129,7 @@ mod tests {
     #[test]
     fn test_status_change_request_parse() {
         let json = r#"{"status": "active", "rollout_percentage": 50}"#;
-        let req: StatusChangeRequest = serde_json::from_str(json).unwrap();
+        let req: StatusChangeRequest = serde_json::from_str(json).expect("test");
         assert_eq!(req.status, EntityStatus::Active);
         assert_eq!(req.rollout_percentage, Some(50));
     }
@@ -1136,7 +1137,7 @@ mod tests {
     #[test]
     fn test_status_change_request_no_rollout() {
         let json = r#"{"status": "archived"}"#;
-        let req: StatusChangeRequest = serde_json::from_str(json).unwrap();
+        let req: StatusChangeRequest = serde_json::from_str(json).expect("test");
         assert_eq!(req.status, EntityStatus::Archived);
         assert!(req.rollout_percentage.is_none());
     }
@@ -1144,7 +1145,7 @@ mod tests {
     #[test]
     fn test_rollout_update_request_parse() {
         let json = r#"{"rollout_percentage": 75}"#;
-        let req: RolloutUpdateRequest = serde_json::from_str(json).unwrap();
+        let req: RolloutUpdateRequest = serde_json::from_str(json).expect("test");
         assert_eq!(req.rollout_percentage, 75);
     }
 
@@ -1165,10 +1166,10 @@ mod tests {
             limit: 2,
             offset: 0,
         };
-        let json = serde_json::to_value(&result).unwrap();
+        let json = serde_json::to_value(&result).expect("test");
         assert_eq!(json["total"], 10);
         assert_eq!(json["limit"], 2);
         assert_eq!(json["offset"], 0);
-        assert_eq!(json["data"].as_array().unwrap().len(), 2);
+        assert_eq!(json["data"].as_array().expect("test").len(), 2);
     }
 }

@@ -157,22 +157,22 @@ mod tests {
             "backpressure": { "max_concurrent": 200 },
             "deduplication": { "header": "Idempotency-Key", "window_secs": 300 }
         }"#;
-        let config: ChannelConfig = serde_json::from_str(json).unwrap();
-        let rl = config.rate_limit.unwrap();
+        let config: ChannelConfig = serde_json::from_str(json).expect("test");
+        let rl = config.rate_limit.expect("test");
         assert_eq!(rl.requests_per_second, 100);
         assert_eq!(rl.burst, Some(20));
         assert!(rl.key_logic.is_some());
         assert_eq!(config.timeout_ms, Some(5000));
-        let bp = config.backpressure.unwrap();
+        let bp = config.backpressure.expect("test");
         assert_eq!(bp.max_concurrent, 200);
-        let dedup = config.deduplication.unwrap();
+        let dedup = config.deduplication.expect("test");
         assert_eq!(dedup.header, "Idempotency-Key");
         assert_eq!(dedup.window_secs, Some(300));
     }
 
     #[test]
     fn test_channel_config_empty_json() {
-        let config: ChannelConfig = serde_json::from_str("{}").unwrap();
+        let config: ChannelConfig = serde_json::from_str("{}").expect("test");
         assert!(config.rate_limit.is_none());
         assert!(config.timeout_ms.is_none());
     }

@@ -236,7 +236,7 @@ mod tests {
         })
         .await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), serde_json::json!({"ok": true}));
+        assert_eq!(result.expect("test"), serde_json::json!({"ok": true}));
     }
 
     #[tokio::test]
@@ -341,7 +341,7 @@ mod tests {
         assert!(result.is_err());
         assert!(
             result
-                .unwrap_err()
+                .expect_err("test")
                 .to_string()
                 .contains("Circuit breaker open")
         );

@@ -788,7 +788,7 @@ mod tests {
     fn test_create_channel_request_defaults() {
         use crate::storage::models::{ChannelProtocol, ChannelType};
         let json = r#"{"name":"orders","channel_type":"sync","protocol":"rest"}"#;
-        let req: CreateChannelRequest = serde_json::from_str(json).unwrap();
+        let req: CreateChannelRequest = serde_json::from_str(json).expect("test");
         assert_eq!(req.name, "orders");
         assert_eq!(req.channel_type, ChannelType::Sync);
         assert_eq!(req.protocol, ChannelProtocol::Rest);
@@ -819,7 +819,7 @@ mod tests {
             "config": {"max_retries": 3},
             "priority": 10
         }"#;
-        let req: CreateChannelRequest = serde_json::from_str(json).unwrap();
+        let req: CreateChannelRequest = serde_json::from_str(json).expect("test");
         assert_eq!(req.channel_id, Some("ch-1".to_string()));
         assert_eq!(
             req.methods,
@@ -832,7 +832,7 @@ mod tests {
     #[test]
     fn test_update_channel_request_all_none() {
         let json = r#"{}"#;
-        let req: UpdateChannelRequest = serde_json::from_str(json).unwrap();
+        let req: UpdateChannelRequest = serde_json::from_str(json).expect("test");
         assert!(req.name.is_none());
         assert!(req.description.is_none());
         assert!(req.methods.is_none());
@@ -848,7 +848,7 @@ mod tests {
     #[test]
     fn test_channel_status_change_request() {
         let json = r#"{"status": "active"}"#;
-        let req: ChannelStatusChangeRequest = serde_json::from_str(json).unwrap();
+        let req: ChannelStatusChangeRequest = serde_json::from_str(json).expect("test");
         assert_eq!(req.status, EntityStatus::Active);
     }
 

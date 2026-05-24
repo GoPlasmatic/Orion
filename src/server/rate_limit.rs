@@ -232,7 +232,7 @@ mod tests {
         let req = Request::builder()
             .header("x-forwarded-for", "192.168.1.1, 10.0.0.1")
             .body(Body::empty())
-            .unwrap();
+            .expect("test");
         assert_eq!(extract_client_ip(&req), "192.168.1.1");
     }
 
@@ -241,7 +241,7 @@ mod tests {
         let req = Request::builder()
             .header("x-forwarded-for", "203.0.113.5")
             .body(Body::empty())
-            .unwrap();
+            .expect("test");
         assert_eq!(extract_client_ip(&req), "203.0.113.5");
     }
 
@@ -250,7 +250,7 @@ mod tests {
         let req = Request::builder()
             .header("x-real-ip", "10.0.0.5")
             .body(Body::empty())
-            .unwrap();
+            .expect("test");
         assert_eq!(extract_client_ip(&req), "10.0.0.5");
     }
 
@@ -260,13 +260,13 @@ mod tests {
             .header("x-forwarded-for", "1.2.3.4")
             .header("x-real-ip", "5.6.7.8")
             .body(Body::empty())
-            .unwrap();
+            .expect("test");
         assert_eq!(extract_client_ip(&req), "1.2.3.4");
     }
 
     #[test]
     fn test_extract_client_ip_no_headers() {
-        let req = Request::builder().body(Body::empty()).unwrap();
+        let req = Request::builder().body(Body::empty()).expect("test");
         assert_eq!(extract_client_ip(&req), "unknown");
     }
 
@@ -275,7 +275,7 @@ mod tests {
         let req = Request::builder()
             .header("x-forwarded-for", "")
             .body(Body::empty())
-            .unwrap();
+            .expect("test");
         assert_eq!(extract_client_ip(&req), "unknown");
     }
 
@@ -284,7 +284,7 @@ mod tests {
         let req = Request::builder()
             .header("x-real-ip", "  ")
             .body(Body::empty())
-            .unwrap();
+            .expect("test");
         assert_eq!(extract_client_ip(&req), "unknown");
     }
 
@@ -367,7 +367,6 @@ mod tests {
                 admin_rps: Some(20),
                 data_rps: Some(200),
             },
-            ..Default::default()
         };
         let state = RateLimitState::from_config(&config);
         assert!(state.admin_limiter.is_some());
@@ -382,9 +381,9 @@ mod tests {
             response
                 .headers()
                 .get("retry-after")
-                .unwrap()
+                .expect("test")
                 .to_str()
-                .unwrap(),
+                .expect("test"),
             "1"
         );
     }

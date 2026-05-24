@@ -622,9 +622,9 @@ mod tests {
             .collect();
 
         assert_eq!(topic_map.len(), 2);
-        assert_eq!(topic_map.get("orders").unwrap(), "order-channel");
-        assert_eq!(topic_map.get("events").unwrap(), "event-channel");
-        assert!(topic_map.get("unknown").is_none());
+        assert_eq!(topic_map.get("orders").expect("test"), "order-channel");
+        assert_eq!(topic_map.get("events").expect("test"), "event-channel");
+        assert!(!topic_map.contains_key("unknown"));
     }
 
     #[test]
@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(msg["error"], "JSON parse error");
         assert_eq!(msg["original_payload"], r#"{"data": {"broken": true}}"#);
         // Timestamp should be a valid RFC3339 string
-        let ts = msg["timestamp"].as_str().unwrap();
+        let ts = msg["timestamp"].as_str().expect("test");
         assert!(ts.contains("T"));
         assert!(ts.ends_with('Z') || ts.contains('+'));
     }
@@ -649,7 +649,7 @@ mod tests {
         assert_eq!(msg["source_topic"], "bad-topic");
         assert_eq!(msg["error"], "UTF-8 decode error");
         // Lossy conversion should produce replacement characters
-        let original = msg["original_payload"].as_str().unwrap();
+        let original = msg["original_payload"].as_str().expect("test");
         assert!(original.contains('\u{FFFD}'));
     }
 

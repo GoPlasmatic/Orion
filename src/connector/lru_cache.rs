@@ -118,7 +118,7 @@ mod tests {
         let val: Result<String, String> = cache
             .get_or_create("key1", || async { Ok("value1".to_string()) })
             .await;
-        assert_eq!(val.unwrap(), "value1");
+        assert_eq!(val.expect("test"), "value1");
     }
 
     #[tokio::test]
@@ -149,7 +149,7 @@ mod tests {
             .await;
 
         // Should return cached value, create_fn called only once
-        assert_eq!(val.unwrap(), "value1");
+        assert_eq!(val.expect("test"), "value1");
         assert_eq!(call_count.load(AtomicOrdering::Relaxed), 1);
     }
 
@@ -180,7 +180,7 @@ mod tests {
                 }
             })
             .await;
-        assert_eq!(val.unwrap(), "A2");
+        assert_eq!(val.expect("test"), "A2");
         assert_eq!(call_count.load(AtomicOrdering::Relaxed), 1);
 
         // "b" or "c" should still be cached
@@ -235,7 +235,7 @@ mod tests {
                 }
             })
             .await;
-        assert_eq!(val.unwrap(), "A");
+        assert_eq!(val.expect("test"), "A");
         assert_eq!(
             cc.load(AtomicOrdering::Relaxed),
             0,
@@ -265,7 +265,7 @@ mod tests {
                 }
             })
             .await;
-        assert_eq!(val.unwrap(), "value2");
+        assert_eq!(val.expect("test"), "value2");
         assert_eq!(call_count.load(AtomicOrdering::Relaxed), 1);
     }
 
@@ -288,7 +288,7 @@ mod tests {
                     }
                 })
                 .await;
-            val.unwrap()
+            val.expect("test")
         });
 
         let cache2 = cache.clone();
@@ -303,12 +303,12 @@ mod tests {
                     }
                 })
                 .await;
-            val.unwrap()
+            val.expect("test")
         });
 
         let (v1, v2) = tokio::join!(h1, h2);
-        let v1 = v1.unwrap();
-        let v2 = v2.unwrap();
+        let v1 = v1.expect("test");
+        let v2 = v2.expect("test");
 
         // Both tasks should return the same value (whichever won the race)
         assert_eq!(v1, v2, "both tasks should see the same cached value");

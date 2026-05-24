@@ -733,7 +733,7 @@ mod tests {
 
     #[test]
     fn test_generate_sqlite_migration() {
-        let sql = generate_migration("sqlite").unwrap();
+        let sql = generate_migration("sqlite").expect("test");
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS"));
         assert!(sql.contains("workflows"));
         assert!(sql.contains("channels"));
@@ -748,7 +748,7 @@ mod tests {
 
     #[test]
     fn test_generate_postgres_migration() {
-        let sql = generate_migration("postgres").unwrap();
+        let sql = generate_migration("postgres").expect("test");
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS"));
         assert!(sql.contains("update_updated_at_column"));
         assert!(sql.contains("idx_workflows_single_draft"));
@@ -758,7 +758,7 @@ mod tests {
 
     #[test]
     fn test_generate_mysql_migration() {
-        let sql = generate_migration("mysql").unwrap();
+        let sql = generate_migration("mysql").expect("test");
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS"));
         assert!(sql.contains("DELIMITER //"));
         assert!(sql.contains("SIGNAL SQLSTATE"));
@@ -769,11 +769,11 @@ mod tests {
     fn test_write_migration_files() {
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         for backend in &["sqlite", "postgres", "mysql"] {
-            let sql = generate_migration(backend).unwrap();
+            let sql = generate_migration(backend).expect("test");
             let dir = format!("{manifest_dir}/migrations/{backend}");
-            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::create_dir_all(&dir).expect("test");
             let path = format!("{dir}/001_initial.sql");
-            std::fs::write(&path, &sql).unwrap();
+            std::fs::write(&path, &sql).expect("test");
             eprintln!("Wrote {path} ({} bytes)", sql.len());
         }
     }
@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn test_all_backends_have_views() {
         for backend in &["sqlite", "postgres", "mysql"] {
-            let sql = generate_migration(backend).unwrap();
+            let sql = generate_migration(backend).expect("test");
             assert!(
                 sql.contains("CREATE VIEW current_workflows"),
                 "{backend} missing current_workflows view"

@@ -387,9 +387,9 @@ mod tests {
 
     fn sample_datetime() -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2025, 1, 1)
-            .unwrap()
+            .expect("test")
             .and_hms_opt(0, 0, 0)
-            .unwrap()
+            .expect("test")
     }
 
     fn sample_workflow() -> Workflow {
@@ -435,7 +435,7 @@ mod tests {
     #[test]
     fn test_workflow_response_try_from_valid() {
         let workflow = sample_workflow();
-        let response = WorkflowResponse::try_from(&workflow).unwrap();
+        let response = WorkflowResponse::try_from(&workflow).expect("test");
         assert_eq!(response.workflow_id, "wf-1");
         assert_eq!(response.name, "Test Workflow");
         assert_eq!(response.priority, 10);
@@ -479,14 +479,14 @@ mod tests {
     fn test_workflow_response_try_from_no_description() {
         let mut workflow = sample_workflow();
         workflow.description = None;
-        let response = WorkflowResponse::try_from(&workflow).unwrap();
+        let response = WorkflowResponse::try_from(&workflow).expect("test");
         assert!(response.description.is_none());
     }
 
     #[test]
     fn test_channel_response_try_from_valid() {
         let channel = sample_channel();
-        let response = ChannelResponse::try_from(&channel).unwrap();
+        let response = ChannelResponse::try_from(&channel).expect("test");
         assert_eq!(response.channel_id, "ch-1");
         assert_eq!(response.name, "orders");
         assert_eq!(response.channel_type, CHANNEL_TYPE_SYNC);
@@ -507,7 +507,7 @@ mod tests {
         channel.route_pattern = None;
         channel.topic = Some("order.placed".to_string());
         channel.consumer_group = Some("orion".to_string());
-        let response = ChannelResponse::try_from(&channel).unwrap();
+        let response = ChannelResponse::try_from(&channel).expect("test");
         assert_eq!(response.channel_type, CHANNEL_TYPE_ASYNC);
         assert_eq!(response.protocol, ChannelProtocol::Kafka.as_str());
         assert!(response.methods.is_none());
@@ -538,11 +538,11 @@ mod tests {
 
     #[test]
     fn test_entity_status_serde_roundtrip() {
-        let draft: EntityStatus = serde_json::from_str(r#""draft""#).unwrap();
+        let draft: EntityStatus = serde_json::from_str(r#""draft""#).expect("test");
         assert_eq!(draft, EntityStatus::Draft);
-        let active: EntityStatus = serde_json::from_str(r#""active""#).unwrap();
+        let active: EntityStatus = serde_json::from_str(r#""active""#).expect("test");
         assert_eq!(active, EntityStatus::Active);
-        let archived: EntityStatus = serde_json::from_str(r#""archived""#).unwrap();
+        let archived: EntityStatus = serde_json::from_str(r#""archived""#).expect("test");
         assert_eq!(archived, EntityStatus::Archived);
         // Invalid status should fail
         assert!(serde_json::from_str::<EntityStatus>(r#""pending""#).is_err());
@@ -570,11 +570,11 @@ mod tests {
 
     #[test]
     fn test_channel_protocol_serde_roundtrip() {
-        let rest: ChannelProtocol = serde_json::from_str(r#""rest""#).unwrap();
+        let rest: ChannelProtocol = serde_json::from_str(r#""rest""#).expect("test");
         assert_eq!(rest, ChannelProtocol::Rest);
-        let http: ChannelProtocol = serde_json::from_str(r#""http""#).unwrap();
+        let http: ChannelProtocol = serde_json::from_str(r#""http""#).expect("test");
         assert_eq!(http, ChannelProtocol::Http);
-        let kafka: ChannelProtocol = serde_json::from_str(r#""kafka""#).unwrap();
+        let kafka: ChannelProtocol = serde_json::from_str(r#""kafka""#).expect("test");
         assert_eq!(kafka, ChannelProtocol::Kafka);
         // Invalid protocol should fail
         assert!(serde_json::from_str::<ChannelProtocol>(r#""grpc""#).is_err());
