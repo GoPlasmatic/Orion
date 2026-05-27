@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Orion is a declarative services runtime written in Rust. It exposes business logic management through channels (service endpoints) and workflows (task pipelines powered by dataflow-rs) via a REST API. Ships as a single binary with an embedded SQLite database.
 
 - **Rust Edition:** 2024 (requires Rust 1.85+). The codebase uses let-chains (`if let Some(x) = a && let Some(y) = b`).
-- **Core dependencies:** `dataflow-rs` 2.1 (workflow engine), `datalogic-rs` 4 (JSONLogic), `axum` 0.8 (HTTP), `sqlx` 0.8 (database), `sea-query` 0.32 (portable SQL builder)
+- **Core dependencies:** `dataflow-rs` 3.0 (workflow engine), `datalogic-rs` 5 (JSONLogic), `axum` 0.8 (HTTP), `sqlx` 0.8 (database), `sea-query` 0.32 (portable SQL builder)
 - **Single binary:** `orion-server` (server, `src/main.rs`)
 
 ## Build & Development Commands
