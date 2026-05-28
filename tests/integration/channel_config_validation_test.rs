@@ -7,9 +7,8 @@
 //!     rejected at CREATE (instead of silently warning at engine reload)
 //!   - well-formed channel.config still accepts
 
-
-use axum::http::StatusCode;
 use crate::common::{body_json, json_request, test_app};
+use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 

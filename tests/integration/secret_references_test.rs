@@ -6,9 +6,8 @@
 //!   - plain strings (https://..., postgres://...) pass through unchanged
 //!   - a missing required env var fails the connector load cleanly
 
-
-use axum::http::StatusCode;
 use crate::common::{body_json, json_request, test_app};
+use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
