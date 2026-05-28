@@ -2,7 +2,7 @@
 
 Orion includes an MCP (Model Context Protocol) server that lets AI assistants like Claude manage workflows, channels, and connectors through natural language. The MCP server wraps the Orion admin API, giving AI agents full control over your Orion instance.
 
-<div class="asciinema-player" data-cast="../casts/mcp.cast"></div>
+<div class="asciinema-player" data-cast="casts/mcp.cast"></div>
 <span class="asciinema-caption">▶ Click to play. A real stdio JSON-RPC session: handshake, tool discovery, then a live tool call.</span>
 
 ## Prerequisites
