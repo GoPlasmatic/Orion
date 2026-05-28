@@ -1,0 +1,9 @@
+{
+  "channel_id": "sensors",
+  "name": "sensors",
+  "channel_type": "sync",
+  "protocol": "http",
+  "route_pattern": "/sensors",
+  "methods": ["POST"],
+  "workflow_id": "iot-sensor-alert"
+}

@@ -1,0 +1,9 @@
+{
+  "channel_id": "orders",
+  "name": "orders",
+  "channel_type": "sync",
+  "protocol": "http",
+  "route_pattern": "/orders",
+  "methods": ["POST"],
+  "workflow_id": "high-value-order"
+}
