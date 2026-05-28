@@ -3,9 +3,8 @@
 //! authors fix everything in one round-trip instead of failing on the
 //! first issue.
 
-
-use axum::http::StatusCode;
 use crate::common::{body_json, json_request, test_app};
+use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 

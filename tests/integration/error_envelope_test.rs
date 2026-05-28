@@ -6,9 +6,8 @@
 //!   - `request_id` is embedded in error bodies when middleware is active
 //!   - non-validation errors omit the `details` key (no breakage for old clients)
 
-
-use axum::http::StatusCode;
 use crate::common::{body_json, json_request, test_app};
+use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 

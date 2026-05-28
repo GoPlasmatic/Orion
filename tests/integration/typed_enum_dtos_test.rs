@@ -6,9 +6,8 @@
 //!   - bad enum values fail with 400 (v0.1 status preserved by OrionJson extractor)
 //!   - the response field shape is unchanged (still lowercase strings)
 
-
-use axum::http::StatusCode;
 use crate::common::{body_json, json_request, test_app};
+use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 

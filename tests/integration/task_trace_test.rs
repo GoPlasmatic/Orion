@@ -7,12 +7,11 @@
 //!     capture an `ExecutionTrace` and persist it as `task_trace_json` on the
 //!     resulting trace row
 
-
-use axum::http::StatusCode;
 use crate::common::{
     body_json, create_and_activate_channel_with_config, create_and_activate_workflow, json_request,
     test_app,
 };
+use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
