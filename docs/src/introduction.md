@@ -10,6 +10,9 @@ AI generates workflows, Orion provides the governance. Every service gets health
 
 Replace a sprawl of single-purpose microservices with one runtime: each channel and workflow is independently versioned, testable, and deployable, but they share a single binary and a single set of built-in production features. This site is the deep reference and how-to guide — new here? [**Install Orion and ship your first service**](./tutorials/cli-setup.md) in a couple of minutes.
 
+<div class="asciinema-player" data-cast="casts/quickstart.cast"></div>
+<span class="asciinema-caption">From zero to a live, governed service — business logic as JSON, deployed over plain HTTP. ▶ Click to play.</span>
+
 ## Three Primitives
 
 You build services in Orion with three things:

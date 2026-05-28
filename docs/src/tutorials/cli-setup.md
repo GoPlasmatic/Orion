@@ -205,6 +205,11 @@ orion-cli channels list
 orion-cli send hello -d '{ "data": { "name": "World" } }'
 ```
 
+The full lifecycle — create, activate, dry-run, then send live data — in one tool:
+
+<div class="asciinema-player" data-cast="../casts/cli-lifecycle.cast"></div>
+<span class="asciinema-caption">▶ Click to play. Dry-run testing and live traffic flow through the same workflow.</span>
+
 See the [CLI reference](https://github.com/GoPlasmatic/Orion-cli) for the full command list, or set up the [MCP Server](./mcp-setup.md) for AI assistant integration.
 
 ## Next Steps
