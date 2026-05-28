@@ -1,0 +1,68 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly full scan (Mondays 06:00 UTC) to pick up new query-pack releases.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  analyze:
+    name: Analyze (rust)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      # rdkafka (cmake-build feature) and the full dependency graph are heavy;
+      # reclaim space WITHOUT deleting the CodeQL toolcache.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo docker image prune --all --force || true
+
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Required so rdkafka's cmake-build feature compiles librdkafka from source.
+      # Without these the kafka/queue dependency path extracts only partially,
+      # which drags down CodeQL's call-target resolution metric.
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          # Manual build so the full crate graph (proc-macros, build scripts,
+          # native libs) compiles before extraction, maximizing type and
+          # call-target resolution.
+          build-mode: manual
+          queries: security-and-quality
+
+      - name: Build
+        run: cargo build --all-targets --locked
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:rust"
