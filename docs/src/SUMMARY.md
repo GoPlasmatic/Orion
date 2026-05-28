@@ -25,6 +25,11 @@
 - [Admin API](./api/admin.md)
 - [Data API](./api/data.md)
 
+# Reference
+
+- [Workflow Reference](./reference/workflows.md)
+- [Function Reference](./reference/functions.md)
+
 # Tutorials
 
 - [CLI Setup](./tutorials/cli-setup.md)
