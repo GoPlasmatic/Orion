@@ -6,7 +6,7 @@ Contributions are welcome! Whether it's a bug fix, new feature, documentation im
 
 **Prerequisites:**
 
-- [Rust 1.85+](https://www.rust-lang.org/tools/install) (Orion uses the 2024 edition)
+- [Rust 1.88+](https://www.rust-lang.org/tools/install) (Orion uses the 2024 edition; MSRV is 1.88)
 - SQLite (bundled — no separate install needed)
 
 **Clone and build:**
@@ -23,13 +23,12 @@ If all tests pass, you're ready to go.
 ## Development Workflow
 
 ```bash
-cargo build                        # Build (default, no Kafka)
-cargo build --features kafka       # Build with Kafka support
+cargo build                        # Build (all capabilities compiled in — no feature flags)
+cargo build --release              # Release build
 cargo test                         # Run all tests
-cargo test --features kafka        # Include Kafka-gated tests
 cargo test <test_name>             # Run a single test by name
+cargo test --test integration      # Run the consolidated integration test binary
 cargo clippy                       # Lint
-cargo clippy --features kafka      # Lint including Kafka code
 cargo fmt                          # Format code
 ```
 
@@ -39,20 +38,24 @@ Run `cargo clippy` and `cargo fmt` before committing — both must pass cleanly.
 
 ```
 src/
-  main.rs              # Server binary entry point
-  lib.rs               # Library root
-  config/              # Configuration loading (TOML + env vars)
-  engine/              # Rule engine, custom functions (http_call, publish_kafka)
-  server/              # Axum routes, middleware, AppState
-  storage/             # Repository traits and SQLite implementations
-  errors.rs            # Error types and HTTP error responses
-  connector/           # Connector registry and secret masking
-  queue/               # Async job queue
+  main.rs              # CLI entrypoint, startup sequence
+  lib.rs               # Public module declarations
+  channel/             # Channel registry, config, routing, deduplication
+  config/              # Configuration loading (TOML + ORION_SECTION__KEY env overrides)
+  connector/           # Connector types, registry, circuit breakers, pool caching
+  engine/              # Dataflow engine & custom function handlers (functions/)
+  errors.rs            # OrionError enum -> HTTP response mapping
+  kafka/               # Kafka producer & consumer
+  metrics/             # Prometheus metrics collection
+  queue/               # Async trace processing, DLQ retry
+  server/              # Axum routes (routes/), middleware, AppState
+  storage/             # Database abstraction, models, repositories (repositories/)
+  validation/          # Input validation, SSRF protection
 tests/
-  common/mod.rs        # Test helpers (test_app, json_request, body_json)
-  *.rs                 # Integration tests
-migrations/            # SQLite migrations (embedded at compile time)
-docs/                  # Documentation
+  integration/         # Consolidated integration test binary (main.rs + *_test.rs modules)
+  integration/common/  # Test helpers (test_app, json_request, body_json)
+migrations/            # SQLite / Postgres / MySQL migrations (embedded at compile time)
+docs/                  # mdBook documentation (published to GitHub Pages)
 ```
 
 ## Making Changes
@@ -70,7 +73,7 @@ docs/                  # Documentation
 
 ### Integration tests
 
-Integration tests use an in-memory SQLite database and the full Axum router — no running server needed. The test helpers in `tests/common/mod.rs` provide:
+Integration tests use an in-memory SQLite database and the full Axum router — no running server needed. New test files go in `tests/integration/` and are declared as modules in `tests/integration/main.rs`. The test helpers in `tests/integration/common/mod.rs` provide:
 
 - `test_app()` — creates a ready-to-use `Router` with in-memory DB, repos, and engine
 - `json_request(method, uri, body)` — builds an HTTP `Request<Body>` with JSON content-type
@@ -81,20 +84,22 @@ Integration tests use an in-memory SQLite database and the full Axum router — 
 ```rust
 #[tokio::test]
 async fn test_my_feature() {
-    let app = test_app().await;
+    let app = common::test_app().await;
 
-    let req = json_request("POST", "/api/v1/admin/rules", json!({
-        "name": "Test Rule",
-        "channel": "test",
+    let req = json_request("POST", "/api/v1/admin/workflows", Some(json!({
+        "workflow_id": "test-workflow",
+        "name": "Test Workflow",
         "condition": true,
         "tasks": []
-    }));
+    })));
 
     let response = app.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
 
+    // Responses are wrapped in a `data` envelope; new workflows start as drafts.
     let body = body_json(response).await;
-    assert_eq!(body["name"], "Test Rule");
+    assert_eq!(body["data"]["name"], "Test Workflow");
+    assert_eq!(body["data"]["status"], "draft");
 }
 ```
 
@@ -106,7 +111,7 @@ Add unit tests inline in the relevant module using `#[cfg(test)]` blocks. See `s
 
 ```bash
 cargo test test_my_feature              # By test name
-cargo test --test admin_rules_test      # By test file
+cargo test --test integration           # Run the whole integration binary
 ```
 
 ## Code Style
