@@ -161,28 +161,3 @@ jobs:
       - name: Inspect manifest
         run: |
           docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}"
-
-      # Mirror to ACR if credentials are available
-      - name: Login to Azure Container Registry
-        if: ${{ env.ACR_URL != '' }}
-        uses: docker/login-action@v3
-        env:
-          ACR_URL: ${{ secrets.ACR_URL }}
-        with:
-          registry: ${{ secrets.ACR_URL }}
-          username: ${{ secrets.ACR_USERNAME }}
-          password: ${{ secrets.ACR_PASSWORD }}
-
-      - name: Mirror to ACR
-        if: ${{ env.ACR_URL != '' }}
-        env:
-          ACR_URL: ${{ secrets.ACR_URL }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-        run: |
-          ACR_IMAGE="${ACR_URL}/orion"
-          docker buildx imagetools create \
-            --tag "${ACR_IMAGE}:${VERSION}" \
-            "${{ env.GHCR_IMAGE }}:${VERSION}"
-          docker buildx imagetools create \
-            --tag "${ACR_IMAGE}:latest" \
-            "${{ env.GHCR_IMAGE }}:${VERSION}"
