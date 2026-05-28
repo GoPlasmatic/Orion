@@ -11,7 +11,7 @@ documentation = "https://goplasmatic.github.io/Orion/"
 readme = "README.md"
 keywords = ["workflow", "runtime", "declarative", "microservices", "jsonlogic"]
 categories = ["web-programming"]
-exclude = ["tests/", "docs/", ".github/", ".claude/", "docker-compose*", "Dockerfile"]
+exclude = ["tests/", "docs/", "examples/", ".github/", ".claude/", "docker-compose*", "Dockerfile"]
 
 [[bin]]
 name = "orion-server"
