@@ -43,24 +43,25 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # Required so rdkafka's cmake-build feature compiles librdkafka from source.
-      # Without these the kafka/queue dependency path extracts only partially,
-      # which drags down CodeQL's call-target resolution metric.
+      # The Rust extractor is buildless, but it still runs build scripts and
+      # compiles proc-macros while resolving the crate graph. cmake + libcurl
+      # let rdkafka's cmake-build feature succeed, so the kafka/queue path
+      # resolves instead of extracting only partially.
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+
+      # Warm the dependency cache so extraction resolves the full graph reliably.
+      - name: Fetch dependencies
+        run: cargo fetch --locked
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: rust
-          # Manual build so the full crate graph (proc-macros, build scripts,
-          # native libs) compiles before extraction, maximizing type and
-          # call-target resolution.
-          build-mode: manual
+          # Rust only supports buildless extraction; the extractor resolves
+          # dependencies itself via cargo.
+          build-mode: none
           queries: security-and-quality
-
-      - name: Build
-        run: cargo build --all-targets --locked
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
