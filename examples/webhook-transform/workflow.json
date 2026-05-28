@@ -1,0 +1,27 @@
+{
+  "workflow_id": "webhook-transform",
+  "name": "Webhook Transform Pipeline",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse Payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "event" } }
+    },
+    {
+      "id": "normalize",
+      "name": "Normalize Schema",
+      "function": {
+        "name": "map",
+        "input": {
+          "mappings": [
+            { "path": "data.normalized.source", "logic": { "var": "data.event.origin" } },
+            { "path": "data.normalized.event_type", "logic": { "var": "data.event.type" } },
+            { "path": "data.normalized.payload", "logic": { "var": "data.event.body" } },
+            { "path": "data.normalized.processed", "logic": true }
+          ]
+        }
+      }
+    }
+  ]
+}

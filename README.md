@@ -382,7 +382,7 @@ Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mo
 - **Multi-agent orchestration:** route agent outputs to channels with coordinating workflows
 - **Protocol bridging:** REST-to-Kafka, Kafka-to-HTTP with transformation
 
-See [Use Cases & Patterns](docs/src/tutorials/use-cases.md) for complete, tested examples.
+See [Use Cases & Patterns](docs/src/tutorials/use-cases.md) for complete, tested examples, or grab ready-to-deploy JSON from [`examples/`](examples/) and run `./deploy.sh <example>` against a local instance.
 
 ## Install
 
