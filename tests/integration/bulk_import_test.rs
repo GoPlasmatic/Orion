@@ -136,6 +136,104 @@ async fn connectors_import_dry_run_reports_validation_outcome() {
 }
 
 #[tokio::test]
+async fn channels_import_dry_run_reports_enum_typo_per_item() {
+    // An invalid enum used to fail the whole-batch deserialize with 400 before
+    // the per-item loop ran, so dry-run couldn't preview the typo. It must now
+    // be reported as a single would_fail entry.
+    let app = test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels/import?dry_run=true",
+            Some(json!([
+                {
+                    "name": "ch-enum-ok",
+                    "channel_type": "sync",
+                    "protocol": "rest",
+                    "methods": ["POST"],
+                    "route_pattern": "/enum-ok"
+                },
+                {
+                    "name": "ch-enum-bad",
+                    "channel_type": "bogus",
+                    "protocol": "rest",
+                    "methods": ["POST"],
+                    "route_pattern": "/enum-bad"
+                }
+            ])),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["dry_run"], true);
+    assert_eq!(body["would_create"], 1);
+    assert_eq!(body["would_fail"], 1);
+    let errors = body["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["index"], 1);
+}
+
+#[tokio::test]
+async fn channels_import_real_run_skips_only_the_bad_enum_item() {
+    let app = test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels/import",
+            Some(json!([
+                {
+                    "name": "ch-real-ok",
+                    "channel_type": "sync",
+                    "protocol": "rest",
+                    "methods": ["POST"],
+                    "route_pattern": "/real-ok"
+                },
+                {
+                    "name": "ch-real-bad",
+                    "channel_type": "bogus",
+                    "protocol": "rest",
+                    "methods": ["POST"],
+                    "route_pattern": "/real-bad"
+                }
+            ])),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["imported"], 1);
+    assert_eq!(body["failed"], 1);
+}
+
+#[tokio::test]
+async fn connectors_import_dry_run_reports_enum_typo_per_item() {
+    let app = test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors/import?dry_run=true",
+            Some(json!([
+                { "name": "con-enum-ok", "connector_type": "http", "config": {"url": "https://ok.example"} },
+                { "name": "con-enum-bad", "connector_type": "bogus", "config": {"url": "https://bad.example"} }
+            ])),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["dry_run"], true);
+    assert_eq!(body["would_create"], 1);
+    assert_eq!(body["would_fail"], 1);
+    let errors = body["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0]["index"], 1);
+}
+
+#[tokio::test]
 async fn workflows_import_dry_run_does_not_persist() {
     // Existing /workflows/import endpoint: B6 added ?dry_run=true to it.
     let app = test_app().await;

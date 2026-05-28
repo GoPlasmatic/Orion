@@ -40,6 +40,9 @@ pub struct TraceResultRow {
     pub id: String,
     pub result_json: String,
     pub duration_ms: f64,
+    /// Optional per-task execution trace JSON. Populated only when the
+    /// channel has `config.tracing.task_details = true` (A2).
+    pub task_trace_json: Option<String>,
 }
 
 // -- Repository trait --
@@ -64,6 +67,7 @@ pub trait TraceRepository: Send + Sync {
         id: &str,
         result_json: &str,
         duration_ms: f64,
+        task_trace_json: Option<&str>,
     ) -> Result<(), OrionError>;
     async fn store_completed(
         &self,
@@ -104,8 +108,13 @@ pub trait TraceRepository: Send + Sync {
     /// method; backend implementations can override using one transaction.
     async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
         for row in rows {
-            self.set_result(&row.id, &row.result_json, row.duration_ms)
-                .await?;
+            self.set_result(
+                &row.id,
+                &row.result_json,
+                row.duration_ms,
+                row.task_trace_json.as_deref(),
+            )
+            .await?;
         }
         Ok(())
     }
@@ -234,13 +243,16 @@ impl TraceRepository for SqlTraceRepository {
         id: &str,
         result_json: &str,
         duration_ms: f64,
+        task_trace_json: Option<&str>,
     ) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("traces.set_result", async {
+            let task_trace_val = super::helpers::optional_string_value(task_trace_json);
             let (sql, values) = build_sqlx(
                 Query::update()
                     .table(Traces::Table)
                     .value(Traces::ResultJson, result_json)
                     .value(Traces::DurationMs, duration_ms)
+                    .value(Traces::TaskTraceJson, task_trace_val)
                     .and_where(Expr::col(Traces::Id).eq(id)),
             );
 
@@ -359,11 +371,14 @@ impl TraceRepository for SqlTraceRepository {
         crate::metrics::timed_db_op("traces.set_result_batch", async {
             let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
             for row in rows {
+                let task_trace_val =
+                    super::helpers::optional_string_value(row.task_trace_json.as_deref());
                 let (sql, values) = build_sqlx(
                     Query::update()
                         .table(Traces::Table)
                         .value(Traces::ResultJson, row.result_json.as_str())
                         .value(Traces::DurationMs, row.duration_ms)
+                        .value(Traces::TaskTraceJson, task_trace_val)
                         .and_where(Expr::col(Traces::Id).eq(row.id.as_str())),
                 );
                 tx.execute_query(&sql, values).await?;

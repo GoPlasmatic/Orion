@@ -166,6 +166,7 @@ async fn route_set_result(
     trace_id: &str,
     result_json: String,
     duration_ms: f64,
+    task_trace_json: Option<String>,
 ) -> bool {
     match mode {
         crate::config::TraceStorageMode::Sync => false, // caller handles inline write
@@ -176,6 +177,7 @@ async fn route_set_result(
                         id: trace_id.to_string(),
                         result_json,
                         duration_ms,
+                        task_trace_json,
                     },
                 ))
                 .await;
@@ -272,12 +274,28 @@ async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
 
     // Clone the inner Arc<Engine> and release the lock immediately
     let engine_ref = crate::engine::acquire_engine_read(&engine).await;
+    // A2: capture the per-task execution trace when the channel opted in via
+    // `config.tracing.task_details = true`. Both arms resolve to the same
+    // `(Result, Option<ExecutionTrace>)` shape so the timeout handling is shared.
+    let capture_trace = effective_trace.task_details;
     let workflow_start = Instant::now();
     let engine_fut = async {
-        tokio::time::timeout(
-            Duration::from_millis(processing_timeout_ms),
-            engine_ref.process_message_for_channel(&channel, &mut message),
-        )
+        tokio::time::timeout(Duration::from_millis(processing_timeout_ms), async {
+            if capture_trace {
+                match engine_ref
+                    .process_message_for_channel_with_trace(&channel, &mut message)
+                    .await
+                {
+                    Ok(trace) => (Ok(()), Some(trace)),
+                    Err(e) => (Err(e), None),
+                }
+            } else {
+                let r = engine_ref
+                    .process_message_for_channel(&channel, &mut message)
+                    .await;
+                (r, None)
+            }
+        })
         .await
     };
     let timeout_outcome = if let Some(ref p) = profile {
@@ -289,7 +307,7 @@ async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
     if let Some(ref p) = profile {
         p.set_workflow_total(workflow_start.elapsed());
     }
-    let result = match timeout_outcome {
+    let (result, task_trace) = match timeout_outcome {
         Ok(inner) => inner,
         Err(_) => {
             tracing::warn!(
@@ -298,11 +316,17 @@ async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
                 timeout_ms = processing_timeout_ms,
                 "Async trace processing timed out"
             );
-            Err(dataflow_rs::DataflowError::Timeout(format!(
-                "Processing timed out after {processing_timeout_ms}ms"
-            )))
+            (
+                Err(dataflow_rs::DataflowError::Timeout(format!(
+                    "Processing timed out after {processing_timeout_ms}ms"
+                ))),
+                None,
+            )
         }
     };
+    let task_trace_json = task_trace
+        .as_ref()
+        .and_then(|t| serde_json::to_string(t).ok());
 
     crate::engine::utils::remove_rollout_bucket(&mut message);
 
@@ -394,6 +418,7 @@ async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
                 &trace_id,
                 result_json.clone(),
                 duration_ms,
+                task_trace_json.clone(),
             )
             .await
             {
@@ -404,7 +429,12 @@ async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
                 let mut ok = false;
                 for attempt in 0..3 {
                     match trace_repo
-                        .set_result(&trace_id, &result_json, duration_ms)
+                        .set_result(
+                            &trace_id,
+                            &result_json,
+                            duration_ms,
+                            task_trace_json.as_deref(),
+                        )
                         .await
                     {
                         Ok(_) => {

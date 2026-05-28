@@ -190,22 +190,37 @@ pub(crate) async fn delete_connector(
     request_body = Vec<CreateConnectorRequest>,
     params(super::workflows::ImportQuery),
     responses(
-        (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true)"),
+        (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
+            Dry-run validates each item's shape and values only — it does NOT read the database, so it \
+            cannot detect name conflicts. Connectors whose names already exist are reported as would_create \
+            and will surface as Conflict on the real (non-dry-run) import."),
     )
 )]
-#[tracing::instrument(skip(state, connectors, principal), fields(count = connectors.len()))]
+#[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
 pub(crate) async fn import_connectors(
     State(state): State<AppState>,
     Query(query): Query<super::workflows::ImportQuery>,
     principal: Option<Extension<AdminPrincipal>>,
-    OrionJson(connectors): OrionJson<Vec<CreateConnectorRequest>>,
+    OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {
     if query.dry_run {
+        // Dry-run is pure validation: no DB reads, so name conflicts are not
+        // detected here (they surface as Conflict on the real import).
         let mut would_create = 0u64;
         let mut would_fail = 0u64;
         let mut errors = Vec::new();
-        for (i, c) in connectors.iter().enumerate() {
-            match crate::validation::validate_create_connector(c) {
+        for (i, item) in items.into_iter().enumerate() {
+            // Deserialize per-item so a single shape/enum typo becomes one
+            // would_fail entry instead of aborting the whole batch.
+            let c = match serde_json::from_value::<CreateConnectorRequest>(item) {
+                Ok(c) => c,
+                Err(e) => {
+                    would_fail += 1;
+                    errors.push(json!({"index": i, "error": e.to_string()}));
+                    continue;
+                }
+            };
+            match crate::validation::validate_create_connector(&c) {
                 Ok(()) => would_create += 1,
                 Err(e) => {
                     would_fail += 1;
@@ -225,13 +240,21 @@ pub(crate) async fn import_connectors(
     let mut imported = 0u64;
     let mut failed = 0u64;
     let mut errors = Vec::new();
-    for (i, c) in connectors.iter().enumerate() {
-        if let Err(e) = crate::validation::validate_create_connector(c) {
+    for (i, item) in items.into_iter().enumerate() {
+        let c = match serde_json::from_value::<CreateConnectorRequest>(item) {
+            Ok(c) => c,
+            Err(e) => {
+                failed += 1;
+                errors.push(json!({"index": i, "error": e.to_string()}));
+                continue;
+            }
+        };
+        if let Err(e) = crate::validation::validate_create_connector(&c) {
             failed += 1;
             errors.push(json!({"index": i, "error": e.to_string()}));
             continue;
         }
-        match state.connector_repo.create(c).await {
+        match state.connector_repo.create(&c).await {
             Ok(_) => imported += 1,
             Err(e) => {
                 failed += 1;
