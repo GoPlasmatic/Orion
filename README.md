@@ -5,8 +5,11 @@
 
   **The declarative services runtime for the AI era.**
 
+  [![CI](https://github.com/GoPlasmatic/Orion/actions/workflows/ci.yml/badge.svg)](https://github.com/GoPlasmatic/Orion/actions/workflows/ci.yml)
+  [![Crates.io](https://img.shields.io/crates/v/orion-server.svg)](https://crates.io/crates/orion-server)
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)](https://www.rust-lang.org)
+  [![Docs](https://img.shields.io/badge/docs-mdBook-blue.svg)](https://goplasmatic.github.io/Orion/)
   [![JSONLogic](https://img.shields.io/badge/JSONLogic-standard-green.svg)](https://jsonlogic.com)
   [![GitHub Release](https://img.shields.io/github/v/release/GoPlasmatic/Orion)](https://github.com/GoPlasmatic/Orion/releases)
   [![GitHub Stars](https://img.shields.io/github/stars/GoPlasmatic/Orion?style=social)](https://github.com/GoPlasmatic/Orion)
@@ -175,7 +178,7 @@ Every AI-generated workflow gets version history, draft-before-activate, dry-run
 
 Need to ship a bundle of workflows, channels, or connectors at once (e.g. promoting from staging)? Use the bulk import endpoints — `POST /api/v1/admin/{workflows,channels,connectors}/import?dry_run=true` validates the whole batch first; drop `dry_run` to commit.
 
-See [Use Cases & Patterns](docs/src/tutorials/use-cases.md#ai-workflow--cicd) for CI/CD integration and GitHub Actions examples.
+See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html#ai-workflow--cicd) for CI/CD integration and GitHub Actions examples.
 
 ---
 
@@ -245,7 +248,7 @@ Every channel gets production-grade features without writing a line of code. Con
 
 A minimal channel needs only a name and a workflow. Everything else has sensible defaults.
 
-> **Observability deep dive:** health endpoints, full Prometheus metrics list, Kubernetes probes, and OpenTelemetry tracing config. See [Observability Guide](docs/src/features/observability.md).
+> **Observability deep dive:** health endpoints, full Prometheus metrics list, Kubernetes probes, and OpenTelemetry tracing config. See [Observability Guide](https://goplasmatic.github.io/Orion/features/observability.html).
 
 ---
 
@@ -263,7 +266,7 @@ Sync channels respond immediately. Async channels return a trace ID; poll `GET /
 
 **Bridging is a pattern, not a feature.** A sync workflow can `publish_kafka` and return 202. An async channel picks it up from there.
 
-REST channels support parameterized route patterns (`/orders/{order_id}`) with path, query, and header injection into the workflow context. See [Data API](docs/src/api/data.md#route-resolution).
+REST channels support parameterized route patterns (`/orders/{order_id}`) with path, query, and header injection into the workflow context. See [Data API](https://goplasmatic.github.io/Orion/api/data.html#route-resolution).
 
 ## Service Composition
 
@@ -294,7 +297,7 @@ Connectors are named, reusable connections to external systems. Configure once, 
 | **MongoDB** | Any MongoDB instance | Document queries, BSON-to-JSON conversion, connection pooling |
 | **Kafka** | Any Kafka cluster | Publish with key/value logic, consume with DLQ routing |
 
-Every connector gets **circuit breaker protection** automatically: failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Secrets are stored in the database and masked in API responses, and any string field can use an `env://VAR_NAME` reference to pull the value from the process environment at startup so production credentials never sit in the saved config. See [Connectors Guide](docs/src/features/extensibility.md#connectors) for configuration examples and auth options.
+Every connector gets **circuit breaker protection** automatically: failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Secrets are stored in the database and masked in API responses, and any string field can use an `env://VAR_NAME` reference to pull the value from the process environment at startup so production credentials never sit in the saved config. See [Connectors Guide](https://goplasmatic.github.io/Orion/features/extensibility.html#connectors) for configuration examples and auth options.
 
 ---
 
@@ -307,7 +310,7 @@ Every connector gets **circuit breaker protection** automatically: failures trip
 | `filter` | Allow or halt processing based on JSONLogic conditions |
 | `map` | Transform and reshape JSON using JSONLogic expressions |
 | `validation` | Enforce required fields, constraints, and schema-like checks |
-| `http_call` | Invoke downstream APIs, webhooks, or services via [connectors](docs/src/features/extensibility.md#connectors) |
+| `http_call` | Invoke downstream APIs, webhooks, or services via [connectors](https://goplasmatic.github.io/Orion/features/extensibility.html#connectors) |
 | `channel_call` | Invoke another channel's workflow in-process |
 | `db_read` | Execute SQL SELECT queries, return rows as JSON |
 | `db_write` | Execute SQL INSERT/UPDATE/DELETE, return affected count |
@@ -316,10 +319,10 @@ Every connector gets **circuit breaker protection** automatically: failures trip
 | `mongo_read` | Query MongoDB collections, BSON-to-JSON conversion |
 | `publish_json` | Serialize data to JSON output format |
 | `publish_xml` | Serialize data to XML output format |
-| `publish_kafka` | Publish messages to [Kafka topics](docs/src/features/extensibility.md#kafka-connector) |
+| `publish_kafka` | Publish messages to [Kafka topics](https://goplasmatic.github.io/Orion/features/extensibility.html#kafka-connector) |
 | `log` | Emit structured log entries for auditing and debugging |
 
-All functions are built into every binary. The dataflow-rs runtime contributes `parse_json`/`parse_xml`/`filter`/`map`/`validation`/`publish_json`/`publish_xml`/`log`; Orion adds the connector-backed handlers (`http_call`, `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`, `publish_kafka`) and the in-process `channel_call`. `cache_read`/`cache_write` use the in-memory backend by default; reference a Redis connector for distributed caching. See the [Function Reference](docs/src/reference/functions.md) for every function's exact `input` schema, or browse them at runtime via `GET /api/v1/admin/functions`.
+All functions are built into every binary. The dataflow-rs runtime contributes `parse_json`/`parse_xml`/`filter`/`map`/`validation`/`publish_json`/`publish_xml`/`log`; Orion adds the connector-backed handlers (`http_call`, `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`, `publish_kafka`) and the in-process `channel_call`. `cache_read`/`cache_write` use the in-memory backend by default; reference a Redis connector for distributed caching. See the [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html) for every function's exact `input` schema, or browse them at runtime via `GET /api/v1/admin/functions`.
 
 ---
 
@@ -336,7 +339,7 @@ Production services fail. Orion handles it so you don't write retry loops and fa
 | **Task in pipeline fails** | Pipeline halts with error, or continues collecting errors if `continue_on_error: true` | Per-workflow setting |
 | **Duplicate request** | Detected via idempotency key, returns 409 | `Idempotency-Key` header + retention window |
 
-**Debugging is built in.** Every request gets a `x-request-id` propagated through the entire pipeline. Structured JSON logs show what data each task received and produced. Enable OpenTelemetry for distributed tracing across `http_call` and `channel_call` chains. Inspect circuit breakers, DLQ traces, and debug endpoints via the [API Reference](docs/src/api/admin.md).
+**Debugging is built in.** Every request gets a `x-request-id` propagated through the entire pipeline. Structured JSON logs show what data each task received and produced. Enable OpenTelemetry for distributed tracing across `http_call` and `channel_call` chains. Inspect circuit breakers, DLQ traces, and debug endpoints via the [API Reference](https://goplasmatic.github.io/Orion/api/admin.html).
 
 ---
 
@@ -366,7 +369,7 @@ Single binary. SQLite by default, no database to provision, no runtime dependenc
 | Complex workflow (4 tasks) | 6,053 | 8.2 ms | 25.5 ms |
 | 12 workflows on one channel | 6,912 | 7.2 ms | 16.6 ms |
 
-v0.2.0 upgrades dataflow-rs to 3.0 and datalogic-rs to 5, which moved JSONLogic compilation to engine-construction time. Compared to the v0.1.x baseline (dataflow-rs 2.1.5), complex and multi-workflow scenarios pick up large gains (+48% and +120% req/s respectively) and P99 latency drops materially on every scenario. See [`tests/benchmark/results/`](tests/benchmark/results/) for the full v0.1 (`v2.1.5`) baseline, v0.2 (`v0.2.0`) release, and the per-scenario `hey` output. Run `./tests/benchmark/bench.sh` to reproduce.
+v0.2.0 upgrades dataflow-rs to 3.0 and datalogic-rs to 5, which moved JSONLogic compilation to engine-construction time. Compared to the v0.1.x baseline (dataflow-rs 2.1.5), complex and multi-workflow scenarios pick up large gains (+48% and +120% req/s respectively) and P99 latency drops materially on every scenario. The benchmark folders under [`tests/benchmark/results/`](tests/benchmark/results/) mix two version schemes: `v2.1.5` and `v3.0.0` are **dataflow-rs engine** versions (the v0.1.x baseline and the 3.0 upgrade snapshot), while `v0.2.0` is **Orion's own** release version — the `v0.2.0` and `v3.0.0` datasets are the same run. Run `./tests/benchmark/bench.sh` to reproduce.
 
 Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mode, async-first on Tokio.
 
@@ -382,7 +385,7 @@ Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mo
 - **Multi-agent orchestration:** route agent outputs to channels with coordinating workflows
 - **Protocol bridging:** REST-to-Kafka, Kafka-to-HTTP with transformation
 
-See [Use Cases & Patterns](docs/src/tutorials/use-cases.md) for complete, tested examples, or grab ready-to-deploy JSON from [`examples/`](examples/) and run `./deploy.sh <example>` against a local instance.
+See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html) for complete, tested examples, or grab ready-to-deploy JSON from [`examples/`](examples/) and run `./deploy.sh <example>` against a local instance.
 
 ## Install
 
@@ -409,7 +412,7 @@ cargo install orion-server
 cargo install --git https://github.com/GoPlasmatic/Orion.git
 ```
 
-Verify with `orion-server --version`. Swagger UI available at `http://localhost:8080/docs`. See [Configuration](docs/src/configuration/reference.md) for deployment options.
+Verify with `orion-server --version`. Swagger UI available at `http://localhost:8080/docs`. See [Configuration](https://goplasmatic.github.io/Orion/configuration/reference.html) for deployment options.
 
 The server binary also ships diagnostic subcommands you can run without booting the HTTP listener:
 
@@ -447,18 +450,18 @@ See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full comma
 
 | Guide | Description |
 |-------|-------------|
-| [Workflow Reference](docs/src/reference/workflows.md) | Workflow & task JSON schema, conditions, error handling, lifecycle, and rollout |
-| [Function Reference](docs/src/reference/functions.md) | Every built-in task function and its exact `input` schema |
-| [Admin API](docs/src/api/admin.md) | Workflows, channels, connectors, engine, audit, and backup endpoints |
-| [Data API](docs/src/api/data.md) | Data routing, sync/async processing, traces, and operational endpoints |
-| [Configuration](docs/src/configuration/reference.md) | Config file, env vars, database backends, deployment |
-| [Connectors & Extensibility](docs/src/features/extensibility.md) | HTTP, DB, Cache, Storage, MongoDB, Kafka: auth, retry, circuit breakers |
-| [Observability](docs/src/features/observability.md) | Prometheus metrics, health checks, Kubernetes probes, tracing, logging |
-| [Resilience](docs/src/features/resilience.md) | Circuit breakers, timeouts, dead letter queues |
-| [Scalability](docs/src/features/scalability.md) | Rate limiting, backpressure, horizontal scaling |
-| [Security](docs/src/features/security.md) | Input validation, SSRF protection, CORS, auth |
-| [Deployability](docs/src/features/deployability.md) | Packaging, Docker, installers, distribution |
-| [Use Cases & Patterns](docs/src/tutorials/use-cases.md) | AI prompt templates, tested examples, validation workflows, CI/CD |
+| [Workflow Reference](https://goplasmatic.github.io/Orion/reference/workflows.html) | Workflow & task JSON schema, conditions, error handling, lifecycle, and rollout |
+| [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html) | Every built-in task function and its exact `input` schema |
+| [Admin API](https://goplasmatic.github.io/Orion/api/admin.html) | Workflows, channels, connectors, engine, audit, and backup endpoints |
+| [Data API](https://goplasmatic.github.io/Orion/api/data.html) | Data routing, sync/async processing, traces, and operational endpoints |
+| [Configuration](https://goplasmatic.github.io/Orion/configuration/reference.html) | Config file, env vars, database backends, deployment |
+| [Connectors & Extensibility](https://goplasmatic.github.io/Orion/features/extensibility.html) | HTTP, DB, Cache, Storage, MongoDB, Kafka: auth, retry, circuit breakers |
+| [Observability](https://goplasmatic.github.io/Orion/features/observability.html) | Prometheus metrics, health checks, Kubernetes probes, tracing, logging |
+| [Resilience](https://goplasmatic.github.io/Orion/features/resilience.html) | Circuit breakers, timeouts, dead letter queues |
+| [Scalability](https://goplasmatic.github.io/Orion/features/scalability.html) | Rate limiting, backpressure, horizontal scaling |
+| [Security](https://goplasmatic.github.io/Orion/features/security.html) | Input validation, SSRF protection, CORS, auth |
+| [Deployability](https://goplasmatic.github.io/Orion/features/deployability.html) | Packaging, Docker, installers, distribution |
+| [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html) | AI prompt templates, tested examples, validation workflows, CI/CD |
 | [CLI Tool](https://github.com/GoPlasmatic/Orion-cli) | Command-line tool for managing channels, workflows, and connectors |
 
 ## Built With
