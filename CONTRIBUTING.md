@@ -67,6 +67,11 @@ docs/                  # mdBook documentation (published to GitHub Pages)
    ```bash
    cargo fmt && cargo clippy && cargo test
    ```
+   If you changed the HTTP API (routes or request/response schemas), regenerate
+   the checked-in OpenAPI spec — a test fails if it's stale:
+   ```bash
+   cargo run -- dump-openapi > docs/openapi.json
+   ```
 5. **Submit a pull request** with a clear description of what changed and why
 
 ## Testing

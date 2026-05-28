@@ -68,6 +68,27 @@ async fn openapi_documents_new_b4_tags() {
     assert!(tag_names.contains(&"Backups"));
 }
 
+/// The checked-in `docs/openapi.json` must match what the binary emits via
+/// `dump-openapi`. Keeps the static spec from drifting as the API (or the
+/// crate version) changes. If this fails, regenerate it:
+/// `cargo run -- dump-openapi > docs/openapi.json`.
+#[test]
+fn committed_openapi_json_is_up_to_date() {
+    let committed =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/openapi.json")).expect(
+            "docs/openapi.json should exist — run `cargo run -- dump-openapi > docs/openapi.json`",
+        );
+
+    let generated = orion::server::routes::openapi::pretty_json();
+
+    // `println!` adds a trailing newline to the committed file; trim both ends.
+    assert_eq!(
+        committed.trim_end(),
+        generated.trim_end(),
+        "docs/openapi.json is stale — regenerate with: cargo run -- dump-openapi > docs/openapi.json"
+    );
+}
+
 #[tokio::test]
 async fn test_swagger_ui_accessible() {
     let app = common::test_app().await;

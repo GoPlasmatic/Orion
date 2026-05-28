@@ -37,7 +37,8 @@ EXAMPLES:\n    \
     orion-server migrate --dry-run            Preview pending migrations\n    \
     orion-server lint workflow.json           Validate a workflow JSON file\n    \
     orion-server dry-run -w wf.json -i x.json Dry-run a workflow against an input\n    \
-    orion-server test-connectivity            Probe DB (and Kafka if enabled)\n\n\
+    orion-server test-connectivity            Probe DB (and Kafka if enabled)\n    \
+    orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n\n\
 ENVIRONMENT VARIABLES:\n    \
     All settings can be overridden via ORION_SECTION__KEY env vars:\n\n    \
     ORION_SERVER__PORT=9090            Override server port\n    \
@@ -96,6 +97,11 @@ enum Command {
     /// and runs a no-op query. Catches "DB credentials wrong / file
     /// unreadable" before the server tries to start.
     TestConnectivity,
+    /// Print the public HTTP API's OpenAPI 3.1 spec as JSON to stdout.
+    ///
+    /// Needs no config, database, or running server. Redirect it to refresh
+    /// the checked-in copy: `orion-server dump-openapi > docs/openapi.json`.
+    DumpOpenapi,
 }
 
 /// Construct the Kafka producer and wire it into the engine's
@@ -340,6 +346,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Lint { workflow }) => return run_lint(&workflow),
         Some(Command::DryRun { workflow, input }) => return run_dry_run(&workflow, &input).await,
         Some(Command::TestConnectivity) => return run_test_connectivity(&config).await,
+        Some(Command::DumpOpenapi) => return run_dump_openapi(),
         None => {} // Continue to start the server
     }
 
@@ -782,6 +789,14 @@ fn run_lint(workflow_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("'{workflow_path}' is valid.");
+    Ok(())
+}
+
+/// Print the OpenAPI spec to stdout. Backs the checked-in `docs/openapi.json`
+/// (regenerate with `orion-server dump-openapi > docs/openapi.json`) and needs
+/// neither config, a database, nor a running server.
+fn run_dump_openapi() -> Result<(), Box<dyn std::error::Error>> {
+    println!("{}", orion::server::routes::openapi::pretty_json());
     Ok(())
 }
 
