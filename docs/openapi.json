@@ -1,0 +1,2078 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Orion — Declarative Services Runtime API",
+    "description": "Declarative services runtime platform",
+    "license": {
+      "name": "Apache-2.0"
+    },
+    "version": "0.2.0"
+  },
+  "paths": {
+    "/api/v1/admin/audit-logs": {
+      "get": {
+        "tags": [
+          "Audit"
+        ],
+        "operationId": "list_audit_logs",
+        "parameters": [
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Pagination offset (default 0)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to [1, 1000] (default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated audit log entries with total count"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/backups": {
+      "get": {
+        "tags": [
+          "Backups"
+        ],
+        "operationId": "list_backups",
+        "responses": {
+          "200": {
+            "description": "List of backup files in the configured backup directory"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Backups"
+        ],
+        "operationId": "create_backup",
+        "responses": {
+          "200": {
+            "description": "Backup created (SQLite only — VACUUM INTO a timestamped file)"
+          },
+          "400": {
+            "description": "Backup unavailable (non-SQLite backend)"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/channels": {
+      "get": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "list_channels",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "channel_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "protocol",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Column to sort by: priority (default), name, status, channel_type, protocol, created_at, updated_at.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc or desc (default).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of channels"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "create_channel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateChannelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Channel created as draft"
+          },
+          "400": {
+            "description": "Invalid input"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/channels/import": {
+      "post": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "import_channels",
+        "parameters": [
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "When true, validates each item and reports what would happen\nwithout writing to the database. The response shape mirrors\na real import but `imported` is always 0.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CreateChannelRequest"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Import results with counts (or would-be results when ?dry_run=true)"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/channels/{id}": {
+      "get": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "get_channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Channel details"
+          },
+          "404": {
+            "description": "Channel not found"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "update_channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateChannelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Draft channel updated"
+          },
+          "400": {
+            "description": "No draft version or invalid input"
+          },
+          "404": {
+            "description": "Channel not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "delete_channel",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Channel deleted"
+          },
+          "404": {
+            "description": "Channel not found"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/channels/{id}/status": {
+      "patch": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "change_channel_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelStatusChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Status updated"
+          },
+          "400": {
+            "description": "Invalid status transition"
+          },
+          "404": {
+            "description": "Channel not found"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/channels/{id}/versions": {
+      "get": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "list_channel_versions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated version history"
+          },
+          "404": {
+            "description": "Channel not found"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "create_new_channel_version",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Channel ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "New draft version created"
+          },
+          "409": {
+            "description": "Draft already exists"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/connectors": {
+      "get": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "list_connectors",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of connectors"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "create_connector",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateConnectorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Connector created"
+          },
+          "409": {
+            "description": "Connector name conflict"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/connectors/circuit-breakers": {
+      "get": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "list_circuit_breakers",
+        "responses": {
+          "200": {
+            "description": "Circuit breaker states"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/connectors/circuit-breakers/{key}": {
+      "post": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "reset_circuit_breaker",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Circuit breaker key (channel:connector)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Circuit breaker reset"
+          },
+          "404": {
+            "description": "Circuit breaker not found"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/connectors/import": {
+      "post": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "import_connectors",
+        "parameters": [
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "When true, validates each item and reports what would happen\nwithout writing to the database. The response shape mirrors\na real import but `imported` is always 0.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CreateConnectorRequest"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Import results with counts (or would-be results when ?dry_run=true)"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/connectors/{id}": {
+      "get": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "get_connector",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connector ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Connector details"
+          },
+          "404": {
+            "description": "Connector not found"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "update_connector",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connector ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateConnectorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Connector updated"
+          },
+          "404": {
+            "description": "Connector not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "delete_connector",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connector ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Connector deleted"
+          },
+          "404": {
+            "description": "Connector not found"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/engine/reload": {
+      "post": {
+        "tags": [
+          "Engine"
+        ],
+        "operationId": "engine_reload",
+        "responses": {
+          "200": {
+            "description": "Engine reloaded"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/engine/status": {
+      "get": {
+        "tags": [
+          "Engine"
+        ],
+        "operationId": "engine_status",
+        "responses": {
+          "200": {
+            "description": "Engine status"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/functions": {
+      "get": {
+        "tags": [
+          "Functions"
+        ],
+        "operationId": "list_functions",
+        "responses": {
+          "200": {
+            "description": "Registered workflow function schemas"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workflows": {
+      "get": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "list_workflows",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Column to sort by: priority (default), name, status, created_at, updated_at.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc or desc (default).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of workflows"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "create_workflow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Workflow created as draft"
+          },
+          "400": {
+            "description": "Invalid input"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workflows/export": {
+      "get": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "export_workflows",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "tag",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Column to sort by: priority (default), name, status, created_at, updated_at.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc or desc (default).",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exported workflows"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workflows/import": {
+      "post": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "import_workflows",
+        "parameters": [
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "When true, validates each item and reports what would happen\nwithout writing to the database. The response shape mirrors\na real import but `imported` is always 0.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CreateWorkflowRequest"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Import results with counts (or would-be results when ?dry_run=true)"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workflows/validate": {
+      "post": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "validate_workflow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Validation result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workflows/{id}": {
+      "get": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "get_workflow",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workflow ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workflow details"
+          },
+          "404": {
+            "description": "Workflow not found"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "update_workflow",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workflow ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Draft workflow updated"
+          },
+          "400": {
+            "description": "No draft version or invalid input"
+          },
+          "404": {
+            "description": "Workflow not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "delete_workflow",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workflow ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Workflow deleted"
+          },
+          "404": {
+            "description": "Workflow not found"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workflows/{id}/rollout": {
+      "patch": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "update_rollout",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workflow ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RolloutUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Rollout percentage updated"
+          },
+          "400": {
+            "description": "Invalid rollout configuration"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workflows/{id}/status": {
+      "patch": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "change_workflow_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workflow ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StatusChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Status updated"
+          },
+          "400": {
+            "description": "Invalid status transition"
+          },
+          "404": {
+            "description": "Workflow not found"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workflows/{id}/test": {
+      "post": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "test_workflow",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workflow ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Test result with trace"
+          },
+          "404": {
+            "description": "Workflow not found"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/workflows/{id}/versions": {
+      "get": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "list_workflow_versions",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workflow ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated version history"
+          },
+          "404": {
+            "description": "Workflow not found"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "create_new_workflow_version",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workflow ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "New draft version created"
+          },
+          "409": {
+            "description": "Draft already exists"
+          }
+        }
+      }
+    },
+    "/api/v1/data/traces": {
+      "get": {
+        "tags": [
+          "Data"
+        ],
+        "operationId": "list_traces",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by trace status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel",
+            "in": "query",
+            "description": "Filter by channel",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "description": "Filter by mode: sync, async",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (default 50, max 1000)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Page offset",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Sort column: created_at (default), updated_at, status, channel, mode",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc or desc (default)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated list of traces"
+          }
+        }
+      }
+    },
+    "/api/v1/data/traces/{id}": {
+      "get": {
+        "tags": [
+          "Data"
+        ],
+        "operationId": "get_trace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Trace ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Trace status and result"
+          },
+          "404": {
+            "description": "Trace not found"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "Operational"
+        ],
+        "operationId": "health_check",
+        "responses": {
+          "200": {
+            "description": "Service healthy"
+          },
+          "503": {
+            "description": "Service degraded"
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "Operational"
+        ],
+        "operationId": "metrics_endpoint",
+        "responses": {
+          "200": {
+            "description": "Prometheus metrics",
+            "content": {
+              "text/plain": {}
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Channel": {
+        "type": "object",
+        "required": [
+          "channel_id",
+          "version",
+          "name",
+          "channel_type",
+          "protocol",
+          "transport_config_json",
+          "config_json",
+          "status",
+          "priority",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": "string"
+          },
+          "channel_type": {
+            "type": "string"
+          },
+          "config_json": {
+            "type": "string"
+          },
+          "consumer_group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "route_pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transport_config_json": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ChannelProtocol": {
+        "type": "string",
+        "enum": [
+          "rest",
+          "http",
+          "kafka"
+        ]
+      },
+      "ChannelStatusChangeRequest": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/EntityStatus"
+          }
+        }
+      },
+      "ChannelType": {
+        "type": "string",
+        "enum": [
+          "sync",
+          "async"
+        ]
+      },
+      "Connector": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "connector_type",
+          "config_json",
+          "enabled",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "config_json": {
+            "type": "string"
+          },
+          "connector_type": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "ConnectorType": {
+        "type": "string",
+        "description": "Typed enum for the connector `type` field on create/update requests.\nWire format is lowercase (\"http\", \"kafka\", \"db\", \"cache\", \"storage\");\ndeserialization is case-insensitive so \"HTTP\" or \"Kafka\" also parse —\nstrictly additive on v0.1's accepted set.",
+        "enum": [
+          "http",
+          "kafka",
+          "db",
+          "cache",
+          "storage"
+        ]
+      },
+      "CreateChannelRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "channel_type",
+          "protocol"
+        ],
+        "properties": {
+          "channel_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "channel_type": {
+            "$ref": "#/components/schemas/ChannelType"
+          },
+          "config": {},
+          "consumer_group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ChannelProtocol"
+          },
+          "route_pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transport_config": {},
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreateConnectorRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "connector_type"
+        ],
+        "properties": {
+          "config": {},
+          "connector_type": {
+            "$ref": "#/components/schemas/ConnectorType"
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateWorkflowRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "tasks"
+        ],
+        "properties": {
+          "condition": {},
+          "continue_on_error": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tasks": {},
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "EntityStatus": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "active",
+          "archived"
+        ]
+      },
+      "ErrorDetail": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "description": "Error response body matching Orion's `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}` format.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
+      "ProcessRequest": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {},
+          "metadata": {}
+        }
+      },
+      "RolloutUpdateRequest": {
+        "type": "object",
+        "required": [
+          "rollout_percentage"
+        ],
+        "properties": {
+          "rollout_percentage": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "StatusChangeRequest": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "rollout_percentage": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "status": {
+            "$ref": "#/components/schemas/EntityStatus"
+          }
+        }
+      },
+      "TestWorkflowRequest": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {},
+          "metadata": {}
+        }
+      },
+      "Trace": {
+        "type": "object",
+        "required": [
+          "id",
+          "channel",
+          "mode",
+          "status",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "duration_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "input_json": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "type": "string"
+          },
+          "result_json": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string"
+          },
+          "task_trace_json": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Per-task `dataflow_rs::ExecutionTrace` JSON, captured only when the\nchannel has `config.tracing.task_details = true`. Workflow authors\ncan inspect intermediate inputs/outputs for each task to debug\npipelines without re-running them in dry-run."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "UpdateChannelRequest": {
+        "type": "object",
+        "properties": {
+          "config": {},
+          "consumer_group": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "methods": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "route_pattern": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "topic": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transport_config": {},
+          "workflow_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpdateConnectorRequest": {
+        "type": "object",
+        "properties": {
+          "config": {},
+          "connector_type": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ConnectorType"
+              }
+            ]
+          },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "UpdateWorkflowRequest": {
+        "type": "object",
+        "properties": {
+          "condition": {},
+          "continue_on_error": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "tasks": {}
+        }
+      },
+      "ValidationIssue": {
+        "type": "object",
+        "required": [
+          "field",
+          "message"
+        ],
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "ValidationResponse": {
+        "type": "object",
+        "required": [
+          "valid",
+          "errors",
+          "warnings"
+        ],
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssue"
+            }
+          },
+          "valid": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssue"
+            }
+          }
+        }
+      },
+      "Workflow": {
+        "type": "object",
+        "required": [
+          "workflow_id",
+          "version",
+          "name",
+          "priority",
+          "status",
+          "rollout_percentage",
+          "condition_json",
+          "tasks_json",
+          "tags",
+          "continue_on_error",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "condition_json": {
+            "type": "string"
+          },
+          "continue_on_error": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "rollout_percentage": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "status": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "string"
+          },
+          "tasks_json": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "workflow_id": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Channels",
+      "description": "Channel management"
+    },
+    {
+      "name": "Workflows",
+      "description": "Workflow management"
+    },
+    {
+      "name": "Connectors",
+      "description": "Connector management"
+    },
+    {
+      "name": "Engine",
+      "description": "Engine control"
+    },
+    {
+      "name": "Functions",
+      "description": "Engine function schemas"
+    },
+    {
+      "name": "Audit",
+      "description": "Admin audit-log history"
+    },
+    {
+      "name": "Backups",
+      "description": "Database backup management (SQLite only)"
+    },
+    {
+      "name": "Data",
+      "description": "Data processing"
+    },
+    {
+      "name": "Operational",
+      "description": "Health and metrics"
+    }
+  ]
+}
