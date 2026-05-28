@@ -105,3 +105,14 @@ pub(crate) struct ErrorDetail {
     )
 )]
 pub(crate) struct ApiDoc;
+
+/// The public HTTP API's OpenAPI 3.1 spec, pretty-printed as JSON.
+///
+/// Shared by the `orion-server dump-openapi` subcommand and the drift-check
+/// integration test so both serialize the spec identically. The committed
+/// copy lives at `docs/openapi.json`; regenerate it with
+/// `cargo run -- dump-openapi > docs/openapi.json` whenever the API changes.
+pub fn pretty_json() -> String {
+    serde_json::to_string_pretty(&ApiDoc::openapi())
+        .expect("OpenAPI spec is always serializable to JSON")
+}
