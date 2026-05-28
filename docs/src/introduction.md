@@ -8,7 +8,7 @@
 
 AI generates workflows, Orion provides the governance. Every service gets health checks, metrics, retries, and error handling, regardless of how the workflow was created.
 
-> Looking for the elevator pitch, the 2-minute quickstart, the feature matrix, and benchmarks? The [project README](https://github.com/GoPlasmatic/Orion) covers those. This site is the deep reference and how-to guide.
+Replace a sprawl of single-purpose microservices with one runtime: each channel and workflow is independently versioned, testable, and deployable, but they share a single binary and a single set of built-in production features. This site is the deep reference and how-to guide — new here? [**Install Orion and ship your first service**](./tutorials/cli-setup.md) in a couple of minutes.
 
 ## Three Primitives
 
