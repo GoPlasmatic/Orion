@@ -6,7 +6,7 @@
   **The declarative services runtime for the AI era.**
 
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-  [![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)
+  [![Rust](https://img.shields.io/badge/rust-1.88+-orange.svg)](https://www.rust-lang.org)
   [![JSONLogic](https://img.shields.io/badge/JSONLogic-standard-green.svg)](https://jsonlogic.com)
   [![GitHub Release](https://img.shields.io/github/v/release/GoPlasmatic/Orion)](https://github.com/GoPlasmatic/Orion/releases)
   [![GitHub Stars](https://img.shields.io/github/stars/GoPlasmatic/Orion?style=social)](https://github.com/GoPlasmatic/Orion)
@@ -319,7 +319,7 @@ Every connector gets **circuit breaker protection** automatically: failures trip
 | `publish_kafka` | Publish messages to [Kafka topics](docs/src/features/extensibility.md#kafka-connector) |
 | `log` | Emit structured log entries for auditing and debugging |
 
-All functions are built into every binary. The dataflow-rs runtime contributes `parse_json`/`parse_xml`/`filter`/`map`/`validation`/`publish_json`/`publish_xml`/`log`; Orion adds the connector-backed handlers (`http_call`, `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`, `publish_kafka`) and the in-process `channel_call`. `cache_read`/`cache_write` use the in-memory backend by default; reference a Redis connector for distributed caching. Browse the input-field schemas at runtime via `GET /api/v1/admin/functions`.
+All functions are built into every binary. The dataflow-rs runtime contributes `parse_json`/`parse_xml`/`filter`/`map`/`validation`/`publish_json`/`publish_xml`/`log`; Orion adds the connector-backed handlers (`http_call`, `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`, `publish_kafka`) and the in-process `channel_call`. `cache_read`/`cache_write` use the in-memory backend by default; reference a Redis connector for distributed caching. See the [Function Reference](docs/src/reference/functions.md) for every function's exact `input` schema, or browse them at runtime via `GET /api/v1/admin/functions`.
 
 ---
 
@@ -447,6 +447,8 @@ See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full comma
 
 | Guide | Description |
 |-------|-------------|
+| [Workflow Reference](docs/src/reference/workflows.md) | Workflow & task JSON schema, conditions, error handling, lifecycle, and rollout |
+| [Function Reference](docs/src/reference/functions.md) | Every built-in task function and its exact `input` schema |
 | [Admin API](docs/src/api/admin.md) | Workflows, channels, connectors, engine, audit, and backup endpoints |
 | [Data API](docs/src/api/data.md) | Data routing, sync/async processing, traces, and operational endpoints |
 | [Configuration](docs/src/configuration/reference.md) | Config file, env vars, database backends, deployment |
@@ -471,7 +473,7 @@ See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full comma
 - **Scheduler:** cron-based workflow execution
 - **WASM task functions:** extend the engine with custom logic in any language
 
-Have an idea? [Open a discussion](https://github.com/GoPlasmatic/Orion/issues).
+Have an idea? [Open an issue](https://github.com/GoPlasmatic/Orion/issues).
 
 ## Contributing
 
@@ -486,7 +488,7 @@ cargo fmt                                # Format
 ```
 
 - **Report bugs:** [Open an issue](https://github.com/GoPlasmatic/Orion/issues)
-- **Ask questions:** [Start a discussion](https://github.com/GoPlasmatic/Orion/issues)
+- **Ask questions:** [Open an issue](https://github.com/GoPlasmatic/Orion/issues)
 - **Submit code:** Fork, branch, PR. All tests must pass (`cargo test && cargo clippy`)
 
 ## License
