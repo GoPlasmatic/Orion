@@ -113,7 +113,7 @@ orion-server validate-config -c config.toml
 curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
   -H "Content-Type: application/json" \
   -d '{
-    "id": "hello-world",
+    "workflow_id": "hello-world",
     "name": "Hello World",
     "condition": true,
     "tasks": [

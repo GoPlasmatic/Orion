@@ -15,24 +15,9 @@
   [![GitHub Stars](https://img.shields.io/github/stars/GoPlasmatic/Orion?style=social)](https://github.com/GoPlasmatic/Orion)
 </div>
 
-The declarative services runtime. AI generates workflows, Orion provides the governance. Instead of writing, deploying, and operating a microservice for every piece of business logic, you **declare** what the service should do, and Orion runs it. Architectural governance — observability, rate limiting, circuit breakers, versioning, input validation, and more — is built in.
+Instead of writing, deploying, and operating a separate microservice for every piece of business logic, you **declare** what the service should do — as a JSON workflow — and Orion runs it. Architectural governance — observability, rate limiting, circuit breakers, versioning, input validation, and more — is built into every service, not bolted on. Hand-write the workflows or let an AI generate them; either way they run under the same guarantees.
 
----
-
-## Is Orion Right for You?
-
-| If you need to... | Orion? | Why |
-|---|:-:|---|
-| Turn business rules into live REST/Kafka services | **Yes** | Define logic as JSON workflows, deploy with one API call |
-| Let AI generate and manage business logic | **Yes** | Built-in validation, dry-run testing, and draft-before-activate safety |
-| Replace a handful of single-purpose microservices | **Yes** | One instance handles many channels, governance included |
-| Use a rule engine like Drools | **Not quite** | Orion uses [JSONLogic](https://jsonlogic.com) via [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) for conditions and transforms. Lightweight and AI-friendly, but not a full RETE-based rule engine with complex fact networks |
-| Embed a workflow engine library in your app | **No** | Orion is a standalone runtime, not a library. For an embeddable workflow engine, see [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) which Orion is built on |
-| Build a visual drag-and-drop workflow UI | No | Orion is API-first; pair it with your own UI or use the [CLI](https://github.com/GoPlasmatic/Orion-cli) |
-| Orchestrate long-running jobs (hours/days) | No | Use Temporal or Airflow. Orion is optimized for request-response and event processing |
-| Run a full API gateway with plugin ecosystem | No | Use Kong or Envoy. Orion focuses on service logic, not proxy features |
-| General-purpose compute (image processing, ML) | No | Orion's task functions operate on JSON data. Use custom services or serverless for arbitrary compute |
-| Stateful workflows with human-in-the-loop approvals | No | Use [Temporal](https://temporal.io) or BPMN engines. Orion workflows are stateless request pipelines |
+**Jump to:** [Quickstart](#your-first-service-in-2-minutes) · [Is Orion right for you?](#is-orion-right-for-you) · [Three primitives](#three-primitives) · [What's built in](#whats-built-in) · [Connectors](#connect-to-anything) · [Functions](#built-in-task-functions) · [Performance](#performance) · [Install](#install) · [Docs](#documentation)
 
 ---
 
@@ -91,7 +76,7 @@ curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/high-value-order/s
 curl -s -X POST http://localhost:8080/api/v1/admin/channels \
   -H "Content-Type: application/json" \
   -d '{ "channel_id": "orders", "name": "orders", "channel_type": "sync",
-        "protocol": "http", "route_pattern": "/orders",
+        "protocol": "rest", "route_pattern": "/orders",
         "methods": ["POST"], "workflow_id": "high-value-order" }'
 
 # Activate
@@ -122,6 +107,23 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders \
 ```
 
 That's it. You described what you needed. AI wrote the logic. Orion ran it, with rate limiting, metrics, health checks, and request tracing already active. Change the threshold? One API call. No rebuild, no redeploy, no restart.
+
+---
+
+## Is Orion Right for You?
+
+| If you need to... | Orion? | Why |
+|---|:-:|---|
+| Turn business rules into live REST/Kafka services | **Yes** | Define logic as JSON workflows, deploy with one API call |
+| Let AI generate and manage business logic | **Yes** | Built-in validation, dry-run testing, and draft-before-activate safety |
+| Replace a handful of single-purpose microservices | **Yes** | One instance handles many channels, governance included |
+| Use a rule engine like Drools | **Not quite** | Orion uses [JSONLogic](https://jsonlogic.com) via [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) for conditions and transforms. Lightweight and AI-friendly, but not a full RETE-based rule engine with complex fact networks |
+| Embed a workflow engine library in your app | **No** | Orion is a standalone runtime, not a library. For an embeddable workflow engine, see [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) which Orion is built on |
+| Build a visual drag-and-drop workflow UI | No | Orion is API-first; pair it with your own UI or use the [CLI](https://github.com/GoPlasmatic/Orion-cli) |
+| Orchestrate long-running jobs (hours/days) | No | Use Temporal or Airflow. Orion is optimized for request-response and event processing |
+| Run a full API gateway with plugin ecosystem | No | Use Kong or Envoy. Orion focuses on service logic, not proxy features |
+| General-purpose compute (image processing, ML) | No | Orion's task functions operate on JSON data. Use custom services or serverless for arbitrary compute |
+| Stateful workflows with human-in-the-loop approvals | No | Use [Temporal](https://temporal.io) or BPMN engines. Orion workflows are stateless request pipelines |
 
 ---
 
