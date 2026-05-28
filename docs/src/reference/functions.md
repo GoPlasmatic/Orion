@@ -248,10 +248,6 @@ support. The connector supplies the base URL and auth.
 }
 ```
 
-> **Schema note:** `GET /api/v1/admin/functions` lists the response-path field as
-> `output`, but the runtime field is **`response_path`** (shown above). Use
-> `response_path`.
-
 ### `db_read`
 
 Runs a `SELECT` against a SQL connector and writes the result rows as a JSON
@@ -330,11 +326,6 @@ Writes a key to a cache connector, optionally with a TTL.
 ```json
 { "name": "cache_write", "input": { "connector": "redis", "key": "rate:42", "value": 1, "ttl_secs": 60 } }
 ```
-
-> **Schema note:** `GET /api/v1/admin/functions` lists `value` as optional, a
-> `value_logic` field, and a `ttl_seconds` field. The runtime handler instead
-> **requires `value`**, ignores `value_logic`, and reads the TTL from
-> **`ttl_secs`** (shown above).
 
 ### `mongo_read`
 
@@ -426,5 +417,3 @@ and at most one of `data`/`data_logic`.
 composition functions (the data functions are provided by dataflow-rs and are not
 catalogued there). The [Orion CLI MCP server](../tutorials/mcp-setup.md) surfaces
 the same schemas to AI assistants so generated workflows use correct field names.
-Where this page and the live schema differ, the **schema notes above** reflect the
-runtime behavior.
