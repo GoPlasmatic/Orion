@@ -45,6 +45,18 @@ pub struct ConnectorsToggleParams {
     pub id: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConnectorsImportParams {
+    #[schemars(
+        description = "JSON string containing an array of connector definitions to import. Each element must be a complete connector object (see connectors_create for format)."
+    )]
+    pub connectors_json: String,
+    #[schemars(
+        description = "If true, validate on the server without writing any changes (returns would_create/would_fail counts)"
+    )]
+    pub dry_run: Option<bool>,
+}
+
 pub async fn list(client: &OrionClient, params: ConnectorsListParams) -> Result<String, String> {
     let qs = utils::build_query_string(&[
         ("limit", params.limit.map(|l| l.to_string())),
@@ -124,4 +136,18 @@ pub async fn disable(
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
+}
+
+pub async fn import(
+    client: &OrionClient,
+    params: ConnectorsImportParams,
+) -> Result<String, String> {
+    super::import_resource(
+        client,
+        "/api/v1/admin/connectors/import",
+        "connector",
+        &params.connectors_json,
+        params.dry_run.unwrap_or(false),
+    )
+    .await
 }

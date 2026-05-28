@@ -52,30 +52,35 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 - `src/output.rs` — Output formatting: `print_table()` (tabled with rounded borders), `print_value()` (JSON/YAML)
 - `src/commands/` — One file per command group, each defining clap subcommands and `execute()` async functions
 - `src/mcp/` — MCP server module (OrionService with tool_router/tool_handler, serve function for stdio/HTTP)
-- `src/mcp/tools/` — MCP tool implementations (workflows, channels, connectors, circuit_breakers, data, traces, engine, health, metrics)
+- `src/mcp/tools/` — MCP tool implementations (workflows, channels, connectors, circuit_breakers, data, traces, engine, functions, health, metrics, audit_logs, backups). `tools/mod.rs` also holds the shared `import_resource()` bulk-import helper.
 - `src/mcp/tools/descriptions/` — Markdown files with detailed tool descriptions for MCP clients
 
 ### Command Modules
 
 | Module | Key functionality |
 |---|---|
-| `workflows.rs` (largest) | Full CRUD, status transitions (activate/archive), test dry-run, rollout, versioning, import/export with diff |
-| `channels.rs` | Channel CRUD, status transitions, versioning |
-| `data.rs` | Send data: sync, async (with wait/timeout/trace tracking) |
-| `connectors.rs` | Connector CRUD, enable/disable, circuit breaker management |
-| `traces.rs` | Execution trace viewing and polling |
+| `workflows.rs` (largest) | Full CRUD, status transitions (activate/archive), test dry-run, rollout, versioning, import (server-side `?dry_run`)/export with diff |
+| `channels.rs` | Channel CRUD, status transitions, versioning, bulk import |
+| `data.rs` | Send data: sync (`--profile` renders `_orion.profile`), async (wait/timeout/trace tracking; handles null trace_id when tracing is off) |
+| `connectors.rs` | Connector CRUD, enable/disable, circuit breaker management, bulk import |
+| `traces.rs` | Execution trace viewing and polling (shows `task_trace_json` when present) |
 | `engine.rs` | Engine status, hot-reload |
+| `functions.rs` | List registered workflow task functions and their input schemas |
 | `health.rs` | Health check with component status, exit code 1 if degraded |
 | `metrics.rs` | Raw Prometheus metrics retrieval |
+| `audit_logs.rs` | List audit log entries of admin actions |
+| `backups.rs` | Create and list database backups (SQLite) |
 | `config.rs` | CLI config management (set-server, show, set key-value) |
 | `completions.rs` | Shell completion generation (bash/zsh/fish/powershell) |
 | `mcp.rs` | MCP server subcommand (`orion-cli mcp serve`) |
+
+Shared bulk-import logic lives in `utils::run_import()` (CLI) and `mcp::tools::import_resource()` (MCP).
 
 ### Key Patterns
 
 - **Config precedence:** CLI flags > env vars (`ORION_SERVER_URL`, `NO_COLOR`) > `~/.orion/config.toml`
 - **Output formats:** table (default), json, yaml — controlled by `--output` flag
-- **Error handling:** `anyhow` throughout; `OrionClient` parses server error responses with codes and messages
+- **Error handling:** `anyhow` throughout; `OrionClient` parses server error responses with codes/messages and renders the v0.2 structured `error.details[]` (field-pathed validation errors) and `request_id` when present
 - **All commands are async** — Tokio runtime, reqwest for HTTP
 
 ### Dependencies

@@ -277,6 +277,16 @@ impl OrionService {
         tools::channels::create_version(&self.client, params).await
     }
 
+    #[tool(
+        description = "Bulk import channels from a JSON array. Use dry_run=true to validate on the server without writing (returns would_create/would_fail counts and per-item errors)."
+    )]
+    async fn channels_import(
+        &self,
+        Parameters(params): Parameters<tools::channels::ChannelsImportParams>,
+    ) -> Result<String, String> {
+        tools::channels::import(&self.client, params).await
+    }
+
     // ── Connectors ─────────────────────────────────────────────────────
 
     #[tool(
@@ -341,6 +351,16 @@ impl OrionService {
         Parameters(params): Parameters<tools::connectors::ConnectorsToggleParams>,
     ) -> Result<String, String> {
         tools::connectors::disable(&self.client, params).await
+    }
+
+    #[tool(
+        description = "Bulk import connectors from a JSON array. Use dry_run=true to validate on the server without writing (returns would_create/would_fail counts and per-item errors)."
+    )]
+    async fn connectors_import(
+        &self,
+        Parameters(params): Parameters<tools::connectors::ConnectorsImportParams>,
+    ) -> Result<String, String> {
+        tools::connectors::import(&self.client, params).await
     }
 
     // ── Circuit Breakers ──────────────────────────────────────────────
@@ -408,6 +428,14 @@ impl OrionService {
     #[tool]
     async fn backups_list(&self) -> Result<String, String> {
         tools::backups::list(&self.client).await
+    }
+
+    // ── Functions ──────────────────────────────────────────────────────
+
+    #[doc = include_str!("tools/descriptions/functions_list.md")]
+    #[tool]
+    async fn functions_list(&self) -> Result<String, String> {
+        tools::functions::list(&self.client).await
     }
 
     // ── Traces ──────────────────────────────────────────────────────────

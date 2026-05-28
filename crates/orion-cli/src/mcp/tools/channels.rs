@@ -57,6 +57,18 @@ pub struct ChannelsVersionsParams {
     pub id: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ChannelsImportParams {
+    #[schemars(
+        description = "JSON string containing an array of channel definitions to import. Each element must be a complete channel object (see channels_create for format)."
+    )]
+    pub channels_json: String,
+    #[schemars(
+        description = "If true, validate on the server without writing any changes (returns would_create/would_fail counts)"
+    )]
+    pub dry_run: Option<bool>,
+}
+
 pub async fn list(client: &OrionClient, params: ChannelsListParams) -> Result<String, String> {
     let qs = utils::build_query_string(&[
         ("status", params.status),
@@ -148,4 +160,15 @@ pub async fn create_version(
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
+}
+
+pub async fn import(client: &OrionClient, params: ChannelsImportParams) -> Result<String, String> {
+    super::import_resource(
+        client,
+        "/api/v1/admin/channels/import",
+        "channel",
+        &params.channels_json,
+        params.dry_run.unwrap_or(false),
+    )
+    .await
 }

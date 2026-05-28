@@ -215,30 +215,14 @@ pub async fn export(client: &OrionClient, params: WorkflowsExportParams) -> Resu
 }
 
 pub async fn import(client: &OrionClient, params: WorkflowsImportParams) -> Result<String, String> {
-    let workflows: Value = serde_json::from_str(&params.workflows_json)
-        .map_err(|e| format!("Invalid workflows JSON: {e}"))?;
-
-    if !workflows.is_array() {
-        return Err("Import data must be a JSON array of workflows".to_string());
-    }
-
-    if params.dry_run.unwrap_or(false) {
-        let count = workflows.as_array().map(|a| a.len()).unwrap_or(0);
-        let mut preview = format!("Dry run: would import {count} workflow(s)\n");
-        if let Some(arr) = workflows.as_array() {
-            for (i, wf) in arr.iter().enumerate() {
-                let name = wf["name"].as_str().unwrap_or("(unnamed)");
-                preview.push_str(&format!("  {}. {name}\n", i + 1));
-            }
-        }
-        return Ok(preview);
-    }
-
-    let resp: Value = client
-        .post("/api/v1/admin/workflows/import", &workflows)
-        .await
-        .map_err(|e| e.to_string())?;
-    serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
+    super::import_resource(
+        client,
+        "/api/v1/admin/workflows/import",
+        "workflow",
+        &params.workflows_json,
+        params.dry_run.unwrap_or(false),
+    )
+    .await
 }
 
 pub async fn validate(

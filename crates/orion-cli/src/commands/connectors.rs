@@ -89,6 +89,18 @@ enum ConnectorsSubcommand {
         /// Circuit breaker key in connector:channel format
         key: String,
     },
+    /// Bulk import connectors from a JSON array file
+    #[command(
+        after_help = "Examples:\n  orion-cli connectors import -f connectors.json --dry-run\n  orion-cli connectors import -f connectors.json"
+    )]
+    Import {
+        /// Path to a JSON file containing an array of connector definitions
+        #[arg(short, long)]
+        file: String,
+        /// Validate on the server without writing any changes
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Tabled)]
@@ -134,6 +146,18 @@ impl ConnectorsCmd {
             ConnectorsSubcommand::Disable { id } => toggle(client, quiet, id, false).await,
             ConnectorsSubcommand::CircuitBreakers => circuit_breakers(client, format, quiet).await,
             ConnectorsSubcommand::ResetBreaker { key } => reset_breaker(client, quiet, key).await,
+            ConnectorsSubcommand::Import { file, dry_run } => {
+                utils::run_import(
+                    client,
+                    format,
+                    quiet,
+                    "/api/v1/admin/connectors/import",
+                    "connector",
+                    file,
+                    *dry_run,
+                )
+                .await
+            }
         }
     }
 }

@@ -242,6 +242,20 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
         }
     }
 
+    // Per-task execution trace, captured when the channel sets
+    // config.tracing.task_details = true (v0.2). The server returns it as a
+    // JSON object; tolerate a JSON-encoded string too.
+    if let Some(task_trace) = resp.get("task_trace_json").filter(|t| !t.is_null()) {
+        let parsed = match task_trace.as_str() {
+            Some(s) => serde_json::from_str::<Value>(s).ok(),
+            None => Some(task_trace.clone()),
+        };
+        if let Some(parsed) = parsed {
+            println!("\n{}", "Task trace:".bold());
+            println!("{}", serde_json::to_string_pretty(&parsed)?);
+        }
+    }
+
     Ok(status_exit_code(status))
 }
 

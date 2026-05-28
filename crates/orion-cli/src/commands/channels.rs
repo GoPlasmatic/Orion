@@ -101,6 +101,18 @@ enum ChannelsSubcommand {
         /// Channel ID
         id: String,
     },
+    /// Bulk import channels from a JSON array file
+    #[command(
+        after_help = "Examples:\n  orion-cli channels import -f channels.json --dry-run\n  orion-cli channels import -f channels.json"
+    )]
+    Import {
+        /// Path to a JSON file containing an array of channel definitions
+        #[arg(short, long)]
+        file: String,
+        /// Validate on the server without writing any changes
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Tabled)]
@@ -180,6 +192,18 @@ impl ChannelsCmd {
             }
             ChannelsSubcommand::Versions { id } => versions(client, format, quiet, id).await,
             ChannelsSubcommand::NewVersion { id } => new_version(client, format, quiet, id).await,
+            ChannelsSubcommand::Import { file, dry_run } => {
+                utils::run_import(
+                    client,
+                    format,
+                    quiet,
+                    "/api/v1/admin/channels/import",
+                    "channel",
+                    file,
+                    *dry_run,
+                )
+                .await
+            }
         }
     }
 }

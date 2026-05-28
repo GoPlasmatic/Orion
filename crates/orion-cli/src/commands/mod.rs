@@ -7,6 +7,7 @@ pub mod config;
 pub mod connectors;
 pub mod data;
 pub mod engine;
+pub mod functions;
 pub mod health;
 pub mod mcp;
 pub mod metrics;
@@ -48,6 +49,10 @@ pub enum Commands {
     /// Control the Orion engine -- view status and hot-reload configuration
     #[command(alias = "eng")]
     Engine(engine::EngineCmd),
+
+    /// Inspect workflow task functions registered in the engine
+    #[command(alias = "fn")]
+    Functions(functions::FunctionsCmd),
 
     /// View server metrics in Prometheus exposition format
     Metrics(metrics::MetricsCmd),

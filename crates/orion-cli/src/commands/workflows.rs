@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{Args, Subcommand};
 use colored::Colorize;
 use serde_json::Value;
@@ -268,7 +268,16 @@ impl WorkflowsCmd {
             }
             WorkflowsSubcommand::Export { status, tag } => export(client, status, tag).await,
             WorkflowsSubcommand::Import { file, dry_run } => {
-                import(client, quiet, file, *dry_run).await
+                utils::run_import(
+                    client,
+                    format,
+                    quiet,
+                    "/api/v1/admin/workflows/import",
+                    "workflow",
+                    file,
+                    *dry_run,
+                )
+                .await
             }
             WorkflowsSubcommand::Diff { file } => diff(client, file).await,
         }
@@ -743,70 +752,6 @@ async fn export(
     let workflows = resp.get("data").unwrap_or(&resp);
     println!("{}", serde_json::to_string_pretty(workflows)?);
     Ok(0)
-}
-
-async fn import(client: &OrionClient, quiet: bool, file: &str, dry_run: bool) -> Result<i32> {
-    let content = std::fs::read_to_string(file)?;
-    let workflows: Value = serde_json::from_str(&content)?;
-
-    if !workflows.is_array() {
-        bail!("Import file must contain a JSON array of workflows");
-    }
-
-    let count = workflows.as_array().map(|a| a.len()).unwrap_or(0);
-
-    if dry_run {
-        println!(
-            "{} Would import {} workflow(s) from {file}",
-            "DRY RUN".yellow().bold(),
-            count
-        );
-        if let Some(arr) = workflows.as_array() {
-            for (i, wf) in arr.iter().enumerate() {
-                let name = wf["name"].as_str().unwrap_or("(unnamed)");
-                println!("  {}. {name}", i + 1);
-            }
-        }
-        return Ok(0);
-    }
-
-    let resp: Value = client
-        .post("/api/v1/admin/workflows/import", &workflows)
-        .await?;
-
-    if quiet {
-        let imported = resp["imported"].as_u64().unwrap_or(0);
-        println!("{imported}");
-        return Ok(0);
-    }
-
-    let imported = resp["imported"].as_u64().unwrap_or(0);
-    let failed = resp["failed"].as_u64().unwrap_or(0);
-
-    println!(
-        "{} Imported: {}, Failed: {}",
-        if failed == 0 {
-            "OK".green().bold()
-        } else {
-            "PARTIAL".yellow().bold()
-        },
-        imported.to_string().green(),
-        if failed > 0 {
-            failed.to_string().red().to_string()
-        } else {
-            "0".to_string()
-        }
-    );
-
-    if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
-        for err in errors {
-            let idx = err["index"].as_u64().unwrap_or(0);
-            let msg = err["error"].as_str().unwrap_or("unknown");
-            println!("  {} Workflow #{idx}: {msg}", "ERR".red());
-        }
-    }
-
-    Ok(if failed > 0 { 1 } else { 0 })
 }
 
 async fn diff(client: &OrionClient, file: &str) -> Result<i32> {

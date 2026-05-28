@@ -164,8 +164,13 @@ impl OrionClient {
             if let Some(err) = body.get("error") {
                 let code = err["code"].as_str().unwrap_or("UNKNOWN");
                 let msg = err["message"].as_str().unwrap_or("Unknown error");
-                let hint = Self::error_hint(code);
-                bail!("[{code}] {msg}{hint}");
+                let mut out = format!("[{code}] {msg}");
+                out.push_str(&Self::format_field_errors(err.get("details")));
+                if let Some(request_id) = err.get("request_id").and_then(|r| r.as_str()) {
+                    out.push_str(&format!("\n  request_id: {request_id}"));
+                }
+                out.push_str(Self::error_hint(code));
+                bail!("{out}");
             }
             if status == reqwest::StatusCode::UNAUTHORIZED {
                 bail!(
@@ -175,5 +180,56 @@ impl OrionClient {
             bail!("Request failed ({status})");
         }
         Ok(resp)
+    }
+
+    /// Render the v0.2 structured `error.details[]` array (field-pathed
+    /// validation errors) as indented lines. Returns an empty string when the
+    /// server is v0.1 or the array is absent/empty.
+    fn format_field_errors(details: Option<&Value>) -> String {
+        let Some(items) = details.and_then(|d| d.as_array()) else {
+            return String::new();
+        };
+        if items.is_empty() {
+            return String::new();
+        }
+        let mut out = String::new();
+        for item in items {
+            let path = item["path"].as_str().unwrap_or("");
+            let message = item["message"].as_str().unwrap_or("");
+            out.push_str("\n  - ");
+            if !path.is_empty() {
+                out.push_str(&format!("{path}: "));
+            }
+            out.push_str(message);
+            let expected = item.get("expected").filter(|v| !v.is_null());
+            let got = item.get("got").filter(|v| !v.is_null());
+            match (expected, got) {
+                (Some(exp), Some(got)) => {
+                    out.push_str(&format!(
+                        " (expected {}, got {})",
+                        compact_value(exp),
+                        compact_value(got)
+                    ));
+                }
+                (Some(exp), None) => out.push_str(&format!(" (expected {})", compact_value(exp))),
+                (None, Some(got)) => out.push_str(&format!(" (got {})", compact_value(got))),
+                (None, None) => {}
+            }
+        }
+        out
+    }
+}
+
+/// Render a JSON value compactly for inline error messages: strings unquoted,
+/// arrays joined with `|`, everything else via its compact JSON form.
+fn compact_value(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Array(items) => items
+            .iter()
+            .map(compact_value)
+            .collect::<Vec<_>>()
+            .join("|"),
+        other => other.to_string(),
     }
 }

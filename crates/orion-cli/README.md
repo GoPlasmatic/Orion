@@ -74,12 +74,15 @@ orion-cli send orders -d '{"order_id":"ORD-9182","total":25000}'
 |---------|-------------|
 | `health` | Check server health and component status |
 | `workflows` | Manage workflows — create, update, delete, test, import/export, diff |
-| `channels` | Manage channels — create, update, delete, activate/archive, versioning |
-| `connectors` | Manage connectors — create, update, delete, enable/disable, circuit breakers |
-| `send` | Send data through channels (sync or async) |
+| `channels` | Manage channels — create, update, delete, activate/archive, versioning, bulk import |
+| `connectors` | Manage connectors — create, update, delete, enable/disable, circuit breakers, bulk import |
+| `send` | Send data through channels (sync or async; `--profile` for timing breakdown) |
 | `traces` | View and monitor execution traces |
 | `engine` | View engine status and trigger reloads |
+| `functions` | Inspect workflow task functions registered in the engine |
 | `metrics` | Retrieve Prometheus metrics |
+| `audit-logs` | View audit logs of admin actions |
+| `backups` | Create and list database backups (SQLite) |
 | `config` | Configure server URL and defaults |
 | `completions` | Generate shell completions (bash, zsh, fish, powershell) |
 | `mcp` | Start MCP server for AI tool integration |
@@ -168,7 +171,7 @@ orion-cli workflows export --status active > workflows.json
 # Import workflows from file
 orion-cli workflows import -f workflows.json
 
-# Preview import without applying
+# Validate the import on the server without applying (reports would_create/would_fail)
 orion-cli workflows import -f workflows.json --dry-run
 
 # Compare local file against server state
@@ -197,6 +200,10 @@ orion-cli channels archive <ID>
 # Version management
 orion-cli channels versions <ID>
 orion-cli channels new-version <ID>
+
+# Bulk import (server-side validation with --dry-run)
+orion-cli channels import -f channels.json --dry-run
+orion-cli channels import -f channels.json
 ```
 
 ---
@@ -217,6 +224,10 @@ orion-cli connectors disable <ID>
 # Circuit breaker management
 orion-cli connectors circuit-breakers
 orion-cli connectors reset-breaker <KEY>
+
+# Bulk import (server-side validation with --dry-run)
+orion-cli connectors import -f connectors.json --dry-run
+orion-cli connectors import -f connectors.json
 ```
 
 ---
@@ -229,6 +240,10 @@ orion-cli connectors reset-breaker <KEY>
 
 ```bash
 orion-cli send orders -d '{"order_id":"ORD-001","amount":150}'
+
+# Include a server-side execution profile (timing breakdown by phase/handler).
+# Requires tracing.debug_profile_enabled on the server.
+orion-cli send orders -d '{"order_id":"ORD-001","amount":150}' --profile
 ```
 
 ### Asynchronous
@@ -267,6 +282,20 @@ orion-cli engine status
 
 # Hot-reload workflows and channels (zero downtime)
 orion-cli engine reload
+```
+
+---
+
+## Functions
+
+Inspect the workflow task functions registered in the engine, with their input schemas:
+
+```bash
+# List functions (table view)
+orion-cli functions list
+
+# Full input schemas as JSON
+orion-cli --output json functions list
 ```
 
 ---
@@ -324,18 +353,21 @@ Add to Cursor MCP settings (Settings > MCP Servers):
 
 ### Available MCP Tools
 
-The MCP server exposes 40 tools covering the full Orion API:
+The MCP server exposes 45 tools covering the full Orion API:
 
 | Category | Tools |
 |----------|-------|
 | **Health** | `health_check` |
 | **Engine** | `engine_status`, `engine_reload` |
 | **Workflows** | `workflows_list`, `workflows_get`, `workflows_create`, `workflows_update`, `workflows_delete`, `workflows_activate`, `workflows_archive`, `workflows_test`, `workflows_validate`, `workflows_rollout`, `workflows_versions`, `workflows_create_version`, `workflows_export`, `workflows_import` |
-| **Channels** | `channels_list`, `channels_get`, `channels_create`, `channels_update`, `channels_delete`, `channels_activate`, `channels_archive`, `channels_versions`, `channels_create_version` |
-| **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable` |
+| **Channels** | `channels_list`, `channels_get`, `channels_create`, `channels_update`, `channels_delete`, `channels_activate`, `channels_archive`, `channels_versions`, `channels_create_version`, `channels_import` |
+| **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable`, `connectors_import` |
 | **Circuit Breakers** | `circuit_breakers_list`, `circuit_breaker_reset` |
 | **Data** | `data_send_sync`, `data_send_async` |
 | **Traces** | `traces_list`, `traces_get` |
+| **Functions** | `functions_list` |
+| **Audit Logs** | `audit_logs_list` |
+| **Backups** | `backups_create`, `backups_list` |
 | **Metrics** | `get_metrics` |
 
 ---

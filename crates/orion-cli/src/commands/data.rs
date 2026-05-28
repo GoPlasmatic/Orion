@@ -47,6 +47,11 @@ pub struct SendCmd {
     /// Optional metadata JSON string attached to the request
     #[arg(long)]
     metadata: Option<String>,
+
+    /// Request server-side execution profiling (sync only; requires the server's
+    /// tracing.debug_profile_enabled flag). Adds an _orion.profile breakdown.
+    #[arg(long)]
+    profile: bool,
 }
 
 impl SendCmd {
@@ -61,6 +66,12 @@ impl SendCmd {
             utils::read_json_input(self.file.as_deref(), self.data.as_deref(), self.stdin)?;
 
         if self.async_mode {
+            if self.profile && !quiet {
+                eprintln!(
+                    "{} --profile is sync-only and is ignored with --async-mode",
+                    "WARN".yellow()
+                );
+            }
             self.run_async(client, format, quiet, &self.channel, &payload)
                 .await
         } else {
@@ -83,9 +94,12 @@ impl SendCmd {
             body["metadata"] = serde_json::from_str(meta)?;
         }
 
-        let resp: Value = client
-            .post(&format!("/api/v1/data/{channel}"), &body)
-            .await?;
+        let path = if self.profile {
+            format!("/api/v1/data/{channel}?profile=1")
+        } else {
+            format!("/api/v1/data/{channel}")
+        };
+        let resp: Value = client.post(&path, &body).await?;
 
         let status = resp["status"].as_str().unwrap_or("unknown");
 
@@ -124,6 +138,16 @@ impl SendCmd {
             }
         }
 
+        if self.profile {
+            match resp.get("_orion").and_then(|o| o.get("profile")) {
+                Some(profile) => render_profile(profile),
+                None => println!(
+                    "{}",
+                    "  Profiling requested but not returned -- enable tracing.debug_profile_enabled on the server.".dimmed()
+                ),
+            }
+        }
+
         Ok(if status == "ok" { 0 } else { 1 })
     }
 
@@ -145,6 +169,21 @@ impl SendCmd {
             .await?;
 
         let trace_id = resp["trace_id"].as_str().unwrap_or("");
+
+        // When the channel's trace storage mode is "off", the server accepts the
+        // request but returns a null trace_id (with a 299 warning header). There
+        // is nothing to poll, so report and return success.
+        if trace_id.is_empty() {
+            if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+                output::print_value(format, &resp)?;
+            } else if !quiet {
+                println!(
+                    "{} Submitted to '{channel}' (no trace -- tracing disabled for this channel)",
+                    "OK".green().bold()
+                );
+            }
+            return Ok(0);
+        }
 
         if quiet {
             println!("{trace_id}");
@@ -208,6 +247,46 @@ impl SendCmd {
             }
         } else {
             Ok(0)
+        }
+    }
+}
+
+/// Render the `_orion.profile` block (v0.2 profiling output) as a compact
+/// human-readable summary: total time, per-phase split, and the slowest handlers.
+fn render_profile(profile: &Value) {
+    println!("\n{}", "Profile:".bold());
+
+    let total = profile
+        .get("request_total_ms")
+        .or_else(|| profile.get("totals_ms"))
+        .and_then(|v| v.as_f64());
+    if let Some(total) = total {
+        println!("  Total: {total:.3} ms");
+    }
+
+    if let Some(phases) = profile.get("phases").and_then(|p| p.as_array()) {
+        for phase in phases {
+            let name = phase["name"].as_str().unwrap_or("");
+            let ms = phase["ms"].as_f64().unwrap_or(0.0);
+            let pct = phase["pct"].as_f64().unwrap_or(0.0);
+            println!("    {name:<20} {ms:>8.3} ms  ({pct:.1}%)");
+        }
+    }
+
+    if let Some(handlers) = profile.get("handlers").and_then(|h| h.as_array()) {
+        if !handlers.is_empty() {
+            println!("  {}", "Handlers:".bold());
+            for h in handlers {
+                let function = h["function"].as_str().unwrap_or("");
+                let connector = h["connector"].as_str().unwrap_or("");
+                let ms = h["duration_ms"].as_f64().unwrap_or(0.0);
+                let target = if connector.is_empty() {
+                    function.to_string()
+                } else {
+                    format!("{function} -> {connector}")
+                };
+                println!("    {target:<32} {ms:>8.3} ms");
+            }
         }
     }
 }
