@@ -20,6 +20,14 @@ path = "src/main.rs"
 name = "orion"
 path = "src/lib.rs"
 
+# All integration tests are consolidated into a single binary so the suite
+# links once instead of ~43 times. New test files go in tests/integration/ and
+# are declared as modules in tests/integration/main.rs.
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+harness = true
+
 [dependencies]
 dataflow-rs = "3.0"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
