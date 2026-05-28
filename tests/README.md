@@ -8,11 +8,17 @@ Run all standard tests (no external services required):
 cargo test
 ```
 
-Tests run against an in-memory SQLite database constructed by `tests/common::test_app()`, so no additional setup is needed for the default suite.
+Tests run against an in-memory SQLite database constructed by `tests/integration/common::test_app()`, so no additional setup is needed for the default suite.
+
+### Layout
+
+All integration tests are consolidated into a **single test binary** (`integration`) so the suite links once instead of ~43 times — this cuts the per-edit relink cost roughly 5×. Each former `tests/<name>_test.rs` file now lives at `tests/integration/<name>_test.rs` and is declared as a module in `tests/integration/main.rs`. Shared helpers live in `tests/integration/common/`.
+
+To add a test file: create `tests/integration/<name>_test.rs`, reference shared helpers via `crate::common::…`, and add a `mod <name>_test;` line to `tests/integration/main.rs`.
 
 ### What's Covered
 
-Integration tests at the top of `tests/` exercise every public-facing surface of Orion:
+The consolidated `integration` binary exercises every public-facing surface of Orion:
 
 - **Admin API** — `admin_workflows_test`, `admin_connectors_test`, `bulk_import_test`,
   `workflow_lifecycle_test`, `typed_enum_dtos_test`, `audit_log_test`, `backup_restore_test`
@@ -67,13 +73,16 @@ cargo test test_redis -- --ignored
 cargo test test_mongo -- --ignored
 ```
 
-### Run a Specific Test File
+### Run a Specific Test Module
+
+Since all tests share one binary, filter by the module name (the former file
+name) rather than a `--test` target:
 
 ```bash
-cargo test --test postgres_test -- --ignored
-cargo test --test mysql_test -- --ignored
-cargo test --test connector_redis_test -- --ignored
-cargo test --test mongodb_test -- --ignored
+cargo test postgres_test:: -- --ignored
+cargo test mysql_test:: -- --ignored
+cargo test connector_redis_test:: -- --ignored
+cargo test mongodb_test:: -- --ignored
 ```
 
 ### Stop External Services
