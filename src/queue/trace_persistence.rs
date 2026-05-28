@@ -32,7 +32,7 @@ use crate::storage::repositories::traces::{TraceCompletedRow, TraceRepository, T
 pub enum TracePersistenceTask {
     /// Equivalent to `trace_repo.store_completed(...)`.
     StoreCompleted(TraceCompletedRow),
-    /// Equivalent to `trace_repo.set_result(id, result_json, duration_ms)`.
+    /// Equivalent to `trace_repo.set_result(id, result_json, duration_ms, task_trace_json)`.
     SetResult(TraceResultRow),
     /// Equivalent to `trace_repo.update_status(id, status, error_message)`.
     UpdateStatus {
@@ -279,7 +279,12 @@ async fn dispatch_one(trace_repo: &Arc<dyn TraceRepository>, task: TracePersiste
             .map(|_| ()),
         TracePersistenceTask::SetResult(row) => {
             trace_repo
-                .set_result(&row.id, &row.result_json, row.duration_ms)
+                .set_result(
+                    &row.id,
+                    &row.result_json,
+                    row.duration_ms,
+                    row.task_trace_json.as_deref(),
+                )
                 .await
         }
         TracePersistenceTask::UpdateStatus {

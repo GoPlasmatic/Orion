@@ -239,22 +239,37 @@ pub(crate) async fn create_new_channel_version(
     request_body = Vec<CreateChannelRequest>,
     params(super::workflows::ImportQuery),
     responses(
-        (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true)"),
+        (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
+            Dry-run validates each item's shape and values only — it does NOT read the database, so it \
+            cannot detect name conflicts. Channels whose names already exist are reported as would_create \
+            and will surface as Conflict on the real (non-dry-run) import."),
     )
 )]
-#[tracing::instrument(skip(state, channels, principal), fields(count = channels.len()))]
+#[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
 pub(crate) async fn import_channels(
     State(state): State<AppState>,
     Query(query): Query<super::workflows::ImportQuery>,
     principal: Option<Extension<AdminPrincipal>>,
-    OrionJson(channels): OrionJson<Vec<CreateChannelRequest>>,
+    OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {
     if query.dry_run {
+        // Dry-run is pure validation: no DB reads, so name conflicts are not
+        // detected here (they surface as Conflict on the real import).
         let mut would_create = 0u64;
         let mut would_fail = 0u64;
         let mut errors = Vec::new();
-        for (i, ch) in channels.iter().enumerate() {
-            match crate::validation::validate_create_channel(ch) {
+        for (i, item) in items.into_iter().enumerate() {
+            // Deserialize per-item so a single shape/enum typo becomes one
+            // would_fail entry instead of aborting the whole batch.
+            let ch = match serde_json::from_value::<CreateChannelRequest>(item) {
+                Ok(ch) => ch,
+                Err(e) => {
+                    would_fail += 1;
+                    errors.push(serde_json::json!({"index": i, "error": e.to_string()}));
+                    continue;
+                }
+            };
+            match crate::validation::validate_create_channel(&ch) {
                 Ok(()) => would_create += 1,
                 Err(e) => {
                     would_fail += 1;
@@ -281,13 +296,21 @@ pub(crate) async fn import_channels(
     let mut imported = 0u64;
     let mut failed = 0u64;
     let mut errors = Vec::new();
-    for (i, ch) in channels.iter().enumerate() {
-        if let Err(e) = crate::validation::validate_create_channel(ch) {
+    for (i, item) in items.into_iter().enumerate() {
+        let ch = match serde_json::from_value::<CreateChannelRequest>(item) {
+            Ok(ch) => ch,
+            Err(e) => {
+                failed += 1;
+                errors.push(serde_json::json!({"index": i, "error": e.to_string()}));
+                continue;
+            }
+        };
+        if let Err(e) = crate::validation::validate_create_channel(&ch) {
             failed += 1;
             errors.push(serde_json::json!({"index": i, "error": e.to_string()}));
             continue;
         }
-        match state.channel_repo.create(ch).await {
+        match state.channel_repo.create(&ch).await {
             Ok(_) => imported += 1,
             Err(e) => {
                 failed += 1;

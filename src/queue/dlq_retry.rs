@@ -268,6 +268,7 @@ mod tests {
             _id: &str,
             _result_json: &str,
             _duration_ms: f64,
+            _task_trace_json: Option<&str>,
         ) -> Result<(), OrionError> {
             unimplemented!()
         }

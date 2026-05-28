@@ -298,7 +298,11 @@ impl ProfileCollector {
 }
 
 fn round2(v: f64) -> f64 {
-    (v * 100.0).round() / 100.0
+    let r = (v * 100.0).round() / 100.0;
+    // Canonicalize -0.0 -> +0.0 (they compare equal) so the JSON never
+    // serializes "-0.0": rounding preserves the IEEE sign bit, and tiny
+    // negatives from float subtraction round down to -0.0.
+    if r == 0.0 { 0.0 } else { r }
 }
 
 task_local! {

@@ -9,7 +9,7 @@
 
 use crate::common::{
     body_json, create_and_activate_channel_with_config, create_and_activate_workflow, json_request,
-    test_app,
+    poll_trace_until_done, test_app,
 };
 use axum::http::StatusCode;
 use serde_json::json;
@@ -195,4 +195,117 @@ async fn sync_request_without_task_details_omits_task_trace_json() {
         row.get("task_trace_json").is_none() || row["task_trace_json"].is_null(),
         "task_trace_json should be omitted when task_details is unset, row={row:?}"
     );
+}
+
+#[tokio::test]
+async fn sync_get_trace_endpoint_returns_task_trace_json() {
+    // The single-trace GET handler builds its response field-by-field; this
+    // guards against it dropping task_trace_json (it was write-only before).
+    let app = test_app().await;
+
+    let (channel_name, _) = create_and_activate_channel_with_config(
+        &app,
+        "get-trace-task-details",
+        json!({
+            "name": "get-trace-task-details-wf",
+            "tasks": [{
+                "id": "t1",
+                "name": "log",
+                "function": { "name": "log", "input": { "message": "ping" } }
+            }]
+        }),
+        json!({ "tracing": { "task_details": true } }),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/data/{}", channel_name),
+            Some(json!({ "data": { "x": 1 } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Find the trace row id, then fetch it via the single-trace GET endpoint.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/data/traces?channel={}", channel_name),
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let trace_id = body["data"][0]["id"]
+        .as_str()
+        .expect("expected a trace row")
+        .to_string();
+
+    let resp = app
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/data/traces/{}", trace_id),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let steps = body["task_trace_json"]["steps"]
+        .as_array()
+        .expect("single-trace GET must return task_trace_json.steps when task_details=true");
+    assert!(!steps.is_empty());
+    assert!(steps.iter().any(|s| s["task_id"] == "t1"));
+}
+
+#[tokio::test]
+async fn async_request_with_task_details_captures_and_returns_task_trace_json() {
+    // Async traces are processed by the queue worker, which must use the
+    // with-trace engine entrypoint and persist task_trace_json via set_result.
+    let app = test_app().await;
+
+    let (channel_name, _) = create_and_activate_channel_with_config(
+        &app,
+        "async-task-details",
+        json!({
+            "name": "async-task-details-wf",
+            "tasks": [{
+                "id": "t1",
+                "name": "log",
+                "function": { "name": "log", "input": { "message": "ping" } }
+            }]
+        }),
+        json!({ "tracing": { "task_details": true } }),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/data/{}/async", channel_name),
+            Some(json!({ "data": { "x": 1 } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
+
+    // poll_trace_until_done hits the single-trace GET endpoint.
+    let body = poll_trace_until_done(&app, &trace_id, 40).await;
+    assert_eq!(
+        body["status"], "completed",
+        "trace did not complete: {body:?}"
+    );
+    let steps = body["task_trace_json"]["steps"]
+        .as_array()
+        .expect("async trace must capture + return task_trace_json.steps when task_details=true");
+    assert!(!steps.is_empty());
+    assert!(steps.iter().any(|s| s["task_id"] == "t1"));
 }

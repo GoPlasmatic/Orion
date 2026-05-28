@@ -223,7 +223,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true)"
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Dry-run validates each item's shape and values only — it does NOT read the database, so it cannot detect name conflicts. Channels whose names already exist are reported as would_create and will surface as Conflict on the real (non-dry-run) import."
           }
         }
       }
@@ -545,7 +545,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true)"
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Dry-run validates each item's shape and values only — it does NOT read the database, so it cannot detect name conflicts. Connectors whose names already exist are reported as would_create and will surface as Conflict on the real (non-dry-run) import."
           }
         }
       }

@@ -868,6 +868,11 @@ pub(crate) async fn get_trace(
     if let Some(duration) = trace.duration_ms {
         response["duration_ms"] = json!(duration);
     }
+    if let Some(ref tt) = trace.task_trace_json
+        && let Ok(v) = serde_json::from_str::<Value>(tt)
+    {
+        response["task_trace_json"] = v;
+    }
 
     Ok(Json(response))
 }
