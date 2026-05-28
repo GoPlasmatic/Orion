@@ -61,7 +61,7 @@ jobs:
           # Rust only supports buildless extraction; the extractor resolves
           # dependencies itself via cargo.
           build-mode: none
-          queries: security-and-quality
+          queries: security-extended
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
