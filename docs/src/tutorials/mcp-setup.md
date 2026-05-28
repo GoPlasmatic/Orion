@@ -2,6 +2,9 @@
 
 Orion includes an MCP (Model Context Protocol) server that lets AI assistants like Claude manage workflows, channels, and connectors through natural language. The MCP server wraps the Orion admin API, giving AI agents full control over your Orion instance.
 
+<div class="asciinema-player" data-cast="../casts/mcp.cast"></div>
+<span class="asciinema-caption">▶ Click to play. A real stdio JSON-RPC session: handshake, tool discovery, then a live tool call.</span>
+
 ## Prerequisites
 
 - A running Orion instance (see [CLI Setup](./cli-setup.md))
@@ -56,26 +59,23 @@ If admin authentication is enabled on your Orion instance, include the API key:
 
 ## Available Tools
 
-The MCP server exposes the following tools to AI assistants:
+The MCP server exposes **46 tools** covering the full Orion API. Tool names follow a
+`<resource>_<action>` convention:
 
-| Tool | Description |
-|------|-------------|
-| `list_workflows` | List all workflows with optional status/tag filters |
-| `create_workflow` | Create a new workflow (as draft) |
-| `get_workflow` | Get workflow details by ID |
-| `update_workflow` | Update a draft workflow |
-| `activate_workflow` | Activate a draft workflow |
-| `archive_workflow` | Archive a workflow |
-| `test_workflow` | Dry-run a workflow with sample data |
-| `validate_workflow` | Validate workflow structure |
-| `list_channels` | List all channels |
-| `create_channel` | Create a new channel |
-| `activate_channel` | Activate a draft channel |
-| `list_connectors` | List connectors (secrets masked) |
-| `create_connector` | Create a new connector |
-| `engine_status` | Get engine status |
-| `reload_engine` | Hot-reload the engine |
-| `health_check` | Check Orion health |
+| Category | Tools |
+|----------|-------|
+| **Health** | `health_check` |
+| **Engine** | `engine_status`, `engine_reload` |
+| **Workflows** | `workflows_list`, `workflows_get`, `workflows_create`, `workflows_update`, `workflows_delete`, `workflows_activate`, `workflows_archive`, `workflows_test`, `workflows_validate`, `workflows_rollout`, `workflows_versions`, `workflows_create_version`, `workflows_export`, `workflows_import` |
+| **Channels** | `channels_list`, `channels_get`, `channels_create`, `channels_update`, `channels_delete`, `channels_activate`, `channels_archive`, `channels_versions`, `channels_create_version`, `channels_import` |
+| **Connectors** | `connectors_list`, `connectors_get`, `connectors_create`, `connectors_update`, `connectors_delete`, `connectors_enable`, `connectors_disable`, `connectors_import` |
+| **Circuit Breakers** | `circuit_breakers_list`, `circuit_breaker_reset` |
+| **Data** | `data_send_sync`, `data_send_async` |
+| **Traces** | `traces_list`, `traces_get` |
+| **Functions** | `functions_list` |
+| **Audit Logs** | `audit_logs_list` |
+| **Backups** | `backups_create`, `backups_list` |
+| **Metrics** | `get_metrics` |
 
 ## Usage Example
 
@@ -85,11 +85,11 @@ Once configured, you can use natural language to manage Orion:
 
 The AI assistant will use the MCP tools to:
 
-1. Create the workflow via `create_workflow`
-2. Test it with sample data via `test_workflow`
-3. Activate it via `activate_workflow`
-4. Create the channel via `create_channel`
-5. Activate the channel via `activate_channel`
+1. Create the workflow via `workflows_create`
+2. Test it with sample data via `workflows_test`
+3. Activate it via `workflows_activate`
+4. Create the channel via `channels_create`
+5. Activate the channel via `channels_activate`, then apply with `engine_reload`
 
 ## Troubleshooting
 

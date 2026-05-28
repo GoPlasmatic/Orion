@@ -25,6 +25,12 @@ Instead of writing, deploying, and operating a separate microservice for every p
 
 No code. No Dockerfile. No CI pipeline. Just a running service.
 
+<div align="center">
+  <img src="media/quickstart.gif" alt="Define a workflow and channel over HTTP, then send a request and get a governed response — all in under a minute" width="100%">
+  <br>
+  <em>Business logic as JSON, deployed over plain HTTP — flagged in milliseconds, with rate limiting, metrics and tracing already on.</em>
+</div>
+
 **1. Start Orion**
 
 ```bash
@@ -496,6 +502,7 @@ cargo fmt                                # Format
 - **Report bugs:** [Open an issue](https://github.com/GoPlasmatic/Orion/issues)
 - **Ask questions:** [Open an issue](https://github.com/GoPlasmatic/Orion/issues)
 - **Submit code:** Fork, branch, PR. All tests must pass (`cargo test && cargo clippy`)
+- **Docs recordings:** the README GIFs and mdBook asciinema casts are generated from real sessions — see [`docs/recordings/`](docs/recordings/) to regenerate them.
 
 ## License
 
