@@ -474,5 +474,62 @@ Orion provides production-grade capabilities across eight architectural dimensio
   hint.textContent = 'Scroll to zoom \u00b7 Drag to pan \u00b7 Click to expand \u00b7 Double-click to reset';
   container.appendChild(hint);
 
+  /* \u2550\u2550\u2550 FULLSCREEN \u2550\u2550\u2550 */
+  function walk(node, fn) {
+    fn(node);
+    var kids = node.children || node._c;
+    if (kids) kids.forEach(function (k) { walk(k, fn); });
+  }
+  function snapshot() {
+    var snap = {};
+    cats.forEach(function (c) { walk(c, function (n) { snap[n._id] = !!n.children; }); });
+    return snap;
+  }
+  // snap === null \u2192 expand everything; otherwise restore each node to its saved state
+  function setExpanded(snap) {
+    cats.forEach(function (c) { walk(c, function (n) {
+      var kids = n.children || n._c;
+      if (!kids) return; // leaf
+      if (snap === null || snap[n._id]) { n.children = kids; n._c = null; }
+      else { n._c = kids; n.children = null; }
+    }); });
+  }
+
+  var savedSnap = null;
+  var fsBtn = document.createElement('button');
+  fsBtn.type = 'button';
+  fsBtn.className = 'mm-fs-btn';
+  fsBtn.setAttribute('aria-label', 'Toggle fullscreen');
+  fsBtn.textContent = '\u2922 Fullscreen';
+  container.appendChild(fsBtn);
+
+  function onResize() { requestAnimationFrame(fitToWidth); }
+
+  function setFullscreen(on) {
+    if (on === container.classList.contains('is-fullscreen')) return;
+    if (on) {
+      savedSnap = snapshot();
+      setExpanded(null);
+      window.addEventListener('resize', onResize);
+    } else {
+      if (savedSnap) setExpanded(savedSnap);
+      window.removeEventListener('resize', onResize);
+    }
+    container.classList.toggle('is-fullscreen', on);
+    document.body.style.overflow = on ? 'hidden' : '';
+    fsBtn.textContent = on ? '\u2921 Exit' : '\u2922 Fullscreen';
+    fsBtn.setAttribute('aria-label', on ? 'Exit fullscreen' : 'Toggle fullscreen');
+    render(false);
+    requestAnimationFrame(fitToWidth);
+  }
+
+  fsBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    setFullscreen(!container.classList.contains('is-fullscreen'));
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') setFullscreen(false);
+  });
+
 })();
 </script>
