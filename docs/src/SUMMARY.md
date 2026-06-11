@@ -9,6 +9,10 @@
 - [Overview](./architecture/overview.md)
 - [Architectural Characteristics](./architecture/characteristics.md)
 
+# Deployment & Topology
+
+- [Dev & Prod Environments](./topology/environments.md)
+
 # Production Features
 
 - [Observability](./features/observability.md)

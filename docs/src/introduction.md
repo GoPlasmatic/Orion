@@ -17,11 +17,19 @@ Replace a sprawl of single-purpose microservices with one runtime: each channel 
 
 You build services in Orion with three things:
 
-```
-┌─────────────┐       ┌──────────────┐       ┌─────────────┐
-│   Channel   │──────▶│   Workflow   │──────▶│  Connector  │
-│  (endpoint) │       │   (logic)    │       │  (external) │
-└─────────────┘       └──────────────┘       └─────────────┘
+```orion-diagram
+{
+  "direction": "LR",
+  "nodes": [
+    { "id": "Channel",   "label": "Channel",   "sublabel": "endpoint", "type": "channel" },
+    { "id": "Workflow",  "label": "Workflow",  "sublabel": "logic",    "type": "service" },
+    { "id": "Connector", "label": "Connector", "sublabel": "external", "type": "datastore" }
+  ],
+  "edges": [
+    { "from": "Channel",  "to": "Workflow" },
+    { "from": "Workflow", "to": "Connector" }
+  ]
+}
 ```
 
 | Primitive | What it is | Example |
@@ -30,7 +38,7 @@ You build services in Orion with three things:
 | **Workflow** | A pipeline of tasks that defines what the service does | Parse → validate → enrich → transform → respond |
 | **Connector** | A named connection to an external system, with auth and retries | Stripe API, PostgreSQL, Redis, Kafka cluster |
 
-**Design-time:** define channels, build workflows, configure connectors, test with dry-run, manage versions — all through the admin API. **Runtime:** Orion routes traffic to channels, executes workflows, calls connectors, and handles observability automatically.
+**Design-time:** define channels, build workflows, configure connectors, test with dry-run, manage versions — all through the admin API. **Runtime:** Orion routes traffic to channels, executes workflows, calls connectors, and handles observability automatically. See [**Dev & Prod Environments**](./topology/environments.md) for how the same binary serves both planes.
 
 ## Start here
 
