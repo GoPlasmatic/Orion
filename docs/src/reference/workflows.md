@@ -141,8 +141,19 @@ automatic retry — see [Resilience](../features/resilience.md).
 Each `workflow_id` has one or more **versions**, identified by the composite key
 `(workflow_id, version)`. Status moves in one direction:
 
-```
-draft ──activate──▶ active ──archive──▶ archived
+```orion-diagram
+{
+  "direction": "LR",
+  "nodes": [
+    { "id": "draft",    "label": "draft",    "type": "infra" },
+    { "id": "active",   "label": "active",   "type": "channel" },
+    { "id": "archived", "label": "archived", "type": "datastore", "shape": "rectangle" }
+  ],
+  "edges": [
+    { "from": "draft",  "to": "active",   "label": "activate" },
+    { "from": "active", "to": "archived", "label": "archive" }
+  ]
+}
 ```
 
 - **draft** — editable; not served. Only **one draft per `workflow_id`** may exist

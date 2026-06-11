@@ -1,5 +1,6 @@
-/* ── D3 diagrams ── */
-.d3-diagram {
+/* ── D3 diagrams + ReactFlow diagrams (shared container) ── */
+.d3-diagram,
+.orion-diagram {
   position: relative;
   width: 100%;
   border: 1px solid var(--table-border-color);
@@ -31,8 +32,9 @@
   white-space: nowrap;
 }
 
-/* ── D3 diagram fullscreen overlay ── */
-.d3-diagram.is-fullscreen {
+/* ── Diagram fullscreen overlay (D3 + ReactFlow) ── */
+.d3-diagram.is-fullscreen,
+.orion-diagram.is-fullscreen {
   position: fixed;
   inset: 0;
   width: 100vw !important;
@@ -86,4 +88,233 @@
 /* ── General tweaks ── */
 :root {
   --content-max-width: 920px;
+}
+
+/* ============================================================
+   ReactFlow diagrams (orion-diagram blocks)
+   ============================================================ */
+
+/* Hide the raw JSON source before the widget mounts (avoids a flash). */
+pre:has(> code.language-orion-diagram) {
+  display: none;
+}
+
+.orion-diagram-rf {
+  width: 100%;
+  height: 100%;
+}
+
+/* Connection handles are layout-only; keep them invisible. */
+.orion-diagram .react-flow__handle {
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  background: transparent;
+}
+
+/* ── Nodes ──
+   Color comes from per-type CSS custom props (--node-fill/-stroke/-text); shape is
+   orthogonal — the rectangle box and the SVG silhouettes both consume those vars. */
+.rf-node {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 8px 13px;
+  color: var(--node-text);
+  font-family: "DM Sans", system-ui, sans-serif;
+  transition: box-shadow 0.15s ease;
+}
+
+/* Rectangle (default) draws its own filled, bordered box. */
+.rf-shape-rectangle {
+  background: var(--node-fill);
+  border: 1px solid var(--node-stroke);
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+.rf-shape-rectangle:hover {
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+}
+
+/* Shaped nodes are drawn by an inline SVG silhouette; the box stays transparent. */
+.rf-node:not(.rf-shape-rectangle) {
+  justify-content: center;
+}
+
+.rf-shape {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.rf-shape path,
+.rf-shape ellipse,
+.rf-shape polygon {
+  fill: var(--node-fill);
+  stroke: var(--node-stroke);
+  stroke-width: 1.4;
+}
+
+.rf-node-text {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+/* Shaped nodes center their (short) labels. */
+.rf-node:not(.rf-shape-rectangle) .rf-node-text {
+  align-items: center;
+  text-align: center;
+}
+
+/* Actor: stick figure above the label. */
+.rf-shape-actor {
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 6px 8px;
+}
+
+.rf-actor-fig {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+}
+
+.rf-actor-fig circle,
+.rf-actor-fig path {
+  fill: var(--node-stroke);
+  stroke: none;
+}
+
+.rf-node-label {
+  font-weight: 700;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.rf-node-sub {
+  margin-top: 3px;
+  font-size: 10px;
+  opacity: 0.72;
+}
+
+.rf-node-sub > div {
+  white-space: nowrap;
+}
+
+/* Node palette — dark (navy): per-type fill / stroke / text */
+.navy .rf-channel               { --node-fill: #12352a; --node-stroke: #2E9A74; --node-text: #D7F5EA; }
+.navy .rf-service,
+.navy .rf-workflow              { --node-fill: #13314e; --node-stroke: #119FCD; --node-text: #E2F1FB; }
+.navy .rf-connector,
+.navy .rf-datastore             { --node-fill: #1d2b3a; --node-stroke: #5E8DA0; --node-text: #E2F1FB; }
+.navy .rf-gateway               { --node-fill: #222a33; --node-stroke: #6B7785; --node-text: #E6EDF2; }
+.navy .rf-observability         { --node-fill: #2a1f45; --node-stroke: #8B7BD8; --node-text: #EDE9FB; }
+.navy .rf-ci                    { --node-fill: #3a1f2a; --node-stroke: #EF476F; --node-text: #FBE2E9; }
+.navy .rf-infra                 { --node-fill: #382f12; --node-stroke: #E0B43C; --node-text: #F7EFD6; }
+.navy .rf-accent                { --node-fill: #13314e; --node-stroke: #7DD3FC; --node-text: #E2F1FB; }
+
+/* Node palette — light */
+.light .rf-channel              { --node-fill: #E3F6EE; --node-stroke: #2E9A74; --node-text: #0B3D2C; }
+.light .rf-service,
+.light .rf-workflow             { --node-fill: #DCEFFA; --node-stroke: #0D7FA3; --node-text: #073049; }
+.light .rf-connector,
+.light .rf-datastore            { --node-fill: #E6EEF3; --node-stroke: #5E8DA0; --node-text: #073049; }
+.light .rf-gateway              { --node-fill: #EAEEF2; --node-stroke: #6B7785; --node-text: #1C2530; }
+.light .rf-observability        { --node-fill: #ECE7FA; --node-stroke: #6C5CE7; --node-text: #2A1F5E; }
+.light .rf-ci                   { --node-fill: #FBE2E9; --node-stroke: #D03555; --node-text: #5E1020; }
+.light .rf-infra                { --node-fill: #F7EFD6; --node-stroke: #D4A520; --node-text: #4A3A0C; }
+.light .rf-accent               { --node-fill: #DCEFFA; --node-stroke: #0D7FA3; --node-text: #073049; }
+
+/* ── Group (subgraph) backgrounds ── */
+.rf-group {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border: 1px dashed;
+  border-radius: 12px;
+}
+
+.navy .rf-group  { border-color: #3D6B7D; background: rgba(17, 159, 205, 0.05); }
+.light .rf-group { border-color: #B0CDD8; background: rgba(13, 127, 163, 0.05); }
+
+.rf-group-label {
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 6px 11px;
+  opacity: 0.75;
+}
+
+.navy .rf-group-label  { color: #7FAFC0; }
+.light .rf-group-label { color: #3D6B7D; }
+
+/* ── Edges ── */
+.orion-diagram .react-flow__edge.rf-edge-dashed .react-flow__edge-path {
+  stroke-dasharray: 6 4;
+}
+
+.orion-diagram .react-flow__edge-text {
+  font-family: "DM Sans", system-ui, sans-serif;
+  font-size: 10px;
+  fill: var(--fg);
+}
+
+.orion-diagram .react-flow__edge-textbg {
+  fill: var(--bg);
+  opacity: 0.85;
+}
+
+/* ── Controls ── */
+.orion-diagram .react-flow__controls {
+  border-radius: 6px;
+  overflow: hidden;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.25);
+}
+
+.navy .orion-diagram .react-flow__controls-button {
+  background: #0F2030;
+  border-bottom: 1px solid #063B4C;
+  fill: #7FAFC0;
+}
+
+.navy .orion-diagram .react-flow__controls-button:hover {
+  background: #152839;
+  fill: #ECF4F8;
+}
+
+.light .orion-diagram .react-flow__controls-button {
+  background: #ffffff;
+  border-bottom: 1px solid #D0DFE8;
+  fill: #3D6B7D;
+}
+
+/* ── Attribution (kept, subtle) ── */
+.orion-diagram .react-flow__attribution {
+  background: transparent;
+  font-size: 9px;
+  opacity: 0.4;
+}
+
+.orion-diagram .react-flow__attribution a {
+  color: var(--fg);
 }

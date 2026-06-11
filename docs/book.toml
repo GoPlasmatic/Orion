@@ -11,7 +11,7 @@ create-missing = true
 
 [output.html]
 additional-css = ["css/plasmatic.css", "css/custom.css", "css/asciinema-player.css"]
-additional-js = ["js/asciinema-player.min.js", "js/extra.js"]
+additional-js = ["js/asciinema-player.min.js", "js/extra.js", "js/diagram-loader.js"]
 default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/GoPlasmatic/Orion"
