@@ -1,6 +1,6 @@
 [book]
 title = "Orion Documentation"
-description = "The declarative services runtime for the AI era"
+description = "Deploy high-performance, governed microservices as JSON workflows—without writing boilerplate."
 authors = ["Plasmatic"]
 language = "en"
 src = "src"

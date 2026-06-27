@@ -1,14 +1,24 @@
 <div class="hero-logo">
   <img src="images/plasmatic-logo.png" alt="Plasmatic Logo">
   <h1>Orion</h1>
-  <p>The declarative services runtime for the AI era</p>
+  <p>Deploy high-performance, governed microservices as JSON workflows—without writing boilerplate.</p>
 </div>
 
-**Orion** is a declarative services runtime written in Rust. Instead of writing, deploying, and operating a microservice for every piece of business logic, you **declare** what the service should do, and Orion runs it. Architectural governance — observability, rate limiting, circuit breakers, versioning, input validation, and more — is built in.
+**Orion** is an API-first declarative services runtime written in Rust. Instead of writing, containerizing, and operating a new microservice for every piece of business logic, you simply **declare** what the service should do as a JSON workflow, and Orion runs it.
 
-AI generates workflows, Orion provides the governance. Every service gets health checks, metrics, retries, and error handling, regardless of how the workflow was created.
+Every workflow is executed with enterprise-grade architectural governance—including observability, rate limiting, circuit breakers, caching, input validation, and versioning—built directly into the runtime, not bolted on. Build workflows yourself or let an AI generate them; either way, they run under the same production-grade guarantees.
 
-Replace a sprawl of single-purpose microservices with one runtime: each channel and workflow is independently versioned, testable, and deployable, but they share a single binary and a single set of built-in production features. This site is the deep reference and how-to guide — new here? [**Install Orion and ship your first service**](./tutorials/cli-setup.md) in a couple of minutes.
+### Why Orion?
+
+Developers spend too much time building the same boilerplate for microservices—setting up HTTP servers, configuring database connection pools, writing Prometheus exporters, integrating OpenTelemetry, and coding retry loops or circuit breakers. Orion eliminates this overhead entirely.
+
+* **⚡ Zero Boilerplate:** Go from idea to a live REST/Kafka service in seconds. No Dockerfiles, no CI pipelines, and no server boilerplates.
+* **🛡️ Built-in Governance:** Out-of-the-box support for rate limiting, circuit breakers, timeouts, caching, and payload validation.
+* **🤖 AI-Native & Safe:** Structured JSON workflows are exceptionally easy for LLMs to generate. Safe rollout pipelines (validation, draft/dry-run, rollout percentage, rollbacks) ensure AI-generated code never breaks production.
+* **🦀 Rust Performance:** Built on Tokio and Axum. Achieves **6,000+ requests/sec** per instance with single-digit millisecond latency and a tiny memory footprint.
+* **🧩 In-Process Composition:** Call other workflows in-process like functions with zero network round-trip overhead.
+
+This site is the deep reference and how-to guide — new here? [**Install Orion and ship your first service**](./tutorials/cli-setup.md) in a couple of minutes.
 
 <div class="asciinema-player" data-cast="casts/quickstart.cast"></div>
 <span class="asciinema-caption">From zero to a live, governed service — business logic as JSON, deployed over plain HTTP. ▶ Click to play.</span>

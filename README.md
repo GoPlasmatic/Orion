@@ -3,7 +3,7 @@
 
   # Orion
 
-  **The declarative services runtime for the AI era.**
+  **Deploy high-performance, governed microservices as JSON workflows—without writing boilerplate.**
 
   [![CI](https://github.com/GoPlasmatic/Orion/actions/workflows/ci.yml/badge.svg)](https://github.com/GoPlasmatic/Orion/actions/workflows/ci.yml)
   [![Crates.io](https://img.shields.io/crates/v/orion-server.svg)](https://crates.io/crates/orion-server)
@@ -15,9 +15,23 @@
   [![GitHub Stars](https://img.shields.io/github/stars/GoPlasmatic/Orion?style=social)](https://github.com/GoPlasmatic/Orion)
 </div>
 
-Instead of writing, deploying, and operating a separate microservice for every piece of business logic, you **declare** what the service should do — as a JSON workflow — and Orion runs it. Architectural governance — observability, rate limiting, circuit breakers, versioning, input validation, and more — is built into every service, not bolted on. Hand-write the workflows or let an AI generate them; either way they run under the same guarantees.
+Orion is an API-first declarative services runtime written in Rust. Instead of writing, containerizing, and operating a new microservice for every piece of business logic, you simply **declare** what the service should do as a JSON workflow, and Orion runs it. 
 
-**Jump to:** [Quickstart](#your-first-service-in-2-minutes) · [Is Orion right for you?](#is-orion-right-for-you) · [Three primitives](#three-primitives) · [What's built in](#whats-built-in) · [Connectors](#connect-to-anything) · [Functions](#built-in-task-functions) · [Performance](#performance) · [Install](#install) · [Docs](#documentation)
+Every workflow is executed with enterprise-grade architectural governance—including observability, rate limiting, circuit breakers, caching, input validation, and versioning—built directly into the runtime, not bolted on. Build workflows yourself or let an AI generate them; either way, they run under the same production-grade guarantees.
+
+**Jump to:** [Quickstart](#your-first-service-in-2-minutes) · [Why Orion?](#why-orion) · [Is Orion right for you?](#is-orion-right-for-you) · [Three primitives](#three-primitives) · [What's built in](#whats-built-in) · [Connectors](#connect-to-anything) · [Functions](#built-in-task-functions) · [Performance](#performance) · [Install](#install) · [Docs](#documentation)
+
+---
+
+## Why Orion?
+
+Developers spend too much time building the same boilerplate for microservices—setting up HTTP servers, configuring database connection pools, writing Prometheus exporters, integrating OpenTelemetry, and coding retry loops or circuit breakers. Orion eliminates this overhead entirely.
+
+* **⚡ Zero Boilerplate:** Go from idea to a live REST/Kafka service in seconds. No Dockerfiles, no CI pipelines, and no server boilerplates.
+* **🛡️ Built-in Governance:** Out-of-the-box support for rate limiting, circuit breakers, timeouts, caching, and payload validation.
+* **🤖 AI-Native & Safe:** Structured JSON workflows are exceptionally easy for LLMs to generate. Safe rollout pipelines (validation, draft/dry-run, rollout percentage, rollbacks) ensure AI-generated code never breaks production.
+* **🦀 Rust Performance:** Built on Tokio and Axum. Achieves **6,000+ requests/sec** per instance with single-digit millisecond latency and a tiny memory footprint.
+* **🧩 In-Process Composition:** Call other workflows in-process like functions with zero network round-trip overhead.
 
 ---
 
@@ -137,11 +151,14 @@ That's it. You described what you needed. AI wrote the logic. Orion ran it, with
 
 You build services in Orion with three things:
 
-```
-┌─────────────┐       ┌──────────────┐       ┌─────────────┐
-│   Channel   │──────▶│  Workflow    │──────▶│  Connector  │
-│  (endpoint) │       │  (logic)     │       │  (external) │
-└─────────────┘       └──────────────┘       └─────────────┘
+```mermaid
+graph LR
+    C["Channel<br>(endpoint)"] --> W["Workflow<br>(logic)"]
+    W --> Co["Connector<br>(external)"]
+
+    style C fill:#21252b,stroke:#61afef,stroke-width:2px,color:#abb2bf
+    style W fill:#21252b,stroke:#61afef,stroke-width:2px,color:#abb2bf
+    style Co fill:#21252b,stroke:#61afef,stroke-width:2px,color:#abb2bf
 ```
 
 | Primitive | What it is | Example |
@@ -173,13 +190,20 @@ AI:  → generates valid workflow JSON
 
 **Safe path from AI output to production — every time:**
 
-```
-1. Generate    → AI produces the workflow JSON (with full context from MCP)
-2. Validate    → POST /api/v1/admin/workflows/validate         ← catches structural errors
-3. Create      → POST /api/v1/admin/workflows                  ← saved as draft (not live)
-4. Dry-run     → POST /api/v1/admin/workflows/{id}/test        ← test with sample data
-5. Activate    → PATCH /api/v1/admin/workflows/{id}/status     ← goes live
-6. Rollout     → PATCH /api/v1/admin/workflows/{id}/rollout    ← gradual traffic (10% → 50% → 100%)
+```mermaid
+graph TD
+    A["1. Generate<br>(AI Workflow JSON via MCP)"] --> B["2. Validate<br>(Verify JSON Syntax & Schema)"]
+    B --> C["3. Create Draft<br>(Saved in DB, Offline)"]
+    C --> D["4. Dry-Run Test<br>(Verify with Sample Data)"]
+    D --> E["5. Activate<br>(Engine hot-reloads)"]
+    E --> F["6. Canary Rollout<br>(10% → 50% → 100% traffic)"]
+
+    style A fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style B fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style C fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style D fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style E fill:#2e3f2f,stroke:#98c379,stroke-width:2px,color:#98c379
+    style F fill:#293c4e,stroke:#61afef,stroke-width:2px,color:#61afef
 ```
 
 Every AI-generated workflow gets version history, draft-before-activate, dry-run testing, rollout control, structured `FieldError` validation feedback, and audit trails — the same governance as hand-written ones. Roll back to any previous version instantly.
@@ -194,39 +218,49 @@ See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cas
 
 **Before** — every piece of business logic is its own service to build, deploy, and operate:
 
+```mermaid
+graph TD
+    Client["API Clients"] --> GW["API Gateway"]
+    GW --> PS["Pricing Service"] --> DB[("Database")]
+    GW --> FS["Fraud Service"] --> RD[("Redis Cache")]
+    GW --> RS["Routing Service"] --> KF[("Kafka Cluster")]
+    GW --> NS["Notification Service"] --> SM["SMTP Server"]
+
+    style Client fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style GW fill:#e06c75,stroke:#e06c75,color:#1e222b
+    style PS fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style FS fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style RS fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style NS fill:#21252b,stroke:#5c6370,color:#abb2bf
 ```
-                         ┌──────────────┐
-                    ┌───▶│ Pricing Svc  │───▶ DB
-                    │    └──────────────┘
-┌──────────┐        │    ┌──────────────┐
-│  API     │────────┼───▶│ Fraud Svc    │───▶ Redis
-│  Gateway │        │    └──────────────┘
-└──────────┘        │    ┌──────────────┐
-                    ├───▶│ Routing Svc  │───▶ Kafka
-                    │    └──────────────┘
-                    │    ┌──────────────┐
-                    └───▶│ Notif. Svc   │───▶ SMTP
-                         └──────────────┘
 
-4 services × (code + Dockerfile + CI + health checks + metrics + deployment)
-```
+**After** — one Orion instance replaces all four (with API gateway and logic engine consolidated, routing traffic, executing workflows, and automatically handling governance):
 
-**After** — one Orion instance replaces all four:
+```mermaid
+graph TD
+    Client["API Clients"] --> Orion["Orion Server Runtime"]
+    
+    subgraph Orion ["Orion Runtime (Single Binary)"]
+        direction TB
+        C1["/pricing (Workflow)"]
+        C2["/fraud (Workflow)"]
+        C3["/routing (Workflow)"]
+        C4["/notify (Workflow)"]
+        Gov["Built-in: Rate Limiting, Metrics, Tracing, Circuit Breakers"]
+    end
+    
+    C1 --> DB[("Database")]
+    C2 --> RD[("Redis Cache")]
+    C3 --> KF[("Kafka Cluster")]
+    C4 --> SM["SMTP Server"]
 
-```
-                         ┌──────────────────────────────────┐
-                         │           Orion                  │
-                         │                                  │
-┌──────────┐             │  Channel /pricing  → workflow ───┼──▶ DB
-│ Clients  │────────────▶│  Channel /fraud    → workflow ───┼──▶ Redis
-└──────────┘             │  Channel /routing  → workflow ───┼──▶ Kafka
-                         │  Channel /notify   → workflow ───┼──▶ SMTP
-                         │                                  │
-                         │  Rate limiting, metrics, health  │
-                         │  checks, circuit breakers, logs  │
-                         └──────────────────────────────────┘
-
-No API gateway needed. Governance is built in. One binary to deploy.
+    style Client fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style Orion fill:#282c34,stroke:#abb2bf,stroke-width:2px,color:#abb2bf
+    style C1 fill:#61afef,stroke:#61afef,color:#1e222b
+    style C2 fill:#61afef,stroke:#61afef,color:#1e222b
+    style C3 fill:#61afef,stroke:#61afef,color:#1e222b
+    style C4 fill:#61afef,stroke:#61afef,color:#1e222b
+    style Gov fill:#e5c07b,stroke:#e5c07b,color:#1e222b
 ```
 
 **The best of both worlds:** each channel and workflow is independently versioned, testable, and deployable. The modularity of microservices with the operational simplicity of a monolith. Change one workflow without touching the others. Roll back a single channel without redeploying everything.
@@ -280,13 +314,18 @@ REST channels support parameterized route patterns (`/orders/{order_id}`) with p
 
 Most platforms require HTTP calls between services, adding latency, failure modes, and serialization overhead. Orion's `channel_call` invokes another channel's workflow **in-process** with zero network round-trip:
 
-```
-POST /orders (order-processing workflow)
-  ├── parse_json         → extract order data
-  ├── channel_call       → "inventory-check" channel (in-process)
-  ├── channel_call       → "customer-lookup" channel (in-process)
-  ├── map                → compute pricing with enriched data
-  └── publish_json       → return combined result
+```mermaid
+graph TD
+    Req["POST /orders (Workflow)"] --> P["parse_json<br>(Extract order data)"]
+    P --> C1["channel_call<br>(inventory-check)"]
+    C1 --> C2["channel_call<br>(customer-lookup)"]
+    C2 --> M["map<br>(Compute pricing)"]
+    M --> Res["publish_json<br>(Combined response)"]
+
+    classDef task fill:#21252b,stroke:#5c6370,color:#abb2bf;
+    classDef inprocess fill:#61afef,stroke:#61afef,color:#1e222b;
+    class P,M,Res task;
+    class C1,C2 inprocess;
 ```
 
 Each composed channel has its own workflow, versioning, and governance, but calls between them are function calls, not network hops. Cycle detection prevents infinite recursion.
@@ -353,14 +392,30 @@ Production services fail. Orion handles it so you don't write retry loops and fa
 
 ## Deploy Anywhere
 
-```
-┌────────────────┐   ┌────────────────────┐   ┌────────────────┐
-│   Standalone   │   │      Sidecar       │   │     Docker     │
-│                │   │                    │   │                │
-│ ./orion-server │   │  ┌─────┐ ┌──────┐  │   │  docker run \  │
-│                │   │  │ App │─│Orion │  │   │   orion:latest │
-│   That's it.   │   │  └─────┘ └──────┘  │   │                │
-└────────────────┘   └────────────────────┘   └────────────────┘
+```mermaid
+flowchart LR
+    subgraph Standalone ["Standalone"]
+        direction TB
+        S["./orion-server"]
+    end
+
+    subgraph Sidecar ["Sidecar Pattern"]
+        direction LR
+        App["App"] <--> O["Orion"]
+    end
+
+    subgraph Container ["Docker / Kubernetes"]
+        direction TB
+        D["docker run ghcr.io/goplasmatic/orion:latest"]
+    end
+
+    style Standalone fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style Sidecar fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style Container fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style S fill:#61afef,stroke:#61afef,color:#1e222b
+    style App fill:#4b5263,stroke:#5c6370,color:#abb2bf
+    style O fill:#61afef,stroke:#61afef,color:#1e222b
+    style D fill:#61afef,stroke:#61afef,color:#1e222b
 ```
 
 Single binary. SQLite by default, no database to provision, no runtime dependencies. Need more scale? Swap to **PostgreSQL** or **MySQL** by changing the `storage.url`. No rebuild needed.
