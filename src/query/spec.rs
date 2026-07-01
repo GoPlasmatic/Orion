@@ -1,9 +1,9 @@
 //! Envelope parsing: the plain (non-JSONLogic) shell around the `filter`.
 //!
-//! Parses `source` / `filter` / `fields` / `sort` / `limit` / `skip` into a
-//! [`QuerySpec`]. The `filter` is kept as raw JSON here and lowered separately by
-//! [`crate::query::lower`]. `include` (relation nesting) is Phase 4 and is
-//! rejected when non-empty so results are never silently un-nested.
+//! Parses `source` / `filter` / `fields` / `sort` / `limit` / `skip` / `include`
+//! into a [`QuerySpec`]. The `filter` is kept as raw JSON here and lowered
+//! separately by [`crate::query::lower`]; `include` is parsed into [`IncludeSpec`]s
+//! and hydrated by the handler (a per-relation child query).
 
 use serde_json::Value as Json;
 
@@ -18,6 +18,18 @@ pub struct QuerySpec {
     pub sort: Vec<SortKey>,
     pub limit: Option<u64>,
     pub skip: Option<u64>,
+    pub include: Vec<IncludeSpec>,
+}
+
+/// A related collection to nest in the result: `"orders": { "fields": [..], "limit": n }`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct IncludeSpec {
+    /// Relation name (declared in the schema) and the output field name.
+    pub relation: String,
+    /// Child fields to return; empty means all.
+    pub fields: Vec<String>,
+    /// Max related rows per parent.
+    pub limit: Option<u64>,
 }
 
 /// One ordering key, e.g. `{ "created_at": "desc" }`.
@@ -72,18 +84,7 @@ pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
     let sort = parse_sort(obj.get("sort"))?;
     let limit = parse_u64(obj.get("limit"), "limit")?;
     let skip = parse_u64(obj.get("skip"), "skip")?;
-
-    // `include` (relation nesting) is Phase 4. A non-empty include is rejected
-    // so the author is not silently handed flat results.
-    if let Some(inc) = obj.get("include") {
-        let empty = inc.is_null() || inc.as_object().is_some_and(|m| m.is_empty());
-        if !empty {
-            return Err(QueryError::UnsupportedInQuery {
-                op: "include".into(),
-                at: "include".into(),
-            });
-        }
-    }
+    let include = parse_include(obj.get("include"))?;
 
     Ok(QuerySpec {
         source,
@@ -92,7 +93,51 @@ pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
         sort,
         limit,
         skip,
+        include,
     })
+}
+
+fn parse_include(v: Option<&Json>) -> Result<Vec<IncludeSpec>, QueryError> {
+    let obj = match v {
+        None | Some(Json::Null) => return Ok(Vec::new()),
+        Some(Json::Object(m)) => m,
+        Some(_) => {
+            return Err(invalid(
+                "'include' must be an object of relation → selection",
+            ));
+        }
+    };
+    let mut out = Vec::with_capacity(obj.len());
+    for (relation, sel) in obj {
+        let sel = sel
+            .as_object()
+            .ok_or_else(|| invalid(format!("include.{relation} must be an object")))?;
+        let fields = match sel.get("fields") {
+            None | Some(Json::Null) => Vec::new(),
+            Some(Json::Array(arr)) => {
+                let mut fs = Vec::with_capacity(arr.len());
+                for (i, f) in arr.iter().enumerate() {
+                    let s = f.as_str().ok_or_else(|| {
+                        invalid(format!("include.{relation}.fields[{i}] must be a string"))
+                    })?;
+                    fs.push(s.to_string());
+                }
+                fs
+            }
+            Some(_) => {
+                return Err(invalid(format!(
+                    "include.{relation}.fields must be an array"
+                )));
+            }
+        };
+        let limit = parse_u64(sel.get("limit"), &format!("include.{relation}.limit"))?;
+        out.push(IncludeSpec {
+            relation: relation.clone(),
+            fields,
+            limit,
+        });
+    }
+    Ok(out)
 }
 
 fn parse_sort(v: Option<&Json>) -> Result<Vec<SortKey>, QueryError> {

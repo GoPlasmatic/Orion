@@ -396,3 +396,78 @@ async fn test_data_query_relation_some() {
     assert_eq!(rows[0]["id"], "u1");
     assert_eq!(rows[0]["name"], "Alice");
 }
+
+#[tokio::test]
+async fn test_data_query_include_nested() {
+    let app = common::test_app().await;
+    let conn = "dq-inc";
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite(conn, "sqlite:file:dq_inc?mode=memory&cache=shared"),
+    )
+    .await;
+
+    let dbw = |id: &str, q: &str| {
+        json!({
+            "id": id, "name": id,
+            "function": { "name": "db_write", "input": { "connector": conn, "query": q, "output": "data.x" } }
+        })
+    };
+    let tasks = json!([
+        dbw("t_cu", "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT)"),
+        dbw("t_co", "CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, user_id TEXT, total INTEGER)"),
+        dbw("t_u1", "INSERT INTO users (id, name) VALUES ('u1', 'Alice')"),
+        dbw("t_u2", "INSERT INTO users (id, name) VALUES ('u2', 'Bob')"),
+        dbw("t_o1", "INSERT INTO orders (id, user_id, total) VALUES ('o1', 'u1', 150)"),
+        dbw("t_o2", "INSERT INTO orders (id, user_id, total) VALUES ('o2', 'u1', 50)"),
+        dbw("t_o3", "INSERT INTO orders (id, user_id, total) VALUES ('o3', 'u2', 10)"),
+        {
+            "id": "t_q", "name": "query",
+            "function": { "name": "data_query", "input": {
+                "connector": conn,
+                "query": {
+                    "source": "users",
+                    "fields": ["id", "name"],
+                    "sort": [{ "id": "asc" }],
+                    "include": { "orders": { "fields": ["id", "total"], "limit": 5 } }
+                },
+                "schema": { "entities": { "users": { "relations": {
+                    "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
+                } } } },
+                "output": "data.result"
+            } }
+        }
+    ]);
+    common::create_and_activate_channel(
+        &app,
+        "ch-dq-inc",
+        common::workflow_with_tasks("dq", tasks),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/ch-dq-inc",
+            Some(json!({ "data": {} })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(body["status"], "ok", "body = {body}");
+    let rows = body["data"]["result"].as_array().expect("array");
+    assert_eq!(rows.len(), 2);
+
+    // u1 (Alice) has two nested orders; the foreign key user_id is stripped.
+    assert_eq!(rows[0]["id"], "u1");
+    let alice_orders = rows[0]["orders"].as_array().expect("orders array");
+    assert_eq!(alice_orders.len(), 2);
+    assert!(alice_orders[0].get("user_id").is_none());
+    assert!(alice_orders[0].get("total").is_some());
+
+    // u2 (Bob) has one nested order.
+    assert_eq!(rows[1]["id"], "u2");
+    assert_eq!(rows[1]["orders"].as_array().expect("orders array").len(), 1);
+}

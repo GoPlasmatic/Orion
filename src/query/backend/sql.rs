@@ -65,6 +65,47 @@ pub fn build_for(dialect: SqlDialect, stmt: &SelectStatement) -> (String, SqlxVa
     }
 }
 
+/// Build the child query for an `include`: `SELECT <fields>, <foreign> FROM
+/// <target> WHERE <foreign> IN (<keys>)`. The foreign key is always selected so
+/// results can be grouped back to their parents. Callers must skip this when
+/// `keys` is empty (an empty `IN` is not built here).
+pub fn build_include_select(
+    target_table: &str,
+    foreign: &str,
+    fields: &[String],
+    keys: &[SeaValue],
+    dialect: SqlDialect,
+) -> (String, SqlxValues) {
+    let mut stmt = Query::select();
+    if fields.is_empty() {
+        stmt.column(Asterisk);
+    } else {
+        for f in fields {
+            stmt.column(Alias::new(f.as_str()));
+        }
+        if !fields.iter().any(|f| f == foreign) {
+            stmt.column(Alias::new(foreign));
+        }
+    }
+    stmt.from(Alias::new(target_table));
+    stmt.cond_where(Expr::col(Alias::new(foreign)).is_in(keys.to_vec()));
+    build_for(dialect, &stmt)
+}
+
+/// Convert a JSON scalar (a parent key value) into a bound `sea_query::Value` for
+/// an `IN` list. Returns `None` for null / non-scalar values (skipped as keys).
+pub fn json_key_to_sea(v: &serde_json::Value) -> Option<SeaValue> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone().into()),
+        serde_json::Value::Bool(b) => Some((*b).into()),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(Into::into)
+            .or_else(|| n.as_f64().map(Into::into)),
+        _ => None,
+    }
+}
+
 fn resolve_limit(
     requested: Option<u64>,
     default_limit: u64,
@@ -656,5 +697,70 @@ mod tests {
             sql.matches("EXISTS(SELECT 1 FROM \"orders\"").count() == 2,
             "sql = {sql}"
         );
+    }
+
+    // ---- Phase 4: include planning ----
+
+    #[test]
+    fn test_plan_sql_augments_parent_key_and_plans_include() {
+        let plan = crate::query::plan_sql(
+            &json!({
+                "source": "users",
+                "fields": ["name"],
+                "include": { "orders": { "fields": ["total"], "limit": 5 } }
+            }),
+            &serde_json::Map::new(),
+            &rel_schema(),
+            SqlDialect::Sqlite,
+            100,
+            1000,
+        )
+        .expect("plan");
+
+        // The parent key `id` is added to the main select (for grouping) and
+        // marked for stripping from the output.
+        assert_eq!(
+            plan.main.to_string(SqliteQueryBuilder),
+            r#"SELECT "name", "id" FROM "users" LIMIT 100"#
+        );
+        assert_eq!(plan.strip, vec!["id".to_string()]);
+        assert_eq!(plan.includes.len(), 1);
+        let inc = &plan.includes[0];
+        assert_eq!(inc.field, "orders");
+        assert_eq!(inc.target_table, "orders");
+        assert_eq!(inc.local, "id");
+        assert_eq!(inc.foreign, "user_id");
+        assert_eq!(inc.limit, Some(5));
+    }
+
+    #[test]
+    fn test_include_child_query_selects_foreign_key() {
+        let keys = vec![SeaValue::from("u1"), SeaValue::from("u2")];
+        let (sql, _v) = build_include_select(
+            "orders",
+            "user_id",
+            &["total".to_string()],
+            &keys,
+            SqlDialect::Sqlite,
+        );
+        // `user_id` is appended so children can be grouped by parent.
+        assert!(
+            sql.starts_with(r#"SELECT "total", "user_id" FROM "orders" WHERE "user_id" IN ("#),
+            "sql = {sql}"
+        );
+    }
+
+    #[test]
+    fn test_m2m_include_rejected() {
+        let err = crate::query::plan_sql(
+            &json!({ "source": "users", "include": { "tags": {} } }),
+            &serde_json::Map::new(),
+            &rel_schema(),
+            SqlDialect::Sqlite,
+            100,
+            1000,
+        )
+        .expect_err("m2m include not supported");
+        assert!(matches!(err, QueryError::FeatureUnsupportedByTarget { .. }));
     }
 }
