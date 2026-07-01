@@ -26,6 +26,7 @@ mod concurrency_test;
 mod connector_cache_test;
 mod connector_db_test;
 mod connector_redis_test;
+mod data_query_test;
 mod error_envelope_test;
 mod error_paths_test;
 mod function_schema_test;

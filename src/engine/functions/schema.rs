@@ -177,6 +177,34 @@ const DB_WRITE_FIELDS: &[FieldSchema] = &[
     },
 ];
 
+const DATA_QUERY_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "connector",
+        description: "Name of the SQL connector to query.",
+        kind: FieldKind::String,
+        required: true,
+    },
+    FieldSchema {
+        name: "query",
+        description: "Backend-neutral query envelope: source/filter/fields/sort/limit/skip.",
+        kind: FieldKind::Object,
+        required: true,
+    },
+    FieldSchema {
+        name: "params",
+        description: "Object of named values folded into the filter's {\"param\": ..} nodes. \
+                      A value of {\"var\": \"path\"} is read from the message context.",
+        kind: FieldKind::Object,
+        required: false,
+    },
+    FieldSchema {
+        name: "output",
+        description: "Dotted path in the message where rows are written. Defaults to \"data\".",
+        kind: FieldKind::String,
+        required: false,
+    },
+];
+
 const MONGO_READ_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "connector",
@@ -357,6 +385,12 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Execute INSERT/UPDATE/DELETE against a SQL connector.",
         category: "connector",
         input_fields: DB_WRITE_FIELDS,
+    },
+    FunctionSchema {
+        name: "data_query",
+        description: "Run a backend-neutral query (filter + envelope) against a SQL connector.",
+        category: "connector",
+        input_fields: DATA_QUERY_FIELDS,
     },
     FunctionSchema {
         name: "mongo_read",
