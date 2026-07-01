@@ -191,6 +191,13 @@ const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         required: true,
     },
     FieldSchema {
+        name: "schema",
+        description: "Optional inline entity schema (renames, type hints, allowlist, relations) \
+                      enabling some/all/none and typed coercion.",
+        kind: FieldKind::Object,
+        required: false,
+    },
+    FieldSchema {
         name: "params",
         description: "Object of named values folded into the filter's {\"param\": ..} nodes. \
                       A value of {\"var\": \"path\"} is read from the message context.",

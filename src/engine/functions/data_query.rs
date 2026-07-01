@@ -58,8 +58,21 @@ impl AsyncFunctionHandler for DataQueryHandler {
                 .map_err(to_exec_error)?
                 .into();
 
-            let stmt =
-                query::translate_sql(query, &params, dialect, self.default_limit, self.max_limit)?;
+            // Optional inline schema (privileged config authored alongside the
+            // query): renames, type hints, allowlist, and relation declarations.
+            let registry = match input.get("schema") {
+                Some(s) => query::EntityRegistry::from_json(s)?,
+                None => query::EntityRegistry::default(),
+            };
+
+            let stmt = query::translate_sql_with_schema(
+                query,
+                &params,
+                &registry,
+                dialect,
+                self.default_limit,
+                self.max_limit,
+            )?;
             let (sql, values) = query::backend::sql::build_for(dialect, &stmt);
 
             let pool = self

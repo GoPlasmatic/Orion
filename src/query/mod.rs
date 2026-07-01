@@ -10,21 +10,24 @@ pub mod backend;
 pub mod error;
 pub mod ir;
 pub mod lower;
+pub mod schema;
 pub mod spec;
 pub mod vocab;
 
 pub use backend::SqlDialect;
 pub use error::QueryError;
 pub use lower::Params;
+pub use schema::EntityRegistry;
 pub use spec::QuerySpec;
 
 use ir::Cond;
 use sea_query::SelectStatement;
 use serde_json::Value as Json;
 
-/// Parse the envelope, lower the filter, and render a SQL `SelectStatement` for
-/// `dialect`, enforcing the configured page-size bounds. `params` are concrete
-/// (already message-resolved) values substituted for `{"param": ..}` nodes.
+/// Parse the envelope, lower the filter (identity mode), and render a SQL
+/// `SelectStatement` for `dialect`, enforcing the configured page-size bounds.
+/// `params` are concrete (already message-resolved) values substituted for
+/// `{"param": ..}` nodes.
 pub fn translate_sql(
     query: &Json,
     params: &Params,
@@ -32,12 +35,33 @@ pub fn translate_sql(
     default_limit: u64,
     max_limit: u64,
 ) -> Result<SelectStatement, QueryError> {
+    translate_sql_with_schema(
+        query,
+        params,
+        &EntityRegistry::default(),
+        dialect,
+        default_limit,
+        max_limit,
+    )
+}
+
+/// Schema-aware variant: resolves fields and relations through `reg` (renames,
+/// type hints, allowlist, and the relation declarations `some`/`all`/`none` need).
+pub fn translate_sql_with_schema(
+    query: &Json,
+    params: &Params,
+    reg: &EntityRegistry,
+    dialect: SqlDialect,
+    default_limit: u64,
+    max_limit: u64,
+) -> Result<SelectStatement, QueryError> {
     let spec = spec::parse(query)?;
     let cond = match &spec.filter {
-        Some(f) => lower::lower(f, params)?,
+        Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
     };
-    backend::sql::render(&spec, &cond, dialect, default_limit, max_limit)
+    let root_table = reg.physical_table(&spec.source);
+    backend::sql::render(&spec, &cond, &root_table, dialect, default_limit, max_limit)
 }
 
 /// Validate a query against `dialect` without retaining the rendered output.
