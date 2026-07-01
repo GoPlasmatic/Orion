@@ -74,6 +74,8 @@ pub enum Quant {
 /// lowering from the schema so the renderer never needs the registry.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelRef {
+    /// Logical relation name (Mongo embedded-array field / `$lookup` alias).
+    pub name: String,
     /// Physical table of the related entity.
     pub target_table: String,
     /// Physical column on the current entity (the join's local side).
@@ -83,6 +85,28 @@ pub struct RelRef {
     pub foreign: String,
     /// Junction table for a many-to-many relation.
     pub through: Option<JunctionRef>,
+    /// How the relation is stored in MongoDB (find `$elemMatch` vs `$lookup`).
+    pub mongo: MongoStorage,
+    /// How the relation is stored in Elasticsearch (nested vs child).
+    pub es: EsStorage,
+}
+
+/// How a relation is stored in MongoDB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MongoStorage {
+    #[default]
+    Embedded,
+    Referenced,
+}
+
+/// How a relation is stored in Elasticsearch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EsStorage {
+    #[default]
+    Nested,
+    Child,
 }
 
 /// The junction table of a many-to-many relation, resolved to physical names.

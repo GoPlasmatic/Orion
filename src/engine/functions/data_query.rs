@@ -5,6 +5,8 @@ use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
+use futures::TryStreamExt;
+use mongodb::bson::Document;
 use serde_json::{Map, Value};
 use sqlx::any::AnyRow;
 
@@ -14,16 +16,18 @@ use super::connector_helpers::{
 };
 use super::db_read::rows_to_json;
 use crate::connector::ConnectorRegistry;
+use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::query::{self, SqlDialect};
 use crate::storage::detect_backend;
 
 /// Executes a portable `data_query` — one backend-neutral filter + envelope that
-/// renders to native SQL — against a SQL connector. Phase 1 is scalar SQL in
-/// identity mode; the translation lives in `src/query/`, and this handler only
-/// wires it to the existing connector/pool machinery (mirroring `db_read`).
+/// renders to native SQL or a MongoDB `find` — against a SQL or Mongo connector
+/// (chosen by the connection-string scheme). The translation lives in
+/// `src/query/`; this handler wires it to the existing connector/pool machinery.
 pub struct DataQueryHandler {
     pub pool_cache: Arc<SqlPoolCache>,
+    pub mongo_pool_cache: Arc<MongoPoolCache>,
     pub registry: Arc<ConnectorRegistry>,
     pub default_limit: u64,
     pub max_limit: u64,
@@ -52,12 +56,6 @@ impl AsyncFunctionHandler for DataQueryHandler {
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
             let db_config = require_db_connector(&connector_config, connector_name)?;
 
-            // Dialect from the connector's connection-string scheme — the same
-            // source `AnyPool` uses — so the rendered SQL matches the pool.
-            let dialect: SqlDialect = detect_backend(&db_config.connection_string)
-                .map_err(to_exec_error)?
-                .into();
-
             // Optional inline schema (privileged config authored alongside the
             // query): renames, type hints, allowlist, and relation declarations.
             let registry = match input.get("schema") {
@@ -65,35 +63,82 @@ impl AsyncFunctionHandler for DataQueryHandler {
                 None => query::EntityRegistry::default(),
             };
 
-            let stmt = query::translate_sql_with_schema(
-                query,
-                &params,
-                &registry,
-                dialect,
-                self.default_limit,
-                self.max_limit,
-            )?;
-            let (sql, values) = query::backend::sql::build_for(dialect, &stmt);
+            let result = if is_mongo(&db_config.connection_string) {
+                // MongoDB: render a `find` and execute it via the Mongo pool.
+                let database = require_str_field(input, "database", "data_query")?;
+                let mq = query::translate_mongo(
+                    query,
+                    &params,
+                    &registry,
+                    self.default_limit,
+                    self.max_limit,
+                )?;
+                let client = self
+                    .mongo_pool_cache
+                    .get_client(connector_name, db_config)
+                    .await
+                    .map_err(to_exec_error)?;
+                let coll = client
+                    .database(database)
+                    .collection::<Document>(&mq.collection);
+                let mut find = coll.find(mq.filter);
+                if let Some(p) = mq.projection {
+                    find = find.projection(p);
+                }
+                if let Some(s) = mq.sort {
+                    find = find.sort(s);
+                }
+                if let Some(sk) = mq.skip {
+                    find = find.skip(sk);
+                }
+                find = find.limit(mq.limit as i64);
+                let cursor = find.await.map_err(to_exec_error)?;
+                let docs: Vec<Document> = cursor.try_collect().await.map_err(to_exec_error)?;
+                Value::Array(
+                    docs.iter()
+                        .filter_map(|d| serde_json::to_value(d).ok())
+                        .collect(),
+                )
+            } else {
+                // SQL: dialect from the connection-string scheme (the same source
+                // `AnyPool` uses), so the rendered SQL matches the pool.
+                let dialect: SqlDialect = detect_backend(&db_config.connection_string)
+                    .map_err(to_exec_error)?
+                    .into();
+                let stmt = query::translate_sql_with_schema(
+                    query,
+                    &params,
+                    &registry,
+                    dialect,
+                    self.default_limit,
+                    self.max_limit,
+                )?;
+                let (sql, values) = query::backend::sql::build_for(dialect, &stmt);
+                let pool = self
+                    .pool_cache
+                    .get_pool(connector_name, db_config)
+                    .await
+                    .map_err(to_exec_error)?;
+                let rows: Vec<AnyRow> = timed_query(
+                    db_config.query_timeout_ms,
+                    "data_query",
+                    sqlx::query_with(&sql, values).fetch_all(&pool),
+                )
+                .await?;
+                rows_to_json(&rows)
+            };
 
-            let pool = self
-                .pool_cache
-                .get_pool(connector_name, db_config)
-                .await
-                .map_err(to_exec_error)?;
-
-            let rows: Vec<AnyRow> = timed_query(
-                db_config.query_timeout_ms,
-                "data_query",
-                sqlx::query_with(&sql, values).fetch_all(&pool),
-            )
-            .await?;
-
-            let result = rows_to_json(&rows);
             apply_output(ctx, extract_output_path(input), result);
             Ok(TaskOutcome::Success)
         })
         .await
     }
+}
+
+/// A connector targets MongoDB when its connection string uses a `mongodb`
+/// scheme; otherwise it is a SQL connector (dialect from the URL scheme).
+fn is_mongo(conn: &str) -> bool {
+    conn.starts_with("mongodb://") || conn.starts_with("mongodb+srv://")
 }
 
 /// Resolve the `params` object into concrete values. A value shaped like

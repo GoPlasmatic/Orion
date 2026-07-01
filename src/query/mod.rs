@@ -64,6 +64,25 @@ pub fn translate_sql_with_schema(
     backend::sql::render(&spec, &cond, &root_table, dialect, default_limit, max_limit)
 }
 
+/// Parse the envelope, lower the filter, and render a MongoDB `find` query
+/// (collection + `$match` filter + projection/sort/skip/limit), enforcing the
+/// configured page-size bounds.
+pub fn translate_mongo(
+    query: &Json,
+    params: &Params,
+    reg: &EntityRegistry,
+    default_limit: u64,
+    max_limit: u64,
+) -> Result<backend::mongo::MongoQuery, QueryError> {
+    let spec = spec::parse(query)?;
+    let cond = match &spec.filter {
+        Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
+        None => Cond::True,
+    };
+    let collection = reg.physical_table(&spec.source);
+    backend::mongo::render(&spec, &cond, &collection, default_limit, max_limit)
+}
+
 /// Validate a query against `dialect` without retaining the rendered output.
 /// A query that validates clean cannot then fail in [`translate_sql`].
 pub fn validate_sql(

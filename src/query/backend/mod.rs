@@ -1,6 +1,7 @@
-//! Backend renderers. Phase 1 ships SQL only (`sql`); MongoDB and Elasticsearch
-//! renderers arrive in later phases over the same `Cond` IR.
+//! Backend renderers over the same `Cond` IR: SQL (`sql`), MongoDB (`mongo`), and
+//! Elasticsearch (later).
 
+pub mod mongo;
 pub mod sql;
 
 use crate::storage::DbBackend;
