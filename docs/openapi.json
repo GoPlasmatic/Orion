@@ -1497,7 +1497,8 @@
           "kafka",
           "db",
           "cache",
-          "storage"
+          "storage",
+          "es"
         ]
       },
       "CreateChannelRequest": {
