@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -105,7 +106,7 @@ impl AsyncFunctionHandler for DataQueryHandler {
                 let dialect: SqlDialect = detect_backend(&db_config.connection_string)
                     .map_err(to_exec_error)?
                     .into();
-                let stmt = query::translate_sql_with_schema(
+                let plan = query::plan_sql(
                     query,
                     &params,
                     &registry,
@@ -113,19 +114,12 @@ impl AsyncFunctionHandler for DataQueryHandler {
                     self.default_limit,
                     self.max_limit,
                 )?;
-                let (sql, values) = query::backend::sql::build_for(dialect, &stmt);
                 let pool = self
                     .pool_cache
                     .get_pool(connector_name, db_config)
                     .await
                     .map_err(to_exec_error)?;
-                let rows: Vec<AnyRow> = timed_query(
-                    db_config.query_timeout_ms,
-                    "data_query",
-                    sqlx::query_with(&sql, values).fetch_all(&pool),
-                )
-                .await?;
-                rows_to_json(&rows)
+                run_sql_with_includes(&pool, &plan, dialect, db_config.query_timeout_ms).await?
             };
 
             apply_output(ctx, extract_output_path(input), result);
@@ -139,6 +133,100 @@ impl AsyncFunctionHandler for DataQueryHandler {
 /// scheme; otherwise it is a SQL connector (dialect from the URL scheme).
 fn is_mongo(conn: &str) -> bool {
     conn.starts_with("mongodb://") || conn.starts_with("mongodb+srv://")
+}
+
+/// Execute the main SQL query, then hydrate each `include` with a per-relation
+/// child query (`WHERE fk IN (parent keys)`), grouping children back to their
+/// parents in memory and applying the per-parent include limit. One extra query
+/// per include relation; no per-dialect JSON functions needed.
+async fn run_sql_with_includes(
+    pool: &sqlx::AnyPool,
+    plan: &query::SqlPlan,
+    dialect: SqlDialect,
+    timeout_ms: Option<u64>,
+) -> Result<Value, DataflowError> {
+    let (sql, values) = query::backend::sql::build_for(dialect, &plan.main);
+    let rows: Vec<AnyRow> = timed_query(
+        timeout_ms,
+        "data_query",
+        sqlx::query_with(&sql, values).fetch_all(pool),
+    )
+    .await?;
+    let mut parents: Vec<Value> = match rows_to_json(&rows) {
+        Value::Array(a) => a,
+        _ => Vec::new(),
+    };
+
+    for inc in &plan.includes {
+        // Distinct, non-null parent keys to fetch children for.
+        let mut seen = HashSet::new();
+        let mut keys = Vec::new();
+        for p in &parents {
+            if let Some(k) = p.get(&inc.local)
+                && let Some(sv) = query::backend::sql::json_key_to_sea(k)
+                && seen.insert(k.to_string())
+            {
+                keys.push(sv);
+            }
+        }
+
+        // Fetch children and group them by their foreign-key value.
+        let keep_foreign = inc.fields.is_empty() || inc.fields.iter().any(|f| f == &inc.foreign);
+        let mut groups: HashMap<String, Vec<Value>> = HashMap::new();
+        if !keys.is_empty() {
+            let (csql, cvalues) = query::backend::sql::build_include_select(
+                &inc.target_table,
+                &inc.foreign,
+                &inc.fields,
+                &keys,
+                dialect,
+            );
+            let crows: Vec<AnyRow> = timed_query(
+                timeout_ms,
+                "data_query",
+                sqlx::query_with(&csql, cvalues).fetch_all(pool),
+            )
+            .await?;
+            let children = match rows_to_json(&crows) {
+                Value::Array(a) => a,
+                _ => Vec::new(),
+            };
+            for mut child in children {
+                let Some(fk) = child.get(&inc.foreign).map(|v| v.to_string()) else {
+                    continue;
+                };
+                if !keep_foreign && let Value::Object(m) = &mut child {
+                    m.remove(&inc.foreign);
+                }
+                groups.entry(fk).or_default().push(child);
+            }
+        }
+
+        // Attach the (limited) child list to each parent under the relation name.
+        for p in &mut parents {
+            let key = p.get(&inc.local).map(|k| k.to_string()).unwrap_or_default();
+            let mut kids = groups.get(&key).cloned().unwrap_or_default();
+            if let Some(lim) = inc.limit {
+                kids.truncate(lim as usize);
+            }
+            if let Value::Object(m) = p {
+                m.insert(inc.field.clone(), Value::Array(kids));
+            }
+        }
+    }
+
+    // Remove parent columns that were added only to group children.
+    if !plan.strip.is_empty() {
+        for p in &mut parents {
+            if let Value::Object(m) = p {
+                for s in &plan.strip {
+                    m.remove(s);
+                }
+            }
+        }
+    }
+
+    Ok(Value::Array(parents))
 }
 
 /// Resolve the `params` object into concrete values. A value shaped like

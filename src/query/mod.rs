@@ -64,6 +64,91 @@ pub fn translate_sql_with_schema(
     backend::sql::render(&spec, &cond, &root_table, dialect, default_limit, max_limit)
 }
 
+/// A rendered SQL query plus its `include` plan (related collections to nest).
+#[derive(Debug, Clone)]
+pub struct SqlPlan {
+    pub main: SelectStatement,
+    pub includes: Vec<IncludePlan>,
+    /// Parent physical columns added only to group children — stripped from output.
+    pub strip: Vec<String>,
+}
+
+/// One resolved `include`: the child relation to fetch and nest per parent.
+#[derive(Debug, Clone)]
+pub struct IncludePlan {
+    /// Output field name (the relation name).
+    pub field: String,
+    pub target_table: String,
+    /// Parent physical key column (grouping key on the parent side).
+    pub local: String,
+    /// Child physical foreign-key column (grouping key on the child side).
+    pub foreign: String,
+    /// Child fields to select (physical); empty = all.
+    pub fields: Vec<String>,
+    pub limit: Option<u64>,
+}
+
+/// Plan a SQL query with `include`s: render the main `SelectStatement` (with any
+/// parent keys needed for grouping added) and resolve each include to an
+/// [`IncludePlan`] the handler hydrates with a per-relation child query.
+pub fn plan_sql(
+    query: &Json,
+    params: &Params,
+    reg: &EntityRegistry,
+    dialect: SqlDialect,
+    default_limit: u64,
+    max_limit: u64,
+) -> Result<SqlPlan, QueryError> {
+    let spec = spec::parse(query)?;
+    let cond = match &spec.filter {
+        Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
+        None => Cond::True,
+    };
+
+    let mut main_spec = spec.clone();
+    let mut includes = Vec::new();
+    let mut strip: Vec<String> = Vec::new();
+    for inc in &spec.include {
+        let (rel, _target) = reg.resolve_relation(&spec.source, &inc.relation, "include")?;
+        if rel.through.is_some() {
+            return Err(QueryError::FeatureUnsupportedByTarget {
+                feature: format!("many-to-many include '{}'", inc.relation),
+                target: "sql".to_string(),
+            });
+        }
+        // Ensure the parent key is projected so children can be grouped back.
+        if !main_spec.fields.is_empty() && !main_spec.fields.iter().any(|f| f == &rel.local) {
+            main_spec.fields.push(rel.local.clone());
+            if !strip.contains(&rel.local) {
+                strip.push(rel.local.clone());
+            }
+        }
+        includes.push(IncludePlan {
+            field: inc.relation.clone(),
+            target_table: rel.target_table,
+            local: rel.local,
+            foreign: rel.foreign,
+            fields: inc.fields.clone(),
+            limit: inc.limit,
+        });
+    }
+
+    let root_table = reg.physical_table(&spec.source);
+    let main = backend::sql::render(
+        &main_spec,
+        &cond,
+        &root_table,
+        dialect,
+        default_limit,
+        max_limit,
+    )?;
+    Ok(SqlPlan {
+        main,
+        includes,
+        strip,
+    })
+}
+
 /// Parse the envelope, lower the filter, and render a MongoDB `find` query
 /// (collection + `$match` filter + projection/sort/skip/limit), enforcing the
 /// configured page-size bounds.
