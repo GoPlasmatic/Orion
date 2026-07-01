@@ -481,7 +481,7 @@ fn single_arg<'a>(arg: &'a Json, at: &str) -> Result<&'a Json, QueryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::ir::{JunctionRef, RelRef};
+    use crate::query::ir::{EsStorage, JunctionRef, MongoStorage, RelRef};
     use serde_json::json;
 
     fn lower_ok(filter: Json) -> Cond {
@@ -727,10 +727,13 @@ mod tests {
             Cond::Rel {
                 quant: Quant::Any,
                 rel: RelRef {
+                    name: "orders".into(),
                     target_table: "orders".into(),
                     local: "id".into(),
                     foreign: "user_id".into(),
                     through: None,
+                    mongo: MongoStorage::Embedded,
+                    es: EsStorage::Nested,
                 },
                 cond: Box::new(Cond::Compare {
                     field: FieldRef {

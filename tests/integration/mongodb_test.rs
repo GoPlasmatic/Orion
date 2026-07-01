@@ -145,3 +145,63 @@ async fn test_mongo_read_with_filter() {
         results
     );
 }
+
+/// data_query against a Mongo connector: the portable filter renders to a
+/// `$match` find. On an empty collection it returns an empty array, proving the
+/// data_query → Mongo execution path end-to-end.
+#[tokio::test]
+#[ignore]
+async fn test_data_query_mongo_find() {
+    let app = common::test_app().await;
+
+    common::create_connector(&app, mongo_connector("dq-mongo")).await;
+
+    common::create_and_activate_channel(
+        &app,
+        "dq-mongo-ch",
+        common::workflow_with_tasks(
+            "DataQueryMongo",
+            json!([
+                {
+                    "id": "t1",
+                    "name": "portable query",
+                    "function": {
+                        "name": "data_query",
+                        "input": {
+                            "connector": "dq-mongo",
+                            "database": "orion_test",
+                            "query": {
+                                "source": "dq_empty_items",
+                                "filter": { "and": [
+                                    { ">": [{ "field": "age" }, 18] },
+                                    { "in": [{ "field": "status" }, ["active"]] }
+                                ] },
+                                "sort": [{ "age": "asc" }],
+                                "limit": 10
+                            },
+                            "output": "data.result"
+                        }
+                    }
+                }
+            ]),
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/dq-mongo-ch",
+            Some(json!({ "data": {} })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+    let rows = body["data"]["result"]
+        .as_array()
+        .expect("result should be an array");
+    assert!(rows.is_empty(), "expected empty array, got {rows:?}");
+}

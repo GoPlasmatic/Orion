@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use serde::Deserialize;
 
 use crate::query::error::QueryError;
-use crate::query::ir::{FieldRef, FieldType, JunctionRef, RelRef};
+use crate::query::ir::{EsStorage, FieldRef, FieldType, JunctionRef, MongoStorage, RelRef};
 
 /// The set of entities queryable through the dialect, plus the unmapped policy.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -97,24 +97,6 @@ pub struct Junction {
     pub foreign: String,
 }
 
-/// How a relation is stored in MongoDB (drives find-vs-aggregate — Phase 3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MongoStorage {
-    #[default]
-    Embedded,
-    Referenced,
-}
-
-/// How a relation is stored in Elasticsearch (Phase 5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EsStorage {
-    #[default]
-    Nested,
-    Child,
-}
-
 impl EntityRegistry {
     /// Parse an inline schema JSON value into a registry.
     pub fn from_json(v: &serde_json::Value) -> Result<Self, QueryError> {
@@ -184,10 +166,13 @@ impl EntityRegistry {
         });
         Ok((
             RelRef {
+                name: name.to_string(),
                 target_table: self.physical_table(&rel.to),
                 local: rel.local.clone(),
                 foreign: rel.foreign.clone(),
                 through,
+                mongo: rel.mongo,
+                es: rel.es,
             },
             rel.to.clone(),
         ))

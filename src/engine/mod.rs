@@ -136,11 +136,13 @@ pub fn build_custom_functions(
     );
 
     // Register the portable query handler (data_query). It renders a
-    // backend-neutral filter + envelope to native SQL (§ src/query/).
+    // backend-neutral filter + envelope to native SQL or a MongoDB find
+    // (§ src/query/).
     fns.insert(
         "data_query".to_string(),
         Box::new(functions::data_query::DataQueryHandler {
             pool_cache: sql_pool_cache,
+            mongo_pool_cache: mongo_pool_cache.clone(),
             registry: registry.clone(),
             default_limit: query_config.default_limit,
             max_limit: query_config.max_limit,
