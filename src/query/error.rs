@@ -21,8 +21,12 @@ pub enum QueryError {
     InvalidField { field: String, at: String },
     /// A `{"param": name}` referenced a name absent from the params map.
     MissingParam { name: String, at: String },
+    /// A `some`/`all`/`none` referenced a relation not declared in the schema.
+    UnknownRelation { relation: String, at: String },
     /// The requested page size exceeds the configured hard maximum.
     LimitExceeded { requested: u64, max: u64 },
+    /// The query uses a feature the chosen backend cannot express.
+    FeatureUnsupportedByTarget { feature: String, target: String },
 }
 
 impl std::fmt::Display for QueryError {
@@ -40,6 +44,12 @@ impl std::fmt::Display for QueryError {
             }
             QueryError::MissingParam { name, at } => {
                 write!(f, "query references undefined param '{name}' (at {at})")
+            }
+            QueryError::UnknownRelation { relation, at } => {
+                write!(f, "unknown relation '{relation}' (at {at})")
+            }
+            QueryError::FeatureUnsupportedByTarget { feature, target } => {
+                write!(f, "{feature} is not supported by the {target} backend")
             }
             QueryError::LimitExceeded { requested, max } => {
                 write!(

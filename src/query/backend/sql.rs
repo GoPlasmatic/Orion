@@ -15,14 +15,17 @@ use sea_query_binder::{SqlxBinder, SqlxValues};
 
 use crate::query::backend::SqlDialect;
 use crate::query::error::QueryError;
-use crate::query::ir::{CmpOp, Cond, FieldRef, TextOp, Value};
+use crate::query::ir::{CmpOp, Cond, FieldRef, Quant, RelRef, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir, SortKey};
 
 /// Build a `SelectStatement` from the envelope and lowered condition, enforcing
-/// the page-size bounds (`LimitExceeded` when `limit` > `max_limit`).
+/// the page-size bounds (`LimitExceeded` when `limit` > `max_limit`). `root_table`
+/// is the physical table the query selects from (and the correlation base for any
+/// relation subqueries).
 pub fn render(
     spec: &QuerySpec,
     cond: &Cond,
+    root_table: &str,
     dialect: SqlDialect,
     default_limit: u64,
     max_limit: u64,
@@ -37,11 +40,11 @@ pub fn render(
             stmt.column(Alias::new(f.as_str()));
         }
     }
-    stmt.from(Alias::new(spec.source.as_str()));
+    stmt.from(Alias::new(root_table));
     // Skip the WHERE clause entirely when the filter is unconditionally true, so
     // a filterless query does not render a redundant `WHERE TRUE`.
     if !matches!(cond, Cond::True) {
-        stmt.cond_where(render_cond(cond)?);
+        stmt.cond_where(render_expr(cond, root_table)?);
     }
     apply_sort(&mut stmt, &spec.sort, dialect);
     stmt.limit(limit);
@@ -77,41 +80,30 @@ fn resolve_limit(
     }
 }
 
-fn render_cond(cond: &Cond) -> Result<Condition, QueryError> {
+/// Render a `Cond` as a single boolean `SimpleExpr`. Composing on `SimpleExpr`
+/// (rather than `Condition`) keeps `and`/`or`/`not`, EXISTS subqueries, and the
+/// §5.6 `all` null-fix uniformly expressible. `current_table` is the physical
+/// table the bare columns belong to (the correlation base for relations).
+fn render_expr(cond: &Cond, current_table: &str) -> Result<SimpleExpr, QueryError> {
     Ok(match cond {
-        Cond::True => Condition::all(),
-        Cond::False => Condition::all().add(Expr::val(1).eq(0)),
-        Cond::And(cs) => {
-            let mut c = Condition::all();
-            for x in cs {
-                c = c.add(render_cond(x)?);
-            }
-            c
-        }
-        Cond::Or(cs) => {
-            let mut c = Condition::any();
-            for x in cs {
-                c = c.add(render_cond(x)?);
-            }
-            c
-        }
-        Cond::Not(inner) => render_cond(inner)?.not(),
-        Cond::Compare { field, op, value } => {
-            Condition::all().add(compare_expr(field, *op, value)?)
-        }
+        Cond::True => Expr::val(1).eq(1),
+        Cond::False => Expr::val(1).eq(0),
+        Cond::And(cs) => fold_bool(cs, current_table, true)?,
+        Cond::Or(cs) => fold_bool(cs, current_table, false)?,
+        Cond::Not(inner) => render_expr(inner, current_table)?.not(),
+        Cond::Compare { field, op, value } => compare_expr(field, *op, value)?,
         Cond::In {
             field,
             values,
             negated,
-        } => Condition::all().add(in_expr(field, values, *negated)?),
+        } => in_expr(field, values, *negated)?,
         Cond::IsNull { field, negated } => {
             let col = col_expr(field);
-            let e = if *negated {
+            if *negated {
                 col.is_not_null()
             } else {
                 col.is_null()
-            };
-            Condition::all().add(e)
+            }
         }
         Cond::Between {
             field,
@@ -120,14 +112,111 @@ fn render_cond(cond: &Cond) -> Result<Condition, QueryError> {
             low_incl,
             high_incl,
             negated,
-        } => between_cond(field, low, high, *low_incl, *high_incl, *negated)?,
+        } => between_expr(field, low, high, *low_incl, *high_incl, *negated)?,
         Cond::Text {
             field,
             op,
             pattern,
             ci: _,
-        } => Condition::all().add(text_expr(field, *op, pattern)),
+        } => text_expr(field, *op, pattern),
+        Cond::Rel { quant, rel, cond } => render_rel(*quant, rel, cond, current_table)?,
     })
+}
+
+/// Fold a non-empty list of conditions with AND (`and = true`) or OR.
+fn fold_bool(cs: &[Cond], current_table: &str, and: bool) -> Result<SimpleExpr, QueryError> {
+    let mut iter = cs.iter();
+    let mut acc = match iter.next() {
+        Some(first) => render_expr(first, current_table)?,
+        // Empty groups are folded to True/False at lowering; be defensive anyway.
+        None => return Ok(Expr::val(1).eq(if and { 1 } else { 0 })),
+    };
+    for c in iter {
+        let e = render_expr(c, current_table)?;
+        acc = if and { acc.and(e) } else { acc.or(e) };
+    }
+    Ok(acc)
+}
+
+/// Render a relation predicate as an EXISTS-style semi/anti join.
+fn render_rel(
+    quant: Quant,
+    rel: &RelRef,
+    inner: &Cond,
+    current_table: &str,
+) -> Result<SimpleExpr, QueryError> {
+    // Inner columns belong to the target entity's table.
+    let target = rel.target_table.as_str();
+    match quant {
+        Quant::Any => {
+            let inner_e = render_expr(inner, target)?;
+            Ok(Expr::exists(rel_subquery(
+                rel,
+                current_table,
+                Some(inner_e),
+            )?))
+        }
+        Quant::None => {
+            let inner_e = render_expr(inner, target)?;
+            Ok(Expr::exists(rel_subquery(rel, current_table, Some(inner_e))?).not())
+        }
+        Quant::All => {
+            // Reference semantics: false on an empty relation, and a null inner
+            // predicate counts as a counterexample. Rendered as
+            //   EXISTS(rel) AND NOT EXISTS(rel WHERE NOT c OR c IS NULL)   (§5.6)
+            let nonempty = Expr::exists(rel_subquery(rel, current_table, None)?);
+            let ie = render_expr(inner, target)?;
+            let violates = ie.clone().not().or(Expr::expr(ie).is_null());
+            let no_violation =
+                Expr::exists(rel_subquery(rel, current_table, Some(violates))?).not();
+            Ok(nonempty.and(no_violation))
+        }
+    }
+}
+
+/// Build `SELECT 1 FROM <rel> WHERE <correlation> [AND <inner>]`, joining through
+/// the junction for a many-to-many relation.
+fn rel_subquery(
+    rel: &RelRef,
+    current_table: &str,
+    inner: Option<SimpleExpr>,
+) -> Result<SelectStatement, QueryError> {
+    let mut sub = Query::select();
+    sub.expr(Expr::val(1));
+    let mut where_cond = Condition::all();
+    match &rel.through {
+        None => {
+            // Direct: target.foreign = current.local
+            sub.from(Alias::new(rel.target_table.as_str()));
+            where_cond = where_cond.add(
+                Expr::col((
+                    Alias::new(rel.target_table.as_str()),
+                    Alias::new(rel.foreign.as_str()),
+                ))
+                .equals((Alias::new(current_table), Alias::new(rel.local.as_str()))),
+            );
+        }
+        Some(j) => {
+            // M:M: junction.local = current.local, junction.foreign = target.foreign
+            sub.from(Alias::new(j.table.as_str()));
+            sub.inner_join(
+                Alias::new(rel.target_table.as_str()),
+                Expr::col((Alias::new(j.table.as_str()), Alias::new(j.foreign.as_str()))).equals((
+                    Alias::new(rel.target_table.as_str()),
+                    Alias::new(rel.foreign.as_str()),
+                )),
+            );
+            where_cond = where_cond.add(
+                Expr::col((Alias::new(j.table.as_str()), Alias::new(j.local.as_str())))
+                    .equals((Alias::new(current_table), Alias::new(rel.local.as_str()))),
+            );
+        }
+    }
+    if let Some(e) = inner {
+        where_cond = where_cond.add(e);
+    }
+    sub.cond_where(where_cond);
+    Ok(sub)
 }
 
 fn compare_expr(field: &FieldRef, op: CmpOp, value: &Value) -> Result<SimpleExpr, QueryError> {
@@ -156,20 +245,20 @@ fn in_expr(field: &FieldRef, values: &[Value], negated: bool) -> Result<SimpleEx
     })
 }
 
-fn between_cond(
+fn between_expr(
     field: &FieldRef,
     low: &Value,
     high: &Value,
     low_incl: bool,
     high_incl: bool,
     negated: bool,
-) -> Result<Condition, QueryError> {
+) -> Result<SimpleExpr, QueryError> {
     let lo = to_sea_value(low)?;
     let hi = to_sea_value(high)?;
     // Native BETWEEN is inclusive-only; use it only when both bounds are
     // inclusive, else render explicit per-bound comparisons (§5.11).
-    let cond = if low_incl && high_incl {
-        Condition::all().add(col_expr(field).between(lo, hi))
+    let e = if low_incl && high_incl {
+        col_expr(field).between(lo, hi)
     } else {
         let lo_e = if low_incl {
             col_expr(field).gte(lo)
@@ -181,9 +270,9 @@ fn between_cond(
         } else {
             col_expr(field).lt(hi)
         };
-        Condition::all().add(lo_e).add(hi_e)
+        lo_e.and(hi_e)
     };
-    Ok(if negated { cond.not() } else { cond })
+    Ok(if negated { e.not() } else { e })
 }
 
 fn text_expr(field: &FieldRef, op: TextOp, pattern: &str) -> SimpleExpr {
@@ -256,7 +345,7 @@ fn to_sea_value(v: &Value) -> Result<SeaValue, QueryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::translate_sql;
+    use crate::query::{EntityRegistry, translate_sql, translate_sql_with_schema};
     use serde_json::{Value as Json, json};
 
     /// Render `query` for `dialect` with values inlined, for golden assertions.
@@ -272,6 +361,37 @@ mod tests {
 
     fn sqlite(query: Json) -> String {
         sql_for(query, SqlDialect::Sqlite)
+    }
+
+    /// users→orders (has_many) and users↔tags (many-to-many via user_tags).
+    fn rel_schema() -> EntityRegistry {
+        EntityRegistry::from_json(&json!({
+            "entities": {
+                "users": {
+                    "relations": {
+                        "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" },
+                        "tags": {
+                            "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "id",
+                            "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id" }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("valid schema")
+    }
+
+    fn sqlite_schema(query: Json) -> String {
+        let stmt = translate_sql_with_schema(
+            &query,
+            &serde_json::Map::new(),
+            &rel_schema(),
+            SqlDialect::Sqlite,
+            100,
+            1000,
+        )
+        .expect("translation should succeed");
+        stmt.to_string(SqliteQueryBuilder)
     }
 
     #[test]
@@ -469,5 +589,72 @@ mod tests {
                 max: 1000
             }
         ));
+    }
+
+    // ---- Phase 2: relations ----
+
+    #[test]
+    fn test_relation_some_exists() {
+        let sql = sqlite_schema(json!({
+            "source": "users",
+            "filter": { "some": [{"field": "orders"}, {">": [{"field": "total"}, 100]}] }
+        }));
+        assert_eq!(
+            sql,
+            r#"SELECT * FROM "users" WHERE EXISTS(SELECT 1 FROM "orders" WHERE "orders"."user_id" = "users"."id" AND "total" > 100) LIMIT 100"#
+        );
+    }
+
+    #[test]
+    fn test_relation_none_not_exists() {
+        let sql = sqlite_schema(json!({
+            "source": "users",
+            "filter": { "none": [{"field": "orders"}, {">": [{"field": "total"}, 100]}] }
+        }));
+        assert_eq!(
+            sql,
+            r#"SELECT * FROM "users" WHERE NOT EXISTS(SELECT 1 FROM "orders" WHERE "orders"."user_id" = "users"."id" AND "total" > 100) LIMIT 100"#
+        );
+    }
+
+    #[test]
+    fn test_relation_all_null_fix() {
+        // all → EXISTS(rel) AND NOT EXISTS(rel WHERE NOT c OR c IS NULL)  (§5.6)
+        let sql = sqlite_schema(json!({
+            "source": "users",
+            "filter": { "all": [{"field": "orders"}, {">": [{"field": "total"}, 100]}] }
+        }));
+        assert_eq!(
+            sql,
+            r#"SELECT * FROM "users" WHERE EXISTS(SELECT 1 FROM "orders" WHERE "orders"."user_id" = "users"."id") AND (NOT EXISTS(SELECT 1 FROM "orders" WHERE "orders"."user_id" = "users"."id" AND ((NOT "total" > 100) OR ("total" > 100) IS NULL))) LIMIT 100"#
+        );
+    }
+
+    #[test]
+    fn test_relation_many_to_many_join() {
+        let sql = sqlite_schema(json!({
+            "source": "users",
+            "filter": { "some": [{"field": "tags"}, {"==": [{"field": "label"}, "vip"]}] }
+        }));
+        assert_eq!(
+            sql,
+            r#"SELECT * FROM "users" WHERE EXISTS(SELECT 1 FROM "user_tags" INNER JOIN "tags" ON "user_tags"."tag_id" = "tags"."id" WHERE "user_tags"."user_id" = "users"."id" AND "label" = 'vip') LIMIT 100"#
+        );
+    }
+
+    #[test]
+    fn test_two_sibling_relations_are_independent() {
+        // Two `some`s → two independent EXISTS, never a cross product.
+        let sql = sqlite_schema(json!({
+            "source": "users",
+            "filter": { "and": [
+                { "some": [{"field": "orders"}, {">": [{"field": "total"}, 100]}] },
+                { "some": [{"field": "orders"}, {"==": [{"field": "user_id"}, 7]}] }
+            ] }
+        }));
+        assert!(
+            sql.matches("EXISTS(SELECT 1 FROM \"orders\"").count() == 2,
+            "sql = {sql}"
+        );
     }
 }

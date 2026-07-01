@@ -22,6 +22,10 @@ pub enum OpKind {
     EndsWith,
     /// `missing` — one or more fields have no meaningful value.
     Missing,
+    /// Relation quantifiers over a declared relation (Phase 2+).
+    Some,
+    All,
+    None,
 }
 
 /// Classify a JSONLogic operator key, or `None` if it is outside the vocabulary.
@@ -40,6 +44,9 @@ pub fn classify(op: &str) -> Option<OpKind> {
         "starts_with" => OpKind::StartsWith,
         "ends_with" => OpKind::EndsWith,
         "missing" => OpKind::Missing,
+        "some" => OpKind::Some,
+        "all" => OpKind::All,
+        "none" => OpKind::None,
         _ => return None,
     })
 }

@@ -1,22 +1,31 @@
 //! Lowering: raw JSONLogic `filter` JSON → the neutral [`Cond`] IR.
 //!
-//! Resolves `{"field": ..}` references (identity mode: single-segment column
-//! names) and `{"param": ..}` references (from the pre-resolved params map), and
-//! applies the proposal §5 normalisations: empty `and`/`or` fold to `True`/`False`,
-//! empty `in` folds to `False`, `== null` becomes `IsNull`, and chained
-//! comparisons become `Between` with faithful strict/inclusive bounds (§5.11).
+//! Resolves `{"field": ..}` references (against the schema, or identity mode) and
+//! `{"param": ..}` references (from the pre-resolved params map), lowers
+//! `some`/`all`/`none` over declared relations into [`Cond::Rel`], and applies the
+//! proposal §5 normalisations: empty `and`/`or` fold to `True`/`False`, empty `in`
+//! folds to `False`, `== null` becomes `IsNull`, and chained comparisons become
+//! `Between` with faithful strict/inclusive bounds (§5.11).
 //!
-//! Anything outside the vocabulary, column-to-column comparison, and dotted-path
-//! fields are rejected with a located [`QueryError`] rather than mistranslated.
+//! Anything outside the vocabulary, column-to-column comparison, dotted-path
+//! fields, and relations not declared in the schema are rejected with a located
+//! [`QueryError`] rather than mistranslated.
 
 use serde_json::{Map, Value as Json};
 
 use crate::query::error::QueryError;
-use crate::query::ir::{CmpOp, Cond, FieldRef, TextOp, Value};
+use crate::query::ir::{CmpOp, Cond, FieldRef, Quant, TextOp, Value};
+use crate::query::schema::EntityRegistry;
 use crate::query::vocab::{OpKind, classify};
 
 /// Params map: name → concrete (already message-resolved) JSON value.
 pub type Params = Map<String, Json>;
+
+/// Shared, entity-independent lowering context.
+struct Ctx<'a> {
+    params: &'a Params,
+    reg: &'a EntityRegistry,
+}
 
 /// A parsed operand: either a column reference or a literal value.
 enum Operand {
@@ -24,12 +33,24 @@ enum Operand {
     Val(Value),
 }
 
-/// Lower a raw `filter` node into a `Cond`.
+/// Lower a `filter` in identity mode (no schema).
 pub fn lower(filter: &Json, params: &Params) -> Result<Cond, QueryError> {
-    lower_cond(filter, params, "filter")
+    lower_with(filter, params, &EntityRegistry::default(), "")
 }
 
-fn lower_cond(node: &Json, params: &Params, at: &str) -> Result<Cond, QueryError> {
+/// Lower a `filter` rooted at `root_entity`, resolving fields and relations
+/// through `reg`.
+pub fn lower_with(
+    filter: &Json,
+    params: &Params,
+    reg: &EntityRegistry,
+    root_entity: &str,
+) -> Result<Cond, QueryError> {
+    let ctx = Ctx { params, reg };
+    lower_cond(filter, &ctx, root_entity, "filter")
+}
+
+fn lower_cond(node: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Cond, QueryError> {
     let map = node.as_object().ok_or_else(|| {
         QueryError::InvalidEnvelope(format!("filter node at {at} must be an object"))
     })?;
@@ -52,7 +73,7 @@ fn lower_cond(node: &Json, params: &Params, at: &str) -> Result<Cond, QueryError
             }
             let mut out = Vec::with_capacity(items.len());
             for (i, it) in items.iter().enumerate() {
-                out.push(lower_cond(it, params, &format!("{child_at}[{i}]"))?);
+                out.push(lower_cond(it, ctx, entity, &format!("{child_at}[{i}]"))?);
             }
             Ok(Cond::And(out))
         }
@@ -63,31 +84,65 @@ fn lower_cond(node: &Json, params: &Params, at: &str) -> Result<Cond, QueryError
             }
             let mut out = Vec::with_capacity(items.len());
             for (i, it) in items.iter().enumerate() {
-                out.push(lower_cond(it, params, &format!("{child_at}[{i}]"))?);
+                out.push(lower_cond(it, ctx, entity, &format!("{child_at}[{i}]"))?);
             }
             Ok(Cond::Or(out))
         }
         OpKind::Not => {
             let inner = single_arg(arg, &child_at)?;
-            Ok(Cond::Not(Box::new(lower_cond(inner, params, &child_at)?)))
+            Ok(Cond::Not(Box::new(lower_cond(
+                inner, ctx, entity, &child_at,
+            )?)))
         }
-        OpKind::Cmp(cmp) => lower_cmp(cmp, arg, params, &child_at),
-        OpKind::In => lower_in(arg, params, &child_at),
-        OpKind::StartsWith => lower_text(TextOp::StartsWith, arg, params, &child_at),
-        OpKind::EndsWith => lower_text(TextOp::EndsWith, arg, params, &child_at),
-        OpKind::Missing => lower_missing(arg, &child_at),
+        OpKind::Cmp(cmp) => lower_cmp(cmp, arg, ctx, entity, &child_at),
+        OpKind::In => lower_in(arg, ctx, entity, &child_at),
+        OpKind::StartsWith => lower_text(TextOp::StartsWith, arg, ctx, entity, &child_at),
+        OpKind::EndsWith => lower_text(TextOp::EndsWith, arg, ctx, entity, &child_at),
+        OpKind::Missing => lower_missing(arg, ctx, entity, &child_at),
+        OpKind::Some => lower_rel(Quant::Any, arg, ctx, entity, &child_at),
+        OpKind::All => lower_rel(Quant::All, arg, ctx, entity, &child_at),
+        OpKind::None => lower_rel(Quant::None, arg, ctx, entity, &child_at),
     }
 }
 
-fn lower_cmp(cmp: CmpOp, arg: &Json, params: &Params, at: &str) -> Result<Cond, QueryError> {
+fn lower_rel(
+    quant: Quant,
+    arg: &Json,
+    ctx: &Ctx,
+    entity: &str,
+    at: &str,
+) -> Result<Cond, QueryError> {
+    let args = as_args(arg, at)?;
+    if args.len() != 2 {
+        return Err(QueryError::InvalidEnvelope(format!(
+            "relation predicate at {at} expects 2 operands"
+        )));
+    }
+    let relation = rel_name(&args[0], at)?;
+    let (rel, target_entity) = ctx.reg.resolve_relation(entity, &relation, at)?;
+    let inner = lower_cond(&args[1], ctx, &target_entity, &format!("{at}.{relation}"))?;
+    Ok(Cond::Rel {
+        quant,
+        rel,
+        cond: Box::new(inner),
+    })
+}
+
+fn lower_cmp(
+    cmp: CmpOp,
+    arg: &Json,
+    ctx: &Ctx,
+    entity: &str,
+    at: &str,
+) -> Result<Cond, QueryError> {
     let args = as_args(arg, at)?;
     match args.len() {
         2 => {
-            let a = parse_operand(&args[0], params, at)?;
-            let b = parse_operand(&args[1], params, at)?;
+            let a = parse_operand(&args[0], ctx, entity, at)?;
+            let b = parse_operand(&args[1], ctx, entity, at)?;
             lower_binary_cmp(cmp, a, b, at)
         }
-        3 => lower_chained(cmp, args, params, at),
+        3 => lower_chained(cmp, args, ctx, entity, at),
         n => Err(QueryError::InvalidEnvelope(format!(
             "comparison at {at} expects 2 or 3 operands, got {n}"
         ))),
@@ -117,10 +172,16 @@ fn lower_binary_cmp(cmp: CmpOp, a: Operand, b: Operand, at: &str) -> Result<Cond
     Ok(Cond::Compare { field, op, value })
 }
 
-fn lower_chained(cmp: CmpOp, args: &[Json], params: &Params, at: &str) -> Result<Cond, QueryError> {
-    let a = parse_operand(&args[0], params, at)?;
-    let mid = parse_operand(&args[1], params, at)?;
-    let b = parse_operand(&args[2], params, at)?;
+fn lower_chained(
+    cmp: CmpOp,
+    args: &[Json],
+    ctx: &Ctx,
+    entity: &str,
+    at: &str,
+) -> Result<Cond, QueryError> {
+    let a = parse_operand(&args[0], ctx, entity, at)?;
+    let mid = parse_operand(&args[1], ctx, entity, at)?;
+    let b = parse_operand(&args[2], ctx, entity, at)?;
 
     let field = match mid {
         Operand::Field(f) => f,
@@ -162,7 +223,7 @@ fn between(field: FieldRef, low: Value, high: Value, incl: bool) -> Cond {
     }
 }
 
-fn lower_in(arg: &Json, params: &Params, at: &str) -> Result<Cond, QueryError> {
+fn lower_in(arg: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Cond, QueryError> {
     let args = as_args(arg, at)?;
     if args.len() != 2 {
         return Err(QueryError::InvalidEnvelope(format!(
@@ -170,8 +231,8 @@ fn lower_in(arg: &Json, params: &Params, at: &str) -> Result<Cond, QueryError> {
         )));
     }
     // datalogic order is [needle, haystack].
-    let needle = parse_operand(&args[0], params, at)?;
-    let haystack = parse_operand(&args[1], params, at)?;
+    let needle = parse_operand(&args[0], ctx, entity, at)?;
+    let haystack = parse_operand(&args[1], ctx, entity, at)?;
     match (needle, haystack) {
         // Membership: field IN (list).
         (Operand::Field(f), Operand::Val(Value::List(items))) => {
@@ -209,14 +270,20 @@ fn lower_in(arg: &Json, params: &Params, at: &str) -> Result<Cond, QueryError> {
     }
 }
 
-fn lower_text(op: TextOp, arg: &Json, params: &Params, at: &str) -> Result<Cond, QueryError> {
+fn lower_text(
+    op: TextOp,
+    arg: &Json,
+    ctx: &Ctx,
+    entity: &str,
+    at: &str,
+) -> Result<Cond, QueryError> {
     let args = as_args(arg, at)?;
     if args.len() != 2 {
         return Err(QueryError::InvalidEnvelope(format!(
             "text match at {at} expects 2 operands"
         )));
     }
-    let field = match parse_operand(&args[0], params, at)? {
+    let field = match parse_operand(&args[0], ctx, entity, at)? {
         Operand::Field(f) => f,
         Operand::Val(_) => {
             return Err(not_representable(
@@ -225,7 +292,7 @@ fn lower_text(op: TextOp, arg: &Json, params: &Params, at: &str) -> Result<Cond,
             ));
         }
     };
-    let pattern = match parse_operand(&args[1], params, at)? {
+    let pattern = match parse_operand(&args[1], ctx, entity, at)? {
         Operand::Val(Value::Str(s)) => s,
         _ => {
             return Err(not_representable(
@@ -242,7 +309,7 @@ fn lower_text(op: TextOp, arg: &Json, params: &Params, at: &str) -> Result<Cond,
     })
 }
 
-fn lower_missing(arg: &Json, at: &str) -> Result<Cond, QueryError> {
+fn lower_missing(arg: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Cond, QueryError> {
     let names: Vec<String> = match arg {
         Json::Array(a) => {
             let mut v = Vec::with_capacity(a.len());
@@ -267,7 +334,7 @@ fn lower_missing(arg: &Json, at: &str) -> Result<Cond, QueryError> {
     let mut conds = Vec::with_capacity(names.len());
     for n in names {
         conds.push(Cond::IsNull {
-            field: resolve_field(&n, at)?,
+            field: resolve_field(ctx, entity, &n, at)?,
             negated: false,
         });
     }
@@ -278,7 +345,7 @@ fn lower_missing(arg: &Json, at: &str) -> Result<Cond, QueryError> {
     }
 }
 
-fn parse_operand(node: &Json, params: &Params, at: &str) -> Result<Operand, QueryError> {
+fn parse_operand(node: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Operand, QueryError> {
     match node {
         Json::Object(map) => {
             if let Some(fv) = map.get("field") {
@@ -289,7 +356,7 @@ fn parse_operand(node: &Json, params: &Params, at: &str) -> Result<Operand, Quer
                     field: fv.to_string(),
                     at: at.to_string(),
                 })?;
-                return Ok(Operand::Field(resolve_field(name, at)?));
+                return Ok(Operand::Field(resolve_field(ctx, entity, name, at)?));
             }
             if let Some(pv) = map.get("param") {
                 if map.len() != 1 {
@@ -298,13 +365,15 @@ fn parse_operand(node: &Json, params: &Params, at: &str) -> Result<Operand, Quer
                 let name = pv.as_str().ok_or_else(|| {
                     QueryError::InvalidEnvelope("param name must be a string".to_string())
                 })?;
-                let resolved = params.get(name).ok_or_else(|| QueryError::MissingParam {
-                    name: name.to_string(),
-                    at: at.to_string(),
-                })?;
+                let resolved = ctx
+                    .params
+                    .get(name)
+                    .ok_or_else(|| QueryError::MissingParam {
+                        name: name.to_string(),
+                        at: at.to_string(),
+                    })?;
                 return Ok(Operand::Val(json_to_value(resolved, at)?));
             }
-            // An operator object where a value is expected (arithmetic, etc.).
             match single_entry(map) {
                 Some((inner_op, _)) => Err(QueryError::UnsupportedInQuery {
                     op: inner_op.to_string(),
@@ -317,21 +386,36 @@ fn parse_operand(node: &Json, params: &Params, at: &str) -> Result<Operand, Quer
     }
 }
 
-fn resolve_field(name: &str, at: &str) -> Result<FieldRef, QueryError> {
+/// Resolve a `{"field": name}` reference: reject dotted paths (identity mode is
+/// single-segment; JSON-path extraction is a later phase), else delegate to the
+/// schema (renames/types/allowlist, or identity when unmapped).
+fn resolve_field(ctx: &Ctx, entity: &str, name: &str, at: &str) -> Result<FieldRef, QueryError> {
     if name.is_empty() {
         return Err(QueryError::InvalidField {
             field: name.to_string(),
             at: at.to_string(),
         });
     }
-    // Dotted / JSON-path fields need per-dialect extraction — deferred past Phase 1.
     if name.contains('.') {
         return Err(QueryError::UnsupportedInQuery {
             op: format!("dotted field path '{name}'"),
             at: at.to_string(),
         });
     }
-    Ok(FieldRef::identity(name))
+    ctx.reg.resolve_field(entity, name, at)
+}
+
+/// Extract the relation name from a `{"field": "<relation>"}` operand.
+fn rel_name(node: &Json, at: &str) -> Result<String, QueryError> {
+    node.as_object()
+        .and_then(|m| (m.len() == 1).then(|| m.get("field")).flatten())
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| {
+            QueryError::InvalidEnvelope(format!(
+                "relation at {at} expects {{\"field\":\"<relation>\"}} as its first operand"
+            ))
+        })
 }
 
 fn json_to_value(j: &Json, at: &str) -> Result<Value, QueryError> {
@@ -397,10 +481,36 @@ fn single_arg<'a>(arg: &'a Json, at: &str) -> Result<&'a Json, QueryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::query::ir::{JunctionRef, RelRef};
     use serde_json::json;
 
     fn lower_ok(filter: Json) -> Cond {
         lower(&filter, &Params::new()).expect("lowering should succeed")
+    }
+
+    /// A registry with users→orders (has_many) and users↔tags (many-to-many).
+    fn schema() -> EntityRegistry {
+        EntityRegistry::from_json(&json!({
+            "entities": {
+                "users": {
+                    "columns": { "id": {"type": "int"}, "status": {"type": "keyword"} },
+                    "relations": {
+                        "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" },
+                        "tags": {
+                            "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "id",
+                            "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id" }
+                        }
+                    }
+                },
+                "orders": { "columns": { "total": {"type": "float"}, "user_id": {"type": "int"} } },
+                "tags": { "columns": { "id": {"type": "int"}, "label": {"type": "keyword"} } }
+            }
+        }))
+        .expect("valid schema")
+    }
+
+    fn lower_schema(filter: Json) -> Cond {
+        lower_with(&filter, &Params::new(), &schema(), "users").expect("lowering should succeed")
     }
 
     #[test]
@@ -418,7 +528,6 @@ mod tests {
 
     #[test]
     fn test_flipped_comparison() {
-        // 18 < age  ==  age > 18
         let c = lower_ok(json!({ "<": [18, {"field": "age"}] }));
         assert_eq!(
             c,
@@ -598,12 +707,73 @@ mod tests {
     }
 
     #[test]
-    fn test_relation_rejected_phase1() {
+    fn test_relation_without_schema_is_unknown() {
+        // In identity mode (no schema) a relation is not declared → clear error.
         let err = lower(
             &json!({ "some": [{"field": "orders"}, {">": [{"field": "total"}, 1]}] }),
             &Params::new(),
         )
-        .expect_err("some is Phase 2");
-        assert!(matches!(err, QueryError::UnsupportedInQuery { .. }));
+        .expect_err("no schema");
+        assert!(matches!(err, QueryError::UnknownRelation { .. }));
+    }
+
+    #[test]
+    fn test_relation_some_lowers_to_rel() {
+        let c = lower_schema(json!({
+            "some": [{"field": "orders"}, {">": [{"field": "total"}, 100]}]
+        }));
+        assert_eq!(
+            c,
+            Cond::Rel {
+                quant: Quant::Any,
+                rel: RelRef {
+                    target_table: "orders".into(),
+                    local: "id".into(),
+                    foreign: "user_id".into(),
+                    through: None,
+                },
+                cond: Box::new(Cond::Compare {
+                    field: FieldRef {
+                        path: vec!["total".into()],
+                        physical: "total".into(),
+                        ty: crate::query::ir::FieldType::Float,
+                    },
+                    op: CmpOp::Gt,
+                    // Literals keep their natural JSON type in v1 (no coercion to
+                    // the column's declared type yet).
+                    value: Value::Int(100),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn test_relation_m2m_carries_junction() {
+        let c = lower_schema(json!({
+            "some": [{"field": "tags"}, {"==": [{"field": "label"}, "vip"]}]
+        }));
+        let Cond::Rel { rel, .. } = c else {
+            unreachable!("expected a relation predicate");
+        };
+        assert_eq!(
+            rel.through,
+            Some(JunctionRef {
+                table: "user_tags".into(),
+                local: "user_id".into(),
+                foreign: "tag_id".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_unknown_relation_rejected_with_schema() {
+        let err = lower_with(
+            &json!({ "some": [{"field": "nope"}, {">": [{"field": "total"}, 1]}] }),
+            &Params::new(),
+            &schema(),
+            "users",
+        )
+        .expect_err("unknown relation");
+        assert!(matches!(err, QueryError::UnknownRelation { .. }));
     }
 }

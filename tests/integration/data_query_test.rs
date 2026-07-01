@@ -329,3 +329,70 @@ async fn test_data_query_limit_exceeds_max_rejected() {
         "expected a rejection for limit over the cap, got status={status} body={body}"
     );
 }
+
+#[tokio::test]
+async fn test_data_query_relation_some() {
+    let app = common::test_app().await;
+    let conn = "dq-rel";
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite(conn, "sqlite:file:dq_rel?mode=memory&cache=shared"),
+    )
+    .await;
+
+    // Two entities: users and orders (orders.user_id → users.id). Only u1 has an
+    // order over 100, so `some orders total > 100` must return only u1.
+    let dbw = |id: &str, q: &str| {
+        json!({
+            "id": id, "name": id,
+            "function": { "name": "db_write", "input": { "connector": conn, "query": q, "output": "data.x" } }
+        })
+    };
+    let tasks = json!([
+        dbw("t_cu", "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT)"),
+        dbw("t_co", "CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, user_id TEXT, total INTEGER)"),
+        dbw("t_u1", "INSERT INTO users (id, name) VALUES ('u1', 'Alice')"),
+        dbw("t_u2", "INSERT INTO users (id, name) VALUES ('u2', 'Bob')"),
+        dbw("t_o1", "INSERT INTO orders (id, user_id, total) VALUES ('o1', 'u1', 150)"),
+        dbw("t_o2", "INSERT INTO orders (id, user_id, total) VALUES ('o2', 'u2', 50)"),
+        {
+            "id": "t_q", "name": "query",
+            "function": { "name": "data_query", "input": {
+                "connector": conn,
+                "query": {
+                    "source": "users",
+                    "fields": ["id", "name"],
+                    "sort": [{ "id": "asc" }],
+                    "filter": { "some": [{ "field": "orders" }, { ">": [{ "field": "total" }, 100] }] }
+                },
+                "schema": { "entities": { "users": { "relations": {
+                    "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
+                } } } },
+                "output": "data.result"
+            } }
+        }
+    ]);
+    common::create_and_activate_channel(
+        &app,
+        "ch-dq-rel",
+        common::workflow_with_tasks("dq", tasks),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/ch-dq-rel",
+            Some(json!({ "data": {} })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+    let rows = body["data"]["result"].as_array().expect("array");
+    assert_eq!(rows.len(), 1, "body = {body}");
+    assert_eq!(rows[0]["id"], "u1");
+    assert_eq!(rows[0]["name"], "Alice");
+}

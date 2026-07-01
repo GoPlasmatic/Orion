@@ -53,6 +53,47 @@ pub enum Cond {
         pattern: String,
         ci: bool,
     },
+    /// A relation predicate: `some` / `all` / `none` over a declared relation.
+    /// Always an EXISTS-style semi/anti join — the root row count never changes.
+    Rel {
+        quant: Quant,
+        rel: RelRef,
+        cond: Box<Cond>,
+    },
+}
+
+/// Relation quantifier. `Any` = `some`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Quant {
+    Any,
+    All,
+    None,
+}
+
+/// A relation resolved to physical join keys, ready to render. Populated during
+/// lowering from the schema so the renderer never needs the registry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RelRef {
+    /// Physical table of the related entity.
+    pub target_table: String,
+    /// Physical column on the current entity (the join's local side).
+    pub local: String,
+    /// Physical column on the target that references the current entity
+    /// (for a direct relation), or on the junction (for M:M).
+    pub foreign: String,
+    /// Junction table for a many-to-many relation.
+    pub through: Option<JunctionRef>,
+}
+
+/// The junction table of a many-to-many relation, resolved to physical names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JunctionRef {
+    /// Physical junction table.
+    pub table: String,
+    /// Junction column referencing the current entity (joins to `RelRef::local`).
+    pub local: String,
+    /// Junction column referencing the target (joins to `RelRef::foreign`).
+    pub foreign: String,
 }
 
 /// Scalar comparison operators.
@@ -116,7 +157,8 @@ impl FieldRef {
 }
 
 /// The declared type of a field. Only `Unknown` is produced in identity mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum FieldType {
     Bool,
     Int,
@@ -127,6 +169,7 @@ pub enum FieldType {
     Date,
     Timestamp,
     Json,
+    #[default]
     Unknown,
 }
 
