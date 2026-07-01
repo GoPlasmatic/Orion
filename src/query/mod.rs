@@ -168,6 +168,25 @@ pub fn translate_mongo(
     backend::mongo::render(&spec, &cond, &collection, default_limit, max_limit)
 }
 
+/// Parse the envelope, lower the filter, and render an Elasticsearch search
+/// (index + query DSL body in filter context), enforcing the page-size bounds and
+/// the deep-pagination cap.
+pub fn translate_es(
+    query: &Json,
+    params: &Params,
+    reg: &EntityRegistry,
+    default_limit: u64,
+    max_limit: u64,
+) -> Result<backend::es::EsQuery, QueryError> {
+    let spec = spec::parse(query)?;
+    let cond = match &spec.filter {
+        Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
+        None => Cond::True,
+    };
+    let index = reg.physical_table(&spec.source);
+    backend::es::render(&spec, &cond, &index, default_limit, max_limit)
+}
+
 /// Validate a query against `dialect` without retaining the rendered output.
 /// A query that validates clean cannot then fail in [`translate_sql`].
 pub fn validate_sql(

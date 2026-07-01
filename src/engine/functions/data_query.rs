@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
@@ -12,23 +13,24 @@ use serde_json::{Map, Value};
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, extract_output_path, profile_handler, require_db_connector, require_str_field,
-    resolve_connector, timed_query, to_exec_error,
+    apply_output, extract_output_path, profile_handler, require_str_field, resolve_connector,
+    timed_query, to_exec_error,
 };
 use super::db_read::rows_to_json;
-use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
+use crate::connector::{AuthConfig, ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
 use crate::query::{self, SqlDialect};
 use crate::storage::detect_backend;
 
 /// Executes a portable `data_query` — one backend-neutral filter + envelope that
-/// renders to native SQL or a MongoDB `find` — against a SQL or Mongo connector
-/// (chosen by the connection-string scheme). The translation lives in
-/// `src/query/`; this handler wires it to the existing connector/pool machinery.
+/// renders to native SQL, a MongoDB `find`, or an Elasticsearch search — against a
+/// SQL, Mongo, or ES connector. The translation lives in `src/query/`; this
+/// handler wires it to the connector/pool machinery (ES runs over the HTTP client).
 pub struct DataQueryHandler {
     pub pool_cache: Arc<SqlPoolCache>,
     pub mongo_pool_cache: Arc<MongoPoolCache>,
+    pub http_client: reqwest::Client,
     pub registry: Arc<ConnectorRegistry>,
     pub default_limit: u64,
     pub max_limit: u64,
@@ -55,7 +57,6 @@ impl AsyncFunctionHandler for DataQueryHandler {
             })?;
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
-            let db_config = require_db_connector(&connector_config, connector_name)?;
 
             // Optional inline schema (privileged config authored alongside the
             // query): renames, type hints, allowlist, and relation declarations.
@@ -64,62 +65,81 @@ impl AsyncFunctionHandler for DataQueryHandler {
                 None => query::EntityRegistry::default(),
             };
 
-            let result = if is_mongo(&db_config.connection_string) {
-                // MongoDB: render a `find` and execute it via the Mongo pool.
-                let database = require_str_field(input, "database", "data_query")?;
-                let mq = query::translate_mongo(
-                    query,
-                    &params,
-                    &registry,
-                    self.default_limit,
-                    self.max_limit,
-                )?;
-                let client = self
-                    .mongo_pool_cache
-                    .get_client(connector_name, db_config)
-                    .await
-                    .map_err(to_exec_error)?;
-                let coll = client
-                    .database(database)
-                    .collection::<Document>(&mq.collection);
-                let mut find = coll.find(mq.filter);
-                if let Some(p) = mq.projection {
-                    find = find.projection(p);
+            let result = match connector_config.as_ref() {
+                ConnectorConfig::Es(es) => {
+                    // Elasticsearch: render a search body and POST it via HTTP.
+                    let eq = query::translate_es(
+                        query,
+                        &params,
+                        &registry,
+                        self.default_limit,
+                        self.max_limit,
+                    )?;
+                    run_es_search(&self.http_client, es, &eq).await?
                 }
-                if let Some(s) = mq.sort {
-                    find = find.sort(s);
+                ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
+                    // MongoDB: render a `find` and execute it via the Mongo pool.
+                    let database = require_str_field(input, "database", "data_query")?;
+                    let mq = query::translate_mongo(
+                        query,
+                        &params,
+                        &registry,
+                        self.default_limit,
+                        self.max_limit,
+                    )?;
+                    let client = self
+                        .mongo_pool_cache
+                        .get_client(connector_name, db)
+                        .await
+                        .map_err(to_exec_error)?;
+                    let coll = client
+                        .database(database)
+                        .collection::<Document>(&mq.collection);
+                    let mut find = coll.find(mq.filter);
+                    if let Some(p) = mq.projection {
+                        find = find.projection(p);
+                    }
+                    if let Some(s) = mq.sort {
+                        find = find.sort(s);
+                    }
+                    if let Some(sk) = mq.skip {
+                        find = find.skip(sk);
+                    }
+                    find = find.limit(mq.limit as i64);
+                    let cursor = find.await.map_err(to_exec_error)?;
+                    let docs: Vec<Document> = cursor.try_collect().await.map_err(to_exec_error)?;
+                    Value::Array(
+                        docs.iter()
+                            .filter_map(|d| serde_json::to_value(d).ok())
+                            .collect(),
+                    )
                 }
-                if let Some(sk) = mq.skip {
-                    find = find.skip(sk);
+                ConnectorConfig::Db(db) => {
+                    // SQL: dialect from the connection-string scheme (the same
+                    // source `AnyPool` uses), so the rendered SQL matches the pool.
+                    let dialect: SqlDialect = detect_backend(&db.connection_string)
+                        .map_err(to_exec_error)?
+                        .into();
+                    let plan = query::plan_sql(
+                        query,
+                        &params,
+                        &registry,
+                        dialect,
+                        self.default_limit,
+                        self.max_limit,
+                    )?;
+                    let pool = self
+                        .pool_cache
+                        .get_pool(connector_name, db)
+                        .await
+                        .map_err(to_exec_error)?;
+                    run_sql_with_includes(&pool, &plan, dialect, db.query_timeout_ms).await?
                 }
-                find = find.limit(mq.limit as i64);
-                let cursor = find.await.map_err(to_exec_error)?;
-                let docs: Vec<Document> = cursor.try_collect().await.map_err(to_exec_error)?;
-                Value::Array(
-                    docs.iter()
-                        .filter_map(|d| serde_json::to_value(d).ok())
-                        .collect(),
-                )
-            } else {
-                // SQL: dialect from the connection-string scheme (the same source
-                // `AnyPool` uses), so the rendered SQL matches the pool.
-                let dialect: SqlDialect = detect_backend(&db_config.connection_string)
-                    .map_err(to_exec_error)?
-                    .into();
-                let plan = query::plan_sql(
-                    query,
-                    &params,
-                    &registry,
-                    dialect,
-                    self.default_limit,
-                    self.max_limit,
-                )?;
-                let pool = self
-                    .pool_cache
-                    .get_pool(connector_name, db_config)
-                    .await
-                    .map_err(to_exec_error)?;
-                run_sql_with_includes(&pool, &plan, dialect, db_config.query_timeout_ms).await?
+                _ => {
+                    return Err(DataflowError::Validation(format!(
+                        "Connector '{connector_name}' is not a db or es connector"
+                    )));
+                }
             };
 
             apply_output(ctx, extract_output_path(input), result);
@@ -133,6 +153,49 @@ impl AsyncFunctionHandler for DataQueryHandler {
 /// scheme; otherwise it is a SQL connector (dialect from the URL scheme).
 fn is_mongo(conn: &str) -> bool {
     conn.starts_with("mongodb://") || conn.starts_with("mongodb+srv://")
+}
+
+/// Execute an Elasticsearch search: POST the rendered body to
+/// `{url}/{index}/_search` and return the `_source` of each hit as a JSON array.
+async fn run_es_search(
+    client: &reqwest::Client,
+    es: &EsConnectorConfig,
+    eq: &query::backend::es::EsQuery,
+) -> Result<Value, DataflowError> {
+    let url = format!("{}/{}/_search", es.url.trim_end_matches('/'), eq.index);
+    let mut req = client.post(&url).json(&eq.body);
+    if let Some(auth) = &es.auth {
+        req = match auth {
+            AuthConfig::Basic { username, password } => req.basic_auth(username, Some(password)),
+            AuthConfig::Bearer { token } => req.bearer_auth(token),
+            AuthConfig::ApiKey { header, key } => req.header(header.as_str(), key.as_str()),
+        };
+    }
+    if let Some(ms) = es.request_timeout_ms {
+        req = req.timeout(Duration::from_millis(ms));
+    }
+
+    let resp = req.send().await.map_err(to_exec_error)?;
+    let status = resp.status();
+    let body: Value = resp.json().await.map_err(to_exec_error)?;
+    if !status.is_success() {
+        return Err(DataflowError::function_execution(
+            format!("Elasticsearch search failed ({status}): {body}"),
+            None,
+        ));
+    }
+
+    let docs: Vec<Value> = body
+        .get("hits")
+        .and_then(|h| h.get("hits"))
+        .and_then(|h| h.as_array())
+        .map(|hits| {
+            hits.iter()
+                .map(|h| h.get("_source").cloned().unwrap_or(Value::Null))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Value::Array(docs))
 }
 
 /// Execute the main SQL query, then hydrate each `include` with a per-relation

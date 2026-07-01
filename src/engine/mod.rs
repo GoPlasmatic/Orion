@@ -143,6 +143,7 @@ pub fn build_custom_functions(
         Box::new(functions::data_query::DataQueryHandler {
             pool_cache: sql_pool_cache,
             mongo_pool_cache: mongo_pool_cache.clone(),
+            http_client: client.clone(),
             registry: registry.clone(),
             default_limit: query_config.default_limit,
             max_limit: query_config.max_limit,

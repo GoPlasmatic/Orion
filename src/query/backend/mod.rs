@@ -1,6 +1,7 @@
 //! Backend renderers over the same `Cond` IR: SQL (`sql`), MongoDB (`mongo`), and
-//! Elasticsearch (later).
+//! Elasticsearch (`es`).
 
+pub mod es;
 pub mod mongo;
 pub mod sql;
 

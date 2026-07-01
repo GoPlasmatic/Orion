@@ -9,6 +9,7 @@ pub enum ConnectorConfig {
     Db(DbConnectorConfig),
     Cache(CacheConnectorConfig),
     Storage(StorageConnectorConfig),
+    Es(EsConnectorConfig),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,8 +124,24 @@ pub struct StorageConnectorConfig {
     pub retry: RetryConfig,
 }
 
+/// Elasticsearch connector: a REST endpoint queried by the `data_query` handler
+/// (executed via the shared HTTP client — no dedicated ES driver).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EsConnectorConfig {
+    /// Base URL, e.g. `http://localhost:9200`.
+    pub url: String,
+    pub auth: Option<AuthConfig>,
+    #[serde(default)]
+    pub request_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub retry: RetryConfig,
+    /// Allow requests to private/internal IP addresses. Default false (SSRF protection).
+    #[serde(default)]
+    pub allow_private_urls: bool,
+}
+
 /// Allowed connector type values.
-pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "storage"];
+pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "storage", "es"];
 
 /// Allowed cache backend values.
 pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
@@ -141,6 +158,7 @@ pub enum ConnectorType {
     Db,
     Cache,
     Storage,
+    Es,
 }
 
 impl ConnectorType {
@@ -151,6 +169,7 @@ impl ConnectorType {
             Self::Db => "db",
             Self::Cache => "cache",
             Self::Storage => "storage",
+            Self::Es => "es",
         }
     }
 }
@@ -170,6 +189,7 @@ impl<'de> serde::Deserialize<'de> for ConnectorType {
             "db" => Ok(Self::Db),
             "cache" => Ok(Self::Cache),
             "storage" => Ok(Self::Storage),
+            "es" => Ok(Self::Es),
             other => Err(serde::de::Error::unknown_variant(
                 other,
                 VALID_CONNECTOR_TYPES,
@@ -291,12 +311,27 @@ mod tests {
     }
 
     #[test]
+    fn test_connector_config_deserialization_es() {
+        let json = r#"{"type":"es","url":"http://localhost:9200"}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        match config {
+            ConnectorConfig::Es(es) => {
+                assert_eq!(es.url, "http://localhost:9200");
+                assert!(es.auth.is_none());
+                assert!(!es.allow_private_urls);
+            }
+            _ => unreachable!("Expected Es config"),
+        }
+    }
+
+    #[test]
     fn test_valid_connector_types_expanded() {
         assert!(VALID_CONNECTOR_TYPES.contains(&"http"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"kafka"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"db"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"cache"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"storage"));
+        assert!(VALID_CONNECTOR_TYPES.contains(&"es"));
         assert!(!VALID_CONNECTOR_TYPES.contains(&"grpc"));
     }
 
