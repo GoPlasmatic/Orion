@@ -81,6 +81,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         http_client.clone(),
         engine.clone(),
         &config.engine,
+        &config.query,
         cache_pool.clone(),
         sql_pool_cache.clone(),
         mongo_pool_cache.clone(),

@@ -55,6 +55,7 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "publish_kafka",
     "db_read",
     "db_write",
+    "data_query",
     "cache_read",
     "cache_write",
     "mongo_read",
@@ -67,6 +68,7 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
     "publish_kafka",
     "db_read",
     "db_write",
+    "data_query",
     "cache_read",
     "cache_write",
     "mongo_read",
@@ -78,11 +80,13 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
 /// `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`) plus a
 /// stub `publish_kafka`. Call [`register_kafka_publisher`] afterwards to swap
 /// the stub for the real Kafka-backed handler once the producer is initialised.
+#[allow(clippy::too_many_arguments)]
 pub fn build_custom_functions(
     registry: Arc<ConnectorRegistry>,
     client: reqwest::Client,
     engine: Arc<tokio::sync::RwLock<Arc<dataflow_rs::Engine>>>,
     engine_config: &crate::config::EngineConfig,
+    query_config: &crate::config::QueryConfig,
     cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
@@ -126,8 +130,20 @@ pub fn build_custom_functions(
     fns.insert(
         "db_write".to_string(),
         Box::new(functions::db_write::DbWriteHandler {
+            pool_cache: sql_pool_cache.clone(),
+            registry: registry.clone(),
+        }),
+    );
+
+    // Register the portable query handler (data_query). It renders a
+    // backend-neutral filter + envelope to native SQL (§ src/query/).
+    fns.insert(
+        "data_query".to_string(),
+        Box::new(functions::data_query::DataQueryHandler {
             pool_cache: sql_pool_cache,
             registry: registry.clone(),
+            default_limit: query_config.default_limit,
+            max_limit: query_config.max_limit,
         }),
     );
 

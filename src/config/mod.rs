@@ -5,6 +5,7 @@ pub(crate) mod env_substitute;
 mod kafka;
 mod logging;
 mod observability;
+mod query;
 mod queue;
 mod rate_limit;
 mod server;
@@ -20,6 +21,7 @@ pub use observability::{
     AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageMode, TracingConfig,
     TracingStorageConfig,
 };
+pub use query::QueryConfig;
 pub use queue::QueueConfig;
 pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
 pub use server::{CompressionConfig, IngestConfig, ServerConfig, TlsConfig};
@@ -44,6 +46,7 @@ pub struct AppConfig {
     pub ingest: IngestConfig,
     pub engine: EngineConfig,
     pub queue: QueueConfig,
+    pub query: QueryConfig,
     pub kafka: KafkaIngestConfig,
     pub logging: LoggingConfig,
     pub metrics: MetricsConfig,

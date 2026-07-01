@@ -162,6 +162,20 @@ where
         usize
     );
 
+    // Query (data_query page-size bounds)
+    env_parsed!(
+        env_var,
+        "ORION_QUERY__DEFAULT_LIMIT",
+        config.query.default_limit,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_QUERY__MAX_LIMIT",
+        config.query.max_limit,
+        u64
+    );
+
     // Metrics
     env_parsed!(
         env_var,
