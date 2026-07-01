@@ -63,7 +63,7 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 # External DB connectors
 mongodb = { version = "3", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
-redis = { version = "1.2", default-features = false, features = ["tokio-comp", "aio"] }
+redis = { version = "1.3", default-features = false, features = ["tokio-comp", "aio"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # TLS support
