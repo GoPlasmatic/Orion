@@ -30,7 +30,7 @@ path = "tests/integration/main.rs"
 harness = true
 
 [dependencies]
-dataflow-rs = "3.0"
+dataflow-rs = "3.0.2"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
@@ -48,8 +48,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 thiserror = "2"
 async-trait = "0.1"
-datalogic-rs = { version = "5", features = ["serde_json"] }
-datavalue = { package = "datavalue-rs", version = "0.2", features = ["serde_json"] }
+datalogic-rs = { version = "5.1", features = ["serde_json"] }
+datavalue = { package = "datavalue-rs", version = "0.2.3", features = ["serde_json"] }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 url = "2"
