@@ -33,3 +33,6 @@ debug/
 
 # mdBook rendered output
 /docs/book/
+
+# Benchmark results
+/tests/benchmark/results/
