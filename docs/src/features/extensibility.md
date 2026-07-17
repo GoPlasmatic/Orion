@@ -189,8 +189,16 @@ Parameterized SQL queries against PostgreSQL, MySQL, or SQLite:
 | `connect_timeout_ms` | `null` | Connection establishment timeout |
 | `query_timeout_ms` | `null` | Individual query timeout |
 | `retry` | 3 retries, 1000ms | Retry with exponential backoff |
+| `operations` | all allowed | [Operation gates](#operation-gates) — en/disable read / insert / update / delete / upsert / raw_write |
 
-Use `db_read` for SELECT (returns rows as JSON array) and `db_write` for INSERT/UPDATE/DELETE (returns affected count):
+Two ways to talk to it:
+
+- **Portable dialect** — `data_query` / `data_write` express backend-neutral
+  queries and mutations that run unchanged against SQL, MongoDB, or
+  Elasticsearch connectors. See the
+  [Portable Data Dialect](../reference/data-dialect.md) reference.
+- **Raw SQL** — `db_read` for SELECT (returns rows as JSON array) and
+  `db_write` for INSERT/UPDATE/DELETE (returns affected count):
 
 ```json
 {
@@ -205,6 +213,32 @@ Use `db_read` for SELECT (returns rows as JSON array) and `db_write` for INSERT/
   }
 }
 ```
+
+### Operation Gates
+
+`db` and `es` connectors carry per-operation gates — everything defaults to
+allowed, and disabling an operation rejects the call with a validation error
+naming the op and connector, regardless of what a workflow asks for:
+
+```json
+{
+  "name": "orders-db-readonly",
+  "connector_type": "db",
+  "config": {
+    "type": "db",
+    "connection_string": "postgres://user:pass@db-host:5432/orders",
+    "operations": { "insert": false, "update": false, "delete": false, "upsert": false, "raw_write": false }
+  }
+}
+```
+
+| Gate | Default | Blocks |
+|------|---------|--------|
+| `read` | `true` | `data_query`, `db_read`, `mongo_read` |
+| `insert` / `update` / `delete` / `upsert` | `true` | The matching `data_write` operation |
+| `raw_write` | `true` | The raw-SQL `db_write` escape hatch (raw SQL cannot be classified per-op) |
+
+To make a connector fully delete-proof, disable both `delete` and `raw_write`.
 
 ### Cache Connector
 
@@ -276,7 +310,7 @@ S3, GCS, or local filesystem for file operations:
 
 ### MongoDB Connector (NoSQL)
 
-MongoDB document queries with BSON-to-JSON conversion:
+MongoDB uses a `db` connector with a `mongodb://` connection string:
 
 ```json
 {
@@ -290,7 +324,9 @@ MongoDB document queries with BSON-to-JSON conversion:
 }
 ```
 
-Use `mongo_read` in workflows:
+The portable `data_query` / `data_write` functions run against it unchanged
+(pass a `database` field in the task input). For raw `find()` filters, use
+`mongo_read`:
 
 ```json
 {
@@ -307,19 +343,55 @@ Use `mongo_read` in workflows:
 }
 ```
 
+### Elasticsearch Connector
+
+A REST endpoint driven by the portable dialect: `data_query` renders an ES
+Query DSL `_search` body; `data_write` renders `_bulk` /
+`_update_by_query` / `_delete_by_query` / `_update` calls. Executed via the
+shared HTTP client — no dedicated ES driver:
+
+```json
+{
+  "name": "search-cluster",
+  "connector_type": "es",
+  "config": {
+    "type": "es",
+    "url": "http://localhost:9200",
+    "auth": { "type": "apikey", "header": "Authorization", "key": "ApiKey ..." },
+    "request_timeout_ms": 10000
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `url` | required | Base URL of the cluster, e.g. `http://localhost:9200` |
+| `auth` | `null` | Authentication config (bearer, basic, or apikey) |
+| `request_timeout_ms` | `null` | Per-request timeout |
+| `retry` | 3 retries, 1000ms | Retry with exponential backoff |
+| `allow_private_urls` | `false` | Allow private/internal IPs (SSRF protection) |
+| `operations` | all allowed | [Operation gates](#operation-gates) |
+
+ES-specific dialect semantics (the `_id` schema rename, forced refresh for
+read-your-writes, capability limits) are documented in the
+[Portable Data Dialect](../reference/data-dialect.md#elasticsearch-notes)
+reference.
+
 ## Custom Functions
 
-Orion provides 8 async function handlers that can be used in workflow tasks:
+Orion provides 10 async function handlers that can be used in workflow tasks:
 
 | Function | Description |
 |----------|-------------|
 | `http_call` | Call external APIs via HTTP connectors |
 | `channel_call` | Invoke another channel's workflow in-process (no HTTP round-trip) |
-| `db_read` | Execute SELECT queries against SQL connectors |
-| `db_write` | Execute INSERT/UPDATE/DELETE against SQL connectors |
+| `data_query` | Portable, backend-neutral query against SQL / MongoDB / Elasticsearch |
+| `data_write` | Portable, backend-neutral insert/update/delete/upsert against SQL / MongoDB / Elasticsearch |
+| `db_read` | Execute raw SELECT queries against SQL connectors |
+| `db_write` | Execute raw INSERT/UPDATE/DELETE against SQL connectors |
 | `cache_read` | Read from memory or Redis cache connectors |
 | `cache_write` | Write to memory or Redis cache connectors |
-| `mongo_read` | Query MongoDB collections |
+| `mongo_read` | Query MongoDB collections with raw find() filters |
 | `publish_kafka` | Produce messages to Kafka topics |
 
 In addition to the Orion-specific handlers, the dataflow-rs 3.0 engine contributes a **built-in function library** for parsing, transformation, and output:

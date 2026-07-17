@@ -472,6 +472,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         engine.clone(),
         &config.engine,
         &config.query,
+        &config.write,
         cache_pool.clone(),
         sql_pool_cache.clone(),
         mongo_pool_cache.clone(),

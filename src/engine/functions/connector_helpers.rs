@@ -1,12 +1,53 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::task_context::TaskContext;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::connector::{
-    CacheConnectorConfig, ConnectorConfig, ConnectorRegistry, DbConnectorConfig,
+    AuthConfig, CacheConnectorConfig, ConnectorConfig, ConnectorRegistry, DbConnectorConfig,
+    EsConnectorConfig, OperationGates,
 };
+
+/// Reject the call when the connector's operation gates disable `op` — the
+/// per-connector en/disable switch for read / insert / update / delete /
+/// upsert / raw_write (see [`OperationGates`]).
+pub fn require_op_allowed(
+    gates: &OperationGates,
+    op: &str,
+    connector_name: &str,
+) -> Result<(), DataflowError> {
+    if !gates.allows(op) {
+        return Err(DataflowError::Validation(format!(
+            "operation '{op}' is disabled on connector '{connector_name}'"
+        )));
+    }
+    Ok(())
+}
+
+/// Build an Elasticsearch HTTP request with the connector's auth and timeout
+/// applied. Shared by the `data_query` search path and the `data_write` write
+/// path.
+pub fn es_request(
+    client: &reqwest::Client,
+    es: &EsConnectorConfig,
+    method: reqwest::Method,
+    url: &str,
+) -> reqwest::RequestBuilder {
+    let mut req = client.request(method, url);
+    if let Some(auth) = &es.auth {
+        req = match auth {
+            AuthConfig::Basic { username, password } => req.basic_auth(username, Some(password)),
+            AuthConfig::Bearer { token } => req.bearer_auth(token),
+            AuthConfig::ApiKey { header, key } => req.header(header.as_str(), key.as_str()),
+        };
+    }
+    if let Some(ms) = es.request_timeout_ms {
+        req = req.timeout(Duration::from_millis(ms));
+    }
+    req
+}
 
 /// Wrap a handler body with profile recording, peeking the `connector`
 /// field from `input` to label the sample. Replaces the
@@ -89,6 +130,32 @@ pub fn require_cache_connector<'a>(
 /// which auto-records a `Change` on the audit trail when `capture_changes` is on.
 pub fn apply_output(ctx: &mut TaskContext<'_>, output_path: &str, new_value: Value) {
     ctx.set_json(output_path, &new_value);
+}
+
+/// Resolve a `params` object into concrete values for the query/write dialects.
+///
+/// A value shaped like `{"var": "path"}` is looked up in the message context
+/// (dot-path over `{data, metadata, temp_data}`); anything else is used as a
+/// literal. A lookup that does not resolve yields null. Shared by `data_query`
+/// and `data_write` (folded into `{"param": ..}` nodes before translation).
+pub fn resolve_params(params: Option<&Value>, ctx: &TaskContext<'_>) -> Map<String, Value> {
+    let mut out = Map::new();
+    let Some(Value::Object(map)) = params else {
+        return out;
+    };
+    for (name, spec) in map {
+        let resolved = match spec {
+            Value::Object(o) if o.len() == 1 && o.contains_key("var") => {
+                match o.get("var").and_then(|v| v.as_str()) {
+                    Some(path) => ctx.get(path).map(Value::from).unwrap_or(Value::Null),
+                    None => Value::Null,
+                }
+            }
+            other => other.clone(),
+        };
+        out.insert(name.clone(), resolved);
+    }
+    out
 }
 
 /// Bind a slice of JSON values to a sqlx query, matching each value type to

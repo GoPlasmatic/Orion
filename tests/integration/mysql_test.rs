@@ -1,32 +1,17 @@
 use crate::common;
+use crate::common::backends::Backend;
 
 use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
-// MySQL integration tests
+// MySQL integration tests (raw db_read/db_write escape hatch).
 //
-// These tests require a running MySQL instance on localhost:3306.
-// Start it with: docker compose -f docker-compose.test.yml up -d mysql
-// Run with:      cargo test --test mysql_test -- --ignored
+// These tests spin up an ephemeral MySQL container via testcontainers, so they
+// require Docker to be available. They are #[ignore] by default; run with:
+//   cargo test --test integration -- --ignored mysql_test
 // ---------------------------------------------------------------------------
-
-/// Helper: create a MySQL DB connector via the admin API.
-fn mysql_connector(name: &str) -> serde_json::Value {
-    json!({
-        "id": name,
-        "name": name,
-        "connector_type": "db",
-        "config": {
-            "type": "db",
-            "connection_string": "mysql://root:test@localhost:3306/orion_test",
-            "driver": "mysql",
-            "max_connections": 2,
-            "query_timeout_ms": 5000
-        }
-    })
-}
 
 /// Create a table, insert a row, and read it back via db_read.
 #[tokio::test]
@@ -34,7 +19,8 @@ fn mysql_connector(name: &str) -> serde_json::Value {
 async fn test_mysql_db_write_and_read() {
     let app = common::test_app().await;
 
-    common::create_connector(&app, mysql_connector("mysql-rw")).await;
+    let h = common::backends::start(Backend::Mysql, "mysql-rw").await;
+    common::create_connector(&app, h.connector_json()).await;
 
     common::create_and_activate_channel(
         &app,
@@ -125,7 +111,8 @@ async fn test_mysql_db_write_and_read() {
 async fn test_mysql_parameterized_queries() {
     let app = common::test_app().await;
 
-    common::create_connector(&app, mysql_connector("mysql-params")).await;
+    let h = common::backends::start(Backend::Mysql, "mysql-params").await;
+    common::create_connector(&app, h.connector_json()).await;
 
     common::create_and_activate_channel(
         &app,

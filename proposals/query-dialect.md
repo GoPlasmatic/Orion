@@ -1,6 +1,10 @@
 # Proposal: a common query dialect for SQL (sea-query), MongoDB, and Elasticsearch
 
-**Status:** Draft for discussion.
+**Status:** Implemented (all phases live: scalar SQL, schema registry + relations,
+MongoDB, `include` hydration, Elasticsearch). The handler is `data_query` in
+`src/engine/functions/data_query.rs`; the dialect lives in `src/query/`. Its write
+counterpart is `data_write` (`proposals/data-write-dialect.md`). User-facing docs:
+`docs/src/reference/data-dialect.md`.
 **Layer:** This is an **Orion** feature. datalogic-rs is not involved in query
 translation, and dataflow-rs gains nothing new. The whole thing lives in Orion,
 alongside the connectors, pools, and drivers it already owns.
@@ -510,7 +514,8 @@ then executes on the pool it already knows how to obtain:
   convert with `rows_to_json`.
 - **Mongo**: run `pipeline` via `MongoPoolCache::get_client(..)`, using `.find()`
   for a single `$match` and `.aggregate()` when a `$lookup` is present.
-- **ES**: deferred until an ES connector and client exist (§10).
+- **ES**: POST the rendered `_search` body to the `es` connector's URL via the
+  shared HTTP client (auth + timeout from the connector config).
 
 ---
 

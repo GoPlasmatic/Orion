@@ -21,9 +21,9 @@ flows through the pipeline. By convention the request body is parsed into
 [Workflow Reference](./workflows.md#the-data-context) for the context model and
 how `condition` expressions are evaluated.
 
-Orion ships **16 functions** (plus `validate`, an alias for `validation`). Eight
+Orion ships **18 functions** (plus `validate`, an alias for `validation`). Eight
 are contributed by the [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs)
-engine; eight are Orion handlers that talk to [connectors](../features/extensibility.md#connectors)
+engine; ten are Orion handlers that talk to [connectors](../features/extensibility.md#connectors)
 or compose channels.
 
 | Function | Category | Connector | Purpose |
@@ -37,11 +37,13 @@ or compose channels.
 | [`publish_json`](#publish_json) | Data | — | Serialize a context field to a JSON string |
 | [`publish_xml`](#publish_xml) | Data | — | Serialize a context field to an XML string |
 | [`http_call`](#http_call) | Connector | HTTP | Call an external API with retry + circuit breaker |
-| [`db_read`](#db_read) | Connector | SQL | Run a `SELECT`, return rows as JSON |
-| [`db_write`](#db_write) | Connector | SQL | Run `INSERT`/`UPDATE`/`DELETE`, return affected count |
+| [`data_query`](#data_query) | Connector | SQL / MongoDB / ES | Portable, backend-neutral query |
+| [`data_write`](#data_write) | Connector | SQL / MongoDB / ES | Portable, backend-neutral insert/update/delete/upsert |
+| [`db_read`](#db_read) | Connector | SQL | Run a raw `SELECT`, return rows as JSON |
+| [`db_write`](#db_write) | Connector | SQL | Run raw `INSERT`/`UPDATE`/`DELETE`, return affected count |
 | [`cache_read`](#cache_read) | Connector | Cache | Read a value from Redis or the in-memory cache |
 | [`cache_write`](#cache_write) | Connector | Cache | Write a value to cache with optional TTL |
-| [`mongo_read`](#mongo_read) | Connector | MongoDB | Run `find()`, return documents as JSON |
+| [`mongo_read`](#mongo_read) | Connector | MongoDB | Run a raw `find()`, return documents as JSON |
 | [`publish_kafka`](#publish_kafka) | Connector | Kafka | Publish a message to a Kafka topic |
 | [`channel_call`](#channel_call) | Composition | — | Invoke another channel's workflow in-process |
 
@@ -248,10 +250,97 @@ support. The connector supplies the base URL and auth.
 }
 ```
 
+### `data_query`
+
+Runs one **backend-neutral query** against a SQL (PostgreSQL/MySQL/SQLite),
+MongoDB, or Elasticsearch connector — the connector decides the rendering
+(parameterized SQL via sea-query, a Mongo `find`, or an ES `_search` body).
+The full envelope, operator vocabulary, schema registry, and relation support
+are documented in the [Portable Data Dialect](./data-dialect.md) reference.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `connector` | string | yes | — | Name of a `db` or `es` connector |
+| `query` | object | yes | — | The query envelope: `source`, `filter`, `fields`, `sort`, `limit`, `skip`, `include` |
+| `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside the filter; each value is JSONLogic resolved against the context |
+| `schema` | object | no | identity | Inline entity schema: renames, types, allowlist, relations |
+| `database` | string | MongoDB only | — | Database name (Mongo connectors) |
+| `output` | string | no | `"data"` | Dotted path where the row array is written |
+
+```json
+{
+  "name": "data_query",
+  "input": {
+    "connector": "orders-db",
+    "query": {
+      "source": "orders",
+      "filter": { "and": [
+        { "==": [{ "field": "customer_id" }, { "param": "cid" }] },
+        { ">":  [{ "field": "total" }, 100] }
+      ] },
+      "sort": [{ "created_at": "desc" }],
+      "limit": 20
+    },
+    "params": { "cid": { "var": "data.customer_id" } },
+    "output": "data.orders"
+  }
+}
+```
+
+Page sizes are bounded by the `[query]` config section (`default_limit` /
+`max_limit`); a query asking for more than the cap is rejected, never clamped.
+
+### `data_write`
+
+The write counterpart of `data_query`: one **backend-neutral mutation** —
+`insert`, `update`, `delete`, or `upsert` — rendered natively for SQL, MongoDB,
+or Elasticsearch. The `filter` of an update/delete is the query dialect's
+filter, unchanged. See the [Portable Data Dialect](./data-dialect.md) reference
+for the full envelope, backend mapping, and safety rules.
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
+| `connector` | string | yes | — | Name of a `db` or `es` connector |
+| `op` | string | yes | — | `insert` \| `update` \| `delete` \| `upsert` |
+| `target` | string | yes | — | Logical entity → table / collection / index |
+| `values` | object \| array | insert, upsert | — | Row object(s) to insert |
+| `set` | object | update, upsert | — | Column → value/param assignments |
+| `filter` | JSONLogic | update, delete | — | Row selection (same operators as `data_query`) |
+| `on_conflict` | object | upsert | — | `{ "target": [cols], "action": "update" \| "nothing" }` |
+| `returning` | array | no | — | Columns returned from mutated rows (PostgreSQL/SQLite only) |
+| `all` | bool | no | `false` | Acknowledge an intentionally unfiltered update/delete |
+| `params` / `schema` / `database` / `output` | | | | As in `data_query` |
+
+```json
+{
+  "name": "data_write",
+  "input": {
+    "connector": "orders-db",
+    "op": "update",
+    "target": "orders",
+    "set": { "status": "shipped" },
+    "filter": { "==": [{ "field": "id" }, { "param": "id" }] },
+    "params": { "id": { "var": "data.order_id" } },
+    "output": "data.write_result"
+  }
+}
+```
+
+Safety guards: unfiltered mutations are rejected unless `"all": true` **and**
+`write.allow_unfiltered` are both set; bulk inserts over `write.max_rows` are
+rejected; and a connector's
+[operation gates](./data-dialect.md#connector-operation-gates) can disable
+individual ops entirely. Results are normalized per backend — SQL returns
+`{ "rows_affected": n }` (plus `returning` / `last_insert_id` where supported);
+MongoDB and Elasticsearch return doc-store counts (`inserted`/`ids`,
+`matched`/`modified`, `deleted`).
+
 ### `db_read`
 
-Runs a `SELECT` against a SQL connector and writes the result rows as a JSON
-array. Use placeholders bound from `params` — `?` for SQLite/MySQL, `$1`, `$2`,
+The raw-SQL escape hatch for reads — anything outside the portable dialect's
+vocabulary (joins, aggregations, CTEs, database-specific SQL). Runs a `SELECT`
+against a SQL connector and writes the result rows as a JSON array. Use
+placeholders bound from `params` — `?` for SQLite/MySQL, `$1`, `$2`,
 … for PostgreSQL.
 
 | Field | Type | Required | Default | Description |
@@ -275,8 +364,11 @@ array. Use placeholders bound from `params` — `?` for SQLite/MySQL, `$1`, `$2`
 
 ### `db_write`
 
-Runs an `INSERT`/`UPDATE`/`DELETE` against a SQL connector and writes
-`{ "rows_affected": N }`.
+The raw-SQL escape hatch for writes (multi-table statements, `UPDATE … FROM`,
+SQL functions in `SET`, DDL). Runs an `INSERT`/`UPDATE`/`DELETE` against a SQL
+connector and writes `{ "rows_affected": N }`. Note: the author writes
+dialect-specific SQL, and a connector can disable this function entirely via
+its [`raw_write` operation gate](./data-dialect.md#connector-operation-gates).
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
@@ -329,8 +421,9 @@ Writes a key to a cache connector, optionally with a TTL.
 
 ### `mongo_read`
 
-Runs a `find()` against a MongoDB connector and writes the matched documents as
-a JSON array.
+The raw escape hatch for MongoDB reads: runs a `find()` with a hand-written
+Mongo filter document and writes the matched documents as a JSON array. For
+backend-portable queries, prefer [`data_query`](#data_query).
 
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|

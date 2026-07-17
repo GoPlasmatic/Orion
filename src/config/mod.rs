@@ -11,6 +11,7 @@ mod rate_limit;
 mod server;
 mod storage;
 pub(super) mod validation;
+mod write;
 
 // Re-export all types so `use crate::config::Foo` keeps working.
 pub use admin_auth::AdminAuthConfig;
@@ -26,6 +27,7 @@ pub use queue::QueueConfig;
 pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
 pub use server::{CompressionConfig, IngestConfig, ServerConfig, TlsConfig};
 pub use storage::StorageConfig;
+pub use write::WriteConfig;
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -47,6 +49,7 @@ pub struct AppConfig {
     pub engine: EngineConfig,
     pub queue: QueueConfig,
     pub query: QueryConfig,
+    pub write: WriteConfig,
     pub kafka: KafkaIngestConfig,
     pub logging: LoggingConfig,
     pub metrics: MetricsConfig,

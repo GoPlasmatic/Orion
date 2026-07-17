@@ -52,6 +52,10 @@ pub struct Column {
     pub ty: FieldType,
     #[serde(default = "default_true")]
     pub queryable: bool,
+    /// Whether `data_write` may assign this column. Marks read-only / generated
+    /// columns (identity/serial, computed) as non-writable. Defaults to true.
+    #[serde(default = "default_true")]
+    pub writable: bool,
 }
 
 fn default_true() -> bool {
@@ -135,6 +139,34 @@ impl EntityRegistry {
         }
         match self.unmapped {
             UnmappedPolicy::Identity => Ok(FieldRef::identity(name)),
+            UnmappedPolicy::Reject => Err(QueryError::InvalidField {
+                field: name.to_string(),
+                at: at.to_string(),
+            }),
+        }
+    }
+
+    /// Resolve a column being written on `entity` to its physical name, honouring
+    /// renames, the `writable` flag, and the unmapped policy. Unlike
+    /// [`resolve_field`](Self::resolve_field) this checks `writable` (not
+    /// `queryable`) and returns only the physical name.
+    pub fn resolve_write_column(
+        &self,
+        entity: &str,
+        name: &str,
+        at: &str,
+    ) -> Result<String, QueryError> {
+        if let Some(col) = self.entities.get(entity).and_then(|e| e.columns.get(name)) {
+            if !col.writable {
+                return Err(QueryError::InvalidField {
+                    field: name.to_string(),
+                    at: at.to_string(),
+                });
+            }
+            return Ok(col.name.clone().unwrap_or_else(|| name.to_string()));
+        }
+        match self.unmapped {
+            UnmappedPolicy::Identity => Ok(name.to_string()),
             UnmappedPolicy::Reject => Err(QueryError::InvalidField {
                 field: name.to_string(),
                 at: at.to_string(),

@@ -113,3 +113,27 @@ jobs:
         with:
           name: coverage-report
           path: lcov.info
+
+  integration-containers:
+    name: Container Integration Tests
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+
+      # GitHub-hosted ubuntu runners ship Docker, so testcontainers spins up
+      # ephemeral Postgres / MySQL / MongoDB / Elasticsearch containers on
+      # demand. The name filters run only the container-backed round-trip +
+      # raw-SQL + ES tests and skip the still-localhost redis test.
+      - name: Run container-backed integration tests
+        run: cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test

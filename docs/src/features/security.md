@@ -157,6 +157,40 @@ allowed_origins = ["*"]    # Global default
 
 Values are always passed as parameters, never interpolated into SQL strings.
 
+**The portable dialect is injection-safe by construction:** `data_query` and
+`data_write` never accept SQL or query text at all — message data enters only
+through the `params` map, and every resolved value becomes a bound parameter
+(SQL), a document value (MongoDB), or a script parameter (Elasticsearch
+painless scripts, where field names *and* values travel as params). Identifiers
+come only from the envelope and schema and are quoted per dialect. An optional
+schema allowlist (`"unmapped": "reject"`) restricts which entities and columns
+workflows can touch, with per-column `queryable`/`writable` flags. See the
+[Portable Data Dialect](../reference/data-dialect.md) reference.
+
+**Write-safety guards:** an unfiltered `data_write` update/delete is rejected
+unless the call carries `"all": true` **and** the server enables
+`write.allow_unfiltered` — a double opt-in against accidental table truncation.
+Bulk inserts over `write.max_rows` are rejected, never silently truncated.
+
+**Per-connector operation gates:** a `db` or `es` connector's config can
+disable operation types outright — `operations: { "read", "insert", "update",
+"delete", "upsert", "raw_write" }`, all defaulting to allowed. A gated call
+fails with a validation error naming the op and connector, so a connector can
+be made read-only (or insert-only, delete-proof, …) in configuration,
+regardless of what any workflow asks for:
+
+```json
+{
+  "name": "orders-db-readonly",
+  "connector_type": "db",
+  "config": {
+    "type": "db",
+    "connection_string": "postgres://…",
+    "operations": { "insert": false, "update": false, "delete": false, "upsert": false, "raw_write": false }
+  }
+}
+```
+
 **URL validation:** connector URLs are validated at creation time. Combined with SSRF protection, this prevents workflows from making requests to unexpected destinations.
 
 **Injection protection:** JSONLogic expressions are evaluated in a sandboxed environment. User-supplied data cannot escape the data context or execute arbitrary code.

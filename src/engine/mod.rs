@@ -56,6 +56,7 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "db_read",
     "db_write",
     "data_query",
+    "data_write",
     "cache_read",
     "cache_write",
     "mongo_read",
@@ -69,6 +70,7 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
     "db_read",
     "db_write",
     "data_query",
+    "data_write",
     "cache_read",
     "cache_write",
     "mongo_read",
@@ -87,6 +89,7 @@ pub fn build_custom_functions(
     engine: Arc<tokio::sync::RwLock<Arc<dataflow_rs::Engine>>>,
     engine_config: &crate::config::EngineConfig,
     query_config: &crate::config::QueryConfig,
+    write_config: &crate::config::WriteConfig,
     cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
@@ -141,12 +144,27 @@ pub fn build_custom_functions(
     fns.insert(
         "data_query".to_string(),
         Box::new(functions::data_query::DataQueryHandler {
-            pool_cache: sql_pool_cache,
+            pool_cache: sql_pool_cache.clone(),
             mongo_pool_cache: mongo_pool_cache.clone(),
             http_client: client.clone(),
             registry: registry.clone(),
             default_limit: query_config.default_limit,
             max_limit: query_config.max_limit,
+        }),
+    );
+
+    // Register the portable write handler (data_write). It renders a
+    // backend-neutral mutation envelope to a native SQL INSERT/UPDATE/DELETE/upsert,
+    // a MongoDB write, or an Elasticsearch write (§ src/query/write.rs).
+    fns.insert(
+        "data_write".to_string(),
+        Box::new(functions::data_write::DataWriteHandler {
+            pool_cache: sql_pool_cache,
+            mongo_pool_cache: mongo_pool_cache.clone(),
+            http_client: client.clone(),
+            registry: registry.clone(),
+            max_rows: write_config.max_rows,
+            allow_unfiltered: write_config.allow_unfiltered,
         }),
     );
 

@@ -46,7 +46,7 @@ You build services in Orion with three things:
 |-----------|-----------|---------|
 | **Channel** | A service endpoint: sync (REST, HTTP) or async (Kafka) | `POST /orders`, `GET /users/{id}`, Kafka topic `order.placed` |
 | **Workflow** | A pipeline of tasks that defines what the service does | Parse → validate → enrich → transform → respond |
-| **Connector** | A named connection to an external system, with auth and retries | Stripe API, PostgreSQL, Redis, Kafka cluster |
+| **Connector** | A named connection to an external system, with auth and retries | Stripe API, PostgreSQL, MongoDB, Elasticsearch, Redis, Kafka cluster |
 
 **Design-time:** define channels, build workflows, configure connectors, test with dry-run, manage versions — all through the admin API. **Runtime:** Orion routes traffic to channels, executes workflows, calls connectors, and handles observability automatically. See [**Dev & Prod Environments**](./topology/environments.md) for how the same binary serves both planes.
 

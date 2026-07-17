@@ -48,6 +48,8 @@ All admin endpoints are under `/api/v1/admin/`. When admin authentication is ena
 | GET | `/api/v1/admin/connectors/circuit-breakers` | List circuit breaker states |
 | POST | `/api/v1/admin/connectors/circuit-breakers/{key}` | Reset a circuit breaker |
 
+Connector types: `http`, `kafka`, `db` (PostgreSQL/MySQL/SQLite/MongoDB), `cache`, `storage`, `es` (Elasticsearch). `db` and `es` connector configs accept an optional `operations` block that en/disables operation types per connector (read / insert / update / delete / upsert / raw_write) — see [Operation Gates](../features/extensibility.md#operation-gates).
+
 ## Engine
 
 | Method | Path | Description |
