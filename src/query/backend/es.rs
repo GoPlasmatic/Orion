@@ -6,12 +6,18 @@
 //! set-equivalent to SQL/Mongo, never relevance-ranked (§5.2). Relations render as
 //! `nested` / `has_child` (§4.2). `all` and deep pagination are capability-gated
 //! (§5.6, §5.8).
+//!
+//! Also renders the write dialect: [`render_write`] turns a [`ResolvedWrite`] into
+//! an [`EsWrite`] (`_bulk` / `_update_by_query` / `_delete_by_query` / `_update` /
+//! `_doc?op_type=create`), reusing the same condition rendering for the
+//! update/delete filter.
 
 use serde_json::{Value as Json, json};
 
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, EsStorage, FieldRef, Quant, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir};
+use crate::query::write::{ConflictAction, ResolvedWrite, WriteError, WriteOp};
 
 /// ES bounds `from + size` by `index.max_result_window` (default 10k). Beyond it
 /// we raise a capability error rather than return a truncated page (§5.8).
@@ -254,6 +260,241 @@ fn wildcard_escape(s: &str) -> String {
     out
 }
 
+// ---- Write rendering (insert / update / delete / upsert) ----
+
+/// A rendered Elasticsearch write, ready for the HTTP call the handler makes.
+/// Each variant implies the method, path, and refresh parameter; bodies are plain
+/// JSON (NDJSON for `_bulk`, assembled by [`bulk_ndjson`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum EsWrite {
+    /// `POST {index}/_bulk?refresh=wait_for` — one `index` action + source line
+    /// per row. A `Some` id becomes the action's `_id`; `None` auto-generates.
+    BulkInsert {
+        index: String,
+        docs: Vec<(Option<String>, Json)>,
+    },
+    /// `POST {index}/_update_by_query?refresh=true` — query + painless script.
+    UpdateByQuery { index: String, body: Json },
+    /// `POST {index}/_delete_by_query?refresh=true` — query only.
+    DeleteByQuery { index: String, body: Json },
+    /// `POST {index}/_update/{id}?refresh=wait_for` — single-document upsert
+    /// (`doc` / `doc_as_upsert` / `upsert`).
+    UpdateDoc {
+        index: String,
+        id: String,
+        body: Json,
+    },
+    /// `PUT {index}/_doc/{id}?op_type=create&refresh=wait_for` — insert-if-absent;
+    /// an HTTP 409 is the "conflict → do nothing" no-op.
+    CreateDoc {
+        index: String,
+        id: String,
+        doc: Json,
+    },
+}
+
+/// Render a resolved mutation into an [`EsWrite`]. The `filter` of an
+/// update/delete reuses the query dialect's [`query_json`]; values become JSON via
+/// the same [`to_json`] the read path uses.
+///
+/// Unlike Mongo there is **no** implicit `id` → `_id` mapping: `_id` is metadata
+/// outside `_source`, and a genuine `id` field inside `_source` is legal, so the
+/// rename is an explicit schema decision (`{"columns": {"id": {"name": "_id"}}}`).
+/// A physical `_id` column is lifted out of the source into the action/path.
+pub fn render_write(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
+    if !w.returning.is_empty() {
+        return Err(WriteError::FeatureUnsupportedByTarget {
+            feature: "returning".to_string(),
+            target: "elasticsearch".to_string(),
+        });
+    }
+    Ok(match w.op {
+        WriteOp::Insert => {
+            let id_idx = w.columns.iter().position(|c| c == "_id");
+            let mut docs = Vec::with_capacity(w.rows.len());
+            for row in &w.rows {
+                let id = match id_idx {
+                    Some(i) => id_string(&row[i], "values")?,
+                    None => None,
+                };
+                docs.push((id, source_doc(&w.columns, row, "_id")));
+            }
+            EsWrite::BulkInsert {
+                index: w.table.clone(),
+                docs,
+            }
+        }
+        WriteOp::Update => {
+            reject_id_in_set(&w.set)?;
+            // Field names AND values travel as painless params — nothing
+            // user-controlled is spliced into the script source.
+            let mut source = String::new();
+            let mut params = serde_json::Map::new();
+            for (i, (col, v)) in w.set.iter().enumerate() {
+                source.push_str(&format!("ctx._source[params.f{i}] = params.v{i};"));
+                params.insert(format!("f{i}"), Json::String(col.clone()));
+                params.insert(format!("v{i}"), to_json(v));
+            }
+            EsWrite::UpdateByQuery {
+                index: w.table.clone(),
+                body: json!({
+                    "query": cond_to_query(&w.cond)?,
+                    "script": { "lang": "painless", "source": source, "params": params },
+                }),
+            }
+        }
+        WriteOp::Delete => EsWrite::DeleteByQuery {
+            index: w.table.clone(),
+            body: json!({ "query": cond_to_query(&w.cond)? }),
+        },
+        WriteOp::Upsert => render_es_upsert(w)?,
+    })
+}
+
+fn render_es_upsert(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
+    let conflict = w
+        .conflict
+        .as_ref()
+        .ok_or_else(|| WriteError::MissingField {
+            field: "on_conflict".to_string(),
+            op: "upsert".to_string(),
+        })?;
+    // A single-document upsert keyed on `_id`. Bulk upsert would need one
+    // `_update` call per row; deferred (fail loudly, don't guess).
+    if w.rows.len() != 1 {
+        return Err(WriteError::FeatureUnsupportedByTarget {
+            feature: "bulk upsert".to_string(),
+            target: "elasticsearch".to_string(),
+        });
+    }
+    // ES has no unique constraints; the only conflict key it can express is the
+    // document `_id`.
+    if conflict.targets.len() != 1 || conflict.targets[0] != "_id" {
+        return Err(WriteError::FeatureUnsupportedByTarget {
+            feature: format!(
+                "upsert on conflict target [{}] (Elasticsearch keys upserts on the document `_id`; declare a schema rename to \"_id\")",
+                conflict.targets.join(", ")
+            ),
+            target: "elasticsearch".to_string(),
+        });
+    }
+    let row = &w.rows[0];
+    let idx = w.columns.iter().position(|c| c == "_id").ok_or_else(|| {
+        WriteError::InvalidEnvelope(
+            "on_conflict target '_id' must be one of the inserted columns".to_string(),
+        )
+    })?;
+    let id = id_string(&row[idx], "values")?.ok_or_else(|| WriteError::NotRepresentable {
+        what: "a null `_id` in an upsert".to_string(),
+        at: "values".to_string(),
+    })?;
+    let doc = source_doc(&w.columns, row, "_id");
+
+    Ok(match conflict.action {
+        ConflictAction::Update => {
+            reject_id_in_set(&w.set)?;
+            if w.set.is_empty() {
+                // Overwrite every non-`_id` column on conflict; index the row
+                // when absent.
+                EsWrite::UpdateDoc {
+                    index: w.table.clone(),
+                    id,
+                    body: json!({ "doc": doc, "doc_as_upsert": true }),
+                }
+            } else {
+                // On conflict apply `set`; on insert index the row overlaid with
+                // `set` (Mongo's `$set` + `$setOnInsert` split).
+                let mut set_doc = serde_json::Map::new();
+                for (col, v) in &w.set {
+                    set_doc.insert(col.clone(), to_json(v));
+                }
+                let mut merged = match &doc {
+                    Json::Object(m) => m.clone(),
+                    _ => serde_json::Map::new(),
+                };
+                for (k, v) in &set_doc {
+                    merged.insert(k.clone(), v.clone());
+                }
+                EsWrite::UpdateDoc {
+                    index: w.table.clone(),
+                    id,
+                    body: json!({ "doc": Json::Object(set_doc), "upsert": Json::Object(merged) }),
+                }
+            }
+        }
+        ConflictAction::Nothing => EsWrite::CreateDoc {
+            index: w.table.clone(),
+            id,
+            doc,
+        },
+    })
+}
+
+/// Serialise a rendered bulk insert into the `_bulk` NDJSON body. The trailing
+/// newline is mandatory — ES rejects bulk bodies without it.
+pub fn bulk_ndjson(docs: &[(Option<String>, Json)]) -> String {
+    let mut out = String::new();
+    for (id, source) in docs {
+        let action = match id {
+            Some(id) => json!({ "index": { "_id": id } }),
+            None => json!({ "index": {} }),
+        };
+        out.push_str(&action.to_string());
+        out.push('\n');
+        out.push_str(&source.to_string());
+        out.push('\n');
+    }
+    out
+}
+
+/// Lower an optional filter to a query clause (`None` — an acknowledged
+/// unfiltered mutation — matches everything).
+fn cond_to_query(cond: &Option<Cond>) -> Result<Json, WriteError> {
+    Ok(match cond {
+        None => json!({ "match_all": {} }),
+        Some(c) => query_json(c, "").map_err(WriteError::from)?,
+    })
+}
+
+/// `_id` is immutable metadata; a `set` touching it cannot be expressed.
+fn reject_id_in_set(set: &[(String, Value)]) -> Result<(), WriteError> {
+    if set.iter().any(|(c, _)| c == "_id") {
+        return Err(WriteError::FeatureUnsupportedByTarget {
+            feature: "updating `_id`".to_string(),
+            target: "elasticsearch".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// The row as a `_source` document, excluding the `skip` column (`_id` lives in
+/// the action/path — ES rejects it inside `_source`).
+fn source_doc(columns: &[String], row: &[Value], skip: &str) -> Json {
+    let mut m = serde_json::Map::new();
+    for (col, v) in columns.iter().zip(row) {
+        if col != skip {
+            m.insert(col.clone(), to_json(v));
+        }
+    }
+    Json::Object(m)
+}
+
+/// Coerce an `_id` value to the string form ES document ids use. `Null` means
+/// "let ES auto-generate" (insert only; upsert rejects it).
+fn id_string(v: &Value, at: &str) -> Result<Option<String>, WriteError> {
+    Ok(match v {
+        Value::Null => None,
+        Value::Str(s) => Some(s.clone()),
+        Value::Int(i) => Some(i.to_string()),
+        _ => {
+            return Err(WriteError::NotRepresentable {
+                what: "a non-string/integer `_id` value".to_string(),
+                at: at.to_string(),
+            });
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,5 +687,286 @@ mod tests {
             json!([{ "created_at": { "order": "desc", "missing": "_first" } }])
         );
         assert_eq!(q.body["size"], json!(20));
+    }
+
+    // ---- Write rendering ----
+
+    fn resolve(input: Json) -> crate::query::write::ResolvedWrite {
+        crate::query::write::resolve_write(
+            &input,
+            &serde_json::Map::new(),
+            &EntityRegistry::default(),
+        )
+        .expect("resolve_write should succeed")
+    }
+
+    fn resolve_schema(input: Json, schema: Json) -> crate::query::write::ResolvedWrite {
+        crate::query::write::resolve_write(
+            &input,
+            &serde_json::Map::new(),
+            &EntityRegistry::from_json(&schema).expect("schema"),
+        )
+        .expect("resolve_write should succeed")
+    }
+
+    /// The schema declaring that the logical `id` keys the ES document.
+    fn id_schema() -> Json {
+        json!({ "entities": { "users": { "columns": { "id": { "name": "_id" } } } } })
+    }
+
+    #[test]
+    fn test_es_insert_bulk_lifts_id() {
+        let ew = render_write(&resolve_schema(
+            json!({
+                "op": "insert", "target": "users",
+                "values": [ { "id": "u1", "name": "Ada" }, { "id": "u2", "name": "Bob" } ]
+            }),
+            id_schema(),
+        ))
+        .expect("render");
+        // The physical `_id` column is lifted out of the source into the action.
+        assert_eq!(
+            ew,
+            EsWrite::BulkInsert {
+                index: "users".to_string(),
+                docs: vec![
+                    (Some("u1".to_string()), json!({ "name": "Ada" })),
+                    (Some("u2".to_string()), json!({ "name": "Bob" })),
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn test_es_insert_id_stays_in_source_without_schema() {
+        // No implicit `id` → `_id` mapping: without the schema rename, `id` is an
+        // ordinary source field and ES auto-generates the document id.
+        let ew = render_write(&resolve(json!({
+            "op": "insert", "target": "users",
+            "values": { "id": "u1", "name": "Ada" }
+        })))
+        .expect("render");
+        assert_eq!(
+            ew,
+            EsWrite::BulkInsert {
+                index: "users".to_string(),
+                docs: vec![(None, json!({ "id": "u1", "name": "Ada" }))],
+            }
+        );
+    }
+
+    #[test]
+    fn test_es_insert_null_id_autogenerates() {
+        let ew = render_write(&resolve_schema(
+            json!({
+                "op": "insert", "target": "users",
+                "values": { "id": null, "name": "Ada" }
+            }),
+            id_schema(),
+        ))
+        .expect("render");
+        assert_eq!(
+            ew,
+            EsWrite::BulkInsert {
+                index: "users".to_string(),
+                docs: vec![(None, json!({ "name": "Ada" }))],
+            }
+        );
+    }
+
+    #[test]
+    fn test_es_bulk_ndjson_shape() {
+        let body = bulk_ndjson(&[
+            (Some("u1".to_string()), json!({ "name": "Ada" })),
+            (None, json!({ "name": "Bob" })),
+        ]);
+        assert_eq!(
+            body,
+            "{\"index\":{\"_id\":\"u1\"}}\n{\"name\":\"Ada\"}\n{\"index\":{}}\n{\"name\":\"Bob\"}\n"
+        );
+    }
+
+    #[test]
+    fn test_es_update_by_query_script_params() {
+        let ew = render_write(&resolve(json!({
+            "op": "update", "target": "users",
+            "set": { "status": "inactive", "age": null },
+            "filter": { ">": [{ "field": "age" }, 25] }
+        })))
+        .expect("render");
+        // `set` keeps the envelope's key order (serde_json preserve_order):
+        // status first, then age.
+        assert_eq!(
+            ew,
+            EsWrite::UpdateByQuery {
+                index: "users".to_string(),
+                body: json!({
+                    "query": { "range": { "age": { "gt": 25 } } },
+                    "script": {
+                        "lang": "painless",
+                        "source": "ctx._source[params.f0] = params.v0;ctx._source[params.f1] = params.v1;",
+                        "params": { "f0": "status", "v0": "inactive", "f1": "age", "v1": null }
+                    }
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn test_es_update_all_true_is_match_all() {
+        let ew = render_write(&resolve(json!({
+            "op": "update", "target": "users",
+            "set": { "status": "x" },
+            "all": true
+        })))
+        .expect("render");
+        assert_eq!(
+            ew,
+            EsWrite::UpdateByQuery {
+                index: "users".to_string(),
+                body: json!({
+                    "query": { "match_all": {} },
+                    "script": {
+                        "lang": "painless",
+                        "source": "ctx._source[params.f0] = params.v0;",
+                        "params": { "f0": "status", "v0": "x" }
+                    }
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn test_es_delete_by_query() {
+        let ew = render_write(&resolve(json!({
+            "op": "delete", "target": "sessions",
+            "filter": { "<": [{ "field": "age" }, 0] }
+        })))
+        .expect("render");
+        assert_eq!(
+            ew,
+            EsWrite::DeleteByQuery {
+                index: "sessions".to_string(),
+                body: json!({ "query": { "range": { "age": { "lt": 0 } } } }),
+            }
+        );
+    }
+
+    #[test]
+    fn test_es_upsert_update_is_doc_as_upsert() {
+        let ew = render_write(&resolve_schema(
+            json!({
+                "op": "upsert", "target": "users",
+                "values": { "id": "u1", "name": "Alice2", "age": 31 },
+                "on_conflict": { "target": ["id"], "action": "update" }
+            }),
+            id_schema(),
+        ))
+        .expect("render");
+        assert_eq!(
+            ew,
+            EsWrite::UpdateDoc {
+                index: "users".to_string(),
+                id: "u1".to_string(),
+                body: json!({ "doc": { "age": 31, "name": "Alice2" }, "doc_as_upsert": true }),
+            }
+        );
+    }
+
+    #[test]
+    fn test_es_upsert_with_set_uses_doc_plus_upsert() {
+        let ew = render_write(&resolve_schema(
+            json!({
+                "op": "upsert", "target": "users",
+                "values": { "id": "u1", "name": "Alice2", "age": 31 },
+                "set": { "status": "active" },
+                "on_conflict": { "target": ["id"], "action": "update" }
+            }),
+            id_schema(),
+        ))
+        .expect("render");
+        // On conflict apply `set`; on insert the row overlaid with `set`.
+        assert_eq!(
+            ew,
+            EsWrite::UpdateDoc {
+                index: "users".to_string(),
+                id: "u1".to_string(),
+                body: json!({
+                    "doc": { "status": "active" },
+                    "upsert": { "age": 31, "name": "Alice2", "status": "active" }
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn test_es_upsert_nothing_is_create() {
+        let ew = render_write(&resolve_schema(
+            json!({
+                "op": "upsert", "target": "users",
+                "values": { "id": "u1", "name": "Ada" },
+                "on_conflict": { "target": ["id"], "action": "nothing" }
+            }),
+            id_schema(),
+        ))
+        .expect("render");
+        assert_eq!(
+            ew,
+            EsWrite::CreateDoc {
+                index: "users".to_string(),
+                id: "u1".to_string(),
+                doc: json!({ "name": "Ada" }),
+            }
+        );
+    }
+
+    #[test]
+    fn test_es_bulk_upsert_rejected() {
+        let err = render_write(&resolve_schema(
+            json!({
+                "op": "upsert", "target": "users",
+                "values": [ { "id": "u1", "name": "A" }, { "id": "u2", "name": "B" } ],
+                "on_conflict": { "target": ["id"], "action": "update" }
+            }),
+            id_schema(),
+        ))
+        .expect_err("bulk upsert is gated on ES");
+        assert!(matches!(err, WriteError::FeatureUnsupportedByTarget { .. }));
+    }
+
+    #[test]
+    fn test_es_upsert_non_id_target_rejected() {
+        let err = render_write(&resolve(json!({
+            "op": "upsert", "target": "users",
+            "values": { "email": "a@x.io", "name": "Ada" },
+            "on_conflict": { "target": ["email"], "action": "update" }
+        })))
+        .expect_err("non-_id conflict target is gated on ES");
+        assert!(matches!(err, WriteError::FeatureUnsupportedByTarget { .. }));
+    }
+
+    #[test]
+    fn test_es_returning_rejected() {
+        let err = render_write(&resolve(json!({
+            "op": "insert", "target": "users",
+            "values": { "name": "Ada" },
+            "returning": ["id"]
+        })))
+        .expect_err("returning is gated on ES");
+        assert!(matches!(err, WriteError::FeatureUnsupportedByTarget { .. }));
+    }
+
+    #[test]
+    fn test_es_update_set_id_rejected() {
+        let err = render_write(&resolve_schema(
+            json!({
+                "op": "update", "target": "users",
+                "set": { "id": "u9" },
+                "filter": { "==": [{ "field": "name" }, "Ada"] }
+            }),
+            id_schema(),
+        ))
+        .expect_err("updating _id is gated on ES");
+        assert!(matches!(err, WriteError::FeatureUnsupportedByTarget { .. }));
     }
 }

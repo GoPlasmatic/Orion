@@ -180,15 +180,21 @@ const DB_WRITE_FIELDS: &[FieldSchema] = &[
 const DATA_QUERY_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "connector",
-        description: "Name of the SQL connector to query.",
+        description: "Name of the db (SQL/MongoDB) or es (Elasticsearch) connector to query.",
         kind: FieldKind::String,
         required: true,
     },
     FieldSchema {
         name: "query",
-        description: "Backend-neutral query envelope: source/filter/fields/sort/limit/skip.",
+        description: "Backend-neutral query envelope: source/filter/fields/sort/limit/skip/include.",
         kind: FieldKind::Object,
         required: true,
+    },
+    FieldSchema {
+        name: "database",
+        description: "MongoDB database name (required for MongoDB connectors).",
+        kind: FieldKind::String,
+        required: false,
     },
     FieldSchema {
         name: "schema",
@@ -207,6 +213,89 @@ const DATA_QUERY_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "output",
         description: "Dotted path in the message where rows are written. Defaults to \"data\".",
+        kind: FieldKind::String,
+        required: false,
+    },
+];
+
+const DATA_WRITE_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "connector",
+        description: "Name of the db (SQL/MongoDB) or es (Elasticsearch) connector to write to.",
+        kind: FieldKind::String,
+        required: true,
+    },
+    FieldSchema {
+        name: "op",
+        description: "Mutation kind: \"insert\", \"update\", \"delete\", or \"upsert\".",
+        kind: FieldKind::String,
+        required: true,
+    },
+    FieldSchema {
+        name: "target",
+        description: "Logical entity to write to (schema-resolved to a table/collection).",
+        kind: FieldKind::String,
+        required: true,
+    },
+    FieldSchema {
+        name: "values",
+        description: "Row object, or array of row objects (bulk), for insert/upsert.",
+        kind: FieldKind::Any,
+        required: false,
+    },
+    FieldSchema {
+        name: "set",
+        description: "Object of column → value assignments for update/upsert.",
+        kind: FieldKind::Object,
+        required: false,
+    },
+    FieldSchema {
+        name: "filter",
+        description: "Query-dialect filter selecting rows for update/delete. An \
+                      update/delete without it is rejected unless \"all\": true is set.",
+        kind: FieldKind::Object,
+        required: false,
+    },
+    FieldSchema {
+        name: "on_conflict",
+        description: "Upsert conflict clause: { \"target\": [cols], \"action\": \"update\"|\"nothing\" }.",
+        kind: FieldKind::Object,
+        required: false,
+    },
+    FieldSchema {
+        name: "returning",
+        description: "Column names to return from mutated rows (Postgres/SQLite only).",
+        kind: FieldKind::Array,
+        required: false,
+    },
+    FieldSchema {
+        name: "all",
+        description: "Acknowledge an intentionally unfiltered update/delete (affects every row).",
+        kind: FieldKind::Bool,
+        required: false,
+    },
+    FieldSchema {
+        name: "database",
+        description: "MongoDB database name (required for MongoDB connectors).",
+        kind: FieldKind::String,
+        required: false,
+    },
+    FieldSchema {
+        name: "schema",
+        description: "Optional inline entity schema (renames, allowlist, writable flag).",
+        kind: FieldKind::Object,
+        required: false,
+    },
+    FieldSchema {
+        name: "params",
+        description: "Object of named values folded into {\"param\": ..} nodes in values/set/filter. \
+                      A value of {\"var\": \"path\"} is read from the message context.",
+        kind: FieldKind::Object,
+        required: false,
+    },
+    FieldSchema {
+        name: "output",
+        description: "Dotted path in the message where the write result is written. Defaults to \"data\".",
         kind: FieldKind::String,
         required: false,
     },
@@ -395,9 +484,15 @@ const REGISTRY: &[FunctionSchema] = &[
     },
     FunctionSchema {
         name: "data_query",
-        description: "Run a backend-neutral query (filter + envelope) against a SQL connector.",
+        description: "Run a backend-neutral query (filter + envelope) against a SQL, MongoDB, or Elasticsearch connector.",
         category: "connector",
         input_fields: DATA_QUERY_FIELDS,
+    },
+    FunctionSchema {
+        name: "data_write",
+        description: "Run a backend-neutral mutation (insert/update/delete/upsert) against a SQL, MongoDB, or Elasticsearch connector.",
+        category: "connector",
+        input_fields: DATA_WRITE_FIELDS,
     },
     FunctionSchema {
         name: "mongo_read",

@@ -44,6 +44,10 @@
 # default_limit = 100          # Page size when a query omits `limit`
 # max_limit = 1000             # Hard cap; a query asking for more is rejected
 
+[write]                         # Safety bounds for the portable `data_write` handler
+# max_rows = 1000              # Hard cap on rows per bulk insert/upsert (over this is rejected)
+# allow_unfiltered = false     # Permit unfiltered update/delete (still needs per-call "all": true)
+
 [kafka]                         # Kafka producer + consumer (compiled into every binary)
 # enabled = false
 # brokers = ["localhost:9092"]

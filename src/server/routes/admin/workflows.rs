@@ -309,6 +309,7 @@ pub(crate) async fn test_workflow(
         state.engine.clone(),
         &state.config.engine,
         &state.config.query,
+        &state.config.write,
         state.cache_pool.clone(),
         state.sql_pool_cache.clone(),
         state.mongo_pool_cache.clone(),

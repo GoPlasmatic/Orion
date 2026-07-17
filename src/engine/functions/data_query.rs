@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
@@ -9,17 +8,17 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use futures::TryStreamExt;
 use mongodb::bson::Document;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, extract_output_path, profile_handler, require_str_field, resolve_connector,
-    timed_query, to_exec_error,
+    apply_output, es_request, extract_output_path, profile_handler, require_op_allowed,
+    require_str_field, resolve_connector, resolve_params, timed_query, to_exec_error,
 };
 use super::db_read::rows_to_json;
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
-use crate::connector::{AuthConfig, ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
+use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
 use crate::query::{self, SqlDialect};
 use crate::storage::detect_backend;
 
@@ -57,6 +56,12 @@ impl AsyncFunctionHandler for DataQueryHandler {
             })?;
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
+
+            // Per-connector operation gates: reads can be disabled too
+            // (e.g. a write-only audit sink).
+            if let Some(gates) = connector_config.operation_gates() {
+                require_op_allowed(gates, "read", connector_name)?;
+            }
 
             // Optional inline schema (privileged config authored alongside the
             // query): renames, type hints, allowlist, and relation declarations.
@@ -163,17 +168,7 @@ async fn run_es_search(
     eq: &query::backend::es::EsQuery,
 ) -> Result<Value, DataflowError> {
     let url = format!("{}/{}/_search", es.url.trim_end_matches('/'), eq.index);
-    let mut req = client.post(&url).json(&eq.body);
-    if let Some(auth) = &es.auth {
-        req = match auth {
-            AuthConfig::Basic { username, password } => req.basic_auth(username, Some(password)),
-            AuthConfig::Bearer { token } => req.bearer_auth(token),
-            AuthConfig::ApiKey { header, key } => req.header(header.as_str(), key.as_str()),
-        };
-    }
-    if let Some(ms) = es.request_timeout_ms {
-        req = req.timeout(Duration::from_millis(ms));
-    }
+    let req = es_request(client, es, reqwest::Method::POST, &url).json(&eq.body);
 
     let resp = req.send().await.map_err(to_exec_error)?;
     let status = resp.status();
@@ -290,28 +285,4 @@ async fn run_sql_with_includes(
     }
 
     Ok(Value::Array(parents))
-}
-
-/// Resolve the `params` object into concrete values. A value shaped like
-/// `{"var": "path"}` is looked up in the message context (dot-path over
-/// `{data, metadata, temp_data}`); anything else is used as a literal. A lookup
-/// that does not resolve yields null.
-fn resolve_params(params: Option<&Value>, ctx: &TaskContext<'_>) -> Map<String, Value> {
-    let mut out = Map::new();
-    let Some(Value::Object(map)) = params else {
-        return out;
-    };
-    for (name, spec) in map {
-        let resolved = match spec {
-            Value::Object(o) if o.len() == 1 && o.contains_key("var") => {
-                match o.get("var").and_then(|v| v.as_str()) {
-                    Some(path) => ctx.get(path).map(Value::from).unwrap_or(Value::Null),
-                    None => Value::Null,
-                }
-            }
-            other => other.clone(),
-        };
-        out.insert(name.clone(), resolved);
-    }
-    out
 }

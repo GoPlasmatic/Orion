@@ -4,6 +4,9 @@
 // need their own marker.
 #![allow(dead_code)]
 
+/// Testcontainers-backed harness for the portable data_query/data_write dialects.
+pub mod backends;
+
 use std::sync::Arc;
 
 use axum::Router;
@@ -82,6 +85,7 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         engine.clone(),
         &config.engine,
         &config.query,
+        &config.write,
         cache_pool.clone(),
         sql_pool_cache.clone(),
         mongo_pool_cache.clone(),

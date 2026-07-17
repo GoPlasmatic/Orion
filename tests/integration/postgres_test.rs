@@ -1,32 +1,17 @@
 use crate::common;
+use crate::common::backends::Backend;
 
 use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
-// PostgreSQL integration tests
+// PostgreSQL integration tests (raw db_read/db_write escape hatch).
 //
-// These tests require a running PostgreSQL instance on localhost:5432.
-// Start it with: docker compose -f docker-compose.test.yml up -d postgres
-// Run with:      cargo test --test postgres_test -- --ignored
+// These tests spin up an ephemeral PostgreSQL container via testcontainers, so
+// they require Docker to be available. They are #[ignore] by default; run with:
+//   cargo test --test integration -- --ignored postgres_test
 // ---------------------------------------------------------------------------
-
-/// Helper: create a Postgres DB connector via the admin API.
-fn pg_connector(name: &str) -> serde_json::Value {
-    json!({
-        "id": name,
-        "name": name,
-        "connector_type": "db",
-        "config": {
-            "type": "db",
-            "connection_string": "postgres://postgres:test@localhost:5432/orion_test",
-            "driver": "postgres",
-            "max_connections": 2,
-            "query_timeout_ms": 5000
-        }
-    })
-}
 
 /// Create a table, insert a row, and read it back via db_read.
 #[tokio::test]
@@ -34,7 +19,8 @@ fn pg_connector(name: &str) -> serde_json::Value {
 async fn test_postgres_db_write_and_read() {
     let app = common::test_app().await;
 
-    common::create_connector(&app, pg_connector("pg-rw")).await;
+    let h = common::backends::start(Backend::Postgres, "pg-rw").await;
+    common::create_connector(&app, h.connector_json()).await;
 
     common::create_and_activate_channel(
         &app,
@@ -125,7 +111,8 @@ async fn test_postgres_db_write_and_read() {
 async fn test_postgres_parameterized_queries() {
     let app = common::test_app().await;
 
-    common::create_connector(&app, pg_connector("pg-params")).await;
+    let h = common::backends::start(Backend::Postgres, "pg-params").await;
+    common::create_connector(&app, h.connector_json()).await;
 
     common::create_and_activate_channel(
         &app,

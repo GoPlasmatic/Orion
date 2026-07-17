@@ -13,7 +13,7 @@ pub(crate) use pool_access_counter::POOL_ACCESS_COUNTER;
 
 pub use config::{
     AuthConfig, CacheConnectorConfig, ConnectorConfig, ConnectorType, DbConnectorConfig,
-    EsConnectorConfig, HttpConnectorConfig, KafkaConnectorConfig, RetryConfig,
+    EsConnectorConfig, HttpConnectorConfig, KafkaConnectorConfig, OperationGates, RetryConfig,
     StorageConnectorConfig, VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES,
 };
 pub use masking::{mask_connector, mask_connector_secrets};

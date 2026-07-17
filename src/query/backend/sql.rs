@@ -7,7 +7,7 @@
 //! injection-safe and quoted per dialect.
 
 use sea_query::{
-    Alias, Asterisk, Condition, Expr, LikeExpr, MysqlQueryBuilder, NullOrdering, Order,
+    Alias, Asterisk, Condition, Expr, LikeExpr, MysqlQueryBuilder, NullOrdering, OnConflict, Order,
     PostgresQueryBuilder, Query, SelectStatement, SimpleExpr, SqliteQueryBuilder,
     Value as SeaValue,
 };
@@ -17,6 +17,7 @@ use crate::query::backend::SqlDialect;
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, FieldRef, Quant, RelRef, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir, SortKey};
+use crate::query::write::{ConflictAction, ResolvedWrite, WriteError, WriteOp};
 
 /// Build a `SelectStatement` from the envelope and lowered condition, enforcing
 /// the page-size bounds (`LimitExceeded` when `limit` > `max_limit`). `root_table`
@@ -381,6 +382,149 @@ fn to_sea_value(v: &Value) -> Result<SeaValue, QueryError> {
             });
         }
     })
+}
+
+// ---- Write rendering (INSERT / UPDATE / DELETE / upsert) ----
+
+/// Render a resolved mutation into `(sql, values)` for `dialect`, bound to the
+/// external connector's `AnyPool`. The `filter` of an update/delete reuses the
+/// query dialect's [`render_expr`]; every value is a bound parameter.
+pub fn render_write(
+    w: &ResolvedWrite,
+    dialect: SqlDialect,
+) -> Result<(String, SqlxValues), WriteError> {
+    // MySQL cannot express RETURNING; surface it rather than emitting invalid SQL.
+    if !w.returning.is_empty() && dialect == SqlDialect::Mysql {
+        return Err(WriteError::FeatureUnsupportedByTarget {
+            feature: "returning".to_string(),
+            target: "mysql".to_string(),
+        });
+    }
+    match w.op {
+        WriteOp::Insert => render_insert(w, dialect, false),
+        WriteOp::Upsert => render_insert(w, dialect, true),
+        WriteOp::Update => render_update(w, dialect),
+        WriteOp::Delete => render_delete(w, dialect),
+    }
+}
+
+fn render_insert(
+    w: &ResolvedWrite,
+    dialect: SqlDialect,
+    upsert: bool,
+) -> Result<(String, SqlxValues), WriteError> {
+    let mut stmt = Query::insert();
+    stmt.into_table(Alias::new(w.table.as_str()));
+    stmt.columns(w.columns.iter().map(|c| Alias::new(c.as_str())));
+    for row in &w.rows {
+        let vals: Vec<SimpleExpr> = row
+            .iter()
+            .map(value_expr)
+            .collect::<Result<_, WriteError>>()?;
+        stmt.values(vals)
+            .map_err(|e| WriteError::InvalidEnvelope(e.to_string()))?;
+    }
+
+    if upsert {
+        // `conflict` is guaranteed present for upsert (validated in `resolve_write`).
+        let c = w
+            .conflict
+            .as_ref()
+            .ok_or_else(|| WriteError::MissingField {
+                field: "on_conflict".to_string(),
+                op: "upsert".to_string(),
+            })?;
+        let mut oc = OnConflict::columns(c.targets.iter().map(|t| Alias::new(t.as_str())));
+        match c.action {
+            ConflictAction::Nothing => {
+                oc.do_nothing();
+            }
+            ConflictAction::Update => {
+                if !w.set.is_empty() {
+                    for (col, v) in &w.set {
+                        oc.value(Alias::new(col.as_str()), value_expr(v)?);
+                    }
+                } else {
+                    // Default: overwrite every inserted column except the conflict keys.
+                    let upd: Vec<Alias> = w
+                        .columns
+                        .iter()
+                        .filter(|c2| !c.targets.contains(c2))
+                        .map(|c2| Alias::new(c2.as_str()))
+                        .collect();
+                    if upd.is_empty() {
+                        oc.do_nothing();
+                    } else {
+                        oc.update_columns(upd);
+                    }
+                }
+            }
+        }
+        stmt.on_conflict(oc);
+    }
+
+    if !w.returning.is_empty() {
+        stmt.returning(
+            Query::returning().columns(w.returning.iter().map(|c| Alias::new(c.as_str()))),
+        );
+    }
+    Ok(build_write_for(dialect, &stmt))
+}
+
+fn render_update(
+    w: &ResolvedWrite,
+    dialect: SqlDialect,
+) -> Result<(String, SqlxValues), WriteError> {
+    let mut stmt = Query::update();
+    stmt.table(Alias::new(w.table.as_str()));
+    for (col, v) in &w.set {
+        stmt.value(Alias::new(col.as_str()), value_expr(v)?);
+    }
+    if let Some(cond) = &w.cond
+        && !matches!(cond, Cond::True)
+    {
+        stmt.cond_where(render_expr(cond, &w.table).map_err(WriteError::from)?);
+    }
+    if !w.returning.is_empty() {
+        stmt.returning(
+            Query::returning().columns(w.returning.iter().map(|c| Alias::new(c.as_str()))),
+        );
+    }
+    Ok(build_write_for(dialect, &stmt))
+}
+
+fn render_delete(
+    w: &ResolvedWrite,
+    dialect: SqlDialect,
+) -> Result<(String, SqlxValues), WriteError> {
+    let mut stmt = Query::delete();
+    stmt.from_table(Alias::new(w.table.as_str()));
+    if let Some(cond) = &w.cond
+        && !matches!(cond, Cond::True)
+    {
+        stmt.cond_where(render_expr(cond, &w.table).map_err(WriteError::from)?);
+    }
+    if !w.returning.is_empty() {
+        stmt.returning(
+            Query::returning().columns(w.returning.iter().map(|c| Alias::new(c.as_str()))),
+        );
+    }
+    Ok(build_write_for(dialect, &stmt))
+}
+
+/// An IR value as a bound `SimpleExpr` (a NULL binds as SQL NULL).
+fn value_expr(v: &Value) -> Result<SimpleExpr, WriteError> {
+    let sv = to_sea_value(v).map_err(WriteError::from)?;
+    Ok(Expr::val(sv).into())
+}
+
+/// Dialect-specific `(sql, values)` for any write statement (Insert/Update/Delete).
+fn build_write_for<S: SqlxBinder>(dialect: SqlDialect, stmt: &S) -> (String, SqlxValues) {
+    match dialect {
+        SqlDialect::Postgres => stmt.build_sqlx(PostgresQueryBuilder),
+        SqlDialect::Mysql => stmt.build_sqlx(MysqlQueryBuilder),
+        SqlDialect::Sqlite => stmt.build_sqlx(SqliteQueryBuilder),
+    }
 }
 
 #[cfg(test)]
@@ -762,5 +906,150 @@ mod tests {
         )
         .expect_err("m2m include not supported");
         assert!(matches!(err, QueryError::FeatureUnsupportedByTarget { .. }));
+    }
+
+    // ---- Write rendering (INSERT / UPDATE / DELETE / upsert) ----
+
+    /// Resolve `input` (identity mode) and render the write SQL for `dialect`.
+    fn write_sql(input: Json, dialect: SqlDialect) -> String {
+        let resolved = crate::query::write::resolve_write(
+            &input,
+            &serde_json::Map::new(),
+            &EntityRegistry::default(),
+        )
+        .expect("resolve_write should succeed");
+        let (sql, _values) = render_write(&resolved, dialect).expect("render should succeed");
+        sql
+    }
+
+    fn sqlite_w(input: Json) -> String {
+        write_sql(input, SqlDialect::Sqlite)
+    }
+
+    #[test]
+    fn test_insert_single() {
+        let sql = sqlite_w(json!({
+            "op": "insert",
+            "target": "users",
+            "values": { "id": "u1", "name": "Alice" }
+        }));
+        assert_eq!(sql, r#"INSERT INTO "users" ("id", "name") VALUES (?, ?)"#);
+    }
+
+    #[test]
+    fn test_insert_bulk() {
+        let sql = sqlite_w(json!({
+            "op": "insert",
+            "target": "users",
+            "values": [ { "id": "u1", "name": "Alice" }, { "id": "u2", "name": "Bob" } ]
+        }));
+        assert_eq!(
+            sql,
+            r#"INSERT INTO "users" ("id", "name") VALUES (?, ?), (?, ?)"#
+        );
+    }
+
+    #[test]
+    fn test_insert_returning() {
+        let sql = sqlite_w(json!({
+            "op": "insert",
+            "target": "users",
+            "values": { "name": "Alice" },
+            "returning": ["id", "name"]
+        }));
+        assert_eq!(
+            sql,
+            r#"INSERT INTO "users" ("name") VALUES (?) RETURNING "id", "name""#
+        );
+    }
+
+    #[test]
+    fn test_update_with_filter() {
+        let sql = sqlite_w(json!({
+            "op": "update",
+            "target": "users",
+            "set": { "status": "inactive" },
+            "filter": { "==": [{ "field": "id" }, "u1"] }
+        }));
+        assert_eq!(sql, r#"UPDATE "users" SET "status" = ? WHERE "id" = ?"#);
+    }
+
+    #[test]
+    fn test_update_relation_filter_reuses_query_dialect() {
+        // The update WHERE is the query dialect's filter, EXISTS subquery and all.
+        let input = json!({
+            "op": "update",
+            "target": "users",
+            "set": { "flagged": true },
+            "filter": { "some": [{ "field": "orders" }, { ">": [{ "field": "total" }, 100] }] }
+        });
+        let resolved =
+            crate::query::write::resolve_write(&input, &serde_json::Map::new(), &rel_schema())
+                .expect("resolve");
+        let (sql, _v) = render_write(&resolved, SqlDialect::Sqlite).expect("render");
+        // In the bound-parameter path the constant `1` in `SELECT 1` binds as `?`.
+        assert_eq!(
+            sql,
+            r#"UPDATE "users" SET "flagged" = ? WHERE EXISTS(SELECT ? FROM "orders" WHERE "orders"."user_id" = "users"."id" AND "total" > ?)"#
+        );
+    }
+
+    #[test]
+    fn test_delete_with_filter() {
+        let sql = sqlite_w(json!({
+            "op": "delete",
+            "target": "sessions",
+            "filter": { "<": [{ "field": "age" }, 0] }
+        }));
+        assert_eq!(sql, r#"DELETE FROM "sessions" WHERE "age" < ?"#);
+    }
+
+    #[test]
+    fn test_upsert_do_update() {
+        let sql = sqlite_w(json!({
+            "op": "upsert",
+            "target": "users",
+            "values": { "email": "a@x.io", "name": "Ada" },
+            "on_conflict": { "target": ["email"], "action": "update" }
+        }));
+        assert_eq!(
+            sql,
+            r#"INSERT INTO "users" ("email", "name") VALUES (?, ?) ON CONFLICT ("email") DO UPDATE SET "name" = "excluded"."name""#
+        );
+    }
+
+    #[test]
+    fn test_upsert_do_nothing() {
+        let sql = sqlite_w(json!({
+            "op": "upsert",
+            "target": "users",
+            "values": { "email": "a@x.io", "name": "Ada" },
+            "on_conflict": { "target": ["email"], "action": "nothing" }
+        }));
+        assert_eq!(
+            sql,
+            r#"INSERT INTO "users" ("email", "name") VALUES (?, ?) ON CONFLICT ("email") DO NOTHING"#
+        );
+    }
+
+    #[test]
+    fn test_returning_on_mysql_rejected() {
+        let input = json!({
+            "op": "insert",
+            "target": "users",
+            "values": { "name": "Ada" },
+            "returning": ["id"]
+        });
+        let resolved = crate::query::write::resolve_write(
+            &input,
+            &serde_json::Map::new(),
+            &EntityRegistry::default(),
+        )
+        .expect("resolve");
+        let err = render_write(&resolved, SqlDialect::Mysql).expect_err("no RETURNING on MySQL");
+        assert!(matches!(
+            err,
+            crate::query::write::WriteError::FeatureUnsupportedByTarget { .. }
+        ));
     }
 }

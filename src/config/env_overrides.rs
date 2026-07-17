@@ -176,6 +176,15 @@ where
         u64
     );
 
+    // Write (data_write safety bounds)
+    env_parsed!(env_var, "ORION_WRITE__MAX_ROWS", config.write.max_rows, u64);
+    env_parsed!(
+        env_var,
+        "ORION_WRITE__ALLOW_UNFILTERED",
+        config.write.allow_unfiltered,
+        bool
+    );
+
     // Metrics
     env_parsed!(
         env_var,

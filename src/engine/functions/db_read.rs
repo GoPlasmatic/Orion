@@ -10,7 +10,7 @@ use sqlx::{Column, Row};
 
 use super::connector_helpers::{
     apply_output, bind_json_params, extract_output_path, profile_handler, require_db_connector,
-    require_str_field, resolve_connector, timed_query, to_exec_error,
+    require_op_allowed, require_str_field, resolve_connector, timed_query, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
@@ -37,6 +37,7 @@ impl AsyncFunctionHandler for DbReadHandler {
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
             let db_config = require_db_connector(&connector_config, connector_name)?;
+            require_op_allowed(&db_config.operations, "read", connector_name)?;
 
             let pool = self
                 .pool_cache

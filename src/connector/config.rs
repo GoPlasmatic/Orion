@@ -12,6 +12,66 @@ pub enum ConnectorConfig {
     Es(EsConnectorConfig),
 }
 
+impl ConnectorConfig {
+    /// The operation gates for connectors that carry them (db, es).
+    pub fn operation_gates(&self) -> Option<&OperationGates> {
+        match self {
+            ConnectorConfig::Db(c) => Some(&c.operations),
+            ConnectorConfig::Es(c) => Some(&c.operations),
+            _ => None,
+        }
+    }
+}
+
+/// Per-connector operation gates. Everything defaults to allowed; disabling an
+/// operation turns the corresponding handler call into a located validation
+/// error, so a connector can be made read-only (or insert-only, …) in its
+/// config without touching workflows.
+///
+/// - `read` gates `data_query`, `db_read`, and `mongo_read`.
+/// - `insert` / `update` / `delete` / `upsert` gate the matching `data_write` op.
+/// - `raw_write` gates the raw-SQL `db_write` escape hatch, which cannot be
+///   classified per-op (hand-written SQL may contain any statement).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OperationGates {
+    pub read: bool,
+    pub insert: bool,
+    pub update: bool,
+    pub delete: bool,
+    pub upsert: bool,
+    pub raw_write: bool,
+}
+
+impl Default for OperationGates {
+    fn default() -> Self {
+        Self {
+            read: true,
+            insert: true,
+            update: true,
+            delete: true,
+            upsert: true,
+            raw_write: true,
+        }
+    }
+}
+
+impl OperationGates {
+    /// Whether the named operation is enabled. Unknown names are denied
+    /// (defensive — callers pass the fixed set above).
+    pub fn allows(&self, op: &str) -> bool {
+        match op {
+            "read" => self.read,
+            "insert" => self.insert,
+            "update" => self.update,
+            "delete" => self.delete,
+            "upsert" => self.upsert,
+            "raw_write" => self.raw_write,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HttpConnectorConfig {
     pub url: String,
@@ -88,6 +148,9 @@ pub struct DbConnectorConfig {
     pub auth: Option<AuthConfig>,
     #[serde(default)]
     pub retry: RetryConfig,
+    /// Which operations workflows may run through this connector.
+    #[serde(default)]
+    pub operations: OperationGates,
 }
 
 fn default_db_driver() -> String {
@@ -138,6 +201,9 @@ pub struct EsConnectorConfig {
     /// Allow requests to private/internal IP addresses. Default false (SSRF protection).
     #[serde(default)]
     pub allow_private_urls: bool,
+    /// Which operations workflows may run through this connector.
+    #[serde(default)]
+    pub operations: OperationGates,
 }
 
 /// Allowed connector type values.
@@ -333,6 +399,47 @@ mod tests {
         assert!(VALID_CONNECTOR_TYPES.contains(&"storage"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"es"));
         assert!(!VALID_CONNECTOR_TYPES.contains(&"grpc"));
+    }
+
+    #[test]
+    fn test_operation_gates_default_all_allowed() {
+        let json = r#"{"type":"db","connection_string":"sqlite::memory:"}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        let gates = config.operation_gates().expect("db has gates");
+        for op in ["read", "insert", "update", "delete", "upsert", "raw_write"] {
+            assert!(gates.allows(op), "{op} should default to allowed");
+        }
+        assert!(!gates.allows("unknown"), "unknown ops are denied");
+    }
+
+    #[test]
+    fn test_operation_gates_partial_override() {
+        let json = r#"{"type":"db","connection_string":"sqlite::memory:",
+            "operations":{"delete":false,"raw_write":false}}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        let gates = config.operation_gates().expect("db has gates");
+        assert!(!gates.allows("delete"));
+        assert!(!gates.allows("raw_write"));
+        assert!(gates.allows("read"));
+        assert!(gates.allows("insert"));
+        assert!(gates.allows("update"));
+        assert!(gates.allows("upsert"));
+    }
+
+    #[test]
+    fn test_operation_gates_on_es() {
+        let json = r#"{"type":"es","url":"http://localhost:9200","operations":{"update":false}}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        let gates = config.operation_gates().expect("es has gates");
+        assert!(!gates.allows("update"));
+        assert!(gates.allows("insert"));
+    }
+
+    #[test]
+    fn test_operation_gates_absent_on_http() {
+        let json = r#"{"type":"http","url":"https://example.com"}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        assert!(config.operation_gates().is_none());
     }
 
     #[test]

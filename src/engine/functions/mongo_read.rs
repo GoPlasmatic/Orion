@@ -10,8 +10,8 @@ use mongodb::bson::{self, Document};
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, extract_output_path, profile_handler, require_db_connector, require_str_field,
-    resolve_connector, to_exec_error,
+    apply_output, extract_output_path, profile_handler, require_db_connector, require_op_allowed,
+    require_str_field, resolve_connector, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -45,6 +45,7 @@ impl AsyncFunctionHandler for MongoReadHandler {
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
             let db_config = require_db_connector(&connector_config, connector_name)?;
+            require_op_allowed(&db_config.operations, "read", connector_name)?;
 
             let client = self
                 .pool_cache

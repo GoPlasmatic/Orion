@@ -13,12 +13,14 @@ pub mod lower;
 pub mod schema;
 pub mod spec;
 pub mod vocab;
+pub mod write;
 
 pub use backend::SqlDialect;
 pub use error::QueryError;
 pub use lower::Params;
 pub use schema::EntityRegistry;
 pub use spec::QuerySpec;
+pub use write::{ResolvedWrite, WriteError, WriteOp, resolve_write};
 
 use ir::Cond;
 use sea_query::SelectStatement;

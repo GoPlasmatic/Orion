@@ -66,6 +66,14 @@ url = "sqlite:orion.db"       # Database URL (sqlite:, postgres://, mysql://)
 [ingest]
 max_payload_size = 1048576     # Maximum payload size in bytes (1 MB)
 
+[query]                        # Page-size bounds for the portable `data_query` handler
+# default_limit = 100          # Page size when a query omits `limit`
+# max_limit = 1000             # Hard cap; a query asking for more is rejected (never clamped)
+
+[write]                        # Safety bounds for the portable `data_write` handler
+# max_rows = 1000              # Hard cap on rows per bulk insert/upsert (over this is rejected)
+# allow_unfiltered = false     # Permit unfiltered update/delete (still needs per-call "all": true)
+
 [engine]
 # health_check_timeout_secs = 2   # Timeout for engine read lock in health checks
 # reload_timeout_secs = 10        # Timeout for engine write lock during reload
@@ -195,6 +203,8 @@ All capabilities are compiled into a single binary and controlled at runtime:
 | SQL connectors | `db_read`/`db_write` functions | Always available |
 | Redis cache | `cache_read`/`cache_write` with Redis backend | Always available |
 | MongoDB connector | `mongo_read` function | Always available |
+| Portable data dialect | `data_query`/`data_write` against SQL, MongoDB, or Elasticsearch | Always available |
+| Elasticsearch connector | `es` connector type (used by `data_query`/`data_write`) | Always available |
 | Rate limiting | `rate_limit.enabled` | Disabled |
 | Metrics | `metrics.enabled` | Disabled |
 

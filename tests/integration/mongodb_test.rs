@@ -1,4 +1,5 @@
 use crate::common;
+use crate::common::backends::Backend;
 
 use axum::http::StatusCode;
 use serde_json::json;
@@ -7,28 +8,14 @@ use tower::ServiceExt;
 // ---------------------------------------------------------------------------
 // MongoDB integration tests
 //
-// These tests require a running MongoDB instance on localhost:27017.
-// Start it with: docker compose -f docker-compose.test.yml up -d mongo
-// Run with:      cargo test --test mongodb_test -- --ignored
+// These tests spin up an ephemeral MongoDB container via testcontainers, so
+// they require Docker to be available. They are #[ignore] by default; run with:
+//   cargo test --test integration -- --ignored mongodb_test
+//
+// The connector uses the "db" connector type; the mongo_read / data_query
+// handlers extract the DbConnectorConfig to get the connection string, and the
+// `database` field in each task input selects the Mongo database.
 // ---------------------------------------------------------------------------
-
-/// Helper: create a MongoDB connector via the admin API.
-/// MongoDB uses the "db" connector type; the mongo_read function extracts
-/// the DbConnectorConfig to get the connection string.
-fn mongo_connector(name: &str) -> serde_json::Value {
-    json!({
-        "id": name,
-        "name": name,
-        "connector_type": "db",
-        "config": {
-            "type": "db",
-            "connection_string": "mongodb://localhost:27017",
-            "driver": "mongodb",
-            "max_connections": 2,
-            "query_timeout_ms": 5000
-        }
-    })
-}
 
 /// Read from an empty (or nonexistent) collection with an empty filter.
 /// The mongo_read function should return an empty array rather than an error.
@@ -37,7 +24,8 @@ fn mongo_connector(name: &str) -> serde_json::Value {
 async fn test_mongo_read_returns_documents() {
     let app = common::test_app().await;
 
-    common::create_connector(&app, mongo_connector("mongo-read")).await;
+    let h = common::backends::start(Backend::Mongo, "mongo-read").await;
+    common::create_connector(&app, h.connector_json()).await;
 
     common::create_and_activate_channel(
         &app,
@@ -95,7 +83,8 @@ async fn test_mongo_read_returns_documents() {
 async fn test_mongo_read_with_filter() {
     let app = common::test_app().await;
 
-    common::create_connector(&app, mongo_connector("mongo-filter")).await;
+    let h = common::backends::start(Backend::Mongo, "mongo-filter").await;
+    common::create_connector(&app, h.connector_json()).await;
 
     common::create_and_activate_channel(
         &app,
@@ -154,7 +143,8 @@ async fn test_mongo_read_with_filter() {
 async fn test_data_query_mongo_find() {
     let app = common::test_app().await;
 
-    common::create_connector(&app, mongo_connector("dq-mongo")).await;
+    let h = common::backends::start(Backend::Mongo, "dq-mongo").await;
+    common::create_connector(&app, h.connector_json()).await;
 
     common::create_and_activate_channel(
         &app,

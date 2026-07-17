@@ -8,6 +8,7 @@ pub mod schema;
 pub mod cache_read;
 pub mod cache_write;
 pub mod data_query;
+pub mod data_write;
 pub mod db_read;
 pub mod db_write;
 pub mod mongo_read;

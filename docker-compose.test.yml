@@ -1,57 +1,25 @@
 # Docker Compose for Orion external service integration tests.
 #
+# NOTE: Postgres, MySQL, MongoDB, and Elasticsearch are now managed
+# automatically by testcontainers inside the tests themselves (see
+# tests/integration/common/backends.rs) — you no longer need to start them
+# here. This file remains only for services still addressed over a fixed
+# localhost port (Redis).
+#
 # Usage:
-#   docker compose -f docker-compose.test.yml up -d          # Start all services
-#   docker compose -f docker-compose.test.yml up -d redis    # Start Redis only
+#   docker compose -f docker-compose.test.yml up -d          # Start services
 #   docker compose -f docker-compose.test.yml down            # Stop and remove
 #
-# Once services are healthy, run the ignored tests:
-#   cargo test -- --ignored
+# Once services are healthy, run the ignored tests (Docker required):
+#   cargo test --test integration -- --ignored
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    ports:
-      - "5432:5432"
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: test
-      POSTGRES_DB: orion_test
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  mysql:
-    image: mysql:8
-    ports:
-      - "3306:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: test
-      MYSQL_DATABASE: orion_test
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-ptest"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  mongo:
-    image: mongo:7
-    ports:
-      - "27017:27017"
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s
       timeout: 5s
       retries: 5

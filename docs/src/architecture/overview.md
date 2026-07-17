@@ -251,9 +251,10 @@ Two sources contribute task functions, all compiled into every binary:
 |----------|-------------|
 | `http_call` | Invoke downstream APIs via an HTTP connector |
 | `channel_call` | Invoke another channel's workflow in-process |
-| `db_read` / `db_write` | Execute SQL queries against a SQL connector, return rows / affected count |
+| `data_query` / `data_write` | Portable, backend-neutral queries and mutations against SQL, MongoDB, or Elasticsearch connectors (see the [Portable Data Dialect](../reference/data-dialect.md)) |
+| `db_read` / `db_write` | Execute raw SQL against a SQL connector, return rows / affected count |
 | `cache_read` / `cache_write` | Read/write to an in-memory or Redis cache connector |
-| `mongo_read` | Query MongoDB collections via a MongoDB connector |
+| `mongo_read` | Query MongoDB collections with raw find() filters |
 | `publish_kafka` | Publish messages via a Kafka connector |
 
 The Orion handlers have machine-readable input schemas surfaced at `GET /api/v1/admin/functions`, and workflow create/update calls validate `function.input` against those schemas with field-pathed `FieldError`s before the workflow can be activated.

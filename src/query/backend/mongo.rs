@@ -14,6 +14,7 @@ use mongodb::bson::{Bson, Document};
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, FieldRef, MongoStorage, Quant, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir};
+use crate::query::write::{ConflictAction, ResolvedWrite, WriteError, WriteOp};
 
 /// A rendered MongoDB `find`: the collection plus filter and options.
 #[derive(Debug, Clone, PartialEq)]
@@ -266,6 +267,176 @@ fn mongo_name<T: MongoName + ?Sized>(f: &T) -> String {
     }
 }
 
+// ---- Write rendering (insert / update / delete / upsert) ----
+
+/// A rendered MongoDB write, ready for the driver call the handler makes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MongoWrite {
+    Insert {
+        collection: String,
+        docs: Vec<Document>,
+    },
+    Update {
+        collection: String,
+        filter: Document,
+        /// Update document (e.g. `{ "$set": {..} }`); already assembled.
+        update: Document,
+        upsert: bool,
+        /// `true` → `update_many`; `false` → `update_one` (upsert).
+        multi: bool,
+    },
+    Delete {
+        collection: String,
+        filter: Document,
+    },
+}
+
+/// Render a resolved mutation into a [`MongoWrite`]. The `filter` of an
+/// update/delete reuses the query dialect's [`match_doc`]; values become BSON via
+/// the same [`to_bson`] the read path uses. `id` maps to `_id`.
+pub fn render_write(w: &ResolvedWrite) -> Result<MongoWrite, WriteError> {
+    Ok(match w.op {
+        WriteOp::Insert => MongoWrite::Insert {
+            collection: w.table.clone(),
+            docs: build_docs(&w.columns, &w.rows),
+        },
+        WriteOp::Update => MongoWrite::Update {
+            collection: w.table.clone(),
+            filter: cond_to_doc(&w.cond)?,
+            update: doc_kv("$set", Bson::Document(set_to_doc(&w.set))),
+            upsert: false,
+            multi: true,
+        },
+        WriteOp::Delete => MongoWrite::Delete {
+            collection: w.table.clone(),
+            filter: cond_to_doc(&w.cond)?,
+        },
+        WriteOp::Upsert => render_upsert(w)?,
+    })
+}
+
+fn render_upsert(w: &ResolvedWrite) -> Result<MongoWrite, WriteError> {
+    let conflict = w
+        .conflict
+        .as_ref()
+        .ok_or_else(|| WriteError::MissingField {
+            field: "on_conflict".to_string(),
+            op: "upsert".to_string(),
+        })?;
+    // A single-document upsert keyed on the conflict target. Bulk upsert would
+    // need one updateOne per row; deferred (fail loudly, don't guess).
+    if w.rows.len() != 1 {
+        return Err(WriteError::FeatureUnsupportedByTarget {
+            feature: "bulk upsert".to_string(),
+            target: "mongodb".to_string(),
+        });
+    }
+    let row = &w.rows[0];
+
+    // Filter matches on the conflict-target columns (also applied on insert).
+    let mut filter = Document::new();
+    for t in &conflict.targets {
+        let idx = w.columns.iter().position(|c| c == t).ok_or_else(|| {
+            WriteError::InvalidEnvelope(format!(
+                "on_conflict target '{t}' must be one of the inserted columns"
+            ))
+        })?;
+        filter.insert(mongo_name(t.as_str()), to_bson(&row[idx]));
+    }
+
+    let mut set = Document::new();
+    let mut set_on_insert = Document::new();
+    match conflict.action {
+        ConflictAction::Update => {
+            if w.set.is_empty() {
+                // Overwrite every non-target column on conflict.
+                for (col, v) in w.columns.iter().zip(row) {
+                    if !conflict.targets.contains(col) {
+                        set.insert(mongo_name(col.as_str()), to_bson(v));
+                    }
+                }
+            } else {
+                for (col, v) in &w.set {
+                    set.insert(mongo_name(col.as_str()), to_bson(v));
+                }
+                // Inserted columns not in `set` (and not targets) apply only on insert.
+                for (col, v) in w.columns.iter().zip(row) {
+                    if !conflict.targets.contains(col) && !w.set.iter().any(|(c, _)| c == col) {
+                        set_on_insert.insert(mongo_name(col.as_str()), to_bson(v));
+                    }
+                }
+            }
+        }
+        ConflictAction::Nothing => {
+            // Insert the row if absent; leave an existing row untouched.
+            for (col, v) in w.columns.iter().zip(row) {
+                if !conflict.targets.contains(col) {
+                    set_on_insert.insert(mongo_name(col.as_str()), to_bson(v));
+                }
+            }
+        }
+    }
+
+    let mut update = Document::new();
+    if !set.is_empty() {
+        update.insert("$set", Bson::Document(set));
+    }
+    if !set_on_insert.is_empty() {
+        update.insert("$setOnInsert", Bson::Document(set_on_insert));
+    }
+    // Guard against an empty update doc (Mongo rejects it): fall back to keying
+    // the targets on insert.
+    if update.is_empty() {
+        let mut soi = Document::new();
+        for t in &conflict.targets {
+            let idx = w
+                .columns
+                .iter()
+                .position(|c| c == t)
+                .expect("target present");
+            soi.insert(mongo_name(t.as_str()), to_bson(&row[idx]));
+        }
+        update.insert("$setOnInsert", Bson::Document(soi));
+    }
+
+    Ok(MongoWrite::Update {
+        collection: w.table.clone(),
+        filter,
+        update,
+        upsert: true,
+        multi: false,
+    })
+}
+
+/// One BSON document per row, keyed by physical column name (`id` → `_id`).
+fn build_docs(columns: &[String], rows: &[Vec<Value>]) -> Vec<Document> {
+    rows.iter()
+        .map(|row| {
+            let mut d = Document::new();
+            for (col, v) in columns.iter().zip(row) {
+                d.insert(mongo_name(col.as_str()), to_bson(v));
+            }
+            d
+        })
+        .collect()
+}
+
+fn set_to_doc(set: &[(String, Value)]) -> Document {
+    let mut d = Document::new();
+    for (col, v) in set {
+        d.insert(mongo_name(col.as_str()), to_bson(v));
+    }
+    d
+}
+
+/// Lower an optional filter to a `$match`-shaped document (empty = match all).
+fn cond_to_doc(cond: &Option<Cond>) -> Result<Document, WriteError> {
+    Ok(match cond {
+        None | Some(Cond::True) => Document::new(),
+        Some(c) => match_doc(c).map_err(WriteError::from)?,
+    })
+}
+
 /// Escape regex metacharacters so user text matches literally inside `$regex`.
 fn regex_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -415,5 +586,92 @@ mod tests {
         )
         .expect_err("over cap");
         assert!(matches!(err, QueryError::LimitExceeded { .. }));
+    }
+
+    // ---- Write rendering ----
+
+    fn resolve(input: serde_json::Value) -> crate::query::write::ResolvedWrite {
+        crate::query::write::resolve_write(
+            &input,
+            &serde_json::Map::new(),
+            &EntityRegistry::default(),
+        )
+        .expect("resolve_write should succeed")
+    }
+
+    #[test]
+    fn test_mongo_insert_docs() {
+        let mw = render_write(&resolve(json!({
+            "op": "insert", "target": "users",
+            "values": [ { "id": "u1", "name": "Ada" }, { "id": "u2", "name": "Bob" } ]
+        })))
+        .expect("render");
+        // `id` maps to `_id`.
+        assert_eq!(
+            mw,
+            MongoWrite::Insert {
+                collection: "users".to_string(),
+                docs: vec![
+                    doc! { "_id": "u1", "name": "Ada" },
+                    doc! { "_id": "u2", "name": "Bob" },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn test_mongo_update_uses_set_and_filter() {
+        let mw = render_write(&resolve(json!({
+            "op": "update", "target": "users",
+            "set": { "status": "inactive" },
+            "filter": { "==": [{ "field": "id" }, "u1"] }
+        })))
+        .expect("render");
+        assert_eq!(
+            mw,
+            MongoWrite::Update {
+                collection: "users".to_string(),
+                filter: doc! { "_id": { "$eq": "u1" } },
+                update: doc! { "$set": { "status": "inactive" } },
+                upsert: false,
+                multi: true,
+            }
+        );
+    }
+
+    #[test]
+    fn test_mongo_delete_filter() {
+        let mw = render_write(&resolve(json!({
+            "op": "delete", "target": "sessions",
+            "filter": { "<": [{ "field": "age" }, 0] }
+        })))
+        .expect("render");
+        assert_eq!(
+            mw,
+            MongoWrite::Delete {
+                collection: "sessions".to_string(),
+                filter: doc! { "age": { "$lt": 0_i64 } },
+            }
+        );
+    }
+
+    #[test]
+    fn test_mongo_upsert_is_update_one_with_upsert() {
+        let mw = render_write(&resolve(json!({
+            "op": "upsert", "target": "users",
+            "values": { "email": "a@x.io", "name": "Ada" },
+            "on_conflict": { "target": ["email"], "action": "update" }
+        })))
+        .expect("render");
+        assert_eq!(
+            mw,
+            MongoWrite::Update {
+                collection: "users".to_string(),
+                filter: doc! { "email": "a@x.io" },
+                update: doc! { "$set": { "name": "Ada" } },
+                upsert: true,
+                multi: false,
+            }
+        );
     }
 }
