@@ -36,3 +36,6 @@ debug/
 
 # Benchmark results
 /tests/benchmark/results/
+
+# Design proposals (local only)
+/proposals/
