@@ -1,6 +1,6 @@
 [package]
 name = "orion-server"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Declarative services runtime — deploy governed REST/Kafka services as JSON workflows, with rate limiting, circuit breakers, versioning, and observability built in"

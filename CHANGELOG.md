@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-07-18
+
+This release introduces the portable data dialect: backend-neutral `data_query` and
+`data_write` task functions that render one declarative filter/envelope format to
+SQL (SQLite/PostgreSQL/MySQL), MongoDB, and Elasticsearch — so workflows can read
+and write data without embedding backend-specific queries. `db_read`/`db_write`
+remain available as the raw-SQL escape hatch.
+
+### Added
+
+- **`data_query` portable read dialect** — declarative, backend-neutral queries
+  (filter, sort, pagination, projection) rendered per connector backend: SQL,
+  MongoDB `find`, and Elasticsearch. Supports an inline schema registry with
+  relations, and `include` for fetching nested related records with hydration.
+- **`data_write` portable write dialect** — insert/update/delete/upsert with
+  SQL/MongoDB/Elasticsearch parity and a cross-backend end-to-end test suite.
+- **Per-operation connector gates** — db/es connector configs accept
+  `operations: { read, insert, update, delete, upsert, raw_write }` (all default
+  `true`), enforced by the data handlers; e.g. set `"delete": false` to make a
+  connector delete-proof.
+- **One-command quickstart** (`examples/quickstart.sh`), a connector-backed
+  `postgres-orders` example, and Getting Started guides (CLI setup, first
+  connector, AI prompt pack). All examples are linted and deployed end-to-end in CI.
+- **Docs**: Dev & Prod topology pages with interactive architecture diagrams,
+  terminal recordings (GIFs + asciinema), a comparison page, and a benchmark chart.
+- **AI-consumable docs**: `llms.txt` and generated `llms-full.txt` published with
+  the docs site, alongside the checked-in OpenAPI 3.1 spec.
+- **Security & community**: `SECURITY.md`, `CODE_OF_CONDUCT.md`, issue templates,
+  CodeQL (security-extended) and cargo-audit in CI, `ADOPTERS.md`.
+
+### Changed
+
+- Dependency upgrades: `datalogic-rs` 5.0 → 5.1, `dataflow-rs` 3.0.1 → 3.0.2,
+  `datavalue-rs` 0.2.2 → 0.2.3 (benchmarked perf-neutral), `redis` 1.2 → 1.3.
+- Docker release workflow publishes to GHCR only (ACR mirror removed).
+
+### Security
+
+- Updated `Cargo.lock` to clear RUSTSEC-2026-0185 (`quinn-proto`).
+
 ## [0.2.0] - 2026-05-27
 
 This release upgrades the workflow engine to dataflow-rs 3.0 / datalogic-rs 5 and
@@ -67,6 +107,7 @@ Earlier release. See the Git history for details.
 
 Initial release.
 
+[0.3.0]: https://github.com/GoPlasmatic/Orion/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/GoPlasmatic/Orion/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/GoPlasmatic/Orion/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/GoPlasmatic/Orion/releases/tag/v0.1.0
