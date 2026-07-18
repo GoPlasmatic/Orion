@@ -19,7 +19,7 @@ Orion is an API-first declarative services runtime written in Rust. Instead of w
 
 Every workflow is executed with enterprise-grade architectural governance—including observability, rate limiting, circuit breakers, caching, input validation, and versioning—built directly into the runtime, not bolted on. Build workflows yourself or let an AI generate them; either way, they run under the same production-grade guarantees.
 
-**Jump to:** [Quickstart](#your-first-service-in-2-minutes) · [Why Orion?](#why-orion) · [Is Orion right for you?](#is-orion-right-for-you) · [Three primitives](#three-primitives) · [What's built in](#whats-built-in) · [Connectors](#connect-to-anything) · [Functions](#built-in-task-functions) · [Performance](#performance) · [Install](#install) · [Docs](#documentation)
+**Jump to:** [Quickstart](#your-first-service-in-2-minutes) · [Why Orion?](#why-orion) · [Is Orion right for you?](#is-orion-right-for-you) · [Three primitives](#three-primitives) · [The console](#the-console) · [What's built in](#whats-built-in) · [Connectors](#connect-to-anything) · [Functions](#built-in-task-functions) · [Performance](#performance) · [Install](#install) · [Docs](#documentation)
 
 ---
 
@@ -40,9 +40,12 @@ Developers spend too much time building the same boilerplate for microservices�
 No code. No Dockerfile. No CI pipeline. Just a running service.
 
 <div align="center">
-  <img src="media/quickstart.gif" alt="Define a workflow and channel over HTTP, then send a request and get a governed response — all in under a minute" width="100%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="media/ui-quickstart-dark.gif">
+    <img src="media/ui-quickstart-light.gif" alt="Import a workflow, validate and dry-run it, create a channel in a form, send a request, and see the live service map — all in the Orion console, no code" width="100%">
+  </picture>
   <br>
-  <em>Business logic as JSON, deployed over plain HTTP — flagged in milliseconds, with rate limiting, metrics and tracing already on.</em>
+  <em>Zero to a live service in under a minute: declare the logic, validate and dry-run it, give it an endpoint, send a request — tracing and metrics already on. Prefer a terminal? The same flow is four curl calls, below.</em>
 </div>
 
 **1. Start Orion**
@@ -62,6 +65,10 @@ The script talks to the same admin API you'd use in production: it creates a **w
 
 <details>
 <summary><b>What the script does — the four API calls, spelled out</b></summary>
+
+<div align="center">
+  <img src="media/quickstart.gif" alt="Define a workflow and channel over HTTP, then send a request and get a governed response — all in under a minute" width="100%">
+</div>
 
 Create the workflow (business logic as JSON — a parse task, then a conditional flag task):
 
@@ -179,6 +186,24 @@ graph LR
 **Design-time:** define channels, build workflows, configure connectors, test with dry-run, manage versions, all through the admin API.
 
 **Runtime:** Orion routes traffic to channels, executes workflows, calls connectors, and handles observability automatically.
+
+---
+
+## The Console
+
+Orion itself is API-first, and everything it does is also point-and-click: [Orion UI](https://github.com/GoPlasmatic/Orion-ui) is the operations console for a running instance — live dashboards, a system map of every channel → workflow → connector, workflow logic visualization, trace drill-downs, and a data console for firing test requests (`docker compose up` next to the server, or `npm run dev`).
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/ui-operations-dark.png">
+  <img src="media/ui-operations-light.png" alt="Operations dashboard — request rate, error rate, latency percentiles, outcomes by channel, top channels, and recent traces for a live Orion instance" width="100%">
+</picture>
+<em>Operations: live request rate, error rate, latency, and traces for every channel.</em>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/ui-system-map-dark.png">
+  <img src="media/ui-system-map-light.png" alt="System Map — the orders channel traced through the workflow it runs, rendered as a live topology graph" width="100%">
+</picture>
+<em>System Map: any channel traced through the workflow it runs and the connectors it touches.</em>
 
 ---
 
