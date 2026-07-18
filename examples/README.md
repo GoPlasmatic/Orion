@@ -3,10 +3,16 @@
 Ready-to-deploy [channels and workflows](../docs/src/reference/workflows.md) you
 can POST to a running Orion instance and call immediately.
 
-Every example here is **self-contained and zero-dependency** — it uses only the
-built-in data functions (`parse_json`, `map`, and JSONLogic conditions), so it
-runs against a fresh `orion-server` with no database, connectors, or external
-services to set up. Each workflow is validated in CI with `orion-server lint`.
+Most examples are **self-contained and zero-dependency** — they use only the
+built-in data functions (`parse_json`, `map`, and JSONLogic conditions), so they
+run against a fresh `orion-server` with no database, connectors, or external
+services to set up. The exception is [`postgres-orders`](postgres-orders/),
+which ships a `docker compose` file and shows the connector-backed side of
+Orion: `data_query`/`data_write` against a real PostgreSQL database. Every
+workflow is linted and deployed end-to-end in CI.
+
+New to Orion? `./quickstart.sh` deploys your first service (workflow + channel,
+activated, first request sent) against a running instance in one command.
 
 ## Layout
 
@@ -17,6 +23,7 @@ Each example directory holds three request bodies:
 | `workflow.json` | `POST /api/v1/admin/workflows` | The task pipeline (the logic) |
 | `channel.json`  | `POST /api/v1/admin/channels`  | The endpoint that routes to the workflow |
 | `request.json`  | `POST /api/v1/data/<route>`    | A sample request to try it |
+| `connector.json` *(optional)* | `POST /api/v1/admin/connectors` | A named connection to an external system, when the example needs one |
 
 > Requests use the `{ "data": { … } }` envelope. Orion unwraps `data` into the
 > workflow payload, which `parse_json` reads via `"source": "payload"`.
@@ -31,10 +38,9 @@ any example in one command:
 ```
 
 `deploy.sh` creates and activates the workflow, creates and activates the
-channel, then POSTs `request.json` and prints the response. It needs `curl` and
-`python3`. (Each example uses a fixed workflow/channel id, so re-running against
-the same instance will report "already exists" — delete them first or use a fresh
-DB to redeploy.)
+channel (and creates the connector first, if the example has one), then POSTs
+`request.json` and prints the response. It needs `curl` and `python3`.
+Re-running is safe — objects that already exist are skipped.
 
 ### …or step by step
 
@@ -79,13 +85,14 @@ curl -X POST http://localhost:8080/api/v1/data/orders \
 | [`iot-sensor-alert`](iot-sensor-alert/) | `POST /sensors` | Range-based severity with `and` / `or` |
 | [`webhook-transform`](webhook-transform/) | `POST /webhooks` | Normalize provider payloads with `var` mapping (null-safe) |
 | [`notification-routing`](notification-routing/) | `POST /notifications` | Progressive routing with the `in` set-membership operator |
+| [`postgres-orders`](postgres-orders/) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |
 
 ## Beyond these examples
 
-These use only built-in data functions, so they run anywhere. Workflows that talk
-to external systems — `http_call`, `db_read`/`db_write`, `cache_*`, `mongo_read`,
-`publish_kafka` — additionally need a **connector**
-(`POST /api/v1/admin/connectors`), and `channel_call` composes channels
+Workflows that talk to external systems — `data_query`/`data_write`,
+`http_call`, `db_read`/`db_write`, `cache_*`, `mongo_read`, `publish_kafka` —
+need a **connector** (`POST /api/v1/admin/connectors`); `postgres-orders` is
+the worked example of that pattern, and `channel_call` composes channels
 in-process. See:
 
 - [Function Reference](../docs/src/reference/functions.md) — every function's input schema

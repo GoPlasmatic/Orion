@@ -1,4 +1,4 @@
-# CLI Setup
+# Install & First Service
 
 Get Orion running on your machine in under a minute.
 
@@ -107,6 +107,15 @@ orion-server validate-config -c config.toml
 
 ## Create Your First Service
 
+> **In a hurry?** One command deploys a first service (workflow + channel,
+> activated) against your running instance and sends a test request:
+>
+> ```bash
+> curl -fsSL https://raw.githubusercontent.com/GoPlasmatic/Orion/main/examples/quickstart.sh | bash
+> ```
+>
+> The steps below build a service by hand so you can see each moving part.
+
 **1. Create a workflow:**
 
 ```bash
@@ -214,6 +223,7 @@ See the [CLI reference](https://github.com/GoPlasmatic/Orion-cli) for the full c
 
 ## Next Steps
 
+- Connect a real database: [Your First Connector](../getting-started/first-connector.md)
 - Browse the [API Reference](../api/admin.md) for all available endpoints
 - Explore [Production Features](../features/observability.md) for observability, security, and resilience
 - See the [Config Reference](../configuration/reference.md) for all configuration options

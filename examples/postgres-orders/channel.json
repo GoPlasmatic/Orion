@@ -1,0 +1,9 @@
+{
+  "channel_id": "record-order",
+  "name": "record-order",
+  "channel_type": "sync",
+  "protocol": "rest",
+  "route_pattern": "/record-order",
+  "methods": ["POST"],
+  "workflow_id": "record-order"
+}

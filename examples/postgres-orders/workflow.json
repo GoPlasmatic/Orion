@@ -1,0 +1,64 @@
+{
+  "workflow_id": "record-order",
+  "name": "Record Order (Postgres)",
+  "description": "Insert an order with data_write, then return the customer with their order history via data_query + include.",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "req" } }
+    },
+    {
+      "id": "record",
+      "name": "Insert the order",
+      "function": {
+        "name": "data_write",
+        "input": {
+          "connector": "orders-db",
+          "op": "insert",
+          "target": "orders",
+          "values": {
+            "customer_id": { "param": "customer_id" },
+            "item": { "param": "item" },
+            "total": { "param": "total" }
+          },
+          "params": {
+            "customer_id": { "var": "data.req.customer_id" },
+            "item": { "var": "data.req.item" },
+            "total": { "var": "data.req.total" }
+          },
+          "returning": ["id"],
+          "output": "data.created"
+        }
+      }
+    },
+    {
+      "id": "history",
+      "name": "Fetch customer with order history",
+      "function": {
+        "name": "data_query",
+        "input": {
+          "connector": "orders-db",
+          "query": {
+            "source": "customers",
+            "filter": { "==": [{ "field": "id" }, { "param": "customer_id" }] },
+            "include": { "orders": { "fields": ["id", "item", "total"], "limit": 10 } }
+          },
+          "params": { "customer_id": { "var": "data.req.customer_id" } },
+          "schema": {
+            "entities": {
+              "customers": {
+                "relations": {
+                  "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "customer_id" }
+                }
+              },
+              "orders": {}
+            }
+          },
+          "output": "data.customer"
+        }
+      }
+    }
+  ]
+}

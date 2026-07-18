@@ -52,16 +52,20 @@ brew install GoPlasmatic/tap/orion-server   # or: curl installer, cargo install 
 orion-server
 ```
 
-**2. Tell AI what you need**
-
-Give your LLM this prompt, or write the JSON yourself:
-
-> "Flag orders over $10,000 for manual review with an alert message"
-
-**3. Deploy the workflow AI generated**
+**2. Deploy your first service — one command**
 
 ```bash
-# Create the workflow (paste the AI-generated JSON here)
+curl -fsSL https://raw.githubusercontent.com/GoPlasmatic/Orion/main/examples/quickstart.sh | bash
+```
+
+The script talks to the same admin API you'd use in production: it creates a **workflow** (the logic — flag any order over $10,000 for review) and a **channel** (the endpoint — `POST /orders`), activates both, and sends a first test order. Re-running it is safe. Cloned the repo? Run `./examples/quickstart.sh` instead.
+
+<details>
+<summary><b>What the script does — the four API calls, spelled out</b></summary>
+
+Create the workflow (business logic as JSON — a parse task, then a conditional flag task):
+
+```bash
 curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
   -H "Content-Type: application/json" \
   -d '{
@@ -85,12 +89,12 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
     ]
   }'
 
-# Activate it
+# Activate it (draft → active; the engine hot-reloads)
 curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/high-value-order/status \
   -H "Content-Type: application/json" -d '{"status": "active"}'
 ```
 
-**4. Create a channel (the service endpoint)**
+Create the channel — the endpoint that routes to the workflow — and activate it:
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/admin/channels \
@@ -99,12 +103,13 @@ curl -s -X POST http://localhost:8080/api/v1/admin/channels \
         "protocol": "rest", "route_pattern": "/orders",
         "methods": ["POST"], "workflow_id": "high-value-order" }'
 
-# Activate
 curl -s -X PATCH http://localhost:8080/api/v1/admin/channels/orders/status \
   -H "Content-Type: application/json" -d '{"status": "active"}'
 ```
 
-**5. Send a request — your service is live**
+</details>
+
+**3. Call it — your service is live**
 
 ```bash
 curl -s -X POST http://localhost:8080/api/v1/data/orders \
@@ -126,7 +131,9 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders \
 }
 ```
 
-That's it. You described what you needed. AI wrote the logic. Orion ran it, with rate limiting, metrics, health checks, and request tracing already active. Change the threshold? One API call. No rebuild, no redeploy, no restart.
+That's it. The business logic is a JSON document, deploying it was an API call, and rate limiting, metrics, health checks, and request tracing were already active when it went live. Change the threshold? One API call. No rebuild, no redeploy, no restart.
+
+> **Prefer to describe the service instead of writing it?** Workflow JSON is exceptionally easy for LLMs to generate — tell your AI assistant *"flag orders over $10,000 for manual review with an alert message"* and deploy what it returns. [AI Writes Services, Not Code](#ai-writes-services-not-code) shows the safe path from prompt to production.
 
 ---
 
@@ -342,9 +349,10 @@ Connectors are named, reusable connections to external systems. Configure once, 
 | **Database** | PostgreSQL, MySQL, SQLite | Parameterized queries, connection pooling, read + write operations |
 | **Cache** | In-memory (built-in) or Redis | TTL-based expiry, also powers deduplication and response caching |
 | **MongoDB** | Any MongoDB instance | Document queries, BSON-to-JSON conversion, connection pooling |
+| **Elasticsearch** | Any Elasticsearch cluster | Portable `data_query`/`data_write` rendered to Query DSL and `_bulk`, via the shared HTTP client |
 | **Kafka** | Any Kafka cluster | Publish with key/value logic, consume with DLQ routing |
 
-Every connector gets **circuit breaker protection** automatically: failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Secrets are stored in the database and masked in API responses, and any string field can use an `env://VAR_NAME` reference to pull the value from the process environment at startup so production credentials never sit in the saved config. See [Connectors Guide](https://goplasmatic.github.io/Orion/features/extensibility.html#connectors) for configuration examples and auth options.
+Every connector gets **circuit breaker protection** automatically: failures trip the breaker, subsequent calls fast-fail, and the breaker auto-recovers. Database and Elasticsearch connectors also carry **per-operation gates** (`operations: { read, insert, update, delete, upsert, raw_write }`) — set `"delete": false` and no workflow can delete through that connector, no matter what its tasks say. Secrets are stored in the database and masked in API responses, and any string field can use an `env://VAR_NAME` reference to pull the value from the process environment at startup so production credentials never sit in the saved config. See [Connectors Guide](https://goplasmatic.github.io/Orion/features/extensibility.html#connectors) for configuration examples and auth options.
 
 ---
 
@@ -359,8 +367,10 @@ Every connector gets **circuit breaker protection** automatically: failures trip
 | `validation` | Enforce required fields, constraints, and schema-like checks |
 | `http_call` | Invoke downstream APIs, webhooks, or services via [connectors](https://goplasmatic.github.io/Orion/features/extensibility.html#connectors) |
 | `channel_call` | Invoke another channel's workflow in-process |
-| `db_read` | Execute SQL SELECT queries, return rows as JSON |
-| `db_write` | Execute SQL INSERT/UPDATE/DELETE, return affected count |
+| `data_query` | Portable, backend-neutral read — filter, project, sort, paginate, include related records — runs unchanged on SQL, MongoDB, or Elasticsearch |
+| `data_write` | Portable insert/update/delete/upsert using the same envelope across SQL, MongoDB, and Elasticsearch |
+| `db_read` | Execute raw SQL SELECT queries, return rows as JSON (escape hatch for CTEs, aggregations, hand-tuned SQL) |
+| `db_write` | Execute raw SQL INSERT/UPDATE/DELETE, return affected count |
 | `cache_read` | Read from in-memory or Redis cache |
 | `cache_write` | Write to cache with optional TTL |
 | `mongo_read` | Query MongoDB collections, BSON-to-JSON conversion |
@@ -369,7 +379,7 @@ Every connector gets **circuit breaker protection** automatically: failures trip
 | `publish_kafka` | Publish messages to [Kafka topics](https://goplasmatic.github.io/Orion/features/extensibility.html#kafka-connector) |
 | `log` | Emit structured log entries for auditing and debugging |
 
-All functions are built into every binary. The dataflow-rs runtime contributes `parse_json`/`parse_xml`/`filter`/`map`/`validation`/`publish_json`/`publish_xml`/`log`; Orion adds the connector-backed handlers (`http_call`, `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`, `publish_kafka`) and the in-process `channel_call`. `cache_read`/`cache_write` use the in-memory backend by default; reference a Redis connector for distributed caching. See the [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html) for every function's exact `input` schema, or browse them at runtime via `GET /api/v1/admin/functions`.
+All functions are built into every binary. The dataflow-rs runtime contributes `parse_json`/`parse_xml`/`filter`/`map`/`validation`/`publish_json`/`publish_xml`/`log`; Orion adds the connector-backed handlers (`http_call`, `data_query`, `data_write`, `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`, `publish_kafka`) and the in-process `channel_call`. `data_query`/`data_write` speak the [portable data dialect](https://goplasmatic.github.io/Orion/reference/data-dialect.html) — write the query once, switch backends by switching connectors. `cache_read`/`cache_write` use the in-memory backend by default; reference a Redis connector for distributed caching. See the [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html) for every function's exact `input` schema, or browse them at runtime via `GET /api/v1/admin/functions`.
 
 ---
 
@@ -432,7 +442,7 @@ Single binary. SQLite by default, no database to provision, no runtime dependenc
 | Complex workflow (4 tasks) | 6,053 | 8.2 ms | 25.5 ms |
 | 12 workflows on one channel | 6,912 | 7.2 ms | 16.6 ms |
 
-v0.2.0 upgrades dataflow-rs to 3.0 and datalogic-rs to 5, which moved JSONLogic compilation to engine-construction time. Compared to the v0.1.x baseline (dataflow-rs 2.1.5), complex and multi-workflow scenarios pick up large gains (+48% and +120% req/s respectively) and P99 latency drops materially on every scenario. The benchmark folders under [`tests/benchmark/results/`](tests/benchmark/results/) mix two version schemes: `v2.1.5` and `v3.0.0` are **dataflow-rs engine** versions (the v0.1.x baseline and the 3.0 upgrade snapshot), while `v0.2.0` is **Orion's own** release version — the `v0.2.0` and `v3.0.0` datasets are the same run. Run `./tests/benchmark/bench.sh` to reproduce.
+v0.2.0 upgrades dataflow-rs to 3.0 and datalogic-rs to 5, which moved JSONLogic compilation to engine-construction time. Compared to the v0.1.x baseline (dataflow-rs 2.1.5), complex and multi-workflow scenarios pick up large gains (+48% and +120% req/s respectively) and P99 latency drops materially on every scenario. Run `./tests/benchmark/bench.sh` to reproduce.
 
 Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mode, async-first on Tokio.
 
@@ -516,10 +526,11 @@ See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full comma
 |-------|-------------|
 | [Workflow Reference](https://goplasmatic.github.io/Orion/reference/workflows.html) | Workflow & task JSON schema, conditions, error handling, lifecycle, and rollout |
 | [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html) | Every built-in task function and its exact `input` schema |
+| [Portable Data Dialect](https://goplasmatic.github.io/Orion/reference/data-dialect.html) | Backend-neutral query/write envelope for `data_query`/`data_write` — one filter dialect across SQL, MongoDB, Elasticsearch |
 | [Admin API](https://goplasmatic.github.io/Orion/api/admin.html) | Workflows, channels, connectors, engine, audit, and backup endpoints |
 | [Data API](https://goplasmatic.github.io/Orion/api/data.html) | Data routing, sync/async processing, traces, and operational endpoints |
 | [Configuration](https://goplasmatic.github.io/Orion/configuration/reference.html) | Config file, env vars, database backends, deployment |
-| [Connectors & Extensibility](https://goplasmatic.github.io/Orion/features/extensibility.html) | HTTP, DB, Cache, Storage, MongoDB, Kafka: auth, retry, circuit breakers |
+| [Connectors & Extensibility](https://goplasmatic.github.io/Orion/features/extensibility.html) | HTTP, DB, Cache, Storage, MongoDB, Elasticsearch, Kafka: auth, retry, circuit breakers |
 | [Observability](https://goplasmatic.github.io/Orion/features/observability.html) | Prometheus metrics, health checks, Kubernetes probes, tracing, logging |
 | [Resilience](https://goplasmatic.github.io/Orion/features/resilience.html) | Circuit breakers, timeouts, dead letter queues |
 | [Scalability](https://goplasmatic.github.io/Orion/features/scalability.html) | Rate limiting, backpressure, horizontal scaling |
