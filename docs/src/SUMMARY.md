@@ -8,6 +8,7 @@
 # Getting Started
 
 - [Install & First Service](./tutorials/cli-setup.md)
+- [The Console (Orion UI)](./getting-started/console.md)
 - [Your First Connector](./getting-started/first-connector.md)
 - [MCP Server Setup](./tutorials/mcp-setup.md)
 - [Prompt Pack (any LLM)](./getting-started/prompt-pack.md)

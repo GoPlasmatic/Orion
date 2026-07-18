@@ -2,6 +2,13 @@
 
 Orion provides structured logging, Prometheus metrics, distributed tracing, and health monitoring out of the box. No sidecars, no agents. Everything runs inside the single binary.
 
+All of it surfaces visually in [the Orion console](../getting-started/console.md) — live request rate, error rate, latency percentiles, outcomes by channel, and trace drill-downs:
+
+<div class="themed-media">
+  <img class="media-dark" src="../images/ui-operations-dark.png" alt="Operations dashboard — request rate, error rate, latency percentiles, outcomes by channel, top channels, and recent traces for a live Orion instance">
+  <img class="media-light" src="../images/ui-operations-light.png" alt="Operations dashboard — request rate, error rate, latency percentiles, outcomes by channel, top channels, and recent traces for a live Orion instance">
+</div>
+
 ## Structured Logging
 
 Orion emits structured logs in JSON or pretty-printed format, configurable at runtime:

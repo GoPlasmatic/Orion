@@ -20,6 +20,12 @@ Developers spend too much time building the same boilerplate for microservices�
 
 This site is the deep reference and how-to guide — new here? [**Install Orion and ship your first service**](./tutorials/cli-setup.md) in a couple of minutes.
 
+<div class="themed-media">
+  <video class="media-dark" controls muted playsinline preload="metadata" src="videos/ui-quickstart-dark.webm"></video>
+  <video class="media-light" controls muted playsinline preload="metadata" src="videos/ui-quickstart-light.webm"></video>
+</div>
+<span class="asciinema-caption">▶ Zero to a live service in under a minute, without writing code — in <a href="getting-started/console.html">the Orion console</a>. Prefer a terminal? The same flow over plain HTTP:</span>
+
 <div class="asciinema-player" data-cast="casts/quickstart.cast"></div>
 <span class="asciinema-caption">From zero to a live, governed service — business logic as JSON, deployed over plain HTTP. ▶ Click to play.</span>
 
