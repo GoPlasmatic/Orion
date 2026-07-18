@@ -31,3 +31,34 @@ ORION_PORT=8090 ./record.sh        # use a different port (the quickstart GIF sh
 
 `record.sh` uses the debug binaries at `../../target/debug/orion-server` and
 `../../../Orion-cli/target/debug/orion-cli`, building them if they are missing.
+
+## UI recordings (console GIF + screenshots)
+
+The README hero GIF and the console screenshots are also generated, not
+hand-captured: [`record-ui.sh`](record-ui.sh) boots a throwaway `orion-server`
+plus the Orion-ui dev server (sibling checkout, override with `ORION_UI_DIR`),
+then a Playwright script ([`ui/demo-ui-quickstart.mjs`](ui/demo-ui-quickstart.mjs))
+drives the console through the creation loop — import workflow (paste →
+validate → dry-run → activate) → logic visualization → channel form → Data
+Console request → System Map — and captures, per theme (light + dark):
+
+| Artifact | Files |
+|----------|-------|
+| Hero GIF (creation loop, ~50 s) | `../../media/ui-quickstart-{light,dark}.gif` |
+| Screenshots | `../../media/ui-{operations,system-map,workflow-dag,console}-{light,dark}.png` |
+
+```bash
+brew install ffmpeg                # one-time (plus node/npm)
+./record-ui.sh                     # installs Playwright + Chromium on first run
+```
+
+Useful overrides:
+
+```bash
+THEMES=dark ./record-ui.sh         # a single theme
+SPEED=1.0 FPS=15 ./record-ui.sh    # GIF playback speed / frame rate
+ORION_UI_DIR=~/src/Orion-ui ./record-ui.sh
+```
+
+The captions and the pointer are injected into the page by the driver, so the
+recording stays in sync with the real UI — if the console changes, just re-run.
