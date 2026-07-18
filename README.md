@@ -146,7 +146,7 @@ That's it. The business logic is a JSON document, deploying it was an API call, 
 | Replace a handful of single-purpose microservices | **Yes** | One instance handles many channels, governance included |
 | Use a rule engine like Drools | **Not quite** | Orion uses [JSONLogic](https://jsonlogic.com) via [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) for conditions and transforms. Lightweight and AI-friendly, but not a full RETE-based rule engine with complex fact networks |
 | Embed a workflow engine library in your app | **No** | Orion is a standalone runtime, not a library. For an embeddable workflow engine, see [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) which Orion is built on |
-| Build a visual drag-and-drop workflow UI | No | Orion is API-first; pair it with your own UI or use the [CLI](https://github.com/GoPlasmatic/Orion-cli) |
+| Manage services from a browser dashboard | **Yes** | [Orion UI](https://github.com/GoPlasmatic/Orion-ui) — manage workflows/channels/connectors, visualize pipelines, monitor health (Orion itself stays API-first) |
 | Orchestrate long-running jobs (hours/days) | No | Use Temporal or Airflow. Orion is optimized for request-response and event processing |
 | Run a full API gateway with plugin ecosystem | No | Use Kong or Envoy. Orion focuses on service logic, not proxy features |
 | General-purpose compute (image processing, ML) | No | Orion's task functions operate on JSON data. Use custom services or serverless for arbitrary compute |
@@ -564,17 +564,14 @@ See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full comma
 
 [Axum](https://github.com/tokio-rs/axum) (HTTP), [Tokio](https://tokio.rs) (async runtime), [SQLx](https://github.com/launchbadge/sqlx) (database), [sea-query](https://github.com/SeaQL/sea-query) (portable SQL builder), SQLite/PostgreSQL/MySQL (storage), [datalogic-rs](https://github.com/GoPlasmatic/datalogic-rs) (JSONLogic), [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) (workflow orchestration).
 
-## Roadmap
+## Ecosystem & Roadmap
 
-The roadmap lives in the issue tracker — every item is an open issue you can 👍 to prioritize, comment on, or pick up:
+Orion ships with two companion projects:
 
-- **[Web UI](https://github.com/GoPlasmatic/Orion/issues/233):** visual workflow builder and channel dashboard
-- **[SDK clients](https://github.com/GoPlasmatic/Orion/issues/234):** Python, Go, and Node.js libraries for the admin API
-- **[Workflow marketplace](https://github.com/GoPlasmatic/Orion/issues/235):** community-contributed workflow templates
-- **[Scheduler](https://github.com/GoPlasmatic/Orion/issues/236):** cron-based workflow execution
-- **[WASM task functions](https://github.com/GoPlasmatic/Orion/issues/237):** extend the engine with custom logic in any language
+- **[Orion UI](https://github.com/GoPlasmatic/Orion-ui):** the admin dashboard — manage workflows, channels, and connectors, visualize workflow pipelines, inspect audit trails, and monitor engine health from the browser
+- **[Orion CLI](https://github.com/GoPlasmatic/Orion-cli):** the command-line interface and MCP server — manage everything from your terminal or AI assistant
 
-Have an idea? [Open an issue](https://github.com/GoPlasmatic/Orion/issues) or start a [discussion](https://github.com/GoPlasmatic/Orion/discussions).
+Under consideration: workflow marketplace (community templates), cron-based scheduling, WASM task functions, and language SDKs. Have an idea or want to push one of these forward? [Open an issue](https://github.com/GoPlasmatic/Orion/issues) or start a [discussion](https://github.com/GoPlasmatic/Orion/discussions).
 
 ## Who's Using Orion?
 

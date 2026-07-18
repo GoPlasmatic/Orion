@@ -16,7 +16,7 @@ home turf, and pairing them with Orion is often the right answer.
 | Orchestrate long-running jobs (hours/days), human approvals | No | Temporal, Airflow, BPMN engines |
 | Run a full API gateway with a plugin ecosystem | No | Kong, Envoy (Orion runs happily behind them) |
 | A RETE rule engine with complex fact networks | No | Drools |
-| Visual drag-and-drop automation | Not yet | n8n, Make — or pair the [CLI](https://github.com/GoPlasmatic/Orion-cli) with your own UI |
+| Manage services from a browser dashboard | **Yes** | [Orion UI](https://github.com/GoPlasmatic/Orion-ui), the admin dashboard |
 | Embed a workflow engine inside your app | No | [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs), the library Orion is built on |
 | General-purpose compute (ML, media processing) | No | Your own services / serverless |
 
@@ -75,7 +75,8 @@ huge app catalogs, drag-and-drop, hosted convenience. Orion optimizes for
 **production service traffic**: thousands of requests per second, P99 in
 milliseconds, versioned rollouts, circuit breakers, Prometheus metrics — and
 an API-first design where definitions are JSON in your repo, not boxes in a
-canvas (a visual builder is [on the roadmap](https://github.com/GoPlasmatic/Orion/issues/233)).
+canvas ([Orion UI](https://github.com/GoPlasmatic/Orion-ui) adds a dashboard
+for managing and visualizing them, but the API stays the source of truth).
 If a workflow runs a few times an hour and touches 40 SaaS apps, use the
 automation tools. If it *is* one of your services, run it on Orion.
 
