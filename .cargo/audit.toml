@@ -1,4 +1,9 @@
 [advisories]
 ignore = [
     "RUSTSEC-2023-0071",  # rsa via sqlx-mysql in Cargo.lock; we only use SQLite
+    # quick-xml <0.41 DoS advisories, pulled in via dataflow-rs 3.0.2 (pins ^0.37).
+    # Upstream bump to 0.41 is committed on dataflow-rs main; remove both ignores
+    # and `cargo update` once dataflow-rs 3.0.3 is published.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
