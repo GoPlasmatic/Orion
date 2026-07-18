@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](./introduction.md)
+[Is Orion Right for You?](./comparison.md)
 
 ---
 

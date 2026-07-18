@@ -3,14 +3,14 @@ name = "orion-server"
 version = "0.2.1"
 edition = "2024"
 rust-version = "1.88"
-description = "Declarative services runtime powered by dataflow-rs"
+description = "Declarative services runtime — deploy governed REST/Kafka services as JSON workflows, with rate limiting, circuit breakers, versioning, and observability built in"
 license = "Apache-2.0"
 repository = "https://github.com/GoPlasmatic/Orion"
-homepage = "https://github.com/GoPlasmatic/Orion"
+homepage = "https://goplasmatic.io/orion"
 documentation = "https://goplasmatic.github.io/Orion/"
 readme = "README.md"
 keywords = ["workflow", "runtime", "declarative", "microservices", "jsonlogic"]
-categories = ["web-programming"]
+categories = ["web-programming", "web-programming::http-server"]
 exclude = ["tests/", "docs/", "examples/", ".github/", ".claude/", "docker-compose*", "Dockerfile"]
 
 [[bin]]

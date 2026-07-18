@@ -152,6 +152,8 @@ That's it. The business logic is a JSON document, deploying it was an API call, 
 | General-purpose compute (image processing, ML) | No | Orion's task functions operate on JSON data. Use custom services or serverless for arbitrary compute |
 | Stateful workflows with human-in-the-loop approvals | No | Use [Temporal](https://temporal.io) or BPMN engines. Orion workflows are stateless request pipelines |
 
+Longer, tool-by-tool discussion (Temporal, Kong, Drools, n8n, dataflow-rs): [Is Orion Right for You?](https://goplasmatic.github.io/Orion/comparison.html)
+
 ---
 
 ## Three Primitives
@@ -450,6 +452,11 @@ Single binary. SQLite by default, no database to provision, no runtime dependenc
 
 **6K–7K workflow requests/sec** on a single instance (Apple M-series, release build, 50 concurrent connections, v0.2.0 release):
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/benchmark-dark.svg">
+  <img src="media/benchmark-light.svg" alt="Throughput by scenario — simple workflow: 7,446 req/s; 12 workflows on one channel: 6,912 req/s; complex workflow (4 tasks): 6,053 req/s" width="100%">
+</picture>
+
 | Scenario | Req/sec | Avg Latency | P99 Latency |
 |----------|--------:|------------:|------------:|
 | Simple workflow (1 task) | 7,446 | 6.7 ms | 16.7 ms |
@@ -559,13 +566,19 @@ See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full comma
 
 ## Roadmap
 
-- **Web UI:** visual workflow builder and channel dashboard
-- **SDK clients:** Python, Go, and Node.js libraries for the admin API
-- **Workflow marketplace:** community-contributed workflow templates
-- **Scheduler:** cron-based workflow execution
-- **WASM task functions:** extend the engine with custom logic in any language
+The roadmap lives in the issue tracker — every item is an open issue you can 👍 to prioritize, comment on, or pick up:
 
-Have an idea? [Open an issue](https://github.com/GoPlasmatic/Orion/issues).
+- **[Web UI](https://github.com/GoPlasmatic/Orion/issues/233):** visual workflow builder and channel dashboard
+- **[SDK clients](https://github.com/GoPlasmatic/Orion/issues/234):** Python, Go, and Node.js libraries for the admin API
+- **[Workflow marketplace](https://github.com/GoPlasmatic/Orion/issues/235):** community-contributed workflow templates
+- **[Scheduler](https://github.com/GoPlasmatic/Orion/issues/236):** cron-based workflow execution
+- **[WASM task functions](https://github.com/GoPlasmatic/Orion/issues/237):** extend the engine with custom logic in any language
+
+Have an idea? [Open an issue](https://github.com/GoPlasmatic/Orion/issues) or start a [discussion](https://github.com/GoPlasmatic/Orion/discussions).
+
+## Who's Using Orion?
+
+Using Orion in a project, a company, or a side quest? Add yourself to [ADOPTERS.md](ADOPTERS.md) with a one-line PR, or share what you built in [Discussions](https://github.com/GoPlasmatic/Orion/discussions) — real-world usage reports directly shape the roadmap.
 
 ## Contributing
 
