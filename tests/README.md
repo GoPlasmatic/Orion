@@ -108,13 +108,4 @@ Performance scenarios live in `tests/benchmark/` and use the [`hey`](https://git
 BENCH_RELEASE=1 ./tests/benchmark/bench.sh
 ```
 
-Captured runs live alongside the script under `tests/benchmark/results/`:
-
-| Directory       | What it captures                                                               |
-|-----------------|---------------------------------------------------------------------------------|
-| `v2.1.5/`       | v0.1.x baseline (dataflow-rs 2.1.5 + datalogic-rs 4)                            |
-| `v0.2.0/`       | v0.2.0 release (dataflow-rs 3.0 + datalogic-rs 5) — current default            |
-| `v3.0.0/`       | First dataflow-rs 3.0 upgrade snapshot, kept for historical comparison         |
-| `trace-modes/`  | sync vs async vs batch vs off trace-persistence cost on a steady workload      |
-
-Each result directory contains a `SUMMARY.md` (Markdown table) plus the raw per-scenario `hey` output for reproducibility.
+Each run writes its results to `tests/benchmark/results/` next to the script — a `SUMMARY.md` (Markdown table) plus the raw per-scenario `hey` output. The directory is gitignored; results are local snapshots, not checked in. The headline numbers live in the README's [Performance](../README.md#performance) section.

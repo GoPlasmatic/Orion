@@ -74,7 +74,7 @@ injection-safe by construction.
 | `fields` | array | Projection; omit for all columns/fields |
 | `sort` | array | `[{ "age": "asc" }, { "name": "desc" }]` — deterministic null ordering across backends |
 | `limit` / `skip` | number | Pagination. Missing `limit` gets `query.default_limit`; above `query.max_limit` is **rejected, never clamped** |
-| `include` | array | Nested related records, hydrated per relation (see [Relations](#relations-and-includes)) |
+| `include` | object | Relation name → `{ "fields": [..], "limit": n }`; nested related records, hydrated per relation (see [Relations](#relations-and-includes)) |
 
 ### Operator vocabulary
 
@@ -221,8 +221,8 @@ the dialect runs in *identity mode*: names pass through as-is.
 - **Allowlist** — with `"unmapped": "reject"`, only declared entities/columns
   are usable; `queryable: false` hides a column from reads, `writable: false`
   protects it from writes (generated/identity columns).
-- **Relations** — declare `has_many` / `belongs_to` / many-to-many (via
-  `through`) so `some`/`all`/`none` predicates and `include` work.
+- **Relations** — declare `has_one` / `has_many` / `many_to_many` (the latter
+  via `through`) so `some`/`all`/`none` predicates and `include` work.
 
 ## Relations and includes
 
@@ -237,7 +237,7 @@ renders as a correlated `EXISTS` (SQL), `$elemMatch` over embedded documents
 themselves, hydrated with one child query per relation:
 
 ```json
-"include": [ { "relation": "orders", "fields": ["id", "total"], "limit": 10 } ]
+"include": { "orders": { "fields": ["id", "total"], "limit": 10 } }
 ```
 
 ## Connector operation gates

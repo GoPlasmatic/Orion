@@ -4,6 +4,12 @@
 
 ---
 
+# Getting Started
+
+- [Install & First Service](./tutorials/cli-setup.md)
+- [Your First Connector](./getting-started/first-connector.md)
+- [MCP Server Setup](./tutorials/mcp-setup.md)
+
 # Architecture
 
 - [Overview](./architecture/overview.md)
@@ -37,8 +43,6 @@
 
 # Tutorials
 
-- [CLI Setup](./tutorials/cli-setup.md)
-- [MCP Server Setup](./tutorials/mcp-setup.md)
 - [Use Cases & Patterns](./tutorials/use-cases.md)
 
 # Configuration
