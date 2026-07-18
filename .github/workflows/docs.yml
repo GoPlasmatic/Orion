@@ -31,6 +31,20 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
+      # llms-full.txt: the whole book as one markdown file, in SUMMARY order,
+      # served from the site root for LLM/agent consumption (llms.txt is a
+      # static file in docs/src and is copied by mdbook build).
+      - name: Generate llms-full.txt
+        run: |
+          {
+            echo "# Orion — complete documentation"
+            echo "# Generated from the mdBook sources at https://github.com/GoPlasmatic/Orion/tree/main/docs/src"
+            grep -oE '\(\./[A-Za-z0-9_./-]+\.md\)' docs/src/SUMMARY.md | tr -d '()' | while read -r p; do
+              printf '\n\n---\nsource: %s\n---\n\n' "$p"
+              cat "docs/src/${p#./}"
+            done
+          } > docs/book/llms-full.txt
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

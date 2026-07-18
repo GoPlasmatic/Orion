@@ -1,0 +1,39 @@
+# Orion
+
+> Orion is an API-first declarative services runtime written in Rust. Business
+> logic is declared as JSON workflows and exposed through channels (REST/Kafka
+> service endpoints) via a REST admin API — with rate limiting, circuit
+> breakers, caching, validation, versioning, and observability built into the
+> runtime. Single binary, embedded SQLite by default (PostgreSQL/MySQL
+> optional).
+
+Key facts: workflows are pipelines of tasks using JSONLogic; everything is
+created as a draft, tested via dry-run, then activated (the engine
+hot-reloads); active versions are immutable; connectors are named connections
+to external systems (HTTP, SQL, MongoDB, Elasticsearch, Redis, Kafka)
+referenced from tasks by name. The full documentation concatenated into one
+file is at https://goplasmatic.github.io/Orion/llms-full.txt
+
+## Getting started
+
+- [Install & First Service](https://goplasmatic.github.io/Orion/tutorials/cli-setup.html): install matrix, first workflow + channel end-to-end
+- [Your First Connector](https://goplasmatic.github.io/Orion/getting-started/first-connector.html): PostgreSQL + the portable data dialect
+- [Prompt Pack](https://goplasmatic.github.io/Orion/getting-started/prompt-pack.html): self-contained context block for driving Orion from any LLM
+- [MCP Server Setup](https://goplasmatic.github.io/Orion/tutorials/mcp-setup.html): 46 MCP tools via orion-cli
+
+## Reference
+
+- [Workflow Reference](https://goplasmatic.github.io/Orion/reference/workflows.html): workflow & task JSON schema, conditions, lifecycle, rollout
+- [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html): every task function's exact input schema
+- [Portable Data Dialect](https://goplasmatic.github.io/Orion/reference/data-dialect.html): backend-neutral query/write envelope (data_query / data_write) across SQL, MongoDB, Elasticsearch
+- [Admin API](https://goplasmatic.github.io/Orion/api/admin.html): workflows, channels, connectors, engine, audit, backup endpoints
+- [Data API](https://goplasmatic.github.io/Orion/api/data.html): routing, sync/async processing, traces
+- [Configuration](https://goplasmatic.github.io/Orion/configuration/reference.html): config file, env overrides, database backends
+- [OpenAPI 3.1 spec](https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/openapi.json): machine-readable API description
+
+## Optional
+
+- [Connectors & Extensibility](https://goplasmatic.github.io/Orion/features/extensibility.html): HTTP, DB, cache, MongoDB, Elasticsearch, Kafka connectors
+- [Observability](https://goplasmatic.github.io/Orion/features/observability.html): Prometheus metrics, health checks, tracing
+- [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html): worked examples, AI prompt templates, CI/CD
+- [GitHub repository](https://github.com/GoPlasmatic/Orion): source, examples/, issues
