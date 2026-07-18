@@ -25,7 +25,7 @@
 **1. Install the CLI:**
 
 ```bash
-brew install GoPlasmatic/tap/orion-cli   # or: curl installer, cargo install (see Install)
+brew install GoPlasmatic/tap/orion-cli   # or: curl installer, Docker (see Install)
 ```
 
 **2. Point it at your [Orion server](https://github.com/GoPlasmatic/Orion):**
@@ -454,9 +454,6 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion-cli/r
 
 # Windows (PowerShell)
 powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.ps1 | iex"
-
-# From crates.io
-cargo install orion-cli
 
 # From source
 cargo install --git https://github.com/GoPlasmatic/Orion-cli.git
