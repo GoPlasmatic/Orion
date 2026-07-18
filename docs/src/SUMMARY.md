@@ -9,6 +9,7 @@
 - [Install & First Service](./tutorials/cli-setup.md)
 - [Your First Connector](./getting-started/first-connector.md)
 - [MCP Server Setup](./tutorials/mcp-setup.md)
+- [Prompt Pack (any LLM)](./getting-started/prompt-pack.md)
 
 # Architecture
 

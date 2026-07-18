@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a new capability or an improvement to an existing one
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: >
+        Describe the situation, not the solution — what are you building, and
+        where does Orion get in the way or fall short today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: >
+        What would you like Orion to do? If it touches workflow/channel/connector
+        JSON, a sketch of the shape you'd expect helps a lot.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: >
+        Workarounds you're using now (raw-SQL escape hatch, extra workflow tasks,
+        an external service, ...) and why they aren't enough.
+    validations:
+      required: false

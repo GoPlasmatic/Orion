@@ -7,8 +7,12 @@ Orion includes an MCP (Model Context Protocol) server that lets AI assistants li
 
 ## Prerequisites
 
-- A running Orion instance (see [CLI Setup](./cli-setup.md))
+- A running Orion instance (see [Install & First Service](./cli-setup.md))
 - An MCP-compatible client (Claude Code, Claude Desktop, or other MCP clients)
+
+> No MCP client? Use the [Prompt Pack](../getting-started/prompt-pack.md) — a
+> self-contained context block that lets any LLM drive Orion through the plain
+> REST API.
 
 ## Configuration
 

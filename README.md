@@ -184,7 +184,21 @@ graph LR
 
 When AI generates a microservice, you still need to add health checks, metrics, retries, and error handling. When AI generates an Orion workflow, **all of that is already there**. The platform guarantees it.
 
-**Use the [Orion CLI's MCP server](https://github.com/GoPlasmatic/Orion-cli)** to give your AI assistant full Orion context. No manual prompt engineering needed. The MCP server provides your LLM with workflow syntax, available functions, connector types, and API operations automatically.
+**Use the [Orion CLI's MCP server](https://github.com/GoPlasmatic/Orion-cli)** to give your AI assistant full Orion context. No manual prompt engineering needed. The MCP server exposes 46 tools covering the full Orion API — workflow syntax, available functions, connector types, and API operations. One config block and you're done (Claude Code `.mcp.json`, Claude Desktop, or any MCP client):
+
+```json
+{
+  "mcpServers": {
+    "orion": {
+      "command": "orion-cli",
+      "args": ["mcp", "serve"],
+      "env": { "ORION_SERVER_URL": "http://localhost:8080" }
+    }
+  }
+}
+```
+
+No MCP client? Paste the [**prompt pack**](https://goplasmatic.github.io/Orion/getting-started/prompt-pack.html) — a self-contained context block with Orion's schemas, conventions, and API calls — into any LLM and it can write and deploy workflows through the plain REST API.
 
 ```
 You: "Classify orders into VIP (>=500, 15% discount), Premium (100-500, 5%), and Standard tiers"
@@ -566,7 +580,8 @@ cargo fmt                                # Format
 ```
 
 - **Report bugs:** [Open an issue](https://github.com/GoPlasmatic/Orion/issues)
-- **Ask questions:** [Open an issue](https://github.com/GoPlasmatic/Orion/issues)
+- **Ask questions:** [GitHub Discussions](https://github.com/GoPlasmatic/Orion/discussions)
+- **Report security issues privately:** see [SECURITY.md](SECURITY.md)
 - **Submit code:** Fork, branch, PR. All tests must pass (`cargo test && cargo clippy`)
 - **Docs recordings:** the README GIFs and mdBook asciinema casts are generated from real sessions — see [`docs/recordings/`](docs/recordings/) to regenerate them.
 

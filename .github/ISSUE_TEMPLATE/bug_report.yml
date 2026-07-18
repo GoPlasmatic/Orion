@@ -1,0 +1,72 @@
+name: Bug report
+description: Something broke or behaved unexpectedly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. The more of this you fill in,
+        the faster we can reproduce and fix it.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        Created a workflow with ..., sent a request to ..., expected 200 with ...,
+        got a 500 with ...
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: >
+        The smallest workflow / channel / connector JSON and request that
+        reproduces the problem. Strip anything sensitive — connector secrets
+        are masked in API responses, but double-check pasted configs.
+      render: bash
+      placeholder: |
+        curl -X POST http://localhost:8080/api/v1/admin/workflows -d '{ ... }'
+        curl -X POST http://localhost:8080/api/v1/data/... -d '{ "data": { ... } }'
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Orion version
+      description: Output of `orion-server --version`
+      placeholder: orion-server 0.3.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How is Orion running?
+      options:
+        - Binary (brew / shell installer / cargo install)
+        - Docker / Docker Compose
+        - Kubernetes
+        - Built from source
+    validations:
+      required: true
+  - type: dropdown
+    id: database
+    attributes:
+      label: Metadata database backend
+      options:
+        - SQLite (default)
+        - PostgreSQL
+        - MySQL
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log output
+      description: >
+        Server logs around the failure (Orion logs structured JSON by default;
+        include the `x-request-id` of the failing request if you have it).
+      render: text
+    validations:
+      required: false
