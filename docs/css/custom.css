@@ -318,3 +318,23 @@ pre:has(> code.language-orion-diagram) {
 .orion-diagram .react-flow__attribution a {
   color: var(--fg);
 }
+
+/* ============================================================
+   Theme-aware screenshots & videos (.themed-media)
+   Dark asset on dark themes (navy is the site default), light
+   asset on light themes — switched on mdBook's <html> class.
+   ============================================================ */
+.themed-media .media-light { display: none; }
+.themed-media .media-dark { display: block; }
+html.light .themed-media .media-dark,
+html.rust .themed-media .media-dark { display: none; }
+html.light .themed-media .media-light,
+html.rust .themed-media .media-light { display: block; }
+
+.themed-media img,
+.themed-media video {
+  width: 100%;
+  margin: 1.25em 0;
+  border: 1px solid var(--table-border-color);
+  border-radius: 8px;
+}

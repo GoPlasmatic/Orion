@@ -45,7 +45,11 @@ Console request → System Map — and captures, per theme (light + dark):
 | Artifact | Files |
 |----------|-------|
 | Hero GIF (creation loop, ~50 s) | `../../media/ui-quickstart-{light,dark}.gif` |
-| Screenshots | `../../media/ui-{operations,system-map,workflow-dag,console}-{light,dark}.png` |
+| Demo video (same recording, webm, mdBook) | `../src/videos/ui-quickstart-{light,dark}.webm` |
+| Screenshots (README + mdBook) | `../../media/` and `../src/images/` — `ui-{operations,system-map,workflow-dag,console}-{light,dark}.png` |
+
+The GIFs/screenshots in Orion-ui's README are copies of the same files — sync them
+when regenerating.
 
 ```bash
 brew install ffmpeg                # one-time (plus node/npm)

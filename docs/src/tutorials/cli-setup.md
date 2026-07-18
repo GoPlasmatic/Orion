@@ -2,6 +2,9 @@
 
 Get Orion running on your machine in under a minute.
 
+> Prefer point-and-click? [**The Console (Orion UI)**](../getting-started/console.md) walks
+> the same zero-to-live-service flow entirely in the browser — with a demo video.
+
 ## Installation
 
 Choose your preferred method:
