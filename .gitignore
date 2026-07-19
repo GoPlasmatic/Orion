@@ -37,5 +37,5 @@ debug/
 # Benchmark results
 /tests/benchmark/results/
 
-# Design proposals (local only)
-/proposals/
+# Launch/marketing collateral (local only — drafts, checklists, submission notes)
+/marketing/

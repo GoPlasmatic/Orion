@@ -620,6 +620,10 @@ cargo fmt                                # Format
 - **Submit code:** Fork, branch, PR. All tests must pass (`cargo test && cargo clippy`)
 - **Docs recordings:** the README GIFs and mdBook asciinema casts are generated from real sessions — see [`docs/recordings/`](docs/recordings/) to regenerate them.
 
+## Support the Project
+
+If Orion looks useful, a ⭐ on this repo is the easiest way to help other developers find it. Beyond that: share what you build in [Discussions](https://github.com/GoPlasmatic/Orion/discussions), add yourself to [ADOPTERS.md](ADOPTERS.md), or send this to a colleague who's tired of writing boilerplate services.
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) for details.

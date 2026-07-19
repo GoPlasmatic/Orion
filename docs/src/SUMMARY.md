@@ -11,6 +11,7 @@
 - [The Console (Orion UI)](./getting-started/console.md)
 - [Your First Connector](./getting-started/first-connector.md)
 - [MCP Server Setup](./tutorials/mcp-setup.md)
+- [Orion + Claude Code](./tutorials/claude-code.md)
 - [Prompt Pack (any LLM)](./getting-started/prompt-pack.md)
 
 # Architecture
