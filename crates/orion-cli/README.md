@@ -349,7 +349,11 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ### Cursor Configuration
 
-Add to Cursor MCP settings (Settings > MCP Servers):
+One-click install:
+
+[![Install MCP Server in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=orion&config=eyJjb21tYW5kIjoib3Jpb24tY2xpIiwiYXJncyI6WyJtY3AiLCJzZXJ2ZSJdLCJlbnYiOnsiT1JJT05fU0VSVkVSX1VSTCI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MCJ9fQ==)
+
+Or add manually to Cursor MCP settings (Settings > MCP Servers):
 
 ```json
 {
@@ -486,3 +490,7 @@ cargo fmt            # Format
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE) for details.
+
+---
+
+If Orion CLI is useful to you, a ⭐ on [GitHub](https://github.com/GoPlasmatic/Orion-cli) helps other developers find it.

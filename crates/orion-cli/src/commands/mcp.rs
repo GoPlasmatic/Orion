@@ -18,12 +18,12 @@ enum McpCommands {
         long_about = "Start the Model Context Protocol (MCP) server for AI tool integration.\n\n\
             Stdio transport (default): for Claude Desktop, Cursor, and other local AI clients.\n\
             HTTP transport (--http): for remote AI clients over the network.\n\n\
-            The MCP server exposes 40+ tools for managing workflows, channels, connectors, \
+            The MCP server exposes 46 tools for managing workflows, channels, connectors, \
             data, traces, engine, metrics, audit logs, and backups.",
         after_help = "Examples:\n  \
             orion-cli mcp serve --server http://localhost:8080\n  \
             orion-cli mcp serve --http --bind 0.0.0.0:9090\n\n\
-            Claude Desktop config (~/.claude/claude_desktop_config.json):\n  \
+            Claude Desktop config (macOS: ~/Library/Application Support/Claude/claude_desktop_config.json):\n  \
             {\"mcpServers\":{\"orion\":{\"command\":\"orion-cli\",\"args\":[\"mcp\",\"serve\",\"--server\",\"http://localhost:8080\"]}}}"
     )]
     Serve(ServeArgs),

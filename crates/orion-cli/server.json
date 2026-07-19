@@ -1,0 +1,37 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.goplasmatic/orion",
+  "description": "Build and operate declarative REST/Kafka services on Orion: 46 tools over the full admin API.",
+  "repository": {
+    "url": "https://github.com/GoPlasmatic/Orion-cli",
+    "source": "github"
+  },
+  "version": "0.2.1",
+  "websiteUrl": "https://goplasmatic.github.io/Orion/tutorials/mcp-setup.html",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/goplasmatic/orion-cli:0.2.1",
+      "transport": { "type": "stdio" },
+      "packageArguments": [
+        { "type": "positional", "value": "mcp" },
+        { "type": "positional", "value": "serve" }
+      ],
+      "environmentVariables": [
+        {
+          "name": "ORION_SERVER_URL",
+          "description": "URL of the Orion server to manage (e.g. http://localhost:8080)",
+          "isRequired": true,
+          "format": "string"
+        },
+        {
+          "name": "ORION_API_KEY",
+          "description": "API key, if the Orion server has admin authentication enabled",
+          "isRequired": false,
+          "isSecret": true,
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}

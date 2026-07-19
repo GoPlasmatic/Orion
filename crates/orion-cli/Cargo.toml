@@ -3,10 +3,12 @@ name = "orion-cli"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
-description = "CLI tool for the Orion services runtime"
+description = "CLI and MCP server for the Orion declarative services runtime — manage workflows, channels, connectors, data, and traces from the terminal or an AI client"
 license = "Apache-2.0"
 repository = "https://github.com/GoPlasmatic/Orion-cli"
 homepage = "https://github.com/GoPlasmatic/Orion-cli"
+keywords = ["mcp", "cli", "workflow", "microservices", "devops"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "orion-cli"

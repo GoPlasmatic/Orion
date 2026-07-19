@@ -161,3 +161,37 @@ jobs:
       - name: Inspect manifest
         run: |
           docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}"
+
+  # Publish/update the server listing in the official MCP registry.
+  # OIDC from this repo grants the io.github.goplasmatic/* namespace; the pushed
+  # image must carry the io.modelcontextprotocol.server.name label (see Dockerfile).
+  # Docs: https://modelcontextprotocol.io/registry/github-actions
+  publish-mcp:
+    name: Publish to MCP Registry
+    needs: [prepare, merge]
+    if: ${{ github.ref_type == 'tag' && !inputs.dry_run }}
+    runs-on: ubuntu-22.04
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m).tar.gz" \
+            | tar xz mcp-publisher
+
+      - name: Sync server.json to release version
+        run: |
+          VERSION="${{ needs.prepare.outputs.version }}"
+          jq --arg v "$VERSION" \
+            '.version = $v | .packages[0].identifier = "ghcr.io/goplasmatic/orion-cli:" + $v' \
+            server.json > server.json.tmp && mv server.json.tmp server.json
+
+      - name: Publish
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
