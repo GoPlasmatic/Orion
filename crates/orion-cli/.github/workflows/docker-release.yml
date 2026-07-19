@@ -163,7 +163,7 @@ jobs:
           docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}"
 
   # Publish/update the server listing in the official MCP registry.
-  # OIDC from this repo grants the io.github.goplasmatic/* namespace; the pushed
+  # OIDC from this repo grants the io.github.GoPlasmatic/* namespace (case-sensitive); the pushed
   # image must carry the io.modelcontextprotocol.server.name label (see Dockerfile).
   # Docs: https://modelcontextprotocol.io/registry/github-actions
   publish-mcp:

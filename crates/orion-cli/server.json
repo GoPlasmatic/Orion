@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.goplasmatic/orion",
+  "name": "io.github.GoPlasmatic/orion",
   "description": "Build and operate declarative REST/Kafka services on Orion: 46 tools over the full admin API.",
   "repository": {
     "url": "https://github.com/GoPlasmatic/Orion-cli",

@@ -28,7 +28,7 @@ RUN cargo build --release --locked
 FROM debian:trixie-slim
 
 # MCP registry ownership verification (must match server.json "name")
-LABEL io.modelcontextprotocol.server.name="io.github.goplasmatic/orion"
+LABEL io.modelcontextprotocol.server.name="io.github.GoPlasmatic/orion"
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
