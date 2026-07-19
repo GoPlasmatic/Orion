@@ -169,7 +169,8 @@ jobs:
   publish-mcp:
     name: Publish to MCP Registry
     needs: [prepare, merge]
-    if: ${{ github.ref_type == 'tag' && !inputs.dry_run }}
+    # Runs on version tags, or on manual dispatch with tag_override (re-publish path)
+    if: ${{ !inputs.dry_run && (github.ref_type == 'tag' || inputs.tag_override != '') }}
     runs-on: ubuntu-22.04
     permissions:
       id-token: write
@@ -181,7 +182,13 @@ jobs:
 
       - name: Install mcp-publisher
         run: |
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m).tar.gz" \
+          OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64) ARCH=amd64 ;;
+            aarch64) ARCH=arm64 ;;
+          esac
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${OS}_${ARCH}.tar.gz" \
             | tar xz mcp-publisher
 
       - name: Sync server.json to release version
