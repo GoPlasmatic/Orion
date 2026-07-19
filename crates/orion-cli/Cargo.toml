@@ -1,6 +1,6 @@
 [package]
 name = "orion-cli"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 description = "CLI and MCP server for the Orion declarative services runtime — manage workflows, channels, connectors, data, and traces from the terminal or an AI client"
