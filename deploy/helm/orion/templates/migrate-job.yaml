@@ -1,0 +1,49 @@
+{{- if and .Values.migrateJob.enabled (not .Values.devStack.enabled) }}
+# Runs `orion-server migrate` before installs and upgrades, so replicas
+# (which boot with storage.autoMigrate=false) never race migrations.
+# Migrations must follow the expand/contract convention — see CONTRIBUTING.md.
+#
+# As a pre-install hook this runs BEFORE release resources exist, so it
+# cannot reference the chart-managed storage Secret: the URL is inlined
+# unless you provide storage.existingSecret (which pre-exists the release).
+# With devStack.enabled the Job is skipped entirely — the dev database is
+# itself a release resource — and replicas migrate at boot instead.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "orion.fullname" . }}-migrate
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrateJob.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "orion.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: {{ include "orion.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["migrate"]
+          env:
+            - name: ORION_STORAGE__URL
+              {{- if .Values.storage.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.storage.existingSecret }}
+                  key: storage-url
+              {{- else }}
+              value: {{ include "orion.storageUrl" . | quote }}
+              {{- end }}
+{{- end }}

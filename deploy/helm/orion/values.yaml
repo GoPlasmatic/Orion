@@ -1,0 +1,119 @@
+# Default values for the Orion chart.
+#
+# The defaults deploy a 2-replica HA cluster and REQUIRE two inputs:
+#   storage.url   — a postgres:// (or mysql://) URL
+#   cluster.redisUrl — a redis:// URL
+# For a self-contained dev/demo install, set devStack.enabled=true instead:
+# it runs a throwaway single-replica Postgres + Redis in the same namespace
+# and wires Orion to them automatically.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/goplasmatic/orion
+  # Defaults to the chart appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Orion cluster-mode coordination (multi-instance HA).
+cluster:
+  enabled: true
+  # Shared Redis URL for dedup / response cache / rate limits.
+  # Required when cluster.enabled and devStack.enabled=false.
+  redisUrl: ""
+  epochPollIntervalMs: 2000
+
+storage:
+  # Database URL. Required unless devStack.enabled=true.
+  # Example: postgres://orion:orion@my-postgres:5432/orion
+  url: ""
+  # Name of an existing Secret with a `storage-url` key, if you prefer not
+  # to put the URL in values. Takes precedence over storage.url.
+  existingSecret: ""
+  # Replicas never migrate at boot; the pre-upgrade Job below does.
+  autoMigrate: false
+
+# Pre-install/pre-upgrade `orion-server migrate` Job (expand/contract
+# convention: see CONTRIBUTING.md).
+migrateJob:
+  enabled: true
+  backoffLimit: 3
+
+server:
+  port: 8080
+  # Drain: readiness withdrawn immediately on SIGTERM, keep serving this long.
+  shutdownDrainSecs: 15
+  # Bound on the post-drain in-flight wait (0 = unbounded).
+  shutdownForceTimeoutSecs: 20
+
+logging:
+  format: json
+  level: info
+
+# Extra environment variables for the Orion container (ORION_* overrides).
+# - name: ORION_ENGINE__ROLLOUT_STICKY_HEADER
+#   value: x-user-id
+extraEnv: []
+
+# Extra environment sourced from Secrets/ConfigMaps.
+extraEnvFrom: []
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: orion.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 75
+
+podDisruptionBudget:
+  enabled: true
+  # Keep at least one replica during voluntary disruptions.
+  maxUnavailable: 1
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Throwaway in-namespace Postgres + Redis for dev/demo installs ONLY.
+# No persistence tuning, no HA, no backups — never use in production.
+devStack:
+  enabled: false
+  postgres:
+    image: postgres:16-alpine
+    user: orion
+    password: orion
+    database: orion
+  redis:
+    image: redis:7-alpine

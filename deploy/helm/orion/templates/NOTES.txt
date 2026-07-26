@@ -1,0 +1,21 @@
+Orion {{ .Values.image.tag | default .Chart.AppVersion }} deployed as {{ include "orion.fullname" . }} ({{ .Values.replicaCount }} replica(s), cluster mode {{ ternary "ON" "OFF" .Values.cluster.enabled }}).
+
+Reach the API:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "orion.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl http://localhost:{{ .Values.service.port }}/health
+  open http://localhost:{{ .Values.service.port }}/docs
+
+{{- if .Values.devStack.enabled }}
+
+WARNING: devStack is enabled — the in-namespace Postgres/Redis are throwaway
+dev services with no persistence guarantees. For production, set:
+  storage.url        (or storage.existingSecret)
+  cluster.redisUrl
+and disable devStack.
+{{- else if .Values.migrateJob.enabled }}
+
+Migrations run as a pre-upgrade Job ({{ include "orion.fullname" . }}-migrate);
+replicas boot with auto_migrate=false and refuse to start on a pending
+migration. Keep migrations expand/contract compatible across one release.
+{{- end }}
