@@ -481,6 +481,32 @@ async fn check_deduplication(
     Ok(())
 }
 
+/// Stable caller identity for sticky rollout bucketing (C1): the configured
+/// sticky header's value, else the forwarded client IP. `None` (direct
+/// connection, no forwarding headers) falls back to a random bucket.
+fn rollout_identity_from_headers(
+    headers: &axum::http::HeaderMap,
+    sticky_header: &str,
+) -> Option<String> {
+    if !sticky_header.is_empty()
+        && let Some(v) = headers.get(sticky_header).and_then(|v| v.to_str().ok())
+        && !v.is_empty()
+    {
+        return Some(v.to_string());
+    }
+    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok())
+        && let Some(first) = xff.split(',').next().map(str::trim)
+        && !first.is_empty()
+    {
+        return Some(first.to_string());
+    }
+    headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
 /// Acquire a per-channel backpressure permit. Returns `Err(ServiceUnavailable)`
 /// when the channel's concurrency limit has been reached.
 fn acquire_backpressure(
@@ -679,7 +705,9 @@ async fn process_sync_for_channel(
     let engine = crate::engine::acquire_engine_read(&state.engine).await;
     let mut message = dataflow_rs::Message::from_value(&data);
     merge_metadata(&mut message, &metadata);
-    inject_rollout_bucket(&mut message);
+    let sticky_identity =
+        rollout_identity_from_headers(headers, &state.config.engine.rollout_sticky_header);
+    inject_rollout_bucket(&mut message, sticky_identity.as_deref());
 
     let timeout_ms = channel_config
         .as_ref()
@@ -1048,6 +1076,31 @@ mod tests {
         let cfg = dedup_runtime(StubOutcome::BackendError);
         let result = super::check_deduplication("test-channel", &cfg, &idempotency_headers()).await;
         assert!(result.is_ok(), "backend errors must fail open, not 409");
+    }
+
+    #[test]
+    fn test_rollout_identity_prefers_sticky_header() {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-user-id", "user-42".parse().expect("test"));
+        headers.insert(
+            "x-forwarded-for",
+            "10.0.0.1, 10.0.0.2".parse().expect("test"),
+        );
+        assert_eq!(
+            super::rollout_identity_from_headers(&headers, "x-user-id").as_deref(),
+            Some("user-42")
+        );
+        // No sticky header configured → first forwarded IP.
+        assert_eq!(
+            super::rollout_identity_from_headers(&headers, "").as_deref(),
+            Some("10.0.0.1")
+        );
+        // Neither present → None (random bucket fallback).
+        let empty = axum::http::HeaderMap::new();
+        assert_eq!(
+            super::rollout_identity_from_headers(&empty, "x-user-id"),
+            None
+        );
     }
 
     #[tokio::test]

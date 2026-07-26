@@ -130,6 +130,7 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
         channel_registry.clone(),
         trace_persistence_queue_for_workers.clone(),
         config.tracing.storage.clone(),
+        config.engine.rollout_sticky_header.clone(),
     );
 
     // Init metrics recorder (use try — may already be initialized by another test)

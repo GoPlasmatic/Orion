@@ -621,6 +621,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         channel_registry.clone(),
         trace_persistence_queue.clone(),
         config.tracing.storage.clone(),
+        config.engine.rollout_sticky_header.clone(),
     );
 
     tracing::info!(

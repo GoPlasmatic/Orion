@@ -428,6 +428,11 @@ where
         config.engine.max_pool_cache_entries,
         usize
     );
+    env_str!(
+        env_var,
+        "ORION_ENGINE__ROLLOUT_STICKY_HEADER",
+        config.engine.rollout_sticky_header
+    );
 
     // Circuit breaker
     env_parsed!(

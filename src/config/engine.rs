@@ -24,6 +24,11 @@ pub struct EngineConfig {
     pub max_pool_cache_entries: usize,
     /// Interval in seconds between cache cleanup sweeps that evict expired entries.
     pub cache_cleanup_interval_secs: u64,
+    /// Header whose value identifies the caller for sticky canary-rollout
+    /// bucketing (e.g. "x-user-id"). Empty (default): fall back to the
+    /// forwarded client IP (`x-forwarded-for` / `x-real-ip`); with neither,
+    /// the bucket is random per request.
+    pub rollout_sticky_header: String,
 }
 
 impl Default for EngineConfig {
@@ -37,6 +42,7 @@ impl Default for EngineConfig {
             global_http_timeout_secs: 30,
             max_pool_cache_entries: 100,
             cache_cleanup_interval_secs: 60,
+            rollout_sticky_header: String::new(),
         }
     }
 }

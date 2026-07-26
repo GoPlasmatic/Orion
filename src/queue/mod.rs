@@ -179,6 +179,7 @@ impl WorkerHandle {
 /// Scalar config parameters (workers, buffer_size, timeouts, limits) are read
 /// from `config`. The Arc dependencies (engine, repos) are passed separately
 /// because they have independent lifetimes.
+#[allow(clippy::too_many_arguments)]
 pub fn start_workers(
     config: &crate::config::QueueConfig,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
@@ -187,6 +188,7 @@ pub fn start_workers(
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     persistence_queue: TracePersistenceQueue,
     global_trace_storage: crate::config::TracingStorageConfig,
+    rollout_sticky_header: String,
 ) -> (TraceQueue, WorkerHandle) {
     let max_workers = config.workers;
     let buffer_size = config.buffer_size;
@@ -215,6 +217,7 @@ pub fn start_workers(
             processing_timeout_ms: config.processing_timeout_ms,
             max_result_size_bytes: config.max_result_size_bytes,
             dlq_max_retries: config.dlq_max_retries,
+            rollout_sticky_header,
             channel_registry,
             persistence_queue,
             global_trace_storage,

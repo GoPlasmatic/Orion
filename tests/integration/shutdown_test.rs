@@ -51,6 +51,7 @@ async fn test_worker_shutdown_empty_queue() {
         channel_registry,
         persistence_queue,
         global_trace_storage,
+        String::new(),
     );
 
     // Drop the queue sender so the dispatcher loop exits when WorkerHandle

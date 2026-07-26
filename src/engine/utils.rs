@@ -15,13 +15,38 @@ pub fn merge_metadata(message: &mut dataflow_rs::Message, metadata: &Value) {
     }
 }
 
-/// Inject a random `_rollout_bucket` (0–99) into the message data for rollout routing.
-pub fn inject_rollout_bucket(message: &mut dataflow_rs::Message) {
-    let bucket = rand::random::<u32>() % 100;
+/// FNV-1a 64-bit hash. Unkeyed and deterministic — the same identity maps to
+/// the same rollout bucket on every replica and across restarts.
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+/// Compute the rollout bucket (0–99) for a caller.
+///
+/// With a stable identity (configured sticky header, else forwarded client
+/// IP) the bucket is a hash — the same caller lands on the same canary
+/// version on every request and every replica. Without one (direct
+/// connection, no forwarding headers) it falls back to per-request random,
+/// which still honors the rollout percentages in aggregate.
+pub fn rollout_bucket_for_identity(identity: Option<&str>) -> i64 {
+    match identity {
+        Some(id) if !id.is_empty() => (fnv1a64(id.as_bytes()) % 100) as i64,
+        _ => (rand::random::<u32>() % 100) as i64,
+    }
+}
+
+/// Inject `_rollout_bucket` (0–99) into the message data for rollout routing.
+pub fn inject_rollout_bucket(message: &mut dataflow_rs::Message, identity: Option<&str>) {
+    let bucket = rollout_bucket_for_identity(identity);
     set_nested_value(
         &mut message.context,
         "data._rollout_bucket",
-        OwnedDataValue::from_i64(bucket as i64),
+        OwnedDataValue::from_i64(bucket),
     );
 }
 
@@ -63,7 +88,7 @@ mod tests {
     #[test]
     fn test_inject_rollout_bucket_in_range() {
         let mut msg = make_message(json!({}));
-        inject_rollout_bucket(&mut msg);
+        inject_rollout_bucket(&mut msg, None);
 
         let bucket = msg
             .data()
@@ -74,6 +99,30 @@ mod tests {
             (0..100).contains(&bucket),
             "bucket should be 0–99, got {bucket}"
         );
+    }
+
+    #[test]
+    fn test_rollout_bucket_is_sticky_per_identity() {
+        let a1 = rollout_bucket_for_identity(Some("10.0.0.7"));
+        let a2 = rollout_bucket_for_identity(Some("10.0.0.7"));
+        assert_eq!(a1, a2, "same identity must map to the same bucket");
+        assert!((0..100).contains(&a1));
+
+        // Distinct identities distribute (spot-check that not everything
+        // collapses onto one bucket).
+        let buckets: std::collections::HashSet<i64> = (0..50)
+            .map(|i| rollout_bucket_for_identity(Some(&format!("user-{i}"))))
+            .collect();
+        assert!(buckets.len() > 10, "expected spread, got {buckets:?}");
+    }
+
+    #[test]
+    fn test_rollout_bucket_empty_identity_falls_back_to_random() {
+        // Empty identity must not pin every caller to one bucket.
+        let buckets: std::collections::HashSet<i64> = (0..100)
+            .map(|_| rollout_bucket_for_identity(Some("")))
+            .collect();
+        assert!(buckets.len() > 1, "empty identity should randomize");
     }
 
     #[test]
