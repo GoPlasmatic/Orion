@@ -447,7 +447,20 @@ async fn check_deduplication(
         && let Some(key) = headers.get(&dedup.header).and_then(|v| v.to_str().ok())
     {
         let window = dedup.window_secs.unwrap_or(300);
-        let is_new = store.check_and_insert(key, window).await.unwrap_or(false);
+        // Fail open on backend errors: a dedup-store outage must not reject
+        // every request with 409 — availability wins over strict idempotency.
+        let is_new = match store.check_and_insert(key, window).await {
+            Ok(is_new) => is_new,
+            Err(e) => {
+                metrics::record_error("dedup_backend");
+                tracing::warn!(
+                    error = %e,
+                    header = %dedup.header,
+                    "Dedup backend error; failing open (request allowed without dedup check)"
+                );
+                true
+            }
+        };
         if !is_new {
             return Err(OrionError::Conflict(format!(
                 "Duplicate request: idempotency key '{key}' already seen"
@@ -875,4 +888,118 @@ pub(crate) async fn get_trace(
     }
 
     Ok(Json(response))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+
+    use crate::channel::registry::EffectiveTraceConfig;
+    use crate::channel::{ChannelConfig, ChannelRuntimeConfig, DeduplicationConfig};
+    use crate::config::TracingStorageConfig;
+    use crate::connector::cache_backend::CacheBackend;
+    use crate::errors::OrionError;
+    use crate::storage::models::Channel;
+
+    /// Dedup-store stub with a fixed `check_and_insert` outcome.
+    enum StubOutcome {
+        New,
+        Duplicate,
+        BackendError,
+    }
+
+    struct StubDedupBackend {
+        outcome: StubOutcome,
+    }
+
+    #[async_trait]
+    impl CacheBackend for StubDedupBackend {
+        async fn get(&self, _key: &str) -> Result<Option<String>, OrionError> {
+            Ok(None)
+        }
+        async fn set(&self, _key: &str, _value: &str) -> Result<(), OrionError> {
+            Ok(())
+        }
+        async fn set_ex(&self, _key: &str, _value: &str, _ttl: u64) -> Result<(), OrionError> {
+            Ok(())
+        }
+        async fn check_and_insert(&self, _key: &str, _window: u64) -> Result<bool, OrionError> {
+            match self.outcome {
+                StubOutcome::New => Ok(true),
+                StubOutcome::Duplicate => Ok(false),
+                StubOutcome::BackendError => {
+                    Err(OrionError::Internal("dedup backend down".to_string()))
+                }
+            }
+        }
+    }
+
+    fn dedup_runtime(outcome: StubOutcome) -> Option<Arc<ChannelRuntimeConfig>> {
+        let now = chrono::Utc::now().naive_utc();
+        Some(Arc::new(ChannelRuntimeConfig {
+            channel: Channel {
+                channel_id: "ch_test".to_string(),
+                version: 1,
+                name: "test-channel".to_string(),
+                description: None,
+                channel_type: "sync".to_string(),
+                protocol: "rest".to_string(),
+                methods: None,
+                route_pattern: None,
+                topic: None,
+                consumer_group: None,
+                transport_config_json: "{}".to_string(),
+                workflow_id: None,
+                config_json: "{}".to_string(),
+                status: "active".to_string(),
+                priority: 0,
+                created_at: now,
+                updated_at: now,
+            },
+            parsed_config: ChannelConfig {
+                deduplication: Some(DeduplicationConfig {
+                    header: "idempotency-key".to_string(),
+                    window_secs: Some(60),
+                    connector: None,
+                }),
+                ..Default::default()
+            },
+            rate_limiter: None,
+            rate_limit_key_logic: None,
+            validation_logic: None,
+            backpressure_semaphore: None,
+            dedup_store: Some(Arc::new(StubDedupBackend { outcome })),
+            response_cache: None,
+            trace_storage: EffectiveTraceConfig::resolve(&TracingStorageConfig::default(), None),
+        }))
+    }
+
+    fn idempotency_headers() -> axum::http::HeaderMap {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("idempotency-key", "token-1".parse().expect("test header"));
+        headers
+    }
+
+    #[tokio::test]
+    async fn test_dedup_new_key_passes() {
+        let cfg = dedup_runtime(StubOutcome::New);
+        let result = super::check_deduplication(&cfg, &idempotency_headers()).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_dedup_duplicate_rejected() {
+        let cfg = dedup_runtime(StubOutcome::Duplicate);
+        let result = super::check_deduplication(&cfg, &idempotency_headers()).await;
+        assert!(matches!(result, Err(OrionError::Conflict(_))));
+    }
+
+    #[tokio::test]
+    async fn test_dedup_fails_open_on_backend_error() {
+        let cfg = dedup_runtime(StubOutcome::BackendError);
+        let result = super::check_deduplication(&cfg, &idempotency_headers()).await;
+        assert!(result.is_ok(), "backend errors must fail open, not 409");
+    }
 }
