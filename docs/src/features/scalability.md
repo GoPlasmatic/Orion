@@ -1,6 +1,6 @@
 # Scalability
 
-Orion handles high-throughput workloads with token-bucket rate limiting, semaphore-based backpressure, async processing queues, and stateless horizontal scaling, all configurable per channel.
+Orion handles high-throughput workloads with token-bucket rate limiting, semaphore-based backpressure, async processing queues, and true horizontal scaling: with **cluster mode**, N replicas behind a load balancer behave as a single logical system.
 
 ## Rate Limiting
 
@@ -44,7 +44,9 @@ Rate limiting uses the **token bucket algorithm**: tokens replenish at the confi
 }
 ```
 
-Rate limiter state is per-instance (in-memory). In multi-instance deployments, divide the configured RPS by the number of instances to approximate global limits, or use sticky sessions at the load balancer.
+**Single instance:** rate limiter state is in-memory (token bucket via governor).
+
+**Cluster mode:** per-channel limits enforce as a shared fixed window on the cluster Redis, so the configured rate holds across **all replicas combined** — 3 replicas at `requests_per_second = 100` is still ~100 RPS globally, and limiter state survives engine reloads. Platform-level limits (`[rate_limit]`, keyed by client IP) intentionally stay per-node: with N replicas the effective platform limit is N× the configured value.
 
 ## Backpressure
 
@@ -104,42 +106,48 @@ trace_retention_hours = 72
 trace_cleanup_interval_secs = 3600
 ```
 
-## Horizontal Scaling
+## Horizontal Scaling — Cluster Mode
 
-Orion is designed for **single-instance simplicity** with **multi-instance capability**. Each instance is stateless; all persistent data lives in the shared database.
+Orion is designed for **single-instance simplicity** with **first-class multi-instance support**. Enable cluster mode to run N identical replicas behind a load balancer against one shared Postgres/MySQL and one shared Redis:
 
-**What works across instances:**
+```toml
+[cluster]
+enabled = true
+redis_url = "redis://redis:6379"   # required; shared dedup / cache / rate limits
+epoch_poll_interval_ms = 2000      # how often nodes poll for config changes
+instance_id = ""                   # auto-generated UUID when empty
 
-| Component | How It Works |
-|-----------|-------------|
-| Database | All instances share the same database (PostgreSQL or MySQL recommended) |
-| Kafka consumers | Consumer groups handle partition assignment automatically |
-| Traces | Stored in the shared database; queries return consistent results |
-| Workflows & Channels | Definitions live in the database; all instances load the same set |
-| Audit logs | Stored in the shared database regardless of which instance handles the request |
-
-### Per-Instance State
-
-The following components use in-memory state that is local to each instance:
-
-| Component | Impact | Workaround |
-|-----------|--------|------------|
-| **Rate Limiting** | 3 instances at 100 RPS = 300 RPS effective global limit | Sticky sessions; divide configured RPS by instance count |
-| **Request Deduplication** | Same idempotency key on two instances → processed twice | Sticky sessions, or Redis-backed dedup store |
-| **Response Caching** | Lower cache hit rates (each instance has a cold cache) | Sticky sessions, or Redis-backed cache connector |
-| **Circuit Breakers** | One instance may trip while others keep sending | Acceptable; monitor `/health` on each instance |
-| **Engine State** | `POST /admin/engine/reload` only reloads the receiving instance | Script reload to hit all instances (see below) |
-
-**Reload all instances:**
-
-```bash
-for host in $INSTANCE_HOSTS; do
-  curl -X POST "http://$host:8080/api/v1/admin/engine/reload" \
-    -H "Authorization: Bearer $API_KEY"
-done
+[storage]
+url = "postgres://orion:orion@postgres:5432/orion"
+auto_migrate = false               # run `orion-server migrate` as a deploy step
 ```
 
-Alternatively, use a rolling restart strategy with your orchestrator (e.g., Kubernetes rolling deployment).
+Cluster mode **requires** Postgres or MySQL storage plus a shared Redis — startup refuses `sqlite:` (single-host by construction). A complete reference topology (2× Orion + Postgres + Redis + nginx) ships as `docker-compose.ha.yml`.
+
+**What cluster mode coordinates:**
+
+| Concern | How it works |
+|-----------|-------------|
+| **Config changes** | Every admin mutation (workflows, channels, rollout, connectors, manual reload) advances a shared config epoch; every node polls it and resyncs within `epoch_poll_interval_ms`. A change made through *any* node reaches *all* nodes — no fan-out scripting. |
+| **Request deduplication** | Channels without an explicit cache connector use the shared cluster Redis — the same idempotency key on two nodes gets exactly one execution and a `409` for the replay. |
+| **Response caching** | Shared cluster Redis by default — no per-node cold caches. |
+| **Per-channel rate limits** | Shared Redis fixed window — the configured rate holds across all replicas combined. |
+| **Background jobs** | Trace cleanup and DLQ retry acquire a per-tick job lease, so only one node runs each job; DLQ entries are additionally row-leased (`FOR UPDATE SKIP LOCKED`), so each entry is retried by exactly one node. |
+| **Kafka consumers** | Static group membership (`group.instance.id` = the instance id): rolling restarts rejoin without a full consumer-group rebalance. |
+| **Circuit-breaker resets** | `POST /circuit-breakers/{key}` fans out over the epoch bus — one API call resets the key on every node. |
+
+**What intentionally stays per-node** (documented ×N semantics):
+
+| Component | Semantics |
+|-----------|-----------|
+| **Circuit breakers** | Trip independently per node; each node stops sending after its own `failure_threshold` failures. Resets fan out cluster-wide (above). |
+| **Backpressure** | `max_concurrent` is per node — N replicas admit up to N× `max_concurrent` in-flight requests total. |
+| **Platform rate limits** | `[rate_limit]` IP limits are per node (N× the configured value globally). |
+| `/metrics` | Per node — point Prometheus at every replica (or let it discover pods). |
+
+**Guardrails:** in cluster mode, a channel whose dedup/cache connector is missing, broken, or explicitly in-memory **refuses to load** (the activating admin call errors; boot fails) instead of silently degrading to per-node state.
+
+**Filesystem backups are disabled in cluster mode** — `POST /api/v1/admin/backups` returns `400` because the file would land on one arbitrary node (and cluster storage is Postgres/MySQL, which `VACUUM INTO` cannot back up). Use your managed database's native tooling instead: automated snapshots + point-in-time recovery on RDS/Cloud SQL/Azure Database, or `pg_dump` / `mysqldump` on self-managed databases. Redis needs no backup — everything in it (dedup windows, response caches, rate-limit windows) is reconstructible ephemeral state.
 
 ### Topology Control
 
@@ -159,10 +167,10 @@ This enables microservice-style deployment where each instance handles a subset 
 
 ### Database Backend Recommendations
 
-| Backend | Single Instance | Multiple Instances | Notes |
+| Backend | Single Instance | Cluster Mode | Notes |
 |---------|:-:|:-:|-------|
-| **SQLite** | Recommended | Not recommended | WAL mode supports concurrent reads but only one writer. File-based, cannot be shared across hosts. |
+| **SQLite** | Recommended | Refused at startup | WAL mode supports concurrent reads but only one writer. File-based, cannot be shared across hosts. |
 | **PostgreSQL** | Supported | Recommended | Full multi-connection support. Use connection pooling (PgBouncer) for many instances. |
 | **MySQL** | Supported | Supported | Ensure `READ-COMMITTED` isolation for best concurrency. |
 
-For multi-instance deployments, use PostgreSQL with connection pooling (PgBouncer). Script engine reloads to broadcast to all instances after workflow or channel changes.
+For cluster deployments, use PostgreSQL with connection pooling (PgBouncer) and set `storage.auto_migrate = false` — run `orion-server migrate` as a deploy step (init container, Helm pre-upgrade hook, or the one-shot `migrate` service in `docker-compose.ha.yml`) so replicas never race migrations at boot.

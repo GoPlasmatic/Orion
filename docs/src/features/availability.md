@@ -18,16 +18,9 @@ A reload performs three operations atomically:
 2. **Channel registry rebuild:** reconstructs the route table, validation logic, rate limiters, backpressure semaphores, dedup stores, and response caches
 3. **Kafka consumer restart:** if the topic set changed, the Kafka consumer is stopped and restarted with the new topics
 
-Reloads are triggered automatically on status changes (activate/archive) and deletes. Draft creates and updates do not trigger reload.
+Reloads are triggered automatically on status changes (activate/archive), deletes, rollout updates, and connector mutations. Draft creates and updates do not trigger reload.
 
-In multi-instance deployments, reload only affects the instance that receives the request. Script the reload to broadcast to all instances:
-
-```bash
-for host in $INSTANCE_HOSTS; do
-  curl -X POST "http://$host:8080/api/v1/admin/engine/reload" \
-    -H "Authorization: Bearer $API_KEY"
-done
-```
+**Cluster mode:** every mutation also advances a shared config epoch in the database. Each replica polls the epoch (every `cluster.epoch_poll_interval_ms`, default 2 s) and resyncs itself — engine, connector registry, and cached connector pools — when it advances. A change made through *any* node reaches *all* nodes automatically, and `POST /api/v1/admin/engine/reload` is likewise cluster-wide. No broadcast scripting or rolling restart is needed for config changes.
 
 ## Canary Rollouts
 
@@ -50,11 +43,38 @@ curl -s -X PATCH http://localhost:8080/api/v1/admin/workflows/<id>/rollout \
   -d '{"rollout_percentage": 100}'
 ```
 
-The rollout percentage determines the probability that incoming requests are matched to this workflow. This enables:
+The rollout percentage determines the share of traffic matched to this workflow version. This enables:
 
 - **Gradual migration:** slowly ramp traffic from 0% to 100%
 - **A/B testing:** run two workflow versions at different percentages
 - **Instant rollback:** set rollout to 0% or archive the workflow
+
+**Sticky assignment:** the canary bucket is a hash of a stable caller identity, so the same caller lands on the same version on every request — and on every replica. The identity is the header named by `engine.rollout_sticky_header` (e.g. `x-user-id`) when configured, else the forwarded client IP (`x-forwarded-for` / `x-real-ip`). Direct connections with neither fall back to a random per-request bucket, which still honors the percentages in aggregate.
+
+```toml
+[engine]
+rollout_sticky_header = "x-user-id"   # optional; default: forwarded client IP
+```
+
+## Rolling Deploys
+
+On `SIGTERM`, Orion drains gracefully in a sequence designed for load balancers:
+
+1. `/readyz` flips to **503 immediately** — the LB pulls the node from rotation
+2. the node **keeps accepting and serving** for `server.shutdown_drain_secs` (default 30 s), so requests the LB routes here during its own poll interval still succeed
+3. accepting stops; in-flight requests get up to `server.shutdown_force_timeout_secs` (default 30 s; `0` = unbounded) to finish
+
+```toml
+[server]
+shutdown_drain_secs = 30           # readiness-withdrawn grace: still serving
+shutdown_force_timeout_secs = 30   # bound on the post-drain in-flight wait
+```
+
+Make sure your orchestrator's kill grace exceeds the sum (Kubernetes `terminationGracePeriodSeconds`, compose `stop_grace_period`). Probes: point `readinessProbe` at `/readyz` and `livenessProbe` at `/healthz`.
+
+The `docker-compose.ha.yml` reference topology wires all of this up (2× Orion + Postgres + Redis + nginx), and `deploy/ha/rolling-drill.sh` demonstrates a zero-5xx roll: it drives traffic through the LB while SIGTERM-ing one node and asserts every response was a 2xx.
+
+**Migrations during deploys:** in cluster mode set `storage.auto_migrate = false` and run `orion-server migrate` as a deploy step before new replicas start (startup fails hard on a pending migration). Write migrations expand/contract style: first ship a migration that only *adds* (columns, tables, indexes) alongside code that works with both schemas, and only *remove* the old shape in a later release once no running replica depends on it — during a rolling deploy, old and new binaries briefly share one database.
 
 ## Versioning
 
@@ -113,7 +133,7 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows/import \
 }
 ```
 
-Cache keys are computed from the specified fields. Cached responses are returned directly without executing the workflow. The cache backend is in-memory by default; Redis-backed caching is available via a cache connector.
+Cache keys are computed from the specified fields. Cached responses are returned directly without executing the workflow. The cache backend is in-memory by default; Redis-backed caching is available via a cache connector. In cluster mode, channels without an explicit connector use the shared cluster Redis — cache hits are shared across replicas instead of each node warming its own.
 
 **Request deduplication:** prevent duplicate processing using idempotency keys:
 
@@ -121,12 +141,12 @@ Cache keys are computed from the specified fields. Cached responses are returned
 {
   "deduplication": {
     "header": "Idempotency-Key",
-    "retention_secs": 300
+    "window_secs": 300
   }
 }
 ```
 
-When a request with the same idempotency key arrives within the retention window, it returns `409 Conflict` instead of re-processing.
+When a request with the same idempotency key arrives within the window, it returns `409 Conflict` instead of re-processing. Keys are scoped per channel. In cluster mode the dedup store is the shared cluster Redis by default, so the window holds across all replicas.
 
 **Connection pool caching:** external database and MongoDB connector pools are cached and reused across requests, with configurable pool sizes and idle timeouts:
 

@@ -74,6 +74,22 @@ docs/                  # mdBook documentation (published to GitHub Pages)
    ```
 5. **Submit a pull request** with a clear description of what changed and why
 
+### Database migrations
+
+The shipped migration files are **checksum-frozen** once released (sqlx records
+a checksum per applied migration), so never edit an existing `NNN_*.sql` — add
+a new numbered file to **each** of `migrations/{sqlite,postgres,mysql}/`.
+`src/storage/migration_gen.rs` is a scaffold for bootstrapping a new backend,
+not the source of truth for the shipped files.
+
+Write migrations **expand/contract** style: during a rolling deploy, old and
+new binaries briefly share one database, so a release may only *add* schema
+(columns, tables, indexes) alongside code that tolerates both shapes; drop or
+rename the old shape in a *later* release, once no running replica depends on
+it. Cluster deployments run `orion-server migrate` as a deploy step
+(`storage.auto_migrate = false`), and replicas refuse to boot on a pending
+migration.
+
 ## Testing
 
 ### Integration tests
