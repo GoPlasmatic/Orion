@@ -114,10 +114,8 @@ pub struct ChannelCorsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackpressureConfig {
     /// Maximum concurrent requests for this channel.
+    /// Excess requests are rejected immediately with 503 (no queueing).
     pub max_concurrent: usize,
-    /// Optional queue depth before shedding load.
-    #[serde(default)]
-    pub queue_depth: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
