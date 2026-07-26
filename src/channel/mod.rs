@@ -1,5 +1,4 @@
 pub mod config;
-pub mod dedup;
 pub mod registry;
 pub mod routing;
 
@@ -14,7 +13,6 @@ pub use config::{
     BackpressureConfig, ChannelCacheConfig, ChannelConfig, ChannelCorsConfig,
     ChannelRateLimitConfig, DeduplicationConfig,
 };
-pub use dedup::DeduplicationStore;
 pub use registry::{ChannelRegistry, ChannelRuntimeConfig};
 pub use routing::{RouteMatch, RouteTable};
 
