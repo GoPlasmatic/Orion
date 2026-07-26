@@ -57,6 +57,7 @@ pub(super) struct ProcessingContext {
     pub(super) dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     pub(super) processing_timeout_ms: u64,
     pub(super) max_result_size_bytes: usize,
+    pub(super) dlq_max_retries: i64,
     pub(super) channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub(super) persistence_queue: crate::queue::TracePersistenceQueue,
     pub(super) global_trace_storage: crate::config::TracingStorageConfig,
@@ -196,6 +197,7 @@ async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
         dlq_repo,
         processing_timeout_ms,
         max_result_size_bytes,
+        dlq_max_retries,
         channel_registry,
         persistence_queue,
         global_trace_storage,
@@ -497,7 +499,14 @@ async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
             {
                 let metadata = metadata_json_for_dlq.as_deref().unwrap_or("{}");
                 if let Err(dlq_err) = dlq
-                    .enqueue(&trace_id, &channel, payload, metadata, &error_str, 5)
+                    .enqueue(
+                        &trace_id,
+                        &channel,
+                        payload,
+                        metadata,
+                        &error_str,
+                        dlq_max_retries,
+                    )
                     .await
                 {
                     tracing::error!(

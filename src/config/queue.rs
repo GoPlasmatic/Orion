@@ -56,6 +56,44 @@ impl QueueConfig {
         require_nonzero(self.buffer_size as u64, "queue.buffer_size")?;
         require_nonzero(self.processing_timeout_ms, "queue.processing_timeout_ms")?;
         require_nonzero(self.shutdown_timeout_secs, "queue.shutdown_timeout_secs")?;
+        // 0 or negative would make every DLQ row invisible to the retry
+        // worker (queries filter `retry_count < max_retries`) — a silently
+        // dead DLQ. Disable retries via `dlq_retry_enabled` instead.
+        if self.dlq_max_retries < 1 {
+            return Err(OrionError::Config {
+                message: "queue.dlq_max_retries must be >= 1 \
+                          (set queue.dlq_retry_enabled = false to disable retries)"
+                    .to_string(),
+            });
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_default_passes() {
+        assert!(QueueConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_zero_dlq_max_retries() {
+        let config = QueueConfig {
+            dlq_max_retries: 0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_rejects_negative_dlq_max_retries() {
+        let config = QueueConfig {
+            dlq_max_retries: -1,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
     }
 }
