@@ -824,6 +824,7 @@ pub(crate) struct ProcessRequest {
     ),
     responses(
         (status = 200, description = "Paginated list of traces"),
+        (status = 401, description = "Missing or invalid admin API key (when admin auth is enabled)"),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -847,6 +848,7 @@ pub(crate) async fn list_traces(
     params(("id" = String, Path, description = "Trace ID")),
     responses(
         (status = 200, description = "Trace status and result"),
+        (status = 401, description = "Missing or invalid admin API key (when admin auth is enabled)"),
         (status = 404, description = "Trace not found"),
     )
 )]

@@ -1,7 +1,8 @@
 //! Admin API authentication middleware.
 //!
-//! When enabled, requires a valid API key for all `/api/v1/admin/*` endpoints
-//! and the `/metrics` endpoint.
+//! When enabled, requires a valid API key for all `/api/v1/admin/*` endpoints,
+//! the `/metrics` endpoint, and the trace read endpoints under
+//! `/api/v1/data/traces` (traces expose full request/response payloads).
 //! Supports `Authorization: Bearer <token>` or custom header (e.g. `X-API-Key: <token>`).
 
 use axum::extract::{MatchedPath, Request, State};
@@ -47,7 +48,13 @@ pub async fn admin_auth_middleware(
         .map(|m| m.as_str())
         .unwrap_or(req.uri().path());
 
-    if !path.starts_with("/api/v1/admin") && path != "/metrics" {
+    // Trace endpoints return full input/result payloads, so they are guarded
+    // like admin routes. Channel traffic cannot collide with this prefix: its
+    // MatchedPath is always the `/api/v1/data/{*path}` catch-all template.
+    let is_guarded = path.starts_with("/api/v1/admin")
+        || path == "/metrics"
+        || path.starts_with("/api/v1/data/traces");
+    if !is_guarded {
         return Ok(next.run(req).await);
     }
 

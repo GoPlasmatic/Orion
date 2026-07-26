@@ -13,6 +13,11 @@ The data API handles runtime request processing: routing messages to channels, e
 | `GET` | `/api/v1/data/traces` | List traces. Filter with `?status=`, `?channel=`, `?mode=` |
 | `GET` | `/api/v1/data/traces/{id}` | Poll async trace result |
 
+> **Note:** the two trace endpoints return full request/response payloads, so
+> when admin auth is enabled (`[admin_auth]`) they require the admin API key —
+> same as `/api/v1/admin/*` and `/metrics`. Channel endpoints stay
+> unauthenticated.
+
 ## Route Resolution
 
 When a request arrives at `/api/v1/data/{path}`, Orion resolves the target channel in this order:

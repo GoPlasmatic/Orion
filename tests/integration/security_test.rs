@@ -359,6 +359,58 @@ async fn test_admin_auth_data_routes_not_protected() {
 }
 
 #[tokio::test]
+async fn test_traces_list_requires_admin_key() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    // Without a key → 401 (traces expose full payloads)
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/data/traces", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // With the admin key → 200
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/data/traces")
+        .header("Authorization", "Bearer test-secret-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_trace_get_requires_admin_key() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    // Without a key → 401
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/data/traces/some-id", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // With the admin key → auth passes; trace is absent → 404
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/data/traces/some-id")
+        .header("Authorization", "Bearer test-secret-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn test_admin_auth_health_not_protected() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
