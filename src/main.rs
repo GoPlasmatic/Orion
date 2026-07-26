@@ -668,7 +668,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         http_client,
         datalogic: datalogic_engine,
         rate_limit_state,
-        ready,
+        ready: ready.clone(),
         sql_pool_cache,
         mongo_pool_cache,
         kafka_consumer_handle: kafka_consumer_handle_arc.clone(),
@@ -692,9 +692,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let handle = axum_server::Handle::new();
         let shutdown_handle = handle.clone();
         let drain_secs = config.server.shutdown_drain_secs;
+        let force_timeout_secs = config.server.shutdown_force_timeout_secs;
+        let ready_for_drain = ready.clone();
         tokio::spawn(async move {
-            orion::server::shutdown_signal().await;
-            shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(drain_secs)));
+            // Withdraw readiness, keep accepting through the LB grace window,
+            // THEN stop accepting — same sequence as the plain-HTTP path.
+            orion::server::drain::drain_gate(
+                orion::server::shutdown_signal(),
+                ready_for_drain,
+                std::time::Duration::from_secs(drain_secs),
+            )
+            .await;
+            let force = (force_timeout_secs > 0)
+                .then(|| std::time::Duration::from_secs(force_timeout_secs));
+            shutdown_handle.graceful_shutdown(force);
         });
 
         tracing::info!(
@@ -713,6 +724,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             &addr,
             &config.storage.url,
             config.server.shutdown_drain_secs,
+            config.server.shutdown_force_timeout_secs,
+            ready.clone(),
             router,
         )
         .await?;
@@ -787,6 +800,8 @@ async fn serve_plain_http(
     addr: &str,
     storage_url: &str,
     drain_secs: u64,
+    force_timeout_secs: u64,
+    ready: Arc<std::sync::atomic::AtomicBool>,
     router: axum::Router,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = create_tcp_listener(addr)?;
@@ -796,13 +811,41 @@ async fn serve_plain_http(
         tcp_nodelay = true,
         "Orion is ready"
     );
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            orion::server::shutdown_signal().await;
-            tracing::info!(drain_secs, "Starting HTTP connection drain");
-            tokio::time::sleep(std::time::Duration::from_secs(drain_secs)).await;
-        })
-        .await?;
+    // `drained` fires when the gate resolves (accept stopped); the force
+    // timeout counts from that point, bounding the in-flight wait.
+    let (drained_tx, mut drained_rx) = tokio::sync::watch::channel(false);
+    let gate = async move {
+        orion::server::drain::drain_gate(
+            orion::server::shutdown_signal(),
+            ready,
+            std::time::Duration::from_secs(drain_secs),
+        )
+        .await;
+        let _ = drained_tx.send(true);
+    };
+    let serve = axum::serve(listener, router).with_graceful_shutdown(gate);
+    if force_timeout_secs == 0 {
+        serve.await?;
+    } else {
+        tokio::select! {
+            result = serve => result?,
+            _ = async {
+                // Wait for the gate, then bound the in-flight drain. If the
+                // server finishes first the sender is dropped and this arm
+                // pends forever — the select resolves through `serve`.
+                while !*drained_rx.borrow() {
+                    if drained_rx.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(force_timeout_secs)).await;
+                tracing::warn!(
+                    force_timeout_secs,
+                    "Shutdown force timeout elapsed; aborting remaining in-flight connections"
+                );
+            } => {}
+        }
+    }
     Ok(())
 }
 

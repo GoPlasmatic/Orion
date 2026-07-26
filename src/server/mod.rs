@@ -1,4 +1,5 @@
 pub mod admin_auth;
+pub mod drain;
 pub mod extract;
 pub mod observability;
 pub mod otel;
