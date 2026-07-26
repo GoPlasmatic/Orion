@@ -73,4 +73,24 @@ async fn mysql_migrations_apply_and_repo_roundtrip() {
 
     let activated = repo.activate("wf-mysql", 100).await.expect("activate");
     assert_eq!(activated.status, "active");
+
+    // Active-immutability trigger (004): raw content UPDATE on an active row
+    // must be rejected even though it bypasses the repository layer.
+    let orion::storage::DbPool::Mysql(mysql) = &pool else {
+        panic!("expected mysql pool");
+    };
+    let raw_update = sqlx::query(
+        "UPDATE workflows SET tasks_json = '[{\"tampered\":true}]' \
+         WHERE workflow_id = 'wf-mysql' AND status = 'active'",
+    )
+    .execute(mysql)
+    .await;
+    let err = raw_update.expect_err("active content update must be blocked");
+    assert!(
+        err.to_string().contains("Cannot modify content of active workflows"),
+        "unexpected error: {err}"
+    );
+
+    // Legitimate lifecycle transition still works.
+    repo.archive("wf-mysql").await.expect("archive active workflow");
 }

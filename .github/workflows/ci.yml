@@ -197,3 +197,12 @@ jobs:
       # raw-SQL + ES tests and skip the still-localhost redis test.
       - name: Run container-backed integration tests
         run: cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test
+
+      # Orion's own storage on Postgres / MySQL. Separate binaries (one
+      # process each) because the storage backend is pinned per process via
+      # the DB_BACKEND OnceLock.
+      - name: Postgres storage backend tests
+        run: cargo test --test storage_postgres -- --ignored
+
+      - name: MySQL storage backend tests
+        run: cargo test --test storage_mysql -- --ignored
