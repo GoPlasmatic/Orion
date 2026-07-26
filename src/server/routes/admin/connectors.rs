@@ -21,13 +21,15 @@ use super::audit_log;
 // Connectors CRUD
 // ============================================================
 
-/// Reload the connector registry after a mutation.
+/// Reload the connector registry after a mutation, then advance the config
+/// epoch so other nodes resync too (connector edits previously propagated to
+/// no other node at all).
 async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
     state
         .connector_registry
         .reload(state.connector_repo.as_ref())
         .await?;
-    Ok(())
+    super::bump_config_epoch(state).await
 }
 
 /// Evict cached connection pools for a connector whose config may have changed.
@@ -328,6 +330,15 @@ pub(crate) async fn reset_circuit_breaker(
             "circuit_breaker",
             &key,
         );
+        // Breakers are node-local (D3); fan the reset out over the epoch bus
+        // so one API call resets the same key on every node.
+        if state.cluster.enabled {
+            let breaker_epoch = state.cluster.repo.request_breaker_reset(&key).await?;
+            state
+                .cluster
+                .last_seen_breaker_epoch
+                .fetch_max(breaker_epoch, std::sync::atomic::Ordering::AcqRel);
+        }
         Ok(Json(json!({ "reset": true, "key": key })))
     } else {
         Err(OrionError::NotFound(format!(

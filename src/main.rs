@@ -131,6 +131,7 @@ fn start_kafka_ingest(
     channels: &[orion::storage::models::Channel],
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     kafka_producer: Option<Arc<orion::kafka::producer::KafkaProducer>>,
+    instance_id: Option<&str>,
 ) -> Result<Option<orion::kafka::consumer::ConsumerHandle>, Box<dyn std::error::Error>> {
     if !kafka_config.enabled {
         return Ok(None);
@@ -166,8 +167,13 @@ fn start_kafka_ingest(
         (None, None)
     };
 
-    let handle =
-        orion::kafka::consumer::start_consumer(&merged_config, engine, dlq_producer, dlq_topic)?;
+    let handle = orion::kafka::consumer::start_consumer(
+        &merged_config,
+        engine,
+        dlq_producer,
+        dlq_topic,
+        instance_id,
+    )?;
 
     tracing::info!(
         config_topics = kafka_config.topics.len(),
@@ -557,6 +563,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         &channels,
         engine.clone(),
         kafka_producer.clone(),
+        cluster.enabled.then(|| cluster.instance_id.as_str()),
     )?;
 
     // Start trace persistence queue (async/batch modes). A no-op queue is
@@ -677,6 +684,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         cluster,
     });
 
+    // Cluster background tasks (epoch watcher). Empty when disabled.
+    let cluster_task_handles = orion::cluster::start_cluster_tasks(&state);
+
     let router = orion::server::build_router(state);
 
     let addr = format!("{}:{}", config.server.host, config.server.port);
@@ -744,6 +754,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(handle) = dlq_retry_handle {
         tracing::info!("Stopping DLQ retry consumer...");
+        handle.abort();
+    }
+
+    for handle in cluster_task_handles {
         handle.abort();
     }
 

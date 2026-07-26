@@ -22,6 +22,7 @@ mod channel_dedup_test;
 mod channel_response_cache_test;
 mod circuit_breaker_test;
 mod cli_subcommands_test;
+mod cluster_epoch_test;
 mod concurrency_test;
 mod connector_cache_test;
 mod connector_db_test;

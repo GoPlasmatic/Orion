@@ -16,6 +16,10 @@ use crate::errors::OrionError;
 use crate::storage::DbPool;
 use crate::storage::repositories::cluster::{ClusterRepository, SqlClusterRepository};
 
+pub mod epoch_watcher;
+
+pub use epoch_watcher::start_cluster_tasks;
+
 pub struct ClusterRuntime {
     /// Mirrors `cluster.enabled`.
     pub enabled: bool,
@@ -71,14 +75,27 @@ pub async fn init_cluster_runtime(
         (None, None)
     };
 
+    let repo: Arc<dyn ClusterRepository> = Arc::new(SqlClusterRepository::new(pool.clone()));
+
+    // Seed last-seen epochs with the current DB values: this runs BEFORE the
+    // initial channel/workflow load, so anything already counted is included
+    // in that load, and any bump that lands after this read correctly
+    // triggers a watcher resync.
+    let (epoch, breaker_epoch) = if config.enabled {
+        let row = repo.get_epoch().await?;
+        (row.epoch, row.breaker_epoch)
+    } else {
+        (0, 0)
+    };
+
     Ok(Arc::new(ClusterRuntime {
         enabled: config.enabled,
         instance_id,
         redis,
         default_cache,
-        repo: Arc::new(SqlClusterRepository::new(pool.clone())),
-        last_seen_epoch: AtomicI64::new(0),
-        last_seen_breaker_epoch: AtomicI64::new(0),
+        repo,
+        last_seen_epoch: AtomicI64::new(epoch),
+        last_seen_breaker_epoch: AtomicI64::new(breaker_epoch),
     }))
 }
 

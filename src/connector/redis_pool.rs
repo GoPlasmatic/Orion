@@ -51,6 +51,10 @@ impl RedisPoolCache {
     pub async fn evict(&self, connector_name: &str) {
         self.cache.evict(connector_name).await;
     }
+
+    pub async fn evict_all(&self) {
+        self.cache.evict_all().await;
+    }
 }
 
 impl Default for RedisPoolCache {

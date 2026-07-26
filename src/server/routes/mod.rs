@@ -151,9 +151,47 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     (http_status, Json(body))
 }
 
+/// Options for [`reload_engine_with_opts`].
+#[derive(Clone, Copy, Default)]
+pub struct ReloadOpts {
+    /// Add 0–5 s of per-node jitter before a full Kafka consumer restart.
+    /// Epoch-driven reloads fire on every node near-simultaneously; without
+    /// jitter they would all leave and rejoin the consumer group at once.
+    pub kafka_restart_jitter: bool,
+}
+
 /// Reload the engine with all active channels and workflows from the database.
-#[tracing::instrument(skip(state))]
 pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionError> {
+    reload_engine_with_opts(state, ReloadOpts::default()).await
+}
+
+/// Epoch-driven full resync from the database, run by the watcher when
+/// another node's mutation advanced the config epoch. Beyond a plain engine
+/// reload it also refreshes the connector registry and evicts all cached
+/// connector pools — a remote node cannot know *which* connector changed,
+/// and pools rebuild lazily on next use.
+pub async fn resync_from_db(state: &AppState) -> Result<(), crate::errors::OrionError> {
+    state
+        .connector_registry
+        .reload(state.connector_repo.as_ref())
+        .await?;
+    state.sql_pool_cache.evict_all().await;
+    state.mongo_pool_cache.evict_all().await;
+    state.cache_pool.evict_all_pools().await;
+    reload_engine_with_opts(
+        state,
+        ReloadOpts {
+            kafka_restart_jitter: true,
+        },
+    )
+    .await
+}
+
+#[tracing::instrument(skip(state, opts))]
+pub async fn reload_engine_with_opts(
+    state: &AppState,
+    opts: ReloadOpts,
+) -> Result<(), crate::errors::OrionError> {
     let start = std::time::Instant::now();
 
     let result = async {
@@ -200,7 +238,7 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
 
         // Restart Kafka consumer if async channel topics changed
         if state.config.kafka.enabled {
-            restart_kafka_consumer_if_needed(state, &channels).await;
+            restart_kafka_consumer_if_needed(state, &channels, opts).await;
         }
 
         tracing::info!(
@@ -231,6 +269,7 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
 async fn restart_kafka_consumer_if_needed(
     state: &AppState,
     channels: &[crate::storage::models::Channel],
+    opts: ReloadOpts,
 ) {
     use std::collections::HashSet;
 
@@ -274,6 +313,11 @@ async fn restart_kafka_consumer_if_needed(
     }
 
     // Full restart path: pause first to minimize gap, then shutdown and restart
+    if opts.kafka_restart_jitter {
+        let jitter_ms = rand::random_range(0..=5000u64);
+        tracing::info!(jitter_ms, "Jittering Kafka consumer restart (epoch-driven reload)");
+        tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
+    }
     if let Some(ref existing_handle) = *handle_guard {
         let _ = existing_handle.pause(); // Best-effort pause before shutdown
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -304,11 +348,16 @@ async fn restart_kafka_consumer_if_needed(
         None
     };
 
+    let static_member = state
+        .cluster
+        .enabled
+        .then(|| state.cluster.instance_id.as_str());
     match crate::kafka::consumer::start_consumer(
         &merged_config,
         state.engine.clone(),
         dlq_producer,
         dlq_topic,
+        static_member,
     ) {
         Ok(new_handle) => {
             tracing::info!(

@@ -117,7 +117,36 @@ async fn audit_and_reload(
         resource_type,
         resource_id,
     );
-    reload_engine(state).await
+    reload_engine(state).await?;
+    bump_config_epoch(state).await
+}
+
+/// Advance the cluster config epoch after a successful mutation + inline
+/// reload, so other nodes' epoch watchers resync from the DB. Runs even with
+/// cluster disabled (keeps the counter monotonic so enabling cluster later
+/// starts sane) but only propagates failures when enabled — on a single
+/// node a failed bump changes nothing, while in a cluster it means the
+/// change did NOT propagate and the admin must retry.
+pub(crate) async fn bump_config_epoch(
+    state: &AppState,
+) -> Result<(), crate::errors::OrionError> {
+    match state.cluster.repo.bump_epoch().await {
+        Ok(epoch) => {
+            // fetch_max, not store: the inline reload already applied this
+            // node's own change, but a concurrently observed higher epoch
+            // must never be masked.
+            state
+                .cluster
+                .last_seen_epoch
+                .fetch_max(epoch, std::sync::atomic::Ordering::AcqRel);
+            Ok(())
+        }
+        Err(e) if state.cluster.enabled => Err(e),
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to bump config epoch (cluster disabled — ignored)");
+            Ok(())
+        }
+    }
 }
 
 pub fn admin_routes() -> Router<AppState> {

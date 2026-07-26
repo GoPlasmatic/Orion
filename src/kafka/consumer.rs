@@ -88,22 +88,36 @@ impl ConsumerHandle {
 /// Returns a handle for graceful shutdown. The consumer subscribes to all
 /// configured topics, maps each topic to a channel, and processes messages
 /// through the engine.
+///
+/// `instance_id` (cluster mode) enables static group membership
+/// (`group.instance.id`) plus an explicit `session.timeout.ms`, so rolling
+/// restarts and reload-driven consumer restarts rejoin without a full group
+/// rebalance. `None` (single node) keeps today's dynamic membership.
 pub fn start_consumer(
     config: &KafkaIngestConfig,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     dlq_producer: Option<Arc<KafkaProducer>>,
     dlq_topic: Option<String>,
+    instance_id: Option<&str>,
 ) -> Result<ConsumerHandle, OrionError> {
-    let consumer: StreamConsumer = ClientConfig::new()
+    let mut client_config = ClientConfig::new();
+    client_config
         .set("bootstrap.servers", config.brokers.join(","))
         .set("group.id", &config.group_id)
         .set("enable.auto.commit", "false")
-        .set("auto.offset.reset", "earliest")
-        .create()
-        .map_err(|e| OrionError::InternalSource {
-            context: "Failed to create Kafka consumer".to_string(),
-            source: Box::new(e),
-        })?;
+        .set("auto.offset.reset", "earliest");
+    if let Some(id) = instance_id {
+        client_config
+            .set("group.instance.id", id)
+            .set("session.timeout.ms", config.session_timeout_ms.to_string());
+    }
+    let consumer: StreamConsumer =
+        client_config
+            .create()
+            .map_err(|e| OrionError::InternalSource {
+                context: "Failed to create Kafka consumer".to_string(),
+                source: Box::new(e),
+            })?;
 
     // Verify broker connectivity (non-fatal — brokers may come online later)
     match consumer.fetch_metadata(None, std::time::Duration::from_secs(5)) {

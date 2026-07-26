@@ -104,6 +104,12 @@ impl<V: Clone> LruCache<V> {
     pub async fn evict(&self, key: &str) {
         self.entries.write().await.remove(key);
     }
+
+    /// Evict every cached entry. Used by epoch-driven resyncs: a remote node
+    /// cannot know which connector changed, and pools rebuild lazily.
+    pub async fn evict_all(&self) {
+        self.entries.write().await.clear();
+    }
 }
 
 #[cfg(test)]

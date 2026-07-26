@@ -258,6 +258,12 @@ impl CachePool {
     pub async fn evict_pool(&self, connector_name: &str) {
         self.redis.evict(connector_name).await;
     }
+
+    /// Evict every cached Redis connection (epoch-driven resync — a remote
+    /// node cannot know which connector changed).
+    pub async fn evict_all_pools(&self) {
+        self.redis.evict_all().await;
+    }
 }
 
 #[cfg(test)]

@@ -103,7 +103,7 @@ async fn test_consumer_starts_and_stops() {
     let config = test_kafka_config(&brokers, "test-lifecycle", "test-channel");
     let engine = empty_engine();
 
-    let handle = consumer::start_consumer(&config, engine, None, None).unwrap();
+    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
 
     // Consumer should be running — give it a moment
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -124,7 +124,7 @@ async fn test_consumer_processes_valid_message() {
     let engine = empty_engine();
 
     // Start consumer
-    let handle = consumer::start_consumer(&config, engine, None, None).unwrap();
+    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
 
     // Produce a message
     let producer: FutureProducer = ClientConfig::new()
@@ -164,7 +164,7 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
     let dlq_producer = Arc::new(KafkaProducer::new(&brokers).unwrap());
 
     let handle =
-        consumer::start_consumer(&config, engine, Some(dlq_producer), Some(dlq_topic.clone()))
+        consumer::start_consumer(&config, engine, Some(dlq_producer), Some(dlq_topic.clone()), None)
             .unwrap();
 
     // Produce an invalid JSON message
@@ -245,7 +245,7 @@ async fn test_consumer_metadata_injection() {
     let config = test_kafka_config(&brokers, topic, channel);
     let engine = empty_engine();
 
-    let handle = consumer::start_consumer(&config, engine, None, None).unwrap();
+    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
 
     // Produce a message with a key
     let producer: FutureProducer = ClientConfig::new()
@@ -291,7 +291,7 @@ async fn test_concurrent_message_processing() {
     // Initialize metrics so we can verify counts
     let _ = orion::metrics::init_metrics();
 
-    let handle = consumer::start_consumer(&config, engine, None, None).unwrap();
+    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
 
     // Produce messages concurrently
     let producer: FutureProducer = ClientConfig::new()
@@ -348,7 +348,7 @@ async fn test_consumer_backpressure_under_load() {
     };
     let engine = empty_engine();
 
-    let handle = consumer::start_consumer(&config, engine, None, None).unwrap();
+    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
 
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &brokers)
@@ -410,7 +410,7 @@ async fn test_consumer_multiple_topics() {
     };
     let engine = empty_engine();
 
-    let handle = consumer::start_consumer(&config, engine, None, None).unwrap();
+    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
 
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &brokers)
@@ -498,7 +498,7 @@ async fn test_consumer_partition_rebalance() {
         lag_poll_interval_secs: 0,
         session_timeout_ms: 45_000,
     };
-    let handle_a = consumer::start_consumer(&config_a, engine.clone(), None, None).unwrap();
+    let handle_a = consumer::start_consumer(&config_a, engine.clone(), None, None, None).unwrap();
 
     // Produce initial batch of messages across partitions
     let producer: FutureProducer = ClientConfig::new()
@@ -528,7 +528,7 @@ async fn test_consumer_partition_rebalance() {
         group_id: group_id.clone(),
         ..config_a.clone()
     };
-    let handle_b = consumer::start_consumer(&config_b, engine.clone(), None, None).unwrap();
+    let handle_b = consumer::start_consumer(&config_b, engine.clone(), None, None, None).unwrap();
 
     // Wait for rebalance to complete
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -590,7 +590,7 @@ async fn test_consumer_broker_disconnect_recovery() {
     let config = test_kafka_config(&brokers, topic, channel);
     let engine = empty_engine();
 
-    let handle = consumer::start_consumer(&config, engine, None, None).unwrap();
+    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
 
     // Produce initial messages
     let producer: FutureProducer = ClientConfig::new()
