@@ -1,0 +1,120 @@
+# Orion v1.0.0 — Multi-Instance (HA) Change Plan
+
+*Derived from a full code audit on 2026-07-26 (branch `v1.0.0`, based on `main@a0fc8e8`). Companion to `saas-gaps.md` §3 — this document turns the HA gaps into concrete, file-level work items.*
+
+> **Scope note:** Orion is **single-tenant by product decision (2026-07-26)**. This plan contains no tenant concepts. "Multi-instance" means N identical replicas of `orion-server` serving *one* deployment behind a load balancer. Customer isolation, when needed, is one Orion instance per customer (see `saas-gaps.md`).
+
+## Goal
+
+N replicas of `orion-server` behind a load balancer, sharing one Postgres (+ Redis), behave as a single logical system:
+
+- config changes made through any node propagate to all nodes,
+- background jobs (DLQ retry, trace cleanup) don't double-fire,
+- idempotency, response caching, and rate limits hold globally,
+- rolling deploys are zero-downtime.
+
+Backward compatibility is a hard requirement: with `cluster.enabled = false` (the default), Orion must behave exactly as 0.3.x — same API, same config, SQLite single binary.
+
+---
+
+## Design decisions (to lock before implementation)
+
+| # | Decision | Rationale |
+|---|---|---|
+| D1 | **Coordination via the shared DB + Redis, no cluster framework.** DB: config epoch, DLQ leases, job leases. Redis: dedup, response cache, distributed rate limiting. No gossip, no leader-election library, no node discovery. | Orion's source of truth is already the shared DB; leases and epochs cover every coordination need here. |
+| D2 | **Cluster mode requires Postgres (or MySQL) + Redis.** Startup refuses `cluster.enabled = true` with `sqlite:` storage or with in-memory dedup on any active channel. | SQLite is single-host by construction; in-memory dedup across replicas is silent correctness loss. |
+| D3 | **Circuit breakers and backpressure stay node-local** in v1.0.0, with documented ×N semantics. | Sharing breaker state is complexity with marginal benefit; a per-node breaker still converges after `failure_threshold` failures per node. |
+| D4 | **Node identity is ephemeral** — a boot-time UUID, not a registered cluster member. Nothing depends on a stable node list. | Instances are cattle; leases expire, epochs are absolute. |
+
+---
+
+## Workstream 0 — Prerequisite correctness fixes (ship first, valuable standalone)
+
+Pre-existing bugs confirmed in the audit; several silently break the moment a second replica starts.
+
+- [ ] **0.1 Channel-scope the dedup key.** Today the raw idempotency header value is the cache key — tokens collide across channels. Change `check_deduplication` (`src/server/routes/data.rs:440-458`) to `dedup:{channel}:{token}`, mirroring the response-cache key format at `data.rs:521`.
+- [ ] **0.2 Auth on trace endpoints.** `GET /api/v1/data/traces` and `/traces/{id}` (`data.rs:812,836`) return full payloads unauthenticated — `admin_auth.rs:50` only guards `/api/v1/admin` + `/metrics`. Move them under admin auth.
+- [ ] **0.3 Dedup backend errors fail closed as 409.** `store.check_and_insert(key, window).await.unwrap_or(false)` (`data.rs:450`) treats a Redis outage as "duplicate" and rejects every request with Conflict. Decide policy (recommend: fail-open + error metric + warn) and implement.
+- [ ] **0.4 Wire `queue.dlq_max_retries`.** The config value (`src/config/queue.rs:30`) is only logged (`main.rs:585`); the enqueue path hardcodes `5` (`src/queue/processing.rs:500`).
+- [ ] **0.5 Write `traces.channel_id`.** The column exists (and is indexed) but is never populated by any repo path (`traces.rs:158-164`, `:284-295`).
+- [ ] **0.6 Remove dead code `src/channel/dedup.rs`** (`DeduplicationStore` — only reference is its own re-export in `channel/mod.rs:17`).
+- [ ] **0.7 `BackpressureConfig.queue_depth`** (`src/channel/config.rs:114-121`) is parsed but never read — implement or delete the field.
+- [ ] **0.8 Trigger/constraint parity across backends.** Active-immutability triggers exist only on SQLite (`migrations/sqlite/001:136-168`); Postgres and MySQL have none. Either add them (PG plpgsql, MySQL SIGNAL) or enforce immutability in the repository layer — the three backends must enforce identical invariants, and cluster mode makes Postgres the primary backend.
+
+---
+
+## Workstream A — Cluster coordination
+
+- [ ] **A1. Instance identity.** `instance_id` = UUID generated at boot (overridable via `ORION_SERVER__INSTANCE_ID`), stored in `AppState`, used by DLQ leases, job leases, Kafka static membership, and log/metric decoration.
+- [ ] **A2. Config-change propagation (the highest-leverage HA fix).** New `config_epoch` table (single row: `epoch BIGINT`, `updated_at`). Every mutation that today calls `audit_and_reload` (`admin/mod.rs:106-121` — status changes, deletes, rollout updates, manual reload) **and** every connector mutation (`connectors.rs:94,145,177,272`) increments the epoch in the same transaction as the write. Each node runs an epoch-watcher task: poll every `cluster.epoch_poll_interval_ms` (default 2000 ms; Postgres upgrade path: `LISTEN/NOTIFY` with poll as fallback) → on change, run `reload_engine` + `reload_connectors` + pool eviction. This also fixes the existing gap where connector edits never propagate (`reload_connectors` at `connectors.rs:25-31` is node-local and separate from engine reload).
+- [ ] **A3. DLQ claim semantics.** `list_pending` (`trace_dlq.rs:116-139`) is an unguarded global scan every 30 s on every node. Add lease columns (`claimed_by`, `claimed_until`) and claim via `UPDATE … SET claimed_by = $instance, claimed_until = now()+interval WHERE id IN (SELECT … FOR UPDATE SKIP LOCKED LIMIT n)` on PG/MySQL; SQLite keeps the simple path (single-node by definition, per D2). Expired leases are re-claimable. Also lift the hardcoded batch size 20 (`dlq_retry.rs:29`) into config.
+- [ ] **A4. Distributed rate limiting.** governor's `DashMapStateStore` (`src/channel/mod.rs:22-30`) is per-process; N replicas ⇒ N× the configured limit, and per-channel limiter state resets on every engine reload (`registry.rs:150-153`). Introduce a `RateLimitBackend` trait: `local` (governor, default) and `redis` (fixed-window or GCRA via Lua `INCR`/`EXPIRE` — governor has no Redis store). Cluster mode defaults per-channel limits to the Redis backend; platform IP limits may stay local (documented ×N).
+- [ ] **A5. Cluster-mode startup guardrails** (in `src/config/validation.rs`): `cluster.enabled = true` requires (a) non-SQLite storage, (b) `cluster.redis_url` set, (c) hard error if any *active* channel with `deduplication` configured would fall back to the in-memory backend. Also change the silent memory fallbacks in `ChannelRegistry::reload` (`registry.rs:198-233`, `:257-281`) from `warn` to channel-load *error* in cluster mode — silent per-node dedup is a correctness loss, not a degradation.
+- [ ] **A6. Shared dedup/response cache by default in cluster mode:** `[cluster] redis_url` provisions a default Redis-backed `CacheBackend` used whenever a channel doesn't name an explicit cache connector (replacing the `cache_pool.memory()` fallback). The FNV-1a cache key (`data.rs:492-522`) is already cross-process stable — keep it.
+- [ ] **A7. Background-job single-flight.** Trace cleanup (`queue/mod.rs:24-65`) runs on every node (N× duplicate DELETEs). Add a `job_leases` table (`job_name PK, holder, expires_at`); cleanup and DLQ retry acquire the lease before each tick (skip if held). Cheap, no leader election.
+- [ ] **A8. Kafka static membership + restart hygiene.** Set `group.instance.id = instance_id` and explicit `session.timeout.ms` in `start_consumer` (`consumer.rs:97-102`) so rolling deploys and reload-driven restarts rejoin without a full group rebalance. Epoch-driven reloads (A2) will fire on all nodes near-simultaneously — add per-node jitter (0–5 s) before `restart_kafka_consumer_if_needed` (`routes/mod.rs:231-324`) when the topic set changed.
+- [ ] **A9. Rolling-deploy readiness.** `ready` is set true once (`main.rs:519`) and never cleared; `/readyz` (`routes/mod.rs:123-152`) returns 200 through the entire drain window, and the plain-HTTP path *keeps accepting new connections* for `shutdown_drain_secs` (`main.rs:750-771`). Fix: on SIGTERM set `ready = false` immediately (LB pulls the node), keep serving in-flight + newly-arrived requests during drain, and unify TLS/plain drain semantics (they differ today: `main.rs:656-673` vs `:750-771`).
+- [ ] **A10. Migration/deploy separation.** Add `storage.auto_migrate` (default `true` for compat; `false` in cluster mode) so replicas don't race migrations at boot (sqlx has no SQLite migration lock, and PG advisory locks still serialize a thundering herd). Document expand/contract convention for all future migrations; `orion-server migrate` becomes the Helm pre-upgrade hook / init job.
+- [ ] **A11. Circuit breakers & backpressure: document, don't distribute (D3 decision).** Docs state per-node semantics explicitly (`max_concurrent` × N, breaker trips per node). `POST /circuit-breakers/{key}` reset is node-local and 404s elsewhere (`admin/connectors.rs:314-333`) — piggyback breaker resets on the epoch bus (a `breaker_reset` epoch event) so one API call resets all nodes.
+
+---
+
+## Workstream B — Deploy artifacts & ops
+
+- [ ] **B1. Helm chart** (`deploy/helm/orion/`): Deployment (with `readinessProbe: /readyz`, `livenessProbe: /healthz`), HPA, PDB, Service, Ingress, ConfigMap/Secret for `ORION_*` env, optional Redis + Postgres subcharts for dev, pre-upgrade migrate Job (A10). Nothing exists today beyond Dockerfile + single-node compose.
+- [ ] **B2. Fill env-override gaps** (`src/config/env_overrides.rs` is a hand-maintained list): missing today and needed for pure-env K8s deploys — `ORION_QUEUE__DLQ_RETRY_ENABLED`, `ORION_QUEUE__DLQ_POLL_INTERVAL_SECS`, `ORION_QUEUE__DLQ_MAX_RETRIES`, `ORION_STORAGE__{MAX_CONNECTIONS,MIN_CONNECTIONS,IDLE_TIMEOUT_SECS}`, `ORION_CORS__ALLOWED_ORIGINS`, `ORION_KAFKA__TOPICS`, `ORION_KAFKA__DLQ__{ENABLED,TOPIC}`, `ORION_CHANNELS__{INCLUDE,EXCLUDE}`, plus all new `[cluster]` keys.
+- [ ] **B3. Backups in cluster mode.** `POST /api/v1/admin/backups` writes to the local node's filesystem (`admin/backups.rs:34,69,108`) — meaningless behind an LB, and SQLite-only anyway. In cluster mode return 400 with guidance to use managed-DB PITR/snapshots; document the operator runbook.
+- [ ] **B4. HA reference compose file** (`docker-compose.ha.yml`): 2× orion + Postgres + Redis + nginx, used by the multi-node integration tests (see Test plan) and as user documentation.
+- [ ] **B5. Docs:** rewrite `docs/src/features/scalability.md` and `availability.md` around cluster mode (they currently document the curl-loop reload fan-out as the workaround).
+
+---
+
+## Workstream C — Cluster observability
+
+- [ ] **C1. Sticky rollout bucketing.** `inject_rollout_bucket` uses `rand::random` per request (`engine/utils.rs:19-26`) — canary assignment flip-flops per call *and* per node. Hash a stable caller identity (client IP, or a configurable header) → stable bucket across requests and replicas.
+- [ ] **C2. Per-instance labels.** Add `instance_id` to log spans; `/metrics` stays per-node (Prometheus scrapes each pod), no aggregation needed.
+
+---
+
+## New configuration (sketch)
+
+```toml
+[cluster]
+enabled = false               # true = multi-replica coordination on
+redis_url = ""                # required when enabled; shared dedup/cache/rate-limit
+epoch_poll_interval_ms = 2000
+instance_id = ""              # auto-generated UUID when empty
+
+[storage]
+auto_migrate = true           # set false in cluster deployments; run `orion-server migrate` as a job
+```
+
+---
+
+## Test plan
+
+- **Multi-node harness:** extend `tests/common` to build *two* `AppState`s sharing one Postgres testcontainer + one Redis testcontainer (the existing testcontainers setup in `common/backends.rs` covers PG/Redis already). Assert:
+  - activate a channel via node A → node B serves it within one epoch poll (A2);
+  - same idempotency key sent to A then B → second gets 409 (A6);
+  - a DLQ row is retried by exactly one node (A3);
+  - a per-channel limit of 10 rps holds at ~10 rps across both nodes combined (A4).
+- **Rolling-deploy drill:** SIGTERM one of two nodes under load → `/readyz` goes 503 immediately, zero 5xx observed at the LB (A9).
+- **Compat suite:** full existing integration suite (16.5k lines) must pass untouched with `cluster.enabled = false`.
+- **Unit-test fallout to budget for:** rate-limit in-file tests (`server/rate_limit.rs:224-389`), registry tests, `migration_gen` golden tests if A10/0.8 touch the generator.
+
+---
+
+## Sequencing
+
+| Milestone | Contents | Exit criteria |
+|---|---|---|
+| **M1 — Hardening** | Workstream 0 (all items) | Existing suite green; dedup channel-scoped; traces authed; DLQ config honored |
+| **M2 — Coordination** | A1–A11 | Multi-node harness green; rolling deploy with zero 5xx demonstrated |
+| **M3 — Ops & polish** | B1–B5, C1–C2 | Helm install of a 3-replica cluster passes the harness scenarios |
+
+## Explicit non-goals
+
+- **Multi-tenancy in any form** — permanent product decision (2026-07-26). Customer isolation = one instance per customer; see `saas-gaps.md`.
+- Shared/distributed circuit-breaker state (D3 decision).
+- Data-plane API-key auth — still a real gap, but orthogonal to HA; tracked in `saas-gaps.md` §1 (only the trace-endpoint fix 0.2 ships here).
+- Leader election frameworks, gossip, node registries (D1/D4 decisions).

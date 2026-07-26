@@ -1,14 +1,14 @@
 # Orion SaaS Readiness — Gap Analysis
 
-*Generated from a full codebase audit on 2026-07-19 (branch `main`, commit `a0fc8e8`); revised 2026-07-26 after a second verification pass.*
+*Generated from a full codebase audit on 2026-07-19 (branch `main`, commit `a0fc8e8`); revised 2026-07-26 after a second verification pass and the product decision to keep Orion single-tenant permanently.*
 
-> **Companion document:** [`multi-tenant-instance.md`](multi-tenant-instance.md) turns §2 (multi-tenancy) and §3 (HA) of this analysis into a concrete, file-level v1.0.0 change plan with design decisions, workstreams, and milestones.
+> **Companion document:** [`multi-instance-ha.md`](multi-instance-ha.md) turns §3 (HA / horizontal scaling) into a concrete, file-level v1.0.0 change plan with design decisions, workstreams, and milestones.
 
 ## Verdict
 
-Orion today is a **single-tenant, single-node, single-trust-domain appliance**. It is excellent at what it was designed for — a self-hosted declarative runtime with governance built in — but a SaaS offering requires capabilities that do not exist yet in any form: caller identity on the data plane, a tenant model, cross-replica coordination, usage metering, and secrets encryption. There is no partial scaffolding to extend; each of these is a from-scratch, cross-cutting addition.
+Orion today is a **single-tenant, single-node, single-trust-domain appliance**. It is excellent at what it was designed for — a self-hosted declarative runtime with governance built in — but a SaaS offering requires capabilities that do not exist yet in any form: caller identity on the data plane, cross-replica coordination, usage metering, and secrets encryption. There is no partial scaffolding to extend; each of these is a from-scratch, cross-cutting addition.
 
-**Strategic recommendation:** the fastest credible path to a SaaS is **dedicated-instance-per-tenant** (a control plane that provisions one isolated Orion instance + database per customer), which converts most "multi-tenancy" gaps into "platform ops" gaps and reuses the single-tenant architecture as-is. True shared multi-tenancy (one Orion serving many tenants) is a substantially larger rewrite touching every table, registry, and cache key. The phased plan at the end reflects this.
+**Decision (2026-07-26): Orion stays single-tenant — permanently.** Shared multi-tenancy (one Orion serving many tenants) will not be pursued. The SaaS path is therefore **dedicated-instance-per-customer**: a control plane that provisions one isolated Orion instance + database per customer. This converts the former "multi-tenancy" gaps into "platform ops" gaps and reuses the single-tenant architecture as-is. What each instance still needs from this repo: identity & access (§1), horizontal scaling within an instance (§3 → `multi-instance-ha.md`), metering (§4), and security hardening (§5).
 
 ---
 
@@ -29,36 +29,22 @@ Orion today is a **single-tenant, single-node, single-trust-domain appliance**. 
 | Per-channel "auth" is only achievable by hand-rolled JSONLogic over raw headers — not real auth | High | `data.rs:270-279,405` |
 
 ### What SaaS needs
-1. **Data-plane authentication**: per-channel (or per-tenant) API keys, hashed at rest, verified by middleware before channel dispatch; caller identity attached to the request context.
+1. **Data-plane authentication**: per-channel (or per-instance) API keys, hashed at rest, verified by middleware before channel dispatch; caller identity attached to the request context.
 2. **Admin identity**: users + orgs, OIDC/SSO for the console, short-lived tokens; RBAC at minimum `owner / editor / viewer` per workspace.
 3. **Key lifecycle APIs**: create/list/revoke/rotate, last-used tracking, scoped keys (per-channel, read-only, admin).
 4. Put `/api/v1/data/traces*` behind auth immediately — this is a fix worth shipping even for self-hosted users.
 
 ---
 
-## 2. Multi-Tenancy — absent by construction
+## 2. Multi-Tenancy — ruled out by decision
 
-### What exists
-Nothing. The word "tenant" appears only as an example header (`x-tenant-id`) in rate-limit `key_logic` docs (`src/channel/config.rs:81`, `src/server/rate_limit.rs:193`) — client-supplied, unverified, and only scopes a rate-limit bucket.
+**Decision (2026-07-26): Orion is single-tenant, permanently.** The codebase's flat global namespace (one schema, one channel registry, one route table, one connector registry, process-global quotas) is now a deliberate architectural property, not a gap. No `tenant_id` will be added to any table, key, or API.
 
-### Gaps (every layer assumes one flat global namespace)
-| Layer | Single-tenant assumption | Evidence |
-|---|---|---|
-| **Schema** | No `tenant_id`/`org_id` on any of the 6 tables; PKs are bare `(workflow_id, version)` / `(channel_id, version)`; `connectors.name` is globally `UNIQUE` | `migrations/*/001_initial.sql`; single-draft triggers/indexes key on bare IDs |
-| **Routing** | One global `ChannelRegistry.by_name` map + one global `RouteTable` — two tenants cannot own the same channel name or REST path; second registration shadows the first | `src/channel/registry.rs:105-108`, `src/channel/routing.rs` |
-| **Connectors** | Registry + circuit breakers + SQL/Mongo/Redis pool caches all keyed by globally-unique connector name; pools (and credentials) shared process-wide | `src/connector/registry.rs:39`, `pool_cache.rs`, `mongo_pool.rs`, `redis_pool.rs` |
-| **Cache/dedup keys** | Response cache key is `cache:{channel}:{hash}` (channel-scoped, not tenant-scoped). **Dedup key is the raw idempotency header value with NO prefix at all** — idempotency tokens collide *across channels today* (pre-existing bug, see §7) | `data.rs:500-522` vs `data.rs:440-457`; shared `MemoryCacheBackend` DashMap (`cache_backend.rs:43-45`) |
-| **Engine** | One global engine; all active channels+workflows flattened into one match set; rollout bucketing global | `src/server/state.rs:27`, `src/engine/mod.rs:280-354` |
-| **Attribution** | Traces carry only `channel` name — no caller/IP/key/tenant column; audit `principal` is a key prefix or `"anonymous"` | `001_initial.sql` traces table; `admin/mod.rs:57-60` |
-| **Quotas** | Body limit, result size, async queue memory (100 MB), worker pool — all process-global; one tenant's load exhausts them for everyone | `server/mod.rs:63`, `config/queue.rs`, `queue/mod.rs:88-135` |
+Customer isolation is delivered at the deployment layer instead: **one Orion instance + one database per customer**, provisioned by a control plane (see Roadmap Phase 1). The detailed shared-multi-tenancy gap inventory that previously lived in this section is preserved in git history (`947401e`) should the decision ever be revisited.
 
-### What SaaS needs (shared-multi-tenant path)
-1. `tenant_id` column + composite uniqueness on all tables, views, triggers, and every repository query (three DB backends × all queries).
-2. Tenant-prefixed namespaces for: channel names, REST route matching (e.g. `/t/{tenant}/...` or host-based), connector names, cache/dedup keys, circuit-breaker keys, pool-cache keys.
-3. Per-tenant quotas: queue memory, worker share, payload size, channel/workflow/connector counts.
-4. Tenant-scoped trace/audit queries ("list *my* traces").
-
-> On the **dedicated-instance path**, all of §2 is replaced by: a provisioning control plane (instance per tenant, DB per tenant, DNS/routing per tenant) and §1/§3/§4 still apply.
+Two items from that analysis survive because they matter regardless of tenancy:
+1. **Attribution** — traces carry only the channel name (no caller/IP/key column) and audit `principal` is an 8-char key prefix or `"anonymous"` (`admin/mod.rs:57-60`); needed for §4 metering and §5 audit v2.
+2. **Cross-channel key collisions** — the dedup key has no prefix at all (§7 bug 1); fixed in `multi-instance-ha.md` Workstream 0.
 
 ---
 
@@ -87,7 +73,10 @@ Nothing. The word "tenant" appears only as an example header (`x-tenant-id`) in 
 | No clustering primitives at all — no leader election, distributed locks, node identity, config epochs | Every replica is an independent uncoordinated actor | repo-wide grep negative |
 | Migrations auto-apply on boot with no opt-out (`init_pool` always migrates; no `auto_migrate` flag); no documented expand/contract strategy. sqlx serializes via advisory lock on Postgres/MySQL but has **no migration lock for SQLite** | Rolling deploys race on schema changes | `storage/mod.rs:281-311` |
 
-### What SaaS needs
+### What HA needs
+
+> Every item below is expanded into file-level work items in [`multi-instance-ha.md`](multi-instance-ha.md).
+
 1. **Config-change propagation**: minimum viable = a `config_epoch` row + per-node poll (or Postgres LISTEN/NOTIFY; or Redis pub/sub) triggering `reload_engine`. This is the single highest-leverage scaling fix.
 2. **DLQ claim semantics**: `SELECT ... FOR UPDATE SKIP LOCKED` (Postgres/MySQL) or a lease column.
 3. **Redis-by-default for cross-node concerns** in SaaS mode: dedup, response cache, and a distributed rate limiter (governor has no Redis store — needs a Redis token bucket implementation).
@@ -109,16 +98,15 @@ Nothing. The word "tenant" appears only as an example header (`x-tenant-id`) in 
 | Gap | Why it blocks SaaS | Evidence |
 |---|---|---|
 | **No durable usage ledger** — metrics are in-process Prometheus counters: reset on restart, aggregate-only, not queryable per account | Cannot invoice anyone | `metrics/mod.rs` (all counters) |
-| **No per-caller/per-tenant dimension** on any success-path metric (only `rate_limit_rejections_total{client}`) | Cannot attribute usage | `metrics/mod.rs:192` |
+| **No per-caller dimension** on any success-path metric (only `rate_limit_rejections_total{client}`) | Cannot attribute usage | `metrics/mod.rs:192` |
 | **No payload-byte accounting** — request/response volume never measured | Cannot do volume-based pricing | grep negative; only size *caps* exist |
 | **No quota/plan/entitlement system** — only RPS throttling; no monthly volume caps, tiers, overage handling | Cannot enforce plans | grep for plan/quota/entitlement negative |
 | Rollout bucketing is `rand::random` per request — not sticky per caller | Canary sees users flip-flop between versions | `engine/utils.rs:19`, `engine/mod.rs:314-349` |
 
 ### What SaaS needs
-1. A **usage events pipeline**: per-request record (tenant, channel, timestamp, duration, bytes in/out, status) written async to a durable store (reuse the trace-queue pattern), aggregated hourly/daily for billing export (Stripe/Metronome/etc.).
-2. Tenant-labelled metrics (careful with cardinality — aggregate per-tenant in the ledger, not in Prometheus).
-3. Quota enforcement middleware: monthly request/byte caps per plan, with 429 + `X-Quota-Remaining`-style headers, and grace/overage policy.
-4. Sticky rollout bucketing (hash of caller identity) for meaningful canaries.
+1. A **usage events pipeline**: per-request record (channel, timestamp, duration, bytes in/out, status) written async to a durable store (reuse the trace-queue pattern), aggregated hourly/daily per instance for billing export (Stripe/Metronome/etc.). On the dedicated-instance model, the customer dimension is the instance itself — no per-request customer label needed.
+2. Quota enforcement middleware: monthly request/byte caps per plan, with 429 + `X-Quota-Remaining`-style headers, and grace/overage policy — enforced per instance.
+3. Sticky rollout bucketing (hash of caller identity) for meaningful canaries.
 
 ---
 
@@ -132,30 +120,30 @@ Nothing. The word "tenant" appears only as an example header (`x-tenant-id`) in 
 |---|---|---|
 | **Connector secrets stored plaintext in DB** (`connectors.config_json TEXT`) — no encryption at rest, no KMS/envelope crypto | Critical for SaaS (you'd hold customer DB credentials) | `001_initial.sql:8`, `admin/connectors.rs:85` |
 | Secret masking is a **denylist by key name** — `client_secret`, `private_key`, etc. leak in cleartext via GET | High | `src/connector/masking.rs` |
-| SSRF: per-connector `allow_private_urls` bypass; DNS-rebinding TOCTOU (check resolves, reqwest re-resolves); resolution failure allowed through; no IPv6 ULA/link-local; no redirect re-validation; only HTTP connectors covered | High (in SaaS, tenants author connector URLs → SSRF against *your* VPC) | `ssrf.rs`, `http_common.rs:72-81`, `connector/config.rs:90` |
+| SSRF: per-connector `allow_private_urls` bypass; DNS-rebinding TOCTOU (check resolves, reqwest re-resolves); resolution failure allowed through; no IPv6 ULA/link-local; no redirect re-validation; only HTTP connectors covered | High (in SaaS, customers author connector URLs → SSRF against *your* VPC) | `ssrf.rs`, `http_common.rs:72-81`, `connector/config.rs:90` |
 | Audit log: actor = 8-char key prefix or `"anonymous"`; no IP/user-agent/request-id; `details` always `None` (no diffs); fire-and-forget writes can drop; data-plane and read-access never audited; list API has no filters | High (compliance: SOC 2 needs attributable, complete audit trails) | `admin/mod.rs:50-85`, `admin/audit.rs:34` |
 | Secret resolver ships env-only — no Vault/cloud-SM backend implemented | Medium | `connector/secrets.rs:65` |
 | No configurable TLS policy (min version/ciphers); admin key rotation requires redeploy | Low/Medium | `config/server.rs:81-90` |
 
 ### What SaaS needs
-1. **Envelope encryption for connector configs** (per-tenant data key wrapped by a KMS master key) — prerequisite for holding customer credentials.
-2. SSRF: remove/flag-gate `allow_private_urls` in SaaS mode, pin resolved IPs into the HTTP client (defeat rebinding), validate redirects, extend coverage to DB/Mongo/Redis connector URLs (a tenant pointing a "connector" at your internal Postgres is the same attack).
+1. **Envelope encryption for connector configs** (per-instance data key wrapped by a KMS master key) — prerequisite for holding customer credentials.
+2. SSRF: remove/flag-gate `allow_private_urls` in SaaS mode, pin resolved IPs into the HTTP client (defeat rebinding), validate redirects, extend coverage to DB/Mongo/Redis connector URLs (a customer pointing a "connector" at your internal Postgres is the same attack).
 3. Audit v2: full actor identity, IP, request-id, before/after diffs, transactional or at-least-once writes, filterable query API, data-plane access logging.
 4. Implement the `vault://` / cloud secrets-manager resolvers the trait already anticipates.
 
 ---
 
-## 6. Tenant-Facing Operations & Platform Ops
+## 6. Customer-Facing Operations & Platform Ops
 
 ### Gaps
 | Gap | Notes | Evidence |
 |---|---|---|
-| Backup = SQLite-only `VACUUM INTO`, **no restore endpoint**, no Postgres/MySQL backup, no per-tenant export | SaaS needs per-tenant export (offboarding, GDPR portability) and operator PITR (use managed Postgres) | `admin/backups.rs:26-104` |
+| Backup = SQLite-only `VACUUM INTO`, **no restore endpoint**, no Postgres/MySQL backup, no full-instance export | SaaS needs per-customer instance export (offboarding, GDPR portability) and operator PITR (use managed Postgres) | `admin/backups.rs:26-104` |
 | **No operator API for the trace DLQ** — table + retry worker exist, but no route to list/inspect/replay/purge stuck traces | Support team is blind to stuck work | grep `src/server` for dlq routes: none |
 | Audit-log list API: pagination only, no filtering by action/resource/principal/time | | `admin/audit.rs:34` |
 | No runtime config reload (no SIGHUP/watcher) — most config changes need a restart | Acceptable if instances are cattle; painful otherwise | grep `src/config` negative |
-| No Helm chart or K8s manifests; no per-tenant provisioning tooling | The dedicated-instance path lives or dies on this | repo root |
-| No status page / tenant-visible health, no per-tenant trace search UI hooks | Console (Orion-ui) currently assumes single operator | — |
+| No Helm chart or K8s manifests; no per-customer instance provisioning tooling | The dedicated-instance path lives or dies on this | repo root |
+| No status page / customer-visible health, no trace search UI hooks | Console (Orion-ui) currently assumes single operator | — |
 
 ---
 
@@ -180,14 +168,15 @@ Nothing. The word "tenant" appears only as an example header (`x-tenant-id`) in 
 ### Phase 0 — Hardening (valuable for self-hosted users too; ~independent fixes)
 - Auth on trace endpoints; channel-scope the dedup key; DLQ `SKIP LOCKED`; SSRF rebinding fix + connector-URL coverage; audit v2 (actor, IP, diffs, filters); DLQ operator API; masking → encrypt-at-rest for connector configs; remove dead dedup module.
 - From the second audit pass: wire `dlq_max_retries`; write `traces.channel_id`; fail-open (with metric) on dedup-backend errors; PG/MySQL active-immutability parity; `ready=false` on SIGTERM; implement-or-remove `backpressure.queue_depth`.
+- The HA subset of Phase 0 is Workstream 0 of [`multi-instance-ha.md`](multi-instance-ha.md) (milestone M1).
 
-### Phase 1 — "Hosted Orion" (dedicated instance per tenant — fastest sellable SaaS)
-- Control plane service: signup/org model, OIDC login, instance provisioning (K8s namespace or VM per tenant, managed Postgres per tenant), DNS/TLS automation, Helm chart.
+### Phase 1 — Multi-instance HA (v1.0.0 — see `multi-instance-ha.md`)
+- Config-epoch reload propagation, DLQ leases, distributed rate limiting, shared Redis dedup/cache, job single-flight, Kafka static membership, rolling-deploy readiness, `auto_migrate` separation, Helm chart, HA reference compose.
+
+### Phase 2 — "Hosted Orion" (dedicated instance per customer — the sellable SaaS)
+- Control plane service: signup/org model, OIDC login, instance provisioning (K8s namespace or VM per customer, managed Postgres per customer), DNS/TLS automation, built on the Phase 1 Helm chart.
 - Per-instance: admin-key issuance/rotation API, data-plane API keys (hashed store + middleware), usage-events ledger + export for billing, plan-based quota middleware.
-- Ops: Postgres-required SaaS profile, config-epoch reload propagation (needed once an instance runs >1 replica), backup via managed-DB PITR, monitoring per instance.
-
-### Phase 2 — Shared multi-tenancy (only if unit economics demand it)
-- `tenant_id` across schema + all repositories (×3 backends); tenant-prefixed routing/naming/cache/dedup/breaker/pool keys; per-tenant quotas on queue memory/workers/payloads; tenant-scoped traces/audit; distributed rate limiting; noisy-neighbor isolation testing.
+- Ops: Postgres-required SaaS profile, backup via managed-DB PITR, monitoring per instance.
 
 ### Phase 3 — SaaS polish
-- Sticky canary rollouts, per-tenant export/offboarding, SOC 2 evidence automation, status page, billing-provider integration, tenant-visible metrics dashboards in the console.
+- Sticky canary rollouts, per-customer instance export/offboarding, SOC 2 evidence automation, status page, billing-provider integration, customer-visible metrics dashboards in the console.
