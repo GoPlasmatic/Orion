@@ -39,6 +39,19 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     config.write.validate()?;
     config.rate_limit.validate()?;
     config.kafka.validate()?;
+    config.cluster.validate()?;
+    // Cross-section: cluster mode is meaningless on SQLite (single-host by
+    // construction) — refuse at startup rather than corrupt silently.
+    if config.cluster.enabled
+        && crate::storage::detect_backend(&config.storage.url)?
+            == crate::storage::DbBackend::Sqlite
+    {
+        return Err(OrionError::Config {
+            message: "cluster.enabled = true requires postgres:// or mysql:// storage \
+                      (sqlite is single-host by construction)"
+                .to_string(),
+        });
+    }
     Ok(())
 }
 

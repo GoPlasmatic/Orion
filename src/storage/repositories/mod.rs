@@ -1,5 +1,6 @@
 pub mod audit_logs;
 pub mod channels;
+pub mod cluster;
 pub mod connectors;
 pub mod helpers;
 pub mod trace_dlq;

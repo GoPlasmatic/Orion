@@ -12,6 +12,10 @@ pub struct ServerConfig {
     pub port: u16,
     /// Maximum time in seconds to wait for in-flight requests during graceful shutdown.
     pub shutdown_drain_secs: u64,
+    /// Upper bound in seconds on waiting for in-flight requests *after* the
+    /// drain window (readiness already withdrawn, accept stopped). 0 = wait
+    /// forever (pre-1.0 behavior of the plain-HTTP path).
+    pub shutdown_force_timeout_secs: u64,
     /// TLS configuration for HTTPS support.
     pub tls: TlsConfig,
     /// Response compression configuration.
@@ -24,6 +28,7 @@ impl Default for ServerConfig {
             host: "0.0.0.0".to_string(),
             port: 8080,
             shutdown_drain_secs: 30,
+            shutdown_force_timeout_secs: 30,
             tls: TlsConfig::default(),
             compression: CompressionConfig::default(),
         }

@@ -58,6 +58,12 @@ where
     );
     env_parsed!(
         env_var,
+        "ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS",
+        config.server.shutdown_force_timeout_secs,
+        u64
+    );
+    env_parsed!(
+        env_var,
         "ORION_SERVER__TLS__ENABLED",
         config.server.tls.enabled,
         bool
@@ -91,6 +97,45 @@ where
         env_var,
         "ORION_STORAGE__BACKUP_DIR",
         config.storage.backup_dir
+    );
+    env_parsed!(
+        env_var,
+        "ORION_STORAGE__MAX_CONNECTIONS",
+        config.storage.max_connections,
+        u32
+    );
+    env_parsed!(
+        env_var,
+        "ORION_STORAGE__MIN_CONNECTIONS",
+        config.storage.min_connections,
+        u32
+    );
+    env_parsed!(
+        env_var,
+        "ORION_STORAGE__IDLE_TIMEOUT_SECS",
+        config.storage.idle_timeout_secs,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_STORAGE__AUTO_MIGRATE",
+        config.storage.auto_migrate,
+        bool
+    );
+
+    // Cluster
+    env_parsed!(env_var, "ORION_CLUSTER__ENABLED", config.cluster.enabled, bool);
+    env_str!(env_var, "ORION_CLUSTER__REDIS_URL", config.cluster.redis_url);
+    env_parsed!(
+        env_var,
+        "ORION_CLUSTER__EPOCH_POLL_INTERVAL_MS",
+        config.cluster.epoch_poll_interval_ms,
+        u64
+    );
+    env_str!(
+        env_var,
+        "ORION_CLUSTER__INSTANCE_ID",
+        config.cluster.instance_id
     );
 
     // Logging
@@ -177,6 +222,18 @@ where
         env_var,
         "ORION_QUEUE__DLQ_POLL_INTERVAL_SECS",
         config.queue.dlq_poll_interval_secs,
+        u64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_QUEUE__DLQ_BATCH_SIZE",
+        config.queue.dlq_batch_size,
+        i64
+    );
+    env_parsed!(
+        env_var,
+        "ORION_QUEUE__DLQ_LEASE_SECS",
+        config.queue.dlq_lease_secs,
         u64
     );
 
@@ -433,6 +490,12 @@ where
         config.kafka.lag_poll_interval_secs,
         u64
     );
+    env_parsed!(
+        env_var,
+        "ORION_KAFKA__SESSION_TIMEOUT_MS",
+        config.kafka.session_timeout_ms,
+        u64
+    );
 
     // Admin auth
     env_parsed!(
@@ -512,6 +575,18 @@ mod tests {
         env.insert("ORION_QUEUE__DLQ_RETRY_ENABLED", "false");
         env.insert("ORION_QUEUE__DLQ_MAX_RETRIES", "9");
         env.insert("ORION_QUEUE__DLQ_POLL_INTERVAL_SECS", "45");
+        env.insert("ORION_QUEUE__DLQ_BATCH_SIZE", "40");
+        env.insert("ORION_QUEUE__DLQ_LEASE_SECS", "90");
+        env.insert("ORION_STORAGE__MAX_CONNECTIONS", "77");
+        env.insert("ORION_STORAGE__MIN_CONNECTIONS", "7");
+        env.insert("ORION_STORAGE__IDLE_TIMEOUT_SECS", "600");
+        env.insert("ORION_STORAGE__AUTO_MIGRATE", "false");
+        env.insert("ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS", "45");
+        env.insert("ORION_KAFKA__SESSION_TIMEOUT_MS", "30000");
+        env.insert("ORION_CLUSTER__ENABLED", "true");
+        env.insert("ORION_CLUSTER__REDIS_URL", "redis://cluster-redis:6379");
+        env.insert("ORION_CLUSTER__EPOCH_POLL_INTERVAL_MS", "500");
+        env.insert("ORION_CLUSTER__INSTANCE_ID", "node-a");
         env.insert("ORION_METRICS__ENABLED", "true");
         env.insert("ORION_TRACING__ENABLED", "true");
         env.insert("ORION_TRACING__OTLP_ENDPOINT", "http://jaeger:4317");
@@ -546,6 +621,18 @@ mod tests {
         assert!(!config.queue.dlq_retry_enabled);
         assert_eq!(config.queue.dlq_max_retries, 9);
         assert_eq!(config.queue.dlq_poll_interval_secs, 45);
+        assert_eq!(config.queue.dlq_batch_size, 40);
+        assert_eq!(config.queue.dlq_lease_secs, 90);
+        assert_eq!(config.storage.max_connections, 77);
+        assert_eq!(config.storage.min_connections, 7);
+        assert_eq!(config.storage.idle_timeout_secs, 600);
+        assert!(!config.storage.auto_migrate);
+        assert_eq!(config.server.shutdown_force_timeout_secs, 45);
+        assert_eq!(config.kafka.session_timeout_ms, 30000);
+        assert!(config.cluster.enabled);
+        assert_eq!(config.cluster.redis_url, "redis://cluster-redis:6379");
+        assert_eq!(config.cluster.epoch_poll_interval_ms, 500);
+        assert_eq!(config.cluster.instance_id, "node-a");
         assert!(config.metrics.enabled);
         assert!(config.tracing.enabled);
         assert_eq!(config.tracing.otlp_endpoint, "http://jaeger:4317");

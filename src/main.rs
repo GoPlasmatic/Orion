@@ -406,9 +406,43 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Install sqlx Any drivers for external connector pools (must be before any pool creation)
     sqlx::any::install_default_drivers();
 
-    // Init database
-    let pool = orion::storage::init_pool(&config.storage).await?;
+    // Init database. With auto_migrate = false (multi-replica deploys) a
+    // stale schema is a hard startup error — a replica must never serve
+    // against pending migrations; `orion-server migrate` is the deploy step.
+    let pool = if config.storage.auto_migrate {
+        orion::storage::init_pool(&config.storage).await?
+    } else {
+        let pool = orion::storage::init_pool_no_migrate(&config.storage).await?;
+        let pending = orion::storage::pending_migrations(&pool).await?;
+        if !pending.is_empty() {
+            return Err(orion::errors::OrionError::Config {
+                message: format!(
+                    "{} pending migration(s) and storage.auto_migrate = false — \
+                     run `orion-server migrate` first",
+                    pending.len()
+                ),
+            }
+            .into());
+        }
+        pool
+    };
     tracing::info!(path = %config.storage.url, "Database initialized");
+    if config.cluster.enabled && config.storage.auto_migrate {
+        tracing::warn!(
+            "cluster.enabled with storage.auto_migrate = true: replicas will race \
+             migrations at boot (safe but noisy) — prefer auto_migrate = false plus \
+             an `orion-server migrate` deploy step"
+        );
+    }
+
+    // Cluster runtime: instance identity + shared Redis (fails fast when
+    // enabled and Redis is unreachable).
+    let cluster = orion::cluster::init_cluster_runtime(&config.cluster, &pool).await?;
+    tracing::info!(
+        instance_id = %cluster.instance_id,
+        cluster_enabled = cluster.enabled,
+        "Instance identity"
+    );
 
     // Create repositories
     let workflow_repo = Arc::new(SqlWorkflowRepository::new(pool.clone()));
@@ -640,6 +674,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         kafka_consumer_handle: kafka_consumer_handle_arc.clone(),
         kafka_producer,
         trace_persistence_queue,
+        cluster,
     });
 
     let router = orion::server::build_router(state);

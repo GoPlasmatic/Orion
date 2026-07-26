@@ -54,6 +54,8 @@ pub struct AppStateInner {
     pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
     /// Background queue for trace-storage writes. A no-op handle in sync/off modes.
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
+    /// Multi-instance coordination runtime. Inert when `cluster.enabled = false`.
+    pub cluster: Arc<crate::cluster::ClusterRuntime>,
 }
 
 /// Shared application state accessible from all route handlers.

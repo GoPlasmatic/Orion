@@ -27,6 +27,20 @@
 # max_connections = 10          # Connection pool max connections
 # busy_timeout_ms = 5000        # SQLite busy timeout in milliseconds (ignored for other backends)
 # acquire_timeout_secs = 5      # Connection pool acquire timeout in seconds
+# auto_migrate = true           # Run pending migrations at startup. Set false in
+                                # multi-replica deployments and run `orion-server migrate`
+                                # as a deploy step instead (startup fails on pending).
+
+[cluster]
+# Multi-instance (HA) coordination. With enabled = false (default) Orion is a
+# plain single node. When enabled: requires postgres:// or mysql:// storage
+# plus a shared Redis; config changes made through any node propagate to all
+# nodes; dedup/response caches default to the shared Redis; background jobs
+# run on one node at a time.
+# enabled = false
+# redis_url = ""                  # Required when enabled, e.g. "redis://redis:6379"
+# epoch_poll_interval_ms = 2000   # How often nodes poll for config changes
+# instance_id = ""                # Auto-generated UUID when empty (max 64 chars)
 
 [ingest]
 # max_payload_size = 1048576  # Maximum payload size in bytes (1 MB)

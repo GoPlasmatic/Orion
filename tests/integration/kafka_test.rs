@@ -54,6 +54,7 @@ fn test_kafka_config(brokers: &str, topic: &str, channel: &str) -> KafkaIngestCo
         processing_timeout_ms: 5_000,
         max_inflight: 10,
         lag_poll_interval_secs: 0, // disable in tests — no real broker to query
+        session_timeout_ms: 45_000,
     }
 }
 
@@ -405,6 +406,7 @@ async fn test_consumer_multiple_topics() {
         processing_timeout_ms: 5_000,
         max_inflight: 10,
         lag_poll_interval_secs: 0,
+        session_timeout_ms: 45_000,
     };
     let engine = empty_engine();
 
@@ -494,6 +496,7 @@ async fn test_consumer_partition_rebalance() {
         processing_timeout_ms: 5_000,
         max_inflight: 10,
         lag_poll_interval_secs: 0,
+        session_timeout_ms: 45_000,
     };
     let handle_a = consumer::start_consumer(&config_a, engine.clone(), None, None).unwrap();
 

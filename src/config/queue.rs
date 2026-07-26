@@ -30,6 +30,11 @@ pub struct QueueConfig {
     pub dlq_max_retries: i64,
     /// How often to poll the DLQ for pending retries, in seconds.
     pub dlq_poll_interval_secs: u64,
+    /// Maximum DLQ entries claimed per retry tick.
+    pub dlq_batch_size: i64,
+    /// How long a claimed DLQ entry stays leased to one node, in seconds.
+    /// Expired leases are re-claimable (crash recovery in cluster mode).
+    pub dlq_lease_secs: u64,
 }
 
 impl Default for QueueConfig {
@@ -46,6 +51,8 @@ impl Default for QueueConfig {
             dlq_retry_enabled: true,
             dlq_max_retries: 5,
             dlq_poll_interval_secs: 30,
+            dlq_batch_size: 20,
+            dlq_lease_secs: 60,
         }
     }
 }
@@ -66,6 +73,12 @@ impl QueueConfig {
                     .to_string(),
             });
         }
+        if self.dlq_batch_size < 1 {
+            return Err(OrionError::Config {
+                message: "queue.dlq_batch_size must be >= 1".to_string(),
+            });
+        }
+        require_nonzero(self.dlq_lease_secs, "queue.dlq_lease_secs")?;
         Ok(())
     }
 }

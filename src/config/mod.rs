@@ -1,4 +1,5 @@
 mod admin_auth;
+mod cluster;
 mod engine;
 mod env_overrides;
 pub(crate) mod env_substitute;
@@ -15,6 +16,7 @@ mod write;
 
 // Re-export all types so `use crate::config::Foo` keeps working.
 pub use admin_auth::AdminAuthConfig;
+pub use cluster::ClusterConfig;
 pub use engine::EngineConfig;
 pub use kafka::{DlqConfig, KafkaIngestConfig, TopicMapping};
 pub use logging::{LogFormat, LoggingConfig};
@@ -58,6 +60,7 @@ pub struct AppConfig {
     pub rate_limit: RateLimitConfig,
     pub channels: ChannelLoadingConfig,
     pub admin_auth: AdminAuthConfig,
+    pub cluster: ClusterConfig,
 }
 
 fn default_environment() -> String {

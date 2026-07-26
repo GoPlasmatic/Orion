@@ -20,6 +20,11 @@ pub struct StorageConfig {
     pub idle_timeout_secs: u64,
     /// Directory for database backup files (SQLite only).
     pub backup_dir: String,
+    /// Run pending migrations automatically at startup. Set `false` in
+    /// multi-replica deployments so boot-racing replicas never migrate;
+    /// run `orion-server migrate` as a deploy step instead. Startup fails
+    /// hard when this is `false` and migrations are pending.
+    pub auto_migrate: bool,
 }
 
 impl Default for StorageConfig {
@@ -32,6 +37,7 @@ impl Default for StorageConfig {
             acquire_timeout_secs: 3,
             idle_timeout_secs: 300,
             backup_dir: "./backups".to_string(),
+            auto_migrate: true,
         }
     }
 }

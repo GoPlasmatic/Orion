@@ -105,6 +105,30 @@ pub enum TraceDlq {
     NextRetryAt,
     CreatedAt,
     UpdatedAt,
+    ClaimedBy,
+    ClaimedUntil,
+}
+
+// ============================================================
+// Cluster coordination tables
+// ============================================================
+
+#[derive(Iden)]
+pub enum ConfigEpoch {
+    Table,
+    Id,
+    Epoch,
+    BreakerEpoch,
+    BreakerKey,
+    UpdatedAt,
+}
+
+#[derive(Iden)]
+pub enum JobLeases {
+    Table,
+    JobName,
+    Holder,
+    ExpiresAt,
 }
 
 // ============================================================

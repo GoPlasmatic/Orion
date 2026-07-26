@@ -33,6 +33,13 @@ pub async fn test_app() -> Router {
 
 /// Create a test app with a custom config (e.g. for rate limiting tests).
 pub async fn test_app_with_config(config: AppConfig) -> Router {
+    orion::server::build_router(test_state_with_config(config).await)
+}
+
+/// Build a full `AppState` for tests. Split from [`test_app_with_config`] so
+/// multi-node harnesses (tests/cluster) can hold the state itself — e.g. to
+/// spawn cluster tasks or inspect the channel registry directly.
+pub async fn test_state_with_config(config: AppConfig) -> AppState {
     // Install sqlx Any drivers for external connector pools (db_read/db_write tests)
     sqlx::any::install_default_drivers();
 
@@ -138,7 +145,11 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         None
     };
 
-    let state = AppState::new(orion::server::state::AppStateInner {
+    let cluster = orion::cluster::init_cluster_runtime(&config.cluster, &pool)
+        .await
+        .expect("cluster runtime");
+
+    AppState::new(orion::server::state::AppStateInner {
         engine,
         channel_repo,
         workflow_repo,
@@ -162,9 +173,8 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
         kafka_consumer_handle: Arc::new(tokio::sync::Mutex::new(None)),
         kafka_producer: None,
         trace_persistence_queue: trace_persistence_queue_for_workers,
-    });
-
-    orion::server::build_router(state)
+        cluster,
+    })
 }
 
 pub fn json_request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {

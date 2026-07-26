@@ -24,6 +24,10 @@ pub struct KafkaIngestConfig {
     /// Interval in seconds between consumer lag metric polls.
     /// Set to 0 to disable lag monitoring.
     pub lag_poll_interval_secs: u64,
+    /// Kafka `session.timeout.ms`. Only applied in cluster mode, together
+    /// with static group membership (`group.instance.id` = the instance id),
+    /// so rolling restarts rejoin without a full group rebalance.
+    pub session_timeout_ms: u64,
 }
 
 impl Default for KafkaIngestConfig {
@@ -37,6 +41,7 @@ impl Default for KafkaIngestConfig {
             processing_timeout_ms: 60_000,
             max_inflight: 100,
             lag_poll_interval_secs: 30,
+            session_timeout_ms: 45_000,
         }
     }
 }

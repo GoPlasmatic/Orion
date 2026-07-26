@@ -613,6 +613,7 @@ mod tests {
             processing_timeout_ms: 60_000,
             max_inflight: 10,
             lag_poll_interval_secs: 30,
+            session_timeout_ms: 45_000,
         };
 
         let topic_map: HashMap<String, String> = config
