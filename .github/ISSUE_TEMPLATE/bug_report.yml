@@ -36,7 +36,7 @@ body:
     attributes:
       label: Orion version
       description: Output of `orion-server --version`
-      placeholder: orion-server 0.3.0
+      placeholder: orion-server 1.0.0
     validations:
       required: true
   - type: dropdown
