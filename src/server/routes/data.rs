@@ -983,9 +983,7 @@ mod tests {
         dedup_runtime_with_store(Arc::new(StubDedupBackend { outcome }))
     }
 
-    fn dedup_runtime_with_store(
-        store: Arc<dyn CacheBackend>,
-    ) -> Option<Arc<ChannelRuntimeConfig>> {
+    fn dedup_runtime_with_store(store: Arc<dyn CacheBackend>) -> Option<Arc<ChannelRuntimeConfig>> {
         let now = chrono::Utc::now().naive_utc();
         Some(Arc::new(ChannelRuntimeConfig {
             channel: Channel {

@@ -29,6 +29,15 @@ name = "integration"
 path = "tests/integration/main.rs"
 harness = true
 
+# Multi-node (cluster mode) tests: two AppStates over one Postgres + one
+# Redis testcontainer. A separate binary because the storage backend is
+# pinned per process (DB_BACKEND OnceLock) and the integration binary pins
+# SQLite. Run with: cargo test --test cluster -- --ignored
+[[test]]
+name = "cluster"
+path = "tests/cluster/main.rs"
+harness = true
+
 [dependencies]
 dataflow-rs = "3.0.2"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
@@ -99,4 +108,4 @@ lto = "thin"
 
 [dev-dependencies]
 testcontainers = "0.27"
-testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "mongo", "elastic_search"] }
+testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "mongo", "elastic_search", "redis"] }

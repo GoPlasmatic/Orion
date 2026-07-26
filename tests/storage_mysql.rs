@@ -16,8 +16,14 @@ use testcontainers_modules::mysql::Mysql;
 
 use orion::config::StorageConfig;
 
-async fn mysql_pool() -> (testcontainers::ContainerAsync<Mysql>, orion::storage::DbPool) {
-    let container = Mysql::default().start().await.expect("start mysql container");
+async fn mysql_pool() -> (
+    testcontainers::ContainerAsync<Mysql>,
+    orion::storage::DbPool,
+) {
+    let container = Mysql::default()
+        .start()
+        .await
+        .expect("start mysql container");
     let port = container
         .get_host_port_ipv4(3306)
         .await
@@ -87,12 +93,15 @@ async fn mysql_migrations_apply_and_repo_roundtrip() {
     .await;
     let err = raw_update.expect_err("active content update must be blocked");
     assert!(
-        err.to_string().contains("Cannot modify content of active workflows"),
+        err.to_string()
+            .contains("Cannot modify content of active workflows"),
         "unexpected error: {err}"
     );
 
     // Legitimate lifecycle transition still works.
-    repo.archive("wf-mysql").await.expect("archive active workflow");
+    repo.archive("wf-mysql")
+        .await
+        .expect("archive active workflow");
 }
 
 /// DLQ claim semantics on real MySQL: SKIP LOCKED tx claim + lease blocking
@@ -112,10 +121,12 @@ async fn mysql_dlq_claim_leases_rows() {
     let orion::storage::DbPool::Mysql(mysql) = &pool else {
         panic!("mysql expected");
     };
-    sqlx::query("UPDATE trace_dlq SET next_retry_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 SECOND)")
-        .execute(mysql)
-        .await
-        .expect("backdate");
+    sqlx::query(
+        "UPDATE trace_dlq SET next_retry_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 SECOND)",
+    )
+    .execute(mysql)
+    .await
+    .expect("backdate");
 
     let claimed = repo.claim_pending("node-a", 10, 60).await.expect("claim");
     assert_eq!(claimed.len(), 1);
@@ -126,9 +137,17 @@ async fn mysql_dlq_claim_leases_rows() {
     assert!(claimed.is_empty());
 
     // Expired lease is re-claimable.
-    sqlx::query("UPDATE trace_dlq SET claimed_until = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 SECOND)")
-        .execute(mysql)
-        .await
-        .expect("expire");
-    assert_eq!(repo.claim_pending("node-c", 10, 60).await.expect("claim").len(), 1);
+    sqlx::query(
+        "UPDATE trace_dlq SET claimed_until = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 SECOND)",
+    )
+    .execute(mysql)
+    .await
+    .expect("expire");
+    assert_eq!(
+        repo.claim_pending("node-c", 10, 60)
+            .await
+            .expect("claim")
+            .len(),
+        1
+    );
 }

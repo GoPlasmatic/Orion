@@ -40,7 +40,10 @@ impl Default for ClusterConfig {
 
 impl ClusterConfig {
     pub(crate) fn validate(&self) -> Result<(), OrionError> {
-        require_nonzero(self.epoch_poll_interval_ms, "cluster.epoch_poll_interval_ms")?;
+        require_nonzero(
+            self.epoch_poll_interval_ms,
+            "cluster.epoch_poll_interval_ms",
+        )?;
         if self.enabled {
             require_nonempty(&self.redis_url, "cluster.redis_url")?;
         }

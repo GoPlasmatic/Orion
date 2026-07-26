@@ -124,8 +124,17 @@ where
     );
 
     // Cluster
-    env_parsed!(env_var, "ORION_CLUSTER__ENABLED", config.cluster.enabled, bool);
-    env_str!(env_var, "ORION_CLUSTER__REDIS_URL", config.cluster.redis_url);
+    env_parsed!(
+        env_var,
+        "ORION_CLUSTER__ENABLED",
+        config.cluster.enabled,
+        bool
+    );
+    env_str!(
+        env_var,
+        "ORION_CLUSTER__REDIS_URL",
+        config.cluster.redis_url
+    );
     env_parsed!(
         env_var,
         "ORION_CLUSTER__EPOCH_POLL_INTERVAL_MS",

@@ -331,7 +331,10 @@ async fn restart_kafka_consumer_if_needed(
     // Full restart path: pause first to minimize gap, then shutdown and restart
     if opts.kafka_restart_jitter {
         let jitter_ms = rand::random_range(0..=5000u64);
-        tracing::info!(jitter_ms, "Jittering Kafka consumer restart (epoch-driven reload)");
+        tracing::info!(
+            jitter_ms,
+            "Jittering Kafka consumer restart (epoch-driven reload)"
+        );
         tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
     }
     if let Some(ref existing_handle) = *handle_guard {

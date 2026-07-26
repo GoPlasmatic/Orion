@@ -127,9 +127,7 @@ async fn audit_and_reload(
 /// starts sane) but only propagates failures when enabled — on a single
 /// node a failed bump changes nothing, while in a cluster it means the
 /// change did NOT propagate and the admin must retry.
-pub(crate) async fn bump_config_epoch(
-    state: &AppState,
-) -> Result<(), crate::errors::OrionError> {
+pub(crate) async fn bump_config_epoch(state: &AppState) -> Result<(), crate::errors::OrionError> {
     match state.cluster.repo.bump_epoch().await {
         Ok(epoch) => {
             // fetch_max, not store: the inline reload already applied this

@@ -66,7 +66,10 @@ fn start_epoch_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
                 }
             }
 
-            let last_breaker = state.cluster.last_seen_breaker_epoch.load(Ordering::Acquire);
+            let last_breaker = state
+                .cluster
+                .last_seen_breaker_epoch
+                .load(Ordering::Acquire);
             if row.breaker_epoch > last_breaker {
                 if !row.breaker_key.is_empty() {
                     // A missing key on this node is fine — breakers are

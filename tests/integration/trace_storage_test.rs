@@ -292,7 +292,10 @@ async fn sync_trace_records_channel_id() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["data"][0]["channel_id"].as_str(), Some(expected.as_str()));
+    assert_eq!(
+        body["data"][0]["channel_id"].as_str(),
+        Some(expected.as_str())
+    );
 }
 
 #[tokio::test]

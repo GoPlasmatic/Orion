@@ -5,6 +5,81 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Multi-instance (HA) support: N replicas of `orion-server` behind a load
+balancer, sharing one Postgres/MySQL + Redis, behave as a single logical
+system. With `cluster.enabled = false` (the default) behavior is unchanged.
+See `multi-instance-ha.md` for the full plan.
+
+### Added
+
+- **`[cluster]` config section** — `enabled`, `redis_url`,
+  `epoch_poll_interval_ms`, `instance_id` (auto-generated UUID when empty).
+  Cluster mode requires Postgres/MySQL storage and a shared Redis; startup
+  refuses SQLite.
+- **Config-change propagation** — every admin mutation (channels, workflows,
+  rollout, connectors, manual reload) advances a `config_epoch` row; each node
+  polls it and resyncs from the DB, so a change made through any node reaches
+  all nodes. This also fixes connector edits, which previously propagated to
+  no other node at all. Circuit-breaker resets fan out over the same bus.
+- **Cluster-shared dedup, response cache, and rate limits** — channels without
+  an explicit cache connector use the shared cluster Redis for idempotency
+  dedup and response caching; per-channel rate limits enforce as a shared
+  Redis fixed window (~configured rate across ALL replicas combined). In
+  cluster mode, a channel whose backend would silently fall back to per-node
+  memory refuses to load instead.
+- **DLQ claim leases + job single-flight** — DLQ retries claim rows via
+  `FOR UPDATE SKIP LOCKED` leases (each entry retried by exactly one node;
+  expired leases self-recover), and trace cleanup / DLQ retry acquire a job
+  lease per tick so only one node runs them. New `queue.dlq_batch_size` /
+  `queue.dlq_lease_secs`.
+- **`storage.auto_migrate`** (default `true`) — set `false` in multi-replica
+  deployments: pending migrations become a hard startup error and
+  `orion-server migrate` runs as a deploy step.
+- **Kafka static membership** — cluster mode sets `group.instance.id` and
+  `kafka.session_timeout_ms` so rolling restarts rejoin without a full group
+  rebalance; epoch-driven consumer restarts are jittered 0–5 s.
+- **Postgres/MySQL storage-backend test binaries** (`storage_postgres`,
+  `storage_mysql`) and a multi-node cluster test binary (`cluster`) running
+  two full nodes against Postgres + Redis testcontainers in CI.
+- Env overrides: `ORION_CLUSTER__*`, `ORION_STORAGE__AUTO_MIGRATE`,
+  `ORION_STORAGE__{MAX,MIN}_CONNECTIONS`, `ORION_STORAGE__IDLE_TIMEOUT_SECS`,
+  `ORION_QUEUE__DLQ_{RETRY_ENABLED,MAX_RETRIES,POLL_INTERVAL_SECS,BATCH_SIZE,LEASE_SECS}`,
+  `ORION_KAFKA__SESSION_TIMEOUT_MS`, `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS`.
+
+### Fixed
+
+- **MySQL as Orion's own storage backend never worked** — the migration set
+  used mysql-client `DELIMITER` directives, TEXT columns with defaults, and
+  TEXT primary keys, none of which MySQL/sqlx accept. Rewritten with the
+  VARCHAR/datetime idiom; covered by container tests.
+- **Postgres storage was unusable at runtime** — models decode `i64` but
+  columns were `INT4` (every repository read failed), and chrono timestamps
+  were bound as TEXT, which Postgres rejects against timestamp columns. Both
+  fixed (new `004_bigint_columns.sql`); covered by container tests.
+- **Dedup idempotency keys are now channel-scoped** (`dedup:{channel}:{token}`)
+  — raw tokens previously collided across channels sharing a backend — and a
+  dedup-store outage now fails open (requests allowed, `dedup_backend` error
+  metric) instead of rejecting everything with 409.
+- **Trace read endpoints require admin auth** — `GET /api/v1/data/traces` and
+  `/traces/{id}` return full payloads but were unauthenticated even with
+  `admin_auth.enabled = true`.
+- **Rolling-deploy drain** — on SIGTERM, `/readyz` now flips to 503
+  immediately while the node keeps serving through `shutdown_drain_secs`
+  (so the LB drains it gracefully), then stops accepting and bounds the
+  in-flight wait with `server.shutdown_force_timeout_secs`. Previously TLS
+  stopped accepting instantly and plain HTTP never withdrew readiness.
+- **`queue.dlq_max_retries` is honored** (the enqueue path hardcoded 5) and
+  values `< 1` are rejected at startup; `traces.channel_id` is now populated
+  on every insert path; active-immutability triggers now exist on Postgres
+  and MySQL, not just SQLite.
+
+### Removed
+
+- Unread `backpressure.queue_depth` channel-config field (backpressure
+  rejects immediately at `max_concurrent`; there is no wait queue).
+
 ## [0.3.0] - 2026-07-18
 
 This release introduces the portable data dialect: backend-neutral `data_query` and

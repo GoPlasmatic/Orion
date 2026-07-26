@@ -26,7 +26,10 @@ async fn admin_mutations_advance_config_epoch() {
         row.epoch
     );
     // The mutating node marks its own bumps as already applied.
-    assert_eq!(state.cluster.last_seen_epoch.load(Ordering::Acquire), row.epoch);
+    assert_eq!(
+        state.cluster.last_seen_epoch.load(Ordering::Acquire),
+        row.epoch
+    );
     // Breaker epoch untouched by config mutations.
     assert_eq!(row.breaker_epoch, 0);
 }

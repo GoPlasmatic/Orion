@@ -206,3 +206,8 @@ jobs:
 
       - name: MySQL storage backend tests
         run: cargo test --test storage_mysql -- --ignored
+
+      # Multi-node cluster-mode tests: two AppStates over one Postgres + one
+      # Redis container per test. Serial — each test runs its own containers.
+      - name: Cluster mode multi-node tests
+        run: cargo test --test cluster -- --ignored --test-threads=1

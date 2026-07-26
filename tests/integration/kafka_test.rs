@@ -163,9 +163,14 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
     // Create DLQ producer
     let dlq_producer = Arc::new(KafkaProducer::new(&brokers).unwrap());
 
-    let handle =
-        consumer::start_consumer(&config, engine, Some(dlq_producer), Some(dlq_topic.clone()), None)
-            .unwrap();
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        Some(dlq_producer),
+        Some(dlq_topic.clone()),
+        None,
+    )
+    .unwrap();
 
     // Produce an invalid JSON message
     let producer: FutureProducer = ClientConfig::new()

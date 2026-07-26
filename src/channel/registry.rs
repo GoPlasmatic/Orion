@@ -151,25 +151,27 @@ impl ChannelRegistry {
         cluster_strict: bool,
     ) -> Result<Arc<dyn CacheBackend>, String> {
         match connector_registry.get(connector_name).await {
-            Some(cfg) => match cfg.as_ref() {
-                ConnectorConfig::Cache(cache_cfg) => {
-                    if cluster_strict && cache_cfg.backend == "memory" {
-                        return Err(format!(
-                            "connector '{connector_name}' uses the in-memory backend — \
+            Some(cfg) => {
+                match cfg.as_ref() {
+                    ConnectorConfig::Cache(cache_cfg) => {
+                        if cluster_strict && cache_cfg.backend == "memory" {
+                            return Err(format!(
+                                "connector '{connector_name}' uses the in-memory backend — \
                              per-node state in cluster mode is a silent correctness loss"
-                        ));
-                    }
-                    cache_pool
+                            ));
+                        }
+                        cache_pool
                         .get_backend(connector_name, cache_cfg)
                         .await
                         .map_err(|e| {
                             format!("failed to create backend from connector '{connector_name}': {e}")
                         })
+                    }
+                    _ => Err(format!(
+                        "connector '{connector_name}' is not a cache connector"
+                    )),
                 }
-                _ => Err(format!(
-                    "connector '{connector_name}' is not a cache connector"
-                )),
-            },
+            }
             None => Err(format!("connector '{connector_name}' not found")),
         }
     }
@@ -226,15 +228,15 @@ impl ChannelRegistry {
                         // Cluster: shared fixed window — the configured limit
                         // holds across all replicas combined, and survives
                         // engine reloads (state lives in Redis, not here).
-                        Some(conn) => Arc::new(
-                            super::rate_limit_backend::RedisRateLimitBackend::new(
+                        Some(conn) => {
+                            Arc::new(super::rate_limit_backend::RedisRateLimitBackend::new(
                                 conn,
                                 channel.name.clone(),
                                 rl.requests_per_second,
                                 burst,
-                            ),
-                        )
-                            as Arc<dyn super::rate_limit_backend::RateLimitBackend>,
+                            ))
+                                as Arc<dyn super::rate_limit_backend::RateLimitBackend>
+                        }
                         None => Arc::new(super::rate_limit_backend::LocalRateLimitBackend::new(
                             rl.requests_per_second,
                             burst,
@@ -432,9 +434,7 @@ mod tests {
             instance_id: "test-node".to_string(),
             redis: None,
             default_cache: Some(cache_pool.memory()),
-            repo: Arc::new(
-                crate::storage::repositories::cluster::SqlClusterRepository::new(pool),
-            ),
+            repo: Arc::new(crate::storage::repositories::cluster::SqlClusterRepository::new(pool)),
             last_seen_epoch: std::sync::atomic::AtomicI64::new(0),
             last_seen_breaker_epoch: std::sync::atomic::AtomicI64::new(0),
         })

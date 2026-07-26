@@ -269,7 +269,10 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                     .table(TraceDlq::Table)
                     .value(TraceDlq::RetryCount, Expr::col(TraceDlq::RetryCount).add(1))
                     .value(TraceDlq::NextRetryAt, next_retry_at)
-                    .value(TraceDlq::ClaimedBy, super::helpers::optional_string_value(None))
+                    .value(
+                        TraceDlq::ClaimedBy,
+                        super::helpers::optional_string_value(None),
+                    )
                     .value(
                         TraceDlq::ClaimedUntil,
                         super::helpers::optional_string_value(None),
@@ -303,7 +306,10 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 Query::update()
                     .table(TraceDlq::Table)
                     .value(TraceDlq::RetryCount, Expr::col(TraceDlq::MaxRetries))
-                    .value(TraceDlq::ClaimedBy, super::helpers::optional_string_value(None))
+                    .value(
+                        TraceDlq::ClaimedBy,
+                        super::helpers::optional_string_value(None),
+                    )
                     .value(
                         TraceDlq::ClaimedUntil,
                         super::helpers::optional_string_value(None),
@@ -342,11 +348,13 @@ mod tests {
         let DbPool::Sqlite(p) = &repo.pool else {
             panic!("sqlite expected");
         };
-        sqlx::query("UPDATE trace_dlq SET next_retry_at = datetime('now', '-2 seconds') WHERE id = ?")
-            .bind(&entry.id)
-            .execute(p)
-            .await
-            .expect("backdate");
+        sqlx::query(
+            "UPDATE trace_dlq SET next_retry_at = datetime('now', '-2 seconds') WHERE id = ?",
+        )
+        .bind(&entry.id)
+        .execute(p)
+        .await
+        .expect("backdate");
         entry.id
     }
 
@@ -368,7 +376,13 @@ mod tests {
     async fn test_expired_lease_is_reclaimable() {
         let repo = test_repo().await;
         enqueue_due(&repo, "t1").await;
-        assert_eq!(repo.claim_pending("node-a", 10, 60).await.expect("claim").len(), 1);
+        assert_eq!(
+            repo.claim_pending("node-a", 10, 60)
+                .await
+                .expect("claim")
+                .len(),
+            1
+        );
 
         // Force-expire the lease → reclaimable by another node.
         let DbPool::Sqlite(p) = &repo.pool else {
@@ -378,14 +392,26 @@ mod tests {
             .execute(p)
             .await
             .expect("expire");
-        assert_eq!(repo.claim_pending("node-b", 10, 60).await.expect("claim").len(), 1);
+        assert_eq!(
+            repo.claim_pending("node-b", 10, 60)
+                .await
+                .expect("claim")
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
     async fn test_record_retry_clears_lease() {
         let repo = test_repo().await;
         let id = enqueue_due(&repo, "t1").await;
-        assert_eq!(repo.claim_pending("node-a", 10, 60).await.expect("claim").len(), 1);
+        assert_eq!(
+            repo.claim_pending("node-a", 10, 60)
+                .await
+                .expect("claim")
+                .len(),
+            1
+        );
 
         // record_retry releases the lease; once due again it is claimable.
         let past = chrono::Utc::now()
@@ -404,7 +430,19 @@ mod tests {
         for i in 0..5 {
             enqueue_due(&repo, &format!("t{i}")).await;
         }
-        assert_eq!(repo.claim_pending("node-a", 3, 60).await.expect("claim").len(), 3);
-        assert_eq!(repo.claim_pending("node-a", 3, 60).await.expect("claim").len(), 2);
+        assert_eq!(
+            repo.claim_pending("node-a", 3, 60)
+                .await
+                .expect("claim")
+                .len(),
+            3
+        );
+        assert_eq!(
+            repo.claim_pending("node-a", 3, 60)
+                .await
+                .expect("claim")
+                .len(),
+            2
+        );
     }
 }

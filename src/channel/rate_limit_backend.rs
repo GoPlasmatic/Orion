@@ -52,7 +52,12 @@ pub struct RedisRateLimitBackend {
 }
 
 impl RedisRateLimitBackend {
-    pub fn new(conn: redis::aio::MultiplexedConnection, scope: String, rps: u32, burst: u32) -> Self {
+    pub fn new(
+        conn: redis::aio::MultiplexedConnection,
+        scope: String,
+        rps: u32,
+        burst: u32,
+    ) -> Self {
         Self {
             conn,
             scope,

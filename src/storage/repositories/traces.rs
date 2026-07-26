@@ -513,7 +513,15 @@ mod tests {
 
         // Create a completed trace
         let id = repo
-            .store_completed("orders", Some("ch_orders"), "sync", None, r#"{"ok":true}"#, 10.0, None)
+            .store_completed(
+                "orders",
+                Some("ch_orders"),
+                "sync",
+                None,
+                r#"{"ok":true}"#,
+                10.0,
+                None,
+            )
             .await
             .expect("test");
 
@@ -537,7 +545,15 @@ mod tests {
 
         // Create a recent trace that should NOT be deleted
         let _recent_id = repo
-            .store_completed("orders", Some("ch_orders"), "sync", None, r#"{"ok":true}"#, 5.0, None)
+            .store_completed(
+                "orders",
+                Some("ch_orders"),
+                "sync",
+                None,
+                r#"{"ok":true}"#,
+                5.0,
+                None,
+            )
             .await
             .expect("test");
 

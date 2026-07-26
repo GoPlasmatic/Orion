@@ -6,7 +6,7 @@
 //! on node clocks — only the DB's.
 
 use async_trait::async_trait;
-use sea_query::{Values, Value};
+use sea_query::{Value, Values};
 use sea_query_binder::SqlxValues;
 
 use crate::errors::OrionError;
@@ -89,10 +89,12 @@ impl ClusterRepository for SqlClusterRepository {
                         })
                         .await?;
                     tx.commit().await.map_err(OrionError::Storage)?;
-                    row.map(|(epoch,)| epoch).ok_or_else(|| OrionError::Internal(
+                    row.map(|(epoch,)| epoch).ok_or_else(|| {
+                        OrionError::Internal(
                         "config_epoch row missing — migration 00N_cluster_coordination not applied"
                             .to_string(),
-                    ))
+                    )
+                    })
                 }
             }
         })
@@ -157,9 +159,8 @@ impl ClusterRepository for SqlClusterRepository {
                         )
                         .await?;
                     tx.commit().await.map_err(OrionError::Storage)?;
-                    row.map(|(e,)| e).ok_or_else(|| {
-                        OrionError::Internal("config_epoch row missing".to_string())
-                    })
+                    row.map(|(e,)| e)
+                        .ok_or_else(|| OrionError::Internal("config_epoch row missing".to_string()))
                 }
             }
         })
@@ -274,7 +275,9 @@ mod tests {
     async fn test_breaker_reset_records_key() {
         let repo = test_repo().await;
         assert_eq!(
-            repo.request_breaker_reset("conn:http").await.expect("reset"),
+            repo.request_breaker_reset("conn:http")
+                .await
+                .expect("reset"),
             1
         );
         let row = repo.get_epoch().await.expect("get");

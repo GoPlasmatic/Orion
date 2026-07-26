@@ -56,7 +56,10 @@ async fn postgres_migrations_apply_and_triggers_enforce() {
 
     // Repo roundtrip: draft → activate.
     let repo = SqlWorkflowRepository::new(pool.clone());
-    let wf = repo.create(&workflow_request("wf-pg")).await.expect("create");
+    let wf = repo
+        .create(&workflow_request("wf-pg"))
+        .await
+        .expect("create");
     assert_eq!(wf.status, "draft");
 
     // Single-draft enforcement (partial unique index on postgres).
@@ -79,12 +82,15 @@ async fn postgres_migrations_apply_and_triggers_enforce() {
     .await;
     let err = raw_update.expect_err("active content update must be blocked");
     assert!(
-        err.to_string().contains("Cannot modify content of active workflows"),
+        err.to_string()
+            .contains("Cannot modify content of active workflows"),
         "unexpected error: {err}"
     );
 
     // Legitimate lifecycle transition still works.
-    repo.archive("wf-pg").await.expect("archive active workflow");
+    repo.archive("wf-pg")
+        .await
+        .expect("archive active workflow");
 }
 
 /// DLQ claim semantics on real Postgres: SKIP LOCKED claim, lease blocking,
