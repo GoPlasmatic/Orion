@@ -602,11 +602,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "Trace queue started"
     );
 
+    // Cluster-mode single-flight gate for background jobs (None on a single node).
+    let job_lease_gate = cluster.enabled.then(|| {
+        Arc::new(orion::cluster::JobLeaseGate::new(
+            cluster.repo.clone(),
+            cluster.instance_id.clone(),
+        ))
+    });
+
     // Start trace cleanup task
     let trace_cleanup_handle = orion::queue::start_trace_cleanup(
         config.queue.trace_retention_hours,
         config.queue.trace_cleanup_interval_secs,
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+        job_lease_gate.clone(),
     );
 
     // Start DLQ retry consumer
@@ -616,7 +625,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
             );
         let handle = orion::queue::start_dlq_retry(
-            config.queue.dlq_poll_interval_secs,
+            orion::queue::DlqRetryOptions {
+                poll_interval_secs: config.queue.dlq_poll_interval_secs,
+                batch_size: config.queue.dlq_batch_size,
+                lease_secs: config.queue.dlq_lease_secs,
+                claimant: cluster.instance_id.clone(),
+                lease_gate: job_lease_gate.clone(),
+            },
             dlq_for_retry,
             trace_queue.clone(),
             trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,

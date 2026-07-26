@@ -15,16 +15,20 @@ pub mod trace_persistence;
 use crate::storage::repositories::traces::TraceRepository;
 pub use trace_persistence::{PersistenceWorkerHandle, TracePersistenceQueue, TracePersistenceTask};
 
-pub use dlq_retry::start_dlq_retry;
+pub use dlq_retry::{DlqRetryOptions, start_dlq_retry};
 
 /// Start a background task that periodically deletes old traces.
 ///
 /// Returns a `JoinHandle` that can be aborted on shutdown.
 /// If `retention_hours` is 0, no cleanup task is started.
+///
+/// `lease_gate` (cluster mode) single-flights the job: without it every
+/// replica issues the same DELETE every tick. `None` on a single node.
 pub fn start_trace_cleanup(
     retention_hours: u64,
     interval_secs: u64,
     trace_repo: Arc<dyn TraceRepository>,
+    lease_gate: Option<Arc<crate::cluster::JobLeaseGate>>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if retention_hours == 0 {
         tracing::info!("Trace retention disabled (trace_retention_hours = 0)");
@@ -35,9 +39,15 @@ pub fn start_trace_cleanup(
         let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
         // Skip the first immediate tick
         interval.tick().await;
+        let lease_ttl = interval_secs + 60;
 
         loop {
             interval.tick().await;
+            if let Some(ref gate) = lease_gate
+                && !gate.try_acquire("trace_cleanup", lease_ttl).await
+            {
+                continue;
+            }
             match trace_repo.delete_older_than(retention_hours).await {
                 Ok(count) => {
                     if count > 0 {

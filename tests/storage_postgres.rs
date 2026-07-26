@@ -86,3 +86,44 @@ async fn postgres_migrations_apply_and_triggers_enforce() {
     // Legitimate lifecycle transition still works.
     repo.archive("wf-pg").await.expect("archive active workflow");
 }
+
+/// DLQ claim semantics on real Postgres: SKIP LOCKED claim, lease blocking,
+/// and single-winner under concurrency (multi-instance-ha A3).
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_postgres -- --ignored"]
+async fn postgres_dlq_claim_single_winner() {
+    use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqRepository};
+
+    let (_container, pool) = postgres_pool().await;
+    let repo = std::sync::Arc::new(SqlTraceDlqRepository::new(pool.clone()));
+
+    let entry = repo
+        .enqueue("trace-1", "orders", "{}", "{}", "boom", 5)
+        .await
+        .expect("enqueue");
+    let DbPool::Postgres(pg) = &pool else {
+        panic!("postgres expected");
+    };
+    sqlx::query("UPDATE trace_dlq SET next_retry_at = LOCALTIMESTAMP - interval '2 seconds'")
+        .execute(pg)
+        .await
+        .expect("backdate");
+
+    // Two nodes claim concurrently — exactly one wins the single row.
+    let (a, b) = tokio::join!(
+        repo.claim_pending("node-a", 10, 60),
+        repo.claim_pending("node-b", 10, 60),
+    );
+    let a = a.expect("claim a");
+    let b = b.expect("claim b");
+    assert_eq!(a.len() + b.len(), 1, "exactly one node must claim the row");
+
+    // Expired lease is re-claimable.
+    sqlx::query("UPDATE trace_dlq SET claimed_until = LOCALTIMESTAMP - interval '1 seconds'")
+        .execute(pg)
+        .await
+        .expect("expire");
+    let reclaimed = repo.claim_pending("node-c", 10, 60).await.expect("reclaim");
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].id, entry.id);
+}

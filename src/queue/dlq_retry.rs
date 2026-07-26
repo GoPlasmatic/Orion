@@ -7,30 +7,56 @@ use crate::storage::repositories::traces::TraceRepository;
 
 use super::{QueueMessage, TraceQueue};
 
+/// Options for [`start_dlq_retry`].
+pub struct DlqRetryOptions {
+    pub poll_interval_secs: u64,
+    /// Maximum entries claimed per tick (`queue.dlq_batch_size`).
+    pub batch_size: i64,
+    /// Per-row lease duration (`queue.dlq_lease_secs`) — an expired lease is
+    /// re-claimable, so a crashed node's claims recover automatically.
+    pub lease_secs: u64,
+    /// Lease/claim identity: the cluster instance id.
+    pub claimant: String,
+    /// Cluster-mode single-flight gate; `None` on a single node. The gate is
+    /// an efficiency measure (skip whole ticks); per-row claims are the
+    /// correctness layer either way.
+    pub lease_gate: Option<Arc<crate::cluster::JobLeaseGate>>,
+}
+
 /// Start a background task that polls the trace DLQ and re-submits entries
 /// for processing via the trace queue.
 ///
 /// Uses exponential backoff: delay = base_delay * 2^retry_count (1s, 2s, 4s, 8s, 16s, ...).
 /// After `max_retries`, the entry is marked as exhausted and no longer retried.
 pub fn start_dlq_retry(
-    poll_interval_secs: u64,
+    opts: DlqRetryOptions,
     dlq_repo: Arc<dyn TraceDlqRepository>,
     trace_queue: TraceQueue,
     trace_repo: Arc<dyn TraceRepository>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(poll_interval_secs));
+        let mut interval = tokio::time::interval(Duration::from_secs(opts.poll_interval_secs));
         // Skip the first immediate tick
         interval.tick().await;
+        let job_lease_ttl = opts.poll_interval_secs + 30;
 
         loop {
             interval.tick().await;
 
-            let entries = match dlq_repo.list_pending(20).await {
+            if let Some(ref gate) = opts.lease_gate
+                && !gate.try_acquire("dlq_retry", job_lease_ttl).await
+            {
+                continue;
+            }
+
+            let entries = match dlq_repo
+                .claim_pending(&opts.claimant, opts.batch_size, opts.lease_secs)
+                .await
+            {
                 Ok(e) => e,
                 Err(e) => {
-                    tracing::error!(error = %e, "DLQ retry: failed to fetch pending entries");
+                    tracing::error!(error = %e, "DLQ retry: failed to claim pending entries");
                     continue;
                 }
             };
@@ -130,9 +156,8 @@ pub fn start_dlq_retry(
                             let next_retry = chrono::Utc::now()
                                 .naive_utc()
                                 .checked_add_signed(chrono::Duration::seconds(delay_secs))
-                                .unwrap_or(chrono::Utc::now().naive_utc())
-                                .to_string();
-                            let _ = dlq_repo.record_retry(&entry.id, &next_retry).await;
+                                .unwrap_or(chrono::Utc::now().naive_utc());
+                            let _ = dlq_repo.record_retry(&entry.id, next_retry).await;
                         }
                     }
                 }
@@ -200,7 +225,20 @@ mod tests {
             Ok(entries)
         }
 
-        async fn record_retry(&self, id: &str, next_retry_at: &str) -> Result<(), OrionError> {
+        async fn claim_pending(
+            &self,
+            _claimant: &str,
+            limit: i64,
+            _lease_secs: u64,
+        ) -> Result<Vec<TraceDlqEntry>, OrionError> {
+            self.list_pending(limit).await
+        }
+
+        async fn record_retry(
+            &self,
+            id: &str,
+            next_retry_at: chrono::NaiveDateTime,
+        ) -> Result<(), OrionError> {
             self.state
                 .lock()
                 .expect("test")
@@ -374,7 +412,13 @@ mod tests {
         let (queue, mut rx) = make_test_queue(10);
 
         let handle = start_dlq_retry(
-            1,
+            DlqRetryOptions {
+                poll_interval_secs: 1,
+                batch_size: 20,
+                lease_secs: 60,
+                claimant: "test-node".to_string(),
+                lease_gate: None,
+            },
             dlq_repo.clone(),
             queue,
             trace_repo,
@@ -408,7 +452,13 @@ mod tests {
         let (queue, _rx) = make_test_queue(10);
 
         let handle = start_dlq_retry(
-            1,
+            DlqRetryOptions {
+                poll_interval_secs: 1,
+                batch_size: 20,
+                lease_secs: 60,
+                claimant: "test-node".to_string(),
+                lease_gate: None,
+            },
             dlq_repo.clone(),
             queue,
             trace_repo,
@@ -438,7 +488,13 @@ mod tests {
         let queue = make_closed_queue();
 
         let handle = start_dlq_retry(
-            1,
+            DlqRetryOptions {
+                poll_interval_secs: 1,
+                batch_size: 20,
+                lease_secs: 60,
+                claimant: "test-node".to_string(),
+                lease_gate: None,
+            },
             dlq_repo.clone(),
             queue,
             trace_repo,
@@ -468,7 +524,13 @@ mod tests {
         let queue = make_closed_queue();
 
         let handle = start_dlq_retry(
-            1,
+            DlqRetryOptions {
+                poll_interval_secs: 1,
+                batch_size: 20,
+                lease_secs: 60,
+                claimant: "test-node".to_string(),
+                lease_gate: None,
+            },
             dlq_repo.clone(),
             queue,
             trace_repo,

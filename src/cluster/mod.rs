@@ -17,8 +17,10 @@ use crate::storage::DbPool;
 use crate::storage::repositories::cluster::{ClusterRepository, SqlClusterRepository};
 
 pub mod epoch_watcher;
+pub mod job_lease;
 
 pub use epoch_watcher::start_cluster_tasks;
+pub use job_lease::JobLeaseGate;
 
 pub struct ClusterRuntime {
     /// Mirrors `cluster.enabled`.

@@ -94,3 +94,41 @@ async fn mysql_migrations_apply_and_repo_roundtrip() {
     // Legitimate lifecycle transition still works.
     repo.archive("wf-mysql").await.expect("archive active workflow");
 }
+
+/// DLQ claim semantics on real MySQL: SKIP LOCKED tx claim + lease blocking
+/// (multi-instance-ha A3).
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_mysql -- --ignored"]
+async fn mysql_dlq_claim_leases_rows() {
+    use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqRepository};
+
+    let (_container, pool) = mysql_pool().await;
+    let repo = SqlTraceDlqRepository::new(pool.clone());
+
+    let entry = repo
+        .enqueue("trace-1", "orders", "{}", "{}", "boom", 5)
+        .await
+        .expect("enqueue");
+    let orion::storage::DbPool::Mysql(mysql) = &pool else {
+        panic!("mysql expected");
+    };
+    sqlx::query("UPDATE trace_dlq SET next_retry_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 SECOND)")
+        .execute(mysql)
+        .await
+        .expect("backdate");
+
+    let claimed = repo.claim_pending("node-a", 10, 60).await.expect("claim");
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].id, entry.id);
+
+    // Leased — nothing left for a second claimant.
+    let claimed = repo.claim_pending("node-b", 10, 60).await.expect("claim");
+    assert!(claimed.is_empty());
+
+    // Expired lease is re-claimable.
+    sqlx::query("UPDATE trace_dlq SET claimed_until = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 SECOND)")
+        .execute(mysql)
+        .await
+        .expect("expire");
+    assert_eq!(repo.claim_pending("node-c", 10, 60).await.expect("claim").len(), 1);
+}

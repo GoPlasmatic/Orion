@@ -213,7 +213,9 @@ impl TraceRepository for SqlTraceRepository {
         error_message: Option<&str>,
     ) -> Result<Trace, OrionError> {
         crate::metrics::timed_db_op("traces.update_status", async {
-            let now = chrono::Utc::now().naive_utc().to_string();
+            // Bind chrono values, not strings: postgres rejects TEXT
+            // parameters against timestamp columns (42804).
+            let now = chrono::Utc::now().naive_utc();
 
             let (started_at, completed_at) = if status == models::TRACE_STATUS_RUNNING {
                 (Some(now), None)
@@ -231,11 +233,11 @@ impl TraceRepository for SqlTraceRepository {
             if let Some(err) = error_message {
                 update.value(Traces::ErrorMessage, err);
             }
-            if let Some(ref sa) = started_at {
-                update.value(Traces::StartedAt, sa.as_str());
+            if let Some(sa) = started_at {
+                update.value(Traces::StartedAt, sa);
             }
-            if let Some(ref ca) = completed_at {
-                update.value(Traces::CompletedAt, ca.as_str());
+            if let Some(ca) = completed_at {
+                update.value(Traces::CompletedAt, ca);
             }
 
             update.and_where(Expr::col(Traces::Id).eq(id));
@@ -285,7 +287,7 @@ impl TraceRepository for SqlTraceRepository {
     ) -> Result<String, OrionError> {
         crate::metrics::timed_db_op("traces.store_completed", async {
             let id = uuid::Uuid::new_v4().to_string();
-            let now = chrono::Utc::now().naive_utc().to_string();
+            let now = chrono::Utc::now().naive_utc();
 
             let input_val = super::helpers::optional_string_value(input_json);
             let task_trace_val = super::helpers::optional_string_value(task_trace_json);
@@ -316,8 +318,8 @@ impl TraceRepository for SqlTraceRepository {
                         Expr::val(input_val).into(),
                         Expr::val(result_json).into(),
                         Expr::val(duration_ms).into(),
-                        Expr::val(now.as_str()).into(),
-                        Expr::val(now.as_str()).into(),
+                        Expr::val(now).into(),
+                        Expr::val(now).into(),
                         Expr::val(task_trace_val).into(),
                     ]),
             );
@@ -337,7 +339,7 @@ impl TraceRepository for SqlTraceRepository {
             return Ok(Vec::new());
         }
         crate::metrics::timed_db_op("traces.store_completed_batch", async {
-            let now = chrono::Utc::now().naive_utc().to_string();
+            let now = chrono::Utc::now().naive_utc();
             let mut ids = Vec::with_capacity(rows.len());
             let mut insert = Query::insert();
             insert.into_table(Traces::Table).columns([
@@ -369,8 +371,8 @@ impl TraceRepository for SqlTraceRepository {
                     Expr::val(input_val).into(),
                     Expr::val(row.result_json.as_str()).into(),
                     Expr::val(row.duration_ms).into(),
-                    Expr::val(now.as_str()).into(),
-                    Expr::val(now.as_str()).into(),
+                    Expr::val(now).into(),
+                    Expr::val(now).into(),
                     Expr::val(task_trace_val).into(),
                 ]);
                 ids.push(id);
@@ -473,13 +475,12 @@ impl TraceRepository for SqlTraceRepository {
             let cutoff = chrono::Utc::now()
                 .naive_utc()
                 .checked_sub_signed(chrono::Duration::hours(hours as i64))
-                .unwrap_or(chrono::NaiveDateTime::MIN)
-                .to_string();
+                .unwrap_or(chrono::NaiveDateTime::MIN);
 
             let (sql, values) = build_sqlx(
                 Query::delete()
                     .from_table(Traces::Table)
-                    .and_where(Expr::col(Traces::CreatedAt).lt(&cutoff))
+                    .and_where(Expr::col(Traces::CreatedAt).lt(cutoff))
                     .and_where(Expr::col(Traces::Status).is_in(["completed", "failed"])),
             );
 

@@ -50,9 +50,8 @@ async fn test_record_retry_increments_count() {
         .unwrap();
 
     // Set next_retry_at far in the future
-    let future_time =
-        (chrono::Utc::now().naive_utc() + chrono::Duration::seconds(3600)).to_string();
-    repo.record_retry(&entry.id, &future_time).await.unwrap();
+    let future_time = chrono::Utc::now().naive_utc() + chrono::Duration::seconds(3600);
+    repo.record_retry(&entry.id, future_time).await.unwrap();
 
     // Entry should not appear in pending (next_retry_at is in the future)
     // Wait briefly for the initial 1s retry window

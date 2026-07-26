@@ -135,7 +135,7 @@ async fn test_trace_cleanup_abort_is_safe() {
         );
 
     // Start cleanup with very short interval
-    let handle = orion::queue::start_trace_cleanup(72, 1, trace_repo.clone());
+    let handle = orion::queue::start_trace_cleanup(72, 1, trace_repo.clone(), None);
     assert!(
         handle.is_some(),
         "Cleanup task should start when retention > 0"
@@ -167,7 +167,7 @@ async fn test_trace_cleanup_disabled_when_zero_retention() {
     let trace_repo: std::sync::Arc<dyn orion::storage::repositories::traces::TraceRepository> =
         std::sync::Arc::new(orion::storage::repositories::traces::SqlTraceRepository::new(pool));
 
-    let handle = orion::queue::start_trace_cleanup(0, 3600, trace_repo);
+    let handle = orion::queue::start_trace_cleanup(0, 3600, trace_repo, None);
     assert!(
         handle.is_none(),
         "Cleanup should not start when retention is 0"

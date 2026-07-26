@@ -24,8 +24,25 @@ pub trait TraceDlqRepository: Send + Sync {
     /// Fetch entries that are due for retry (next_retry_at <= now AND retry_count < max_retries).
     async fn list_pending(&self, limit: i64) -> Result<Vec<TraceDlqEntry>, OrionError>;
 
+    /// Atomically claim up to `limit` due, unleased entries for `claimant`,
+    /// leasing them until now + `lease_secs`. Due = `next_retry_at <= now`,
+    /// `retry_count < max_retries`, and no live lease (`claimed_until` NULL
+    /// or expired). Expired leases are re-claimable, so a crashed claimant's
+    /// entries recover declaratively. All time comparisons use the DB clock.
+    async fn claim_pending(
+        &self,
+        claimant: &str,
+        limit: i64,
+        lease_secs: u64,
+    ) -> Result<Vec<TraceDlqEntry>, OrionError>;
+
     /// Increment retry count and set next retry time for a DLQ entry.
-    async fn record_retry(&self, id: &str, next_retry_at: &str) -> Result<(), OrionError>;
+    /// Releases any claim lease.
+    async fn record_retry(
+        &self,
+        id: &str,
+        next_retry_at: chrono::NaiveDateTime,
+    ) -> Result<(), OrionError>;
 
     /// Remove an entry after successful retry.
     async fn remove(&self, id: &str) -> Result<(), OrionError>;
@@ -60,12 +77,12 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         crate::metrics::timed_db_op("trace_dlq.enqueue", async {
             let id = uuid::Uuid::new_v4().to_string();
 
-            // First retry after 1 second
+            // First retry after 1 second. Bind chrono values, not strings:
+            // postgres rejects TEXT parameters against timestamp columns.
             let next_retry = chrono::Utc::now()
                 .naive_utc()
                 .checked_add_signed(chrono::Duration::seconds(1))
-                .unwrap_or(chrono::Utc::now().naive_utc())
-                .to_string();
+                .unwrap_or(chrono::Utc::now().naive_utc());
 
             let (sql, values) = build_sqlx(
                 Query::insert()
@@ -88,7 +105,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                         Expr::val(metadata_json).into(),
                         Expr::val(error_message).into(),
                         Expr::val(max_retries).into(),
-                        Expr::val(next_retry.as_str()).into(),
+                        Expr::val(next_retry).into(),
                     ]),
             );
 
@@ -115,10 +132,10 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
 
     async fn list_pending(&self, limit: i64) -> Result<Vec<TraceDlqEntry>, OrionError> {
         crate::metrics::timed_db_op("trace_dlq.list_pending", async {
-            let now = chrono::Utc::now().naive_utc().to_string();
+            let now = chrono::Utc::now().naive_utc();
 
             let cond = Condition::all()
-                .add(Expr::col(TraceDlq::NextRetryAt).lte(now.as_str()))
+                .add(Expr::col(TraceDlq::NextRetryAt).lte(now))
                 .add(Expr::col(TraceDlq::RetryCount).lt(Expr::col(TraceDlq::MaxRetries)));
 
             let (sql, values) = build_sqlx(
@@ -138,13 +155,125 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         .await
     }
 
-    async fn record_retry(&self, id: &str, next_retry_at: &str) -> Result<(), OrionError> {
+    async fn claim_pending(
+        &self,
+        claimant: &str,
+        limit: i64,
+        lease_secs: u64,
+    ) -> Result<Vec<TraceDlqEntry>, OrionError> {
+        use sea_query::{Value, Values};
+        use sea_query_binder::SqlxValues;
+
+        crate::metrics::timed_db_op("trace_dlq.claim_pending", async {
+            match crate::storage::get_backend() {
+                crate::storage::DbBackend::Postgres => {
+                    // Single statement: SKIP LOCKED prevents two nodes from
+                    // claiming the same rows even mid-transaction.
+                    let sql = format!(
+                        "UPDATE trace_dlq SET claimed_by = $1, \
+                             claimed_until = LOCALTIMESTAMP + interval '{lease_secs} seconds' \
+                         WHERE id IN ( \
+                             SELECT id FROM trace_dlq \
+                             WHERE next_retry_at <= LOCALTIMESTAMP \
+                               AND retry_count < max_retries \
+                               AND (claimed_until IS NULL OR claimed_until < LOCALTIMESTAMP) \
+                             ORDER BY next_retry_at ASC LIMIT {limit} \
+                             FOR UPDATE SKIP LOCKED) \
+                         RETURNING *"
+                    );
+                    Ok(self
+                        .pool
+                        .fetch_all_as::<TraceDlqEntry>(
+                            &sql,
+                            SqlxValues(Values(vec![Value::from(claimant)])),
+                        )
+                        .await?)
+                }
+                crate::storage::DbBackend::Mysql => {
+                    // MySQL 8 has SKIP LOCKED but no UPDATE ... RETURNING:
+                    // select-for-update, update, read back — one transaction.
+                    let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
+                    let select_sql = format!(
+                        "SELECT id FROM trace_dlq \
+                         WHERE next_retry_at <= UTC_TIMESTAMP() \
+                           AND retry_count < max_retries \
+                           AND (claimed_until IS NULL OR claimed_until < UTC_TIMESTAMP()) \
+                         ORDER BY next_retry_at ASC LIMIT {limit} \
+                         FOR UPDATE SKIP LOCKED"
+                    );
+                    let ids: Vec<(String,)> = tx
+                        .fetch_all_as(&select_sql, SqlxValues(Values(Vec::new())))
+                        .await?;
+                    if ids.is_empty() {
+                        tx.commit().await.map_err(OrionError::Storage)?;
+                        return Ok(Vec::new());
+                    }
+                    let placeholders = vec!["?"; ids.len()].join(", ");
+                    let mut update_values: Vec<Value> = vec![Value::from(claimant)];
+                    update_values.extend(ids.iter().map(|(id,)| Value::from(id.as_str())));
+                    tx.execute_query(
+                        &format!(
+                            "UPDATE trace_dlq SET claimed_by = ?, \
+                                 claimed_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL {lease_secs} SECOND) \
+                             WHERE id IN ({placeholders})"
+                        ),
+                        SqlxValues(Values(update_values)),
+                    )
+                    .await?;
+                    let select_values: Vec<Value> =
+                        ids.iter().map(|(id,)| Value::from(id.as_str())).collect();
+                    let rows = tx
+                        .fetch_all_as::<TraceDlqEntry>(
+                            &format!("SELECT * FROM trace_dlq WHERE id IN ({placeholders})"),
+                            SqlxValues(Values(select_values)),
+                        )
+                        .await?;
+                    tx.commit().await.map_err(OrionError::Storage)?;
+                    Ok(rows)
+                }
+                crate::storage::DbBackend::Sqlite => {
+                    // Single-host by construction (D2): no locking clause
+                    // needed, writes are serialized by SQLite itself.
+                    let sql = format!(
+                        "UPDATE trace_dlq SET claimed_by = ?, \
+                             claimed_until = datetime('now', '+{lease_secs} seconds') \
+                         WHERE id IN ( \
+                             SELECT id FROM trace_dlq \
+                             WHERE next_retry_at <= datetime('now') \
+                               AND retry_count < max_retries \
+                               AND (claimed_until IS NULL OR claimed_until < datetime('now')) \
+                             ORDER BY next_retry_at ASC LIMIT {limit}) \
+                         RETURNING *"
+                    );
+                    Ok(self
+                        .pool
+                        .fetch_all_as::<TraceDlqEntry>(
+                            &sql,
+                            SqlxValues(Values(vec![Value::from(claimant)])),
+                        )
+                        .await?)
+                }
+            }
+        })
+        .await
+    }
+
+    async fn record_retry(
+        &self,
+        id: &str,
+        next_retry_at: chrono::NaiveDateTime,
+    ) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("trace_dlq.record_retry", async {
             let (sql, values) = build_sqlx(
                 Query::update()
                     .table(TraceDlq::Table)
                     .value(TraceDlq::RetryCount, Expr::col(TraceDlq::RetryCount).add(1))
                     .value(TraceDlq::NextRetryAt, next_retry_at)
+                    .value(TraceDlq::ClaimedBy, super::helpers::optional_string_value(None))
+                    .value(
+                        TraceDlq::ClaimedUntil,
+                        super::helpers::optional_string_value(None),
+                    )
                     .and_where(Expr::col(TraceDlq::Id).eq(id)),
             );
 
@@ -174,6 +303,11 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 Query::update()
                     .table(TraceDlq::Table)
                     .value(TraceDlq::RetryCount, Expr::col(TraceDlq::MaxRetries))
+                    .value(TraceDlq::ClaimedBy, super::helpers::optional_string_value(None))
+                    .value(
+                        TraceDlq::ClaimedUntil,
+                        super::helpers::optional_string_value(None),
+                    )
                     .and_where(Expr::col(TraceDlq::Id).eq(id)),
             );
 
@@ -181,5 +315,96 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
             Ok(())
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_repo() -> SqlTraceDlqRepository {
+        let pool = crate::storage::init_pool(&crate::config::StorageConfig {
+            url: "sqlite::memory:".to_string(),
+            max_connections: 1,
+            ..Default::default()
+        })
+        .await
+        .expect("test pool");
+        SqlTraceDlqRepository::new(pool)
+    }
+
+    async fn enqueue_due(repo: &SqlTraceDlqRepository, trace_id: &str) -> String {
+        let entry = repo
+            .enqueue(trace_id, "orders", "{}", "{}", "boom", 5)
+            .await
+            .expect("enqueue");
+        // Entries become due 1s after enqueue — backdate to now-2s.
+        let DbPool::Sqlite(p) = &repo.pool else {
+            panic!("sqlite expected");
+        };
+        sqlx::query("UPDATE trace_dlq SET next_retry_at = datetime('now', '-2 seconds') WHERE id = ?")
+            .bind(&entry.id)
+            .execute(p)
+            .await
+            .expect("backdate");
+        entry.id
+    }
+
+    #[tokio::test]
+    async fn test_claim_leases_and_blocks_second_claimant() {
+        let repo = test_repo().await;
+        let id = enqueue_due(&repo, "t1").await;
+
+        let claimed = repo.claim_pending("node-a", 10, 60).await.expect("claim");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].id, id);
+
+        // Leased — a second claim (any claimant) gets nothing.
+        let claimed = repo.claim_pending("node-b", 10, 60).await.expect("claim");
+        assert!(claimed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_expired_lease_is_reclaimable() {
+        let repo = test_repo().await;
+        enqueue_due(&repo, "t1").await;
+        assert_eq!(repo.claim_pending("node-a", 10, 60).await.expect("claim").len(), 1);
+
+        // Force-expire the lease → reclaimable by another node.
+        let DbPool::Sqlite(p) = &repo.pool else {
+            panic!("sqlite expected");
+        };
+        sqlx::query("UPDATE trace_dlq SET claimed_until = datetime('now', '-1 seconds')")
+            .execute(p)
+            .await
+            .expect("expire");
+        assert_eq!(repo.claim_pending("node-b", 10, 60).await.expect("claim").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_record_retry_clears_lease() {
+        let repo = test_repo().await;
+        let id = enqueue_due(&repo, "t1").await;
+        assert_eq!(repo.claim_pending("node-a", 10, 60).await.expect("claim").len(), 1);
+
+        // record_retry releases the lease; once due again it is claimable.
+        let past = chrono::Utc::now()
+            .naive_utc()
+            .checked_sub_signed(chrono::Duration::seconds(2))
+            .expect("past");
+        repo.record_retry(&id, past).await.expect("retry");
+        let claimed = repo.claim_pending("node-b", 10, 60).await.expect("claim");
+        assert_eq!(claimed.len(), 1);
+        assert_eq!(claimed[0].retry_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_claim_respects_batch_limit() {
+        let repo = test_repo().await;
+        for i in 0..5 {
+            enqueue_due(&repo, &format!("t{i}")).await;
+        }
+        assert_eq!(repo.claim_pending("node-a", 3, 60).await.expect("claim").len(), 3);
+        assert_eq!(repo.claim_pending("node-a", 3, 60).await.expect("claim").len(), 2);
     }
 }
