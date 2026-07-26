@@ -505,6 +505,60 @@ where
         config.kafka.session_timeout_ms,
         u64
     );
+    // Topic mappings: "topic-a:channel-a,topic-b:channel-b"
+    if let Ok(v) = env_var("ORION_KAFKA__TOPICS") {
+        let mut topics = Vec::new();
+        for entry in v.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            match entry.split_once(':') {
+                Some((topic, channel))
+                    if !topic.trim().is_empty() && !channel.trim().is_empty() =>
+                {
+                    topics.push(crate::config::TopicMapping {
+                        topic: topic.trim().to_string(),
+                        channel: channel.trim().to_string(),
+                    });
+                }
+                _ => {
+                    return Err(OrionError::Config {
+                        message: format!(
+                            "ORION_KAFKA__TOPICS entry '{entry}' is not 'topic:channel'"
+                        ),
+                    });
+                }
+            }
+        }
+        config.kafka.topics = topics;
+    }
+    env_parsed!(
+        env_var,
+        "ORION_KAFKA__DLQ__ENABLED",
+        config.kafka.dlq.enabled,
+        bool
+    );
+    env_str!(env_var, "ORION_KAFKA__DLQ__TOPIC", config.kafka.dlq.topic);
+
+    // CORS
+    if let Ok(v) = env_var("ORION_CORS__ALLOWED_ORIGINS") {
+        config.cors.allowed_origins = v.split(',').map(|s| s.trim().to_string()).collect();
+    }
+
+    // Channel loading filters
+    if let Ok(v) = env_var("ORION_CHANNELS__INCLUDE") {
+        config.channels.include = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
+    if let Ok(v) = env_var("ORION_CHANNELS__EXCLUDE") {
+        config.channels.exclude = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+    }
 
     // Admin auth
     env_parsed!(
@@ -612,6 +666,15 @@ mod tests {
         env.insert("ORION_KAFKA__ENABLED", "true");
         env.insert("ORION_KAFKA__BROKERS", "broker1:9092,broker2:9092");
         env.insert("ORION_KAFKA__GROUP_ID", "my-group");
+        env.insert("ORION_KAFKA__TOPICS", "orders:order-ch, events:event-ch");
+        env.insert("ORION_KAFKA__DLQ__ENABLED", "true");
+        env.insert("ORION_KAFKA__DLQ__TOPIC", "my-dlq");
+        env.insert(
+            "ORION_CORS__ALLOWED_ORIGINS",
+            "https://a.example, https://b.example",
+        );
+        env.insert("ORION_CHANNELS__INCLUDE", "orders-*, payments-*");
+        env.insert("ORION_CHANNELS__EXCLUDE", "internal-*");
 
         let mut config = AppConfig::default();
         apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
@@ -658,6 +721,35 @@ mod tests {
         assert!(config.kafka.enabled);
         assert_eq!(config.kafka.brokers, vec!["broker1:9092", "broker2:9092"]);
         assert_eq!(config.kafka.group_id, "my-group");
+        assert_eq!(config.kafka.topics.len(), 2);
+        assert_eq!(config.kafka.topics[0].topic, "orders");
+        assert_eq!(config.kafka.topics[0].channel, "order-ch");
+        assert_eq!(config.kafka.topics[1].topic, "events");
+        assert_eq!(config.kafka.topics[1].channel, "event-ch");
+        assert!(config.kafka.dlq.enabled);
+        assert_eq!(config.kafka.dlq.topic, "my-dlq");
+        assert_eq!(
+            config.cors.allowed_origins,
+            vec![
+                "https://a.example".to_string(),
+                "https://b.example".to_string()
+            ]
+        );
+        assert_eq!(
+            config.channels.include,
+            vec!["orders-*".to_string(), "payments-*".to_string()]
+        );
+        assert_eq!(config.channels.exclude, vec!["internal-*".to_string()]);
+    }
+
+    #[test]
+    fn test_env_override_kafka_topics_rejects_malformed_entry() {
+        let mut env = HashMap::new();
+        env.insert("ORION_KAFKA__TOPICS", "orders:order-ch,missing-channel");
+        let mut config = AppConfig::default();
+        let err = apply_env_overrides_with(&mut config, make_env_reader(&env))
+            .expect_err("malformed mapping must be rejected");
+        assert!(err.to_string().contains("missing-channel"));
     }
 
     #[test]
