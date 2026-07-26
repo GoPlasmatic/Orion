@@ -224,3 +224,72 @@ async fn test_dedup_different_keys_both_pass() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ============================================================
+// 5. Dedup keys are scoped per channel — the same idempotency
+//    key on two channels sharing a backend must not collide
+// ============================================================
+
+#[tokio::test]
+async fn test_dedup_key_scoped_per_channel() {
+    let app = common::test_app().await;
+
+    let dedup_config = json!({
+        "deduplication": {
+            "header": "Idempotency-Key",
+            "window_secs": 300
+        }
+    });
+    create_and_activate_channel_with_config(
+        &app,
+        "dedup-scope-a",
+        simple_log_workflow("Dedup Scope A WF"),
+        dedup_config.clone(),
+    )
+    .await;
+    create_and_activate_channel_with_config(
+        &app,
+        "dedup-scope-b",
+        simple_log_workflow("Dedup Scope B WF"),
+        dedup_config,
+    )
+    .await;
+
+    let payload = json!({"data": {"k": "v"}});
+
+    // Same key on channel A — succeeds
+    let resp = app
+        .clone()
+        .oneshot(post_with_idempotency_key(
+            "/api/v1/data/dedup-scope-a",
+            "shared-token",
+            payload.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Same key on channel B — must also succeed (was 409 before channel scoping)
+    let resp = app
+        .clone()
+        .oneshot(post_with_idempotency_key(
+            "/api/v1/data/dedup-scope-b",
+            "shared-token",
+            payload.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Replay on channel A — still deduplicated within its own scope
+    let resp = app
+        .clone()
+        .oneshot(post_with_idempotency_key(
+            "/api/v1/data/dedup-scope-a",
+            "shared-token",
+            payload,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
