@@ -32,14 +32,17 @@ Backward compatibility is a hard requirement: with `cluster.enabled = false` (th
 
 Pre-existing bugs confirmed in the audit; several silently break the moment a second replica starts.
 
-- [ ] **0.1 Channel-scope the dedup key.** Today the raw idempotency header value is the cache key — tokens collide across channels. Change `check_deduplication` (`src/server/routes/data.rs:440-458`) to `dedup:{channel}:{token}`, mirroring the response-cache key format at `data.rs:521`.
-- [ ] **0.2 Auth on trace endpoints.** `GET /api/v1/data/traces` and `/traces/{id}` (`data.rs:812,836`) return full payloads unauthenticated — `admin_auth.rs:50` only guards `/api/v1/admin` + `/metrics`. Move them under admin auth.
-- [ ] **0.3 Dedup backend errors fail closed as 409.** `store.check_and_insert(key, window).await.unwrap_or(false)` (`data.rs:450`) treats a Redis outage as "duplicate" and rejects every request with Conflict. Decide policy (recommend: fail-open + error metric + warn) and implement.
-- [ ] **0.4 Wire `queue.dlq_max_retries`.** The config value (`src/config/queue.rs:30`) is only logged (`main.rs:585`); the enqueue path hardcodes `5` (`src/queue/processing.rs:500`).
-- [ ] **0.5 Write `traces.channel_id`.** The column exists (and is indexed) but is never populated by any repo path (`traces.rs:158-164`, `:284-295`).
-- [ ] **0.6 Remove dead code `src/channel/dedup.rs`** (`DeduplicationStore` — only reference is its own re-export in `channel/mod.rs:17`).
-- [ ] **0.7 `BackpressureConfig.queue_depth`** (`src/channel/config.rs:114-121`) is parsed but never read — implement or delete the field.
-- [ ] **0.8 Trigger/constraint parity across backends.** Active-immutability triggers exist only on SQLite (`migrations/sqlite/001:136-168`); Postgres and MySQL have none. Either add them (PG plpgsql, MySQL SIGNAL) or enforce immutability in the repository layer — the three backends must enforce identical invariants, and cluster mode makes Postgres the primary backend.
+- [x] **0.1 Channel-scope the dedup key.** Today the raw idempotency header value is the cache key — tokens collide across channels. Change `check_deduplication` (`src/server/routes/data.rs:440-458`) to `dedup:{channel}:{token}`, mirroring the response-cache key format at `data.rs:521`.
+- [x] **0.2 Auth on trace endpoints.** `GET /api/v1/data/traces` and `/traces/{id}` (`data.rs:812,836`) return full payloads unauthenticated — `admin_auth.rs:50` only guards `/api/v1/admin` + `/metrics`. Move them under admin auth.
+- [x] **0.3 Dedup backend errors fail closed as 409.** `store.check_and_insert(key, window).await.unwrap_or(false)` (`data.rs:450`) treats a Redis outage as "duplicate" and rejects every request with Conflict. Decide policy (recommend: fail-open + error metric + warn) and implement.
+- [x] **0.4 Wire `queue.dlq_max_retries`.** The config value (`src/config/queue.rs:30`) is only logged (`main.rs:585`); the enqueue path hardcodes `5` (`src/queue/processing.rs:500`).
+- [x] **0.5 Write `traces.channel_id`.** The column exists (and is indexed) but is never populated by any repo path (`traces.rs:158-164`, `:284-295`).
+- [x] **0.6 Remove dead code `src/channel/dedup.rs`** (`DeduplicationStore` — only reference is its own re-export in `channel/mod.rs:17`).
+- [x] **0.7 `BackpressureConfig.queue_depth`** (`src/channel/config.rs:114-121`) is parsed but never read — implement or delete the field.
+- [x] **0.8 Trigger/constraint parity across backends.** Active-immutability triggers exist only on SQLite (`migrations/sqlite/001:136-168`); Postgres and MySQL have none. Either add them (PG plpgsql, MySQL SIGNAL) or enforce immutability in the repository layer — the three backends must enforce identical invariants, and cluster mode makes Postgres the primary backend.
+
+
+> **M1 implementation notes (2026-07-26):** all eight items landed on `v1.0.0`. Two findings beyond the audit, both fixed under 0.8: (a) `migrations/mysql/001` could never execute through sqlx (DELIMITER directives, TEXT defaults, TEXT keys, TIMESTAMP↔NaiveDateTime) — rewritten with the VARCHAR/datetime idiom, checksum-safe since it never applied anywhere; (b) Postgres was unusable at runtime (models decode i64, columns were INT4) — fixed by `postgres/004_bigint_columns.sql`. New `tests/storage_postgres.rs` / `tests/storage_mysql.rs` binaries run Orion's own storage on real containers in CI. 0.3 chose fail-open + `dedup_backend` error metric + warn. 0.7 deleted the field. Async-path dedup (none exists today) deferred to A6.
 
 ---
 
