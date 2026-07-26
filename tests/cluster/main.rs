@@ -294,3 +294,33 @@ async fn rate_limit_holds_across_nodes_combined() {
         "both nodes must see shared 429s (got {limited})"
     );
 }
+
+/// B3: filesystem backups are refused in cluster mode — the file would land
+/// on one arbitrary node behind the LB.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn backups_refused_in_cluster_mode() {
+    let h = two_nodes().await;
+
+    for (method, desc) in [("POST", "create"), ("GET", "list")] {
+        let resp = h
+            .node_a
+            .clone()
+            .oneshot(json_request(method, "/api/v1/admin/backups", None))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "{desc} backup must be rejected in cluster mode"
+        );
+        let body = body_json(resp).await;
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("cluster mode"),
+            "error should explain the cluster-mode restriction: {body}"
+        );
+    }
+}

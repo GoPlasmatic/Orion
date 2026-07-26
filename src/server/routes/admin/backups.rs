@@ -13,13 +13,29 @@ use super::audit_log;
 // Backups (SQLite only)
 // ============================================================
 
+/// Filesystem backups are meaningless behind a load balancer: the file lands
+/// on whichever node served the request (and cluster storage is
+/// Postgres/MySQL anyway, which VACUUM INTO cannot back up). Point operators
+/// at the managed database's native mechanisms instead (multi-instance B3).
+fn reject_in_cluster_mode(state: &AppState) -> Result<(), OrionError> {
+    if state.config.cluster.enabled {
+        return Err(OrionError::BadRequest(
+            "Filesystem backups are disabled in cluster mode — the file would land on \
+             one arbitrary node. Use your managed database's snapshot/PITR tooling \
+             (e.g. pg_dump, RDS/Cloud SQL backups) instead; see the availability docs."
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[utoipa::path(
     post,
     path = "/api/v1/admin/backups",
     tag = "Backups",
     responses(
         (status = 200, description = "Backup created (SQLite only — VACUUM INTO a timestamped file)"),
-        (status = 400, description = "Backup unavailable (non-SQLite backend)"),
+        (status = 400, description = "Backup unavailable (non-SQLite backend, or cluster mode — use managed-DB snapshots/PITR)"),
     )
 )]
 #[tracing::instrument(skip(state, principal))]
@@ -27,6 +43,7 @@ pub(crate) async fn create_backup(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
 ) -> Result<Json<Value>, OrionError> {
+    reject_in_cluster_mode(&state)?;
     let backup_dir = state.config.storage.backup_dir.clone();
 
     // Run blocking filesystem operations off the async runtime
@@ -98,10 +115,12 @@ pub(crate) async fn create_backup(
     tag = "Backups",
     responses(
         (status = 200, description = "List of backup files in the configured backup directory"),
+        (status = 400, description = "Unavailable in cluster mode — backups are node-local files"),
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_backups(State(state): State<AppState>) -> Result<Json<Value>, OrionError> {
+    reject_in_cluster_mode(&state)?;
     let backup_dir = state.config.storage.backup_dir.clone();
 
     // Run all blocking filesystem I/O off the async runtime

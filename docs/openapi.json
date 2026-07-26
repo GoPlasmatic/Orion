@@ -53,6 +53,9 @@
         "responses": {
           "200": {
             "description": "List of backup files in the configured backup directory"
+          },
+          "400": {
+            "description": "Unavailable in cluster mode — backups are node-local files"
           }
         }
       },
@@ -66,7 +69,7 @@
             "description": "Backup created (SQLite only — VACUUM INTO a timestamped file)"
           },
           "400": {
-            "description": "Backup unavailable (non-SQLite backend)"
+            "description": "Backup unavailable (non-SQLite backend, or cluster mode — use managed-DB snapshots/PITR)"
           }
         }
       }
