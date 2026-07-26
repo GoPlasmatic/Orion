@@ -575,43 +575,36 @@ CREATE UNIQUE INDEX idx_channels_single_draft
 }
 
 fn mysql_triggers() -> String {
+    // No DELIMITER directives: that is a mysql-client artifact for splitting
+    // input; sqlx sends each statement server-side where the parser handles
+    // compound CREATE TRIGGER bodies natively. `updated_at` triggers use
+    // single-statement bodies (no BEGIN/END needed).
     r#"
--- Auto-update updated_at
-DELIMITER //
+-- Auto-update updated_at (single-statement bodies)
 CREATE TRIGGER trg_workflows_updated_at
     BEFORE UPDATE ON workflows
     FOR EACH ROW
-BEGIN
     SET NEW.updated_at = CURRENT_TIMESTAMP;
-END//
 
 CREATE TRIGGER trg_channels_updated_at
     BEFORE UPDATE ON channels
     FOR EACH ROW
-BEGIN
     SET NEW.updated_at = CURRENT_TIMESTAMP;
-END//
 
 CREATE TRIGGER trg_connectors_updated_at
     BEFORE UPDATE ON connectors
     FOR EACH ROW
-BEGIN
     SET NEW.updated_at = CURRENT_TIMESTAMP;
-END//
 
 CREATE TRIGGER trg_traces_updated_at
     BEFORE UPDATE ON traces
     FOR EACH ROW
-BEGIN
     SET NEW.updated_at = CURRENT_TIMESTAMP;
-END//
 
 CREATE TRIGGER trg_trace_dlq_updated_at
     BEFORE UPDATE ON trace_dlq
     FOR EACH ROW
-BEGIN
     SET NEW.updated_at = CURRENT_TIMESTAMP;
-END//
 
 -- Single-draft enforcement
 CREATE TRIGGER trg_workflows_single_draft
@@ -623,7 +616,7 @@ BEGIN
             SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Only one draft version allowed per workflow';
         END IF;
     END IF;
-END//
+END;
 
 CREATE TRIGGER trg_channels_single_draft
     BEFORE INSERT ON channels
@@ -634,8 +627,7 @@ BEGIN
             SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Only one draft version allowed per channel';
         END IF;
     END IF;
-END//
-DELIMITER ;
+END;
 "#
     .to_string()
 }
@@ -665,6 +657,18 @@ CREATE INDEX `idx_trace_dlq_next_retry` ON `trace_dlq` (`next_retry_at`, `retry_
 // ============================================================
 
 /// Generate the complete migration SQL for a given backend.
+///
+/// **The shipped `migrations/*/001_initial.sql` files are checksum-frozen** —
+/// sqlx records a checksum per applied migration, so editing 001 breaks every
+/// existing install. All new DDL must ship as a new hand-written `00N_*.sql`
+/// per backend (see `003_task_trace.sql` for the pattern). This generator is a
+/// scaffold for bootstrapping a *new* backend, not the source of truth for the
+/// shipped files: they have diverged deliberately (e.g. `audit_logs` is not
+/// generated here, and the MySQL set uses `VARCHAR(n)`/`datetime` where this
+/// generator emits `text`/`timestamp`, because MySQL cannot index TEXT without
+/// a prefix length, give TEXT a literal default, or decode TIMESTAMP into
+/// `NaiveDateTime`). Do not run `test_write_migration_files` against the
+/// shipped sets.
 pub fn generate_migration(backend: &str) -> Result<String, OrionError> {
     let tables = [
         workflows_table(),
@@ -760,17 +764,21 @@ mod tests {
     fn test_generate_mysql_migration() {
         let sql = generate_migration("mysql").expect("test");
         assert!(sql.contains("CREATE TABLE IF NOT EXISTS"));
-        assert!(sql.contains("DELIMITER //"));
+        // DELIMITER is a mysql-client directive; sqlx cannot execute it.
+        assert!(!sql.contains("DELIMITER"));
         assert!(sql.contains("SIGNAL SQLSTATE"));
     }
 
     #[test]
     #[ignore = "Run manually with: cargo test test_write_migration -- --ignored"]
     fn test_write_migration_files() {
+        // Writes to target/migration_gen_preview/ — NEVER to migrations/.
+        // The shipped 001 files are checksum-frozen (see generate_migration
+        // docs); this exists to inspect generator output for a new backend.
         let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
         for backend in &["sqlite", "postgres", "mysql"] {
             let sql = generate_migration(backend).expect("test");
-            let dir = format!("{manifest_dir}/migrations/{backend}");
+            let dir = format!("{manifest_dir}/target/migration_gen_preview/{backend}");
             std::fs::create_dir_all(&dir).expect("test");
             let path = format!("{dir}/001_initial.sql");
             std::fs::write(&path, &sql).expect("test");
