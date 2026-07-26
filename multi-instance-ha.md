@@ -1,8 +1,8 @@
 # Orion v1.0.0 — Multi-Instance (HA) Change Plan
 
-*Derived from a full code audit on 2026-07-26 (branch `v1.0.0`, based on `main@a0fc8e8`). Companion to `saas-gaps.md` §3 — this document turns the HA gaps into concrete, file-level work items.*
+*Derived from a full code audit on 2026-07-26 (branch `v1.0.0`, based on `main@a0fc8e8`). This is the v1.0.0 planning document: HA work items (Workstreams 0/A/B/C) plus the security & ops hardening backlog (Workstream H) carried over from the retired `saas-gaps.md` (deleted; full analysis preserved in git history at `947401e`/`f52e7ed`).*
 
-> **Scope note:** Orion is **single-tenant by product decision (2026-07-26)**. This plan contains no tenant concepts. "Multi-instance" means N identical replicas of `orion-server` serving *one* deployment behind a load balancer. Customer isolation, when needed, is one Orion instance per customer (see `saas-gaps.md`).
+> **Scope note:** Orion is **single-tenant and self-hosted — by product decision (2026-07-26)**. There is no SaaS and no multi-tenancy, permanently. The cloud story is **cloud-marketplace images** (AWS/Azure/GCP) that users run in their own accounts. "Multi-instance" means N identical replicas of `orion-server` serving *one* deployment behind a load balancer — HA for a single installation, nothing more.
 
 ## Goal
 
@@ -66,6 +66,7 @@ Pre-existing bugs confirmed in the audit; several silently break the moment a se
 - [ ] **B3. Backups in cluster mode.** `POST /api/v1/admin/backups` writes to the local node's filesystem (`admin/backups.rs:34,69,108`) — meaningless behind an LB, and SQLite-only anyway. In cluster mode return 400 with guidance to use managed-DB PITR/snapshots; document the operator runbook.
 - [ ] **B4. HA reference compose file** (`docker-compose.ha.yml`): 2× orion + Postgres + Redis + nginx, used by the multi-node integration tests (see Test plan) and as user documentation.
 - [ ] **B5. Docs:** rewrite `docs/src/features/scalability.md` and `availability.md` around cluster mode (they currently document the curl-loop reload fan-out as the workaround).
+- [ ] **B6. Cloud-marketplace packaging** (the cloud-native distribution path): AWS AMI / Azure VM image / GCP image + container-marketplace listings. Per-cloud glue: cloud-init to wire a managed Postgres (RDS / Cloud SQL / Azure DB) and managed Redis, Terraform + CloudFormation reference templates, hardened base image, TLS bootstrap. Depends on H3 (cloud secrets-manager resolvers) so instances never store credentials in plaintext config, and on H1 (data-plane auth) before any image defaults to a public endpoint.
 
 ---
 
@@ -73,6 +74,18 @@ Pre-existing bugs confirmed in the audit; several silently break the moment a se
 
 - [ ] **C1. Sticky rollout bucketing.** `inject_rollout_bucket` uses `rand::random` per request (`engine/utils.rs:19-26`) — canary assignment flip-flops per call *and* per node. Hash a stable caller identity (client IP, or a configurable header) → stable bucket across requests and replicas.
 - [ ] **C2. Per-instance labels.** Add `instance_id` to log spans; `/metrics` stays per-node (Prometheus scrapes each pod), no aggregation needed.
+
+---
+
+## Workstream H — Security & ops hardening backlog (carried over from `saas-gaps.md`)
+
+Not HA work, but the items from the retired SaaS analysis that remain valuable for a single-tenant, self-hosted product — especially once marketplace images put instances on cloud networks. Unscheduled backlog except where B6 depends on them.
+
+- [ ] **H1. Data-plane authentication (optional, off by default).** `/api/v1/data/*` is completely unauthenticated today — anyone who can reach the endpoint can invoke any channel (`admin_auth.rs:50` guards only `/api/v1/admin` + `/metrics`; `ChannelConfig` has no `auth` field; per-channel "auth" is only hand-rolled JSONLogic over raw headers, `data.rs:270-279`). Add per-channel API keys hashed at rest (argon2), verified by middleware before dispatch, with a key-lifecycle API (create/list/revoke/rotate, last-used tracking) — this also gives admin-key rotation without redeploy (today: edit config + restart, `config/admin_auth.rs:13`). Fine for a trusted LAN; required before B6 images default to public endpoints.
+- [ ] **H2. SSRF hardening.** DNS-rebinding TOCTOU: validation resolves DNS, then reqwest re-resolves independently (`ssrf.rs`, `http_common.rs:72-81`) — pin the validated IPs into the HTTP client. Also: re-validate redirects, cover IPv6 ULA/link-local ranges, decide the resolution-failure policy (currently allowed through), and extend URL validation to DB/Mongo/Redis connector URLs (pointing a "connector" at an internal service is the same attack).
+- [ ] **H3. Secrets handling.** (a) Connector configs are stored plaintext in `connectors.config_json` (`001_initial.sql:8`) — add optional encryption at rest (key from config or cloud KMS). (b) Secret masking is a denylist by key name — `client_secret`, `private_key`, etc. leak in cleartext via GET (`src/connector/masking.rs`); switch to an allowlist. (c) Implement the `vault://` / `aws-sm://` / cloud secrets-manager resolvers the `SecretResolver` trait already anticipates (`connector/secrets.rs:65`) — **prerequisite for B6** so marketplace instances pull credentials from the cloud's secret store.
+- [ ] **H4. Audit v2.** Actor is an 8-char key prefix or `"anonymous"`; no IP/user-agent/request-id; `details` always `None` (no before/after diffs); fire-and-forget writes can drop entries (`admin/mod.rs:50-85`); list API has no filters (`admin/audit.rs:34`). Enterprise self-hosters need attributable, complete, filterable audit trails for their own compliance.
+- [ ] **H5. Operator APIs.** (a) Trace DLQ has no operator surface — table + retry worker exist but no route to list/inspect/replay/purge stuck entries. (b) Backup is SQLite-only `VACUUM INTO` with no restore endpoint (`admin/backups.rs:26-104`) — add restore, and document the PG/MySQL story (B3 covers the cluster-mode angle).
 
 ---
 
@@ -111,10 +124,11 @@ auto_migrate = true           # set false in cluster deployments; run `orion-ser
 | **M1 — Hardening** | Workstream 0 (all items) | Existing suite green; dedup channel-scoped; traces authed; DLQ config honored |
 | **M2 — Coordination** | A1–A11 | Multi-node harness green; rolling deploy with zero 5xx demonstrated |
 | **M3 — Ops & polish** | B1–B5, C1–C2 | Helm install of a 3-replica cluster passes the harness scenarios |
+| **M4 — Marketplace & hardening** | B6, H1–H5 (H1 + H3 gate B6) | Marketplace image boots against managed Postgres/Redis with secrets from the cloud secret store and data-plane auth on by default |
 
 ## Explicit non-goals
 
-- **Multi-tenancy in any form** — permanent product decision (2026-07-26). Customer isolation = one instance per customer; see `saas-gaps.md`.
+- **Multi-tenancy and SaaS in any form** — permanent product decision (2026-07-26). Orion is a single-tenant, self-hosted product; the cloud offering is marketplace images users run in their own accounts (B6). No hosted control plane, no usage metering/billing pipeline, no per-customer provisioning.
 - Shared/distributed circuit-breaker state (D3 decision).
-- Data-plane API-key auth — still a real gap, but orthogonal to HA; tracked in `saas-gaps.md` §1 (only the trace-endpoint fix 0.2 ships here).
+- OIDC/SSO and a user/role model — static + managed API keys only (H1); console identity is the operator's concern.
 - Leader election frameworks, gossip, node registries (D1/D4 decisions).
