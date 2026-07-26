@@ -269,6 +269,7 @@ async fn dispatch_one(trace_repo: &Arc<dyn TraceRepository>, task: TracePersiste
         TracePersistenceTask::StoreCompleted(row) => trace_repo
             .store_completed(
                 &row.channel,
+                row.channel_id.as_deref(),
                 &row.mode,
                 row.input_json.as_deref(),
                 &row.result_json,

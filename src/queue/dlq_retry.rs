@@ -17,6 +17,7 @@ pub fn start_dlq_retry(
     dlq_repo: Arc<dyn TraceDlqRepository>,
     trace_queue: TraceQueue,
     trace_repo: Arc<dyn TraceRepository>,
+    channel_registry: Arc<crate::channel::ChannelRegistry>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(poll_interval_secs));
@@ -51,9 +52,20 @@ pub fn start_dlq_retry(
                 let metadata: serde_json::Value =
                     serde_json::from_str(&entry.metadata_json).unwrap_or_default();
 
-                // Create a new pending trace for the retry
+                // Create a new pending trace for the retry. DLQ rows only
+                // carry the channel *name*; resolve the ID from the registry
+                // (NULL when the channel is no longer active — honest).
+                let channel_id = channel_registry
+                    .get_by_name(&entry.channel)
+                    .await
+                    .map(|c| c.channel.channel_id.clone());
                 let new_trace = match trace_repo
-                    .create_pending(&entry.channel, "async", Some(&entry.payload_json))
+                    .create_pending(
+                        &entry.channel,
+                        channel_id.as_deref(),
+                        "async",
+                        Some(&entry.payload_json),
+                    )
                     .await
                 {
                     Ok(t) => t,
@@ -247,6 +259,7 @@ mod tests {
         async fn create_pending(
             &self,
             channel: &str,
+            _channel_id: Option<&str>,
             _mode: &str,
             _input_json: Option<&str>,
         ) -> Result<Trace, OrionError> {
@@ -275,6 +288,7 @@ mod tests {
         async fn store_completed(
             &self,
             _channel: &str,
+            _channel_id: Option<&str>,
             _mode: &str,
             _input_json: Option<&str>,
             _result_json: &str,
@@ -359,7 +373,13 @@ mod tests {
         let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
         let (queue, mut rx) = make_test_queue(10);
 
-        let handle = start_dlq_retry(1, dlq_repo.clone(), queue, trace_repo);
+        let handle = start_dlq_retry(
+            1,
+            dlq_repo.clone(),
+            queue,
+            trace_repo,
+            Arc::new(crate::channel::ChannelRegistry::new()),
+        );
 
         // Advance past the first skipped tick
         advance_and_yield(Duration::from_secs(1)).await;
@@ -387,7 +407,13 @@ mod tests {
         let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
         let (queue, _rx) = make_test_queue(10);
 
-        let handle = start_dlq_retry(1, dlq_repo.clone(), queue, trace_repo);
+        let handle = start_dlq_retry(
+            1,
+            dlq_repo.clone(),
+            queue,
+            trace_repo,
+            Arc::new(crate::channel::ChannelRegistry::new()),
+        );
 
         advance_and_yield(Duration::from_secs(1)).await;
         advance_and_yield(Duration::from_secs(1)).await;
@@ -411,7 +437,13 @@ mod tests {
         let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
         let queue = make_closed_queue();
 
-        let handle = start_dlq_retry(1, dlq_repo.clone(), queue, trace_repo);
+        let handle = start_dlq_retry(
+            1,
+            dlq_repo.clone(),
+            queue,
+            trace_repo,
+            Arc::new(crate::channel::ChannelRegistry::new()),
+        );
 
         advance_and_yield(Duration::from_secs(1)).await;
         advance_and_yield(Duration::from_secs(1)).await;
@@ -435,7 +467,13 @@ mod tests {
         let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
         let queue = make_closed_queue();
 
-        let handle = start_dlq_retry(1, dlq_repo.clone(), queue, trace_repo);
+        let handle = start_dlq_retry(
+            1,
+            dlq_repo.clone(),
+            queue,
+            trace_repo,
+            Arc::new(crate::channel::ChannelRegistry::new()),
+        );
 
         advance_and_yield(Duration::from_secs(1)).await;
         advance_and_yield(Duration::from_secs(1)).await;

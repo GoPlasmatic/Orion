@@ -25,6 +25,9 @@ pub struct TraceFilter {
 #[derive(Debug, Clone)]
 pub struct TraceCompletedRow {
     pub channel: String,
+    /// The channel's stable ID (as opposed to `channel`, its name).
+    /// `None` when the channel could not be resolved at write time.
+    pub channel_id: Option<String>,
     pub mode: String,
     pub input_json: Option<String>,
     pub result_json: String,
@@ -52,6 +55,7 @@ pub trait TraceRepository: Send + Sync {
     async fn create_pending(
         &self,
         channel: &str,
+        channel_id: Option<&str>,
         mode: &str,
         input_json: Option<&str>,
     ) -> Result<Trace, OrionError>;
@@ -69,9 +73,11 @@ pub trait TraceRepository: Send + Sync {
         duration_ms: f64,
         task_trace_json: Option<&str>,
     ) -> Result<(), OrionError>;
+    #[allow(clippy::too_many_arguments)]
     async fn store_completed(
         &self,
         channel: &str,
+        channel_id: Option<&str>,
         mode: &str,
         input_json: Option<&str>,
         result_json: &str,
@@ -92,6 +98,7 @@ pub trait TraceRepository: Send + Sync {
             ids.push(
                 self.store_completed(
                     &row.channel,
+                    row.channel_id.as_deref(),
                     &row.mode,
                     row.input_json.as_deref(),
                     &row.result_json,
@@ -144,6 +151,7 @@ impl TraceRepository for SqlTraceRepository {
     async fn create_pending(
         &self,
         channel: &str,
+        channel_id: Option<&str>,
         mode: &str,
         input_json: Option<&str>,
     ) -> Result<Trace, OrionError> {
@@ -151,6 +159,7 @@ impl TraceRepository for SqlTraceRepository {
             let id = uuid::Uuid::new_v4().to_string();
 
             let input_val = super::helpers::optional_string_value(input_json);
+            let channel_id_val = super::helpers::optional_string_value(channel_id);
 
             let (sql, values) = build_sqlx(
                 Query::insert()
@@ -159,6 +168,7 @@ impl TraceRepository for SqlTraceRepository {
                         Traces::Id,
                         Traces::Status,
                         Traces::Channel,
+                        Traces::ChannelId,
                         Traces::Mode,
                         Traces::InputJson,
                     ])
@@ -166,6 +176,7 @@ impl TraceRepository for SqlTraceRepository {
                         Expr::val(id.as_str()).into(),
                         Expr::val("pending").into(),
                         Expr::val(channel).into(),
+                        Expr::val(channel_id_val).into(),
                         Expr::val(mode).into(),
                         Expr::val(input_val).into(),
                     ]),
@@ -265,6 +276,7 @@ impl TraceRepository for SqlTraceRepository {
     async fn store_completed(
         &self,
         channel: &str,
+        channel_id: Option<&str>,
         mode: &str,
         input_json: Option<&str>,
         result_json: &str,
@@ -277,6 +289,7 @@ impl TraceRepository for SqlTraceRepository {
 
             let input_val = super::helpers::optional_string_value(input_json);
             let task_trace_val = super::helpers::optional_string_value(task_trace_json);
+            let channel_id_val = super::helpers::optional_string_value(channel_id);
 
             let (sql, values) = build_sqlx(
                 Query::insert()
@@ -285,6 +298,7 @@ impl TraceRepository for SqlTraceRepository {
                         Traces::Id,
                         Traces::Status,
                         Traces::Channel,
+                        Traces::ChannelId,
                         Traces::Mode,
                         Traces::InputJson,
                         Traces::ResultJson,
@@ -297,6 +311,7 @@ impl TraceRepository for SqlTraceRepository {
                         Expr::val(id.as_str()).into(),
                         Expr::val("completed").into(),
                         Expr::val(channel).into(),
+                        Expr::val(channel_id_val).into(),
                         Expr::val(mode).into(),
                         Expr::val(input_val).into(),
                         Expr::val(result_json).into(),
@@ -329,6 +344,7 @@ impl TraceRepository for SqlTraceRepository {
                 Traces::Id,
                 Traces::Status,
                 Traces::Channel,
+                Traces::ChannelId,
                 Traces::Mode,
                 Traces::InputJson,
                 Traces::ResultJson,
@@ -342,10 +358,13 @@ impl TraceRepository for SqlTraceRepository {
                 let input_val = super::helpers::optional_string_value(row.input_json.as_deref());
                 let task_trace_val =
                     super::helpers::optional_string_value(row.task_trace_json.as_deref());
+                let channel_id_val =
+                    super::helpers::optional_string_value(row.channel_id.as_deref());
                 insert.values_panic([
                     Expr::val(id.as_str()).into(),
                     Expr::val("completed").into(),
                     Expr::val(row.channel.as_str()).into(),
+                    Expr::val(channel_id_val).into(),
                     Expr::val(row.mode.as_str()).into(),
                     Expr::val(input_val).into(),
                     Expr::val(row.result_json.as_str()).into(),
@@ -493,7 +512,7 @@ mod tests {
 
         // Create a completed trace
         let id = repo
-            .store_completed("orders", "sync", None, r#"{"ok":true}"#, 10.0, None)
+            .store_completed("orders", Some("ch_orders"), "sync", None, r#"{"ok":true}"#, 10.0, None)
             .await
             .expect("test");
 
@@ -517,7 +536,7 @@ mod tests {
 
         // Create a recent trace that should NOT be deleted
         let _recent_id = repo
-            .store_completed("orders", "sync", None, r#"{"ok":true}"#, 5.0, None)
+            .store_completed("orders", Some("ch_orders"), "sync", None, r#"{"ok":true}"#, 5.0, None)
             .await
             .expect("test");
 
@@ -540,7 +559,7 @@ mod tests {
 
         // Create a pending trace
         let trace = repo
-            .create_pending("orders", "async", None)
+            .create_pending("orders", Some("ch_orders"), "async", None)
             .await
             .expect("test");
 

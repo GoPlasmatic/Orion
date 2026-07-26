@@ -579,6 +579,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             dlq_for_retry,
             trace_queue.clone(),
             trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+            channel_registry.clone(),
         );
         tracing::info!(
             poll_interval_secs = config.queue.dlq_poll_interval_secs,

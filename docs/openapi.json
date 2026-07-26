@@ -1269,6 +1269,9 @@
         "responses": {
           "200": {
             "description": "Paginated list of traces"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key (when admin auth is enabled)"
           }
         }
       }
@@ -1293,6 +1296,9 @@
         "responses": {
           "200": {
             "description": "Trace status and result"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key (when admin auth is enabled)"
           },
           "404": {
             "description": "Trace not found"

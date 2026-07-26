@@ -248,3 +248,86 @@ async fn channel_override_persists_when_global_is_off() {
         "channel override should beat global Off"
     );
 }
+
+// -----------------------------------------------------------------------
+// traces.channel_id is populated (multi-instance-ha 0.5)
+// -----------------------------------------------------------------------
+
+/// Look up a channel's stable ID by name via the admin API.
+async fn admin_channel_id(app: &axum::Router, name: &str) -> String {
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/channels", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == name)
+        .and_then(|c| c["channel_id"].as_str())
+        .unwrap_or_else(|| panic!("channel '{name}' not found in admin list"))
+        .to_string()
+}
+
+#[tokio::test]
+async fn sync_trace_records_channel_id() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel(&app, "ch_cid_sync", common::simple_log_workflow("Log"))
+        .await;
+    let expected = admin_channel_id(&app, "ch_cid_sync").await;
+
+    assert_eq!(submit_sync(&app, "ch_cid_sync").await, StatusCode::OK);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/data/traces?channel=ch_cid_sync",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"][0]["channel_id"].as_str(), Some(expected.as_str()));
+}
+
+#[tokio::test]
+async fn async_trace_records_channel_id() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel(&app, "ch_cid_async", common::simple_log_workflow("Log"))
+        .await;
+    let expected = admin_channel_id(&app, "ch_cid_async").await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/ch_cid_async/async",
+            Some(json!({"data": {"x": 1}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let trace_id = body_json(resp).await["trace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The pending row is inserted before the 202, so channel_id is already set.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/data/traces/{trace_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["channel_id"].as_str(), Some(expected.as_str()));
+}

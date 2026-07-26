@@ -26,6 +26,7 @@ use crate::engine::utils::{inject_rollout_bucket, remove_rollout_bucket};
 /// arguments at each callsite.
 struct CompletedTrace<'a> {
     channel: &'a str,
+    channel_id: Option<&'a str>,
     input_json: Option<&'a str>,
     response_json: &'a str,
     duration_ms: f64,
@@ -51,6 +52,7 @@ async fn route_store_completed(
         if let Err(e) = trace_repo
             .store_completed(
                 trace.channel,
+                trace.channel_id,
                 "sync",
                 trace.input_json,
                 trace.response_json,
@@ -64,6 +66,7 @@ async fn route_store_completed(
     } else {
         let task = TracePersistenceTask::StoreCompleted(TraceCompletedRow {
             channel: trace.channel.to_string(),
+            channel_id: trace.channel_id.map(str::to_string),
             mode: "sync".to_string(),
             input_json: trace.input_json.map(str::to_string),
             result_json: trace.response_json.to_string(),
@@ -315,9 +318,12 @@ async fn dynamic_handler(
                 (id, resp)
             } else {
                 let input_json = serde_json::to_string(&req.data).ok();
+                let channel_id = channel_runtime
+                    .as_ref()
+                    .map(|c| c.channel.channel_id.as_str());
                 let trace = state
                     .trace_repo
-                    .create_pending(&channel, "async", input_json.as_deref())
+                    .create_pending(&channel, channel_id, "async", input_json.as_deref())
                     .await?;
                 let id = trace.id.clone();
                 let resp =
@@ -756,6 +762,9 @@ async fn process_sync_for_channel(
                 &channel_config,
                 &CompletedTrace {
                     channel,
+                    channel_id: channel_config
+                        .as_ref()
+                        .map(|c| c.channel.channel_id.as_str()),
                     input_json: input_json.as_deref(),
                     response_json: &response_json,
                     duration_ms,
@@ -863,6 +872,8 @@ pub(crate) async fn get_trace(
         "id": trace.id,
         "status": trace.status,
         "mode": trace.mode,
+        "channel": trace.channel,
+        "channel_id": trace.channel_id,
         "created_at": trace.created_at,
     });
 
