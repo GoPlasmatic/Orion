@@ -217,7 +217,7 @@ pub fn start_workers(
             processing_timeout_ms: config.processing_timeout_ms,
             max_result_size_bytes: config.max_result_size_bytes,
             dlq_max_retries: config.dlq_max_retries,
-            rollout_sticky_header,
+            rollout_sticky_header: Arc::from(rollout_sticky_header.as_str()),
             channel_registry,
             persistence_queue,
             global_trace_storage,

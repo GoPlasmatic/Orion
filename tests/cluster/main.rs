@@ -37,6 +37,19 @@ async fn two_nodes() -> TwoNodeHarness {
     two_nodes_with(|_| {}).await
 }
 
+/// Retry `check` once per epoch-poll interval (25 tries ≈ 5 s at the harness
+/// poll rate); `true` as soon as it passes. The shared retry budget for
+/// "node B eventually observes node A's change" assertions.
+async fn eventually(poll: Duration, mut check: impl AsyncFnMut() -> bool) -> bool {
+    for _ in 0..25 {
+        tokio::time::sleep(poll).await;
+        if check().await {
+            return true;
+        }
+    }
+    false
+}
+
 async fn two_nodes_with(customize: impl Fn(&mut orion::config::AppConfig)) -> TwoNodeHarness {
     let pg = Postgres::default().start().await.expect("start postgres");
     let pg_port = pg.get_host_port_ipv4(5432).await.expect("pg port");
@@ -90,9 +103,7 @@ async fn epoch_propagates_channel_activation_across_nodes() {
 
     // Node B picks the channel up via its epoch watcher.
     let payload = json!({"data": {"x": 1}});
-    let mut served = false;
-    for _ in 0..25 {
-        tokio::time::sleep(h.poll).await;
+    let served = eventually(h.poll, async || {
         let resp = h
             .node_b
             .clone()
@@ -103,11 +114,9 @@ async fn epoch_propagates_channel_activation_across_nodes() {
             ))
             .await
             .unwrap();
-        if resp.status() == StatusCode::OK {
-            served = true;
-            break;
-        }
-    }
+        resp.status() == StatusCode::OK
+    })
+    .await;
     assert!(
         served,
         "node B must serve the channel within a few epoch polls"
@@ -138,11 +147,9 @@ async fn dedup_is_shared_across_nodes() {
     )
     .await;
 
-    // Wait until node B serves the channel at all.
+    // Wait until node A serves the channel, consuming the idempotency key.
     let payload = json!({"data": {"k": "v"}});
-    let mut first = StatusCode::NOT_FOUND;
-    for _ in 0..25 {
-        tokio::time::sleep(h.poll).await;
+    let first_ok = eventually(h.poll, async || {
         let resp = h
             .node_a
             .clone()
@@ -153,16 +160,14 @@ async fn dedup_is_shared_across_nodes() {
             ))
             .await
             .unwrap();
-        first = resp.status();
-        if first == StatusCode::OK {
-            break;
-        }
-    }
-    assert_eq!(first, StatusCode::OK);
+        resp.status() == StatusCode::OK
+    })
+    .await;
+    assert!(first_ok, "node A must serve the channel");
 
     // Replay the SAME key against node B: must be rejected as duplicate.
     let mut second = StatusCode::NOT_FOUND;
-    for _ in 0..25 {
+    eventually(h.poll, async || {
         let resp = h
             .node_b
             .clone()
@@ -174,12 +179,10 @@ async fn dedup_is_shared_across_nodes() {
             .await
             .unwrap();
         second = resp.status();
-        if second != StatusCode::NOT_FOUND {
-            break;
-        }
-        // Channel not propagated to B yet.
-        tokio::time::sleep(h.poll).await;
-    }
+        // NOT_FOUND = channel not propagated to B yet; keep waiting.
+        second != StatusCode::NOT_FOUND
+    })
+    .await;
     assert_eq!(
         second,
         StatusCode::CONFLICT,
@@ -245,17 +248,14 @@ async fn rate_limit_holds_across_nodes_combined() {
 
     // Wait for node B to serve the channel.
     let payload = json!({"data": {"x": 1}});
-    for _ in 0..25 {
-        tokio::time::sleep(h.poll).await;
-        if h.state_b
+    eventually(h.poll, async || {
+        h.state_b
             .channel_registry
             .get_by_name("rl-cluster-ch")
             .await
             .is_some()
-        {
-            break;
-        }
-    }
+    })
+    .await;
 
     // Align to the start of a fresh one-second window so all 40 requests
     // land in one window (limit = rps + burst = 10).

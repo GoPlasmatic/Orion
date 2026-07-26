@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sea_query::{Asterisk, Condition, Expr, Order, Query};
+use sea_query::{Asterisk, Expr, Query};
 
 use crate::errors::OrionError;
 use crate::storage::models::TraceDlqEntry;
@@ -20,9 +20,6 @@ pub trait TraceDlqRepository: Send + Sync {
         error_message: &str,
         max_retries: i64,
     ) -> Result<TraceDlqEntry, OrionError>;
-
-    /// Fetch entries that are due for retry (next_retry_at <= now AND retry_count < max_retries).
-    async fn list_pending(&self, limit: i64) -> Result<Vec<TraceDlqEntry>, OrionError>;
 
     /// Atomically claim up to `limit` due, unleased entries for `claimant`,
     /// leasing them until now + `lease_secs`. Due = `next_retry_at <= now`,
@@ -130,31 +127,6 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         .await
     }
 
-    async fn list_pending(&self, limit: i64) -> Result<Vec<TraceDlqEntry>, OrionError> {
-        crate::metrics::timed_db_op("trace_dlq.list_pending", async {
-            let now = chrono::Utc::now().naive_utc();
-
-            let cond = Condition::all()
-                .add(Expr::col(TraceDlq::NextRetryAt).lte(now))
-                .add(Expr::col(TraceDlq::RetryCount).lt(Expr::col(TraceDlq::MaxRetries)));
-
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(TraceDlq::Table)
-                    .cond_where(cond)
-                    .order_by(TraceDlq::NextRetryAt, Order::Asc)
-                    .limit(limit as u64),
-            );
-
-            Ok(self
-                .pool
-                .fetch_all_as::<TraceDlqEntry>(&sql, values)
-                .await?)
-        })
-        .await
-    }
-
     async fn claim_pending(
         &self,
         claimant: &str,
@@ -165,18 +137,22 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         use sea_query_binder::SqlxValues;
 
         crate::metrics::timed_db_op("trace_dlq.claim_pending", async {
-            match crate::storage::get_backend() {
+            let backend = crate::storage::get_backend();
+            let now = super::helpers::sql_now(backend);
+            let lease_until = super::helpers::sql_now_plus_secs(backend, lease_secs);
+            // Due = past next_retry_at, retries left, and no live lease.
+            let due = format!(
+                "next_retry_at <= {now} AND retry_count < max_retries \
+                 AND (claimed_until IS NULL OR claimed_until < {now})"
+            );
+            match backend {
                 crate::storage::DbBackend::Postgres => {
                     // Single statement: SKIP LOCKED prevents two nodes from
                     // claiming the same rows even mid-transaction.
                     let sql = format!(
-                        "UPDATE trace_dlq SET claimed_by = $1, \
-                             claimed_until = LOCALTIMESTAMP + interval '{lease_secs} seconds' \
+                        "UPDATE trace_dlq SET claimed_by = $1, claimed_until = {lease_until} \
                          WHERE id IN ( \
-                             SELECT id FROM trace_dlq \
-                             WHERE next_retry_at <= LOCALTIMESTAMP \
-                               AND retry_count < max_retries \
-                               AND (claimed_until IS NULL OR claimed_until < LOCALTIMESTAMP) \
+                             SELECT id FROM trace_dlq WHERE {due} \
                              ORDER BY next_retry_at ASC LIMIT {limit} \
                              FOR UPDATE SKIP LOCKED) \
                          RETURNING *"
@@ -191,43 +167,35 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 }
                 crate::storage::DbBackend::Mysql => {
                     // MySQL 8 has SKIP LOCKED but no UPDATE ... RETURNING:
-                    // select-for-update, update, read back — one transaction.
+                    // select-for-update the full rows, then lease them. The
+                    // model carries no lease columns, so the pre-UPDATE rows
+                    // are already what the caller needs — no read-back.
                     let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
-                    let select_sql = format!(
-                        "SELECT id FROM trace_dlq \
-                         WHERE next_retry_at <= UTC_TIMESTAMP() \
-                           AND retry_count < max_retries \
-                           AND (claimed_until IS NULL OR claimed_until < UTC_TIMESTAMP()) \
-                         ORDER BY next_retry_at ASC LIMIT {limit} \
-                         FOR UPDATE SKIP LOCKED"
-                    );
-                    let ids: Vec<(String,)> = tx
-                        .fetch_all_as(&select_sql, SqlxValues(Values(Vec::new())))
+                    let rows: Vec<TraceDlqEntry> = tx
+                        .fetch_all_as(
+                            &format!(
+                                "SELECT * FROM trace_dlq WHERE {due} \
+                                 ORDER BY next_retry_at ASC LIMIT {limit} \
+                                 FOR UPDATE SKIP LOCKED"
+                            ),
+                            SqlxValues(Values(Vec::new())),
+                        )
                         .await?;
-                    if ids.is_empty() {
+                    if rows.is_empty() {
                         tx.commit().await.map_err(OrionError::Storage)?;
-                        return Ok(Vec::new());
+                        return Ok(rows);
                     }
-                    let placeholders = vec!["?"; ids.len()].join(", ");
+                    let placeholders = vec!["?"; rows.len()].join(", ");
                     let mut update_values: Vec<Value> = vec![Value::from(claimant)];
-                    update_values.extend(ids.iter().map(|(id,)| Value::from(id.as_str())));
+                    update_values.extend(rows.iter().map(|r| Value::from(r.id.as_str())));
                     tx.execute_query(
                         &format!(
-                            "UPDATE trace_dlq SET claimed_by = ?, \
-                                 claimed_until = DATE_ADD(UTC_TIMESTAMP(), INTERVAL {lease_secs} SECOND) \
+                            "UPDATE trace_dlq SET claimed_by = ?, claimed_until = {lease_until} \
                              WHERE id IN ({placeholders})"
                         ),
                         SqlxValues(Values(update_values)),
                     )
                     .await?;
-                    let select_values: Vec<Value> =
-                        ids.iter().map(|(id,)| Value::from(id.as_str())).collect();
-                    let rows = tx
-                        .fetch_all_as::<TraceDlqEntry>(
-                            &format!("SELECT * FROM trace_dlq WHERE id IN ({placeholders})"),
-                            SqlxValues(Values(select_values)),
-                        )
-                        .await?;
                     tx.commit().await.map_err(OrionError::Storage)?;
                     Ok(rows)
                 }
@@ -235,13 +203,9 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                     // Single-host by construction (D2): no locking clause
                     // needed, writes are serialized by SQLite itself.
                     let sql = format!(
-                        "UPDATE trace_dlq SET claimed_by = ?, \
-                             claimed_until = datetime('now', '+{lease_secs} seconds') \
+                        "UPDATE trace_dlq SET claimed_by = ?, claimed_until = {lease_until} \
                          WHERE id IN ( \
-                             SELECT id FROM trace_dlq \
-                             WHERE next_retry_at <= datetime('now') \
-                               AND retry_count < max_retries \
-                               AND (claimed_until IS NULL OR claimed_until < datetime('now')) \
+                             SELECT id FROM trace_dlq WHERE {due} \
                              ORDER BY next_retry_at ASC LIMIT {limit}) \
                          RETURNING *"
                     );
@@ -329,14 +293,7 @@ mod tests {
     use super::*;
 
     async fn test_repo() -> SqlTraceDlqRepository {
-        let pool = crate::storage::init_pool(&crate::config::StorageConfig {
-            url: "sqlite::memory:".to_string(),
-            max_connections: 1,
-            ..Default::default()
-        })
-        .await
-        .expect("test pool");
-        SqlTraceDlqRepository::new(pool)
+        SqlTraceDlqRepository::new(crate::storage::test_sqlite_pool().await)
     }
 
     async fn enqueue_due(repo: &SqlTraceDlqRepository, trace_id: &str) -> String {

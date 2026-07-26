@@ -46,26 +46,11 @@ impl RateLimitState {
 
 /// Extract client IP from proxy headers or connection info.
 fn extract_client_ip(req: &Request) -> String {
-    // Try X-Forwarded-For first (may contain comma-separated list)
-    if let Some(xff) = req.headers().get("x-forwarded-for")
-        && let Ok(val) = xff.to_str()
-        && let Some(first_ip) = val.split(',').next()
-    {
-        let ip = first_ip.trim();
-        if !ip.is_empty() {
-            return ip.to_string();
-        }
-    }
-    // Try X-Real-IP
-    if let Some(xri) = req.headers().get("x-real-ip")
-        && let Ok(val) = xri.to_str()
-    {
-        let ip = val.trim();
-        if !ip.is_empty() {
-            return ip.to_string();
-        }
-    }
-    "unknown".to_string()
+    crate::engine::utils::first_forwarded_value(|name| {
+        req.headers().get(name).and_then(|v| v.to_str().ok())
+    })
+    .unwrap_or("unknown")
+    .to_string()
 }
 
 /// Extract channel name from a data route path like `/api/v1/data/{channel}`.
@@ -142,7 +127,7 @@ pub async fn rate_limit_middleware(
                 client_ip.clone()
             };
 
-            if !limiter.check(&key).await {
+            if !limiter.check(key).await {
                 metrics::record_rate_limit_rejected(&client_ip);
                 return rate_limited_response();
             }

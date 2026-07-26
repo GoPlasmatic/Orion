@@ -58,7 +58,8 @@ pub(super) struct ProcessingContext {
     pub(super) processing_timeout_ms: u64,
     pub(super) max_result_size_bytes: usize,
     pub(super) dlq_max_retries: i64,
-    pub(super) rollout_sticky_header: String,
+    /// `Arc<str>` so the per-message context clone is a refcount bump.
+    pub(super) rollout_sticky_header: std::sync::Arc<str>,
     pub(super) channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub(super) persistence_queue: crate::queue::TracePersistenceQueue,
     pub(super) global_trace_storage: crate::config::TracingStorageConfig,
@@ -189,35 +190,6 @@ async fn route_set_result(
     }
 }
 
-/// Stable caller identity for sticky rollout bucketing (C1), extracted from
-/// the queued request metadata (`metadata.headers` as captured at submit
-/// time). Mirrors the sync path's header-based extraction.
-fn rollout_identity_from_metadata<'a>(
-    metadata: &'a serde_json::Value,
-    sticky_header: &str,
-) -> Option<&'a str> {
-    let headers = metadata.get("headers")?.as_object()?;
-    if !sticky_header.is_empty() {
-        // Header names are lowercased when the metadata map is built.
-        let lookup = sticky_header.to_lowercase();
-        if let Some(v) = headers.get(&lookup).and_then(|v| v.as_str())
-            && !v.is_empty()
-        {
-            return Some(v);
-        }
-    }
-    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.as_str())
-        && let Some(first) = xff.split(',').next().map(str::trim)
-        && !first.is_empty()
-    {
-        return Some(first);
-    }
-    headers
-        .get("x-real-ip")
-        .and_then(|v| v.as_str())
-        .filter(|v| !v.is_empty())
-}
-
 /// Process a single queued trace.
 #[tracing::instrument(skip_all, fields(trace_id = %msg.trace_id, channel = %msg.channel))]
 async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
@@ -303,7 +275,8 @@ async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
     // Build message
     let mut message = dataflow_rs::Message::from_value(&msg.payload);
     crate::engine::utils::merge_metadata(&mut message, &msg.metadata);
-    let sticky_identity = rollout_identity_from_metadata(&msg.metadata, &rollout_sticky_header);
+    let sticky_identity =
+        crate::engine::utils::rollout_identity(&msg.metadata, &rollout_sticky_header);
     crate::engine::utils::inject_rollout_bucket(&mut message, sticky_identity);
 
     // Clone the inner Arc<Engine> and release the lock immediately
@@ -551,36 +524,5 @@ async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    #[test]
-    fn test_rollout_identity_from_metadata() {
-        let metadata = json!({
-            "method": "POST",
-            "headers": {
-                "x-user-id": "user-7",
-                "x-forwarded-for": "10.1.1.1, 10.1.1.2"
-            }
-        });
-        // Configured sticky header wins (lookup is lowercased).
-        assert_eq!(
-            super::rollout_identity_from_metadata(&metadata, "X-User-Id"),
-            Some("user-7")
-        );
-        // No sticky header → first forwarded IP.
-        assert_eq!(
-            super::rollout_identity_from_metadata(&metadata, ""),
-            Some("10.1.1.1")
-        );
-        // No headers at all → None.
-        assert_eq!(
-            super::rollout_identity_from_metadata(&json!({}), "x-user-id"),
-            None
-        );
     }
 }

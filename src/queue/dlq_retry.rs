@@ -218,20 +218,16 @@ mod tests {
             unimplemented!("not needed for retry tests")
         }
 
-        async fn list_pending(&self, _limit: i64) -> Result<Vec<TraceDlqEntry>, OrionError> {
+        async fn claim_pending(
+            &self,
+            _claimant: &str,
+            _limit: i64,
+            _lease_secs: u64,
+        ) -> Result<Vec<TraceDlqEntry>, OrionError> {
             let mut state = self.state.lock().expect("test");
             // Return entries once, then empty (simulates consumption)
             let entries = std::mem::take(&mut state.entries_to_return);
             Ok(entries)
-        }
-
-        async fn claim_pending(
-            &self,
-            _claimant: &str,
-            limit: i64,
-            _lease_secs: u64,
-        ) -> Result<Vec<TraceDlqEntry>, OrionError> {
-            self.list_pending(limit).await
         }
 
         async fn record_retry(

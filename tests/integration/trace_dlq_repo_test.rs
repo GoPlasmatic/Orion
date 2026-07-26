@@ -12,7 +12,7 @@ async fn dlq_repo() -> SqlTraceDlqRepository {
 }
 
 #[tokio::test]
-async fn test_enqueue_and_list_pending() {
+async fn test_enqueue_and_claim_pending() {
     let repo = dlq_repo().await;
 
     let entry = repo
@@ -32,10 +32,12 @@ async fn test_enqueue_and_list_pending() {
     assert_eq!(entry.retry_count, 0);
     assert_eq!(entry.max_retries, 5);
 
-    // Wait a moment so next_retry_at (1s from creation) is in the past
-    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    // Wait until next_retry_at (1s from creation) is in the past. Claims
+    // compare against the DB clock, which SQLite truncates to whole
+    // seconds — allow a full extra second of margin.
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
 
-    let pending = repo.list_pending(10).await.unwrap();
+    let pending = repo.claim_pending("test-node", 10, 60).await.unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].id, entry.id);
 }
@@ -56,7 +58,7 @@ async fn test_record_retry_increments_count() {
     // Entry should not appear in pending (next_retry_at is in the future)
     // Wait briefly for the initial 1s retry window
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    let pending = repo.list_pending(10).await.unwrap();
+    let pending = repo.claim_pending("test-node", 10, 60).await.unwrap();
     assert!(
         pending.is_empty(),
         "entry with future next_retry_at should not be pending"
@@ -76,7 +78,7 @@ async fn test_mark_exhausted() {
 
     // Exhausted entries (retry_count >= max_retries) should not appear in pending
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    let pending = repo.list_pending(10).await.unwrap();
+    let pending = repo.claim_pending("test-node", 10, 60).await.unwrap();
     assert!(pending.is_empty(), "exhausted entry should not be pending");
 }
 
@@ -93,12 +95,12 @@ async fn test_remove() {
 
     // Removed entry should not appear in pending
     tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
-    let pending = repo.list_pending(10).await.unwrap();
+    let pending = repo.claim_pending("test-node", 10, 60).await.unwrap();
     assert!(pending.is_empty(), "removed entry should not be pending");
 }
 
 #[tokio::test]
-async fn test_list_pending_respects_next_retry_at() {
+async fn test_claim_pending_respects_next_retry_at() {
     let repo = dlq_repo().await;
 
     let _entry = repo
@@ -107,7 +109,7 @@ async fn test_list_pending_respects_next_retry_at() {
         .unwrap();
 
     // Immediately after enqueue, next_retry_at is ~1s in the future
-    let pending = repo.list_pending(10).await.unwrap();
+    let pending = repo.claim_pending("test-node", 10, 60).await.unwrap();
     assert!(
         pending.is_empty(),
         "entry should not be pending before next_retry_at"

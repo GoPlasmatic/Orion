@@ -15,7 +15,7 @@ pub use config::{
     ChannelRateLimitConfig, DeduplicationConfig,
 };
 pub use rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
-pub use registry::{ChannelLoadIssue, ChannelRegistry, ChannelRuntimeConfig};
+pub use registry::{ChannelLoadIssue, ChannelRegistry, ChannelRuntimeConfig, ClusterBackends};
 pub use routing::{RouteMatch, RouteTable};
 
 /// Keyed rate limiter type — shared with rate_limit middleware.

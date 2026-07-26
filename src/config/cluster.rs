@@ -39,6 +39,17 @@ impl Default for ClusterConfig {
 }
 
 impl ClusterConfig {
+    /// The node identity to use: the configured value, or a fresh boot-time
+    /// UUID when empty (D4: instances are cattle). The single policy point —
+    /// callers that need a stable value must store the result once.
+    pub fn effective_instance_id(&self) -> String {
+        if self.instance_id.is_empty() {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            self.instance_id.clone()
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<(), OrionError> {
         require_nonzero(
             self.epoch_poll_interval_ms,

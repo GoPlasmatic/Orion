@@ -278,6 +278,19 @@ fn migrator() -> &'static sqlx::migrate::Migrator {
 // ============================================================
 
 /// Initialize the database connection pool and run migrations.
+/// Fresh in-memory SQLite pool with migrations applied — the shared
+/// constructor for in-file repository tests.
+#[cfg(test)]
+pub(crate) async fn test_sqlite_pool() -> DbPool {
+    init_pool(&crate::config::StorageConfig {
+        url: "sqlite::memory:".to_string(),
+        max_connections: 1,
+        ..Default::default()
+    })
+    .await
+    .expect("test pool")
+}
+
 pub async fn init_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
     let pool = init_pool_no_migrate(config).await?;
     run_migrations(&pool).await?;

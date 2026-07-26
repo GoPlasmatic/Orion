@@ -44,6 +44,42 @@ pub struct ClusterRuntime {
     pub last_seen_breaker_epoch: AtomicI64,
 }
 
+impl ClusterRuntime {
+    /// Advance the config epoch after a successfully applied local mutation
+    /// (the send side of the epoch bus; the watcher is the receive side).
+    /// Runs even with cluster disabled (keeps the counter monotonic so
+    /// enabling cluster later starts sane) but only propagates failures when
+    /// enabled — on a single node a failed bump changes nothing, while in a
+    /// cluster it means the change did NOT propagate and the caller must
+    /// surface the error.
+    pub async fn bump_config_epoch(&self) -> Result<(), crate::errors::OrionError> {
+        match self.repo.bump_epoch().await {
+            Ok(epoch) => {
+                // fetch_max, not store: the inline reload already applied this
+                // node's own change, but a concurrently observed higher epoch
+                // must never be masked.
+                self.last_seen_epoch
+                    .fetch_max(epoch, std::sync::atomic::Ordering::AcqRel);
+                Ok(())
+            }
+            Err(e) if self.enabled => Err(e),
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to bump config epoch (cluster disabled — ignored)");
+                Ok(())
+            }
+        }
+    }
+}
+
+impl From<&ClusterRuntime> for crate::channel::registry::ClusterBackends {
+    fn from(runtime: &ClusterRuntime) -> Self {
+        Self {
+            default_cache: runtime.default_cache.clone(),
+            redis: runtime.redis.clone(),
+        }
+    }
+}
+
 /// Build the cluster runtime. When enabled, connects the shared Redis and
 /// fails fast on any error (a cluster node without its coordination Redis
 /// must not serve). When disabled, performs no I/O.
@@ -51,11 +87,9 @@ pub async fn init_cluster_runtime(
     config: &ClusterConfig,
     pool: &DbPool,
 ) -> Result<Arc<ClusterRuntime>, OrionError> {
-    let instance_id = if config.instance_id.is_empty() {
-        uuid::Uuid::new_v4().to_string()
-    } else {
-        config.instance_id.clone()
-    };
+    // main.rs pre-resolves the id into the config so tracing/Kafka agree
+    // with the runtime; test harnesses may leave it empty (fresh UUID).
+    let instance_id = config.effective_instance_id();
 
     let (redis, default_cache) = if config.enabled {
         let client =
@@ -106,13 +140,7 @@ mod tests {
     use super::*;
 
     async fn sqlite_pool() -> DbPool {
-        crate::storage::init_pool(&crate::config::StorageConfig {
-            url: "sqlite::memory:".to_string(),
-            max_connections: 1,
-            ..Default::default()
-        })
-        .await
-        .expect("test pool")
+        crate::storage::test_sqlite_pool().await
     }
 
     #[tokio::test]

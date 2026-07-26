@@ -15,15 +15,57 @@ pub fn merge_metadata(message: &mut dataflow_rs::Message, metadata: &Value) {
     }
 }
 
-/// FNV-1a 64-bit hash. Unkeyed and deterministic — the same identity maps to
-/// the same rollout bucket on every replica and across restarts.
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
+/// FNV-1a 64-bit hash mixin. Unkeyed and deterministic — used wherever a
+/// value must hash identically on every replica and across restarts
+/// (response-cache keys, rollout buckets).
+pub(crate) fn fnv1a_feed(h: &mut u64, bytes: &[u8]) {
     for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(0x100000001b3);
+        *h ^= b as u64;
+        *h = h.wrapping_mul(0x100000001b3);
     }
+}
+
+/// FNV-1a 64-bit offset basis (seed for [`fnv1a_feed`]).
+pub(crate) const FNV1A_SEED: u64 = 0xcbf29ce484222325;
+
+fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut h = FNV1A_SEED;
+    fnv1a_feed(&mut h, bytes);
     h
+}
+
+/// First forwarded client IP: the first `x-forwarded-for` hop, else
+/// `x-real-ip`. Shape-agnostic over the header lookup so `HeaderMap` and
+/// metadata-JSON callers share one policy.
+pub(crate) fn first_forwarded_value<'a>(
+    mut get: impl FnMut(&str) -> Option<&'a str>,
+) -> Option<&'a str> {
+    if let Some(xff) = get("x-forwarded-for")
+        && let Some(first) = xff.split(',').next().map(str::trim)
+        && !first.is_empty()
+    {
+        return Some(first);
+    }
+    get("x-real-ip").map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// Stable caller identity for sticky rollout bucketing: the configured
+/// sticky header's value, else the forwarded client IP — read from the
+/// request metadata (`metadata.headers`, built once per request and shared
+/// by the sync and async paths). `None` (direct connection, no forwarding
+/// headers) falls back to a random bucket.
+pub fn rollout_identity<'a>(metadata: &'a Value, sticky_header: &str) -> Option<&'a str> {
+    let headers = metadata.get("headers")?.as_object()?;
+    if !sticky_header.is_empty()
+        && let Some((_, v)) = headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(sticky_header))
+        && let Some(v) = v.as_str()
+        && !v.is_empty()
+    {
+        return Some(v);
+    }
+    first_forwarded_value(|name| headers.get(name).and_then(|v| v.as_str()))
 }
 
 /// Compute the rollout bucket (0–99) for a caller.
@@ -114,6 +156,26 @@ mod tests {
             .map(|i| rollout_bucket_for_identity(Some(&format!("user-{i}"))))
             .collect();
         assert!(buckets.len() > 10, "expected spread, got {buckets:?}");
+    }
+
+    #[test]
+    fn test_rollout_identity_prefers_sticky_header() {
+        let metadata = json!({
+            "method": "POST",
+            "headers": {
+                "x-user-id": "user-7",
+                "x-forwarded-for": "10.1.1.1, 10.1.1.2"
+            }
+        });
+        // Configured sticky header wins; lookup is case-insensitive.
+        assert_eq!(rollout_identity(&metadata, "X-User-Id"), Some("user-7"));
+        // No sticky header → first forwarded IP.
+        assert_eq!(rollout_identity(&metadata, ""), Some("10.1.1.1"));
+        // x-real-ip fallback.
+        let metadata = json!({"headers": {"x-real-ip": "10.2.2.2"}});
+        assert_eq!(rollout_identity(&metadata, "x-user-id"), Some("10.2.2.2"));
+        // No headers at all → None (random bucket fallback).
+        assert_eq!(rollout_identity(&json!({}), "x-user-id"), None);
     }
 
     #[test]

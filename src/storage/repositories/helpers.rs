@@ -10,6 +10,32 @@ pub fn optional_string_value(opt: Option<&str>) -> sea_query::Value {
         .unwrap_or(sea_query::Value::String(None))
 }
 
+/// The database's own current time, per backend. Lease and claim comparisons
+/// use this (never node clocks) so every replica agrees with the DB.
+/// SQLite `datetime('now')` and MySQL `UTC_TIMESTAMP()` are UTC; Postgres
+/// `LOCALTIMESTAMP` matches the session timezone (UTC by convention here),
+/// staying in timestamp-without-tz land like the stored columns.
+pub fn sql_now(backend: crate::storage::DbBackend) -> &'static str {
+    match backend {
+        crate::storage::DbBackend::Sqlite => "datetime('now')",
+        crate::storage::DbBackend::Postgres => "LOCALTIMESTAMP",
+        crate::storage::DbBackend::Mysql => "UTC_TIMESTAMP()",
+    }
+}
+
+/// `sql_now` plus a positive offset in seconds, per backend.
+pub fn sql_now_plus_secs(backend: crate::storage::DbBackend, secs: u64) -> String {
+    match backend {
+        crate::storage::DbBackend::Sqlite => format!("datetime('now', '+{secs} seconds')"),
+        crate::storage::DbBackend::Postgres => {
+            format!("LOCALTIMESTAMP + interval '{secs} seconds'")
+        }
+        crate::storage::DbBackend::Mysql => {
+            format!("DATE_ADD(UTC_TIMESTAMP(), INTERVAL {secs} SECOND)")
+        }
+    }
+}
+
 /// Fetch a single required row from the pool. Maps a missing row to the
 /// `OrionError` returned by `err`. Replaces the
 /// `.fetch_optional_as(...).await?.ok_or_else(...)` pattern repeated across

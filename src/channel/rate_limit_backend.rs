@@ -15,8 +15,9 @@ use super::{KeyedLimiter, build_keyed_limiter};
 pub trait RateLimitBackend: Send + Sync {
     /// `true` = allow, `false` = reject with 429. Implementations fail open
     /// (allow + error metric) when their backing store is unreachable —
-    /// consistent with the dedup fail-open policy.
-    async fn check(&self, key: &str) -> bool;
+    /// consistent with the dedup fail-open policy. Takes the key by value:
+    /// callers already own one, and governor's keyed store wants `&String`.
+    async fn check(&self, key: String) -> bool;
 }
 
 /// In-process governor limiter (today's behavior; N replicas = N× the limit).
@@ -34,8 +35,8 @@ impl LocalRateLimitBackend {
 
 #[async_trait]
 impl RateLimitBackend for LocalRateLimitBackend {
-    async fn check(&self, key: &str) -> bool {
-        self.limiter.check_key(&key.to_string()).is_ok()
+    async fn check(&self, key: String) -> bool {
+        self.limiter.check_key(&key).is_ok()
     }
 }
 
@@ -68,7 +69,7 @@ impl RedisRateLimitBackend {
 
 #[async_trait]
 impl RateLimitBackend for RedisRateLimitBackend {
-    async fn check(&self, key: &str) -> bool {
+    async fn check(&self, key: String) -> bool {
         let window = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -104,10 +105,10 @@ mod tests {
     async fn test_local_backend_enforces_burst() {
         let backend = LocalRateLimitBackend::new(1, 2);
         // Burst capacity of 2 → first two pass, third rejected.
-        assert!(backend.check("ip-1").await);
-        assert!(backend.check("ip-1").await);
-        assert!(!backend.check("ip-1").await);
+        assert!(backend.check("ip-1".to_string()).await);
+        assert!(backend.check("ip-1".to_string()).await);
+        assert!(!backend.check("ip-1".to_string()).await);
         // Independent key unaffected.
-        assert!(backend.check("ip-2").await);
+        assert!(backend.check("ip-2".to_string()).await);
     }
 }

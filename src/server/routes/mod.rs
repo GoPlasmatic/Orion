@@ -232,21 +232,16 @@ pub async fn reload_engine_with_opts(
                 &state.config.tracing.storage,
             )
             .await;
+        // Release the write lock before the Kafka restart: request handlers
+        // block on engine reads while it is held, and the epoch-driven
+        // restart path below sleeps a 0–5 s jitter. The engine + registry
+        // swap stays atomic from the readers' point of view.
+        drop(engine_write);
         // Cluster mode refuses channels whose shared backends can't be built
         // (silent per-node dedup/cache is a correctness loss, not a
         // degradation). Surface them to the mutating admin request.
         if !issues.is_empty() {
-            let detail = issues
-                .iter()
-                .map(|i| format!("{}: {}", i.channel, i.reason))
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(crate::errors::OrionError::Config {
-                message: format!(
-                    "cluster mode refused to load {} channel(s): {detail}",
-                    issues.len()
-                ),
-            });
+            return Err(crate::channel::ChannelLoadIssue::refusal_error(&issues));
         }
 
         // Update active workflows gauge

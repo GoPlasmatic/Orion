@@ -18,7 +18,7 @@ use super::audit_log;
 /// Postgres/MySQL anyway, which VACUUM INTO cannot back up). Point operators
 /// at the managed database's native mechanisms instead (multi-instance B3).
 fn reject_in_cluster_mode(state: &AppState) -> Result<(), OrionError> {
-    if state.config.cluster.enabled {
+    if state.cluster.enabled {
         return Err(OrionError::BadRequest(
             "Filesystem backups are disabled in cluster mode — the file would land on \
              one arbitrary node. Use your managed database's snapshot/PITR tooling \

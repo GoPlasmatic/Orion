@@ -73,7 +73,11 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
     let cluster = orion::cluster::init_cluster_runtime(&config.cluster, &pool)
         .await
         .expect("cluster runtime");
-    let channel_registry = Arc::new(ChannelRegistry::with_cluster(cluster.clone()));
+    let channel_registry = Arc::new(if config.cluster.enabled {
+        ChannelRegistry::with_cluster((&*cluster).into())
+    } else {
+        ChannelRegistry::new()
+    });
     let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
         config.engine.max_pool_cache_entries,
         60,

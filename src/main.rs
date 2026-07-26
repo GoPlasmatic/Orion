@@ -340,9 +340,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut config = config::load_config(cli.config.as_deref())?;
     // Resolve the instance identity once, up front, so the tracing resource,
     // cluster runtime, and Kafka static membership all agree on it.
-    if config.cluster.instance_id.is_empty() {
-        config.cluster.instance_id = uuid::Uuid::new_v4().to_string();
-    }
+    config.cluster.instance_id = config.cluster.effective_instance_id();
     let config = config;
 
     if cli.config.is_none() {
@@ -469,9 +467,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Channel registry
-    let channel_registry = Arc::new(orion::channel::ChannelRegistry::with_cluster(
-        cluster.clone(),
-    ));
+    let channel_registry = Arc::new(if config.cluster.enabled {
+        orion::channel::ChannelRegistry::with_cluster((&*cluster).into())
+    } else {
+        orion::channel::ChannelRegistry::new()
+    });
 
     // Load connectors
     let connector_registry = Arc::new(ConnectorRegistry::new(
@@ -552,18 +552,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !load_issues.is_empty() {
         // Cluster mode: a node that cannot build a channel's shared backend
         // must not boot and silently serve with per-node state.
-        let detail = load_issues
-            .iter()
-            .map(|i| format!("{}: {}", i.channel, i.reason))
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(orion::errors::OrionError::Config {
-            message: format!(
-                "cluster mode refused to load {} channel(s): {detail}",
-                load_issues.len()
-            ),
-        }
-        .into());
+        return Err(orion::channel::ChannelLoadIssue::refusal_error(&load_issues).into());
     }
 
     let channel_names: std::collections::HashSet<&str> =
@@ -870,7 +859,7 @@ async fn serve_plain_http(
     );
     // `drained` fires when the gate resolves (accept stopped); the force
     // timeout counts from that point, bounding the in-flight wait.
-    let (drained_tx, mut drained_rx) = tokio::sync::watch::channel(false);
+    let (drained_tx, drained_rx) = tokio::sync::oneshot::channel::<()>();
     let gate = async move {
         orion::server::drain::drain_gate(
             orion::server::shutdown_signal(),
@@ -878,7 +867,7 @@ async fn serve_plain_http(
             std::time::Duration::from_secs(drain_secs),
         )
         .await;
-        let _ = drained_tx.send(true);
+        let _ = drained_tx.send(());
     };
     let serve = axum::serve(listener, router).with_graceful_shutdown(gate);
     if force_timeout_secs == 0 {
@@ -890,16 +879,16 @@ async fn serve_plain_http(
                 // Wait for the gate, then bound the in-flight drain. If the
                 // server finishes first the sender is dropped and this arm
                 // pends forever — the select resolves through `serve`.
-                while !*drained_rx.borrow() {
-                    if drained_rx.changed().await.is_err() {
-                        std::future::pending::<()>().await;
+                match drained_rx.await {
+                    Ok(()) => {
+                        tokio::time::sleep(std::time::Duration::from_secs(force_timeout_secs)).await;
+                        tracing::warn!(
+                            force_timeout_secs,
+                            "Shutdown force timeout elapsed; aborting remaining in-flight connections"
+                        );
                     }
+                    Err(_) => std::future::pending::<()>().await,
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(force_timeout_secs)).await;
-                tracing::warn!(
-                    force_timeout_secs,
-                    "Shutdown force timeout elapsed; aborting remaining in-flight connections"
-                );
             } => {}
         }
     }

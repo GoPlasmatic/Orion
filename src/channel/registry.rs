@@ -5,6 +5,7 @@ use datalogic_rs::{Engine as DatalogicEngine, Logic};
 use tokio::sync::{RwLock, Semaphore};
 
 use super::config::ChannelConfig;
+use super::rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
 use super::routing::{RouteMatch, RouteTable};
 
 use crate::config::{TraceStorageMode, TracingStorageConfig};
@@ -81,7 +82,7 @@ pub struct ChannelRuntimeConfig {
     /// Per-channel rate limiter, built from `parsed_config.rate_limit` if
     /// configured. Governor-local on a single node; shared Redis fixed
     /// window in cluster mode.
-    pub rate_limiter: Option<Arc<dyn super::rate_limit_backend::RateLimitBackend>>,
+    pub rate_limiter: Option<Arc<dyn RateLimitBackend>>,
     /// Pre-compiled JSONLogic expression for computing the rate limit key.
     pub rate_limit_key_logic: Option<Logic>,
     /// Pre-compiled JSONLogic expression for input validation.
@@ -109,15 +110,44 @@ pub struct ChannelLoadIssue {
     pub reason: String,
 }
 
+impl ChannelLoadIssue {
+    /// Format a non-empty issue list as the hard error both boot and reload
+    /// surface (one wording for both).
+    pub fn refusal_error(issues: &[ChannelLoadIssue]) -> crate::errors::OrionError {
+        let detail = issues
+            .iter()
+            .map(|i| format!("{}: {}", i.channel, i.reason))
+            .collect::<Vec<_>>()
+            .join("; ");
+        crate::errors::OrionError::Config {
+            message: format!(
+                "cluster mode refused to load {} channel(s): {detail}",
+                issues.len()
+            ),
+        }
+    }
+}
+
+/// The shared backends cluster mode provides to channel loading. `Some` on
+/// the registry means cluster mode: strict backend resolution (no silent
+/// in-memory fallbacks) with these as the defaults. Deliberately narrow —
+/// the registry needs these two handles, not the whole cluster runtime.
+pub struct ClusterBackends {
+    /// Default dedup/response-cache backend (the shared cluster Redis).
+    pub default_cache: Option<Arc<dyn CacheBackend>>,
+    /// Connection for shared rate-limit windows.
+    pub redis: Option<redis::aio::MultiplexedConnection>,
+}
+
 /// In-memory registry of active channels, rebuilt on engine reload.
 /// Mirrors the ConnectorRegistry pattern.
 pub struct ChannelRegistry {
     by_name: RwLock<HashMap<String, Arc<ChannelRuntimeConfig>>>,
     route_table: RwLock<RouteTable>,
-    /// Cluster runtime, when running multi-instance. Drives the strict
-    /// backend matrix in [`ChannelRegistry::reload`]: shared-Redis defaults
-    /// and load errors instead of silent in-memory fallbacks.
-    cluster: Option<Arc<crate::cluster::ClusterRuntime>>,
+    /// `Some` = cluster mode (strict backend matrix in
+    /// [`ChannelRegistry::reload`]: shared-Redis defaults and load errors
+    /// instead of silent in-memory fallbacks).
+    cluster: Option<ClusterBackends>,
 }
 
 impl Default for ChannelRegistry {
@@ -135,7 +165,7 @@ impl ChannelRegistry {
         }
     }
 
-    pub fn with_cluster(cluster: Arc<crate::cluster::ClusterRuntime>) -> Self {
+    pub fn with_cluster(cluster: ClusterBackends) -> Self {
         Self {
             by_name: RwLock::new(HashMap::new()),
             route_table: RwLock::new(RouteTable::new()),
@@ -143,36 +173,71 @@ impl ChannelRegistry {
         }
     }
 
-    /// Resolve a named cache connector to a backend, or explain why not.
-    async fn resolve_cache_connector(
+    /// Resolve a channel's dedup or response-cache backend — the full
+    /// fallback matrix, shared by both stores:
+    ///
+    /// |                | connector named               | no connector           |
+    /// |----------------|-------------------------------|------------------------|
+    /// | single node    | resolve, warn + memory on any failure | process memory |
+    /// | cluster mode   | resolve; failure/memory = load error  | shared Redis (else memory) |
+    async fn resolve_backend(
+        &self,
         connector_registry: &ConnectorRegistry,
         cache_pool: &CachePool,
-        connector_name: &str,
-        cluster_strict: bool,
-    ) -> Result<Arc<dyn CacheBackend>, String> {
-        match connector_registry.get(connector_name).await {
-            Some(cfg) => {
-                match cfg.as_ref() {
-                    ConnectorConfig::Cache(cache_cfg) => {
-                        if cluster_strict && cache_cfg.backend == "memory" {
-                            return Err(format!(
-                                "connector '{connector_name}' uses the in-memory backend — \
+        connector: Option<&str>,
+        purpose: &str,
+        channel_name: &str,
+    ) -> Result<Arc<dyn CacheBackend>, ChannelLoadIssue> {
+        let Some(connector_name) = connector else {
+            return Ok(self
+                .cluster
+                .as_ref()
+                .and_then(|c| c.default_cache.clone())
+                .unwrap_or_else(|| cache_pool.memory()));
+        };
+
+        let strict = self.cluster.is_some();
+        let resolved = match connector_registry.get(connector_name).await {
+            Some(cfg) => match cfg.as_ref() {
+                ConnectorConfig::Cache(cache_cfg) => {
+                    if strict && cache_cfg.backend == "memory" {
+                        Err(format!(
+                            "connector '{connector_name}' uses the in-memory backend — \
                              per-node state in cluster mode is a silent correctness loss"
-                            ));
-                        }
+                        ))
+                    } else {
                         cache_pool
-                        .get_backend(connector_name, cache_cfg)
-                        .await
-                        .map_err(|e| {
-                            format!("failed to create backend from connector '{connector_name}': {e}")
-                        })
+                            .get_backend(connector_name, cache_cfg)
+                            .await
+                            .map_err(|e| {
+                                format!(
+                                    "failed to create backend from connector '{connector_name}': {e}"
+                                )
+                            })
                     }
-                    _ => Err(format!(
-                        "connector '{connector_name}' is not a cache connector"
-                    )),
                 }
-            }
+                _ => Err(format!(
+                    "connector '{connector_name}' is not a cache connector"
+                )),
+            },
             None => Err(format!("connector '{connector_name}' not found")),
+        };
+
+        match resolved {
+            Ok(backend) => Ok(backend),
+            Err(reason) if strict => Err(ChannelLoadIssue {
+                channel: channel_name.to_string(),
+                reason: format!("{purpose}: {reason}"),
+            }),
+            Err(reason) => {
+                tracing::warn!(
+                    channel = %channel_name,
+                    connector = %connector_name,
+                    reason = %reason,
+                    "{purpose} connector unavailable, falling back to in-memory"
+                );
+                Ok(cache_pool.memory())
+            }
         }
     }
 
@@ -203,17 +268,7 @@ impl ChannelRegistry {
         datalogic: &DatalogicEngine,
         global_trace_storage: &TracingStorageConfig,
     ) -> Vec<ChannelLoadIssue> {
-        let cluster_strict = self.cluster.as_ref().is_some_and(|c| c.enabled);
-        let cluster_default_cache = self
-            .cluster
-            .as_ref()
-            .filter(|c| c.enabled)
-            .and_then(|c| c.default_cache.clone());
-        let cluster_redis = self
-            .cluster
-            .as_ref()
-            .filter(|c| c.enabled)
-            .and_then(|c| c.redis.clone());
+        let cluster_redis = self.cluster.as_ref().and_then(|c| c.redis.clone());
         let mut issues: Vec<ChannelLoadIssue> = Vec::new();
 
         let mut new_map = HashMap::new();
@@ -221,26 +276,20 @@ impl ChannelRegistry {
             let parsed_config: ChannelConfig =
                 serde_json::from_str(&channel.config_json).unwrap_or_default();
 
-            let rate_limiter: Option<Arc<dyn super::rate_limit_backend::RateLimitBackend>> =
+            let rate_limiter: Option<Arc<dyn RateLimitBackend>> =
                 parsed_config.rate_limit.as_ref().map(|rl| {
                     let burst = rl.burst.unwrap_or(rl.requests_per_second / 2 + 1);
                     match cluster_redis.clone() {
                         // Cluster: shared fixed window — the configured limit
                         // holds across all replicas combined, and survives
                         // engine reloads (state lives in Redis, not here).
-                        Some(conn) => {
-                            Arc::new(super::rate_limit_backend::RedisRateLimitBackend::new(
-                                conn,
-                                channel.name.clone(),
-                                rl.requests_per_second,
-                                burst,
-                            ))
-                                as Arc<dyn super::rate_limit_backend::RateLimitBackend>
-                        }
-                        None => Arc::new(super::rate_limit_backend::LocalRateLimitBackend::new(
+                        Some(conn) => Arc::new(RedisRateLimitBackend::new(
+                            conn,
+                            channel.name.clone(),
                             rl.requests_per_second,
                             burst,
-                        )),
+                        )) as Arc<dyn RateLimitBackend>,
+                        None => Arc::new(LocalRateLimitBackend::new(rl.requests_per_second, burst)),
                     }
                 });
 
@@ -279,86 +328,49 @@ impl ChannelRegistry {
                 .as_ref()
                 .map(|bp| Arc::new(Semaphore::new(bp.max_concurrent)));
 
-            // Dedup backend. Fallback matrix:
-            //   cluster off: named connector, warn + memory on any failure
-            //                (historical behavior); no connector → memory.
-            //   cluster on:  failure/memory-connector → channel-load error;
-            //                no connector → the shared cluster Redis.
+            // Dedup / response-cache backends via the shared fallback matrix
+            // (see resolve_backend). A strict-mode refusal skips the channel.
             let dedup_store: Option<Arc<dyn CacheBackend>> =
                 if let Some(ref dedup) = parsed_config.deduplication {
-                    if let Some(ref connector_name) = dedup.connector {
-                        match Self::resolve_cache_connector(
+                    match self
+                        .resolve_backend(
                             connector_registry,
                             cache_pool,
-                            connector_name,
-                            cluster_strict,
+                            dedup.connector.as_deref(),
+                            "deduplication",
+                            &channel.name,
                         )
                         .await
-                        {
-                            Ok(backend) => Some(backend),
-                            Err(reason) => {
-                                if cluster_strict {
-                                    issues.push(ChannelLoadIssue {
-                                        channel: channel.name.clone(),
-                                        reason: format!("deduplication: {reason}"),
-                                    });
-                                    continue;
-                                }
-                                tracing::warn!(
-                                    channel = %channel.name,
-                                    connector = %connector_name,
-                                    reason = %reason,
-                                    "Dedup connector unavailable, falling back to in-memory"
-                                );
-                                Some(cache_pool.memory())
-                            }
+                    {
+                        Ok(backend) => Some(backend),
+                        Err(issue) => {
+                            issues.push(issue);
+                            continue;
                         }
-                    } else if let Some(ref default_cache) = cluster_default_cache {
-                        Some(default_cache.clone())
-                    } else {
-                        // No connector specified — use built-in in-memory
-                        Some(cache_pool.memory())
                     }
                 } else {
                     None
                 };
 
-            // Resolve response cache backend (same matrix as dedup)
             let response_cache: Option<Arc<dyn CacheBackend>> = if let Some(ref cache_cfg) =
                 parsed_config.cache
                 && cache_cfg.enabled
             {
-                if let Some(ref connector_name) = cache_cfg.connector {
-                    match Self::resolve_cache_connector(
+                match self
+                    .resolve_backend(
                         connector_registry,
                         cache_pool,
-                        connector_name,
-                        cluster_strict,
+                        cache_cfg.connector.as_deref(),
+                        "cache",
+                        &channel.name,
                     )
                     .await
-                    {
-                        Ok(backend) => Some(backend),
-                        Err(reason) => {
-                            if cluster_strict {
-                                issues.push(ChannelLoadIssue {
-                                    channel: channel.name.clone(),
-                                    reason: format!("cache: {reason}"),
-                                });
-                                continue;
-                            }
-                            tracing::warn!(
-                                channel = %channel.name,
-                                connector = %connector_name,
-                                reason = %reason,
-                                "Cache connector unavailable, falling back to in-memory"
-                            );
-                            Some(cache_pool.memory())
-                        }
+                {
+                    Ok(backend) => Some(backend),
+                    Err(issue) => {
+                        issues.push(issue);
+                        continue;
                     }
-                } else if let Some(ref default_cache) = cluster_default_cache {
-                    Some(default_cache.clone())
-                } else {
-                    Some(cache_pool.memory())
                 }
             } else {
                 None
@@ -427,32 +439,16 @@ mod tests {
         }
     }
 
-    async fn cluster_runtime(pool: crate::storage::DbPool) -> Arc<crate::cluster::ClusterRuntime> {
-        let cache_pool = CachePool::new(4, 60);
-        Arc::new(crate::cluster::ClusterRuntime {
-            enabled: true,
-            instance_id: "test-node".to_string(),
+    fn cluster_backends() -> ClusterBackends {
+        ClusterBackends {
+            default_cache: Some(CachePool::new(4, 60).memory()),
             redis: None,
-            default_cache: Some(cache_pool.memory()),
-            repo: Arc::new(crate::storage::repositories::cluster::SqlClusterRepository::new(pool)),
-            last_seen_epoch: std::sync::atomic::AtomicI64::new(0),
-            last_seen_breaker_epoch: std::sync::atomic::AtomicI64::new(0),
-        })
-    }
-
-    async fn sqlite_pool() -> crate::storage::DbPool {
-        crate::storage::init_pool(&crate::config::StorageConfig {
-            url: "sqlite::memory:".to_string(),
-            max_connections: 1,
-            ..Default::default()
-        })
-        .await
-        .expect("test pool")
+        }
     }
 
     #[tokio::test]
     async fn test_cluster_strict_mode_refuses_broken_dedup_connector() {
-        let registry = ChannelRegistry::with_cluster(cluster_runtime(sqlite_pool().await).await);
+        let registry = ChannelRegistry::with_cluster(cluster_backends());
         let channel = test_channel(
             "strict-ch",
             r#"{"deduplication": {"header": "idem", "connector": "missing-connector"}}"#,
@@ -474,7 +470,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cluster_mode_defaults_dedup_to_shared_cache() {
-        let registry = ChannelRegistry::with_cluster(cluster_runtime(sqlite_pool().await).await);
+        let registry = ChannelRegistry::with_cluster(cluster_backends());
         let channel = test_channel("shared-ch", r#"{"deduplication": {"header": "idem"}}"#);
         let issues = registry
             .reload(

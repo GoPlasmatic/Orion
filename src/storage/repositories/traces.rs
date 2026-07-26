@@ -497,13 +497,7 @@ mod tests {
     use super::*;
 
     async fn test_pool() -> crate::storage::DbPool {
-        crate::storage::init_pool(&crate::config::StorageConfig {
-            url: "sqlite::memory:".to_string(),
-            max_connections: 1,
-            ..Default::default()
-        })
-        .await
-        .expect("test")
+        crate::storage::test_sqlite_pool().await
     }
 
     #[tokio::test]

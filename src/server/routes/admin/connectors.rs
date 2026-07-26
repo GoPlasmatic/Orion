@@ -29,7 +29,7 @@ async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
         .connector_registry
         .reload(state.connector_repo.as_ref())
         .await?;
-    super::bump_config_epoch(state).await
+    state.cluster.bump_config_epoch().await
 }
 
 /// Evict cached connection pools for a connector whose config may have changed.
