@@ -222,7 +222,7 @@ pub async fn reload_engine_with_opts(
         *engine_write = new_engine;
 
         // Rebuild channel registry
-        state
+        let issues = state
             .channel_registry
             .reload(
                 &channels,
@@ -232,6 +232,22 @@ pub async fn reload_engine_with_opts(
                 &state.config.tracing.storage,
             )
             .await;
+        // Cluster mode refuses channels whose shared backends can't be built
+        // (silent per-node dedup/cache is a correctness loss, not a
+        // degradation). Surface them to the mutating admin request.
+        if !issues.is_empty() {
+            let detail = issues
+                .iter()
+                .map(|i| format!("{}: {}", i.channel, i.reason))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(crate::errors::OrionError::Config {
+                message: format!(
+                    "cluster mode refused to load {} channel(s): {detail}",
+                    issues.len()
+                ),
+            });
+        }
 
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);

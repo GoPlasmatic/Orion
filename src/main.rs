@@ -460,7 +460,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Channel registry
-    let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
+    let channel_registry = Arc::new(orion::channel::ChannelRegistry::with_cluster(
+        cluster.clone(),
+    ));
 
     // Load connectors
     let connector_registry = Arc::new(ConnectorRegistry::new(
@@ -529,7 +531,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let channels = orion::engine::filter_channels(channels, &config.channels);
     let active_workflows = workflow_repo.list_active().await?;
     let workflows = orion::engine::build_engine_workflows(&channels, &active_workflows);
-    channel_registry
+    let load_issues = channel_registry
         .reload(
             &channels,
             &connector_registry,
@@ -538,6 +540,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             &config.tracing.storage,
         )
         .await;
+    if !load_issues.is_empty() {
+        // Cluster mode: a node that cannot build a channel's shared backend
+        // must not boot and silently serve with per-node state.
+        let detail = load_issues
+            .iter()
+            .map(|i| format!("{}: {}", i.channel, i.reason))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(orion::errors::OrionError::Config {
+            message: format!(
+                "cluster mode refused to load {} channel(s): {detail}",
+                load_issues.len()
+            ),
+        }
+        .into());
+    }
 
     let channel_names: std::collections::HashSet<&str> =
         workflows.iter().map(|w| w.channel.as_str()).collect();

@@ -70,7 +70,10 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
     let connector_registry = Arc::new(ConnectorRegistry::new(
         config.engine.circuit_breaker.clone(),
     ));
-    let channel_registry = Arc::new(ChannelRegistry::new());
+    let cluster = orion::cluster::init_cluster_runtime(&config.cluster, &pool)
+        .await
+        .expect("cluster runtime");
+    let channel_registry = Arc::new(ChannelRegistry::with_cluster(cluster.clone()));
     let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
         config.engine.max_pool_cache_entries,
         60,
@@ -144,10 +147,6 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
     } else {
         None
     };
-
-    let cluster = orion::cluster::init_cluster_runtime(&config.cluster, &pool)
-        .await
-        .expect("cluster runtime");
 
     AppState::new(orion::server::state::AppStateInner {
         engine,

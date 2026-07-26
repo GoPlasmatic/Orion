@@ -142,7 +142,7 @@ pub async fn rate_limit_middleware(
                 client_ip.clone()
             };
 
-            if limiter.check_key(&key).is_err() {
+            if !limiter.check(&key).await {
                 metrics::record_rate_limit_rejected(&client_ip);
                 return rate_limited_response();
             }

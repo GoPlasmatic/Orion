@@ -1,4 +1,5 @@
 pub mod config;
+pub mod rate_limit_backend;
 pub mod registry;
 pub mod routing;
 
@@ -13,7 +14,8 @@ pub use config::{
     BackpressureConfig, ChannelCacheConfig, ChannelConfig, ChannelCorsConfig,
     ChannelRateLimitConfig, DeduplicationConfig,
 };
-pub use registry::{ChannelRegistry, ChannelRuntimeConfig};
+pub use rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
+pub use registry::{ChannelLoadIssue, ChannelRegistry, ChannelRuntimeConfig};
 pub use routing::{RouteMatch, RouteTable};
 
 /// Keyed rate limiter type — shared with rate_limit middleware.
