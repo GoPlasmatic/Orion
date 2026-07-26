@@ -67,19 +67,22 @@ Pre-existing bugs confirmed in the audit; several silently break the moment a se
 
 ## Workstream B — Deploy artifacts & ops
 
-- [ ] **B1. Helm chart** (`deploy/helm/orion/`): Deployment (with `readinessProbe: /readyz`, `livenessProbe: /healthz`), HPA, PDB, Service, Ingress, ConfigMap/Secret for `ORION_*` env, optional Redis + Postgres subcharts for dev, pre-upgrade migrate Job (A10). Nothing exists today beyond Dockerfile + single-node compose.
-- [ ] **B2. Fill env-override gaps** (`src/config/env_overrides.rs` is a hand-maintained list): missing today and needed for pure-env K8s deploys — `ORION_QUEUE__DLQ_RETRY_ENABLED`, `ORION_QUEUE__DLQ_POLL_INTERVAL_SECS`, `ORION_QUEUE__DLQ_MAX_RETRIES`, `ORION_STORAGE__{MAX_CONNECTIONS,MIN_CONNECTIONS,IDLE_TIMEOUT_SECS}`, `ORION_CORS__ALLOWED_ORIGINS`, `ORION_KAFKA__TOPICS`, `ORION_KAFKA__DLQ__{ENABLED,TOPIC}`, `ORION_CHANNELS__{INCLUDE,EXCLUDE}`, plus all new `[cluster]` keys.
-- [ ] **B3. Backups in cluster mode.** `POST /api/v1/admin/backups` writes to the local node's filesystem (`admin/backups.rs:34,69,108`) — meaningless behind an LB, and SQLite-only anyway. In cluster mode return 400 with guidance to use managed-DB PITR/snapshots; document the operator runbook.
-- [ ] **B4. HA reference compose file** (`docker-compose.ha.yml`): 2× orion + Postgres + Redis + nginx, used by the multi-node integration tests (see Test plan) and as user documentation.
-- [ ] **B5. Docs:** rewrite `docs/src/features/scalability.md` and `availability.md` around cluster mode (they currently document the curl-loop reload fan-out as the workaround).
+- [x] **B1. Helm chart** (`deploy/helm/orion/`): Deployment (with `readinessProbe: /readyz`, `livenessProbe: /healthz`), HPA, PDB, Service, Ingress, ConfigMap/Secret for `ORION_*` env, optional Redis + Postgres subcharts for dev, pre-upgrade migrate Job (A10). Nothing exists today beyond Dockerfile + single-node compose.
+- [x] **B2. Fill env-override gaps** (`src/config/env_overrides.rs` is a hand-maintained list): missing today and needed for pure-env K8s deploys — `ORION_QUEUE__DLQ_RETRY_ENABLED`, `ORION_QUEUE__DLQ_POLL_INTERVAL_SECS`, `ORION_QUEUE__DLQ_MAX_RETRIES`, `ORION_STORAGE__{MAX_CONNECTIONS,MIN_CONNECTIONS,IDLE_TIMEOUT_SECS}`, `ORION_CORS__ALLOWED_ORIGINS`, `ORION_KAFKA__TOPICS`, `ORION_KAFKA__DLQ__{ENABLED,TOPIC}`, `ORION_CHANNELS__{INCLUDE,EXCLUDE}`, plus all new `[cluster]` keys.
+- [x] **B3. Backups in cluster mode.** `POST /api/v1/admin/backups` writes to the local node's filesystem (`admin/backups.rs:34,69,108`) — meaningless behind an LB, and SQLite-only anyway. In cluster mode return 400 with guidance to use managed-DB PITR/snapshots; document the operator runbook.
+- [x] **B4. HA reference compose file** (`docker-compose.ha.yml`): 2× orion + Postgres + Redis + nginx, used by the multi-node integration tests (see Test plan) and as user documentation.
+- [x] **B5. Docs:** rewrite `docs/src/features/scalability.md` and `availability.md` around cluster mode (they currently document the curl-loop reload fan-out as the workaround).
 - [ ] **B6. Cloud-marketplace packaging** (the cloud-native distribution path): AWS AMI / Azure VM image / GCP image + container-marketplace listings. Per-cloud glue: cloud-init to wire a managed Postgres (RDS / Cloud SQL / Azure DB) and managed Redis, Terraform + CloudFormation reference templates, hardened base image, TLS bootstrap. Depends on H3 (cloud secrets-manager resolvers) so instances never store credentials in plaintext config, and on H1 (data-plane auth) before any image defaults to a public endpoint.
 
 ---
 
 ## Workstream C — Cluster observability
 
-- [ ] **C1. Sticky rollout bucketing.** `inject_rollout_bucket` uses `rand::random` per request (`engine/utils.rs:19-26`) — canary assignment flip-flops per call *and* per node. Hash a stable caller identity (client IP, or a configurable header) → stable bucket across requests and replicas.
-- [ ] **C2. Per-instance labels.** Add `instance_id` to log spans; `/metrics` stays per-node (Prometheus scrapes each pod), no aggregation needed.
+- [x] **C1. Sticky rollout bucketing.** `inject_rollout_bucket` uses `rand::random` per request (`engine/utils.rs:19-26`) — canary assignment flip-flops per call *and* per node. Hash a stable caller identity (client IP, or a configurable header) → stable bucket across requests and replicas.
+- [x] **C2. Per-instance labels.** Add `instance_id` to log spans; `/metrics` stays per-node (Prometheus scrapes each pod), no aggregation needed.
+
+
+> **M3 implementation notes (2026-07-26):** B1–B5 and C1–C2 landed on `v1.0.0`. B1: `deploy/helm/orion` validated on a kind cluster — a 3-replica install passed the harness scenarios (cross-pod epoch propagation, shared-Redis dedup 409 across two pods, backups 400); the install caught a Service-selector bug (devStack pods matched the orion Service) fixed via `app.kubernetes.io/component=server`. B4: `docker-compose.ha.yml` + `deploy/ha/rolling-drill.sh` — drill run against a locally built image: 2372 requests through nginx during a SIGTERM roll, zero non-2xx (the drill surfaced that `proxy_connect_timeout` must sit well below client timeouts, since a vanished container IP fails by timeout, not RST). C1: bucket = FNV-1a of `engine.rollout_sticky_header` value, else forwarded client IP, random fallback; applied on sync and async paths. C2: `service.instance.id` OTel resource attribute + `instance_id` on request spans in cluster mode. B3: 400 + managed-DB PITR guidance; runbook in scalability.md. A10's expand/contract convention documented in CONTRIBUTING.md and availability.md.
 
 ---
 

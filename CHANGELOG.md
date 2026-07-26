@@ -43,10 +43,25 @@ See `multi-instance-ha.md` for the full plan.
 - **Postgres/MySQL storage-backend test binaries** (`storage_postgres`,
   `storage_mysql`) and a multi-node cluster test binary (`cluster`) running
   two full nodes against Postgres + Redis testcontainers in CI.
+- **Helm chart** (`deploy/helm/orion`) — cluster-mode Deployment with
+  readyz/healthz probes, pre-upgrade migration Job, HPA, PDB, and an optional
+  throwaway dev Postgres/Redis; validated on a 3-replica kind install.
+- **HA reference compose** (`docker-compose.ha.yml`) — nginx LB → 2× Orion
+  (cluster mode) → shared Postgres + Redis with a one-shot migrate service,
+  plus `deploy/ha/rolling-drill.sh`, a zero-downtime rolling-deploy drill.
+- **Sticky canary rollouts** — the rollout bucket is now a stable hash of the
+  caller identity (`engine.rollout_sticky_header`, else the forwarded client
+  IP), so the same caller gets the same version on every request and replica;
+  previously assignment was random per request.
+- **Per-instance observability** — `service.instance.id` OTel resource
+  attribute and `instance_id` on request spans in cluster mode.
 - Env overrides: `ORION_CLUSTER__*`, `ORION_STORAGE__AUTO_MIGRATE`,
   `ORION_STORAGE__{MAX,MIN}_CONNECTIONS`, `ORION_STORAGE__IDLE_TIMEOUT_SECS`,
   `ORION_QUEUE__DLQ_{RETRY_ENABLED,MAX_RETRIES,POLL_INTERVAL_SECS,BATCH_SIZE,LEASE_SECS}`,
-  `ORION_KAFKA__SESSION_TIMEOUT_MS`, `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS`.
+  `ORION_KAFKA__SESSION_TIMEOUT_MS`, `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS`,
+  `ORION_KAFKA__TOPICS`, `ORION_KAFKA__DLQ__{ENABLED,TOPIC}`,
+  `ORION_CORS__ALLOWED_ORIGINS`, `ORION_CHANNELS__{INCLUDE,EXCLUDE}`,
+  `ORION_ENGINE__ROLLOUT_STICKY_HEADER`.
 
 ### Fixed
 
@@ -74,6 +89,13 @@ See `multi-instance-ha.md` for the full plan.
   values `< 1` are rejected at startup; `traces.channel_id` is now populated
   on every insert path; active-immutability triggers now exist on Postgres
   and MySQL, not just SQLite.
+
+### Changed
+
+- Filesystem backups (`/api/v1/admin/backups`) return `400` in cluster mode —
+  the file would land on one arbitrary node; use managed-DB snapshots/PITR.
+- `docs/src/features/scalability.md` and `availability.md` rewritten around
+  cluster mode (the multi-node curl-loop reload workaround is obsolete).
 
 ### Removed
 
