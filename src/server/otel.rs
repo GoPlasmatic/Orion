@@ -19,6 +19,7 @@ use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
 /// ```
 pub fn init_otel_pipeline(
     config: &TracingConfig,
+    instance_id: &str,
 ) -> Result<(SdkTracerProvider, opentelemetry_sdk::trace::Tracer), Box<dyn std::error::Error>> {
     // Set the global text map propagator to W3C Trace Context (traceparent / tracestate)
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
@@ -42,6 +43,12 @@ pub fn init_otel_pipeline(
         .with_resource(
             opentelemetry_sdk::Resource::builder()
                 .with_service_name(config.service_name.clone())
+                // Standard semconv attribute — distinguishes replicas of the
+                // same service in trace backends (multi-instance C2).
+                .with_attribute(opentelemetry::KeyValue::new(
+                    "service.instance.id",
+                    instance_id.to_string(),
+                ))
                 .build(),
         )
         .build();

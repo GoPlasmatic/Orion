@@ -337,7 +337,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Load configuration
-    let config = config::load_config(cli.config.as_deref())?;
+    let mut config = config::load_config(cli.config.as_deref())?;
+    // Resolve the instance identity once, up front, so the tracing resource,
+    // cluster runtime, and Kafka static membership all agree on it.
+    if config.cluster.instance_id.is_empty() {
+        config.cluster.instance_id = uuid::Uuid::new_v4().to_string();
+    }
+    let config = config;
 
     if cli.config.is_none() {
         eprintln!(
@@ -365,7 +371,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let env_filter = EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
         if config.tracing.enabled {
-            let (provider, tracer) = orion::server::otel::init_otel_pipeline(&config.tracing)?;
+            let (provider, tracer) = orion::server::otel::init_otel_pipeline(
+                &config.tracing,
+                &config.cluster.instance_id,
+            )?;
             match config.logging.format {
                 LogFormat::Json => {
                     tracing_subscriber::registry()

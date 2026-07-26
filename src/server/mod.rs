@@ -83,7 +83,27 @@ pub fn build_router(state: AppState) -> Router {
 
     // Only add TraceLayer when tracing is enabled to avoid span processing overhead
     let router = if otel_enabled {
-        router.layer(TraceLayer::new_for_http())
+        // In cluster mode, stamp the request span with this node's identity
+        // so multi-replica traces/logs are attributable (multi-instance C2).
+        let instance_id = state
+            .cluster
+            .enabled
+            .then(|| state.cluster.instance_id.clone());
+        router.layer(TraceLayer::new_for_http().make_span_with(
+            move |req: &axum::extract::Request<_>| {
+                let span = tracing::info_span!(
+                    "request",
+                    method = %req.method(),
+                    uri = %req.uri(),
+                    version = ?req.version(),
+                    instance_id = tracing::field::Empty,
+                );
+                if let Some(ref id) = instance_id {
+                    span.record("instance_id", tracing::field::display(id));
+                }
+                span
+            },
+        ))
     } else {
         router
     };
