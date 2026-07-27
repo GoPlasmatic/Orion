@@ -136,6 +136,101 @@ pub fn mask_connector(
     masked
 }
 
+/// Restore values that a client round-tripped through the masked read API
+/// (F34).
+///
+/// A `GET` → edit-one-field → `PUT` cycle sends `"******"` back for every
+/// secret the reader never saw, and a wholesale `config_json` write would
+/// persist the mask *as* the credential. A field is therefore treated as
+/// unchanged when the incoming value is exactly what a `GET` would have shown
+/// for the stored value.
+///
+/// Defined by re-masking the stored config and comparing, rather than by
+/// re-testing key names: that covers whole-value masks
+/// (`"password": "******"`), the URL form (`"url": "redis://u:******@host"`),
+/// and any masking rule added later, with no second copy of the logic to keep
+/// in sync.
+///
+/// Anything still carrying a mask afterwards had no stored counterpart to
+/// restore from — a genuinely new field, or a config whose shape changed — and
+/// is left alone for [`find_masked_value`] to reject.
+pub fn unmask_config(incoming: &mut Value, stored: &Value) {
+    let mut masked_stored = stored.clone();
+    mask_in_place(&mut masked_stored, None, false);
+    restore_in_place(incoming, stored, &masked_stored);
+}
+
+fn restore_in_place(incoming: &mut Value, stored: &Value, masked: &Value) {
+    match (incoming, stored, masked) {
+        (Value::Object(inc), Value::Object(st), Value::Object(mk)) => {
+            for (key, value) in inc.iter_mut() {
+                if let (Some(stored_value), Some(masked_value)) = (st.get(key), mk.get(key)) {
+                    restore_in_place(value, stored_value, masked_value);
+                }
+            }
+        }
+        // Masking is index-preserving, so positions line up. A reordered or
+        // resized array simply stops matching and falls through to rejection.
+        (Value::Array(inc), Value::Array(st), Value::Array(mk)) => {
+            for ((value, stored_value), masked_value) in inc.iter_mut().zip(st).zip(mk) {
+                restore_in_place(value, stored_value, masked_value);
+            }
+        }
+        (inc, stored_value, masked_value) => {
+            // `inc != stored_value` keeps this a no-op for unmasked fields,
+            // and for the pathological case of a secret whose real value is
+            // the mask string.
+            if inc == masked_value && inc != stored_value {
+                *inc = stored_value.clone();
+            }
+        }
+    }
+}
+
+/// The dotted path of the first value that still carries the mask sentinel, or
+/// `None` when the config is clean.
+///
+/// Used to reject writes that would persist `"******"` as a real credential —
+/// on create, where there is nothing to restore from, and on update for
+/// anything [`unmask_config`] could not match to a stored value.
+pub fn find_masked_value(value: &Value) -> Option<String> {
+    fn walk(value: &Value, path: &str, out: &mut Option<String>) {
+        if out.is_some() {
+            return;
+        }
+        match value {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    let child_path = if path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{path}.{key}")
+                    };
+                    walk(child, &child_path, out);
+                }
+            }
+            Value::Array(items) => {
+                for (i, item) in items.iter().enumerate() {
+                    walk(item, &format!("{path}[{i}]"), out);
+                }
+            }
+            // Either the whole value is the mask, or it is a URL whose
+            // password component already reads as the mask — re-masking it
+            // would be a no-op.
+            Value::String(s)
+                if s == MASK || redact_url_password(s).as_deref() == Some(s.as_str()) =>
+            {
+                *out = Some(path.to_string());
+            }
+            _ => {}
+        }
+    }
+
+    let mut found = None;
+    walk(value, "", &mut found);
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +417,109 @@ mod tests {
         let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["connection_string"], "******");
         assert_eq!(val["driver"], "postgres");
+    }
+
+    // ---------------------------------------------------------------
+    // F34: mask round-trip on write
+    // ---------------------------------------------------------------
+
+    /// The exact GET → edit-one-field → PUT cycle an admin UI performs.
+    #[test]
+    fn test_unmask_restores_round_tripped_secret() {
+        let stored: Value = serde_json::from_str(
+            r#"{"type":"http","url":"https://api.example.com","timeout_secs":5,
+                "auth":{"type":"bearer","token":"real-secret"}}"#,
+        )
+        .expect("test");
+        // What GET returned, with one non-secret field edited.
+        let mut incoming: Value =
+            serde_json::from_str(&mask_connector_secrets(&stored.to_string())).expect("test");
+        incoming["timeout_secs"] = serde_json::json!(30);
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(incoming["auth"]["token"], "real-secret");
+        assert_eq!(incoming["timeout_secs"], 30);
+        assert_eq!(find_masked_value(&incoming), None);
+    }
+
+    /// F3 widened masking to `url`, so the userinfo form has to round-trip too.
+    #[test]
+    fn test_unmask_restores_url_password() {
+        let stored: Value =
+            serde_json::from_str(r#"{"type":"cache","url":"redis://admin:hunter2@redis:6379"}"#)
+                .expect("test");
+        let mut incoming: Value =
+            serde_json::from_str(&mask_connector_secrets(&stored.to_string())).expect("test");
+        assert_eq!(incoming["url"], "redis://admin:******@redis:6379");
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(incoming["url"], "redis://admin:hunter2@redis:6379");
+    }
+
+    /// Masking is index-preserving, so a broker list round-trips per element.
+    #[test]
+    fn test_unmask_restores_array_elements() {
+        let stored: Value = serde_json::from_str(
+            r#"{"type":"kafka","brokers":["SASL_SSL://u:p1@b1:9093","plaintext://b2:9092"]}"#,
+        )
+        .expect("test");
+        let mut incoming: Value =
+            serde_json::from_str(&mask_connector_secrets(&stored.to_string())).expect("test");
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(incoming["brokers"][0], "SASL_SSL://u:p1@b1:9093");
+        assert_eq!(incoming["brokers"][1], "plaintext://b2:9092");
+    }
+
+    /// A real edit must survive: only values that still equal the mask are
+    /// restored, never a value the caller actually changed.
+    #[test]
+    fn test_unmask_leaves_a_genuine_new_secret_alone() {
+        let stored: Value =
+            serde_json::from_str(r#"{"auth":{"token":"old-secret"}}"#).expect("test");
+        let mut incoming: Value =
+            serde_json::from_str(r#"{"auth":{"token":"new-secret"}}"#).expect("test");
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(incoming["auth"]["token"], "new-secret");
+    }
+
+    /// A mask with no stored counterpart cannot be restored, so it must remain
+    /// findable — the handler turns that into a 400 rather than persisting it.
+    #[test]
+    fn test_unmask_leaves_unmatched_mask_for_rejection() {
+        let stored: Value = serde_json::from_str(r#"{"auth":{"token":"old"}}"#).expect("test");
+        let mut incoming: Value =
+            serde_json::from_str(r#"{"auth":{"token":"old"},"password":"******"}"#).expect("test");
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(find_masked_value(&incoming).as_deref(), Some("password"));
+    }
+
+    #[test]
+    fn test_find_masked_value_reports_a_dotted_path() {
+        let config: Value = serde_json::from_str(r#"{"a":{"b":[{"c":"******"}]}}"#).expect("test");
+        assert_eq!(find_masked_value(&config).as_deref(), Some("a.b[0].c"));
+    }
+
+    #[test]
+    fn test_find_masked_value_detects_the_url_form() {
+        let config: Value =
+            serde_json::from_str(r#"{"url":"redis://admin:******@redis:6379"}"#).expect("test");
+        assert_eq!(find_masked_value(&config).as_deref(), Some("url"));
+    }
+
+    #[test]
+    fn test_find_masked_value_ignores_a_clean_config() {
+        let config: Value = serde_json::from_str(
+            r#"{"url":"https://api.example.com","auth":{"token":"real"},"n":6}"#,
+        )
+        .expect("test");
+        assert_eq!(find_masked_value(&config), None);
     }
 }

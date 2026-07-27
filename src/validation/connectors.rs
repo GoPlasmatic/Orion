@@ -78,19 +78,34 @@ pub fn validate_create_connector(req: &CreateConnectorRequest) -> Result<(), Ori
     // connector_type itself is now validated by serde at deserialization —
     // unknown values like "grpc" produce a 400 before this function runs.
     validate_connector_config(req.connector_type, &req.config)?;
+    // F34: on create there is no stored value to restore a mask from, so a
+    // mask here is always a copied-from-a-GET mistake.
+    reject_masked_values(&req.config)?;
     Ok(())
 }
 
+/// Refuse to persist the read API's mask sentinel as a real credential (F34).
+pub fn reject_masked_values(config: &serde_json::Value) -> Result<(), OrionError> {
+    if let Some(path) = crate::connector::find_masked_value(config) {
+        return Err(OrionError::BadRequest(format!(
+            "Connector config field '{path}' is the masked placeholder that \
+             GET /api/v1/admin/connectors returns, not a real value. Send the \
+             actual secret, or omit the field to keep the stored one."
+        )));
+    }
+    Ok(())
+}
+
+/// Validate the parts of an update that need no database read.
+///
+/// The config is **not** validated here. It has to be checked after the
+/// handler has restored masked fields from the stored row (F34) and resolved
+/// the effective type — which for a config-only update is the stored one (R4).
+/// Validating a config that still reads `"url": "******"` would reject a legal
+/// edit, so the handler owns that step.
 pub fn validate_update_connector(req: &UpdateConnectorRequest) -> Result<(), OrionError> {
     if let Some(ref name) = req.name {
         validate_name(name, "Name")?;
-    }
-    // If both type and config are provided, validate config against the new
-    // type. A config without a type is validated by the update handler
-    // against the stored connector's type (R4) — the stored row is not
-    // available here.
-    if let (Some(ct), Some(config)) = (req.connector_type, req.config.as_ref()) {
-        validate_connector_config(ct, config)?;
     }
     Ok(())
 }
@@ -222,15 +237,25 @@ mod tests {
         assert!(validate_update_connector(&req).is_ok());
     }
 
+    /// The config is no longer checked here: the handler validates it after
+    /// restoring masked fields from the stored row (F34), because a config
+    /// that still reads `"url": "******"` is not the config being persisted.
+    /// The rejection itself is covered end-to-end by
+    /// `admin_connectors_test::test_update_connector_type_and_invalid_config_rejected`.
     #[test]
-    fn test_validate_update_connector_type_and_invalid_config() {
+    fn test_validate_update_connector_defers_config_to_the_handler() {
         let req = UpdateConnectorRequest {
             name: None,
             connector_type: Some(ConnectorType::Http),
             config: Some(json!("not an object")),
             enabled: None,
         };
-        assert!(validate_update_connector(&req).is_err());
+        assert!(validate_update_connector(&req).is_ok());
+        // …and the check the handler runs is the one that rejects it.
+        assert!(
+            validate_connector_config(ConnectorType::Http, &json!("not an object")).is_err(),
+            "the handler's post-unmask validation must still reject this"
+        );
     }
 
     #[test]

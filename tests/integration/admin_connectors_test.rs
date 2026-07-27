@@ -757,3 +757,265 @@ async fn test_update_connector_config_only_wrong_shape_for_stored_type() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+// ============================================================
+// F34: the mask must never round-trip back in as a credential
+// ============================================================
+
+/// The exact cycle an admin UI performs: read the connector, change one
+/// visible field, PUT the whole object back. Every secret in that object is
+/// `"******"`, because that is all the reader was ever shown.
+#[tokio::test]
+async fn test_connector_get_edit_put_preserves_secrets() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "f34-http",
+                "name": "f34-http",
+                "connector_type": "http",
+                "config": {
+                    "url": "https://api.example.com/v1",
+                    "method": "POST",
+                    "timeout_secs": 5,
+                    "auth": {"type": "bearer", "token": "real-secret-token"}
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Read it back the way a UI would.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/connectors/f34-http",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let mut config: serde_json::Value =
+        serde_json::from_str(body["data"]["config_json"].as_str().unwrap()).unwrap();
+    assert_eq!(config["auth"]["token"], "******", "GET must mask the token");
+
+    // Edit one unrelated field and PUT the whole object back.
+    config["timeout_secs"] = json!(30);
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/f34-http",
+            Some(json!({"config": config})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The edit landed.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/connectors/f34-http",
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let config: serde_json::Value =
+        serde_json::from_str(body["data"]["config_json"].as_str().unwrap()).unwrap();
+    assert_eq!(config["timeout_secs"], 30, "the edit must be persisted");
+
+    // A second read reads `"******"` whether the stored token is the real
+    // secret or the mask itself, so it proves nothing on its own. Round-trip
+    // once more: restoring requires the stored value to *differ* from the
+    // mask, so if the first PUT had persisted `"******"` this one has nothing
+    // to restore and comes back 400. A 200 is only reachable when the real
+    // secret is still in the database.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/f34-http",
+            Some(json!({"config": config})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "second round-trip failed, which means the first one persisted the mask"
+    );
+}
+
+/// A mask with no stored counterpart cannot be restored, so it must be
+/// refused rather than written as a credential.
+#[tokio::test]
+async fn test_connector_update_rejects_unmatched_mask() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "f34-reject",
+                "name": "f34-reject",
+                "connector_type": "http",
+                "config": {"url": "https://api.example.com", "method": "GET"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // `auth.token` was never stored, so "******" here is not a round-trip.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/f34-reject",
+            Some(json!({"config": {
+                "url": "https://api.example.com",
+                "method": "GET",
+                "auth": {"type": "bearer", "token": "******"}
+            }})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("auth.token"),
+        "the error must name the offending field, got: {message}"
+    );
+}
+
+/// On create there is nothing to restore from, so any mask is a mistake.
+#[tokio::test]
+async fn test_connector_create_rejects_mask_placeholder() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "name": "f34-create",
+                "connector_type": "http",
+                "config": {
+                    "url": "https://api.example.com",
+                    "method": "GET",
+                    "auth": {"type": "bearer", "token": "******"}
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The URL form of the mask round-trips too — F3 widened masking to `url`,
+/// which is the field most likely to be hand-edited.
+#[tokio::test]
+async fn test_connector_url_password_round_trip() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "f34-cache",
+                "name": "f34-cache",
+                "connector_type": "cache",
+                "config": {"backend": "redis", "url": "redis://admin:hunter2@redis:6379"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/connectors/f34-cache",
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let config: serde_json::Value =
+        serde_json::from_str(body["data"]["config_json"].as_str().unwrap()).unwrap();
+    assert_eq!(config["url"], "redis://admin:******@redis:6379");
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/f34-cache",
+            Some(json!({"config": config})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "a round-tripped URL password must be restored, not rejected"
+    );
+}
+
+/// Config validation moved out of `validate_update_connector` and into the
+/// handler (it has to run *after* masked fields are restored, F34). This is
+/// the end-to-end proof that an explicit type plus a bad config is still
+/// rejected — the case the retired unit test used to cover.
+#[tokio::test]
+async fn test_update_connector_type_and_invalid_config_rejected() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "bad-cfg-conn",
+                "name": "bad-cfg-conn",
+                "connector_type": "http",
+                "config": {"url": "https://example.com/api"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    for bad in [json!("not an object"), json!({"method": "GET"})] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "PUT",
+                "/api/v1/admin/connectors/bad-cfg-conn",
+                Some(json!({"connector_type": "http", "config": bad})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "invalid config {bad} must be rejected"
+        );
+    }
+}
