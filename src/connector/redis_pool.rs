@@ -11,6 +11,9 @@ pub struct RedisPoolCache {
 impl RedisPoolCache {
     pub fn new(max_entries: usize) -> Self {
         Self {
+            // F17: no evict handler — redis::aio::ConnectionManager exposes
+            // no close API; dropping the last clone disconnects, which
+            // eviction achieves once in-flight users finish.
             cache: LruCache::new(max_entries, "redis_pool"),
         }
     }

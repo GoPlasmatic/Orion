@@ -24,7 +24,13 @@ pub struct SqlPoolCache {
 impl SqlPoolCache {
     pub fn new(max_entries: usize) -> Self {
         Self {
-            cache: LruCache::new(max_entries, "sql_pool"),
+            // F17: close evicted pools on a detached task — new acquires on
+            // the closed pool fail fast, in-flight queries finish, and the
+            // TCP connections are returned instead of counting against the
+            // remote DB's max_connections until the last Arc drops.
+            cache: LruCache::with_evict_handler(max_entries, "sql_pool", |pool: AnyPool| {
+                tokio::spawn(async move { pool.close().await });
+            }),
         }
     }
 

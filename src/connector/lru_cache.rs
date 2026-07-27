@@ -41,6 +41,11 @@ pub struct LruCache<V: Clone> {
     entries: RwLock<HashMap<String, CacheEntry<V>>>,
     max_entries: usize,
     cache_label: &'static str,
+    /// F17: called with every removed value — explicit evict, evict_all, and
+    /// capacity eviction — so pool-like values can be closed instead of
+    /// leaking their TCP connections until the last Arc clone drops
+    /// (under load: indefinitely). Handlers must not block; spawn.
+    on_evict: Option<std::sync::Arc<dyn Fn(V) + Send + Sync>>,
 }
 
 impl<V: Clone> LruCache<V> {
@@ -49,6 +54,27 @@ impl<V: Clone> LruCache<V> {
             entries: RwLock::new(HashMap::new()),
             max_entries,
             cache_label,
+            on_evict: None,
+        }
+    }
+
+    /// A cache whose removed values are handed to `handler` (F17).
+    pub fn with_evict_handler(
+        max_entries: usize,
+        cache_label: &'static str,
+        handler: impl Fn(V) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            entries: RwLock::new(HashMap::new()),
+            max_entries,
+            cache_label,
+            on_evict: Some(std::sync::Arc::new(handler)),
+        }
+    }
+
+    fn dispose(&self, value: V) {
+        if let Some(handler) = &self.on_evict {
+            handler(value);
         }
     }
 
@@ -93,22 +119,36 @@ impl<V: Clone> LruCache<V> {
                 cache = self.cache_label,
                 "Pool cache at capacity, evicting least-recently-used entry"
             );
-            entries.remove(&lru_key);
+            if let Some(entry) = entries.remove(&lru_key) {
+                self.dispose(entry.value);
+            }
         }
 
         entries.insert(key.to_string(), CacheEntry::new(value.clone()));
         Ok(value)
     }
 
-    /// Evict a cached entry (e.g., when connector config changes).
+    /// Evict a cached entry (e.g., when connector config changes). The
+    /// removed value is handed to the evict handler (F17).
     pub async fn evict(&self, key: &str) {
-        self.entries.write().await.remove(key);
+        let removed = self.entries.write().await.remove(key);
+        if let Some(entry) = removed {
+            self.dispose(entry.value);
+        }
     }
 
     /// Evict every cached entry. Used by epoch-driven resyncs: a remote node
-    /// cannot know which connector changed, and pools rebuild lazily.
+    /// cannot know which connector changed, and pools rebuild lazily. Every
+    /// removed value is handed to the evict handler (F17) — before this,
+    /// each resync leaked the old pools' connections.
     pub async fn evict_all(&self) {
-        self.entries.write().await.clear();
+        let drained: Vec<V> = {
+            let mut entries = self.entries.write().await;
+            entries.drain().map(|(_, e)| e.value).collect()
+        };
+        for value in drained {
+            self.dispose(value);
+        }
     }
 }
 
@@ -117,6 +157,37 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    /// F17: every removal path must hand the value to the evict handler.
+    #[tokio::test]
+    async fn evict_handler_fires_on_every_removal_path() {
+        let closed = Arc::new(AtomicUsize::new(0));
+        let closed_ref = closed.clone();
+        let cache: LruCache<u32> = LruCache::with_evict_handler(2, "test", move |_v| {
+            closed_ref.fetch_add(1, AtomicOrdering::SeqCst);
+        });
+
+        let create = |v: u32| async move { Ok::<u32, ()>(v) };
+        cache.get_or_create("a", || create(1)).await.unwrap();
+        cache.get_or_create("b", || create(2)).await.unwrap();
+
+        // Explicit evict.
+        cache.evict("a").await;
+        assert_eq!(closed.load(AtomicOrdering::SeqCst), 1);
+
+        // Capacity eviction: cache is at max 2 after c + d insert once.
+        cache.get_or_create("c", || create(3)).await.unwrap();
+        cache.get_or_create("d", || create(4)).await.unwrap();
+        assert_eq!(
+            closed.load(AtomicOrdering::SeqCst),
+            2,
+            "LRU eviction must dispose"
+        );
+
+        // evict_all drains the remaining two.
+        cache.evict_all().await;
+        assert_eq!(closed.load(AtomicOrdering::SeqCst), 4);
+    }
 
     #[tokio::test]
     async fn test_cache_miss_creates() {

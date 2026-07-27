@@ -11,7 +11,11 @@ pub struct MongoPoolCache {
 impl MongoPoolCache {
     pub fn new(max_entries: usize) -> Self {
         Self {
-            cache: LruCache::new(max_entries, "mongo_pool"),
+            // F17: shut evicted clients down gracefully on a detached task
+            // (waits for in-flight operations, then drops the connections).
+            cache: LruCache::with_evict_handler(max_entries, "mongo_pool", |client: Client| {
+                tokio::spawn(async move { client.shutdown().await });
+            }),
         }
     }
 
