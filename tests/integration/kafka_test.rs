@@ -230,32 +230,48 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
     // Give consumer time to process and send to DLQ
     tokio::time::sleep(Duration::from_secs(5)).await;
 
-    // Verify DLQ received the message.
-    // The verifier consumer may need several attempts: the DLQ topic is
-    // auto-created by the producer and the consumer group coordinator needs
-    // time to assign partitions after subscribe().
+    let dlq_payload = wait_for_dlq_message(&brokers, &dlq_topic, 20)
+        .await
+        .expect("DLQ message not received within deadline");
+
+    assert_eq!(dlq_payload["source_topic"], topic);
+    assert!(dlq_payload["error"].as_str().unwrap().contains("JSON"));
+    assert_eq!(dlq_payload["original_payload"], "not valid json {{{{");
+
+    handle.shutdown().await;
+}
+
+/// Poll a fresh consumer group on `dlq_topic` until a JSON DLQ envelope
+/// arrives or the deadline passes.
+///
+/// The verifier consumer may need several attempts: the DLQ topic is
+/// auto-created by the producer and the consumer group coordinator needs
+/// time to assign partitions after subscribe().
+async fn wait_for_dlq_message(
+    brokers: &str,
+    dlq_topic: &str,
+    deadline_secs: u64,
+) -> Option<serde_json::Value> {
     let dlq_consumer: StreamConsumer = ClientConfig::new()
-        .set("bootstrap.servers", &brokers)
+        .set("bootstrap.servers", brokers)
         .set("group.id", format!("dlq-verifier-{}", uuid::Uuid::new_v4()))
         .set("auto.offset.reset", "earliest")
         .set("fetch.wait.max.ms", "500")
         .create()
         .unwrap();
 
-    dlq_consumer.subscribe(&[&dlq_topic]).unwrap();
+    dlq_consumer.subscribe(&[dlq_topic]).unwrap();
 
     // Poll with retries — first few recv() calls may return errors while the
     // consumer group is rebalancing and partition assignments are pending.
-    let mut dlq_payload: Option<serde_json::Value> = None;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(deadline_secs);
     while tokio::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_secs(5), dlq_consumer.recv()).await {
             Ok(Ok(msg)) => {
                 if let Some(payload) = msg.payload()
                     && let Ok(val) = serde_json::from_slice::<serde_json::Value>(payload)
                 {
-                    dlq_payload = Some(val);
-                    break;
+                    return Some(val);
                 }
             }
             Ok(Err(_)) => {
@@ -267,14 +283,157 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
             }
         }
     }
+    None
+}
 
-    let dlq_payload = dlq_payload.expect("DLQ message not received within deadline");
+#[tokio::test]
+#[ignore]
+async fn test_consumer_sends_invalid_utf8_to_dlq() {
+    let (_container, brokers) = start_kafka().await;
+
+    let topic = "test-invalid-utf8";
+    let dlq_topic = format!("{}-dlq", topic);
+    let channel = "test-channel";
+    let config = test_kafka_config(&brokers, topic, channel);
+    let engine = empty_engine();
+
+    let dlq_producer = Arc::new(plain_producer(&brokers));
+
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        test_registry(),
+        test_datalogic(),
+        Some(dlq_producer),
+        Some(dlq_topic.clone()),
+        None,
+    )
+    .unwrap();
+
+    // Produce a payload that is not valid UTF-8 (e.g. misrouted binary/Avro)
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .set("message.timeout.ms", "10000")
+        .create()
+        .unwrap();
+
+    let invalid_utf8: &[u8] = &[0xFF, 0xFE, 0xFD, 0x00, 0x80];
+    producer
+        .send(
+            FutureRecord::<str, [u8]>::to(topic).payload(invalid_utf8),
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("Failed to produce invalid UTF-8 message");
+
+    tokio::time::sleep(Duration::from_secs(5)).await;
+
+    let dlq_payload = wait_for_dlq_message(&brokers, &dlq_topic, 20)
+        .await
+        .expect("DLQ message not received within deadline");
 
     assert_eq!(dlq_payload["source_topic"], topic);
-    assert!(dlq_payload["error"].as_str().unwrap().contains("JSON"));
-    assert_eq!(dlq_payload["original_payload"], "not valid json {{{{");
+    assert!(dlq_payload["error"].as_str().unwrap().contains("UTF-8"));
+    // Raw bytes are lossy-decoded into the envelope: invalid bytes -> U+FFFD
+    assert!(
+        dlq_payload["original_payload"]
+            .as_str()
+            .unwrap()
+            .contains('\u{FFFD}')
+    );
 
     handle.shutdown().await;
+}
+
+/// A message that fails without a confirmed DLQ write must not have its
+/// offset committed: after a consumer restart it must be redelivered.
+///
+/// Phase 1 runs the consumer with the DLQ disabled, so the unparseable
+/// message can only fail (retried in place, offset never committed).
+/// Phase 2 restarts the consumer in the same group with the DLQ enabled;
+/// the message is redelivered — proving the offset never advanced — and
+/// this time lands in the DLQ.
+#[tokio::test]
+#[ignore]
+async fn test_failed_message_redelivered_after_restart() {
+    let (_container, brokers) = start_kafka().await;
+
+    let topic = "test-redelivery";
+    let dlq_topic = format!("{}-dlq", topic);
+    let channel = "test-channel";
+    let group_id = format!("test-redelivery-{}", uuid::Uuid::new_v4());
+    let config = KafkaIngestConfig {
+        group_id: group_id.clone(),
+        dlq: DlqConfig {
+            enabled: false,
+            topic: dlq_topic.clone(),
+        },
+        ..test_kafka_config(&brokers, topic, channel)
+    };
+    let engine = empty_engine();
+
+    // Phase 1: no DLQ producer — the message cannot be dead-lettered
+    let handle = consumer::start_consumer(
+        &config,
+        engine.clone(),
+        test_registry(),
+        test_datalogic(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .set("message.timeout.ms", "5000")
+        .create()
+        .unwrap();
+
+    producer
+        .send(
+            FutureRecord::<str, str>::to(topic).payload("unparseable {{{{"),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("Failed to produce test message");
+
+    // Let the consumer receive the message and enter the retry loop
+    // (backoff cycles at 1s/2s/4s — several failed attempts fit in 6s)
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    // Shutdown mid-retry: the offset must be left uncommitted
+    handle.shutdown().await;
+
+    // Phase 2: same group, DLQ enabled — the uncommitted message must be
+    // redelivered and dead-lettered this time
+    let config2 = KafkaIngestConfig {
+        dlq: DlqConfig {
+            enabled: true,
+            topic: dlq_topic.clone(),
+        },
+        ..config.clone()
+    };
+    let dlq_producer = Arc::new(plain_producer(&brokers));
+    let handle2 = consumer::start_consumer(
+        &config2,
+        engine,
+        test_registry(),
+        test_datalogic(),
+        Some(dlq_producer),
+        Some(dlq_topic.clone()),
+        None,
+    )
+    .unwrap();
+
+    let dlq_payload = wait_for_dlq_message(&brokers, &dlq_topic, 30)
+        .await
+        .expect("message was not redelivered to the restarted consumer");
+
+    assert_eq!(dlq_payload["source_topic"], topic);
+    assert_eq!(dlq_payload["original_payload"], "unparseable {{{{");
+
+    handle2.shutdown().await;
 }
 
 #[tokio::test]
