@@ -344,3 +344,96 @@ async fn test_cache_with_named_connector() {
         "Expected identical responses when using named cache connector"
     );
 }
+
+// ============================================================
+// N2: error responses are never cached
+// ============================================================
+
+/// A transient downstream failure must not be pinned in the response cache
+/// and replayed to every caller for the full TTL. The workflow's first
+/// request fails (the connector it needs is gone); once the dependency is
+/// restored, the very next request must execute rather than serve the
+/// cached failure.
+#[tokio::test]
+async fn test_error_response_is_not_cached() {
+    let app = common::test_app().await;
+
+    // Create the connector so activation passes (R5), then delete it so the
+    // task fails at runtime — the transient-failure shape N2 is about.
+    let conn_id = create_connector(&app, common::db_connector("n2-flaky-db")).await;
+    create_and_activate_channel_with_config(
+        &app,
+        "n2-cache-ch",
+        workflow_with_tasks(
+            "N2 Failing WF",
+            json!([{
+                "id": "t1",
+                "name": "Read",
+                "continue_on_error": true,
+                "function": { "name": "db_read", "input": {
+                    "connector": "n2-flaky-db",
+                    "query": "SELECT 1",
+                    "output": "data.rows"
+                }}
+            }]),
+        ),
+        json!({ "cache": { "enabled": true, "ttl_secs": 300 } }),
+    )
+    .await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let payload = json!({"data": {"k": "v"}});
+
+    // First request fails at the task level (continue_on_error → 200 + errors[]).
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/n2-cache-ch",
+            Some(payload.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let failed = body_json(resp).await;
+    assert!(
+        !failed["errors"]
+            .as_array()
+            .map(Vec::is_empty)
+            .unwrap_or(true),
+        "expected task errors, got {failed}"
+    );
+
+    // Restore the dependency…
+    create_connector(&app, common::db_connector("n2-flaky-db")).await;
+
+    // …and the next request must run the workflow again rather than replay
+    // the cached failure.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/n2-cache-ch",
+            Some(payload),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let after = body_json(resp).await;
+    assert!(
+        after["errors"]
+            .as_array()
+            .map(Vec::is_empty)
+            .unwrap_or(true),
+        "error response was cached and replayed after recovery (N2): {after}"
+    );
+}

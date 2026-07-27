@@ -601,7 +601,17 @@ async fn persist_trace_and_cache(
         p.set_trace_store(trace_store_start.elapsed());
     }
 
-    // Fire-and-forget cache store
+    // Fire-and-forget cache store. N2: never cache a response carrying task
+    // errors — one transient downstream failure would otherwise be pinned
+    // for the full TTL and replayed to every caller, long after the
+    // dependency recovered.
+    if trace.has_errors {
+        tracing::debug!(
+            channel = trace.channel,
+            "Response has task errors; not caching"
+        );
+        return;
+    }
     if let Some((key, cache, ttl)) = cache_context
         && let Err(e) = cache.set_ex(key, cache_body, *ttl).await
     {
