@@ -83,7 +83,13 @@ impl AsyncFunctionHandler for DataWriteHandler {
                         .get_client(connector_name, db)
                         .await
                         .map_err(to_exec_error)?;
-                    execute_mongo(&client, database, mw).await?
+                    // F11: bound the write like the SQL branches bound theirs.
+                    timed_query(db.query_timeout_ms, "data_write", async {
+                        execute_mongo(&client, database, mw)
+                            .await
+                            .map_err(|e| e.to_string())
+                    })
+                    .await?
                 }
                 ConnectorConfig::Db(db) => {
                     let dialect: SqlDialect = detect_backend(&db.connection_string)

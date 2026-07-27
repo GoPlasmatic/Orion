@@ -100,19 +100,26 @@ impl AsyncFunctionHandler for DataQueryHandler {
                     let coll = client
                         .database(database)
                         .collection::<Document>(&mq.collection);
-                    let mut find = coll.find(mq.filter);
-                    if let Some(p) = mq.projection {
-                        find = find.projection(p);
-                    }
-                    if let Some(s) = mq.sort {
-                        find = find.sort(s);
-                    }
-                    if let Some(sk) = mq.skip {
-                        find = find.skip(sk);
-                    }
-                    find = find.limit(mq.limit as i64);
-                    let cursor = find.await.map_err(to_exec_error)?;
-                    let docs: Vec<Document> = cursor.try_collect().await.map_err(to_exec_error)?;
+                    // F11: DbConnectorConfig.query_timeout_ms never applied
+                    // to Mongo — an unresponsive server hung the request for
+                    // the channel timeout, which is itself optional.
+                    let docs: Vec<Document> =
+                        timed_query(db.query_timeout_ms, "data_query", async {
+                            let mut find = coll.find(mq.filter);
+                            if let Some(p) = mq.projection {
+                                find = find.projection(p);
+                            }
+                            if let Some(s) = mq.sort {
+                                find = find.sort(s);
+                            }
+                            if let Some(sk) = mq.skip {
+                                find = find.skip(sk);
+                            }
+                            find = find.limit(mq.limit as i64);
+                            let cursor = find.await.map_err(|e| e.to_string())?;
+                            cursor.try_collect().await.map_err(|e| e.to_string())
+                        })
+                        .await?;
                     Value::Array(
                         docs.iter()
                             .filter_map(|d| serde_json::to_value(d).ok())
