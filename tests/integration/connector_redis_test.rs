@@ -2,25 +2,36 @@ use crate::common;
 
 use axum::http::StatusCode;
 use serde_json::json;
+use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::redis::Redis;
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
 // Redis cache integration tests
 //
-// These tests require a running Redis instance on localhost:6379.
-// Start it with: docker compose -f docker-compose.test.yml up -d redis
-// Run with:      cargo test --test connector_redis_test -- --ignored
+// Each test starts its own ephemeral Redis testcontainer (Docker required),
+// mirroring tests/cluster. Run with:
+//   cargo test --test integration -- --ignored connector_redis_test
 // ---------------------------------------------------------------------------
+
+/// Start a Redis testcontainer and return `(container guard, redis URL)`.
+/// The container lives as long as the guard is held.
+async fn redis_container() -> (testcontainers::ContainerAsync<Redis>, String) {
+    let redis = Redis::default().start().await.expect("start redis");
+    let port = redis.get_host_port_ipv4(6379).await.expect("redis port");
+    (redis, format!("redis://127.0.0.1:{port}"))
+}
 
 /// Write a value to Redis then read it back in the same workflow.
 #[tokio::test]
-#[ignore]
+#[ignore = "needs Docker; run with: cargo test --test integration -- --ignored connector_redis_test"]
 async fn test_redis_cache_write_then_read() {
     let app = common::test_app().await;
+    let (_redis, redis_url) = redis_container().await;
 
     common::create_connector(
         &app,
-        common::cache_connector_redis("redis-cache", "redis://localhost:6379"),
+        common::cache_connector_redis("redis-cache", &redis_url),
     )
     .await;
 
@@ -78,15 +89,12 @@ async fn test_redis_cache_write_then_read() {
 /// Write a value with a short TTL, read immediately (present), wait for
 /// expiry, then read again (null).
 #[tokio::test]
-#[ignore]
+#[ignore = "needs Docker; run with: cargo test --test integration -- --ignored connector_redis_test"]
 async fn test_redis_cache_ttl_expiry() {
     let app = common::test_app().await;
+    let (_redis, redis_url) = redis_container().await;
 
-    common::create_connector(
-        &app,
-        common::cache_connector_redis("redis-ttl", "redis://localhost:6379"),
-    )
-    .await;
+    common::create_connector(&app, common::cache_connector_redis("redis-ttl", &redis_url)).await;
 
     // Channel that writes a key with 1-second TTL
     common::create_and_activate_channel(
@@ -186,14 +194,15 @@ use crate::common::post_with_idempotency_key;
 /// Channel with Redis-backed deduplication: sending the same idempotency key
 /// twice should return 200 then 409.
 #[tokio::test]
-#[ignore]
+#[ignore = "needs Docker; run with: cargo test --test integration -- --ignored connector_redis_test"]
 async fn test_redis_dedup_via_check_and_insert() {
     let app = common::test_app().await;
+    let (_redis, redis_url) = redis_container().await;
 
     // Create the Redis cache connector that backs the dedup store
     common::create_connector(
         &app,
-        common::cache_connector_redis("redis-dedup", "redis://localhost:6379"),
+        common::cache_connector_redis("redis-dedup", &redis_url),
     )
     .await;
 
