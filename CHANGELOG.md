@@ -58,6 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Channel runtime controls hold (proposal N2, N5).** Responses carrying task
+  errors are no longer cached, so a transient downstream failure is not pinned
+  for the full TTL and replayed to every caller. A `rate_limit.key_logic` that
+  does not compile now quarantines the channel, and an evaluation failure
+  rejects the request with `429` — previously both fell back to `client_ip`,
+  silently turning a per-tenant limit into a per-IP one.
 - **Egress correctness round (proposal F8, F10–F13, F17).** `http_call` no
   longer retries non-idempotent methods by default — a timed-out POST was
   re-sent up to 3× with no idempotency key; set the new HTTP-connector
