@@ -8,6 +8,7 @@
 use axum::extract::{MatchedPath, Request, State};
 use axum::middleware::Next;
 use axum::response::Response;
+use sha2::{Digest, Sha256};
 
 use crate::config::AdminAuthConfig;
 use crate::errors::OrionError;
@@ -26,6 +27,15 @@ impl AdminPrincipal {
         let prefix_len = token.len().min(8);
         Self {
             key_prefix: format!("{}...", &token[..prefix_len]),
+        }
+    }
+
+    /// For keys configured in the `sha256:` hash-at-rest form: identify by a
+    /// prefix of the (already public-at-rest) hash rather than leak plaintext
+    /// characters of the presented token into audit logs.
+    fn from_digest(digest: &[u8; 32]) -> Self {
+        Self {
+            key_prefix: format!("sha256:{}...", hex::encode(&digest[..4])),
         }
     }
 }
@@ -60,25 +70,32 @@ pub async fn admin_auth_middleware(
 
     let token = extract_api_key(&req, &state.config.admin_auth)?;
 
+    // Compare SHA-256 digests instead of raw keys: fixed width, so timing
+    // reveals neither key length nor content (S11).
+    let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
     let matched_key = state
         .config
         .admin_auth
-        .effective_keys()
+        .admin_keys()
         .into_iter()
-        .find(|key| constant_time_eq(token.as_bytes(), key.as_bytes()));
+        .find(|key| constant_time_eq(&presented, &key.digest));
 
-    if matched_key.is_none() {
+    let Some(matched_key) = matched_key else {
         metrics::record_error("auth_failure");
         tracing::warn!(
             path = %req.uri().path(),
             "Admin API authentication failed: invalid API key"
         );
         return Err(OrionError::Unauthorized("Invalid API key".into()));
-    }
+    };
 
     // Store principal identity in request extensions for audit logging
-    req.extensions_mut()
-        .insert(AdminPrincipal::from_token(&token));
+    let principal = if matched_key.hashed {
+        AdminPrincipal::from_digest(&matched_key.digest)
+    } else {
+        AdminPrincipal::from_token(&token)
+    };
+    req.extensions_mut().insert(principal);
 
     Ok(next.run(req).await)
 }
@@ -108,39 +125,69 @@ fn extract_api_key(req: &Request, config: &AdminAuthConfig) -> Result<String, Or
     }
 }
 
-/// Constant-time string comparison to prevent timing attacks.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut result = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-    result == 0
+/// Constant-time comparison of two SHA-256 digests. Digests are fixed width,
+/// so there is no length branch for a timing side channel to observe (S11).
+fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_constant_time_eq_same() {
-        assert!(constant_time_eq(b"secret", b"secret"));
+    fn digest(s: &str) -> [u8; 32] {
+        Sha256::digest(s.as_bytes()).into()
     }
 
     #[test]
-    fn test_constant_time_eq_different() {
-        assert!(!constant_time_eq(b"secret", b"wrong!"));
+    fn test_digest_compare_equal() {
+        assert!(constant_time_eq(&digest("secret"), &digest("secret")));
     }
 
     #[test]
-    fn test_constant_time_eq_different_length() {
-        assert!(!constant_time_eq(b"short", b"longer"));
+    fn test_digest_compare_unequal() {
+        assert!(!constant_time_eq(&digest("secret"), &digest("wrong!")));
     }
 
     #[test]
-    fn test_constant_time_eq_empty() {
-        assert!(constant_time_eq(b"", b""));
+    fn test_digest_compare_length_differs() {
+        // Tokens of different lengths still produce fixed-width digests, so
+        // the comparison runs to completion instead of early-returning.
+        assert!(!constant_time_eq(
+            &digest("short"),
+            &digest("a-much-longer-candidate-key")
+        ));
+    }
+
+    #[test]
+    fn test_digest_compare_empty_token() {
+        assert!(constant_time_eq(&digest(""), &digest("")));
+        assert!(!constant_time_eq(&digest(""), &digest("secret")));
+    }
+
+    #[test]
+    fn test_sha256_config_form_matches_presented_plaintext() {
+        // Operator stores sha256:<hex>; client presents the plaintext key.
+        let config = AdminAuthConfig {
+            enabled: true,
+            api_keys: vec![format!("sha256:{}", hex::encode(digest("the-real-key")))],
+            header: "Authorization".to_string(),
+        };
+        let presented = digest("the-real-key");
+        let keys = config.admin_keys();
+        assert!(keys.iter().any(|k| constant_time_eq(&presented, &k.digest)));
+        let wrong = digest("not-the-key");
+        assert!(!keys.iter().any(|k| constant_time_eq(&wrong, &k.digest)));
+    }
+
+    #[test]
+    fn test_principal_prefix_for_hashed_key_uses_hash() {
+        let d = digest("the-real-key");
+        let principal = AdminPrincipal::from_digest(&d);
+        assert!(principal.key_prefix.starts_with("sha256:"));
+        assert!(!principal.key_prefix.contains("the-real"));
     }
 }

@@ -309,6 +309,51 @@ async fn test_admin_auth_correct_token_returns_200() {
 }
 
 #[tokio::test]
+async fn test_admin_auth_sha256_hashed_key_accepts_plaintext_token() {
+    // S11: operators may store `sha256:<hex>` digests instead of plaintext
+    // keys; clients still present the plaintext key.
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(b"hashed-secret-key");
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec![format!("sha256:{}", hex::encode(digest))];
+    let app = common::test_app_with_config(config).await;
+
+    // Correct plaintext token → 200
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("Authorization", "Bearer hashed-secret-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Presenting the digest itself must NOT authenticate
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header(
+            "Authorization",
+            format!("Bearer sha256:{}", hex::encode(digest)),
+        )
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Wrong token → 401
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("Authorization", "Bearer wrong-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn test_admin_auth_custom_header() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
