@@ -68,6 +68,32 @@ pub fn rollout_identity<'a>(metadata: &'a Value, sticky_header: &str) -> Option<
     first_forwarded_value(|name| headers.get(name).and_then(|v| v.as_str()))
 }
 
+/// Serialize a captured `ExecutionTrace`, dropping it (with a warn and an
+/// error metric) when it exceeds `max_bytes` (N15). `result_json` is capped
+/// by `queue.max_result_size_bytes` on both the sync and async paths, but the
+/// per-task trace rode along uncapped — a workflow with large intermediate
+/// data could persist an unbounded blob per request. Task detail is a debug
+/// aid, so an oversized one is dropped rather than failing the request.
+/// `max_bytes = 0` disables the cap, mirroring the result cap's semantics.
+pub fn serialize_task_trace_capped(
+    trace: Option<&dataflow_rs::ExecutionTrace>,
+    max_bytes: usize,
+    context: &str,
+) -> Option<String> {
+    let json = serde_json::to_string(trace?).ok()?;
+    if max_bytes > 0 && json.len() > max_bytes {
+        crate::metrics::record_error("task_trace_size_exceeded");
+        tracing::warn!(
+            context = %context,
+            task_trace_bytes = json.len(),
+            limit_bytes = max_bytes,
+            "task_trace_json exceeds queue.max_result_size_bytes; dropping task detail"
+        );
+        return None;
+    }
+    Some(json)
+}
+
 /// Compute the rollout bucket (0–99) for a caller.
 ///
 /// With a stable identity (configured sticky header, else forwarded client
@@ -109,6 +135,18 @@ mod tests {
 
     fn make_message(data: Value) -> dataflow_rs::Message {
         dataflow_rs::Message::from_value(&data)
+    }
+
+    #[test]
+    fn test_task_trace_cap_drops_oversized_detail() {
+        let trace = dataflow_rs::ExecutionTrace::new();
+        // Empty trace serializes to a small JSON — passes any nonzero cap…
+        assert!(serialize_task_trace_capped(Some(&trace), 1024, "t").is_some());
+        // …fails a cap smaller than its serialization…
+        assert!(serialize_task_trace_capped(Some(&trace), 1, "t").is_none());
+        // …and 0 disables the cap, mirroring queue.max_result_size_bytes.
+        assert!(serialize_task_trace_capped(Some(&trace), 0, "t").is_some());
+        assert!(serialize_task_trace_capped(None, 1024, "t").is_none());
     }
 
     #[test]

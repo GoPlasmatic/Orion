@@ -375,9 +375,11 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
             )
         }
     };
-    let task_trace_json = task_trace
-        .as_ref()
-        .and_then(|t| serde_json::to_string(t).ok());
+    let task_trace_json = crate::engine::utils::serialize_task_trace_capped(
+        task_trace.as_ref(),
+        max_result_size_bytes,
+        &trace_id,
+    );
 
     crate::engine::utils::remove_rollout_bucket(&mut message);
 

@@ -776,9 +776,11 @@ async fn process_sync_for_channel(
             }
 
             let input_json = serde_json::to_string(&data).ok();
-            let task_trace_json = task_trace
-                .as_ref()
-                .and_then(|t| serde_json::to_string(t).ok());
+            let task_trace_json = crate::engine::utils::serialize_task_trace_capped(
+                task_trace.as_ref(),
+                max_result_size,
+                channel,
+            );
             persist_trace_and_cache(
                 state,
                 &channel_config,
