@@ -380,22 +380,34 @@ impl ChannelRegistry {
                     }
                 });
 
-            let rate_limit_key_logic = parsed_config
+            // N5: an uncompilable `key_logic` used to fall back to
+            // `client_ip`, silently re-dimensioning the limit — a per-API-key
+            // or per-tenant limit became per-IP, so every tenant behind one
+            // NAT shared a bucket and one tenant got N× its quota by rotating
+            // IPs. Quarantine the channel instead, like N3/N4 do for the
+            // other guard-bearing config.
+            let key_logic_source = parsed_config
                 .rate_limit
                 .as_ref()
-                .and_then(|rl| rl.key_logic.as_ref())
-                .and_then(|logic| {
-                    datalogic
-                        .compile(logic)
-                        .map_err(|e| {
-                            tracing::warn!(
-                                channel = %channel.name,
-                                error = %e,
-                                "Failed to compile rate limit key_logic, falling back to client_ip"
-                            );
-                        })
-                        .ok()
-                });
+                .and_then(|rl| rl.key_logic.as_ref());
+            let rate_limit_key_logic = match key_logic_source {
+                Some(logic) => match datalogic.compile(logic) {
+                    Ok(compiled) => Some(compiled),
+                    Err(e) => {
+                        tracing::error!(
+                            channel = %channel.name,
+                            error = %e,
+                            "Refusing to load channel: rate_limit.key_logic does not compile"
+                        );
+                        issues.push(ChannelLoadIssue {
+                            channel: channel.name.clone(),
+                            reason: format!("rate_limit.key_logic does not compile: {e}"),
+                        });
+                        continue;
+                    }
+                },
+                None => None,
+            };
 
             // N4: dropping an uncompilable expression to `None` made
             // `validate_input` a no-op, so the channel's declared input

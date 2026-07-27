@@ -187,6 +187,22 @@ async fn uncompilable_validation_logic_refuses_channel_load() {
     .await;
 }
 
+/// N5: a `rate_limit.key_logic` that no longer compiles used to fall back to
+/// `client_ip`, silently re-dimensioning the limit — a per-API-key or
+/// per-tenant limit became per-IP, so tenants behind one NAT shared a bucket
+/// and one tenant could take N× its quota by rotating IPs. Same class as
+/// N3/N4: refuse the channel rather than serve it with a different control
+/// than the one configured.
+#[tokio::test]
+async fn uncompilable_rate_limit_key_logic_refuses_channel_load() {
+    assert_refused(
+        r#"{"rate_limit": {"requests_per_second": 10, "burst": 10, "key_logic": {"==": [1, 1], "!=": [1, 2]}}}"#,
+        "bad-key-logic-ch",
+        "rate_limit.key_logic does not compile",
+    )
+    .await;
+}
+
 /// F35: the defect this change fixes. One channel with an unparseable
 /// `config_json` used to fail *every* operation that triggers a reload —
 /// activate, archive, delete, rollout — with a 500 `CONFIG_ERROR`, because the

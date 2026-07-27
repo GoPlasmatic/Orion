@@ -192,7 +192,19 @@ pub async fn rate_limit_middleware(
                     Ok(val) => val.as_str().map(|s| s.to_string()).unwrap_or_else(|| {
                         serde_json::to_string(&val).unwrap_or_else(|_| client_ip.clone())
                     }),
-                    Err(_) => client_ip.clone(),
+                    // N5: falling back to client_ip here would silently
+                    // re-dimension the limit mid-flight. The key is part of
+                    // the control, so a request whose key cannot be computed
+                    // is rejected rather than counted in the wrong bucket.
+                    Err(e) => {
+                        tracing::warn!(
+                            channel = %channel,
+                            error = %e,
+                            "rate_limit.key_logic evaluation failed; rejecting request"
+                        );
+                        metrics::record_rate_limit_rejected(channel);
+                        return rate_limited_response();
+                    }
                 }
             } else {
                 client_ip.clone()

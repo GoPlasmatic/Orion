@@ -44,6 +44,13 @@ Rate limiting uses the **token bucket algorithm**: tokens replenish at the confi
 }
 ```
 
+The key is part of the control, not a hint: a `key_logic` that does not
+compile refuses the channel at load (it is quarantined and reported on
+`/health`), and a request whose key cannot be evaluated is rejected with
+`429`. Neither silently falls back to `client_ip` — that would re-dimension a
+per-tenant limit into a per-IP one, sharing a bucket across every tenant
+behind one NAT.
+
 **Single instance:** rate limiter state is in-memory (token bucket via governor).
 
 **Cluster mode:** per-channel limits enforce as a shared fixed window on the cluster Redis, so the configured rate holds across **all replicas combined** — 3 replicas at `requests_per_second = 100` is still ~100 RPS globally, and limiter state survives engine reloads. Platform-level limits (`[rate_limit]`, keyed by client IP) intentionally stay per-node: with N replicas the effective platform limit is N× the configured value.
