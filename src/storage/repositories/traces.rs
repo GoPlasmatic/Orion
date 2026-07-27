@@ -477,16 +477,31 @@ impl TraceRepository for SqlTraceRepository {
 
     async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError> {
         crate::metrics::timed_db_op("traces.delete_older_than", async {
-            let cutoff = chrono::Utc::now()
-                .naive_utc()
+            let now = chrono::Utc::now().naive_utc();
+            let cutoff = now
                 .checked_sub_signed(chrono::Duration::hours(hours as i64))
+                .unwrap_or(chrono::NaiveDateTime::MIN);
+            // D4: rows stuck in `pending`/`running` (queue submit failed,
+            // worker died mid-flight) previously matched no retention
+            // predicate and leaked forever — an unbounded leak on the
+            // hottest table, hidden because retention *looked* configured.
+            // Real processing is bounded by processing_timeout_ms (seconds),
+            // so anything non-terminal at twice the retention window is
+            // unambiguously dead.
+            let stuck_cutoff = now
+                .checked_sub_signed(chrono::Duration::hours((hours as i64).saturating_mul(2)))
                 .unwrap_or(chrono::NaiveDateTime::MIN);
 
             let (sql, values) = build_sqlx(
-                Query::delete()
-                    .from_table(Traces::Table)
-                    .and_where(Expr::col(Traces::CreatedAt).lt(cutoff))
-                    .and_where(Expr::col(Traces::Status).is_in(["completed", "failed"])),
+                Query::delete().from_table(Traces::Table).cond_where(
+                    Condition::any()
+                        .add(
+                            Expr::col(Traces::CreatedAt)
+                                .lt(cutoff)
+                                .and(Expr::col(Traces::Status).is_in(["completed", "failed"])),
+                        )
+                        .add(Expr::col(Traces::CreatedAt).lt(stuck_cutoff)),
+                ),
             );
 
             let rows_affected = self.pool.execute_query(&sql, values).await?;
@@ -569,7 +584,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_delete_older_than_preserves_pending_traces() {
+    async fn test_delete_older_than_preserves_recent_pending_traces() {
         let pool = test_pool().await;
         let repo = SqlTraceRepository::new(pool.clone());
 
@@ -579,10 +594,12 @@ mod tests {
             .await
             .expect("test");
 
-        // Backdate it
+        // Backdate it past the retention window but inside the 2× stuck
+        // window: old enough that a *terminal* row would be deleted, not yet
+        // old enough to be declared stuck.
         let old_time = chrono::Utc::now()
             .naive_utc()
-            .checked_sub_signed(chrono::Duration::hours(200))
+            .checked_sub_signed(chrono::Duration::hours(100))
             .expect("test")
             .to_string();
         match &pool {
@@ -597,8 +614,44 @@ mod tests {
             _ => unreachable!("Test requires SQLite"),
         }
 
-        // Cleanup should NOT delete pending traces
         let deleted = repo.delete_older_than(72).await.expect("test");
         assert_eq!(deleted, 0);
+    }
+
+    #[tokio::test]
+    async fn test_delete_older_than_reclaims_stuck_traces() {
+        // D4: pending/running rows whose worker died (or whose queue submit
+        // failed) previously leaked forever. Beyond twice the retention
+        // window they are unambiguously dead and must be reclaimed.
+        let pool = test_pool().await;
+        let repo = SqlTraceRepository::new(pool.clone());
+
+        for status in ["pending", "running"] {
+            let trace = repo
+                .create_pending("orders", Some("ch_orders"), "async", None, None)
+                .await
+                .expect("test");
+            let old_time = chrono::Utc::now()
+                .naive_utc()
+                .checked_sub_signed(chrono::Duration::hours(200))
+                .expect("test")
+                .to_string();
+            match &pool {
+                crate::storage::DbPool::Sqlite(p) => {
+                    sqlx::query("UPDATE traces SET created_at = ?, status = ? WHERE id = ?")
+                        .bind(&old_time)
+                        .bind(status)
+                        .bind(&trace.id)
+                        .execute(p)
+                        .await
+                        .expect("test");
+                }
+                _ => unreachable!("Test requires SQLite"),
+            }
+        }
+
+        // 200h > 2 × 72h → both stuck rows deleted.
+        let deleted = repo.delete_older_than(72).await.expect("test");
+        assert_eq!(deleted, 2);
     }
 }
