@@ -39,3 +39,6 @@ debug/
 
 # Launch/marketing collateral (local only — drafts, checklists, submission notes)
 /marketing/
+
+# Internal working documents (audit backlogs, design proposals)
+/proposals/
