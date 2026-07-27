@@ -16,6 +16,7 @@ pub use config::{
     EsConnectorConfig, HttpConnectorConfig, KafkaConnectorConfig, OperationGates, RetryConfig,
     StorageConnectorConfig, VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES,
 };
+pub(crate) use masking::MASK;
 pub use masking::{find_masked_value, mask_connector, mask_connector_secrets, unmask_config};
 pub use registry::ConnectorRegistry;
 

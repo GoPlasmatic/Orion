@@ -23,6 +23,16 @@ use crate::storage::repositories::traces::{TraceCompletedRow, TraceFilter};
 pub(crate) use crate::engine::utils::merge_metadata;
 use crate::engine::utils::{inject_rollout_bucket, remove_rollout_bucket};
 
+/// Request headers whose values are credentials, masked before the header
+/// map enters workflow metadata (S10). `http::HeaderName` is always
+/// lowercase, so plain slice lookup suffices.
+const CREDENTIAL_HEADERS: [&str; 4] = [
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+    "x-api-key",
+];
+
 /// One completed sync trace, ready for persistence and (optionally) caching.
 /// Shared by [`route_store_completed`] and [`persist_trace_and_cache`] so
 /// the trace fields are passed as a single borrow instead of 6 positional
@@ -315,14 +325,20 @@ pub(crate) async fn dynamic_handler(
         metadata["query"] = json!(query_params);
     }
     // Expose request headers so validation_logic can check content-type,
-    // content-length, authorization, etc.
+    // content-length, header presence, etc. Credential-bearing headers are
+    // masked (S10): this map is persisted verbatim into `traces.result_json`
+    // on the async path and `trace_dlq.metadata_json` on the failure path,
+    // so a plaintext value here is a plaintext credential at rest — and,
+    // before S14, one readable over HTTP. The key survives so logic can
+    // still test presence; the value is never recoverable downstream.
     let header_map: serde_json::Map<String, Value> = headers
         .iter()
         .filter_map(|(name, value)| {
-            value
-                .to_str()
-                .ok()
-                .map(|v| (name.as_str().to_string(), json!(v)))
+            let name = name.as_str();
+            if CREDENTIAL_HEADERS.contains(&name) {
+                return Some((name.to_string(), json!(crate::connector::MASK)));
+            }
+            value.to_str().ok().map(|v| (name.to_string(), json!(v)))
         })
         .collect();
     metadata["headers"] = Value::Object(header_map);

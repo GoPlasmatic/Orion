@@ -15,7 +15,7 @@
 
 use serde_json::Value;
 
-const MASK: &str = "******";
+pub(crate) const MASK: &str = "******";
 
 /// Substrings that make a key a secret wherever it appears in the tree.
 /// Deliberately narrow: `key` alone is not here because it matches innocuous

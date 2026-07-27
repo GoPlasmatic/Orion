@@ -365,3 +365,75 @@ async fn test_get_completed_trace_with_result() {
     assert!(body.get("started_at").is_some());
     assert!(body.get("completed_at").is_some());
 }
+
+// ============================================================
+// Credential redaction (S10/S14)
+// ============================================================
+
+/// S10: credential-bearing request headers must be masked before the header
+/// map enters workflow metadata, because the async path persists the whole
+/// engine message into `traces.result_json`. Asserts the at-rest state via
+/// the repository, independent of what the HTTP trace projection exposes.
+#[tokio::test]
+async fn test_credential_headers_masked_at_rest_in_async_trace() {
+    use axum::body::Body;
+    use axum::http::Request;
+
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    common::create_and_activate_channel(
+        &app,
+        "secure-events",
+        common::simple_log_workflow("Secure Events"),
+    )
+    .await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/data/secure-events/async")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer SUPER-SECRET-TOKEN-A")
+        .header("cookie", "session=SECRET-COOKIE-A")
+        .header("proxy-authorization", "Basic PROXY-SECRET-B")
+        .header("x-api-key", "APIKEY-SECRET-C")
+        .header("x-tenant", "acme")
+        .body(Body::from(
+            serde_json::to_vec(&json!({"data": {"event": "click"}})).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let trace_id = body_json(resp).await["trace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let trace = poll_trace_until_done(&app, &trace_id, 40).await;
+    assert_eq!(trace["status"], "completed");
+
+    let row = state.trace_repo.get_by_id(&trace_id).await.unwrap();
+    let result_json = row
+        .result_json
+        .expect("completed async trace stores result_json");
+    for secret in [
+        "SUPER-SECRET-TOKEN-A",
+        "SECRET-COOKIE-A",
+        "PROXY-SECRET-B",
+        "APIKEY-SECRET-C",
+    ] {
+        assert!(
+            !result_json.contains(secret),
+            "persisted trace leaks credential {secret}: {result_json}"
+        );
+    }
+
+    let msg: serde_json::Value = serde_json::from_str(&result_json).unwrap();
+    let headers = &msg["context"]["metadata"]["headers"];
+    assert_eq!(headers["authorization"], "******");
+    assert_eq!(headers["cookie"], "******");
+    assert_eq!(headers["proxy-authorization"], "******");
+    assert_eq!(headers["x-api-key"], "******");
+    // Non-credential headers stay readable for validation_logic and debugging.
+    assert_eq!(headers["x-tenant"], "acme");
+}
