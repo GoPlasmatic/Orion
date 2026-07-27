@@ -285,42 +285,75 @@ async fn run_batch_worker(
     }
 }
 
+/// Backoff schedule for failed persistence writes (Q6): a transient DB blip
+/// should cost a short stall on this worker, not silently discarded traces.
+/// After the last attempt the write is dropped — with the failure counter
+/// and a warn so the loss is visible.
+const WRITE_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(50), Duration::from_millis(250)];
+
+/// Run `op` with the bounded retry schedule. Returns `Err` only after every
+/// attempt failed.
+async fn with_write_retries<F, Fut>(mut op: F) -> Result<(), crate::errors::OrionError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<(), crate::errors::OrionError>>,
+{
+    let mut last_err = None;
+    for (attempt, delay) in std::iter::once(Duration::ZERO)
+        .chain(WRITE_RETRY_DELAYS)
+        .enumerate()
+    {
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+            tracing::debug!(attempt, "trace_persistence: retrying failed write");
+        }
+        match op().await {
+            Ok(()) => return Ok(()),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.expect("at least one attempt always runs"))
+}
+
 async fn dispatch_one(trace_repo: &Arc<dyn TraceRepository>, task: TracePersistenceTask) {
-    let result: Result<(), crate::errors::OrionError> = match task {
-        TracePersistenceTask::StoreCompleted(row) => trace_repo
-            .store_completed(
-                &row.channel,
-                row.channel_id.as_deref(),
-                &row.mode,
-                row.input_json.as_deref(),
-                &row.result_json,
-                row.duration_ms,
-                row.task_trace_json.as_deref(),
-            )
-            .await
-            .map(|_| ()),
-        TracePersistenceTask::SetResult(row) => {
-            trace_repo
-                .set_result(
-                    &row.id,
+    let result = with_write_retries(|| async {
+        match &task {
+            TracePersistenceTask::StoreCompleted(row) => trace_repo
+                .store_completed(
+                    &row.channel,
+                    row.channel_id.as_deref(),
+                    &row.mode,
+                    row.input_json.as_deref(),
                     &row.result_json,
                     row.duration_ms,
                     row.task_trace_json.as_deref(),
                 )
                 .await
+                .map(|_| ()),
+            TracePersistenceTask::SetResult(row) => {
+                trace_repo
+                    .set_result(
+                        &row.id,
+                        &row.result_json,
+                        row.duration_ms,
+                        row.task_trace_json.as_deref(),
+                    )
+                    .await
+            }
+            TracePersistenceTask::UpdateStatus {
+                id,
+                status,
+                error_message,
+            } => trace_repo
+                .update_status(id, status, error_message.as_deref())
+                .await
+                .map(|_| ()),
         }
-        TracePersistenceTask::UpdateStatus {
-            id,
-            status,
-            error_message,
-        } => trace_repo
-            .update_status(&id, &status, error_message.as_deref())
-            .await
-            .map(|_| ()),
-    };
+    })
+    .await;
     if let Err(e) = result {
         crate::metrics::record_trace_persistence_failure();
-        tracing::warn!(error = %e, "trace_persistence: write failed");
+        tracing::warn!(error = %e, "trace_persistence: write failed after retries, dropping");
     }
 }
 
@@ -329,26 +362,36 @@ async fn flush_batches(
     completed: &mut Vec<TraceCompletedRow>,
     results: &mut Vec<TraceResultRow>,
 ) {
-    // Both arms clear the batch even on error (Q6 covers retrying instead of
-    // discarding); the counter is what makes the discarded rows visible.
+    // Each arm retries the whole batch (Q6) and clears it only afterwards —
+    // success or exhausted retries — so the buffer cannot grow unbounded
+    // while the DB is down. Exhaustion is a counted, logged drop.
     if !completed.is_empty() {
-        if let Err(e) = trace_repo.store_completed_batch(completed).await {
+        if let Err(e) = with_write_retries(|| async {
+            trace_repo
+                .store_completed_batch(completed)
+                .await
+                .map(|_| ())
+        })
+        .await
+        {
             crate::metrics::record_trace_persistence_failure();
             tracing::warn!(
                 error = %e,
                 dropped = completed.len(),
-                "trace_persistence: store_completed_batch failed"
+                "trace_persistence: store_completed_batch failed after retries, dropping"
             );
         }
         completed.clear();
     }
     if !results.is_empty() {
-        if let Err(e) = trace_repo.set_result_batch(results).await {
+        if let Err(e) =
+            with_write_retries(|| async { trace_repo.set_result_batch(results).await }).await
+        {
             crate::metrics::record_trace_persistence_failure();
             tracing::warn!(
                 error = %e,
                 dropped = results.len(),
-                "trace_persistence: set_result_batch failed"
+                "trace_persistence: set_result_batch failed after retries, dropping"
             );
         }
         results.clear();

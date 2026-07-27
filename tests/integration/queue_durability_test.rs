@@ -326,3 +326,111 @@ async fn persistence_workers_run_in_parallel() {
         "2 async_workers must process 2 queued writes concurrently (Q7)"
     );
 }
+
+// ============================================================
+// Q6: transient persistence-write failures retry before dropping
+// ============================================================
+
+/// Fails the first `update_status`, succeeds afterwards, counting calls.
+struct FlakyUpdateStatusRepo {
+    fails_remaining: Arc<std::sync::atomic::AtomicUsize>,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl TraceRepository for FlakyUpdateStatusRepo {
+    async fn create_pending(
+        &self,
+        _channel: &str,
+        _channel_id: Option<&str>,
+        _mode: &str,
+        _input_json: Option<&str>,
+        _access_token_hash: Option<&str>,
+    ) -> Result<Trace, OrionError> {
+        unimplemented!()
+    }
+    async fn get_by_id(&self, _id: &str) -> Result<Trace, OrionError> {
+        unimplemented!()
+    }
+    async fn update_status(
+        &self,
+        id: &str,
+        _status: &str,
+        _error_message: Option<&str>,
+    ) -> Result<Trace, OrionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .fails_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            return Err(OrionError::Storage(sqlx::Error::PoolTimedOut));
+        }
+        Ok(fake_trace(id))
+    }
+    async fn set_result(
+        &self,
+        _id: &str,
+        _result_json: &str,
+        _duration_ms: f64,
+        _task_trace_json: Option<&str>,
+    ) -> Result<(), OrionError> {
+        unimplemented!()
+    }
+    async fn store_completed(
+        &self,
+        _channel: &str,
+        _channel_id: Option<&str>,
+        _mode: &str,
+        _input_json: Option<&str>,
+        _result_json: &str,
+        _duration_ms: f64,
+        _task_trace_json: Option<&str>,
+    ) -> Result<String, OrionError> {
+        unimplemented!()
+    }
+    async fn list_paginated(
+        &self,
+        _filter: &TraceFilter,
+    ) -> Result<PaginatedResult<Trace>, OrionError> {
+        unimplemented!()
+    }
+    async fn delete_older_than(&self, _hours: u64) -> Result<u64, OrionError> {
+        unimplemented!()
+    }
+}
+
+#[tokio::test]
+async fn transient_persistence_failure_is_retried_not_dropped() {
+    let fails_remaining = Arc::new(std::sync::atomic::AtomicUsize::new(1));
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let repo: Arc<dyn TraceRepository> = Arc::new(FlakyUpdateStatusRepo {
+        fails_remaining: fails_remaining.clone(),
+        calls: calls.clone(),
+    });
+
+    let config = orion::config::TracingStorageConfig {
+        mode: orion::config::TraceStorageMode::Async,
+        async_workers: 1,
+        ..Default::default()
+    };
+    let (queue, handle) = orion::queue::trace_persistence::start(&config, repo);
+    assert!(
+        queue
+            .submit(orion::queue::TracePersistenceTask::UpdateStatus {
+                id: "q6".to_string(),
+                status: "completed".to_string(),
+                error_message: None,
+            })
+            .await
+    );
+    drop(queue);
+    handle.shutdown().await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "one failure then one successful retry (Q6) — the write must not be dropped"
+    );
+    assert_eq!(fails_remaining.load(Ordering::SeqCst), 0);
+}
