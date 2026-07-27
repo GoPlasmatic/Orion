@@ -95,6 +95,10 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     get,
     path = "/metrics",
     tag = "Operational",
+    description = "\
+Prometheus exposition endpoint. Guarded by the same admin credential as \
+`/api/v1/admin/*` when `admin_auth.enabled` is true — scrapers must be \
+configured with the key.",
     responses(
         (status = 200, description = "Prometheus metrics", content_type = "text/plain"),
     )
@@ -114,6 +118,22 @@ pub(crate) async fn metrics_endpoint(State(state): State<AppState>) -> impl Into
 
 /// Liveness probe — always returns 200 if the process is running.
 /// Use for Kubernetes `livenessProbe`.
+#[utoipa::path(
+    get,
+    path = "/healthz",
+    tag = "Operational",
+    operation_id = "liveness_probe",
+    summary = "Liveness probe",
+    description = "\
+Liveness probe. Returns `200 {\"status\":\"ok\"}` as long as the process is \
+running and the HTTP server is accepting connections — it performs no \
+dependency checks, so a database or Redis outage must not restart the pod. \
+Use `/readyz` for rotation decisions and `/health` for a detailed report. \
+Unauthenticated, so probes work without provisioning an admin key.",
+    responses(
+        (status = 200, description = "Process is alive"),
+    )
+)]
 pub(crate) async fn liveness_check() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "ok" })))
 }
@@ -149,6 +169,27 @@ async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
 
 /// Readiness probe — checks DB, engine, cluster Redis, and startup readiness.
 /// Use for Kubernetes `readinessProbe`.
+#[utoipa::path(
+    get,
+    path = "/readyz",
+    tag = "Operational",
+    operation_id = "readiness_probe",
+    summary = "Readiness probe",
+    description = "\
+Readiness probe. Reports `ready` only when the database responds, the engine \
+lock is acquirable, startup has completed, and — in cluster mode — the shared \
+Redis answers `PING`. The Redis check matters because that degradation is \
+otherwise silent: deduplication fails open, the shared response cache misses, \
+and cluster rate limiting stops enforcing, all while the data plane keeps \
+returning 200s.
+
+The `components.cluster_redis` field is present only in cluster mode. \
+Unauthenticated, so probes work without provisioning an admin key.",
+    responses(
+        (status = 200, description = "All components ready — `{\"status\":\"ready\",\"components\":{...}}`"),
+        (status = 503, description = "At least one component is not ready — same body shape with `\"status\":\"not_ready\"`"),
+    )
+)]
 pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse {
     use std::sync::atomic::Ordering;
 

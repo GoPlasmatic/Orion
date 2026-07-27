@@ -30,9 +30,10 @@ async fn test_openapi_spec_all_endpoints() {
     let body = common::body_json(response).await;
     let paths = body["paths"].as_object().unwrap();
 
-    // Data channel routes use a dynamic handler (not in OpenAPI spec).
-    // B4 closed the gap on admin routes — backups, audit, and the new
-    // functions endpoint are now decorated and registered.
+    // B4 closed the gap on admin routes — backups, audit, and the
+    // functions endpoint are decorated and registered. C8 added the data
+    // plane (served by one catch-all handler, documented as a templated
+    // path), the DLQ group, and the two Kubernetes probes.
     let expected = [
         "/api/v1/data/traces",
         "/api/v1/data/traces/{id}",
@@ -42,6 +43,15 @@ async fn test_openapi_spec_all_endpoints() {
         "/api/v1/admin/functions",
         "/api/v1/admin/audit-logs",
         "/api/v1/admin/backups",
+        // C8 additions:
+        "/api/v1/data/{channel}",
+        "/api/v1/data/{channel}/async",
+        "/healthz",
+        "/readyz",
+        "/api/v1/admin/trace-dlq",
+        "/api/v1/admin/trace-dlq/{id}",
+        "/api/v1/admin/trace-dlq/{id}/requeue",
+        "/api/v1/admin/trace-dlq/purge",
     ];
 
     for path in &expected {
@@ -66,6 +76,147 @@ async fn openapi_documents_new_b4_tags() {
     assert!(tag_names.contains(&"Functions"));
     assert!(tag_names.contains(&"Audit"));
     assert!(tag_names.contains(&"Backups"));
+}
+
+/// C8 regression guard: the served spec must never go back to advertising an
+/// unauthenticated API. Before C8 there was no `securitySchemes` block and no
+/// `security` on any operation, so every generated client and codegen tool was
+/// told the admin API needed no credential — while the shipped Helm chart and
+/// HA compose enable `admin_auth` by default.
+#[tokio::test]
+async fn openapi_declares_admin_security() {
+    let app = common::test_app().await;
+    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let response = app.oneshot(req).await.unwrap();
+    let body = common::body_json(response).await;
+
+    let schemes = body["components"]["securitySchemes"]
+        .as_object()
+        .expect("securitySchemes must be present");
+    // Default `Authorization: Bearer <key>` plus the custom-header form
+    // selected by `admin_auth.header`.
+    assert_eq!(schemes["admin_bearer"]["type"], "http");
+    assert_eq!(schemes["admin_bearer"]["scheme"], "bearer");
+    assert_eq!(schemes["admin_api_key"]["type"], "apiKey");
+    assert_eq!(schemes["admin_api_key"]["in"], "header");
+
+    let paths = body["paths"].as_object().unwrap();
+    // Everything the admin-auth middleware guards must say so.
+    for path in [
+        "/api/v1/admin/channels",
+        "/api/v1/admin/workflows",
+        "/api/v1/admin/connectors",
+        "/api/v1/admin/trace-dlq",
+        "/api/v1/admin/audit-logs",
+        "/api/v1/data/traces",
+        "/metrics",
+    ] {
+        let security = &paths[path]["get"]["security"];
+        assert!(
+            security.is_array() && !security.as_array().unwrap().is_empty(),
+            "{path} must declare a security requirement"
+        );
+        assert!(
+            paths[path]["get"]["responses"]["401"].is_object(),
+            "{path} must document its 401"
+        );
+    }
+
+    // ...and nothing else may: the data plane and the probes are open by
+    // design, and claiming otherwise would be just as wrong.
+    for (path, method) in [
+        ("/api/v1/data/{channel}", "post"),
+        ("/api/v1/data/{channel}/async", "post"),
+        ("/health", "get"),
+        ("/healthz", "get"),
+        ("/readyz", "get"),
+    ] {
+        assert!(
+            paths[path][method]["security"].is_null(),
+            "{method} {path} is unauthenticated and must not claim otherwise"
+        );
+    }
+}
+
+/// C8: the data plane is the product's primary user-facing API. It was absent
+/// from the spec entirely because `dynamic_handler` serves every channel from
+/// one catch-all route. It is documented as a templated path — assert the
+/// response shapes operators actually need, including the async `202` and the
+/// `Warning: 299` header emitted when trace persistence is off.
+#[tokio::test]
+async fn openapi_documents_the_data_plane() {
+    let app = common::test_app().await;
+    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let response = app.oneshot(req).await.unwrap();
+    let body = common::body_json(response).await;
+
+    let sync = &body["paths"]["/api/v1/data/{channel}"]["post"];
+    assert_eq!(
+        sync["requestBody"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ProcessRequest"
+    );
+    assert_eq!(
+        sync["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ProcessResponse"
+    );
+    // 400 validation, 409 dedup, 429 rate limit, 503 backpressure/CIRCUIT_OPEN,
+    // 504 timeout — the statuses a client has to branch on.
+    for status in [
+        "400", "403", "404", "409", "415", "429", "502", "503", "504",
+    ] {
+        assert!(
+            sync["responses"][status]["content"]["application/json"]["schema"]["$ref"]
+                == "#/components/schemas/ErrorResponse",
+            "sync data plane must document {status} with the shared error envelope"
+        );
+    }
+
+    let async_submit = &body["paths"]["/api/v1/data/{channel}/async"]["post"];
+    let accepted = &async_submit["responses"]["202"];
+    assert_eq!(
+        accepted["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/AsyncSubmitResponse"
+    );
+    assert!(
+        accepted["headers"]["warning"].is_object(),
+        "the 202 must document the `Warning: 299` header emitted when tracing is off"
+    );
+
+    // `trace_id` is nullable: `off` mode returns 202 with no id to poll.
+    let ack = &body["components"]["schemas"]["AsyncSubmitResponse"]["properties"]["trace_id"];
+    assert!(
+        !ack.is_null(),
+        "AsyncSubmitResponse must describe its trace_id field"
+    );
+}
+
+/// C9 (partial): `ErrorResponse` used to be a registered schema that no
+/// `responses(...)` entry referenced, making error shapes undiscoverable.
+#[tokio::test]
+async fn openapi_references_the_shared_error_envelope() {
+    let app = common::test_app().await;
+    let req = common::json_request("GET", "/api/v1/openapi.json", None);
+    let response = app.oneshot(req).await.unwrap();
+    let body = common::body_json(response).await;
+
+    let detail = &body["components"]["schemas"]["ErrorDetail"]["properties"];
+    for field in ["code", "message", "request_id", "details"] {
+        assert!(
+            detail[field].is_object(),
+            "ErrorDetail must describe `{field}`"
+        );
+    }
+
+    // Every operation carries the shared 500.
+    for (path, item) in body["paths"].as_object().unwrap() {
+        for (method, operation) in item.as_object().unwrap() {
+            assert_eq!(
+                operation["responses"]["500"]["content"]["application/json"]["schema"]["$ref"],
+                "#/components/schemas/ErrorResponse",
+                "{method} {path} is missing the shared 500 response"
+            );
+        }
+    }
 }
 
 /// The checked-in `docs/openapi.json` must match what the binary emits via

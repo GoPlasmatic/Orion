@@ -14,6 +14,8 @@ use crate::config::TraceStorageMode;
 use crate::errors::OrionError;
 use crate::metrics;
 use crate::queue::{TracePersistenceQueue, TracePersistenceTask};
+// Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
+use crate::server::routes::openapi::ErrorResponse;
 use crate::server::state::AppState;
 use crate::storage::repositories::traces::{TraceCompletedRow, TraceFilter};
 
@@ -175,8 +177,59 @@ pub fn data_routes() -> Router<AppState> {
 /// - Simple HTTP channels: `POST /{channel}` (single segment, direct name match)
 /// - Async submissions: `POST /{channel}/async` or `POST /{path...}/async`
 /// - REST channels: any method matched against route patterns from DB
+#[utoipa::path(
+    post,
+    path = "/api/v1/data/{channel}",
+    tag = "Data",
+    operation_id = "process_channel_request",
+    summary = "Invoke a channel synchronously",
+    description = "\
+Invoke a channel's workflow synchronously.
+
+This is a **templated** path, not a static one. Orion serves the whole data \
+plane from a single catch-all route (`/api/v1/data/{*path}`) and resolves the \
+target channel at request time, so no per-channel path exists in this document:
+
+* **Simple HTTP channels** — a single path segment matched against the channel \
+  `name`, e.g. `POST /api/v1/data/order-intake`.
+* **REST channels** — each active channel registers its own method and path \
+  pattern (`config.rest.routes`) at engine-reload time; those patterns may span \
+  several segments and declare their own path parameters, which arrive in the \
+  workflow as `metadata.params`. Any HTTP method is accepted — `GET`, `PUT`, \
+  `PATCH` and `DELETE` behave identically to the `POST` documented here, with \
+  the verb exposed as `metadata.http_method`. Query the admin channel API for \
+  the routes a given deployment actually serves.
+
+Append `/async` to submit to the queue instead — see \
+`POST /api/v1/data/{channel}/async`.
+
+This endpoint is unauthenticated: admin auth does not cover the data plane. \
+Per-channel access control is expressed through `validation_logic` and CORS \
+configuration.",
+    params(
+        ("channel" = String, Path, description = "Channel name, or the first segment of a REST channel's registered route pattern."),
+        ("profile" = Option<bool>, Query, description = "Set to `1`/`true` to append `_orion.profile` timings to the response. Requires `tracing.debug_profile_enabled = true`; the `X-Orion-Profile` header does the same."),
+    ),
+    request_body(
+        content = ProcessRequest,
+        description = "Workflow input. `data` is the payload; `metadata` is merged into the message metadata alongside the server-supplied `channel`, `http_method`, `params`, `query`, and `headers` keys. An empty body is accepted (typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`.",
+        content_type = "application/json",
+    ),
+    responses(
+        (status = 200, description = "Workflow completed. `errors` is empty on success; when tasks failed it carries sanitized `{code, message, task_id}` entries and the envelope gains a `request_id` for correlation with the persisted trace.", body = ProcessResponse),
+        (status = 400, description = "Malformed JSON body, empty channel segment, or a channel `validation_logic` rejection (`VALIDATION_ERROR`, with per-field `details`)", body = ErrorResponse),
+        (status = 403, description = "Origin not allowed by the channel's CORS configuration", body = ErrorResponse),
+        (status = 404, description = "No REST route matches the requested method and path. Note that a single-segment path is *not* checked against the channel registry: an unknown name is accepted and the engine returns a `200` envelope with the input echoed back and no errors.", body = ErrorResponse),
+        (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
+        (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),
+        (status = 502, description = "Result exceeded `queue.max_result_size_bytes` (`RESPONSE_TOO_LARGE`)", body = ErrorResponse),
+        (status = 503, description = "Channel backpressure limit reached, or a connector circuit breaker is open (`CIRCUIT_OPEN`)", body = ErrorResponse),
+        (status = 504, description = "Workflow exceeded the channel's `timeout_ms`", body = ErrorResponse),
+    )
+)]
 #[tracing::instrument(skip(state, headers, query_params, body), fields(path = %path))]
-async fn dynamic_handler(
+pub(crate) async fn dynamic_handler(
     State(state): State<AppState>,
     Path(path): Path<String>,
     method: axum::http::Method,
@@ -380,6 +433,59 @@ async fn dynamic_handler(
     )
     .await
 }
+
+/// Documentation-only anchor for the async submission path.
+///
+/// `POST /api/v1/data/{channel}/async` is served by [`dynamic_handler`], which
+/// strips the `/async` suffix from the catch-all path — one Rust function, two
+/// documented operations. `#[utoipa::path]` can only be applied once per
+/// function, so the async operation hangs off this stub instead of inventing a
+/// second handler. It is never called; the macro only reads its attribute.
+#[allow(dead_code)]
+#[utoipa::path(
+    post,
+    path = "/api/v1/data/{channel}/async",
+    tag = "Data",
+    operation_id = "submit_channel_request_async",
+    summary = "Submit to a channel asynchronously",
+    description = "\
+Queue a channel's workflow for background execution and return immediately.
+
+Accepts the same body and resolves the channel exactly as \
+`POST /api/v1/data/{channel}` (including REST route patterns — append `/async` \
+to any of them). All ingress guards still apply before the queue hand-off: \
+CORS, `validation_logic`, deduplication, and backpressure. The response cache \
+is sync-only, so an async submission never returns a cached body.
+
+Poll `GET /api/v1/data/traces/{id}` with the returned `trace_id` for the \
+result. That endpoint is admin-authenticated even though this one is not.",
+    params(
+        ("channel" = String, Path, description = "Channel name, or the first segment of a REST channel's registered route pattern."),
+    ),
+    request_body(
+        content = ProcessRequest,
+        description = "Same envelope as the synchronous endpoint.",
+        content_type = "application/json",
+    ),
+    responses(
+        (
+            status = 202,
+            description = "Accepted and queued. `trace_id` is `null` when trace persistence is off for this channel, in which case there is nothing to poll and a `Warning: 299` header explains why.",
+            body = AsyncSubmitResponse,
+            headers(
+                ("warning" = String, description = "Present only when trace persistence is disabled for the channel: `299 - \"Trace persistence disabled for channel '<name>'\"`. `trace_id` is `null` in that case."),
+            ),
+        ),
+        (status = 400, description = "Malformed JSON body, empty channel segment, or a `validation_logic` rejection", body = ErrorResponse),
+        (status = 403, description = "Origin not allowed by the channel's CORS configuration", body = ErrorResponse),
+        (status = 404, description = "No REST route matches the requested method and path. Note that a single-segment path is *not* checked against the channel registry: an unknown name is accepted and the engine returns a `200` envelope with the input echoed back and no errors.", body = ErrorResponse),
+        (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
+        (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),
+        (status = 503, description = "Channel backpressure limit reached or the trace queue is full/closed", body = ErrorResponse),
+    )
+)]
+pub(crate) fn submit_channel_request_async_docs() {}
 
 /// Values considered truthy in header/query string flags.
 const TRUTHY_VALUES: &[&str] = &["1", "true", "yes", "on"];
@@ -697,6 +803,57 @@ pub(crate) struct ProcessRequest {
 }
 
 // ============================================================
+// Response Types (schema-only)
+// ============================================================
+//
+// The data plane builds its envelopes with `json!` so the hot path serializes
+// exactly once (see `process_sync_for_channel`). These mirrors exist purely so
+// the OpenAPI document describes the real shape; they are registered in
+// `openapi::ApiDoc` and never constructed at runtime.
+
+/// Synchronous data-plane response envelope.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct ProcessResponse {
+    /// Engine message id, also the correlation key inside the persisted trace.
+    id: String,
+    /// Always `ok` — task-level failures are reported in `errors`, not by
+    /// flipping this field.
+    #[schema(example = "ok")]
+    status: String,
+    /// Workflow output. Shape is entirely channel-defined.
+    data: Value,
+    /// Sanitized per-task failures. Empty on a clean run.
+    errors: Vec<ProcessTaskError>,
+    /// Correlation id, present only when `errors` is non-empty: the full
+    /// messages are kept in the trace, not returned to the caller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
+    /// Debug namespace, present only when profiling was requested and
+    /// `tracing.debug_profile_enabled` is on. Currently carries `profile`.
+    #[serde(rename = "_orion", skip_serializing_if = "Option::is_none")]
+    orion: Option<Value>,
+}
+
+/// One task failure, with the message replaced by a generic string — upstream
+/// URLs, connector names, and driver errors stay in the trace.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct ProcessTaskError {
+    code: String,
+    #[schema(example = "Task processing failed; full detail is available in the trace")]
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_id: Option<String>,
+}
+
+/// Acknowledgement returned by `POST /api/v1/data/{channel}/async`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct AsyncSubmitResponse {
+    /// Id to poll via `GET /api/v1/data/traces/{id}`, or `null` when trace
+    /// persistence is disabled for the channel (see the `Warning` header).
+    trace_id: Option<String>,
+}
+
+// ============================================================
 // Trace Listing & Polling
 // ============================================================
 
@@ -715,7 +872,6 @@ pub(crate) struct ProcessRequest {
     ),
     responses(
         (status = 200, description = "Paginated list of traces"),
-        (status = 401, description = "Missing or invalid admin API key (when admin auth is enabled)"),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -739,8 +895,7 @@ pub(crate) async fn list_traces(
     params(("id" = String, Path, description = "Trace ID")),
     responses(
         (status = 200, description = "Trace status and result"),
-        (status = 401, description = "Missing or invalid admin API key (when admin auth is enabled)"),
-        (status = 404, description = "Trace not found"),
+        (status = 404, description = "Trace not found", body = ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state))]

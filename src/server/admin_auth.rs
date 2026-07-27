@@ -40,6 +40,23 @@ impl AdminPrincipal {
     }
 }
 
+/// True when `path` — an Axum `MatchedPath` template such as
+/// `/api/v1/admin/channels/{id}` — is behind admin authentication.
+///
+/// Trace endpoints return full input/result payloads, so they are guarded like
+/// admin routes. Channel traffic cannot collide with the traces prefix: its
+/// `MatchedPath` is always the `/api/v1/data/{*path}` catch-all template.
+///
+/// The OpenAPI `SecurityAddon` (`server::routes::openapi`) applies the spec's
+/// `security` requirement through this same predicate, so the documented
+/// surface cannot drift from what the middleware enforces. The templates it
+/// feeds in are OpenAPI path keys, which are byte-identical to Axum's.
+pub(crate) fn is_guarded_path(path: &str) -> bool {
+    path.starts_with("/api/v1/admin")
+        || path == "/metrics"
+        || path.starts_with("/api/v1/data/traces")
+}
+
 /// Middleware that authenticates admin API requests.
 ///
 /// Skips authentication for non-admin routes and when auth is disabled.
@@ -58,13 +75,7 @@ pub async fn admin_auth_middleware(
         .map(|m| m.as_str())
         .unwrap_or(req.uri().path());
 
-    // Trace endpoints return full input/result payloads, so they are guarded
-    // like admin routes. Channel traffic cannot collide with this prefix: its
-    // MatchedPath is always the `/api/v1/data/{*path}` catch-all template.
-    let is_guarded = path.starts_with("/api/v1/admin")
-        || path == "/metrics"
-        || path.starts_with("/api/v1/data/traces");
-    if !is_guarded {
+    if !is_guarded_path(path) {
         return Ok(next.run(req).await);
     }
 

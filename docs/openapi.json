@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Orion — Declarative Services Runtime API",
-    "description": "Declarative services runtime platform",
+    "description": "Declarative services runtime platform.\n\n**Authentication.** The admin API (`/api/v1/admin/*`), the Prometheus endpoint (`/metrics`), and the trace read endpoints (`/api/v1/data/traces*`) require an admin API key when `admin_auth.enabled` is true — the default in the shipped Helm chart and HA compose files. Operations that need it carry a `security` block; see the `admin_bearer` / `admin_api_key` schemes for how the key is presented and for the `admin_auth.header` config key that selects between them.\n\nThe data plane (`/api/v1/data/{channel}`) and the health probes are deliberately unauthenticated: channel-level access control is expressed through each channel's `validation_logic` and CORS configuration.\n\n**Errors.** Every non-2xx response uses the `ErrorResponse` envelope: `{\"error\": {\"code\", \"message\", \"request_id\"}}`, plus `details` on validation failures.",
     "license": {
       "name": "Apache-2.0"
     },
@@ -97,8 +97,36 @@
           },
           "400": {
             "description": "Unknown query parameter or malformed timestamp"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/backups": {
@@ -113,8 +141,36 @@
           },
           "400": {
             "description": "Unavailable in cluster mode — backups are node-local files"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -127,8 +183,36 @@
           },
           "400": {
             "description": "Backup unavailable (non-SQLite backend, or cluster mode — use managed-DB snapshots/PITR)"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/channels": {
@@ -223,8 +307,36 @@
         "responses": {
           "200": {
             "description": "Paginated list of channels"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -247,8 +359,36 @@
           },
           "400": {
             "description": "Invalid input"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/channels/import": {
@@ -284,8 +424,36 @@
         "responses": {
           "200": {
             "description": "Import results with counts (or would-be results when ?dry_run=true). Dry-run validates each item's shape and values only — it does NOT read the database, so it cannot detect name conflicts. Channels whose names already exist are reported as would_create and will surface as Conflict on the real (non-dry-run) import."
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/channels/{id}": {
@@ -309,10 +477,38 @@
           "200": {
             "description": "Channel details"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Channel not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "put": {
         "tags": [
@@ -347,10 +543,38 @@
           "400": {
             "description": "No draft version or invalid input"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Channel not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -372,10 +596,38 @@
           "204": {
             "description": "Channel deleted"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Channel not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/channels/{id}/status": {
@@ -412,10 +664,38 @@
           "400": {
             "description": "Invalid status transition"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Channel not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/channels/{id}/versions": {
@@ -439,10 +719,38 @@
           "200": {
             "description": "Paginated version history"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Channel not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -464,10 +772,38 @@
           "201": {
             "description": "New draft version created"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Draft already exists"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/connectors": {
@@ -505,8 +841,36 @@
         "responses": {
           "200": {
             "description": "Paginated list of connectors"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -527,10 +891,38 @@
           "201": {
             "description": "Connector created"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Connector name conflict"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/connectors/circuit-breakers": {
@@ -542,8 +934,36 @@
         "responses": {
           "200": {
             "description": "Circuit breaker states"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/connectors/circuit-breakers/{key}": {
@@ -567,10 +987,38 @@
           "200": {
             "description": "Circuit breaker reset"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Circuit breaker not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/connectors/import": {
@@ -606,8 +1054,36 @@
         "responses": {
           "200": {
             "description": "Import results with counts (or would-be results when ?dry_run=true). Dry-run validates each item's shape and values only — it does NOT read the database, so it cannot detect name conflicts. Connectors whose names already exist are reported as would_create and will surface as Conflict on the real (non-dry-run) import."
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/connectors/{id}": {
@@ -631,10 +1107,38 @@
           "200": {
             "description": "Connector details"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Connector not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "put": {
         "tags": [
@@ -666,10 +1170,38 @@
           "200": {
             "description": "Connector updated"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Connector not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -691,10 +1223,38 @@
           "204": {
             "description": "Connector deleted"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Connector not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/engine/reload": {
@@ -706,8 +1266,36 @@
         "responses": {
           "200": {
             "description": "Engine reloaded"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/engine/status": {
@@ -719,8 +1307,36 @@
         "responses": {
           "200": {
             "description": "Engine status"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/functions": {
@@ -732,8 +1348,36 @@
         "responses": {
           "200": {
             "description": "Registered workflow function schemas"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/trace-dlq": {
@@ -785,8 +1429,36 @@
         "responses": {
           "200": {
             "description": "Paginated DLQ entries without payloads — fetch one by id for the payload"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/trace-dlq/purge": {
@@ -798,19 +1470,56 @@
         "requestBody": {
           "content": {
             "application/json": {
-              "schema": {}
+              "schema": {
+                "$ref": "#/components/schemas/PurgeTraceDlqRequest"
+              }
             }
           },
           "required": true
         },
         "responses": {
           "200": {
-            "description": "Exhausted entries older than `older_than_hours` deleted"
+            "description": "Exhausted entries older than `older_than_hours` deleted; returns `{purged, older_than_hours}`"
           },
           "400": {
-            "description": "Missing or malformed `older_than_hours`"
+            "description": "Missing or malformed `older_than_hours`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/trace-dlq/{id}": {
@@ -834,10 +1543,45 @@
           "200": {
             "description": "DLQ entry including the failed payload and metadata"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "No such DLQ entry"
+            "description": "No such DLQ entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/trace-dlq/{id}/requeue": {
@@ -861,10 +1605,45 @@
           "200": {
             "description": "Entry reset to retry_count = 0 and scheduled for immediate retry"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "No such DLQ entry"
+            "description": "No such DLQ entry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/workflows": {
@@ -948,8 +1727,36 @@
         "responses": {
           "200": {
             "description": "Paginated list of workflows"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -972,8 +1779,36 @@
           },
           "400": {
             "description": "Invalid input"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/workflows/export": {
@@ -1057,8 +1892,36 @@
         "responses": {
           "200": {
             "description": "Exported workflows"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/workflows/import": {
@@ -1094,8 +1957,36 @@
         "responses": {
           "200": {
             "description": "Import results with counts (or would-be results when ?dry_run=true)"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/workflows/validate": {
@@ -1124,8 +2015,36 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/workflows/{id}": {
@@ -1149,10 +2068,38 @@
           "200": {
             "description": "Workflow details"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Workflow not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "put": {
         "tags": [
@@ -1187,10 +2134,38 @@
           "400": {
             "description": "No draft version or invalid input"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Workflow not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -1212,10 +2187,38 @@
           "204": {
             "description": "Workflow deleted"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Workflow not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/workflows/{id}/rollout": {
@@ -1251,8 +2254,36 @@
           },
           "400": {
             "description": "Invalid rollout configuration"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/workflows/{id}/status": {
@@ -1289,10 +2320,38 @@
           "400": {
             "description": "Invalid status transition"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Workflow not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/workflows/{id}/test": {
@@ -1326,10 +2385,38 @@
           "200": {
             "description": "Test result with trace"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Workflow not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/admin/workflows/{id}/versions": {
@@ -1353,10 +2440,38 @@
           "200": {
             "description": "Paginated version history"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Workflow not found"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -1378,10 +2493,38 @@
           "201": {
             "description": "New draft version created"
           },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Draft already exists"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/data/traces": {
@@ -1462,9 +2605,34 @@
             "description": "Paginated list of traces"
           },
           "401": {
-            "description": "Missing or invalid admin API key (when admin auth is enabled)"
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
       }
     },
     "/api/v1/data/traces/{id}": {
@@ -1489,10 +2657,327 @@
             "description": "Trace status and result"
           },
           "401": {
-            "description": "Missing or invalid admin API key (when admin auth is enabled)"
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "404": {
-            "description": "Trace not found"
+            "description": "Trace not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/data/{channel}": {
+      "post": {
+        "tags": [
+          "Data"
+        ],
+        "summary": "Invoke a channel synchronously",
+        "description": "Invoke a channel's workflow synchronously.\n\nThis is a **templated** path, not a static one. Orion serves the whole data plane from a single catch-all route (`/api/v1/data/{*path}`) and resolves the target channel at request time, so no per-channel path exists in this document:\n\n* **Simple HTTP channels** — a single path segment matched against the channel `name`, e.g. `POST /api/v1/data/order-intake`.\n* **REST channels** — each active channel registers its own method and path pattern (`config.rest.routes`) at engine-reload time; those patterns may span several segments and declare their own path parameters, which arrive in the workflow as `metadata.params`. Any HTTP method is accepted — `GET`, `PUT`, `PATCH` and `DELETE` behave identically to the `POST` documented here, with the verb exposed as `metadata.http_method`. Query the admin channel API for the routes a given deployment actually serves.\n\nAppend `/async` to submit to the queue instead — see `POST /api/v1/data/{channel}/async`.\n\nThis endpoint is unauthenticated: admin auth does not cover the data plane. Per-channel access control is expressed through `validation_logic` and CORS configuration.",
+        "operationId": "process_channel_request",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "description": "Channel name, or the first segment of a REST channel's registered route pattern.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "profile",
+            "in": "query",
+            "description": "Set to `1`/`true` to append `_orion.profile` timings to the response. Requires `tracing.debug_profile_enabled = true`; the `X-Orion-Profile` header does the same.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Workflow input. `data` is the payload; `metadata` is merged into the message metadata alongside the server-supplied `channel`, `http_method`, `params`, `query`, and `headers` keys. An empty body is accepted (typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow completed. `errors` is empty on success; when tasks failed it carries sanitized `{code, message, task_id}` entries and the envelope gains a `request_id` for correlation with the persisted trace.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON body, empty channel segment, or a channel `validation_logic` rejection (`VALIDATION_ERROR`, with per-field `details`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed by the channel's CORS configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No REST route matches the requested method and path. Note that a single-segment path is *not* checked against the channel registry: an unknown name is accepted and the engine returns a `200` envelope with the input echoed back and no errors.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Deduplication key already seen inside the channel's dedup window",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Non-empty body without a JSON `Content-Type`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded (global or per-channel)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Result exceeded `queue.max_result_size_bytes` (`RESPONSE_TOO_LARGE`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Channel backpressure limit reached, or a connector circuit breaker is open (`CIRCUIT_OPEN`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Workflow exceeded the channel's `timeout_ms`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/data/{channel}/async": {
+      "post": {
+        "tags": [
+          "Data"
+        ],
+        "summary": "Submit to a channel asynchronously",
+        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v1/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: CORS, `validation_logic`, deduplication, and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v1/data/traces/{id}` with the returned `trace_id` for the result. That endpoint is admin-authenticated even though this one is not.",
+        "operationId": "submit_channel_request_async",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "path",
+            "description": "Channel name, or the first segment of a REST channel's registered route pattern.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Same envelope as the synchronous endpoint.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted and queued. `trace_id` is `null` when trace persistence is off for this channel, in which case there is nothing to poll and a `Warning: 299` header explains why.",
+            "headers": {
+              "warning": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Present only when trace persistence is disabled for the channel: `299 - \"Trace persistence disabled for channel '<name>'\"`. `trace_id` is `null` in that case."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AsyncSubmitResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON body, empty channel segment, or a `validation_logic` rejection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Origin not allowed by the channel's CORS configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No REST route matches the requested method and path. Note that a single-segment path is *not* checked against the channel registry: an unknown name is accepted and the engine returns a `200` envelope with the input echoed back and no errors.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Deduplication key already seen inside the channel's dedup window",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Non-empty body without a JSON `Content-Type`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded (global or per-channel)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Channel backpressure limit reached or the trace queue is full/closed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -1507,8 +2992,43 @@
           "200": {
             "description": "Service healthy"
           },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "503": {
             "description": "Service degraded"
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "Operational"
+        ],
+        "summary": "Liveness probe",
+        "description": "Liveness probe. Returns `200 {\"status\":\"ok\"}` as long as the process is running and the HTTP server is accepting connections — it performs no dependency checks, so a database or Redis outage must not restart the pod. Use `/readyz` for rotation decisions and `/health` for a detailed report. Unauthenticated, so probes work without provisioning an admin key.",
+        "operationId": "liveness_probe",
+        "responses": {
+          "200": {
+            "description": "Process is alive"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -1518,6 +3038,7 @@
         "tags": [
           "Operational"
         ],
+        "description": "Prometheus exposition endpoint. Guarded by the same admin credential as `/api/v1/admin/*` when `admin_auth.enabled` is true — scrapers must be configured with the key.",
         "operationId": "metrics_endpoint",
         "responses": {
           "200": {
@@ -1525,6 +3046,62 @@
             "content": {
               "text/plain": {}
             }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "Operational"
+        ],
+        "summary": "Readiness probe",
+        "description": "Readiness probe. Reports `ready` only when the database responds, the engine lock is acquirable, startup has completed, and — in cluster mode — the shared Redis answers `PING`. The Redis check matters because that degradation is otherwise silent: deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing, all while the data plane keeps returning 200s.\n\nThe `components.cluster_redis` field is present only in cluster mode. Unauthenticated, so probes work without provisioning an admin key.",
+        "operationId": "readiness_probe",
+        "responses": {
+          "200": {
+            "description": "All components ready — `{\"status\":\"ready\",\"components\":{...}}`"
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "At least one component is not ready — same body shape with `\"status\":\"not_ready\"`"
           }
         }
       }
@@ -1532,6 +3109,19 @@
   },
   "components": {
     "schemas": {
+      "AsyncSubmitResponse": {
+        "type": "object",
+        "description": "Acknowledgement returned by `POST /api/v1/data/{channel}/async`.",
+        "properties": {
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Id to poll via `GET /api/v1/data/traces/{id}`, or `null` when trace\npersistence is disabled for the channel (see the `Warning` header)."
+          }
+        }
+      },
       "Channel": {
         "type": "object",
         "required": [
@@ -1845,16 +3435,60 @@
         ],
         "properties": {
           "code": {
-            "type": "string"
+            "type": "string",
+            "description": "Stable machine-readable code, e.g. `NOT_FOUND`, `VALIDATION_ERROR`,\n`RATE_LIMITED`, `CIRCUIT_OPEN`, `TIMEOUT`, `INTERNAL_ERROR`.",
+            "example": "VALIDATION_ERROR"
+          },
+          "details": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ErrorFieldDetail"
+            },
+            "description": "Per-field breakdown, present only on `VALIDATION_ERROR`."
           },
           "message": {
+            "type": "string",
+            "description": "Human-readable message. Internal 5xx messages are replaced with a\ngeneric string; the detail is logged and kept in the trace."
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Echo of the request's `x-request-id`. Omitted when the request carried\nno id and none was generated."
+          }
+        }
+      },
+      "ErrorFieldDetail": {
+        "type": "object",
+        "description": "One entry of `error.details` on a validation failure.",
+        "required": [
+          "path",
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
             "type": "string"
+          },
+          "expected": {},
+          "got": {},
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "JSON pointer-ish path to the offending field.",
+            "example": "data.amount"
           }
         }
       },
       "ErrorResponse": {
         "type": "object",
-        "description": "Error response body matching Orion's `{\"error\": {\"code\": \"...\", \"message\": \"...\"}}` format.",
+        "description": "Error response body matching Orion's\n`{\"error\": {\"code\": \"...\", \"message\": \"...\", \"request_id\": \"...\"}}` format.\n\nEvery 4xx/5xx from `OrionError` — and the 500 emitted by the panic-recovery\nlayer — uses this envelope.",
         "required": [
           "error"
         ],
@@ -1872,6 +3506,85 @@
         "properties": {
           "data": {},
           "metadata": {}
+        }
+      },
+      "ProcessResponse": {
+        "type": "object",
+        "description": "Synchronous data-plane response envelope.",
+        "required": [
+          "id",
+          "status",
+          "data",
+          "errors"
+        ],
+        "properties": {
+          "_orion": {
+            "description": "Debug namespace, present only when profiling was requested and\n`tracing.debug_profile_enabled` is on. Currently carries `profile`."
+          },
+          "data": {
+            "description": "Workflow output. Shape is entirely channel-defined."
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProcessTaskError"
+            },
+            "description": "Sanitized per-task failures. Empty on a clean run."
+          },
+          "id": {
+            "type": "string",
+            "description": "Engine message id, also the correlation key inside the persisted trace."
+          },
+          "request_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Correlation id, present only when `errors` is non-empty: the full\nmessages are kept in the trace, not returned to the caller."
+          },
+          "status": {
+            "type": "string",
+            "description": "Always `ok` — task-level failures are reported in `errors`, not by\nflipping this field.",
+            "example": "ok"
+          }
+        }
+      },
+      "ProcessTaskError": {
+        "type": "object",
+        "description": "One task failure, with the message replaced by a generic string — upstream\nURLs, connector names, and driver errors stay in the trace.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "example": "Task processing failed; full detail is available in the trace"
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "PurgeTraceDlqRequest": {
+        "type": "object",
+        "required": [
+          "older_than_hours"
+        ],
+        "properties": {
+          "older_than_hours": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Age cut-off in hours: exhausted entries whose `failed_at` is older than\nthis are deleted. Required rather than defaulted — purging is\ndestructive and an omitted age must not silently mean \"everything\".",
+            "example": 168,
+            "minimum": 0
+          }
         }
       },
       "RolloutUpdateRequest": {
@@ -2232,6 +3945,19 @@
             "type": "string"
           }
         }
+      }
+    },
+    "securitySchemes": {
+      "admin_api_key": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Alternative to `admin_bearer`, active when `admin_auth.header` names a header other than `Authorization`. The raw key is sent as that header's value with no `Bearer ` prefix. `X-API-Key` is the conventional choice and is what this document shows, but the header name is deployment-specific — substitute whatever `admin_auth.header` is set to. Exactly one of the two schemes is live at a time; they are listed as alternatives because this document is generated without knowledge of a deployment's config."
+      },
+      "admin_bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Admin API key presented as `Authorization: Bearer <key>` — the default. Enforced on `/api/v1/admin/*`, `/metrics`, and `/api/v1/data/traces*` whenever `admin_auth.enabled` is true, which the shipped Helm chart and HA compose files set. Keys come from `admin_auth.api_keys`, either in plaintext or as `sha256:<64-hex>` digests. The data plane (`POST /api/v1/data/{channel}`) is not covered by this scheme."
       }
     }
   },

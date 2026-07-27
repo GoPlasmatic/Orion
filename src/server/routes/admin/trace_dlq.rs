@@ -30,10 +30,12 @@ pub(crate) struct TraceDlqQuery {
     limit: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PurgeTraceDlqRequest {
-    /// Required rather than defaulted: purging is destructive and an omitted
-    /// age must not silently mean "everything".
+    /// Age cut-off in hours: exhausted entries whose `failed_at` is older than
+    /// this are deleted. Required rather than defaulted — purging is
+    /// destructive and an omitted age must not silently mean "everything".
+    #[schema(example = 168)]
     older_than_hours: u64,
 }
 
@@ -83,7 +85,7 @@ pub(crate) async fn list_trace_dlq(
     params(("id" = String, Path, description = "DLQ entry id")),
     responses(
         (status = 200, description = "DLQ entry including the failed payload and metadata"),
-        (status = 404, description = "No such DLQ entry"),
+        (status = 404, description = "No such DLQ entry", body = crate::server::routes::openapi::ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -101,7 +103,7 @@ pub(crate) async fn get_trace_dlq_entry(
     params(("id" = String, Path, description = "DLQ entry id")),
     responses(
         (status = 200, description = "Entry reset to retry_count = 0 and scheduled for immediate retry"),
-        (status = 404, description = "No such DLQ entry"),
+        (status = 404, description = "No such DLQ entry", body = crate::server::routes::openapi::ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state, principal))]
@@ -125,10 +127,10 @@ pub(crate) async fn requeue_trace_dlq_entry(
     post,
     path = "/api/v1/admin/trace-dlq/purge",
     tag = "Trace DLQ",
-    request_body = inline(serde_json::Value),
+    request_body = PurgeTraceDlqRequest,
     responses(
-        (status = 200, description = "Exhausted entries older than `older_than_hours` deleted"),
-        (status = 400, description = "Missing or malformed `older_than_hours`"),
+        (status = 200, description = "Exhausted entries older than `older_than_hours` deleted; returns `{purged, older_than_hours}`"),
+        (status = 400, description = "Missing or malformed `older_than_hours`", body = crate::server::routes::openapi::ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state, principal))]
