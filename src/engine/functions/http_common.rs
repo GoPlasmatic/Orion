@@ -407,6 +407,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let http_config = HttpConnectorConfig {
+            retry_non_idempotent: false,
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
@@ -451,6 +452,7 @@ mod tests {
         headers.insert("x-custom".to_string(), "custom-value".to_string());
 
         let http_config = HttpConnectorConfig {
+            retry_non_idempotent: false,
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::from([(
@@ -497,6 +499,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let http_config = HttpConnectorConfig {
+            retry_non_idempotent: false,
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
@@ -538,6 +541,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let http_config = HttpConnectorConfig {
+            retry_non_idempotent: false,
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
@@ -581,6 +585,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let http_config = HttpConnectorConfig {
+            retry_non_idempotent: false,
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
@@ -624,6 +629,7 @@ mod tests {
 
         let client = reqwest::Client::new();
         let http_config = HttpConnectorConfig {
+            retry_non_idempotent: false,
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),
@@ -652,6 +658,7 @@ mod tests {
     async fn test_execute_request_connection_refused() {
         let client = reqwest::Client::new();
         let http_config = HttpConnectorConfig {
+            retry_non_idempotent: false,
             url: "http://127.0.0.1:1".to_string(),
             method: String::new(),
             headers: std::collections::HashMap::new(),
@@ -687,6 +694,7 @@ mod tests {
 
     fn localhost_config(addr: std::net::SocketAddr) -> HttpConnectorConfig {
         HttpConnectorConfig {
+            retry_non_idempotent: false,
             url: format!("http://{}", addr),
             method: String::new(),
             headers: std::collections::HashMap::new(),

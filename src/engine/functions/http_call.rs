@@ -54,7 +54,27 @@ impl AsyncFunctionHandler for HttpCallHandler {
 
             let timeout = Duration::from_millis(input.timeout_ms);
 
+            // F8: retrying a non-idempotent method resends the side effect.
+            // A POST that times out is indistinguishable from one the server
+            // applied, so re-sending it means double charges and double
+            // orders — out of the box, since max_retries defaults to 3.
+            // Idempotent methods retry as before; others need an explicit
+            // per-connector opt-in (the workflow can carry its own
+            // idempotency key in headers).
+            let retryable_method = is_idempotent(&method) || http_config.retry_non_idempotent;
             let retry_config = &http_config.retry;
+            let policy = super::RetryPolicy {
+                max_retries: if retryable_method {
+                    retry_config.max_retries
+                } else {
+                    0
+                },
+                retry_delay_ms: retry_config.retry_delay_ms,
+                // Bound the whole loop by the task's own timeout budget, so
+                // one http_call cannot outlive the channel deadline it sits
+                // under (attempts + backoff were previously unbounded).
+                deadline: Some(timeout.saturating_mul(retry_config.max_retries + 1)),
+            };
             let response_body = if self.registry.circuit_breaker_enabled() {
                 let channel = super::extract_channel(ctx.message());
                 let key = format!("{}:{}", channel, input.connector);
@@ -63,8 +83,7 @@ impl AsyncFunctionHandler for HttpCallHandler {
                     &breaker,
                     &input.connector,
                     channel,
-                    retry_config.max_retries,
-                    retry_config.retry_delay_ms,
+                    policy,
                     "HTTP call",
                     || {
                         http_common::execute_request(
@@ -80,22 +99,17 @@ impl AsyncFunctionHandler for HttpCallHandler {
                 )
                 .await?
             } else {
-                super::retry_with_backoff(
-                    retry_config.max_retries,
-                    retry_config.retry_delay_ms,
-                    "HTTP call",
-                    || {
-                        http_common::execute_request(
-                            &self.client,
-                            &method,
-                            &url,
-                            Some(&input.headers),
-                            http_config,
-                            body.as_ref(),
-                            timeout,
-                        )
-                    },
-                )
+                super::retry_with_policy(policy, "HTTP call", || {
+                    http_common::execute_request(
+                        &self.client,
+                        &method,
+                        &url,
+                        Some(&input.headers),
+                        http_config,
+                        body.as_ref(),
+                        timeout,
+                    )
+                })
                 .await?
             };
 
@@ -107,6 +121,20 @@ impl AsyncFunctionHandler for HttpCallHandler {
         })
         .await
     }
+}
+
+/// RFC 9110 idempotent methods: re-sending them is safe by definition, so
+/// a timeout can be retried without risking a duplicate side effect (F8).
+fn is_idempotent(method: &reqwest::Method) -> bool {
+    matches!(
+        *method,
+        reqwest::Method::GET
+            | reqwest::Method::HEAD
+            | reqwest::Method::PUT
+            | reqwest::Method::DELETE
+            | reqwest::Method::OPTIONS
+            | reqwest::Method::TRACE
+    )
 }
 
 fn resolve_body(

@@ -77,7 +77,8 @@ REST API calls, webhooks, and external service integration:
 | `method` | `""` | Default HTTP method |
 | `headers` | `{}` | Default headers applied to every request |
 | `auth` | `null` | Authentication config (bearer, basic, or apikey) |
-| `retry` | 3 retries, 1000ms | Retry with exponential backoff |
+| `retry` | 3 retries, 1000ms | Retry with exponential backoff. Idempotent methods only (GET, HEAD, PUT, DELETE, OPTIONS, TRACE) |
+| `retry_non_idempotent` | `false` | Also retry POST/PATCH. A timed-out POST may already have been applied — enable only when the endpoint honours an idempotency key |
 | `max_response_size` | 10 MB | Maximum response body size to prevent OOM |
 | `allow_private_urls` | `false` | Allow requests to private/internal IPs (SSRF protection) |
 

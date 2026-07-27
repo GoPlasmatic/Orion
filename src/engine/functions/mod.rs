@@ -84,8 +84,7 @@ pub async fn execute_with_circuit_breaker<F, Fut>(
     breaker: &Arc<CircuitBreaker>,
     connector: &str,
     channel: &str,
-    max_retries: u32,
-    retry_delay_ms: u64,
+    policy: RetryPolicy,
     label: &str,
     operation: F,
 ) -> dataflow_rs::Result<Value>
@@ -104,7 +103,7 @@ where
     }
 
     let start = std::time::Instant::now();
-    let result = retry_with_backoff(max_retries, retry_delay_ms, label, operation).await;
+    let result = retry_with_policy(policy, label, operation).await;
     let duration_secs = start.elapsed().as_secs_f64();
 
     match &result {
@@ -134,6 +133,39 @@ pub async fn retry_with_backoff<F, Fut>(
     max_retries: u32,
     retry_delay_ms: u64,
     label: &str,
+    operation: F,
+) -> dataflow_rs::Result<Value>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = dataflow_rs::Result<Value>>,
+{
+    retry_with_policy(
+        RetryPolicy {
+            max_retries,
+            retry_delay_ms,
+            deadline: None,
+        },
+        label,
+        operation,
+    )
+    .await
+}
+
+/// How a retry loop is bounded (F8).
+#[derive(Debug, Clone, Copy)]
+pub struct RetryPolicy {
+    pub max_retries: u32,
+    pub retry_delay_ms: u64,
+    /// Wall-clock ceiling for the whole loop, attempts and backoff included.
+    /// Without it a single `http_call` could run ~127 s under a 30 s channel
+    /// timeout: individual backoffs are capped at 60 s but total elapsed was
+    /// never checked.
+    pub deadline: Option<Duration>,
+}
+
+pub async fn retry_with_policy<F, Fut>(
+    policy: RetryPolicy,
+    label: &str,
     mut operation: F,
 ) -> dataflow_rs::Result<Value>
 where
@@ -141,24 +173,36 @@ where
     Fut: Future<Output = dataflow_rs::Result<Value>>,
 {
     let mut last_error = None;
+    let started = std::time::Instant::now();
 
     const MAX_BACKOFF_MS: u64 = 60_000;
 
-    for attempt in 0..=max_retries {
+    for attempt in 0..=policy.max_retries {
         if attempt > 0 {
-            let delay = retry_delay_ms
+            let delay = policy
+                .retry_delay_ms
                 .saturating_mul(1u64.checked_shl(attempt - 1).unwrap_or(u64::MAX))
                 .min(MAX_BACKOFF_MS);
+            // Sleeping past the deadline just to fail is wasted latency the
+            // caller is already waiting on.
+            if let Some(deadline) = policy.deadline
+                && started.elapsed() + Duration::from_millis(delay) >= deadline
+            {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(delay)).await;
         }
 
         match operation().await {
             Ok(val) => return Ok(val),
             Err(e) => {
-                if e.retryable() && attempt < max_retries {
+                let deadline_left = policy
+                    .deadline
+                    .is_none_or(|deadline| started.elapsed() < deadline);
+                if e.retryable() && attempt < policy.max_retries && deadline_left {
                     tracing::warn!(
                         attempt = attempt + 1,
-                        max = max_retries,
+                        max = policy.max_retries,
                         error = %e,
                         "{} failed, retrying",
                         label
@@ -295,6 +339,44 @@ mod tests {
         assert_eq!(counter.load(Ordering::SeqCst), 3);
     }
 
+    /// F8: the loop must stop retrying once the deadline is spent, rather
+    /// than running attempts + backoff far past the caller's budget.
+    #[tokio::test]
+    async fn test_retry_policy_honours_deadline() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let seen = attempts.clone();
+        let start = std::time::Instant::now();
+        let result = retry_with_policy(
+            RetryPolicy {
+                max_retries: 10,
+                retry_delay_ms: 200,
+                deadline: Some(Duration::from_millis(250)),
+            },
+            "deadline test",
+            || {
+                let seen = seen.clone();
+                async move {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    Err::<Value, _>(DataflowError::Timeout("nope".into()))
+                }
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        // 10 retries at 200ms exponential backoff would take minutes.
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "loop must stop at the deadline, took {:?}",
+            start.elapsed()
+        );
+        assert!(
+            attempts.load(Ordering::SeqCst) < 5,
+            "deadline must cut the attempt count, got {}",
+            attempts.load(Ordering::SeqCst)
+        );
+    }
+
     #[tokio::test]
     async fn test_execute_with_circuit_breaker_success() {
         let config = CircuitBreakerConfig {
@@ -309,8 +391,11 @@ mod tests {
             &breaker,
             "test-connector",
             "test-channel",
-            0,
-            1,
+            RetryPolicy {
+                max_retries: 0,
+                retry_delay_ms: 1,
+                deadline: None,
+            },
             "test",
             || async { Ok(serde_json::json!({"result": "ok"})) },
         )
@@ -335,8 +420,11 @@ mod tests {
             &breaker,
             "test-connector",
             "test-channel",
-            0,
-            1,
+            RetryPolicy {
+                max_retries: 0,
+                retry_delay_ms: 1,
+                deadline: None,
+            },
             "test",
             || async { Ok(serde_json::json!({"should": "not reach"})) },
         )
@@ -363,8 +451,11 @@ mod tests {
             &breaker,
             "test-connector",
             "test-channel",
-            0,
-            1,
+            RetryPolicy {
+                max_retries: 0,
+                retry_delay_ms: 1,
+                deadline: None,
+            },
             "test",
             || async { Err(DataflowError::Io("network error".to_string())) },
         )

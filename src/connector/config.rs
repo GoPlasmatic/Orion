@@ -83,6 +83,13 @@ pub struct HttpConnectorConfig {
     #[serde(default)]
     pub retry: RetryConfig,
     /// Maximum response body size in bytes (default 10 MB). Prevents OOM from large responses.
+    /// Retry non-idempotent methods (POST, PATCH) too (F8). Default false:
+    /// a timed-out POST may already have been applied, so re-sending it can
+    /// duplicate the side effect. Enable only when the endpoint is
+    /// idempotent in practice — e.g. it honours an idempotency key the
+    /// workflow sets in `headers`.
+    #[serde(default)]
+    pub retry_non_idempotent: bool,
     #[serde(default = "default_max_response_size")]
     pub max_response_size: usize,
     /// Allow requests to private/internal IP addresses. Default false (SSRF protection).
