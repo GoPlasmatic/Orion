@@ -505,6 +505,16 @@ async fn process_sync_for_channel(
 ) -> Result<Response, OrionError> {
     let profile = profile_requested.then(crate::engine::profile::ProfileCollector::new);
 
+    // O1: only registry-confirmed channels may appear as metric labels.
+    // The single-segment route fallback accepts arbitrary path segments, so
+    // labelling on the raw name would let callers grow Prometheus label
+    // cardinality without bound.
+    let metrics_channel = if channel_config.is_some() {
+        channel
+    } else {
+        "_unknown"
+    };
+
     // Response cache check — return early on cache hit (zero serialization)
     let cache_context =
         match guards::check_response_cache(channel, &data, &metadata, &channel_config).await {
@@ -554,7 +564,7 @@ async fn process_sync_for_channel(
         Ok(inner) => inner,
         Err(EngineRunError::Timeout(ms)) => {
             remove_rollout_bucket(&mut message);
-            metrics::record_message(channel, "timeout");
+            metrics::record_message(metrics_channel, "timeout");
             metrics::record_error("timeout");
             return Err(OrionError::Timeout {
                 channel: channel.to_string(),
@@ -569,9 +579,9 @@ async fn process_sync_for_channel(
             let duration = start.elapsed();
             let duration_secs = duration.as_secs_f64();
             let duration_ms = duration.as_secs_f64() * 1000.0;
-            metrics::record_message(channel, "ok");
-            metrics::record_message_duration(channel, duration_secs);
-            metrics::record_channel_execution(channel);
+            metrics::record_message(metrics_channel, "ok");
+            metrics::record_message_duration(metrics_channel, duration_secs);
+            metrics::record_channel_execution(metrics_channel);
 
             let response = json!({
                 "id": message.id(),
@@ -668,7 +678,7 @@ async fn process_sync_for_channel(
         }
         Err(e) => {
             remove_rollout_bucket(&mut message);
-            metrics::record_message(channel, "error");
+            metrics::record_message(metrics_channel, "error");
             metrics::record_error("engine");
             Err(OrionError::Engine(e))
         }

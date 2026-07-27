@@ -213,12 +213,13 @@ async fn process_trace(mut msg: QueueMessage, ctx: ProcessingContext) {
     // Resolve effective trace-storage config for this channel (channel
     // override > global default). In `Off` mode skip all trace writes; the
     // workflow still runs but no DB rows are touched.
-    let effective_trace = match channel_registry.get_by_name(&msg.channel).await {
-        Some(c) => c.trace_storage,
-        None => {
-            crate::channel::registry::EffectiveTraceConfig::resolve(&global_trace_storage, None)
-        }
-    };
+    let channel_runtime = channel_registry.get_by_name(&msg.channel).await;
+    // O1: unregistered channel names (arbitrary path segments on the async
+    // route) must not become Prometheus label values.
+    let channel_registered = channel_runtime.is_some();
+    let effective_trace = channel_runtime.map(|c| c.trace_storage).unwrap_or_else(|| {
+        crate::channel::registry::EffectiveTraceConfig::resolve(&global_trace_storage, None)
+    });
     let trace_mode = effective_trace.mode;
     // Restore W3C trace context from the originating request so this span
     // appears as a child in the caller's distributed trace.
@@ -244,6 +245,11 @@ async fn process_trace(mut msg: QueueMessage, ctx: ProcessingContext) {
 
     let trace_id = msg.trace_id;
     let channel = msg.channel;
+    let metrics_channel = if channel_registered {
+        channel.as_str()
+    } else {
+        "_unknown"
+    };
     let profile = msg
         .profile_requested
         .then(crate::engine::profile::ProfileCollector::new);
@@ -363,9 +369,9 @@ async fn process_trace(mut msg: QueueMessage, ctx: ProcessingContext) {
 
     match result {
         Ok(()) => {
-            metrics::record_message(&channel, "ok");
-            metrics::record_message_duration(&channel, duration_secs);
-            metrics::record_channel_execution(&channel);
+            metrics::record_message(metrics_channel, "ok");
+            metrics::record_message_duration(metrics_channel, duration_secs);
+            metrics::record_channel_execution(metrics_channel);
 
             let result_json = match serialize_result_with_profile(&message, profile.as_ref()) {
                 Ok(json) => json,
@@ -488,7 +494,7 @@ async fn process_trace(mut msg: QueueMessage, ctx: ProcessingContext) {
             }
         }
         Err(e) => {
-            metrics::record_message(&channel, "error");
+            metrics::record_message(metrics_channel, "error");
             metrics::record_error("engine");
 
             let error_str = e.to_string();
