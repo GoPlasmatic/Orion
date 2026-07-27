@@ -89,8 +89,6 @@ pub trait WorkflowRepository: Send + Sync {
     async fn create(&self, req: &CreateWorkflowRequest) -> Result<Workflow, OrionError>;
     /// Get the latest version of a workflow.
     async fn get_by_id(&self, workflow_id: &str) -> Result<Workflow, OrionError>;
-    /// Get a specific version of a workflow.
-    async fn get_version(&self, workflow_id: &str, version: i64) -> Result<Workflow, OrionError>;
     /// List workflows using the current_workflows view (latest version per workflow_id).
     async fn list(&self, filter: &WorkflowFilter) -> Result<Vec<Workflow>, OrionError>;
     /// List workflows with pagination using the current_workflows view.
@@ -108,8 +106,6 @@ pub trait WorkflowRepository: Send + Sync {
     async fn delete(&self, workflow_id: &str) -> Result<(), OrionError>;
     /// List all active workflows for engine loading.
     async fn list_active(&self) -> Result<Vec<Workflow>, OrionError>;
-    /// List active workflows for the given workflow IDs.
-    async fn list_active_by_ids(&self, workflow_ids: &[&str]) -> Result<Vec<Workflow>, OrionError>;
     /// Activate the draft version of a workflow with a rollout percentage.
     async fn activate(&self, workflow_id: &str, rollout_pct: i64) -> Result<Workflow, OrionError>;
     /// Archive the latest active version of a workflow.
@@ -141,6 +137,27 @@ pub struct SqlWorkflowRepository {
 }
 
 impl SqlWorkflowRepository {
+    /// Fetch one specific version — internal helper for the lifecycle
+    /// methods; the admin API only exposes latest/list forms.
+    async fn get_version(&self, workflow_id: &str, version: i64) -> Result<Workflow, OrionError> {
+        let (sql, values) = build_sqlx(
+            Query::select()
+                .column(Asterisk)
+                .from(Workflows::Table)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Version).eq(version)),
+        );
+
+        self.pool
+            .fetch_optional_as::<Workflow>(&sql, values)
+            .await?
+            .ok_or_else(|| {
+                OrionError::NotFound(format!(
+                    "Workflow '{workflow_id}' version {version} not found"
+                ))
+            })
+    }
+
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
@@ -370,25 +387,6 @@ impl WorkflowRepository for SqlWorkflowRepository {
         .await
     }
 
-    async fn get_version(&self, workflow_id: &str, version: i64) -> Result<Workflow, OrionError> {
-        let (sql, values) = build_sqlx(
-            Query::select()
-                .column(Asterisk)
-                .from(Workflows::Table)
-                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Version).eq(version)),
-        );
-
-        self.pool
-            .fetch_optional_as::<Workflow>(&sql, values)
-            .await?
-            .ok_or_else(|| {
-                OrionError::NotFound(format!(
-                    "Workflow '{workflow_id}' version {version} not found"
-                ))
-            })
-    }
-
     async fn list(&self, filter: &WorkflowFilter) -> Result<Vec<Workflow>, OrionError> {
         let cond = build_condition(filter);
         let (sql, values) = build_sqlx(
@@ -539,26 +537,6 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .column(Asterisk)
                     .from(Workflows::Table)
                     .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
-                    .order_by(Workflows::Priority, Order::Desc),
-            );
-
-            Ok(self.pool.fetch_all_as::<Workflow>(&sql, values).await?)
-        })
-        .await
-    }
-
-    async fn list_active_by_ids(&self, workflow_ids: &[&str]) -> Result<Vec<Workflow>, OrionError> {
-        crate::metrics::timed_db_op("workflows.list_active_by_ids", async {
-            if workflow_ids.is_empty() {
-                return Ok(Vec::new());
-            }
-
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Workflows::Table)
-                    .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
-                    .and_where(Expr::col(Workflows::WorkflowId).is_in(workflow_ids.iter().copied()))
                     .order_by(Workflows::Priority, Order::Desc),
             );
 

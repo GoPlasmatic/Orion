@@ -44,7 +44,6 @@ pub struct ConnectorFilter {
 pub trait ConnectorRepository: Send + Sync {
     async fn create(&self, req: &CreateConnectorRequest) -> Result<Connector, OrionError>;
     async fn get_by_id(&self, id: &str) -> Result<Connector, OrionError>;
-    async fn list(&self) -> Result<Vec<Connector>, OrionError>;
     async fn list_paginated(
         &self,
         filter: &ConnectorFilter,
@@ -129,17 +128,6 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .ok_or_else(|| OrionError::NotFound(format!("Connector '{id}' not found")))
         })
         .await
-    }
-
-    async fn list(&self) -> Result<Vec<Connector>, OrionError> {
-        let (sql, values) = build_sqlx(
-            Query::select()
-                .column(Asterisk)
-                .from(Connectors::Table)
-                .order_by(Connectors::Name, Order::Asc),
-        );
-
-        Ok(self.pool.fetch_all_as::<Connector>(&sql, values).await?)
     }
 
     async fn list_paginated(

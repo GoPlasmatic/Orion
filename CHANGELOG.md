@@ -125,6 +125,10 @@ for the cluster architecture.
 - **Removed:** the unread `backpressure.queue_depth` channel-config field.
   Stored configs still carrying the key deserialize normally (there is no
   `deny_unknown_fields`), so this needs no migration.
+- **Removed:** the unread `cors.allowed_methods` and `cors.allowed_headers`
+  channel-config fields. Only `cors.allowed_origins` was ever enforced —
+  per-channel preflight is not implemented — so setting them was a silent
+  no-op. Same no-migration note as above.
 - **Every admin list endpoint shares one pagination envelope.**
   `GET /api/v1/admin/audit-logs` (and the new trace-DLQ list) now return the
   flat `{data, total, limit, offset}` shape the workflow/channel/connector

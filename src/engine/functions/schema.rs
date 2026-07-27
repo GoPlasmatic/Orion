@@ -592,7 +592,7 @@ pub fn registry() -> &'static [FunctionSchema] {
     REGISTRY
 }
 
-pub fn find(name: &str) -> Option<&'static FunctionSchema> {
+fn find(name: &str) -> Option<&'static FunctionSchema> {
     REGISTRY.iter().find(|s| s.name == name)
 }
 

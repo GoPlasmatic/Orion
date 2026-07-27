@@ -351,10 +351,6 @@ pub fn record_engine_lock_wait(d: Duration) {
     let _ = ORION_PROFILE.try_with(|c| c.set_engine_lock_wait(d));
 }
 
-/// True when a collector is in scope for the current task.
-pub fn is_active() -> bool {
-    ORION_PROFILE.try_with(|_| ()).is_ok()
-}
 
 #[cfg(test)]
 mod tests {

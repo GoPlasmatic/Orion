@@ -118,21 +118,6 @@ pub struct ChannelLoadIssue {
     pub reason: String,
 }
 
-impl ChannelLoadIssue {
-    /// Format a non-empty issue list as the hard error both boot and reload
-    /// surface (one wording for both).
-    pub fn refusal_error(issues: &[ChannelLoadIssue]) -> crate::errors::OrionError {
-        let detail = issues
-            .iter()
-            .map(|i| format!("{}: {}", i.channel, i.reason))
-            .collect::<Vec<_>>()
-            .join("; ");
-        crate::errors::OrionError::Config {
-            message: format!("refused to load {} channel(s): {detail}", issues.len()),
-        }
-    }
-}
-
 /// The shared backends cluster mode provides to channel loading. `Some` on
 /// the registry means cluster mode: strict backend resolution (no silent
 /// in-memory fallbacks) with these as the defaults. Deliberately narrow —
@@ -173,7 +158,7 @@ impl ChannelRegistry {
     pub fn new() -> Self {
         Self {
             by_name: RwLock::new(HashMap::new()),
-            route_table: RwLock::new(RouteTable::new()),
+            route_table: RwLock::new(RouteTable::default()),
             quarantined: RwLock::new(HashMap::new()),
             cluster: None,
         }
@@ -182,7 +167,7 @@ impl ChannelRegistry {
     pub fn with_cluster(cluster: ClusterBackends) -> Self {
         Self {
             by_name: RwLock::new(HashMap::new()),
-            route_table: RwLock::new(RouteTable::new()),
+            route_table: RwLock::new(RouteTable::default()),
             quarantined: RwLock::new(HashMap::new()),
             cluster: Some(cluster),
         }
@@ -539,10 +524,6 @@ impl ChannelRegistry {
         issues
     }
 
-    /// Get all active channel names.
-    pub async fn channel_names(&self) -> Vec<String> {
-        self.by_name.read().await.keys().cloned().collect()
-    }
 }
 
 #[cfg(test)]
@@ -553,7 +534,7 @@ mod tests {
     async fn test_channel_registry_empty() {
         let registry = ChannelRegistry::new();
         assert!(registry.get_by_name("nonexistent").await.is_none());
-        assert!(registry.channel_names().await.is_empty());
+        assert!(registry.by_name.read().await.is_empty());
     }
 
     fn test_channel(name: &str, config_json: &str) -> Channel {

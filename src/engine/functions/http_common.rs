@@ -26,34 +26,6 @@ pub fn apply_auth(req: reqwest::RequestBuilder, auth: &AuthConfig) -> reqwest::R
     }
 }
 
-/// Get a nested value from a JSON object using dot-notation path.
-pub fn get_nested(value: &Value, path: &str) -> Value {
-    let mut current = value;
-    for part in path.split('.') {
-        match current.get(part) {
-            Some(v) => current = v,
-            None => return Value::Null,
-        }
-    }
-    current.clone()
-}
-
-/// Set a nested value in a JSON object using dot-notation path.
-pub fn set_nested(value: &mut Value, path: &str, new_val: Value) {
-    let parts: Vec<&str> = path.split('.').collect();
-    let mut current = value;
-    for (i, part) in parts.iter().enumerate() {
-        if i == parts.len() - 1 {
-            current[*part] = new_val;
-            return;
-        }
-        if !current.get(*part).is_some_and(|v| v.is_object()) {
-            current[*part] = Value::Object(serde_json::Map::new());
-        }
-        current = &mut current[*part];
-    }
-}
-
 /// Redirect-hop cap for the manual follower in [`execute_request`]. The shared
 /// client is built with `redirect::Policy::none()` (see main.rs), so every hop
 /// returns here and passes SSRF validation before being followed.
@@ -285,46 +257,6 @@ mod tests {
             build_url("https://api.example.com", None),
             "https://api.example.com"
         );
-    }
-
-    #[test]
-    fn test_set_get_nested() {
-        let mut val = serde_json::json!({"data": {"x": 1}});
-        set_nested(&mut val, "data.result", serde_json::json!("hello"));
-        assert_eq!(get_nested(&val, "data.result"), serde_json::json!("hello"));
-        assert_eq!(get_nested(&val, "data.x"), serde_json::json!(1));
-    }
-
-    #[test]
-    fn test_get_nested_missing_key() {
-        let val = serde_json::json!({"data": {"x": 1}});
-        assert_eq!(get_nested(&val, "data.y"), Value::Null);
-    }
-
-    #[test]
-    fn test_get_nested_deeply_missing() {
-        let val = serde_json::json!({"a": 1});
-        assert_eq!(get_nested(&val, "a.b.c"), Value::Null);
-    }
-
-    #[test]
-    fn test_get_nested_single_key() {
-        let val = serde_json::json!({"key": "value"});
-        assert_eq!(get_nested(&val, "key"), serde_json::json!("value"));
-    }
-
-    #[test]
-    fn test_set_nested_creates_intermediate_objects() {
-        let mut val = serde_json::json!({});
-        set_nested(&mut val, "a.b.c", serde_json::json!(42));
-        assert_eq!(get_nested(&val, "a.b.c"), serde_json::json!(42));
-    }
-
-    #[test]
-    fn test_set_nested_overwrites_existing() {
-        let mut val = serde_json::json!({"a": {"b": "old"}});
-        set_nested(&mut val, "a.b", serde_json::json!("new"));
-        assert_eq!(get_nested(&val, "a.b"), serde_json::json!("new"));
     }
 
     #[test]

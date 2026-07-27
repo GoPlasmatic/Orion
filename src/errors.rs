@@ -76,9 +76,6 @@ pub enum OrionError {
     #[error("Configuration error: {message}")]
     Config { message: String },
 
-    #[error("Circuit breaker open for connector '{connector}' on channel '{channel}'")]
-    CircuitOpen { connector: String, channel: String },
-
     #[error("Rate limited: {0}")]
     RateLimited(String),
 
@@ -120,7 +117,6 @@ impl OrionError {
         match self {
             OrionError::Storage(_) => true,
             OrionError::Engine(e) => e.retryable(),
-            OrionError::CircuitOpen { .. } => true,
             OrionError::RateLimited(_) => true,
             OrionError::Queue(_) => true,
             OrionError::ServiceUnavailable(_) => true,
@@ -129,27 +125,14 @@ impl OrionError {
         }
     }
 
-    /// Construct a `Validation` error with no field details yet — use
-    /// `.field(...)` or `.with_details(...)` to populate.
+    /// Construct a `Validation` error with no field details yet. For the
+    /// common single-field case use [`OrionError::invalid_field`].
     pub fn validation(message: impl Into<String>) -> Self {
         OrionError::Validation {
             code: "VALIDATION_ERROR",
             message: message.into(),
             details: Vec::new(),
         }
-    }
-
-    /// Append a `FieldError` to a `Validation` variant. No-op on other variants.
-    pub fn field(
-        mut self,
-        path: impl Into<String>,
-        code: &'static str,
-        message: impl Into<String>,
-    ) -> Self {
-        if let OrionError::Validation { details, .. } = &mut self {
-            details.push(FieldError::new(path, code, message));
-        }
-        self
     }
 
     /// Build a single-field validation error in one call. Most validators
@@ -224,11 +207,6 @@ impl IntoResponse for OrionError {
             OrionError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg),
             OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg),
             OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
-            OrionError::CircuitOpen { connector, channel } => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "CIRCUIT_OPEN",
-                format!("Circuit breaker open for connector '{connector}' on channel '{channel}'"),
-            ),
             OrionError::UnsupportedMediaType(msg) => (
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "UNSUPPORTED_MEDIA_TYPE",
@@ -495,25 +473,6 @@ mod tests {
     }
 
     #[test]
-    fn test_circuit_open_status() {
-        let err = OrionError::CircuitOpen {
-            connector: "api".to_string(),
-            channel: "orders".to_string(),
-        };
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    }
-
-    #[test]
-    fn test_circuit_open_retryable() {
-        let err = OrionError::CircuitOpen {
-            connector: "api".to_string(),
-            channel: "orders".to_string(),
-        };
-        assert!(err.is_retryable());
-    }
-
-    #[test]
     fn test_timeout_retryable() {
         let err = OrionError::Timeout {
             channel: "orders".to_string(),
@@ -671,7 +630,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validation_with_field_emits_details_array() {
-        let err = OrionError::validation("body invalid").field(
+        let err = OrionError::invalid_field(
             "channel.protocol",
             "ENUM_MISMATCH",
             "unknown protocol 'REST'",
@@ -738,7 +697,7 @@ mod tests {
 
     #[test]
     fn test_validation_not_retryable() {
-        let err = OrionError::validation("x").field("y", "REQUIRED", "z");
+        let err = OrionError::invalid_field("y", "REQUIRED", "z");
         assert!(!err.is_retryable());
     }
 

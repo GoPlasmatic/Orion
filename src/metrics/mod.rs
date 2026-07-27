@@ -11,7 +11,7 @@ static METRICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Enable or disable metric recording globally. Call once at startup based on
 /// `config.metrics.enabled`. Safe to call again later (e.g., from tests).
-pub fn set_enabled(enabled: bool) {
+fn set_enabled(enabled: bool) {
     METRICS_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
@@ -134,7 +134,7 @@ pub fn record_http_request(method: String, path: String, status: u16, duration_s
 }
 
 /// Record DB query duration.
-pub fn record_db_query_duration(operation: &'static str, duration_secs: f64) {
+fn record_db_query_duration(operation: &'static str, duration_secs: f64) {
     if !is_enabled() {
         return;
     }

@@ -101,14 +101,10 @@ pub struct ChannelCacheConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelCorsConfig {
     /// Allowed origins. Empty or absent means use platform default.
+    /// (Methods/headers stay platform-level: per-channel preflight is not
+    /// implemented, so a per-channel list here would be a silent no-op.)
     #[serde(default)]
     pub allowed_origins: Option<Vec<String>>,
-    /// Allowed HTTP methods.
-    #[serde(default)]
-    pub allowed_methods: Option<Vec<String>>,
-    /// Allowed headers.
-    #[serde(default)]
-    pub allowed_headers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

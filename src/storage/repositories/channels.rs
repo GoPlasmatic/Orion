@@ -84,8 +84,6 @@ pub trait ChannelRepository: Send + Sync {
     async fn create(&self, req: &CreateChannelRequest) -> Result<Channel, OrionError>;
     /// Get the latest version of a channel.
     async fn get_by_id(&self, channel_id: &str) -> Result<Channel, OrionError>;
-    /// Get a specific version of a channel.
-    async fn get_version(&self, channel_id: &str, version: i64) -> Result<Channel, OrionError>;
     /// List channels with pagination using the current_channels view.
     async fn list_paginated(
         &self,
@@ -114,8 +112,6 @@ pub trait ChannelRepository: Send + Sync {
         limit: i64,
         offset: i64,
     ) -> Result<PaginatedResult<Channel>, OrionError>;
-    /// Lookup an active channel by its name (for runtime routing).
-    async fn get_active_by_name(&self, name: &str) -> Result<Channel, OrionError>;
 }
 
 // -- SQL implementation --
@@ -125,6 +121,27 @@ pub struct SqlChannelRepository {
 }
 
 impl SqlChannelRepository {
+    /// Fetch one specific version — internal helper for the lifecycle
+    /// methods; the admin API only exposes latest/list forms.
+    async fn get_version(&self, channel_id: &str, version: i64) -> Result<Channel, OrionError> {
+        let (sql, values) = build_sqlx(
+            Query::select()
+                .column(Asterisk)
+                .from(Channels::Table)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Version).eq(version)),
+        );
+
+        self.pool
+            .fetch_optional_as::<Channel>(&sql, values)
+            .await?
+            .ok_or_else(|| {
+                OrionError::NotFound(format!(
+                    "Channel '{channel_id}' version {version} not found"
+                ))
+            })
+    }
+
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
@@ -281,25 +298,6 @@ impl ChannelRepository for SqlChannelRepository {
                 .ok_or_else(|| OrionError::NotFound(format!("Channel '{channel_id}' not found")))
         })
         .await
-    }
-
-    async fn get_version(&self, channel_id: &str, version: i64) -> Result<Channel, OrionError> {
-        let (sql, values) = build_sqlx(
-            Query::select()
-                .column(Asterisk)
-                .from(Channels::Table)
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Version).eq(version)),
-        );
-
-        self.pool
-            .fetch_optional_as::<Channel>(&sql, values)
-            .await?
-            .ok_or_else(|| {
-                OrionError::NotFound(format!(
-                    "Channel '{channel_id}' version {version} not found"
-                ))
-            })
     }
 
     async fn list_paginated(
@@ -626,28 +624,6 @@ impl ChannelRepository for SqlChannelRepository {
             limit,
             offset,
         })
-    }
-
-    async fn get_active_by_name(&self, name: &str) -> Result<Channel, OrionError> {
-        crate::metrics::timed_db_op("channels.get_active_by_name", async {
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Channels::Table)
-                    .and_where(Expr::col(Channels::Name).eq(name))
-                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
-                    .order_by(Channels::Version, Order::Desc)
-                    .limit(1),
-            );
-
-            self.pool
-                .fetch_optional_as::<Channel>(&sql, values)
-                .await?
-                .ok_or_else(|| {
-                    OrionError::NotFound(format!("No active channel found with name '{name}'"))
-                })
-        })
-        .await
     }
 }
 

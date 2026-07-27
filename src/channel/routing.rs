@@ -75,17 +75,12 @@ fn match_segments(
 }
 
 /// Route table built from active REST channels, sorted by priority.
+#[derive(Default)]
 pub struct RouteTable {
     entries: Vec<RouteEntry>,
 }
 
 impl RouteTable {
-    pub(super) fn new() -> Self {
-        Self {
-            entries: Vec::new(),
-        }
-    }
-
     pub(super) fn build(channels: &[Channel]) -> Self {
         let mut entries: Vec<RouteEntry> = channels
             .iter()

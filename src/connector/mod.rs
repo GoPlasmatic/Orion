@@ -17,7 +17,7 @@ pub use config::{
     StorageConnectorConfig, VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES,
 };
 pub(crate) use masking::MASK;
-pub use masking::{find_masked_value, mask_connector, mask_connector_secrets, unmask_config};
+pub use masking::{find_masked_value, mask_connector, unmask_config};
 pub use registry::ConnectorRegistry;
 
 mod pool_access_counter {

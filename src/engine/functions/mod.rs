@@ -128,29 +128,6 @@ where
     result
 }
 
-/// Execute an async operation with exponential backoff retry.
-pub async fn retry_with_backoff<F, Fut>(
-    max_retries: u32,
-    retry_delay_ms: u64,
-    label: &str,
-    operation: F,
-) -> dataflow_rs::Result<Value>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = dataflow_rs::Result<Value>>,
-{
-    retry_with_policy(
-        RetryPolicy {
-            max_retries,
-            retry_delay_ms,
-            deadline: None,
-        },
-        label,
-        operation,
-    )
-    .await
-}
-
 /// How a retry loop is bounded (F8).
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
@@ -277,9 +254,28 @@ mod tests {
         assert_eq!(extract_channel(&message), "unknown");
     }
 
+    /// Old `retry_with_backoff` shape: undeadlined policy. The production
+    /// callers all use `retry_with_policy` directly.
+    async fn retry<F, Fut>(max_retries: u32, delay_ms: u64, op: F) -> dataflow_rs::Result<Value>
+    where
+        F: FnMut() -> Fut,
+        Fut: Future<Output = dataflow_rs::Result<Value>>,
+    {
+        retry_with_policy(
+            RetryPolicy {
+                max_retries,
+                retry_delay_ms: delay_ms,
+                deadline: None,
+            },
+            "test",
+            op,
+        )
+        .await
+    }
+
     #[tokio::test]
-    async fn test_retry_with_backoff_succeeds_first_try() {
-        let result = retry_with_backoff(3, 1, "test", || async {
+    async fn test_retry_succeeds_first_try() {
+        let result = retry(3, 1, || async {
             Ok(serde_json::json!({"ok": true}))
         })
         .await;
@@ -288,10 +284,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_with_backoff_fails_then_succeeds() {
+    async fn test_retry_fails_then_succeeds() {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
-        let result = retry_with_backoff(3, 1, "test", move || {
+        let result = retry(3, 1, move || {
             let c = counter_clone.clone();
             async move {
                 let attempt = c.fetch_add(1, Ordering::SeqCst);
@@ -308,10 +304,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_with_backoff_non_retryable_fails_immediately() {
+    async fn test_retry_non_retryable_fails_immediately() {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
-        let result = retry_with_backoff(3, 1, "test", move || {
+        let result = retry(3, 1, move || {
             let c = counter_clone.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
@@ -324,10 +320,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_retry_with_backoff_exhausts_retries() {
+    async fn test_retry_exhausts_retries() {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
-        let result = retry_with_backoff(2, 1, "test", move || {
+        let result = retry(2, 1, move || {
             let c = counter_clone.clone();
             async move {
                 c.fetch_add(1, Ordering::SeqCst);
