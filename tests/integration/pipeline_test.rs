@@ -589,3 +589,85 @@ async fn test_http_call_then_map_pipeline() {
         "Expected data.user_name == 'Bob' after map extraction"
     );
 }
+
+// ============================================================
+// Basic data-plane processing (sync + async round trips)
+// ============================================================
+
+#[tokio::test]
+async fn test_data_sync_processing() {
+    let app = common::test_app().await;
+
+    // Create and activate a channel (which also creates and activates a workflow)
+    common::create_and_activate_channel(
+        &app,
+        "orders",
+        json!({
+            "name": "Order Logger",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "Log",
+                "function": { "name": "log", "input": { "message": "order received" } }
+            }]
+        }),
+    )
+    .await;
+
+    // Send data to the orders channel
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/orders",
+            Some(json!({
+                "data": { "order_id": "ORD-001", "amount": 150 },
+                "metadata": { "source": "test" }
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(body.get("id").is_some());
+    assert!(body.get("data").is_some());
+}
+
+#[tokio::test]
+async fn test_data_async_processing() {
+    let app = common::test_app().await;
+
+    // Create and activate a channel
+    common::create_and_activate_channel(
+        &app,
+        "events",
+        json!({
+            "name": "Events Workflow",
+            "condition": true,
+            "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"event"}}}]
+        }),
+    )
+    .await;
+
+    // Submit async trace
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/events/async",
+            Some(json!({
+                "data": { "event": "click", "user_id": "u1" }
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
+
+    let body = common::poll_trace_until_done(&app, &trace_id, 20, Some(&token)).await;
+    assert_eq!(body["status"], "completed");
+}

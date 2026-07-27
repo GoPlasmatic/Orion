@@ -147,15 +147,18 @@ async fn test_multiple_concurrent_async_traces() {
         ));
     }
 
-    // Wait for all traces to complete
+    // Every submission must mint a distinct trace ID
+    let mut ids: Vec<&str> = trace_ids.iter().map(|(id, _)| id.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    assert_eq!(ids.len(), trace_ids.len(), "trace IDs must be unique");
+
+    // Each trace completes independently
     for (trace_id, token) in &trace_ids {
         let trace = poll_trace_until_done(&app, trace_id, 40, Some(token)).await;
-        let status = trace["status"].as_str().unwrap();
-        assert!(
-            status == "completed" || status == "failed",
-            "Trace {} should reach terminal status, got: {}",
-            trace_id,
-            status,
+        assert_eq!(
+            trace["status"], "completed",
+            "Trace {trace_id} should complete independently",
         );
     }
 }
@@ -345,10 +348,28 @@ async fn test_trace_list_filter_by_channel() {
 async fn test_get_completed_trace_with_result() {
     let app = common::test_app().await;
 
+    // A map task writes into the message context, so the completed trace
+    // carries observable result data — not just a status flip.
     common::create_and_activate_channel(
         &app,
         "test-ch",
-        common::simple_log_workflow("Test Workflow"),
+        json!({
+            "name": "Result Workflow",
+            "condition": true,
+            "tasks": [{
+                "id": "map1",
+                "name": "Set result",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [{
+                            "path": "data.computed",
+                            "logic": { "cat": ["hello-", { "var": "data.input" }] }
+                        }]
+                    }
+                }
+            }]
+        }),
     )
     .await;
 
@@ -357,7 +378,7 @@ async fn test_get_completed_trace_with_result() {
         .oneshot(json_request(
             "POST",
             "/api/v1/data/test-ch/async",
-            Some(json!({"data": {"key": "value"}})),
+            Some(json!({"data": {"input": "world"}})),
         ))
         .await
         .unwrap();
@@ -371,6 +392,13 @@ async fn test_get_completed_trace_with_result() {
     assert!(body.get("message").is_some());
     assert!(body.get("started_at").is_some());
     assert!(body.get("completed_at").is_some());
+
+    // The trace message context should contain the mapped data
+    let computed = &body["message"]["context"]["data"]["computed"];
+    assert!(
+        computed.is_string(),
+        "completed async trace should contain mapped result data"
+    );
 }
 
 // ============================================================

@@ -4,14 +4,13 @@
 //! links into a single binary instead of ~43 separate ones. This collapses
 //! the per-edit relink cost dramatically. Add new test files under
 //! `tests/integration/` and declare them below.
-#![allow(dead_code)]
 
 mod common;
 
 mod admin_channel_update_test;
+mod admin_channels_test;
 mod admin_connectors_test;
 mod admin_workflows_test;
-mod async_trace_edge_test;
 mod async_traces_test;
 mod audit_log_test;
 mod backup_test;

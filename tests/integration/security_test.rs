@@ -719,11 +719,31 @@ async fn test_metrics_endpoint_protected_when_auth_enabled() {
 async fn test_metrics_endpoint_open_when_auth_disabled() {
     let app = common::test_app().await;
 
+    // Process a message first so the exposition has real content
+    let _ = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/test-channel",
+            Some(json!({
+                "data": { "key": "value" },
+                "metadata": {}
+            })),
+        ))
+        .await
+        .unwrap();
+
     let resp = app
         .oneshot(json_request("GET", "/metrics", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(!body.contains("error"));
 }
 
 // ============================================================

@@ -294,6 +294,20 @@ async fn test_versioning_create_and_list() {
     assert_eq!(body["data"]["version"], 2);
     assert_eq!(body["data"]["status"], "draft");
 
+    // The new draft is editable in place
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/workflows/ver-lifecycle",
+            Some(json!({"name": "Version Lifecycle v2"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["name"], "Version Lifecycle v2");
+
     // List all versions — should see at least v1 and v2
     let resp = app
         .clone()
@@ -310,6 +324,8 @@ async fn test_versioning_create_and_list() {
     assert!(total >= 2, "should have at least 2 versions, got {total}");
 
     let versions = body["data"].as_array().unwrap();
+    // Every version row carries its workflow_id
+    assert!(versions.iter().all(|v| v.get("workflow_id").is_some()));
     let v1 = versions.iter().find(|v| v["version"] == 1).unwrap();
     let v2 = versions.iter().find(|v| v["version"] == 2).unwrap();
     assert_eq!(v1["status"], "active");
@@ -469,6 +485,7 @@ async fn test_import_export_round_trip() {
         "all exported workflows should import successfully"
     );
     assert_eq!(import_body["failed"], 0);
+    assert!(import_body["errors"].as_array().unwrap().is_empty());
 
     // Verify workflows exist on app2 as drafts
     let resp = app2
