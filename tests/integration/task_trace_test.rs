@@ -126,8 +126,11 @@ async fn sync_request_with_task_details_persists_task_trace_json() {
     // Allow the trace persistence (sync mode) to settle.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    // List traces and find the row from this request.
+    // List traces to find this request's row, then fetch the detail — the
+    // list is a payload-free projection (S14), so task_trace_json is served
+    // only by the single-trace GET.
     let resp = app
+        .clone()
         .oneshot(json_request("GET", "/api/v1/data/traces", None))
         .await
         .unwrap();
@@ -137,14 +140,27 @@ async fn sync_request_with_task_details_persists_task_trace_json() {
         .as_array()
         .and_then(|a| a.iter().find(|r| r["channel"] == channel_name))
         .expect("expected at least one trace row for the task-trace channel");
-    // The captured ExecutionTrace must be persisted as JSON in `task_trace_json`.
-    let task_trace_json = row["task_trace_json"]
-        .as_str()
-        .expect("task_trace_json must be populated when task_details=true");
-    let parsed: serde_json::Value = serde_json::from_str(task_trace_json).unwrap();
+    assert!(
+        row.get("task_trace_json").is_none() || row["task_trace_json"].is_null(),
+        "list rows must not carry payloads (S14), row={row:?}"
+    );
+    let trace_id = row["id"].as_str().unwrap();
+
+    let resp = app
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/data/traces/{trace_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let detail = body_json(resp).await;
+    // The captured ExecutionTrace must be persisted and served on the detail.
+    let parsed = &detail["task_trace_json"];
     let steps = parsed["steps"]
         .as_array()
-        .expect("persisted task_trace_json must include steps[]");
+        .expect("task_trace_json must be populated when task_details=true");
     assert!(!steps.is_empty());
     // At least one step must reference the task we configured.
     assert!(steps.iter().any(|s| s["task_id"] == "t1"));
@@ -182,6 +198,7 @@ async fn sync_request_without_task_details_omits_task_trace_json() {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let resp = app
+        .clone()
         .oneshot(json_request("GET", "/api/v1/data/traces", None))
         .await
         .unwrap();
@@ -190,10 +207,21 @@ async fn sync_request_without_task_details_omits_task_trace_json() {
         .as_array()
         .and_then(|a| a.iter().find(|r| r["channel"] == channel_name))
         .expect("expected a trace row");
-    // task_trace_json should be absent (Option::None serialized as missing).
+    let trace_id = row["id"].as_str().unwrap();
+
+    // task_trace_json should be absent on the detail (Option::None → missing).
+    let resp = app
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/data/traces/{trace_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    let detail = body_json(resp).await;
     assert!(
-        row.get("task_trace_json").is_none() || row["task_trace_json"].is_null(),
-        "task_trace_json should be omitted when task_details is unset, row={row:?}"
+        detail.get("task_trace_json").is_none() || detail["task_trace_json"].is_null(),
+        "task_trace_json should be omitted when task_details is unset, detail={detail:?}"
     );
 }
 

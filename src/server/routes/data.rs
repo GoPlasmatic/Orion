@@ -898,8 +898,32 @@ pub(crate) async fn list_traces(
     Query(filter): Query<TraceFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state.trace_repo.list_paginated(&filter).await?;
+    // Payload-free projection (S14): `input_json` holds the caller's request
+    // body and `result_json`/`task_trace_json` the full engine message, so a
+    // list row is every caller's traffic in one response — including rows
+    // persisted before S10 masked credential headers. Payloads are served
+    // one trace at a time by `GET /traces/{id}`, mirroring the DLQ list.
+    let rows: Vec<Value> = result
+        .data
+        .iter()
+        .map(|t| {
+            json!({
+                "id": t.id,
+                "channel": t.channel,
+                "channel_id": t.channel_id,
+                "mode": t.mode,
+                "status": t.status,
+                "error_message": t.error_message,
+                "duration_ms": t.duration_ms,
+                "started_at": t.started_at,
+                "completed_at": t.completed_at,
+                "created_at": t.created_at,
+                "updated_at": t.updated_at,
+            })
+        })
+        .collect();
     Ok(Json(json!({
-        "data": result.data,
+        "data": rows,
         "total": result.total,
         "limit": result.limit,
         "offset": result.offset,
@@ -935,8 +959,16 @@ pub(crate) async fn get_trace(
     use crate::storage::models;
     if trace.status == models::TRACE_STATUS_COMPLETED {
         if let Some(ref result_str) = trace.result_json
-            && let Ok(result_val) = serde_json::from_str::<Value>(result_str)
+            && let Ok(mut result_val) = serde_json::from_str::<Value>(result_str)
         {
+            // S14: the stored message's `context.metadata` carries the
+            // request headers (masked since S10 — but rows persisted before
+            // that upgrade hold them in plaintext). Strip it from the read
+            // projection; pollers need `data`/`payload`, not the submitter's
+            // request context.
+            if let Some(ctx) = result_val.get_mut("context").and_then(Value::as_object_mut) {
+                ctx.remove("metadata");
+            }
             response["message"] = result_val;
         }
     } else if trace.status == models::TRACE_STATUS_FAILED

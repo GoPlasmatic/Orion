@@ -437,3 +437,74 @@ async fn test_credential_headers_masked_at_rest_in_async_trace() {
     // Non-credential headers stay readable for validation_logic and debugging.
     assert_eq!(headers["x-tenant"], "acme");
 }
+
+/// S14: on a default config (admin auth off), an anonymous caller polling
+/// `GET /traces/{id}` must not be able to read another caller's request
+/// context. The persisted message's `context.metadata` (which carries the
+/// header map) is stripped from the read projection, and the list endpoint
+/// serves a payload-free projection.
+#[tokio::test]
+async fn test_trace_read_does_not_expose_request_context() {
+    use axum::body::Body;
+    use axum::http::Request;
+
+    let app = common::test_app().await;
+
+    common::create_and_activate_channel(
+        &app,
+        "s14-channel",
+        common::simple_log_workflow("S14 Workflow"),
+    )
+    .await;
+
+    // Caller A submits with credentials attached.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/data/s14-channel/async")
+        .header("content-type", "application/json")
+        .header("authorization", "Bearer S14-SECRET-TOKEN")
+        .header("cookie", "session=S14-SECRET-COOKIE")
+        .body(Body::from(
+            serde_json::to_vec(&json!({"data": {"event": "purchase"}})).unwrap(),
+        ))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let trace_id = body_json(resp).await["trace_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // An anonymous caller polls the trace (default config: no admin auth).
+    let trace = poll_trace_until_done(&app, &trace_id, 40).await;
+    assert_eq!(trace["status"], "completed");
+
+    // The message is served, but without the submitter's request context.
+    assert!(trace.get("message").is_some());
+    assert!(
+        trace["message"]["context"].get("metadata").is_none(),
+        "trace read must strip context.metadata (S14), got {trace}"
+    );
+    let serialized = trace.to_string();
+    assert!(!serialized.contains("S14-SECRET-TOKEN"));
+    assert!(!serialized.contains("S14-SECRET-COOKIE"));
+
+    // The list endpoint serves no payload fields at all.
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/data/traces", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let list = body_json(resp).await;
+    let row = list["data"]
+        .as_array()
+        .and_then(|a| a.iter().find(|r| r["id"] == trace_id.as_str()))
+        .expect("submitted trace must appear in the list");
+    for forbidden in ["input_json", "result_json", "task_trace_json"] {
+        assert!(
+            row.get(forbidden).is_none() || row[forbidden].is_null(),
+            "list row must not carry {forbidden} (S14), row={row}"
+        );
+    }
+}
