@@ -101,9 +101,17 @@ pub struct ChannelRuntimeConfig {
     pub trace_storage: EffectiveTraceConfig,
 }
 
-/// A channel the registry refused to load, and why. Only produced in
-/// cluster mode, where a silent per-node fallback (in-memory dedup/cache)
-/// is a correctness loss rather than a degradation.
+/// A channel the registry refused to load, and why.
+///
+/// Two classes produce one:
+/// - **Config invariants (any mode).** A `config_json` that no longer parses
+///   (N3) or a `validation_logic` that no longer compiles (N4) would load the
+///   channel with its guards silently absent — serving unvalidated,
+///   unthrottled traffic on the strength of a log line. Both are checked at
+///   create/update time, so a failure here means the stored row is corrupt.
+/// - **Backend degradation (cluster mode only).** A dedup/response-cache
+///   backend that would fall back to per-node memory is a correctness loss in
+///   a cluster but an acceptable degradation on one node.
 #[derive(Debug, Clone)]
 pub struct ChannelLoadIssue {
     pub channel: String,
@@ -120,10 +128,7 @@ impl ChannelLoadIssue {
             .collect::<Vec<_>>()
             .join("; ");
         crate::errors::OrionError::Config {
-            message: format!(
-                "cluster mode refused to load {} channel(s): {detail}",
-                issues.len()
-            ),
+            message: format!("refused to load {} channel(s): {detail}", issues.len()),
         }
     }
 }
@@ -255,11 +260,12 @@ impl ChannelRegistry {
     /// Rebuild the registry from a list of active channels.
     /// Builds per-channel rate limiters from `config_json.rate_limit` if configured.
     ///
-    /// Returns the channels that were **not** loaded. Always empty outside
-    /// cluster mode (single-node keeps the historical warn-and-fall-back
-    /// behavior); in cluster mode a dedup/cache backend that would silently
-    /// degrade to per-node memory refuses to load instead — callers turn a
-    /// non-empty result into a hard error.
+    /// Returns the channels that were **not** loaded (see [`ChannelLoadIssue`]
+    /// for the two classes). A non-empty result leaves the registry
+    /// **untouched**: callers turn it into a hard error, and a partial swap
+    /// would drop the refused channel's runtime config while the engine still
+    /// routes to it — i.e. serve it with none of its guards, the exact failure
+    /// the refusal exists to prevent.
     pub async fn reload(
         &self,
         channels: &[Channel],
@@ -273,8 +279,24 @@ impl ChannelRegistry {
 
         let mut new_map = HashMap::new();
         for channel in channels {
-            let parsed_config: ChannelConfig =
-                serde_json::from_str(&channel.config_json).unwrap_or_default();
+            // N3: `unwrap_or_default()` here used to turn one typo in the
+            // stored config into a channel with no rate limit, validation,
+            // dedup, backpressure, timeout, or cache — and no log line.
+            let parsed_config: ChannelConfig = match serde_json::from_str(&channel.config_json) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    tracing::error!(
+                        channel = %channel.name,
+                        error = %e,
+                        "Refusing to load channel: config_json does not parse"
+                    );
+                    issues.push(ChannelLoadIssue {
+                        channel: channel.name.clone(),
+                        reason: format!("config_json does not parse: {e}"),
+                    });
+                    continue;
+                }
+            };
 
             let rate_limiter: Option<Arc<dyn RateLimitBackend>> =
                 parsed_config.rate_limit.as_ref().map(|rl| {
@@ -310,18 +332,29 @@ impl ChannelRegistry {
                         .ok()
                 });
 
-            let validation_logic = parsed_config.validation_logic.as_ref().and_then(|logic| {
-                datalogic
-                    .compile(logic)
-                    .map_err(|e| {
-                        tracing::warn!(
+            // N4: dropping an uncompilable expression to `None` made
+            // `validate_input` a no-op, so the channel's declared input
+            // contract disappeared at reload time. Refuse instead — the
+            // expression compiled at create/update time, so this is a
+            // corrupt row or a datalogic upgrade that changed semantics.
+            let validation_logic = match parsed_config.validation_logic.as_ref() {
+                Some(logic) => match datalogic.compile(logic) {
+                    Ok(compiled) => Some(compiled),
+                    Err(e) => {
+                        tracing::error!(
                             channel = %channel.name,
                             error = %e,
-                            "Failed to compile validation_logic, skipping input validation"
+                            "Refusing to load channel: validation_logic does not compile"
                         );
-                    })
-                    .ok()
-            });
+                        issues.push(ChannelLoadIssue {
+                            channel: channel.name.clone(),
+                            reason: format!("validation_logic does not compile: {e}"),
+                        });
+                        continue;
+                    }
+                },
+                None => None,
+            };
 
             let backpressure_semaphore = parsed_config
                 .backpressure
@@ -391,6 +424,14 @@ impl ChannelRegistry {
             });
             new_map.insert(channel.name.clone(), runtime);
         }
+
+        // All-or-nothing: see the doc comment. Callers hard-fail, and the
+        // previous (consistent) registry state is what keeps serving until
+        // the operator fixes the offending row.
+        if !issues.is_empty() {
+            return issues;
+        }
+
         *self.by_name.write().await = new_map;
 
         // Rebuild the REST route table from active channels
@@ -502,8 +543,125 @@ mod tests {
                 &TracingStorageConfig::default(),
             )
             .await;
-        // Historical behavior preserved: warn + in-memory fallback, loaded.
+        // Backend *degradation* stays cluster-only: on one node an in-memory
+        // dedup store is the documented fallback, not a correctness loss.
         assert!(issues.is_empty());
         assert!(registry.get_by_name("fallback-ch").await.is_some());
+    }
+
+    async fn reload_single_node(channel: Channel) -> (ChannelRegistry, Vec<ChannelLoadIssue>) {
+        let registry = ChannelRegistry::new();
+        let issues = registry
+            .reload(
+                &[channel],
+                &ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker),
+                &CachePool::new(4, 60, 1000),
+                &DatalogicEngine::new(),
+                &TracingStorageConfig::default(),
+            )
+            .await;
+        (registry, issues)
+    }
+
+    /// N3: a stored config that does not parse must not load as "no guards".
+    #[tokio::test]
+    async fn test_malformed_config_json_refuses_to_load_single_node() {
+        // `requests_per_second` typed as a string — passes create-time
+        // validation nowhere, but this is what a hand-edited row looks like.
+        let channel = test_channel(
+            "broken-cfg-ch",
+            r#"{"rate_limit": {"requests_per_second": "100"}}"#,
+        );
+        let (registry, issues) = reload_single_node(channel).await;
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].channel, "broken-cfg-ch");
+        assert!(
+            issues[0].reason.contains("config_json does not parse"),
+            "unexpected reason: {}",
+            issues[0].reason
+        );
+        assert!(registry.get_by_name("broken-cfg-ch").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_malformed_config_json_is_not_valid_json_refuses() {
+        let channel = test_channel("not-json-ch", "{ this is not json ");
+        let (registry, issues) = reload_single_node(channel).await;
+        assert_eq!(issues.len(), 1);
+        assert!(registry.get_by_name("not-json-ch").await.is_none());
+    }
+
+    /// N4: an uncompilable `validation_logic` must not silently disable
+    /// input validation.
+    #[tokio::test]
+    async fn test_uncompilable_validation_logic_refuses_to_load_single_node() {
+        // Multi-key object: valid JSON, rejected by the datalogic compiler
+        // outside templating mode.
+        let channel = test_channel(
+            "bad-logic-ch",
+            r#"{"validation_logic": {"==": [1, 1], "!=": [1, 2]}}"#,
+        );
+        let (registry, issues) = reload_single_node(channel).await;
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].channel, "bad-logic-ch");
+        assert!(
+            issues[0]
+                .reason
+                .contains("validation_logic does not compile"),
+            "unexpected reason: {}",
+            issues[0].reason
+        );
+        assert!(registry.get_by_name("bad-logic-ch").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_valid_validation_logic_still_loads() {
+        let channel = test_channel(
+            "good-logic-ch",
+            r#"{"validation_logic": {"!!": [{"var": "data.id"}]}}"#,
+        );
+        let (registry, issues) = reload_single_node(channel).await;
+        assert!(issues.is_empty(), "unexpected issues: {issues:?}");
+        let runtime = registry.get_by_name("good-logic-ch").await.expect("loaded");
+        assert!(runtime.validation_logic.is_some());
+    }
+
+    /// A refusal must not partially apply: the previously loaded channels
+    /// keep serving with their guards rather than being dropped.
+    #[tokio::test]
+    async fn test_refusal_leaves_previous_registry_intact() {
+        let registry = ChannelRegistry::new();
+        let connectors =
+            ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker);
+        let cache_pool = CachePool::new(4, 60, 1000);
+        let datalogic = DatalogicEngine::new();
+        let tracing_cfg = TracingStorageConfig::default();
+
+        let issues = registry
+            .reload(
+                &[test_channel("keep-ch", "{}")],
+                &connectors,
+                &cache_pool,
+                &datalogic,
+                &tracing_cfg,
+            )
+            .await;
+        assert!(issues.is_empty());
+
+        let issues = registry
+            .reload(
+                &[
+                    test_channel("keep-ch", "{}"),
+                    test_channel("broken-ch", "{ nope"),
+                ],
+                &connectors,
+                &cache_pool,
+                &datalogic,
+                &tracing_cfg,
+            )
+            .await;
+        assert_eq!(issues.len(), 1);
+        assert!(registry.get_by_name("keep-ch").await.is_some());
+        assert!(registry.get_by_name("broken-ch").await.is_none());
     }
 }

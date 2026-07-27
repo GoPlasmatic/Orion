@@ -244,6 +244,25 @@ pub async fn reload_engine_with_opts(
                 .map_err(crate::errors::OrionError::Engine)?,
         );
 
+        // Rebuild the channel registry BEFORE swapping the engine. A refusal
+        // leaves the registry untouched, so bailing here also leaves the old
+        // engine in place: the alternative — new engine, refused channel
+        // absent from the registry — routes requests to that channel with
+        // none of its guards, which is what the refusal exists to prevent.
+        let issues = state
+            .channel_registry
+            .reload(
+                &channels,
+                &state.connector_registry,
+                &state.cache_pool,
+                &state.datalogic,
+                &state.config.tracing.storage,
+            )
+            .await;
+        if !issues.is_empty() {
+            return Err(crate::channel::ChannelLoadIssue::refusal_error(&issues));
+        }
+
         let mut engine_write = tokio::time::timeout(
             std::time::Duration::from_secs(state.config.engine.reload_timeout_secs),
             crate::engine::acquire_engine_write(&state.engine),
@@ -255,29 +274,10 @@ pub async fn reload_engine_with_opts(
             )
         })?;
         *engine_write = new_engine;
-
-        // Rebuild channel registry
-        let issues = state
-            .channel_registry
-            .reload(
-                &channels,
-                &state.connector_registry,
-                &state.cache_pool,
-                &state.datalogic,
-                &state.config.tracing.storage,
-            )
-            .await;
         // Release the write lock before the Kafka restart: request handlers
         // block on engine reads while it is held, and the epoch-driven
-        // restart path below sleeps a 0–5 s jitter. The engine + registry
-        // swap stays atomic from the readers' point of view.
+        // restart path below sleeps a 0–5 s jitter.
         drop(engine_write);
-        // Cluster mode refuses channels whose shared backends can't be built
-        // (silent per-node dedup/cache is a correctness loss, not a
-        // degradation). Surface them to the mutating admin request.
-        if !issues.is_empty() {
-            return Err(crate::channel::ChannelLoadIssue::refusal_error(&issues));
-        }
 
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);

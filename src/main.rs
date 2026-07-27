@@ -563,8 +563,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         )
         .await;
     if !load_issues.is_empty() {
-        // Cluster mode: a node that cannot build a channel's shared backend
-        // must not boot and silently serve with per-node state.
+        // A channel whose stored config or validation_logic no longer loads
+        // (any mode), or whose shared backend cannot be built (cluster mode),
+        // must not boot and silently serve unguarded.
         return Err(orion::channel::ChannelLoadIssue::refusal_error(&load_issues).into());
     }
 
