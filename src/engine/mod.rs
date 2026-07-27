@@ -360,6 +360,28 @@ pub fn build_engine_workflows(
                 }
                 bucket_offset = bucket_max;
             }
+            // F30: buckets are 0–99; percentages that don't sum to 100
+            // silently misroute — under 100, the remainder of the traffic
+            // matches no workflow version at all; over 100, later versions'
+            // ranges start past bucket 99 and are unreachable.
+            if !failed && bucket_offset != 100 {
+                issues.push(crate::channel::ChannelLoadIssue {
+                    channel: channel.name.clone(),
+                    reason: format!(
+                        "rollout percentages for workflow '{wf_id}' sum to {bucket_offset}, \
+                         not 100 — {}",
+                        if bucket_offset < 100 {
+                            format!(
+                                "{}% of traffic would match no workflow version",
+                                100 - bucket_offset
+                            )
+                        } else {
+                            "later versions would be unreachable".to_string()
+                        }
+                    ),
+                });
+                failed = true;
+            }
             // All-or-nothing per channel: a partially-converted rollout would
             // silently blackhole the failed version's bucket range.
             if !failed {
@@ -431,6 +453,62 @@ mod tests {
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),
         }
+    }
+
+    fn make_workflow(wf_id: &str, version: i64, rollout: i64) -> Workflow {
+        Workflow {
+            workflow_id: wf_id.to_string(),
+            version,
+            name: format!("{wf_id}-v{version}"),
+            description: None,
+            priority: 0,
+            status: "active".to_string(),
+            rollout_percentage: rollout,
+            condition_json: "true".to_string(),
+            tasks_json:
+                r#"[{"id":"t1","name":"log","function":{"name":"log","input":{"message":"x"}}}]"#
+                    .to_string(),
+            tags: "[]".to_string(),
+            continue_on_error: false,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        }
+    }
+
+    /// F30: rollout percentages that don't sum to 100 quarantine the channel
+    /// instead of silently blackholing (or shadowing) part of the traffic.
+    #[test]
+    fn test_rollout_sum_must_be_100() {
+        let mut channel = make_channel("rollout-ch");
+        channel.workflow_id = Some("wf".to_string());
+
+        // 50 + 30 = 80 — buckets 80–99 would match no version.
+        let wfs = vec![make_workflow("wf", 1, 30), make_workflow("wf", 2, 50)];
+        let (converted, issues) = build_engine_workflows(&[channel.clone()], &wfs);
+        assert!(converted.is_empty(), "under-100 rollout must not half-load");
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].reason.contains("sum to 80"),
+            "{}",
+            issues[0].reason
+        );
+
+        // 60 + 60 = 120 — later versions unreachable.
+        let wfs = vec![make_workflow("wf", 1, 60), make_workflow("wf", 2, 60)];
+        let (converted, issues) = build_engine_workflows(&[channel.clone()], &wfs);
+        assert!(converted.is_empty());
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].reason.contains("sum to 120"),
+            "{}",
+            issues[0].reason
+        );
+
+        // 50 + 50 = 100 — loads both versions cleanly.
+        let wfs = vec![make_workflow("wf", 1, 50), make_workflow("wf", 2, 50)];
+        let (converted, issues) = build_engine_workflows(&[channel], &wfs);
+        assert_eq!(converted.len(), 2);
+        assert!(issues.is_empty(), "{issues:?}");
     }
 
     #[test]
