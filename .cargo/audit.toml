@@ -1,4 +1,18 @@
 [advisories]
 ignore = [
-    "RUSTSEC-2023-0071",  # rsa via sqlx-mysql in Cargo.lock; we only use SQLite
+    # RUSTSEC-2023-0071 — Marvin timing sidechannel in the `rsa` crate
+    # (no fixed release exists). Re-evaluated 2026-07-27 (proposal T11), now
+    # that MySQL is a live, container-tested backend rather than "we only
+    # use SQLite":
+    #
+    # `rsa` enters via sqlx-mysql's auth handshake, where the CLIENT
+    # encrypts the password with the SERVER's public key
+    # (caching_sha2_password / sha256_password over non-TLS connections).
+    # Marvin leaks timing from PRIVATE-key operations (decrypt/sign);
+    # Orion performs none — the private key lives on the MySQL server.
+    # Residual risk: on-path attackers reading password ciphertexts on
+    # untrusted networks; `?ssl-mode=REQUIRED` on the storage.url removes
+    # the RSA path entirely (the password rides inside TLS instead).
+    # Revisit if `rsa` ships a fix or sqlx swaps it out.
+    "RUSTSEC-2023-0071",
 ]
