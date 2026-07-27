@@ -58,6 +58,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Queue durability round (proposal Q4–Q8, N15, D4).** A DLQ backoff shift
+  overflow no longer kills the retry task (`dlq_max_retries` is now bounded
+  1–16); a DB error on the "mark running" write routes the message to the DLQ
+  instead of dropping it with the trace stuck `pending`; failed persistence
+  writes retry (50ms/250ms) before being counted and dropped, and batch
+  buffers are no longer cleared on error before that retry;
+  `async_workers`/`batch_workers` > 1 now actually run in parallel (per-worker
+  receivers, round-robin fan-out); `tracing.storage.batch_size` is bounded at
+  1000 so batch flushes cannot exceed SQLite's bind limit; `task_trace_json`
+  is capped by `queue.max_result_size_bytes` on both paths; and trace
+  retention reclaims pending/running rows older than twice the retention
+  window instead of leaking them forever.
+
 - **Connectors authored the documented way never loaded.** `ConnectorConfig` is
   internally tagged on `type`, but the type lives in its own column and the API
   takes it as a sibling `connector_type` — so a config without a redundant
