@@ -53,6 +53,7 @@ mod pool_exhaustion_test;
 mod postgres_test;
 mod profile_test;
 mod protocol_required_fields_test;
+mod queue_durability_test;
 mod rate_limit_test;
 mod readiness_test;
 mod rest_routing_test;

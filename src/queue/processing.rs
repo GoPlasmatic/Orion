@@ -271,7 +271,36 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
             .update_status(&trace_id, models::TRACE_STATUS_RUNNING, None)
             .await
         {
-            tracing::error!(trace_id = %trace_id, error = %e, "Failed to update trace status to running");
+            // Q5: a transient DB error here used to drop the message
+            // entirely — trace stuck `pending` forever, work silently
+            // undone. Route it through the DLQ instead so the retry
+            // worker re-runs it once the DB recovers. Best-effort: the
+            // enqueue writes to the same DB, but it happens later and
+            // retries again from the DLQ poll loop.
+            tracing::error!(
+                trace_id = %trace_id,
+                error = %e,
+                "Failed to update trace status to running — routing to DLQ"
+            );
+            metrics::record_error("trace_status_write");
+            enqueue_dlq_row(
+                &dlq_repo,
+                &payload_json_for_dlq,
+                &metadata_json_for_dlq,
+                &trace_id,
+                &channel,
+                &format!("Failed to mark trace running: {e}"),
+                dlq_retry_count,
+                dlq_max_retries,
+            )
+            .await;
+            let _ = trace_repo
+                .update_status(
+                    &trace_id,
+                    models::TRACE_STATUS_FAILED,
+                    Some("Could not start processing; routed to DLQ"),
+                )
+                .await;
             return;
         }
     } else if matches!(
@@ -515,48 +544,72 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
 
             // Enqueue to DLQ for retry. The new row starts at the retry count
             // this message's lineage already spent, so `dlq_max_retries`
-            // converges instead of resetting on every failure (Q3). A row born
-            // at `retry_count >= max_retries` is exhausted by the same
-            // predicate `mark_exhausted` writes — invisible to `claim_pending`,
-            // still visible to operators.
-            if let Some(ref dlq) = dlq_repo
-                && let Some(ref payload) = payload_json_for_dlq
-            {
-                let metadata = metadata_json_for_dlq.as_deref().unwrap_or("{}");
-                let exhausted = dlq_retry_count >= dlq_max_retries;
-                if let Err(dlq_err) = dlq
-                    .enqueue(
-                        &trace_id,
-                        &channel,
-                        payload,
-                        metadata,
-                        &error_str,
-                        dlq_retry_count,
-                        dlq_max_retries,
-                    )
-                    .await
-                {
-                    tracing::error!(
-                        trace_id = %trace_id,
-                        error = %dlq_err,
-                        "Failed to enqueue failed trace to DLQ"
-                    );
-                } else if exhausted {
-                    metrics::record_trace_dlq_retry("exhausted");
-                    tracing::warn!(
-                        trace_id = %trace_id,
-                        retry_count = dlq_retry_count,
-                        max_retries = dlq_max_retries,
-                        "Failed trace exhausted its DLQ retries, no further attempts"
-                    );
-                } else {
-                    tracing::info!(
-                        trace_id = %trace_id,
-                        retry_count = dlq_retry_count,
-                        "Failed trace enqueued to DLQ for retry"
-                    );
-                }
-            }
+            // converges instead of resetting on every failure (Q3).
+            enqueue_dlq_row(
+                &dlq_repo,
+                &payload_json_for_dlq,
+                &metadata_json_for_dlq,
+                &trace_id,
+                &channel,
+                &error_str,
+                dlq_retry_count,
+                dlq_max_retries,
+            )
+            .await;
         }
+    }
+}
+
+/// Enqueue a failed message into the trace DLQ. Shared by the engine-error
+/// arm and the Q5 early-failure path (status write failed before the engine
+/// ran). A row born at `retry_count >= max_retries` is exhausted by the same
+/// predicate `mark_exhausted` writes — invisible to `claim_pending`, still
+/// visible to operators.
+#[allow(clippy::too_many_arguments)]
+async fn enqueue_dlq_row(
+    dlq_repo: &Option<Arc<dyn TraceDlqRepository>>,
+    payload_json: &Option<String>,
+    metadata_json: &Option<String>,
+    trace_id: &str,
+    channel: &str,
+    error_str: &str,
+    dlq_retry_count: i64,
+    dlq_max_retries: i64,
+) {
+    let Some(dlq) = dlq_repo else { return };
+    let Some(payload) = payload_json else { return };
+    let metadata = metadata_json.as_deref().unwrap_or("{}");
+    let exhausted = dlq_retry_count >= dlq_max_retries;
+    if let Err(dlq_err) = dlq
+        .enqueue(
+            trace_id,
+            channel,
+            payload,
+            metadata,
+            error_str,
+            dlq_retry_count,
+            dlq_max_retries,
+        )
+        .await
+    {
+        tracing::error!(
+            trace_id = %trace_id,
+            error = %dlq_err,
+            "Failed to enqueue failed trace to DLQ"
+        );
+    } else if exhausted {
+        metrics::record_trace_dlq_retry("exhausted");
+        tracing::warn!(
+            trace_id = %trace_id,
+            retry_count = dlq_retry_count,
+            max_retries = dlq_max_retries,
+            "Failed trace exhausted its DLQ retries, no further attempts"
+        );
+    } else {
+        tracing::info!(
+            trace_id = %trace_id,
+            retry_count = dlq_retry_count,
+            "Failed trace enqueued to DLQ for retry"
+        );
     }
 }

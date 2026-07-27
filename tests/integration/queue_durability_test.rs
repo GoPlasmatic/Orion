@@ -1,0 +1,197 @@
+//! Queue durability (proposal workstream Q).
+//!
+//! Q5: a transient DB error on the "mark running" write must route the
+//! message to the DLQ, not drop it with the trace stuck `pending`.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use async_trait::async_trait;
+use orion::errors::OrionError;
+use orion::storage::models::Trace;
+use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqFilter};
+use orion::storage::repositories::traces::{
+    SqlTraceRepository, TraceCompletedRow, TraceFilter, TraceRepository, TraceResultRow,
+};
+use orion::storage::repositories::workflows::PaginatedResult;
+use tokio::sync::RwLock;
+
+/// Delegating wrapper that fails the first `update_status(_, "running", _)`
+/// call, simulating a DB blip at the worst moment.
+struct FailFirstRunningWrite {
+    inner: Arc<SqlTraceRepository>,
+    armed: AtomicBool,
+}
+
+#[async_trait]
+impl TraceRepository for FailFirstRunningWrite {
+    async fn create_pending(
+        &self,
+        channel: &str,
+        channel_id: Option<&str>,
+        mode: &str,
+        input_json: Option<&str>,
+        access_token_hash: Option<&str>,
+    ) -> Result<Trace, OrionError> {
+        self.inner
+            .create_pending(channel, channel_id, mode, input_json, access_token_hash)
+            .await
+    }
+    async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError> {
+        self.inner.get_by_id(id).await
+    }
+    async fn update_status(
+        &self,
+        id: &str,
+        status: &str,
+        error_message: Option<&str>,
+    ) -> Result<Trace, OrionError> {
+        if status == "running" && self.armed.swap(false, Ordering::SeqCst) {
+            return Err(OrionError::Storage(sqlx::Error::PoolTimedOut));
+        }
+        self.inner.update_status(id, status, error_message).await
+    }
+    async fn set_result(
+        &self,
+        id: &str,
+        result_json: &str,
+        duration_ms: f64,
+        task_trace_json: Option<&str>,
+    ) -> Result<(), OrionError> {
+        self.inner
+            .set_result(id, result_json, duration_ms, task_trace_json)
+            .await
+    }
+    async fn store_completed(
+        &self,
+        channel: &str,
+        channel_id: Option<&str>,
+        mode: &str,
+        input_json: Option<&str>,
+        result_json: &str,
+        duration_ms: f64,
+        task_trace_json: Option<&str>,
+    ) -> Result<String, OrionError> {
+        self.inner
+            .store_completed(
+                channel,
+                channel_id,
+                mode,
+                input_json,
+                result_json,
+                duration_ms,
+                task_trace_json,
+            )
+            .await
+    }
+    async fn store_completed_batch(
+        &self,
+        rows: &[TraceCompletedRow],
+    ) -> Result<Vec<String>, OrionError> {
+        self.inner.store_completed_batch(rows).await
+    }
+    async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
+        self.inner.set_result_batch(rows).await
+    }
+    async fn list_paginated(
+        &self,
+        filter: &TraceFilter,
+    ) -> Result<PaginatedResult<Trace>, OrionError> {
+        self.inner.list_paginated(filter).await
+    }
+    async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError> {
+        self.inner.delete_older_than(hours).await
+    }
+}
+
+#[tokio::test]
+async fn failed_running_write_routes_message_to_dlq() {
+    sqlx::any::install_default_drivers();
+    let pool = orion::storage::init_pool(&orion::config::StorageConfig {
+        url: "sqlite::memory:".to_string(),
+        max_connections: 5,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let sql_repo = Arc::new(SqlTraceRepository::new(pool.clone()));
+    let trace_repo: Arc<dyn TraceRepository> = Arc::new(FailFirstRunningWrite {
+        inner: sql_repo.clone(),
+        armed: AtomicBool::new(true),
+    });
+    let dlq_repo = Arc::new(SqlTraceDlqRepository::new(pool.clone()));
+
+    let engine = Arc::new(RwLock::new(Arc::new(
+        dataflow_rs::Engine::builder().build().unwrap(),
+    )));
+    let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
+    let tracing_storage = orion::config::TracingStorageConfig::default(); // sync mode
+    let (persistence_queue, _persistence_handle) =
+        orion::queue::trace_persistence::start(&tracing_storage, trace_repo.clone());
+    let queue_config = orion::config::QueueConfig {
+        workers: 1,
+        buffer_size: 10,
+        ..Default::default()
+    };
+    let (trace_queue, _worker_handle) = orion::queue::start_workers(
+        &queue_config,
+        engine,
+        trace_repo.clone(),
+        Some(dlq_repo.clone()
+            as Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository>),
+        channel_registry,
+        persistence_queue,
+        tracing_storage,
+        String::new(),
+    );
+
+    // Seed the pending row exactly as the async submit path does, then queue.
+    let trace = trace_repo
+        .create_pending("q5-channel", None, "async", Some("{\"n\":1}"), None)
+        .await
+        .unwrap();
+    trace_queue
+        .submit(orion::queue::QueueMessage {
+            trace_id: trace.id.clone(),
+            channel: "q5-channel".to_string(),
+            payload: serde_json::json!({"n": 1}),
+            metadata: serde_json::json!({}),
+            trace_headers: Default::default(),
+            profile_requested: false,
+            backpressure_permit: None,
+        })
+        .await
+        .unwrap();
+
+    // The failed running-write must produce a DLQ row for this trace…
+    let mut dlq_rows = Vec::new();
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        use orion::storage::repositories::trace_dlq::TraceDlqRepository;
+        dlq_rows = dlq_repo
+            .list_paginated(&TraceDlqFilter::default())
+            .await
+            .unwrap()
+            .data;
+        if !dlq_rows.is_empty() {
+            break;
+        }
+    }
+    let row = dlq_rows
+        .iter()
+        .find(|r| r.trace_id == trace.id)
+        .unwrap_or_else(|| panic!("expected a DLQ row for {} (Q5), got {dlq_rows:?}", trace.id));
+    assert!(
+        row.error_message.contains("Failed to mark trace running"),
+        "DLQ row must carry the status-write error, got {:?}",
+        row.error_message
+    );
+
+    // …and the trace row must not be stuck `pending` forever.
+    let stored = trace_repo.get_by_id(&trace.id).await.unwrap();
+    assert_eq!(
+        stored.status, "failed",
+        "trace must leave `pending` once its message is routed to the DLQ"
+    );
+}
