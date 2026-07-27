@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- HTTP connector `retry_non_idempotent` (default `false`): opt POST/PATCH back
+  into the retry loop. Off by default because a timed-out POST may already
+  have been applied — enable only where the endpoint honours an idempotency
+  key the workflow sets in `headers`.
+- Elasticsearch connector `max_response_size` (default 10 MB), matching the
+  HTTP connector's cap.
+- `POST /{channel}/async` responses carry `trace_token`; `GET /traces/{id}`
+  accepts it via the `x-trace-token` header or a `?token=` query parameter.
 - `engine.fail_on_connector_load_error` (default `false`): refuse to start when
   an enabled connector cannot be loaded, so a bad rollout fails at boot where
   the orchestrator catches it rather than at request time hours later. Startup
@@ -55,6 +63,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS` and `…__DATA_RPS`. The two endpoint
   limits are optional, so their variables are three-state: unset keeps the
   config-file value, a number sets it, an empty string clears it.
+
+### Changed
+
+- `queue.dlq_max_retries` is now validated as 1–16 and connector
+  `retry.max_retries` as ≤ 16 (both are exponents in a doubling backoff);
+  `tracing.storage.batch_size` is capped at 1000 (the batch INSERT binds ~11
+  parameters per row against SQLite's 32 766-bind statement limit). Configs
+  outside these ranges are rejected at startup instead of failing at runtime.
+- Workflow create/update rejects unknown `function.name` values, and workflow
+  activation requires every referenced connector to exist. Both were lint
+  warnings; the workflow failed at its first request instead.
+- Trace retention now also deletes `pending`/`running` rows older than twice
+  `queue.trace_retention_hours` — previously they were never reclaimed.
 
 ### Fixed
 
