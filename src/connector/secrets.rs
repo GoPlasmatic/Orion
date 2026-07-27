@@ -5,9 +5,11 @@
 //! that scheme replaces the string with the resolved secret before the
 //! connector config is deserialized into its typed form.
 //!
-//! v0.2 ships a single resolver: `env://VAR_NAME` reads from the process
-//! environment. The trait leaves room for `vault://`, `aws-sm://`, etc.
-//! later without changing call sites.
+//! v1.0 ships a single working resolver: `env://VAR_NAME` reads from the
+//! process environment. The schemes reserved for later backends
+//! ([`RESERVED_SCHEMES`]) are registered too, but resolve to a hard error —
+//! a reference that cannot be resolved must never reach the remote system as
+//! its own literal text.
 //!
 //! ## Relationship to A5
 //!
@@ -60,10 +62,45 @@ impl SecretResolver for EnvSecretResolver {
     }
 }
 
-/// Returns the default v0.2 resolver registry: env:// only. Add new
-/// resolvers here when supporting additional schemes (e.g. vault://).
+/// Secret-backend schemes Orion recognises but does not implement yet.
+///
+/// They are registered so that a reference using one fails loudly. Without
+/// this, `vault://secret/db#password` has no matching resolver, passes through
+/// [`resolve_in_place`] untouched, and is handed to the database *as the
+/// password* — the connector then fails authentication with nothing pointing at
+/// the unresolved secret. Implementing one of these means replacing its entry
+/// with a real resolver.
+pub const RESERVED_SCHEMES: &[&str] = &["vault", "aws-sm", "gcp-sm", "azure-kv"];
+
+/// Rejects a reserved scheme with an explanatory error. See
+/// [`RESERVED_SCHEMES`].
+pub struct ReservedSchemeResolver {
+    scheme: &'static str,
+}
+
+impl SecretResolver for ReservedSchemeResolver {
+    fn scheme(&self) -> &'static str {
+        self.scheme
+    }
+    fn resolve(&self, _reference: &str) -> Result<String, OrionError> {
+        Err(OrionError::Config {
+            message: format!(
+                "secret scheme '{}://' is reserved but not supported in this build; \
+                 supply the value via env:// or a literal instead",
+                self.scheme
+            ),
+        })
+    }
+}
+
+/// Returns the default resolver registry: a working `env://` resolver plus a
+/// rejecting entry for every scheme in [`RESERVED_SCHEMES`].
 pub fn default_resolvers() -> Vec<Box<dyn SecretResolver>> {
-    vec![Box::new(EnvSecretResolver)]
+    let mut resolvers: Vec<Box<dyn SecretResolver>> = vec![Box::new(EnvSecretResolver)];
+    for scheme in RESERVED_SCHEMES {
+        resolvers.push(Box::new(ReservedSchemeResolver { scheme }));
+    }
+    resolvers
 }
 
 /// Walk `value` recursively, replacing each `scheme://reference` string
@@ -188,10 +225,53 @@ mod tests {
 
     #[test]
     fn resolve_in_place_leaves_unknown_schemes_alone() {
-        // https:// has no resolver — must pass through unchanged.
+        // https:// has no resolver and is not reserved — must pass through
+        // unchanged, or every connector URL would be mangled.
         let mut v = json!({ "url": "https://example.com/api" });
         resolve_in_place(&mut v, &stub(&[]), "test").expect("test");
         assert_eq!(v["url"], "https://example.com/api");
+    }
+
+    #[test]
+    fn reserved_scheme_errors_instead_of_becoming_the_literal_password() {
+        let mut v = json!({ "auth": { "password": "vault://secret/db#password" } });
+        let err = resolve_in_place(&mut v, &default_resolvers(), "connector 'db'").expect_err(
+            "an unimplemented scheme must fail loudly, not pass through as the password",
+        );
+        let OrionError::Config { message } = err else {
+            unreachable!("expected Config error");
+        };
+        assert!(message.contains("vault"), "{message}");
+        assert!(message.contains("not supported"), "{message}");
+        assert!(message.contains("connector 'db'"), "{message}");
+    }
+
+    #[test]
+    fn every_reserved_scheme_is_rejected() {
+        for scheme in RESERVED_SCHEMES {
+            let mut v = json!({ "token": format!("{scheme}://some/path") });
+            assert!(
+                resolve_in_place(&mut v, &default_resolvers(), "test").is_err(),
+                "scheme '{scheme}' must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn default_resolvers_leave_connection_urls_untouched() {
+        // The reserved list must not catch ordinary connector URLs.
+        let mut v = json!({
+            "connection_string": "postgres://user:pass@db.internal:5432/app",
+            "url": "redis://cache.internal:6379",
+            "brokers": ["kafka.internal:9092"]
+        });
+        resolve_in_place(&mut v, &default_resolvers(), "test").expect("test");
+        assert_eq!(
+            v["connection_string"],
+            "postgres://user:pass@db.internal:5432/app"
+        );
+        assert_eq!(v["url"], "redis://cache.internal:6379");
+        assert_eq!(v["brokers"][0], "kafka.internal:9092");
     }
 
     #[test]

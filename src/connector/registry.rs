@@ -175,7 +175,10 @@ impl ConnectorRegistry {
             let resolvers = super::secrets::default_resolvers();
             if let Err(e) = super::secrets::resolve_in_place(&mut value, &resolvers, &source_label)
             {
-                tracing::warn!(
+                // Logged at ERROR, not WARN: an unresolved secret means the
+                // connector is absent at request time with no other signal
+                // (making the degraded set visible on /health is F16).
+                tracing::error!(
                     connector_id = %connector.id,
                     connector_name = %connector.name,
                     error = %e,
