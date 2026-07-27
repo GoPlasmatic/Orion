@@ -1056,15 +1056,18 @@ async fn publish_kafka_publishes_to_the_connectors_brokers() {
 }
 
 /// T3: a workflow naming a non-Kafka connector must fail with a validation
-/// error, not an opaque one.
+/// error, not an opaque one. No container needed — the type check rejects
+/// before any broker is contacted (rdkafka connects lazily), so this runs in
+/// the default suite.
 #[tokio::test]
-#[ignore]
 async fn publish_kafka_rejects_a_non_kafka_connector() {
     use tower::ServiceExt;
 
-    let (_container, brokers) = start_kafka().await;
-    let state =
-        crate::common::test_state_with_kafka(orion::config::AppConfig::default(), &brokers).await;
+    let state = crate::common::test_state_with_kafka(
+        orion::config::AppConfig::default(),
+        "127.0.0.1:9092",
+    )
+    .await;
     let app = orion::server::build_router(state);
 
     crate::common::create_connector(&app, crate::common::db_connector("t3-not-kafka")).await;
