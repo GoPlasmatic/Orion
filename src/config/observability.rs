@@ -200,6 +200,16 @@ impl Default for CorsConfig {
 
 impl CorsConfig {
     pub(crate) fn validate(&self, is_production: bool) -> Result<(), OrionError> {
+        // A "*" mixed into an explicit origin list would skip the permissive
+        // branch in build_cors and reach AllowOrigin::list, which panics on
+        // wildcard entries — a boot-time crash from config alone.
+        if self.allowed_origins.len() > 1 && self.allowed_origins.iter().any(|o| o == "*") {
+            return Err(OrionError::Config {
+                message: "CORS allowed_origins cannot mix '*' with explicit origins. \
+                          Use exactly [\"*\"] for permissive CORS, or list explicit origins only"
+                    .to_string(),
+            });
+        }
         if self.allowed_origins.len() == 1 && self.allowed_origins[0] == "*" {
             if is_production {
                 return Err(OrionError::Config {

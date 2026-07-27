@@ -544,7 +544,14 @@ where
 
     // CORS
     if let Ok(v) = env_var("ORION_CORS__ALLOWED_ORIGINS") {
-        config.cors.allowed_origins = v.split(',').map(|s| s.trim().to_string()).collect();
+        // Empty entries are dropped so an explicitly empty value means
+        // "no cross-origin access" rather than a list with one "" origin.
+        config.cors.allowed_origins = v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
     }
 
     // Channel loading filters

@@ -311,6 +311,26 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_config_cors_wildcard_mixed_with_origins() {
+        let mut config = AppConfig::default();
+        config.cors.allowed_origins = vec!["*".to_string(), "https://x.com".to_string()];
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        let err = result.expect_err("test").to_string();
+        assert!(err.contains("cannot mix"));
+    }
+
+    #[test]
+    fn test_validate_config_cors_explicit_origins_ok() {
+        let mut config = AppConfig::default();
+        config.cors.allowed_origins = vec![
+            "https://a.example.com".to_string(),
+            "https://b.example.com".to_string(),
+        ];
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
     fn test_validate_config_non_production_admin_auth_disabled_ok() {
         let config = AppConfig::default();
         // Non-production + disabled admin auth should be fine (just warns)
