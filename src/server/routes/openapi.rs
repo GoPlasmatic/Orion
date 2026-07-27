@@ -265,8 +265,8 @@ validation failures.",
         // Data plane (C8) — one catch-all handler, two documented operations
         super::data::dynamic_handler,
         super::data::submit_channel_request_async_docs,
-        super::data::list_traces,
-        super::data::get_trace,
+        super::data::traces::list_traces,
+        super::data::traces::get_trace,
         // Operational
         super::health_check,
         super::liveness_check,
