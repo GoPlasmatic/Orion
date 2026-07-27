@@ -8,12 +8,38 @@
 //! `OrionJson(req): OrionJson<T>`.
 
 use axum::extract::FromRequest;
+use axum::extract::FromRequestParts;
 use axum::extract::Request;
-use axum::extract::rejection::JsonRejection;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::http::request::Parts;
 
 use crate::errors::OrionError;
 
 pub struct OrionJson<T>(pub T);
+
+/// Query-string counterpart of [`OrionJson`]: axum's own `Query` rejection is
+/// a plain-text body, which breaks the `{"error": {...}}` envelope every other
+/// response uses.
+pub struct OrionQuery<T>(pub T);
+
+impl<T, S> FromRequestParts<S> for OrionQuery<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = OrionError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match axum::extract::Query::<T>::from_request_parts(parts, state).await {
+            Ok(axum::extract::Query(value)) => Ok(OrionQuery(value)),
+            Err(rej) => Err(map_query_rejection(rej)),
+        }
+    }
+}
+
+fn map_query_rejection(rej: QueryRejection) -> OrionError {
+    OrionError::BadRequest(format!("Invalid query string: {}", rej.body_text()))
+}
 
 impl<T, S> FromRequest<S> for OrionJson<T>
 where

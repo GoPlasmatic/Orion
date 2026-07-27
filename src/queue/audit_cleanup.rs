@@ -72,7 +72,7 @@ mod tests {
     use super::*;
 
     use crate::storage::DbPool;
-    use crate::storage::repositories::audit_logs::SqlAuditLogRepository;
+    use crate::storage::repositories::audit_logs::{AuditLogFilter, SqlAuditLogRepository};
     use crate::storage::repositories::cluster::{ClusterRepository, SqlClusterRepository};
 
     /// One expired row, ready to be collected by the next tick.
@@ -88,9 +88,10 @@ mod tests {
 
     async fn remaining(pool: &DbPool) -> i64 {
         SqlAuditLogRepository::new(pool.clone())
-            .count()
+            .list_paginated(&AuditLogFilter::default())
             .await
             .expect("count")
+            .total
     }
 
     #[tokio::test]

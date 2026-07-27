@@ -67,7 +67,7 @@ Connector types: `http`, `kafka`, `db` (PostgreSQL/MySQL/SQLite/MongoDB), `cache
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/v1/admin/audit-logs` | List audit log entries. Filter with `?action=`, `?resource_type=` |
+| GET | `/api/v1/admin/audit-logs` | List audit log entries, newest first. Filters (AND-combined, exact match): `?action=`, `?resource_type=`, `?resource_id=`, `?principal=`; time range: `?start_time=` (inclusive) and `?end_time=` (exclusive), RFC 3339; paging: `?offset=`, `?limit=` (clamped to 1–1000, default 50). An unknown parameter returns `400` |
 
 ## Backups
 

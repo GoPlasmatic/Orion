@@ -1,10 +1,27 @@
 use async_trait::async_trait;
-use sea_query::{Asterisk, Expr, Order, Query, SimpleExpr};
+use chrono::NaiveDateTime;
+use sea_query::{Asterisk, Condition, Expr, Order, Query, SimpleExpr};
 
 use crate::errors::OrionError;
 use crate::storage::models::AuditLogEntry;
+use crate::storage::repositories::workflows::PaginatedResult;
 use crate::storage::schema::AuditLogs;
 use crate::storage::{DbPool, build_sqlx};
+
+/// Server-side filter for audit-log reads (O8). Every field is an exact match
+/// except the half-open time window `[start_time, end_time)`; unset fields do
+/// not constrain the query.
+#[derive(Debug, Clone, Default)]
+pub struct AuditLogFilter {
+    pub action: Option<String>,
+    pub resource_type: Option<String>,
+    pub resource_id: Option<String>,
+    pub principal: Option<String>,
+    pub start_time: Option<NaiveDateTime>,
+    pub end_time: Option<NaiveDateTime>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
 
 #[async_trait]
 pub trait AuditLogRepository: Send + Sync {
@@ -18,15 +35,12 @@ pub trait AuditLogRepository: Send + Sync {
         details: Option<&str>,
     ) -> Result<(), OrionError>;
 
-    /// List audit log entries with pagination, newest first.
+    /// List audit log entries matching `filter`, newest first. `total` counts
+    /// the rows matching the filter, not the whole table.
     async fn list_paginated(
         &self,
-        offset: i64,
-        limit: i64,
-    ) -> Result<Vec<AuditLogEntry>, OrionError>;
-
-    /// Count total audit log entries.
-    async fn count(&self) -> Result<i64, OrionError>;
+        filter: &AuditLogFilter,
+    ) -> Result<PaginatedResult<AuditLogEntry>, OrionError>;
 
     /// Delete audit log entries older than the given number of days.
     /// Returns the count deleted.
@@ -92,47 +106,61 @@ impl AuditLogRepository for SqlAuditLogRepository {
 
     async fn list_paginated(
         &self,
-        offset: i64,
-        limit: i64,
-    ) -> Result<Vec<AuditLogEntry>, OrionError> {
+        filter: &AuditLogFilter,
+    ) -> Result<PaginatedResult<AuditLogEntry>, OrionError> {
         crate::metrics::timed_db_op("audit_logs.list", async {
+            let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
+
+            // Every predicate is a bound parameter — no identifier or value is
+            // ever interpolated into the SQL text.
+            let mut cond = Condition::all();
+            if let Some(ref action) = filter.action {
+                cond = cond.add(Expr::col(AuditLogs::Action).eq(action.as_str()));
+            }
+            if let Some(ref resource_type) = filter.resource_type {
+                cond = cond.add(Expr::col(AuditLogs::ResourceType).eq(resource_type.as_str()));
+            }
+            if let Some(ref resource_id) = filter.resource_id {
+                cond = cond.add(Expr::col(AuditLogs::ResourceId).eq(resource_id.as_str()));
+            }
+            if let Some(ref principal) = filter.principal {
+                cond = cond.add(Expr::col(AuditLogs::Principal).eq(principal.as_str()));
+            }
+            if let Some(start) = filter.start_time {
+                cond = cond.add(Expr::col(AuditLogs::CreatedAt).gte(start));
+            }
+            if let Some(end) = filter.end_time {
+                cond = cond.add(Expr::col(AuditLogs::CreatedAt).lt(end));
+            }
+
+            let total =
+                super::helpers::count_where(&self.pool, AuditLogs::Table, cond.clone()).await?;
+
             let (sql, values) = build_sqlx(
                 Query::select()
                     .column(Asterisk)
                     .from(AuditLogs::Table)
+                    .cond_where(cond)
                     .order_by(AuditLogs::CreatedAt, Order::Desc)
                     .offset(offset as u64)
                     .limit(limit as u64),
             );
 
-            self.pool
+            let data = self
+                .pool
                 .fetch_all_as::<AuditLogEntry>(&sql, values)
                 .await
                 .map_err(|e| OrionError::InternalSource {
                     context: "Failed to list audit logs".to_string(),
                     source: Box::new(e),
-                })
-        })
-        .await
-    }
-
-    async fn count(&self) -> Result<i64, OrionError> {
-        crate::metrics::timed_db_op("audit_logs.count", async {
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .expr(Expr::col(Asterisk).count())
-                    .from(AuditLogs::Table),
-            );
-
-            let row: (i64,) = self
-                .pool
-                .fetch_one_as::<(i64,)>(&sql, values)
-                .await
-                .map_err(|e| OrionError::InternalSource {
-                    context: "Failed to count audit logs".to_string(),
-                    source: Box::new(e),
                 })?;
-            Ok(row.0)
+
+            Ok(PaginatedResult {
+                data,
+                total,
+                limit,
+                offset,
+            })
         })
         .await
     }
@@ -164,6 +192,12 @@ pub(crate) mod tests {
         SqlAuditLogRepository::new(crate::storage::test_sqlite_pool().await)
     }
 
+    async fn list_all(repo: &SqlAuditLogRepository) -> PaginatedResult<AuditLogEntry> {
+        repo.list_paginated(&AuditLogFilter::default())
+            .await
+            .expect("list")
+    }
+
     /// Backdate every row for `resource_id`, since `created_at` is set by a
     /// column default and cannot be supplied through `insert`.
     pub(crate) async fn backdate(pool: &DbPool, resource_id: &str, days: i64) {
@@ -184,10 +218,10 @@ pub(crate) mod tests {
             .await
             .expect("insert without details");
 
-        let entries = repo.list_paginated(0, 10).await.expect("list");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].action, "create");
-        assert!(entries[0].details.is_none());
+        let page = list_all(&repo).await;
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].action, "create");
+        assert!(page.data[0].details.is_none());
     }
 
     /// D3: `columns()` replaces rather than appends, so the old two-call form
@@ -200,15 +234,15 @@ pub(crate) mod tests {
             .await
             .expect("insert with details must build valid SQL");
 
-        let entries = repo.list_paginated(0, 10).await.expect("list");
-        assert_eq!(entries.len(), 1, "exactly one row, not two");
-        let entry = &entries[0];
+        let page = list_all(&repo).await;
+        assert_eq!(page.data.len(), 1, "exactly one row, not two");
+        assert_eq!(page.total, 1);
+        let entry = &page.data[0];
         assert_eq!(entry.principal, "admin...");
         assert_eq!(entry.action, "activate");
         assert_eq!(entry.resource_type, "workflow");
         assert_eq!(entry.resource_id, "wf-1");
         assert_eq!(entry.details.as_deref(), Some(details));
-        assert_eq!(repo.count().await.expect("count"), 1);
     }
 
     /// D2: nothing removed audit rows before this, so the table grew forever.
@@ -229,9 +263,9 @@ pub(crate) mod tests {
         let deleted = repo.delete_older_than(90).await.expect("cleanup");
         assert_eq!(deleted, 1, "only the 120-day-old row is past retention");
 
-        let entries = repo.list_paginated(0, 10).await.expect("list");
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].resource_id, "recent");
+        let page = list_all(&repo).await;
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].resource_id, "recent");
     }
 
     #[tokio::test]
@@ -244,6 +278,173 @@ pub(crate) mod tests {
             .expect("insert");
 
         assert_eq!(repo.delete_older_than(1).await.expect("cleanup"), 0);
-        assert_eq!(repo.count().await.expect("count"), 1);
+        assert_eq!(list_all(&repo).await.total, 1);
+    }
+
+    // -- O8: filtering --
+
+    async fn seeded_repo() -> SqlAuditLogRepository {
+        let repo = test_repo().await;
+        for (principal, action, resource_type, resource_id) in [
+            ("alice...", "create", "workflow", "wf-1"),
+            ("alice...", "activate", "workflow", "wf-1"),
+            ("bob...", "activate", "workflow", "wf-2"),
+            ("bob...", "activate", "channel", "ch-1"),
+            ("bob...", "delete", "connector", "conn-1"),
+        ] {
+            repo.insert(principal, action, resource_type, resource_id, None)
+                .await
+                .expect("seed");
+        }
+        repo
+    }
+
+    async fn matching(repo: &SqlAuditLogRepository, filter: AuditLogFilter) -> Vec<AuditLogEntry> {
+        let page = repo.list_paginated(&filter).await.expect("list");
+        assert_eq!(
+            page.total,
+            page.data.len() as i64,
+            "total must count filtered rows, not the whole table"
+        );
+        page.data
+    }
+
+    #[tokio::test]
+    async fn test_each_filter_narrows_results() {
+        let repo = seeded_repo().await;
+        assert_eq!(list_all(&repo).await.total, 5);
+
+        assert_eq!(
+            matching(
+                &repo,
+                AuditLogFilter {
+                    action: Some("activate".into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .len(),
+            3
+        );
+        assert_eq!(
+            matching(
+                &repo,
+                AuditLogFilter {
+                    resource_type: Some("workflow".into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .len(),
+            3
+        );
+        assert_eq!(
+            matching(
+                &repo,
+                AuditLogFilter {
+                    resource_id: Some("wf-1".into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .len(),
+            2
+        );
+        assert_eq!(
+            matching(
+                &repo,
+                AuditLogFilter {
+                    principal: Some("bob...".into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .len(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn test_combined_filters_and_together() {
+        let repo = seeded_repo().await;
+
+        let rows = matching(
+            &repo,
+            AuditLogFilter {
+                action: Some("activate".into()),
+                resource_type: Some("workflow".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(rows.len(), 2);
+        assert!(
+            rows.iter()
+                .all(|e| e.action == "activate" && e.resource_type == "workflow")
+        );
+
+        let rows = matching(
+            &repo,
+            AuditLogFilter {
+                action: Some("activate".into()),
+                resource_type: Some("workflow".into()),
+                principal: Some("alice...".into()),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].resource_id, "wf-1");
+
+        // A conjunction that matches nothing must return nothing, not everything.
+        assert!(
+            matching(
+                &repo,
+                AuditLogFilter {
+                    action: Some("create".into()),
+                    resource_type: Some("connector".into()),
+                    ..Default::default()
+                }
+            )
+            .await
+            .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_time_range_filter() {
+        let pool = crate::storage::test_sqlite_pool().await;
+        let repo = SqlAuditLogRepository::new(pool.clone());
+        repo.insert("alice...", "create", "workflow", "old", None)
+            .await
+            .expect("seed old");
+        repo.insert("alice...", "create", "workflow", "new", None)
+            .await
+            .expect("seed new");
+        backdate(&pool, "old", 30).await;
+
+        let cutoff = chrono::Utc::now().naive_utc() - chrono::Duration::days(7);
+
+        let rows = matching(
+            &repo,
+            AuditLogFilter {
+                start_time: Some(cutoff),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].resource_id, "new");
+
+        let rows = matching(
+            &repo,
+            AuditLogFilter {
+                end_time: Some(cutoff),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].resource_id, "old");
     }
 }

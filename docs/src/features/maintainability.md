@@ -149,10 +149,25 @@ curl -s http://localhost:8080/api/v1/data/traces/{trace-id}
 
 ```bash
 curl -s http://localhost:8080/api/v1/admin/audit-logs
-curl -s "http://localhost:8080/api/v1/admin/audit-logs?action=activate&resource_type=workflow"
+curl -s "http://localhost:8080/api/v1/admin/audit-logs?action=status_active&resource_type=workflow"
+curl -s "http://localhost:8080/api/v1/admin/audit-logs?resource_id=wf-orders&start_time=2026-07-01T00:00:00Z"
 ```
 
-Each entry captures: principal, action, resource type, resource ID, details, and timestamp.
+Each entry captures: principal, action, resource type, resource ID, details (JSON — currently the originating request ID), and timestamp.
+
+Filters are applied server-side and combine with AND: `action`, `resource_type`,
+`resource_id`, `principal` (exact match) plus `start_time` (inclusive) and
+`end_time` (exclusive) as RFC 3339 timestamps, on top of `offset` / `limit`.
+An unrecognised parameter is rejected with `400` rather than ignored, so a
+mistyped filter can never come back as an unfiltered `200`.
+
+Recorded actions are `create`, `update`, `delete`, `import`, `update_rollout`,
+`status_active` / `status_archived` / `status_draft`, `reload`, and `backup`.
+
+**Audit retention:** audit rows are only removed by the retention job. It runs
+on the `queue.trace_cleanup_interval_secs` cadence and deletes entries older
+than `queue.audit_retention_days` (default `90`; set `0` to keep forever). In
+cluster mode the job is lease-gated so only one replica performs the delete.
 
 **Database backup and restore:**
 

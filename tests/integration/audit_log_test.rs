@@ -489,3 +489,191 @@ async fn test_audit_import() {
         "expected at least one 'import' audit entry for workflow resource_type"
     );
 }
+
+// ============================================================
+// 8. Server-side filtering (O8)
+// ============================================================
+
+/// Seed a mix of workflow / channel / connector audit entries and return the
+/// app plus the workflow id used.
+async fn app_with_mixed_audit_entries() -> (axum::Router, String) {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(common::simple_log_workflow("Filter WF")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let wf_id = body_json(resp).await["data"]["workflow_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(common::sync_http_channel("filter-chan", &wf_id)),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let ch_id = body_json(resp).await["data"]["channel_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{ch_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    common::create_connector(&app, common::db_connector("filter-conn")).await;
+
+    wait_for_audit().await;
+    (app, wf_id)
+}
+
+async fn audit_query(app: &axum::Router, query: &str) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/audit-logs{query}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, body_json(resp).await)
+}
+
+#[tokio::test]
+async fn test_audit_filter_each_param_narrows_results() {
+    let (app, wf_id) = app_with_mixed_audit_entries().await;
+
+    let (status, all) = audit_query(&app, "").await;
+    assert_eq!(status, StatusCode::OK);
+    let total = all["pagination"]["total"].as_i64().unwrap();
+    assert!(total >= 5, "expected a mixed seed, got {total}");
+
+    for (query, key, value) in [
+        ("?resource_type=workflow", "resource_type", "workflow"),
+        ("?resource_type=connector", "resource_type", "connector"),
+        ("?action=create", "action", "create"),
+        ("?action=status_active", "action", "status_active"),
+    ] {
+        let (status, body) = audit_query(&app, query).await;
+        assert_eq!(status, StatusCode::OK, "query {query}");
+        let entries = body["data"].as_array().unwrap();
+        assert!(!entries.is_empty(), "{query} should match something");
+        assert!(
+            entries.iter().all(|e| e[key] == value),
+            "{query} returned rows that do not match: {entries:?}"
+        );
+        assert!(
+            body["pagination"]["total"].as_i64().unwrap() < total,
+            "{query} must narrow the result set (total was {total})"
+        );
+        assert_eq!(
+            body["pagination"]["total"].as_i64().unwrap(),
+            entries.len() as i64,
+            "total must count filtered rows"
+        );
+    }
+
+    let (status, body) = audit_query(&app, &format!("?resource_id={wf_id}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = body["data"].as_array().unwrap();
+    assert!(!entries.is_empty());
+    assert!(entries.iter().all(|e| e["resource_id"] == wf_id));
+
+    let (status, body) = audit_query(&app, "?principal=anonymous").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["pagination"]["total"].as_i64().unwrap(),
+        total,
+        "auth is off in tests, so every entry is 'anonymous'"
+    );
+
+    let (status, body) = audit_query(&app, "?principal=nobody-else").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["pagination"]["total"], 0);
+}
+
+#[tokio::test]
+async fn test_audit_filters_and_together() {
+    let (app, wf_id) = app_with_mixed_audit_entries().await;
+
+    // The documented example: ?action=…&resource_type=workflow.
+    let (status, body) = audit_query(&app, "?action=status_active&resource_type=workflow").await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = body["data"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["resource_id"], wf_id);
+
+    // A matching action with a non-matching type must yield nothing, not the union.
+    let (status, body) = audit_query(&app, "?action=status_active&resource_type=connector").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["pagination"]["total"], 0);
+    assert!(body["data"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_audit_time_range_filter() {
+    let (app, _) = app_with_mixed_audit_entries().await;
+
+    let (_, all) = audit_query(&app, "").await;
+    let total = all["pagination"]["total"].as_i64().unwrap();
+
+    let (status, body) = audit_query(&app, "?start_time=2000-01-01T00:00:00Z").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["pagination"]["total"].as_i64().unwrap(), total);
+
+    let (status, body) = audit_query(&app, "?end_time=2000-01-01T00:00:00Z").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["pagination"]["total"], 0);
+
+    let (status, body) = audit_query(&app, "?start_time=not-a-timestamp").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "BAD_REQUEST");
+}
+
+/// The core of O8: before the fix an unknown parameter was dropped and the
+/// caller got a 200 with the *unfiltered* table.
+#[tokio::test]
+async fn test_audit_unknown_query_param_is_rejected() {
+    let (app, _) = app_with_mixed_audit_entries().await;
+
+    let (status, body) = audit_query(&app, "?resource_types=workflow").await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a mistyped filter must not silently return everything"
+    );
+    assert_eq!(body["error"]["code"], "BAD_REQUEST");
+    assert!(body.get("data").is_none());
+}

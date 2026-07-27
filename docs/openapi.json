@@ -35,11 +35,68 @@
               "type": "integer",
               "format": "int64"
             }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "description": "Exact-match filter on the action (e.g. `create`, `activate`, `delete`)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_type",
+            "in": "query",
+            "description": "Exact-match filter on the resource type (`workflow`, `channel`, `connector`, `engine`)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "resource_id",
+            "in": "query",
+            "description": "Exact-match filter on the resource ID",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "principal",
+            "in": "query",
+            "description": "Exact-match filter on the acting principal",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "description": "Inclusive lower bound on `created_at`, RFC 3339",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "description": "Exclusive upper bound on `created_at`, RFC 3339",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "Paginated audit log entries with total count"
+          },
+          "400": {
+            "description": "Unknown query parameter or malformed timestamp"
           }
         }
       }
