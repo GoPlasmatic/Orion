@@ -114,7 +114,7 @@ pub enum TraceDlq {
 // Cluster coordination tables
 // ============================================================
 
-#[derive(Iden)]
+#[derive(Iden, Clone, Copy)]
 pub enum ConfigEpoch {
     Table,
     Id,

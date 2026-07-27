@@ -3,14 +3,18 @@
 //!
 //! All statements use each backend's own clock (`datetime('now')` /
 //! `LOCALTIMESTAMP` / `UTC_TIMESTAMP()`) so lease comparisons never depend
-//! on node clocks — only the DB's.
+//! on node clocks — only the DB's. Those clock expressions are the only raw
+//! SQL here (`Expr::cust`); everything else is sea-query, so placeholder
+//! dialects are the builder's problem, not ours.
 
 use async_trait::async_trait;
-use sea_query::{Value, Values};
-use sea_query_binder::SqlxValues;
+use sea_query::{Expr, Query, SimpleExpr};
 
 use crate::errors::OrionError;
-use crate::storage::{DbBackend, DbPool, get_backend};
+use crate::storage::schema::{ConfigEpoch, JobLeases};
+use crate::storage::{DbPool, build_sqlx, get_backend};
+
+use super::helpers::{fetch_required, insert_if_absent, update_returning_scalar};
 
 /// The single `config_epoch` row.
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -53,8 +57,9 @@ impl SqlClusterRepository {
         Self { pool }
     }
 
-    fn no_values() -> SqlxValues {
-        SqlxValues(Values(Vec::new()))
+    /// The DB server's own clock as a SQL expression.
+    fn now_expr() -> SimpleExpr {
+        Expr::cust(super::helpers::sql_now(get_backend()))
     }
 
     fn missing_epoch_row() -> OrionError {
@@ -62,108 +67,79 @@ impl SqlClusterRepository {
             "config_epoch row missing — cluster_coordination migration not applied".to_string(),
         )
     }
+
+    /// `UPDATE config_epoch ... WHERE id = 1` returning `returning_col`, with
+    /// the MySQL read-back handled by [`update_returning_scalar`]. Shared by
+    /// `bump_epoch` and `request_breaker_reset`.
+    async fn update_epoch_row(
+        &self,
+        mut update: sea_query::UpdateStatement,
+        returning_col: ConfigEpoch,
+    ) -> Result<i64, OrionError> {
+        update
+            .value(ConfigEpoch::UpdatedAt, Self::now_expr())
+            .and_where(Expr::col(ConfigEpoch::Id).eq(1));
+        let mut read_back = Query::select()
+            .column(returning_col)
+            .from(ConfigEpoch::Table)
+            .and_where(Expr::col(ConfigEpoch::Id).eq(1))
+            .to_owned();
+        update_returning_scalar(
+            &self.pool,
+            &mut update,
+            returning_col,
+            &mut read_back,
+            Self::missing_epoch_row,
+        )
+        .await
+    }
 }
 
 #[async_trait]
 impl ClusterRepository for SqlClusterRepository {
     async fn bump_epoch(&self) -> Result<i64, OrionError> {
         crate::metrics::timed_db_op("cluster.bump_epoch", async {
-            let now = super::helpers::sql_now(get_backend());
-            match get_backend() {
-                DbBackend::Sqlite | DbBackend::Postgres => {
-                    let sql = format!(
-                        "UPDATE config_epoch SET epoch = epoch + 1, updated_at = {now} \
-                         WHERE id = 1 RETURNING epoch"
-                    );
-                    self.pool
-                        .fetch_scalar::<i64>(&sql, Self::no_values())
-                        .await
-                        .map_err(OrionError::Storage)
-                }
-                DbBackend::Mysql => {
-                    // MySQL has no UPDATE ... RETURNING; read back inside the
-                    // same transaction (the row lock makes it our increment).
-                    let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
-                    tx.execute_query(
-                        &format!(
-                            "UPDATE config_epoch SET epoch = epoch + 1, updated_at = {now} \
-                             WHERE id = 1"
-                        ),
-                        Self::no_values(),
-                    )
-                    .await?;
-                    let (epoch,): (i64,) = super::helpers::fetch_required_tx(
-                        &mut tx,
-                        "SELECT epoch FROM config_epoch WHERE id = 1",
-                        Self::no_values(),
-                        Self::missing_epoch_row,
-                    )
-                    .await?;
-                    tx.commit().await.map_err(OrionError::Storage)?;
-                    Ok(epoch)
-                }
-            }
+            let update = Query::update()
+                .table(ConfigEpoch::Table)
+                .value(
+                    ConfigEpoch::Epoch,
+                    Expr::col(ConfigEpoch::Epoch).add(1),
+                )
+                .to_owned();
+            self.update_epoch_row(update, ConfigEpoch::Epoch).await
         })
         .await
     }
 
     async fn get_epoch(&self) -> Result<EpochRow, OrionError> {
         crate::metrics::timed_db_op("cluster.get_epoch", async {
-            super::helpers::fetch_required(
-                &self.pool,
-                "SELECT epoch, breaker_epoch, breaker_key FROM config_epoch WHERE id = 1",
-                Self::no_values(),
-                Self::missing_epoch_row,
-            )
-            .await
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .columns([
+                        ConfigEpoch::Epoch,
+                        ConfigEpoch::BreakerEpoch,
+                        ConfigEpoch::BreakerKey,
+                    ])
+                    .from(ConfigEpoch::Table)
+                    .and_where(Expr::col(ConfigEpoch::Id).eq(1)),
+            );
+            fetch_required(&self.pool, &sql, values, Self::missing_epoch_row).await
         })
         .await
     }
 
     async fn request_breaker_reset(&self, key: &str) -> Result<i64, OrionError> {
         crate::metrics::timed_db_op("cluster.request_breaker_reset", async {
-            let now = super::helpers::sql_now(get_backend());
-            match get_backend() {
-                DbBackend::Sqlite | DbBackend::Postgres => {
-                    let ph = if get_backend() == DbBackend::Postgres {
-                        "$1"
-                    } else {
-                        "?"
-                    };
-                    let sql = format!(
-                        "UPDATE config_epoch \
-                         SET breaker_epoch = breaker_epoch + 1, breaker_key = {ph}, \
-                             updated_at = {now} \
-                         WHERE id = 1 RETURNING breaker_epoch"
-                    );
-                    self.pool
-                        .fetch_scalar::<i64>(&sql, SqlxValues(Values(vec![Value::from(key)])))
-                        .await
-                        .map_err(OrionError::Storage)
-                }
-                DbBackend::Mysql => {
-                    let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
-                    tx.execute_query(
-                        &format!(
-                            "UPDATE config_epoch \
-                             SET breaker_epoch = breaker_epoch + 1, breaker_key = ?, \
-                                 updated_at = {now} \
-                             WHERE id = 1"
-                        ),
-                        SqlxValues(Values(vec![Value::from(key)])),
-                    )
-                    .await?;
-                    let (breaker_epoch,): (i64,) = super::helpers::fetch_required_tx(
-                        &mut tx,
-                        "SELECT breaker_epoch FROM config_epoch WHERE id = 1",
-                        Self::no_values(),
-                        Self::missing_epoch_row,
-                    )
-                    .await?;
-                    tx.commit().await.map_err(OrionError::Storage)?;
-                    Ok(breaker_epoch)
-                }
-            }
+            let update = Query::update()
+                .table(ConfigEpoch::Table)
+                .value(
+                    ConfigEpoch::BreakerEpoch,
+                    Expr::col(ConfigEpoch::BreakerEpoch).add(1),
+                )
+                .value(ConfigEpoch::BreakerKey, key)
+                .to_owned();
+            self.update_epoch_row(update, ConfigEpoch::BreakerEpoch)
+                .await
         })
         .await
     }
@@ -175,54 +151,34 @@ impl ClusterRepository for SqlClusterRepository {
         ttl_secs: u64,
     ) -> Result<bool, OrionError> {
         crate::metrics::timed_db_op("cluster.try_acquire_job_lease", async {
-            let backend = get_backend();
-            let now = super::helpers::sql_now(backend);
-            let expiry = super::helpers::sql_now_plus_secs(backend, ttl_secs);
+            let expiry: SimpleExpr =
+                Expr::cust(super::helpers::sql_now_plus_secs(get_backend(), ttl_secs));
 
             // Step 1: renew own lease or take over an expired one.
-            let (update_sql, update_values): (String, SqlxValues) = match backend {
-                DbBackend::Sqlite | DbBackend::Mysql => (
-                    format!(
-                        "UPDATE job_leases SET holder = ?, expires_at = {expiry} \
-                         WHERE job_name = ? AND (holder = ? OR expires_at < {now})"
+            let (sql, values) = build_sqlx(
+                Query::update()
+                    .table(JobLeases::Table)
+                    .value(JobLeases::Holder, holder)
+                    .value(JobLeases::ExpiresAt, expiry.clone())
+                    .and_where(Expr::col(JobLeases::JobName).eq(job_name))
+                    .and_where(
+                        Expr::col(JobLeases::Holder)
+                            .eq(holder)
+                            .or(Expr::col(JobLeases::ExpiresAt).lt(Self::now_expr())),
                     ),
-                    SqlxValues(Values(vec![
-                        Value::from(holder),
-                        Value::from(job_name),
-                        Value::from(holder),
-                    ])),
-                ),
-                DbBackend::Postgres => (
-                    format!(
-                        "UPDATE job_leases SET holder = $1, expires_at = {expiry} \
-                         WHERE job_name = $2 AND (holder = $1 OR expires_at < {now})"
-                    ),
-                    SqlxValues(Values(vec![Value::from(holder), Value::from(job_name)])),
-                ),
-            };
-            if self.pool.execute_query(&update_sql, update_values).await? > 0 {
+            );
+            if self.pool.execute_query(&sql, values).await? > 0 {
                 return Ok(true);
             }
 
             // Step 2: no row (first acquisition) — insert-if-absent. A loss
             // to a concurrent inserter means another node holds the lease.
-            let insert_sql = match backend {
-                DbBackend::Sqlite => format!(
-                    "INSERT OR IGNORE INTO job_leases (job_name, holder, expires_at) \
-                     VALUES (?, ?, {expiry})"
-                ),
-                DbBackend::Postgres => format!(
-                    "INSERT INTO job_leases (job_name, holder, expires_at) \
-                     VALUES ($1, $2, {expiry}) ON CONFLICT (job_name) DO NOTHING"
-                ),
-                DbBackend::Mysql => format!(
-                    "INSERT IGNORE INTO job_leases (job_name, holder, expires_at) \
-                     VALUES (?, ?, {expiry})"
-                ),
-            };
-            let insert_values =
-                SqlxValues(Values(vec![Value::from(job_name), Value::from(holder)]));
-            Ok(self.pool.execute_query(&insert_sql, insert_values).await? > 0)
+            let insert = Query::insert()
+                .into_table(JobLeases::Table)
+                .columns([JobLeases::JobName, JobLeases::Holder, JobLeases::ExpiresAt])
+                .values_panic([job_name.into(), holder.into(), expiry])
+                .to_owned();
+            Ok(insert_if_absent(&self.pool, insert, JobLeases::JobName).await? > 0)
         })
         .await
     }
@@ -289,6 +245,49 @@ mod tests {
                 .await
                 .expect("other job")
         );
+    }
+
+    /// The Postgres/MySQL arms cannot execute without containers (CI covers
+    /// that); at least pin the rendered SQL shapes so a sea-query upgrade or
+    /// helper change that breaks them fails here first.
+    #[test]
+    fn per_backend_sql_shapes() {
+        use sea_query::{MysqlQueryBuilder, PostgresQueryBuilder};
+
+        // Postgres: UPDATE ... RETURNING with builder-managed placeholders.
+        let mut update = Query::update()
+            .table(ConfigEpoch::Table)
+            .value(ConfigEpoch::BreakerKey, "k")
+            .and_where(Expr::col(ConfigEpoch::Id).eq(1))
+            .to_owned();
+        update.returning(Query::returning().column(ConfigEpoch::BreakerEpoch));
+        let (sql, _) = update.build(PostgresQueryBuilder);
+        assert!(sql.contains("RETURNING \"breaker_epoch\""), "{sql}");
+        assert!(sql.contains("$1"), "{sql}");
+
+        // MySQL: insert_if_absent patches the verb on the rendered SQL.
+        let insert = Query::insert()
+            .into_table(JobLeases::Table)
+            .columns([JobLeases::JobName, JobLeases::Holder])
+            .values_panic(["j".into(), "h".into()])
+            .to_owned();
+        let (sql, _) = insert.build(MysqlQueryBuilder);
+        let patched = sql.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
+        assert!(patched.starts_with("INSERT IGNORE INTO"), "{patched}");
+
+        // Postgres: insert-if-absent renders ON CONFLICT DO NOTHING.
+        let mut insert = Query::insert()
+            .into_table(JobLeases::Table)
+            .columns([JobLeases::JobName, JobLeases::Holder])
+            .values_panic(["j".into(), "h".into()])
+            .to_owned();
+        insert.on_conflict(
+            sea_query::OnConflict::column(JobLeases::JobName)
+                .do_nothing()
+                .to_owned(),
+        );
+        let (sql, _) = insert.build(PostgresQueryBuilder);
+        assert!(sql.contains("ON CONFLICT (\"job_name\") DO NOTHING"), "{sql}");
     }
 
     #[tokio::test]

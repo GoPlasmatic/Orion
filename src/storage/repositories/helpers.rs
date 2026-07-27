@@ -148,6 +148,78 @@ pub fn parse_sort_order(sort_order: Option<&str>) -> sea_query::Order {
     }
 }
 
+/// Run an UPDATE that must yield one scalar: `RETURNING` on Postgres/SQLite;
+/// on MySQL (no `UPDATE ... RETURNING`) execute the update and read the value
+/// back inside the same transaction — the row lock makes the read-back ours.
+pub async fn update_returning_scalar<C>(
+    pool: &DbPool,
+    update: &mut sea_query::UpdateStatement,
+    returning: C,
+    read_back: &mut sea_query::SelectStatement,
+    missing: impl FnOnce() -> OrionError,
+) -> Result<i64, OrionError>
+where
+    C: sea_query::IntoColumnRef,
+{
+    use crate::storage::{DbBackend, build_sqlx, get_backend};
+
+    match get_backend() {
+        DbBackend::Sqlite | DbBackend::Postgres => {
+            update.returning(sea_query::Query::returning().column(returning));
+            let (sql, values) = build_sqlx(update);
+            pool.fetch_scalar::<i64>(&sql, values)
+                .await
+                .map_err(OrionError::Storage)
+        }
+        DbBackend::Mysql => {
+            let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
+            let (sql, values) = build_sqlx(update);
+            tx.execute_query(&sql, values).await?;
+            let (sql, values) = build_sqlx(read_back);
+            let (value,): (i64,) = fetch_required_tx(&mut tx, &sql, values, missing).await?;
+            tx.commit().await.map_err(OrionError::Storage)?;
+            Ok(value)
+        }
+    }
+}
+
+/// INSERT that silently loses to an existing row: `ON CONFLICT DO NOTHING` on
+/// Postgres/SQLite, `INSERT IGNORE` on MySQL. Returns rows affected (0 = an
+/// existing row won).
+pub async fn insert_if_absent<C>(
+    pool: &DbPool,
+    mut insert: sea_query::InsertStatement,
+    conflict_col: C,
+) -> Result<u64, OrionError>
+where
+    C: sea_query::IntoIden,
+{
+    use crate::storage::{DbBackend, build_sqlx, get_backend};
+
+    match get_backend() {
+        DbBackend::Sqlite | DbBackend::Postgres => {
+            insert.on_conflict(
+                sea_query::OnConflict::column(conflict_col)
+                    .do_nothing()
+                    .to_owned(),
+            );
+            let (sql, values) = build_sqlx(&mut insert);
+            pool.execute_query(&sql, values)
+                .await
+                .map_err(OrionError::Storage)
+        }
+        DbBackend::Mysql => {
+            // sea-query has no INSERT IGNORE rendering; patch the verb into
+            // the rendered SQL rather than hand-rolling placeholders.
+            let (sql, values) = build_sqlx(&mut insert);
+            let sql = sql.replacen("INSERT INTO", "INSERT IGNORE INTO", 1);
+            pool.execute_query(&sql, values)
+                .await
+                .map_err(OrionError::Storage)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
