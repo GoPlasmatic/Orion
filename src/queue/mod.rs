@@ -121,6 +121,11 @@ impl TraceQueue {
     }
 
     /// Submit a trace to the queue for background processing.
+    ///
+    /// Sheds rather than waits. `buffer_size` is a shed threshold, not a
+    /// waiting room: awaiting capacity here parks the calling HTTP handler for
+    /// as long as the workers stay behind, turning saturation into unbounded
+    /// request latency instead of the documented 503 (Q1).
     pub async fn submit(&self, msg: QueueMessage) -> Result<(), crate::errors::OrionError> {
         // Estimate payload memory (approximate — excludes struct overhead)
         let payload_size = msg.payload.to_string().len() + msg.metadata.to_string().len();
@@ -136,10 +141,22 @@ impl TraceQueue {
             }
         }
 
-        self.sender
-            .send(msg)
-            .await
-            .map_err(|_| crate::errors::OrionError::Queue("Trace queue is closed".to_string()))?;
+        if let Err(err) = self.sender.try_send(msg) {
+            return Err(match err {
+                // The rejected message is dropped here, releasing the
+                // backpressure permit it carried — a shed submission must not
+                // hold a slice of the channel's `max_concurrent`.
+                mpsc::error::TrySendError::Full(_) => {
+                    crate::errors::OrionError::ServiceUnavailable(format!(
+                        "Trace queue is full ({} messages pending)",
+                        self.pending_count.load(Ordering::Relaxed)
+                    ))
+                }
+                mpsc::error::TrySendError::Closed(_) => {
+                    crate::errors::OrionError::Queue("Trace queue is closed".to_string())
+                }
+            });
+        }
 
         let pending = self.pending_count.fetch_add(1, Ordering::Relaxed) + 1;
         metrics::set_trace_queue_depth(pending as f64);
@@ -245,4 +262,81 @@ pub fn start_workers(
     };
 
     (queue, worker_handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_message(trace_id: &str) -> QueueMessage {
+        QueueMessage {
+            trace_id: trace_id.to_string(),
+            channel: "orders".to_string(),
+            payload: serde_json::json!({"a": 1}),
+            metadata: serde_json::json!({}),
+            trace_headers: std::collections::HashMap::new(),
+            profile_requested: false,
+            backpressure_permit: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_rejects_when_buffer_is_full() {
+        let (tx, _rx) = mpsc::channel::<QueueMessage>(1);
+        let queue = TraceQueue::new_for_test(tx);
+
+        queue.submit(test_message("t1")).await.expect("first fits");
+
+        // Must resolve immediately with 503 rather than parking the caller
+        // until a worker drains the buffer.
+        let err =
+            tokio::time::timeout(Duration::from_millis(250), queue.submit(test_message("t2")))
+                .await
+                .expect("submit must not block on a full queue")
+                .expect_err("full queue must be rejected");
+
+        assert!(
+            matches!(err, crate::errors::OrionError::ServiceUnavailable(_)),
+            "expected ServiceUnavailable, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_rejection_releases_backpressure_permit() {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = semaphore
+            .clone()
+            .try_acquire_owned()
+            .expect("permit available");
+
+        let (tx, _rx) = mpsc::channel::<QueueMessage>(1);
+        let queue = TraceQueue::new_for_test(tx);
+        queue.submit(test_message("t1")).await.expect("first fits");
+
+        let mut msg = test_message("t2");
+        msg.backpressure_permit = Some(permit);
+        assert!(queue.submit(msg).await.is_err(), "second must be shed");
+
+        assert_eq!(
+            semaphore.available_permits(),
+            1,
+            "a shed submission must not retain the channel's backpressure permit"
+        );
+    }
+
+    #[tokio::test]
+    async fn submit_reports_closed_queue_separately() {
+        let (tx, rx) = mpsc::channel::<QueueMessage>(1);
+        drop(rx);
+        let queue = TraceQueue::new_for_test(tx);
+
+        let err = queue
+            .submit(test_message("t1"))
+            .await
+            .expect_err("closed queue must be rejected");
+        assert!(
+            matches!(err, crate::errors::OrionError::Queue(_)),
+            "expected Queue error, got: {err:?}"
+        );
+    }
 }
