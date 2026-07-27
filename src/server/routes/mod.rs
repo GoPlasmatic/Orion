@@ -320,7 +320,8 @@ pub async fn reload_engine_with_opts(
         let channels = state.channel_repo.list_active().await?;
         let channels = crate::engine::filter_channels(channels, &state.config.channels);
         let active_workflows = state.workflow_repo.list_active().await?;
-        let workflows = crate::engine::build_engine_workflows(&channels, &active_workflows);
+        let (workflows, engine_issues) =
+            crate::engine::build_engine_workflows(&channels, &active_workflows);
 
         // Build the new engine outside the write lock to minimize lock hold time.
         // Clone the current engine Arc, build new workflows, then swap atomically.
@@ -348,6 +349,7 @@ pub async fn reload_engine_with_opts(
                 &state.cache_pool,
                 &state.datalogic,
                 &state.config.tracing.storage,
+                engine_issues,
             )
             .await;
 

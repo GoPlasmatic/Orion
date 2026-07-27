@@ -279,10 +279,20 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 ///
 /// For each active channel, finds the associated workflow(s) and builds
 /// dataflow-rs Workflow objects with the channel name injected as the channel field.
+///
+/// F33: a channel whose workflows cannot be built — missing `workflow_id`,
+/// workflow not found among the active set, or a version that fails
+/// conversion — is reported as a [`ChannelLoadIssue`] instead of being
+/// silently skipped. Callers feed these into `ChannelRegistry::reload`, which
+/// quarantines the channel: previously it stayed registered in the route
+/// table with no workflow behind it, so requests got an opaque engine error.
 pub fn build_engine_workflows(
     channels: &[Channel],
     workflows: &[Workflow],
-) -> Vec<dataflow_rs::Workflow> {
+) -> (
+    Vec<dataflow_rs::Workflow>,
+    Vec<crate::channel::ChannelLoadIssue>,
+) {
     // Index workflows by workflow_id for fast lookup
     let mut workflow_map: HashMap<String, Vec<&Workflow>> = HashMap::new();
     for workflow in workflows {
@@ -293,23 +303,22 @@ pub fn build_engine_workflows(
     }
 
     let mut result = Vec::new();
+    let mut issues: Vec<crate::channel::ChannelLoadIssue> = Vec::new();
 
     for channel in channels {
         let Some(ref wf_id) = channel.workflow_id else {
-            tracing::warn!(
-                channel_id = %channel.channel_id,
-                channel_name = %channel.name,
-                "Channel has no workflow_id, skipping"
-            );
+            issues.push(crate::channel::ChannelLoadIssue {
+                channel: channel.name.clone(),
+                reason: "channel has no workflow_id".to_string(),
+            });
             continue;
         };
 
         let Some(wf_versions) = workflow_map.get(wf_id) else {
-            tracing::warn!(
-                channel_id = %channel.channel_id,
-                workflow_id = %wf_id,
-                "Workflow not found for channel, skipping"
-            );
+            issues.push(crate::channel::ChannelLoadIssue {
+                channel: channel.name.clone(),
+                reason: format!("workflow '{wf_id}' not found among active workflows"),
+            });
             continue;
         };
 
@@ -318,12 +327,10 @@ pub fn build_engine_workflows(
             match workflow_to_dataflow(wf_versions[0], &channel.name) {
                 Ok(w) => result.push(w),
                 Err(e) => {
-                    tracing::warn!(
-                        workflow_id = %wf_id,
-                        channel = %channel.name,
-                        error = %e,
-                        "Failed to convert workflow to dataflow, skipping"
-                    );
+                    issues.push(crate::channel::ChannelLoadIssue {
+                        channel: channel.name.clone(),
+                        reason: format!("workflow '{wf_id}' failed to convert: {e}"),
+                    });
                 }
             }
         } else {
@@ -332,27 +339,36 @@ pub fn build_engine_workflows(
             sorted.sort_by_key(|b| std::cmp::Reverse(b.version));
 
             let mut bucket_offset = 0i64;
+            let mut converted = Vec::new();
+            let mut failed = false;
             for wf in &sorted {
                 let bucket_min = bucket_offset;
                 let bucket_max = bucket_offset + wf.rollout_percentage;
                 match workflow_to_dataflow_with_rollout(wf, &channel.name, bucket_min, bucket_max) {
-                    Ok(w) => result.push(w),
+                    Ok(w) => converted.push(w),
                     Err(e) => {
-                        tracing::warn!(
-                            workflow_id = %wf.workflow_id,
-                            version = wf.version,
-                            channel = %channel.name,
-                            error = %e,
-                            "Failed to convert workflow version to dataflow, skipping"
-                        );
+                        issues.push(crate::channel::ChannelLoadIssue {
+                            channel: channel.name.clone(),
+                            reason: format!(
+                                "workflow '{}' v{} failed to convert: {e}",
+                                wf.workflow_id, wf.version
+                            ),
+                        });
+                        failed = true;
+                        break;
                     }
                 }
                 bucket_offset = bucket_max;
             }
+            // All-or-nothing per channel: a partially-converted rollout would
+            // silently blackhole the failed version's bucket range.
+            if !failed {
+                result.append(&mut converted);
+            }
         }
     }
 
-    result
+    (result, issues)
 }
 
 #[cfg(test)]

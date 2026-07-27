@@ -326,9 +326,21 @@ impl ChannelRegistry {
         cache_pool: &CachePool,
         datalogic: &DatalogicEngine,
         global_trace_storage: &TracingStorageConfig,
+        engine_issues: Vec<ChannelLoadIssue>,
     ) -> Vec<ChannelLoadIssue> {
         let cluster_redis = self.cluster.as_ref().and_then(|c| c.redis.clone());
-        let mut issues: Vec<ChannelLoadIssue> = Vec::new();
+        // F33: seed with the engine-build failures (workflow missing or
+        // unconvertible). Those channels are quarantined exactly like ones
+        // whose own config fails to load — previously they stayed in the
+        // route table with no workflow behind them and served opaque engine
+        // errors. The registry still runs its own checks on them below, so a
+        // channel broken in both stages reports its more specific
+        // config-load reason (the quarantine map is last-write-wins), and
+        // engine-quarantined channels are removed from the serving map after
+        // the loop.
+        let mut issues: Vec<ChannelLoadIssue> = engine_issues;
+        let engine_quarantined: std::collections::HashSet<String> =
+            issues.iter().map(|i| i.channel.clone()).collect();
 
         let mut new_map = HashMap::new();
         for channel in channels {
@@ -478,6 +490,12 @@ impl ChannelRegistry {
             new_map.insert(channel.name.clone(), runtime);
         }
 
+        // F33: a channel whose workflows failed to build must not serve even
+        // when its own config loaded fine.
+        for name in &engine_quarantined {
+            new_map.remove(name);
+        }
+
         *self.by_name.write().await = new_map;
 
         // Quarantined channels are excluded from the route table too, so
@@ -570,6 +588,7 @@ mod tests {
                 &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
                 &TracingStorageConfig::default(),
+                Vec::new(),
             )
             .await;
         assert_eq!(issues.len(), 1);
@@ -589,6 +608,7 @@ mod tests {
                 &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
                 &TracingStorageConfig::default(),
+                Vec::new(),
             )
             .await;
         assert!(issues.is_empty());
@@ -610,6 +630,7 @@ mod tests {
                 &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
                 &TracingStorageConfig::default(),
+                Vec::new(),
             )
             .await;
         // Backend *degradation* stays cluster-only: on one node an in-memory
@@ -627,6 +648,7 @@ mod tests {
                 &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
                 &TracingStorageConfig::default(),
+                Vec::new(),
             )
             .await;
         (registry, issues)
@@ -713,6 +735,7 @@ mod tests {
                 &cache_pool,
                 &datalogic,
                 &tracing_cfg,
+                Vec::new(),
             )
             .await;
         assert!(issues.is_empty());
@@ -727,6 +750,7 @@ mod tests {
                 &cache_pool,
                 &datalogic,
                 &tracing_cfg,
+                Vec::new(),
             )
             .await;
         assert_eq!(issues.len(), 1);

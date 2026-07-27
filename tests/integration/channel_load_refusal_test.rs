@@ -309,3 +309,74 @@ async fn a_quarantined_channel_is_absent_from_the_route_table() {
         "a quarantined channel must not own a route"
     );
 }
+
+// ============================================================
+// F33: engine-build failures quarantine the channel
+// ============================================================
+
+/// Archiving a workflow out from under an active channel used to leave the
+/// channel in the route table with no workflow behind it — requests got an
+/// opaque engine error. Engine-build failures now feed the same quarantine
+/// as config-load failures.
+#[tokio::test]
+async fn channel_whose_workflow_disappears_is_quarantined() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    let (_ch_name, wf_id) = common::create_and_activate_channel(
+        &app,
+        "f33-orphan",
+        common::simple_log_workflow("F33 Orphan WF"),
+    )
+    .await;
+
+    // Serving normally before.
+    assert!(serves_ok(&app, "f33-orphan").await);
+
+    // Archive the workflow — the status change triggers a reload.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            Some(json!({"status": "archived"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "archive must succeed (F35)");
+
+    // The channel is quarantined: refused with 503, not an opaque engine error…
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/f33-orphan",
+            Some(json!({"data": {"x": 1}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::SERVICE_UNAVAILABLE,
+        "quarantined channel must be refused (F33)"
+    );
+
+    // …and reported on /health with the reason.
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let quarantined = body["channels"]["quarantined"]
+        .as_array()
+        .expect("quarantined list");
+    let entry = quarantined
+        .iter()
+        .find(|e| e["channel"] == "f33-orphan")
+        .unwrap_or_else(|| panic!("f33-orphan must be quarantined, got {body}"));
+    assert!(
+        entry["reason"].as_str().unwrap().contains("not found"),
+        "reason must name the missing workflow, got {entry}"
+    );
+}

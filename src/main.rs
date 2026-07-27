@@ -558,7 +558,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let channels = channel_repo.list_active().await?;
     let channels = orion::engine::filter_channels(channels, &config.channels);
     let active_workflows = workflow_repo.list_active().await?;
-    let workflows = orion::engine::build_engine_workflows(&channels, &active_workflows);
+    let (workflows, engine_issues) =
+        orion::engine::build_engine_workflows(&channels, &active_workflows);
     let load_issues = channel_registry
         .reload(
             &channels,
@@ -566,6 +567,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             &cache_pool,
             &datalogic_engine,
             &config.tracing.storage,
+            engine_issues,
         )
         .await;
     if !load_issues.is_empty() {
