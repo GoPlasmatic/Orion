@@ -58,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Routing and rollout truth (proposal F30, F33, R5, F32).** Channels whose
+  workflows cannot be built — missing or unconvertible workflow, or rollout
+  percentages that don't sum to 100 — are now quarantined with the reason on
+  `/health` instead of silently serving engine errors or blackholing part of
+  the traffic. Workflows with unknown functions are rejected at create;
+  activation requires every referenced connector to exist. The channel
+  include/exclude glob matcher gained real backtracking and boot logs the
+  resolved channel list when filters are configured.
 - **Queue durability round (proposal Q4–Q8, N15, D4).** A DLQ backoff shift
   overflow no longer kills the retry task (`dlq_max_retries` is now bounded
   1–16); a DB error on the "mark running" write routes the message to the DLQ
