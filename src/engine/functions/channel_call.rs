@@ -143,9 +143,10 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             if !child_meta.is_object() {
                 child_meta = serde_json::json!({});
             }
-            if let Some(obj) = child_meta.as_object_mut() {
-                obj.remove("channel");
-            }
+            // F4: the child runs as the target channel — override the
+            // parent's "channel" so connector metrics and circuit-breaker
+            // keys attribute to the channel actually executing.
+            child_meta["channel"] = Value::String(target_channel.clone());
             child_meta[META_CALL_DEPTH] = serde_json::json!(child_depth);
             child_meta[META_CALL_CHAIN] = serde_json::json!(child_chain);
 

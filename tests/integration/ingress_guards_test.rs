@@ -211,6 +211,91 @@ async fn test_channel_call_enforces_target_validation_logic() {
     );
 }
 
+// ============================================================
+// F4: metadata.channel is stamped at every entry point
+// ============================================================
+
+#[tokio::test]
+async fn test_metadata_channel_set_on_http_ingress() {
+    let app = common::test_app().await;
+
+    // validation_logic passes only when the ingress stamps metadata.channel
+    // with the resolved channel name — a caller-supplied value must lose.
+    common::create_and_activate_channel_with_config(
+        &app,
+        "f4-ch",
+        common::simple_log_workflow("F4 WF"),
+        json!({
+            "validation_logic": { "==": [{ "var": "metadata.channel" }, "f4-ch"] }
+        }),
+    )
+    .await;
+
+    // Sync path — caller tries to spoof metadata.channel; the server value wins.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/f4-ch",
+            Some(json!({"data": {}, "metadata": {"channel": "spoofed"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Async path.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/f4-ch/async",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn test_metadata_channel_set_on_channel_call() {
+    let app = common::test_app().await;
+
+    // Target accepts only when metadata.channel equals its own name,
+    // proving channel_call overrides the parent's channel on the child.
+    common::create_and_activate_channel_with_config(
+        &app,
+        "f4-target",
+        common::simple_log_workflow("F4 Target WF"),
+        json!({
+            "validation_logic": { "==": [{ "var": "metadata.channel" }, "f4-target"] }
+        }),
+    )
+    .await;
+
+    common::create_and_activate_channel(
+        &app,
+        "f4-caller",
+        channel_call_workflow("F4 Caller WF", "f4-target", json!({"ok": true})),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/f4-caller",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(
+        body["errors"].as_array().is_some_and(|e| e.is_empty()),
+        "child message must carry metadata.channel == target, got: {body}"
+    );
+}
+
 #[tokio::test]
 async fn test_async_path_honors_cors_allowlist() {
     let app = common::test_app().await;

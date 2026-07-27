@@ -250,6 +250,10 @@ async fn dynamic_handler(
     } else {
         json!({})
     };
+    // F4: stamp the resolved channel name (overriding any caller-supplied
+    // value) so circuit-breaker keys and connector metrics are labeled
+    // `channel:connector` instead of `unknown:connector`.
+    metadata["channel"] = json!(channel.clone());
     metadata["http_method"] = json!(method.as_str());
     if !route_params.is_empty() {
         metadata["params"] = json!(route_params);

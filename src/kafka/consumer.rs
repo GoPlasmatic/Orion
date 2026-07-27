@@ -251,7 +251,7 @@ async fn process_one_kafka_message(
     // HTTP-transport concerns and don't apply here. Failures are not
     // silently dropped — they record metrics, log, and route to the DLQ
     // when one is configured.
-    let metadata = kafka_metadata_value(&topic, msg);
+    let metadata = kafka_metadata_value(&channel, &topic, msg);
     let channel_runtime = ctx.channel_registry.get_by_name(&channel).await;
     if let Err(e) = crate::channel::guards::validate_input(
         &channel,
@@ -463,17 +463,20 @@ fn commit_offset(consumer: &StreamConsumer, msg: &rdkafka::message::BorrowedMess
     }
 }
 
-/// Build the Kafka-specific metadata object (topic, key, partition, offset)
-/// for an ingested message. Used both as validation_logic context and as the
-/// metadata merged into the dispatched dataflow message, so validation sees
-/// exactly what the workflow will see.
+/// Build the Kafka-specific metadata object (channel, topic, key, partition,
+/// offset) for an ingested message. Used both as validation_logic context and
+/// as the metadata merged into the dispatched dataflow message, so validation
+/// sees exactly what the workflow will see. The `channel` key (F4) labels
+/// circuit-breaker state and connector metrics for this ingest path.
 fn kafka_metadata_value(
+    channel: &str,
     topic: &str,
     msg: &rdkafka::message::BorrowedMessage<'_>,
 ) -> serde_json::Value {
     use rdkafka::Message as KafkaMsg;
 
     let mut meta = serde_json::json!({
+        "channel": channel,
         "kafka_topic": topic,
         "kafka_partition": msg.partition(),
         "kafka_offset": msg.offset(),
