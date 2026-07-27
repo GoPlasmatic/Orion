@@ -437,6 +437,12 @@ where
         config.engine.max_pool_cache_entries,
         usize
     );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__MAX_MEMORY_CACHE_ENTRIES",
+        config.engine.max_memory_cache_entries,
+        usize
+    );
     env_str!(
         env_var,
         "ORION_ENGINE__ROLLOUT_STICKY_HEADER",

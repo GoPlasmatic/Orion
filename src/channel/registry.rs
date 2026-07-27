@@ -441,7 +441,7 @@ mod tests {
 
     fn cluster_backends() -> ClusterBackends {
         ClusterBackends {
-            default_cache: Some(CachePool::new(4, 60).memory()),
+            default_cache: Some(CachePool::new(4, 60, 1000).memory()),
             redis: None,
         }
     }
@@ -457,7 +457,7 @@ mod tests {
             .reload(
                 &[channel],
                 &ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker),
-                &CachePool::new(4, 60),
+                &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
                 &TracingStorageConfig::default(),
             )
@@ -476,7 +476,7 @@ mod tests {
             .reload(
                 &[channel],
                 &ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker),
-                &CachePool::new(4, 60),
+                &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
                 &TracingStorageConfig::default(),
             )
@@ -497,7 +497,7 @@ mod tests {
             .reload(
                 &[channel],
                 &ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker),
-                &CachePool::new(4, 60),
+                &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
                 &TracingStorageConfig::default(),
             )

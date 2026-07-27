@@ -81,6 +81,7 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
     let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
         config.engine.max_pool_cache_entries,
         60,
+        config.engine.max_memory_cache_entries,
     ));
     let sql_pool_cache = Arc::new(orion::connector::pool_cache::SqlPoolCache::new(
         config.engine.max_pool_cache_entries,

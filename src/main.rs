@@ -517,6 +517,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
         config.engine.max_pool_cache_entries,
         config.engine.cache_cleanup_interval_secs,
+        config.engine.max_memory_cache_entries,
     ));
 
     // Create external connector pool caches (shared with AppState for eviction on update/delete)

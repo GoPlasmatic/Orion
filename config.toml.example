@@ -48,6 +48,9 @@
 [engine]
 # health_check_timeout_secs = 2   # Timeout for engine read lock in health checks
 # reload_timeout_secs = 10        # Timeout for engine write lock during reload
+# max_memory_cache_entries = 100000  # Bound on the shared in-memory cache (dedup store,
+                                     # response cache, `backend = "memory"` connectors).
+                                     # LRU-evicted on insert; 0 disables the bound.
 
 [queue]
 # workers = 4                  # Concurrent async job workers

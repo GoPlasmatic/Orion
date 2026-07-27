@@ -24,6 +24,13 @@ pub struct EngineConfig {
     pub max_pool_cache_entries: usize,
     /// Interval in seconds between cache cleanup sweeps that evict expired entries.
     pub cache_cleanup_interval_secs: u64,
+    /// Maximum entries in the shared in-memory cache (default dedup store,
+    /// default response cache, and every `backend = "memory"` cache
+    /// connector). Least-recently-used entries are evicted on insert once
+    /// the bound is reached. `0` disables the bound — entries written
+    /// without a TTL are never reclaimed, so only do that when the key set
+    /// is known to be finite.
+    pub max_memory_cache_entries: usize,
     /// Header whose value identifies the caller for sticky canary-rollout
     /// bucketing (e.g. "x-user-id"). Empty (default): fall back to the
     /// forwarded client IP (`x-forwarded-for` / `x-real-ip`); with neither,
@@ -42,6 +49,7 @@ impl Default for EngineConfig {
             global_http_timeout_secs: 30,
             max_pool_cache_entries: 100,
             cache_cleanup_interval_secs: 60,
+            max_memory_cache_entries: 100_000,
             rollout_sticky_header: String::new(),
         }
     }
