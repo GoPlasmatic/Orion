@@ -105,6 +105,12 @@ pub(crate) async fn update_channel(
     Path(id): Path<String>,
     OrionJson(req): OrionJson<UpdateChannelRequest>,
 ) -> Result<Json<Value>, OrionError> {
+    // R3: mirror create-time validation. The latest version (404 if the
+    // channel is absent) supplies the protocol and current field values for
+    // the merged-view checks; when a draft exists it is the latest version,
+    // i.e. exactly the row `update_draft` mutates.
+    let current = state.channel_repo.get_by_id(&id).await?;
+    crate::validation::validate_update_channel(&current, &req)?;
     let channel = state.channel_repo.update_draft(&id, &req).await?;
     audit_log_draft_only(&state.audit_log_repo, &principal, "update", "channel", &id);
     Ok(data_response(ChannelResponse::try_from(&channel)?))

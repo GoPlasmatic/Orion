@@ -1,6 +1,6 @@
 use crate::errors::OrionError;
-use crate::storage::models::ChannelProtocol;
-use crate::storage::repositories::channels::CreateChannelRequest;
+use crate::storage::models::{Channel, ChannelProtocol};
+use crate::storage::repositories::channels::{CreateChannelRequest, UpdateChannelRequest};
 
 use super::common::{validate_description, validate_id, validate_name};
 
@@ -15,18 +15,12 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
     // B1: collect all protocol-conditional missing-field errors in one
     // response (instead of failing on the first). Channel authors get
     // the full list of what to fix instead of one round-trip per issue.
-    let protocol_details = collect_protocol_required_fields(req);
-    if !protocol_details.is_empty() {
-        return Err(OrionError::Validation {
-            code: "VALIDATION_ERROR",
-            message: format!(
-                "Channel with protocol=\"{}\" is missing {} required field(s)",
-                req.protocol,
-                protocol_details.len()
-            ),
-            details: protocol_details,
-        });
-    }
+    check_protocol_required_fields(&ProtocolFields {
+        protocol: req.protocol,
+        methods: req.methods.as_deref(),
+        route_pattern: req.route_pattern.as_deref(),
+        topic: req.topic.as_deref(),
+    })?;
     // B2: strict-validate the per-channel `config` blob at create time.
     // The channel registry stays tolerant at runtime (so an already-active
     // channel with a corrupt row doesn't crash engine reload), but new
@@ -36,23 +30,77 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
     Ok(())
 }
 
-/// Per-protocol required-field check. Returns one `FieldError` per missing
+/// R3: mirror the create-time checks on `PUT /channels/{id}`, which
+/// previously ran no validation at all. `UpdateChannelRequest` carries no
+/// protocol (it is immutable across versions), so the protocol-conditional
+/// checks run against the merged (stored draft ⊕ request) view: a field
+/// omitted from the request keeps its stored value, while an explicit `""`
+/// or `[]` counts as emptying it and is rejected when the stored protocol
+/// requires it.
+pub fn validate_update_channel(
+    stored: &Channel,
+    req: &UpdateChannelRequest,
+) -> Result<(), OrionError> {
+    if let Some(ref name) = req.name {
+        validate_name(name, "Name").map_err(|e| remap_to_field(e, "channel.name"))?;
+    }
+    if let Some(ref desc) = req.description {
+        validate_description(desc).map_err(|e| remap_to_field(e, "channel.description"))?;
+    }
+    // Stored `methods` is a JSON-encoded array column; a stored row that
+    // fails to parse contributes no methods, so the request must supply them.
+    let stored_methods: Option<Vec<String>> = stored
+        .methods
+        .as_deref()
+        .and_then(|m| serde_json::from_str(m).ok());
+    // A stored protocol outside the known set (corrupt row) skips the
+    // protocol-conditional checks rather than blocking unrelated updates.
+    let stored_protocol: Option<ChannelProtocol> =
+        serde_json::from_value(serde_json::Value::String(stored.protocol.clone())).ok();
+    if let Some(protocol) = stored_protocol {
+        check_protocol_required_fields(&ProtocolFields {
+            protocol,
+            methods: req.methods.as_deref().or(stored_methods.as_deref()),
+            route_pattern: req
+                .route_pattern
+                .as_deref()
+                .or(stored.route_pattern.as_deref()),
+            topic: req.topic.as_deref().or(stored.topic.as_deref()),
+        })?;
+    }
+    if let Some(ref config) = req.config {
+        validate_channel_config_blob(config)?;
+    }
+    Ok(())
+}
+
+/// The protocol-conditional fields of a channel, as seen by validation —
+/// the request itself at create time, the merged stored ⊕ request view at
+/// update time.
+struct ProtocolFields<'a> {
+    protocol: ChannelProtocol,
+    methods: Option<&'a [String]>,
+    route_pattern: Option<&'a str>,
+    topic: Option<&'a str>,
+}
+
+/// Per-protocol required-field check. Emits one `FieldError` per missing
 /// field, all with `code = "REQUIRED_FOR_PROTOCOL"` so clients can
 /// distinguish "this field is conditionally required" from a generic
 /// missing-field error.
-fn collect_protocol_required_fields(req: &CreateChannelRequest) -> Vec<crate::errors::FieldError> {
+fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionError> {
     use crate::errors::FieldError;
     let mut out = Vec::new();
-    match req.protocol {
+    match fields.protocol {
         ChannelProtocol::Rest | ChannelProtocol::Http => {
-            if req.methods.as_ref().is_none_or(|m| m.is_empty()) {
+            if fields.methods.is_none_or(|m| m.is_empty()) {
                 out.push(
                     FieldError::new(
                         "channel.methods",
                         "REQUIRED_FOR_PROTOCOL",
                         format!(
                             "REST/HTTP channels must specify at least one HTTP method (protocol=\"{}\")",
-                            req.protocol
+                            fields.protocol
                         ),
                     )
                     .with_expected(serde_json::Value::String(
@@ -60,18 +108,14 @@ fn collect_protocol_required_fields(req: &CreateChannelRequest) -> Vec<crate::er
                     )),
                 );
             }
-            if req
-                .route_pattern
-                .as_ref()
-                .is_none_or(|r| r.trim().is_empty())
-            {
+            if fields.route_pattern.is_none_or(|r| r.trim().is_empty()) {
                 out.push(
                     FieldError::new(
                         "channel.route_pattern",
                         "REQUIRED_FOR_PROTOCOL",
                         format!(
                             "REST/HTTP channels must specify a route_pattern (protocol=\"{}\")",
-                            req.protocol
+                            fields.protocol
                         ),
                     )
                     .with_expected(serde_json::Value::String(
@@ -81,7 +125,7 @@ fn collect_protocol_required_fields(req: &CreateChannelRequest) -> Vec<crate::er
             }
         }
         ChannelProtocol::Kafka => {
-            if req.topic.as_ref().is_none_or(|t| t.trim().is_empty()) {
+            if fields.topic.is_none_or(|t| t.trim().is_empty()) {
                 out.push(FieldError::new(
                     "channel.topic",
                     "REQUIRED_FOR_PROTOCOL",
@@ -90,7 +134,18 @@ fn collect_protocol_required_fields(req: &CreateChannelRequest) -> Vec<crate::er
             }
         }
     }
-    out
+    if out.is_empty() {
+        return Ok(());
+    }
+    Err(OrionError::Validation {
+        code: "VALIDATION_ERROR",
+        message: format!(
+            "Channel with protocol=\"{}\" is missing {} required field(s)",
+            fields.protocol,
+            out.len()
+        ),
+        details: out,
+    })
 }
 
 /// Strict-validate the channel `config` Value: parses to `ChannelConfig` to
@@ -299,5 +354,124 @@ mod tests {
     fn test_validate_channel_id() {
         assert!(validate_channel_id("my-channel-1").is_ok());
         assert!(validate_channel_id("bad id!").is_err());
+    }
+
+    // -- validate_update_channel (R3) --
+
+    fn stored_rest_channel() -> Channel {
+        Channel {
+            channel_id: "orders".to_string(),
+            version: 1,
+            name: "Orders".to_string(),
+            description: None,
+            channel_type: "sync".to_string(),
+            protocol: "rest".to_string(),
+            methods: Some("[\"POST\"]".to_string()),
+            route_pattern: Some("/orders".to_string()),
+            topic: None,
+            consumer_group: None,
+            transport_config_json: "{}".to_string(),
+            workflow_id: None,
+            config_json: "{}".to_string(),
+            status: "draft".to_string(),
+            priority: 0,
+            created_at: chrono::Utc::now().naive_utc(),
+            updated_at: chrono::Utc::now().naive_utc(),
+        }
+    }
+
+    fn empty_update() -> UpdateChannelRequest {
+        UpdateChannelRequest {
+            name: None,
+            description: None,
+            methods: None,
+            route_pattern: None,
+            topic: None,
+            consumer_group: None,
+            transport_config: None,
+            workflow_id: None,
+            config: None,
+            priority: None,
+        }
+    }
+
+    #[test]
+    fn test_update_omitted_fields_keep_stored_values() {
+        let stored = stored_rest_channel();
+        let req = UpdateChannelRequest {
+            name: Some("New Name".to_string()),
+            ..empty_update()
+        };
+        assert!(validate_update_channel(&stored, &req).is_ok());
+    }
+
+    #[test]
+    fn test_update_emptying_route_pattern_rejected() {
+        let stored = stored_rest_channel();
+        let req = UpdateChannelRequest {
+            route_pattern: Some("".to_string()),
+            ..empty_update()
+        };
+        assert!(validate_update_channel(&stored, &req).is_err());
+    }
+
+    #[test]
+    fn test_update_emptying_methods_rejected() {
+        let stored = stored_rest_channel();
+        let req = UpdateChannelRequest {
+            methods: Some(vec![]),
+            ..empty_update()
+        };
+        assert!(validate_update_channel(&stored, &req).is_err());
+    }
+
+    #[test]
+    fn test_update_emptying_topic_rejected_for_kafka() {
+        let stored = Channel {
+            protocol: "kafka".to_string(),
+            methods: None,
+            route_pattern: None,
+            topic: Some("orders-topic".to_string()),
+            ..stored_rest_channel()
+        };
+        let req = UpdateChannelRequest {
+            topic: Some("  ".to_string()),
+            ..empty_update()
+        };
+        assert!(validate_update_channel(&stored, &req).is_err());
+        // Omitting topic keeps the stored one
+        assert!(validate_update_channel(&stored, &empty_update()).is_ok());
+    }
+
+    #[test]
+    fn test_update_malformed_config_rejected() {
+        let stored = stored_rest_channel();
+        let req = UpdateChannelRequest {
+            config: Some(json!({"rate_limit": 42})),
+            ..empty_update()
+        };
+        assert!(validate_update_channel(&stored, &req).is_err());
+    }
+
+    #[test]
+    fn test_update_invalid_name_rejected() {
+        let stored = stored_rest_channel();
+        let req = UpdateChannelRequest {
+            name: Some("   ".to_string()),
+            ..empty_update()
+        };
+        assert!(validate_update_channel(&stored, &req).is_err());
+    }
+
+    #[test]
+    fn test_update_replacing_protocol_fields_with_valid_values_accepted() {
+        let stored = stored_rest_channel();
+        let req = UpdateChannelRequest {
+            methods: Some(vec!["GET".to_string(), "POST".to_string()]),
+            route_pattern: Some("/orders/{id}".to_string()),
+            config: Some(json!({"timeout_ms": 5000})),
+            ..empty_update()
+        };
+        assert!(validate_update_channel(&stored, &req).is_ok());
     }
 }
