@@ -28,13 +28,23 @@ pub fn require_op_allowed(
 
 /// Build an Elasticsearch HTTP request with the connector's auth and timeout
 /// applied. Shared by the `data_query` search path and the `data_write` write
-/// path.
-pub fn es_request(
+/// path. Enforces the same SSRF pre-check as `execute_request` unless the
+/// connector opts out via `allow_private_urls`.
+pub async fn es_request(
     client: &reqwest::Client,
     es: &EsConnectorConfig,
     method: reqwest::Method,
     url: &str,
-) -> reqwest::RequestBuilder {
+) -> Result<reqwest::RequestBuilder, DataflowError> {
+    if !es.allow_private_urls
+        && let Err(msg) = crate::validation::validate_url_not_private(url).await
+    {
+        return Err(DataflowError::function_execution(
+            format!("SSRF protection: {msg}"),
+            None,
+        ));
+    }
+
     let mut req = client.request(method, url);
     if let Some(auth) = &es.auth {
         req = match auth {
@@ -46,7 +56,7 @@ pub fn es_request(
     if let Some(ms) = es.request_timeout_ms {
         req = req.timeout(Duration::from_millis(ms));
     }
-    req
+    Ok(req)
 }
 
 /// Wrap a handler body with profile recording, peeking the `connector`
@@ -207,4 +217,49 @@ where
         .map_err(|e| {
             DataflowError::function_execution(format!("{handler_name} query failed: {e}"), None)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn es_config(allow_private_urls: bool) -> EsConnectorConfig {
+        EsConnectorConfig {
+            url: "http://127.0.0.1:9200".to_string(),
+            auth: None,
+            request_timeout_ms: None,
+            retry: crate::connector::RetryConfig::default(),
+            allow_private_urls,
+            operations: OperationGates::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_es_request_blocks_private_url() {
+        let client = reqwest::Client::new();
+        let result = es_request(
+            &client,
+            &es_config(false),
+            reqwest::Method::POST,
+            "http://127.0.0.1:9200/idx/_search",
+        )
+        .await;
+
+        let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(err.contains("SSRF protection"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_es_request_allows_private_url_when_opted_in() {
+        let client = reqwest::Client::new();
+        let result = es_request(
+            &client,
+            &es_config(true),
+            reqwest::Method::POST,
+            "http://127.0.0.1:9200/idx/_search",
+        )
+        .await;
+
+        assert!(result.is_ok());
+    }
 }

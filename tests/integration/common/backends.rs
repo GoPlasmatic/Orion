@@ -110,7 +110,10 @@ impl BackendHarness {
                 "config": {
                     "type": "es",
                     "url": self.connection_string,
-                    "request_timeout_ms": 10000
+                    "request_timeout_ms": 10000,
+                    // Testcontainers publish on localhost, which SSRF
+                    // validation would otherwise block.
+                    "allow_private_urls": true
                 }
             });
         }

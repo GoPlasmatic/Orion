@@ -168,7 +168,9 @@ async fn run_es_search(
     eq: &query::backend::es::EsQuery,
 ) -> Result<Value, DataflowError> {
     let url = format!("{}/{}/_search", es.url.trim_end_matches('/'), eq.index);
-    let req = es_request(client, es, reqwest::Method::POST, &url).json(&eq.body);
+    let req = es_request(client, es, reqwest::Method::POST, &url)
+        .await?
+        .json(&eq.body);
 
     let resp = req.send().await.map_err(to_exec_error)?;
     let status = resp.status();

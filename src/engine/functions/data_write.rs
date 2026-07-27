@@ -302,6 +302,7 @@ async fn run_es_write(
             }
             let url = es_url(&es.url, &[&index, "_bulk"], &[("refresh", "wait_for")])?;
             let req = es_request(client, es, reqwest::Method::POST, &url)
+                .await?
                 .header("Content-Type", "application/x-ndjson")
                 .body(bulk_ndjson(&docs));
             let (status, body) = send_es(req).await?;
@@ -351,7 +352,9 @@ async fn run_es_write(
                 &[&index, "_update", &id],
                 &[("refresh", "wait_for")],
             )?;
-            let req = es_request(client, es, reqwest::Method::POST, &url).json(&body);
+            let req = es_request(client, es, reqwest::Method::POST, &url)
+                .await?
+                .json(&body);
             let (status, resp) = send_es(req).await?;
             if !status.is_success() {
                 return Err(es_write_error(status, &resp));
@@ -368,7 +371,9 @@ async fn run_es_write(
                 &[&index, "_doc", &id],
                 &[("op_type", "create"), ("refresh", "wait_for")],
             )?;
-            let req = es_request(client, es, reqwest::Method::PUT, &url).json(&doc);
+            let req = es_request(client, es, reqwest::Method::PUT, &url)
+                .await?
+                .json(&doc);
             let (status, resp) = send_es(req).await?;
             if status == reqwest::StatusCode::CONFLICT {
                 // The document exists — `action: "nothing"` semantics.
@@ -393,7 +398,9 @@ async fn run_by_query(
     body: &Value,
 ) -> Result<Value, DataflowError> {
     let url = es_url(&es.url, &[index, endpoint], &[("refresh", "true")])?;
-    let req = es_request(client, es, reqwest::Method::POST, &url).json(body);
+    let req = es_request(client, es, reqwest::Method::POST, &url)
+        .await?
+        .json(body);
     let (status, resp) = send_es(req).await?;
     if !status.is_success() {
         return Err(es_write_error(status, &resp));
