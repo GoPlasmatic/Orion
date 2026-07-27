@@ -4,11 +4,11 @@
 //! proving the sea-query → `AnyPool` execution path end-to-end.
 
 use crate::common;
+use crate::common::dsl::{ddl, dq, is_rejection, post};
 
 use axum::http::StatusCode;
 use orion::config::{AppConfig, QueryConfig};
 use serde_json::{Value, json};
-use tower::ServiceExt;
 
 /// Build a `db_write` INSERT task for the shared `users` table.
 fn insert_task(conn: &str, tid: &str, id: &str, name: &str, age: i64, status: &str) -> Value {
@@ -49,32 +49,10 @@ fn seed_tasks(conn: &str) -> Vec<Value> {
     ]
 }
 
-/// A `data_query` task with the given query envelope, writing to `data.result`.
-fn query_task(conn: &str, query: Value) -> Value {
-    json!({
-        "id": "t_query",
-        "name": "query",
-        "function": {
-            "name": "data_query",
-            "input": { "connector": conn, "query": query, "output": "data.result" }
-        }
-    })
-}
-
 /// Seed + run a single `data_query`, returning the parsed response body.
 async fn run_query(app: &axum::Router, conn: &str, channel: &str, query: Value) -> Value {
-    run_query_with_body(app, conn, channel, query, json!({ "data": {} })).await
-}
-
-async fn run_query_with_body(
-    app: &axum::Router,
-    conn: &str,
-    channel: &str,
-    query: Value,
-    body: Value,
-) -> Value {
     let mut tasks = seed_tasks(conn);
-    tasks.push(query_task(conn, query));
+    tasks.push(dq(conn, "t_query", query));
     common::create_and_activate_channel(
         app,
         channel,
@@ -82,21 +60,9 @@ async fn run_query_with_body(
     )
     .await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            &format!("/api/v1/data/{channel}"),
-            Some(body),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "data route should return 200"
-    );
-    common::body_json(resp).await
+    let (status, body) = post(app, channel, json!({ "data": {} })).await;
+    assert_eq!(status, StatusCode::OK, "data route should return 200");
+    body
 }
 
 #[tokio::test]
@@ -209,17 +175,8 @@ async fn test_data_query_param_resolved_from_message() {
     )
     .await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v1/data/ch-dq-ctx",
-            Some(json!({ "data": { "threshold": 25 } })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = common::body_json(resp).await;
+    let (status, body) = post(&app, "ch-dq-ctx", json!({ "data": { "threshold": 25 } })).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok");
 
     // age > 25 → Carol(30), Dave(40).
@@ -299,7 +256,11 @@ async fn test_data_query_limit_exceeds_max_rejected() {
     .await;
 
     let mut tasks = seed_tasks(conn);
-    tasks.push(query_task(conn, json!({ "source": "users", "limit": 50 })));
+    tasks.push(dq(
+        conn,
+        "t_query",
+        json!({ "source": "users", "limit": 50 }),
+    ));
     common::create_and_activate_channel(
         &app,
         "ch-dq-cap",
@@ -307,25 +268,9 @@ async fn test_data_query_limit_exceeds_max_rejected() {
     )
     .await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v1/data/ch-dq-cap",
-            Some(json!({ "data": {} })),
-        ))
-        .await
-        .unwrap();
-
-    let status = resp.status();
-    let body = common::body_json(resp).await;
-    let has_errors_array = body
-        .get("errors")
-        .and_then(|e| e.as_array())
-        .is_some_and(|a| !a.is_empty());
-    let has_error_object = body.get("error").is_some_and(|e| e.get("code").is_some());
+    let (status, body) = post(&app, "ch-dq-cap", json!({ "data": {} })).await;
     assert!(
-        has_errors_array || has_error_object || status.is_server_error(),
+        is_rejection(status, &body),
         "expected a rejection for limit over the cap, got status={status} body={body}"
     );
 }
@@ -342,19 +287,13 @@ async fn test_data_query_relation_some() {
 
     // Two entities: users and orders (orders.user_id → users.id). Only u1 has an
     // order over 100, so `some orders total > 100` must return only u1.
-    let dbw = |id: &str, q: &str| {
-        json!({
-            "id": id, "name": id,
-            "function": { "name": "db_write", "input": { "connector": conn, "query": q, "output": "data.x" } }
-        })
-    };
     let tasks = json!([
-        dbw("t_cu", "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT)"),
-        dbw("t_co", "CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, user_id TEXT, total INTEGER)"),
-        dbw("t_u1", "INSERT INTO users (id, name) VALUES ('u1', 'Alice')"),
-        dbw("t_u2", "INSERT INTO users (id, name) VALUES ('u2', 'Bob')"),
-        dbw("t_o1", "INSERT INTO orders (id, user_id, total) VALUES ('o1', 'u1', 150)"),
-        dbw("t_o2", "INSERT INTO orders (id, user_id, total) VALUES ('o2', 'u2', 50)"),
+        ddl(conn, "t_cu", "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT)"),
+        ddl(conn, "t_co", "CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, user_id TEXT, total INTEGER)"),
+        ddl(conn, "t_u1", "INSERT INTO users (id, name) VALUES ('u1', 'Alice')"),
+        ddl(conn, "t_u2", "INSERT INTO users (id, name) VALUES ('u2', 'Bob')"),
+        ddl(conn, "t_o1", "INSERT INTO orders (id, user_id, total) VALUES ('o1', 'u1', 150)"),
+        ddl(conn, "t_o2", "INSERT INTO orders (id, user_id, total) VALUES ('o2', 'u2', 50)"),
         {
             "id": "t_q", "name": "query",
             "function": { "name": "data_query", "input": {
@@ -379,17 +318,8 @@ async fn test_data_query_relation_some() {
     )
     .await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v1/data/ch-dq-rel",
-            Some(json!({ "data": {} })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = common::body_json(resp).await;
+    let (status, body) = post(&app, "ch-dq-rel", json!({ "data": {} })).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok");
     let rows = body["data"]["result"].as_array().expect("array");
     assert_eq!(rows.len(), 1, "body = {body}");
@@ -407,20 +337,14 @@ async fn test_data_query_include_nested() {
     )
     .await;
 
-    let dbw = |id: &str, q: &str| {
-        json!({
-            "id": id, "name": id,
-            "function": { "name": "db_write", "input": { "connector": conn, "query": q, "output": "data.x" } }
-        })
-    };
     let tasks = json!([
-        dbw("t_cu", "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT)"),
-        dbw("t_co", "CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, user_id TEXT, total INTEGER)"),
-        dbw("t_u1", "INSERT INTO users (id, name) VALUES ('u1', 'Alice')"),
-        dbw("t_u2", "INSERT INTO users (id, name) VALUES ('u2', 'Bob')"),
-        dbw("t_o1", "INSERT INTO orders (id, user_id, total) VALUES ('o1', 'u1', 150)"),
-        dbw("t_o2", "INSERT INTO orders (id, user_id, total) VALUES ('o2', 'u1', 50)"),
-        dbw("t_o3", "INSERT INTO orders (id, user_id, total) VALUES ('o3', 'u2', 10)"),
+        ddl(conn, "t_cu", "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT)"),
+        ddl(conn, "t_co", "CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, user_id TEXT, total INTEGER)"),
+        ddl(conn, "t_u1", "INSERT INTO users (id, name) VALUES ('u1', 'Alice')"),
+        ddl(conn, "t_u2", "INSERT INTO users (id, name) VALUES ('u2', 'Bob')"),
+        ddl(conn, "t_o1", "INSERT INTO orders (id, user_id, total) VALUES ('o1', 'u1', 150)"),
+        ddl(conn, "t_o2", "INSERT INTO orders (id, user_id, total) VALUES ('o2', 'u1', 50)"),
+        ddl(conn, "t_o3", "INSERT INTO orders (id, user_id, total) VALUES ('o3', 'u2', 10)"),
         {
             "id": "t_q", "name": "query",
             "function": { "name": "data_query", "input": {
@@ -445,17 +369,8 @@ async fn test_data_query_include_nested() {
     )
     .await;
 
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            "/api/v1/data/ch-dq-inc",
-            Some(json!({ "data": {} })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = common::body_json(resp).await;
+    let (status, body) = post(&app, "ch-dq-inc", json!({ "data": {} })).await;
+    assert_eq!(status, StatusCode::OK);
     assert_eq!(body["status"], "ok", "body = {body}");
     let rows = body["data"]["result"].as_array().expect("array");
     assert_eq!(rows.len(), 2);

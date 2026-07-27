@@ -7,29 +7,10 @@ use tower::ServiceExt;
 
 use crate::common::{create_and_activate_workflow, create_rest_channel};
 
-/// Create a simple workflow that echoes input + adds a marker.
+/// Create and activate the shared echo workflow (echoes input + adds a
+/// `data.matched` marker), returning its workflow_id.
 async fn create_echo_workflow(app: &axum::Router, name: &str) -> String {
-    create_and_activate_workflow(
-        app,
-        json!({
-            "name": name,
-            "condition": true,
-            "tasks": [{
-                "id": "echo",
-                "name": "Echo",
-                "function": {
-                    "name": "map",
-                    "input": {
-                        "mappings": [{
-                            "path": "data.matched",
-                            "logic": true
-                        }]
-                    }
-                }
-            }]
-        }),
-    )
-    .await
+    create_and_activate_workflow(app, common::echo_workflow(name)).await
 }
 
 #[tokio::test]

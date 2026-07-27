@@ -6,6 +6,8 @@
 
 /// Testcontainers-backed harness for the portable data_query/data_write dialects.
 pub mod backends;
+/// Shared task-builder DSL for the data-plane (data_query/data_write) tests.
+pub mod dsl;
 
 use std::sync::Arc;
 
@@ -246,66 +248,8 @@ pub async fn create_and_activate_channel(
     channel_name: &str,
     workflow_json: serde_json::Value,
 ) -> (String, String) {
-    // Create workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v1/admin/workflows",
-            Some(workflow_json),
-        ))
+    create_and_activate_channel_with_config(app, channel_name, workflow_json, serde_json::json!({}))
         .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
-
-    // Activate workflow
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v1/admin/workflows/{}/status", workflow_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::OK);
-
-    // Create channel
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "POST",
-            "/api/v1/admin/channels",
-            Some(serde_json::json!({
-                "name": channel_name,
-                "channel_type": "sync",
-                "protocol": "http",
-                "methods": ["POST"],
-                "route_pattern": format!("/{}", channel_name),
-                "workflow_id": workflow_id,
-            })),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
-    let body = body_json(resp).await;
-    let channel_id = body["data"]["channel_id"].as_str().unwrap().to_string();
-
-    // Activate channel
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "PATCH",
-            &format!("/api/v1/admin/channels/{}/status", channel_id),
-            Some(serde_json::json!({"status": "active"})),
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), axum::http::StatusCode::OK);
-
-    (channel_name.to_string(), workflow_id)
 }
 
 // ============================================================
@@ -425,6 +369,39 @@ pub fn workflow_with_tasks(name: &str, tasks: serde_json::Value) -> serde_json::
         "condition": true,
         "tasks": tasks
     })
+}
+
+/// A workflow that parses the JSON payload and echoes it back with a marker:
+/// `data.echo` reflects the request's `data` and `data.matched` proves the
+/// workflow ran. Lets tests observe the response shape (response caching,
+/// REST routing).
+pub fn echo_workflow(name: &str) -> serde_json::Value {
+    workflow_with_tasks(
+        name,
+        serde_json::json!([
+            {
+                "id": "parse",
+                "name": "Parse payload",
+                "function": {
+                    "name": "parse_json",
+                    "input": { "source": "payload", "target": "input" }
+                }
+            },
+            {
+                "id": "echo",
+                "name": "Echo input",
+                "function": {
+                    "name": "map",
+                    "input": {
+                        "mappings": [
+                            { "path": "data.echo", "logic": { "var": "data.input" } },
+                            { "path": "data.matched", "logic": true }
+                        ]
+                    }
+                }
+            }
+        ]),
+    )
 }
 
 /// Create and activate a channel with custom config (dedup, cache, validation, etc.).

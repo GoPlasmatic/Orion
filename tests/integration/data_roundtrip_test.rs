@@ -14,35 +14,26 @@
 
 use crate::common;
 use crate::common::backends::{Backend, BackendHarness};
+use crate::common::dsl;
 
 use axum::http::StatusCode;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use tower::ServiceExt;
 
-/// A raw `db_write` task (DDL — outside the portable dialect).
-fn ddl(h: &BackendHarness, id: &str, sql: &str) -> Value {
-    json!({
-        "id": id, "name": id,
-        "function": { "name": "db_write", "input": {
-            "connector": h.connector_name, "query": sql, "output": "data.ddl"
-        } }
-    })
-}
-
-/// A `data_write` task carrying the given envelope; connector, output, the
-/// Mongo `database` field, and the backend's inline schema are filled in.
+/// A `data_write` task carrying the given envelope; the Mongo `database`
+/// field and the backend's inline schema are layered onto the shared DSL
+/// task shape.
 fn dw(h: &BackendHarness, id: &str, mut envelope: Value, out: &str) -> Value {
-    envelope["connector"] = json!(h.connector_name);
     envelope["output"] = json!(out);
     if let Some(schema) = h.schema_json() {
         envelope["schema"] = schema;
     }
-    let input = h.with_db(envelope);
-    json!({ "id": id, "name": id, "function": { "name": "data_write", "input": input } })
+    dsl::dw(&h.connector_name, id, h.with_db(envelope))
 }
 
-/// A `data_query` read-back task.
+/// A `data_query` read-back task. Unlike [`dsl::dq`] each read targets its own
+/// output path, and the backend schema / Mongo `database` field are added.
 fn dq(h: &BackendHarness, id: &str, query: Value, out: &str) -> Value {
     let mut input = h.with_db(json!({
         "connector": h.connector_name, "query": query, "output": out
@@ -88,10 +79,10 @@ async fn assert_crud_roundtrip(backend: Backend) {
     // own output path so we can assert intermediate state from one response.
     let mut tasks: Vec<Value> = Vec::new();
     if let Some(sql) = h.ddl_users() {
-        tasks.push(ddl(&h, "ddl_users", &sql));
+        tasks.push(dsl::ddl(&h.connector_name, "ddl_users", &sql));
     }
     if let Some(sql) = h.ddl_items() {
-        tasks.push(ddl(&h, "ddl_items", &sql));
+        tasks.push(dsl::ddl(&h.connector_name, "ddl_items", &sql));
     }
 
     // 1. Insert three users.

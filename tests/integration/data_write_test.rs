@@ -5,62 +5,11 @@
 //! safety guards end-to-end.
 
 use crate::common;
+use crate::common::dsl::{ddl, dq, dw, is_rejection, post};
 
 use axum::http::StatusCode;
 use orion::config::{AppConfig, WriteConfig};
 use serde_json::{Value, json};
-use tower::ServiceExt;
-
-/// A raw `db_write` task (used for DDL, which is outside the portable dialect).
-fn ddl(conn: &str, id: &str, sql: &str) -> Value {
-    json!({
-        "id": id, "name": id,
-        "function": { "name": "db_write", "input": { "connector": conn, "query": sql, "output": "data.ddl" } }
-    })
-}
-
-/// A `data_write` task; `input` carries the envelope (op/target/values/…). The
-/// connector is filled in, and the result defaults to `data.w`.
-fn dw(conn: &str, id: &str, mut input: Value) -> Value {
-    input["connector"] = json!(conn);
-    if input.get("output").is_none() {
-        input["output"] = json!("data.w");
-    }
-    json!({ "id": id, "name": id, "function": { "name": "data_write", "input": input } })
-}
-
-/// A `data_query` read-back task writing rows to `data.result`.
-fn dq(conn: &str, id: &str, query: Value) -> Value {
-    json!({
-        "id": id, "name": id,
-        "function": { "name": "data_query", "input": { "connector": conn, "query": query, "output": "data.result" } }
-    })
-}
-
-/// POST an empty payload to a channel and return `(status, body)`.
-async fn post(app: &axum::Router, channel: &str, body: Value) -> (StatusCode, Value) {
-    let resp = app
-        .clone()
-        .oneshot(common::json_request(
-            "POST",
-            &format!("/api/v1/data/{channel}"),
-            Some(body),
-        ))
-        .await
-        .unwrap();
-    let status = resp.status();
-    (status, common::body_json(resp).await)
-}
-
-/// Whether a response body signals a task rejection (mirrors data_query tests).
-fn is_rejection(status: StatusCode, body: &Value) -> bool {
-    let errors = body
-        .get("errors")
-        .and_then(|e| e.as_array())
-        .is_some_and(|a| !a.is_empty());
-    let error = body.get("error").is_some_and(|e| e.get("code").is_some());
-    errors || error || status.is_server_error()
-}
 
 async fn sqlite_app(conn: &str, mem: &str) -> axum::Router {
     let app = common::test_app().await;

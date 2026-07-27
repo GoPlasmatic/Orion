@@ -6,45 +6,8 @@ use tower::ServiceExt;
 
 use crate::common::{
     body_json, cache_connector_memory, create_and_activate_channel_with_config, create_connector,
-    json_request, workflow_with_tasks,
+    echo_workflow, json_request, workflow_with_tasks,
 };
-
-/// A workflow that parses the JSON payload and echoes it back with a marker.
-/// This lets us observe the response shape and verify cache behaviour.
-fn echo_workflow(name: &str) -> serde_json::Value {
-    workflow_with_tasks(
-        name,
-        json!([
-            {
-                "id": "parse",
-                "name": "Parse payload",
-                "function": {
-                    "name": "parse_json",
-                    "input": { "source": "payload", "target": "input" }
-                }
-            },
-            {
-                "id": "echo",
-                "name": "Echo input",
-                "function": {
-                    "name": "map",
-                    "input": {
-                        "mappings": [
-                            {
-                                "path": "data.echo",
-                                "logic": { "var": "data.input" }
-                            },
-                            {
-                                "path": "data.processed",
-                                "logic": true
-                            }
-                        ]
-                    }
-                }
-            }
-        ]),
-    )
-}
 
 // ============================================================
 // 1. Cache hit on same request — identical responses
