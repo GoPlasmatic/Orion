@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -88,86 +88,6 @@ async fn route_store_completed(
             task_trace_json: trace.task_trace_json.map(str::to_string),
         });
         persistence_queue.submit(task).await;
-    }
-}
-
-/// Internal error type for `run_engine_optionally_profiled`. The outer error
-/// from `engine.process_message_for_channel` is propagated through the
-/// `dataflow_rs::Result` carried in the `Ok` arm; this enum just distinguishes
-/// "timeout vs engine call returned".
-enum EngineRunError {
-    Timeout(u64),
-}
-
-/// Result tuple returned from the engine call: the engine's own `Result<()>`,
-/// and an optional captured per-task `ExecutionTrace` populated when the
-/// channel opted into `task_details` (A2).
-type EngineCallResult = (dataflow_rs::Result<()>, Option<dataflow_rs::ExecutionTrace>);
-
-/// Run the engine for `channel`, with optional timeout and optional
-/// trace capture. Used by both profiled and non-profiled paths.
-async fn run_engine_inner(
-    engine: &std::sync::Arc<dataflow_rs::Engine>,
-    channel: &str,
-    message: &mut dataflow_rs::Message,
-    timeout_ms: Option<u64>,
-    capture_trace: bool,
-) -> Result<EngineCallResult, EngineRunError> {
-    if capture_trace {
-        let fut = engine.process_message_for_channel_with_trace(channel, message);
-        let inner = if let Some(ms) = timeout_ms {
-            match tokio::time::timeout(Duration::from_millis(ms), fut).await {
-                Ok(r) => r,
-                Err(_) => return Err(EngineRunError::Timeout(ms)),
-            }
-        } else {
-            fut.await
-        };
-        match inner {
-            Ok(trace) => Ok((Ok(()), Some(trace))),
-            Err(e) => Ok((Err(e), None)),
-        }
-    } else if let Some(ms) = timeout_ms {
-        match tokio::time::timeout(
-            Duration::from_millis(ms),
-            engine.process_message_for_channel(channel, message),
-        )
-        .await
-        {
-            Ok(inner) => Ok((inner, None)),
-            Err(_) => Err(EngineRunError::Timeout(ms)),
-        }
-    } else {
-        Ok((
-            engine.process_message_for_channel(channel, message).await,
-            None,
-        ))
-    }
-}
-
-/// Run the engine for `channel`, optionally scoped inside a per-request
-/// `ProfileCollector`. Honors `timeout_ms` when provided. When
-/// `capture_trace` is true, uses the with-trace engine entry point and
-/// returns the resulting `ExecutionTrace` for persistence.
-async fn run_engine_optionally_profiled(
-    engine: &std::sync::Arc<dataflow_rs::Engine>,
-    channel: &str,
-    message: &mut dataflow_rs::Message,
-    timeout_ms: Option<u64>,
-    profile: Option<&std::sync::Arc<crate::engine::profile::ProfileCollector>>,
-    capture_trace: bool,
-) -> Result<EngineCallResult, EngineRunError> {
-    use crate::engine::profile::ORION_PROFILE;
-
-    if let Some(p) = profile {
-        ORION_PROFILE
-            .scope(
-                p.clone(),
-                run_engine_inner(engine, channel, message, timeout_ms, capture_trace),
-            )
-            .await
-    } else {
-        run_engine_inner(engine, channel, message, timeout_ms, capture_trace).await
     }
 }
 
@@ -702,7 +622,7 @@ async fn process_sync_for_channel(
         .unwrap_or(false);
 
     let workflow_start = Instant::now();
-    let result = run_engine_optionally_profiled(
+    let result = crate::engine::run_for_channel(
         &engine,
         channel,
         &mut message,
@@ -717,7 +637,7 @@ async fn process_sync_for_channel(
 
     let (result, task_trace) = match result {
         Ok(inner) => inner,
-        Err(EngineRunError::Timeout(ms)) => {
+        Err(ms) => {
             remove_rollout_bucket(&mut message);
             metrics::record_message(metrics_channel, "timeout");
             metrics::record_error("timeout");

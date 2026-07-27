@@ -330,31 +330,15 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // `(Result, Option<ExecutionTrace>)` shape so the timeout handling is shared.
     let capture_trace = effective_trace.task_details;
     let workflow_start = Instant::now();
-    let engine_fut = async {
-        tokio::time::timeout(Duration::from_millis(processing_timeout_ms), async {
-            if capture_trace {
-                match engine_ref
-                    .process_message_for_channel_with_trace(&channel, &mut message)
-                    .await
-                {
-                    Ok(trace) => (Ok(()), Some(trace)),
-                    Err(e) => (Err(e), None),
-                }
-            } else {
-                let r = engine_ref
-                    .process_message_for_channel(&channel, &mut message)
-                    .await;
-                (r, None)
-            }
-        })
-        .await
-    };
-    let timeout_outcome = if let Some(ref p) = profile {
-        use crate::engine::profile::ORION_PROFILE;
-        ORION_PROFILE.scope(p.clone(), engine_fut).await
-    } else {
-        engine_fut.await
-    };
+    let timeout_outcome = crate::engine::run_for_channel(
+        &engine_ref,
+        &channel,
+        &mut message,
+        Some(processing_timeout_ms),
+        profile.as_ref(),
+        capture_trace,
+    )
+    .await;
     if let Some(ref p) = profile {
         p.set_workflow_total(workflow_start.elapsed());
     }

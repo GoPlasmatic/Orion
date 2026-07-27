@@ -370,9 +370,13 @@ async fn process_one_kafka_message(
 
     // Clone the inner Arc<Engine> and release the lock immediately.
     let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
-    let process_result = tokio::time::timeout(
-        std::time::Duration::from_millis(ctx.processing_timeout_ms),
-        engine_ref.process_message_for_channel(&channel, &mut message),
+    let process_result = crate::engine::run_for_channel(
+        &engine_ref,
+        &channel,
+        &mut message,
+        Some(ctx.processing_timeout_ms),
+        None,
+        false,
     )
     .await;
 
@@ -395,7 +399,7 @@ async fn process_one_kafka_message(
             )
             .await
         }
-        Ok(Err(e)) => {
+        Ok((Err(e), _)) => {
             report_failure_and_dlq(
                 ctx,
                 FailureReport {
@@ -410,7 +414,7 @@ async fn process_one_kafka_message(
             )
             .await
         }
-        Ok(Ok(())) if message.has_errors() => {
+        Ok((Ok(()), _)) if message.has_errors() => {
             // v3 contract: workflow failures are pushed to
             // message.errors() while the outer Result stays Ok.
             let summary = message
@@ -433,7 +437,7 @@ async fn process_one_kafka_message(
             )
             .await
         }
-        Ok(Ok(())) => {
+        Ok((Ok(()), _)) => {
             let duration = start.elapsed().as_secs_f64();
             metrics::record_message(&channel, "ok");
             metrics::record_message_duration(&channel, duration);

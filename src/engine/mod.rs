@@ -28,6 +28,72 @@ pub async fn acquire_engine_read(
     guard.clone()
 }
 
+/// Result of one engine invocation: the engine's own result plus the captured
+/// per-task `ExecutionTrace` when the caller opted in (A2).
+pub type EngineCallResult = (dataflow_rs::Result<()>, Option<dataflow_rs::ExecutionTrace>);
+
+/// Run the engine for `channel` with optional timeout, optional per-task
+/// trace capture, and optional profiling scope. The sync HTTP, async trace
+/// queue, and Kafka ingress paths all go through here so timeout and trace
+/// semantics cannot drift between them. `Err(ms)` means the call timed out
+/// after `ms` milliseconds.
+pub async fn run_for_channel(
+    engine: &Arc<dataflow_rs::Engine>,
+    channel: &str,
+    message: &mut dataflow_rs::Message,
+    timeout_ms: Option<u64>,
+    profile: Option<&Arc<profile::ProfileCollector>>,
+    capture_trace: bool,
+) -> Result<EngineCallResult, u64> {
+    let run = run_for_channel_inner(engine, channel, message, timeout_ms, capture_trace);
+    if let Some(p) = profile {
+        profile::ORION_PROFILE.scope(p.clone(), run).await
+    } else {
+        run.await
+    }
+}
+
+async fn run_for_channel_inner(
+    engine: &Arc<dataflow_rs::Engine>,
+    channel: &str,
+    message: &mut dataflow_rs::Message,
+    timeout_ms: Option<u64>,
+    capture_trace: bool,
+) -> Result<EngineCallResult, u64> {
+    use std::time::Duration;
+
+    if capture_trace {
+        let fut = engine.process_message_for_channel_with_trace(channel, message);
+        let inner = if let Some(ms) = timeout_ms {
+            match tokio::time::timeout(Duration::from_millis(ms), fut).await {
+                Ok(r) => r,
+                Err(_) => return Err(ms),
+            }
+        } else {
+            fut.await
+        };
+        match inner {
+            Ok(trace) => Ok((Ok(()), Some(trace))),
+            Err(e) => Ok((Err(e), None)),
+        }
+    } else if let Some(ms) = timeout_ms {
+        match tokio::time::timeout(
+            Duration::from_millis(ms),
+            engine.process_message_for_channel(channel, message),
+        )
+        .await
+        {
+            Ok(inner) => Ok((inner, None)),
+            Err(_) => Err(ms),
+        }
+    } else {
+        Ok((
+            engine.process_message_for_channel(channel, message).await,
+            None,
+        ))
+    }
+}
+
 /// Acquire the engine write lock with timing instrumentation.
 ///
 /// Records lock wait time as a histogram metric.
