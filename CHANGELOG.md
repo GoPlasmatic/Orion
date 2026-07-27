@@ -125,6 +125,16 @@ for the cluster architecture.
 - **Removed:** the unread `backpressure.queue_depth` channel-config field.
   Stored configs still carrying the key deserialize normally (there is no
   `deny_unknown_fields`), so this needs no migration.
+- **Every admin list endpoint shares one pagination envelope.**
+  `GET /api/v1/admin/audit-logs` (and the new trace-DLQ list) now return the
+  flat `{data, total, limit, offset}` shape the workflow/channel/connector
+  lists always used, instead of a nested `{data, pagination: {…}}`.
+- **Malformed admin request bodies are rejected uniformly with 400 + field
+  details.** The four workflow endpoints that still surfaced axum's plain-text
+  422 (`PATCH …/status`, `PUT …/rollout`, `POST …/test`,
+  `POST /workflows/import`) now use the same extractor as every other admin
+  route, and query-string parse failures return the standard JSON error
+  envelope instead of plain text.
 
 ### Added
 

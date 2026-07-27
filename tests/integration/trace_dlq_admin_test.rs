@@ -44,8 +44,8 @@ async fn list_paginates_and_omits_payloads() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = common::body_json(resp).await;
 
-    assert_eq!(body["pagination"]["total"], 2);
-    assert_eq!(body["pagination"]["limit"], 50);
+    assert_eq!(body["total"], 2);
+    assert_eq!(body["limit"], 50);
     let rows = body["data"].as_array().expect("data array");
     assert_eq!(rows.len(), 2);
     for row in rows {
@@ -73,7 +73,7 @@ async fn list_filters_by_exhaustion_and_channel() {
         .await
         .unwrap();
     let body = common::body_json(resp).await;
-    assert_eq!(body["pagination"]["total"], 1);
+    assert_eq!(body["total"], 1);
     assert_eq!(body["data"][0]["id"], exhausted);
 
     let resp = app
@@ -85,7 +85,7 @@ async fn list_filters_by_exhaustion_and_channel() {
         .await
         .unwrap();
     let body = common::body_json(resp).await;
-    assert_eq!(body["pagination"]["total"], 1);
+    assert_eq!(body["total"], 1);
     assert_eq!(body["data"][0]["channel"], "orders");
 }
 
@@ -145,7 +145,7 @@ async fn requeue_resets_an_exhausted_entry() {
         ))
         .await
         .unwrap();
-    assert_eq!(common::body_json(resp).await["pagination"]["total"], 0);
+    assert_eq!(common::body_json(resp).await["total"], 0);
 
     let resp = app
         .oneshot(common::json_request(
@@ -179,7 +179,7 @@ async fn purge_removes_only_exhausted_entries() {
         .await
         .unwrap();
     let body = common::body_json(resp).await;
-    assert_eq!(body["pagination"]["total"], 1);
+    assert_eq!(body["total"], 1);
     assert_eq!(
         body["data"][0]["id"], pending,
         "an entry with retries left must survive a purge"
@@ -206,7 +206,7 @@ async fn purge_requires_an_explicit_age() {
         .oneshot(common::json_request("GET", "/api/v1/admin/trace-dlq", None))
         .await
         .unwrap();
-    assert_eq!(common::body_json(resp).await["pagination"]["total"], 2);
+    assert_eq!(common::body_json(resp).await["total"], 2);
 }
 
 /// A purge far in the past must spare recent entries — the age bound is real,
@@ -231,5 +231,5 @@ async fn purge_respects_the_age_bound() {
         .oneshot(common::json_request("GET", "/api/v1/admin/trace-dlq", None))
         .await
         .unwrap();
-    assert_eq!(common::body_json(resp).await["pagination"]["total"], 2);
+    assert_eq!(common::body_json(resp).await["total"], 2);
 }

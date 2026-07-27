@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde_json::{Value, json};
@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use crate::connector::mask_connector;
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
-use crate::server::extract::OrionJson;
+use crate::server::extract::{OrionJson, OrionQuery};
 use crate::server::routes::response_helpers::{
     created_response, data_response, paginated_response,
 };
@@ -59,7 +59,7 @@ async fn evict_connector_pools(state: &AppState, connector_name: &str) {
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_connectors(
     State(state): State<AppState>,
-    Query(filter): Query<ConnectorFilter>,
+    OrionQuery(filter): OrionQuery<ConnectorFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state.connector_repo.list_paginated(&filter).await?;
     // F16: a connector that failed to load is simply missing from the
@@ -258,7 +258,7 @@ pub(crate) async fn delete_connector(
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
 pub(crate) async fn import_connectors(
     State(state): State<AppState>,
-    Query(query): Query<super::workflows::ImportQuery>,
+    OrionQuery(query): OrionQuery<super::workflows::ImportQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {

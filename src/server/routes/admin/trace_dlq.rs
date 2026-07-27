@@ -1,12 +1,12 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
-use crate::server::extract::OrionJson;
-use crate::server::routes::response_helpers::data_response;
+use crate::server::extract::{OrionJson, OrionQuery};
+use crate::server::routes::response_helpers::{data_response, paginated_response};
 use crate::server::state::AppState;
 use crate::storage::repositories::trace_dlq::TraceDlqFilter;
 
@@ -50,13 +50,13 @@ pub(crate) struct PurgeTraceDlqRequest {
         ("limit" = Option<i64>, Query, description = "Page size, clamped to [1, 1000] (default 50)"),
     ),
     responses(
-        (status = 200, description = "Paginated DLQ entries without payloads — fetch one by id for the payload"),
+        (status = 200, description = "Paginated DLQ entries (`{data, total, limit, offset}`) without payloads — fetch one by id for the payload"),
     )
 )]
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_trace_dlq(
     State(state): State<AppState>,
-    Query(params): Query<TraceDlqQuery>,
+    OrionQuery(params): OrionQuery<TraceDlqQuery>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state
         .trace_dlq_repo
@@ -68,14 +68,12 @@ pub(crate) async fn list_trace_dlq(
         })
         .await?;
 
-    Ok(Json(json!({
-        "data": result.data,
-        "pagination": {
-            "offset": result.offset,
-            "limit": result.limit,
-            "total": result.total,
-        }
-    })))
+    Ok(paginated_response(
+        result.data,
+        result.total,
+        result.limit,
+        result.offset,
+    ))
 }
 
 #[utoipa::path(

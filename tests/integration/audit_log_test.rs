@@ -365,11 +365,11 @@ async fn test_audit_pagination() {
     let page1 = body["data"].as_array().unwrap();
     assert_eq!(page1.len(), 2, "first page should have 2 entries");
     assert!(
-        body["pagination"]["total"].as_i64().unwrap() >= 5,
+        body["total"].as_i64().unwrap() >= 5,
         "total should be at least 5"
     );
-    assert_eq!(body["pagination"]["offset"], 0);
-    assert_eq!(body["pagination"]["limit"], 2);
+    assert_eq!(body["offset"], 0);
+    assert_eq!(body["limit"], 2);
 
     // Page 2: limit=2, offset=2
     let resp = app
@@ -385,7 +385,7 @@ async fn test_audit_pagination() {
     let body = body_json(resp).await;
     let page2 = body["data"].as_array().unwrap();
     assert_eq!(page2.len(), 2, "second page should have 2 entries");
-    assert_eq!(body["pagination"]["offset"], 2);
+    assert_eq!(body["offset"], 2);
 }
 
 // ============================================================
@@ -577,7 +577,7 @@ async fn test_audit_filter_each_param_narrows_results() {
 
     let (status, all) = audit_query(&app, "").await;
     assert_eq!(status, StatusCode::OK);
-    let total = all["pagination"]["total"].as_i64().unwrap();
+    let total = all["total"].as_i64().unwrap();
     assert!(total >= 5, "expected a mixed seed, got {total}");
 
     for (query, key, value) in [
@@ -595,11 +595,11 @@ async fn test_audit_filter_each_param_narrows_results() {
             "{query} returned rows that do not match: {entries:?}"
         );
         assert!(
-            body["pagination"]["total"].as_i64().unwrap() < total,
+            body["total"].as_i64().unwrap() < total,
             "{query} must narrow the result set (total was {total})"
         );
         assert_eq!(
-            body["pagination"]["total"].as_i64().unwrap(),
+            body["total"].as_i64().unwrap(),
             entries.len() as i64,
             "total must count filtered rows"
         );
@@ -614,14 +614,14 @@ async fn test_audit_filter_each_param_narrows_results() {
     let (status, body) = audit_query(&app, "?principal=anonymous").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        body["pagination"]["total"].as_i64().unwrap(),
+        body["total"].as_i64().unwrap(),
         total,
         "auth is off in tests, so every entry is 'anonymous'"
     );
 
     let (status, body) = audit_query(&app, "?principal=nobody-else").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["pagination"]["total"], 0);
+    assert_eq!(body["total"], 0);
 }
 
 #[tokio::test]
@@ -638,7 +638,7 @@ async fn test_audit_filters_and_together() {
     // A matching action with a non-matching type must yield nothing, not the union.
     let (status, body) = audit_query(&app, "?action=status_active&resource_type=connector").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["pagination"]["total"], 0);
+    assert_eq!(body["total"], 0);
     assert!(body["data"].as_array().unwrap().is_empty());
 }
 
@@ -647,15 +647,15 @@ async fn test_audit_time_range_filter() {
     let (app, _) = app_with_mixed_audit_entries().await;
 
     let (_, all) = audit_query(&app, "").await;
-    let total = all["pagination"]["total"].as_i64().unwrap();
+    let total = all["total"].as_i64().unwrap();
 
     let (status, body) = audit_query(&app, "?start_time=2000-01-01T00:00:00Z").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["pagination"]["total"].as_i64().unwrap(), total);
+    assert_eq!(body["total"].as_i64().unwrap(), total);
 
     let (status, body) = audit_query(&app, "?end_time=2000-01-01T00:00:00Z").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["pagination"]["total"], 0);
+    assert_eq!(body["total"], 0);
 
     let (status, body) = audit_query(&app, "?start_time=not-a-timestamp").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

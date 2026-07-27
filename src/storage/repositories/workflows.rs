@@ -69,6 +69,7 @@ pub struct RolloutUpdateRequest {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct WorkflowFilter {
     pub status: Option<String>,
     pub tag: Option<String>,

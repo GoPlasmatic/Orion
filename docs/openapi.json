@@ -93,7 +93,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated audit log entries with total count"
+            "description": "Paginated audit log entries: `{data, total, limit, offset}`"
           },
           "400": {
             "description": "Unknown query parameter or malformed timestamp"
@@ -227,10 +227,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -238,10 +235,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -249,10 +243,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -260,10 +251,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
@@ -272,10 +260,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
@@ -285,10 +270,7 @@
             "description": "Column to sort by: priority (default), name, status, channel_type, protocol, created_at, updated_at.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -297,10 +279,7 @@
             "description": "Sort direction: asc or desc (default).",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -818,10 +797,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
@@ -830,10 +806,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           }
@@ -1428,7 +1401,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated DLQ entries without payloads — fetch one by id for the payload"
+            "description": "Paginated DLQ entries (`{data, total, limit, offset}`) without payloads — fetch one by id for the payload"
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1658,10 +1631,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -1669,10 +1639,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -1680,10 +1647,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
@@ -1692,10 +1656,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
@@ -1705,10 +1666,7 @@
             "description": "Column to sort by: priority (default), name, status, created_at, updated_at.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -1717,10 +1675,7 @@
             "description": "Sort direction: asc or desc (default).",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -1823,10 +1778,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -1834,10 +1786,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -1845,10 +1794,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
@@ -1857,10 +1803,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "format": "int64"
             }
           },
@@ -1870,10 +1813,7 @@
             "description": "Column to sort by: priority (default), name, status, created_at, updated_at.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           },
           {
@@ -1882,10 +1822,7 @@
             "description": "Sort direction: asc or desc (default).",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -2658,10 +2595,7 @@
             "description": "The capability token returned with the async 202. Alternative to the\n`x-trace-token` header for clients that cannot set headers.",
             "required": false,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],

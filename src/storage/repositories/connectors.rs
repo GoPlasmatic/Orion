@@ -32,6 +32,7 @@ pub struct UpdateConnectorRequest {
 }
 
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ConnectorFilter {
     pub limit: Option<i64>,
     pub offset: Option<i64>,

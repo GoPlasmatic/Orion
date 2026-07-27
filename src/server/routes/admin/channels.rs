@@ -1,11 +1,11 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde_json::Value;
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
-use crate::server::extract::OrionJson;
+use crate::server::extract::{OrionJson, OrionQuery};
 use crate::server::routes::response_helpers::{created_response, data_response, paginated_into};
 use crate::server::state::AppState;
 use crate::storage::models::{ChannelResponse, StatusAction};
@@ -33,7 +33,7 @@ use super::audit_log_draft_only;
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_channels(
     State(state): State<AppState>,
-    Query(filter): Query<ChannelFilter>,
+    OrionQuery(filter): OrionQuery<ChannelFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state.channel_repo.list_paginated(&filter).await?;
     paginated_into(result, |c| ChannelResponse::try_from(c))
@@ -196,7 +196,7 @@ pub(crate) async fn change_channel_status(
 pub(crate) async fn list_channel_versions(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(filter): Query<VersionFilter>,
+    OrionQuery(filter): OrionQuery<VersionFilter>,
 ) -> Result<Json<Value>, OrionError> {
     // Verify channel exists
     let _ = state.channel_repo.get_by_id(&id).await?;
@@ -254,7 +254,7 @@ pub(crate) async fn create_new_channel_version(
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
 pub(crate) async fn import_channels(
     State(state): State<AppState>,
-    Query(query): Query<super::workflows::ImportQuery>,
+    OrionQuery(query): OrionQuery<super::workflows::ImportQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {

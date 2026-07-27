@@ -63,6 +63,7 @@ pub struct ChannelStatusChangeRequest {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ChannelFilter {
     pub status: Option<String>,
     pub channel_type: Option<String>,

@@ -179,8 +179,11 @@ async fn test_invalid_status_transition() {
         .await
         .unwrap();
 
-    // With EntityStatus enum, invalid values are rejected at deserialization (422)
-    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    // Invalid enum values are rejected at deserialization by OrionJson with
+    // the 400 + field-pathed details envelope every admin body error uses.
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 }
 
 // ============================================================

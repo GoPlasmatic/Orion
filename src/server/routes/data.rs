@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get};
@@ -14,6 +14,7 @@ use crate::config::TraceStorageMode;
 use crate::errors::OrionError;
 use crate::metrics;
 use crate::queue::{TracePersistenceQueue, TracePersistenceTask};
+use crate::server::extract::OrionQuery;
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::server::routes::openapi::ErrorResponse;
 use crate::server::state::AppState;
@@ -244,7 +245,7 @@ pub(crate) async fn dynamic_handler(
     Path(path): Path<String>,
     method: axum::http::Method,
     headers: axum::http::HeaderMap,
-    Query(query_params): Query<std::collections::HashMap<String, String>>,
+    OrionQuery(query_params): OrionQuery<std::collections::HashMap<String, String>>,
     body: axum::body::Bytes,
 ) -> Result<impl IntoResponse, OrionError> {
     // Strip trailing /async suffix
@@ -932,7 +933,7 @@ pub(crate) struct AsyncSubmitResponse {
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_traces(
     State(state): State<AppState>,
-    Query(filter): Query<TraceFilter>,
+    OrionQuery(filter): OrionQuery<TraceFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state.trace_repo.list_paginated(&filter).await?;
     // Payload-free projection (S14): `input_json` holds the caller's request
@@ -969,6 +970,7 @@ pub(crate) async fn list_traces(
 
 /// Query parameters for `GET /traces/{id}`.
 #[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct TraceAccessQuery {
     /// The capability token returned with the async 202. Alternative to the
     /// `x-trace-token` header for clients that cannot set headers.
@@ -999,7 +1001,7 @@ before 1.0.1) are admin-plane only when admin auth is enabled.",
 pub(crate) async fn get_trace(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(query): Query<TraceAccessQuery>,
+    OrionQuery(query): OrionQuery<TraceAccessQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, OrionError> {
     let trace = state.trace_repo.get_by_id(&id).await?;

@@ -1,4 +1,4 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
-use crate::server::extract::OrionJson;
+use crate::server::extract::{OrionJson, OrionQuery};
 use crate::server::routes::response_helpers::{created_response, data_response, paginated_into};
 use crate::server::state::AppState;
 use crate::storage::models::{StatusAction, WorkflowResponse};
@@ -36,7 +36,7 @@ use super::audit_log_draft_only;
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_workflows(
     State(state): State<AppState>,
-    Query(filter): Query<WorkflowFilter>,
+    OrionQuery(filter): OrionQuery<WorkflowFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state.workflow_repo.list_paginated(&filter).await?;
     paginated_into(result, |w| WorkflowResponse::try_from(w))
@@ -156,7 +156,7 @@ pub(crate) async fn change_workflow_status(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-    Json(req): Json<StatusChangeRequest>,
+    OrionJson(req): OrionJson<StatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let action = StatusAction::parse(req.status)?;
     let workflow = match action {
@@ -254,7 +254,7 @@ pub(crate) async fn update_rollout(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-    Json(req): Json<RolloutUpdateRequest>,
+    OrionJson(req): OrionJson<RolloutUpdateRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let workflow = state
         .workflow_repo
@@ -284,7 +284,7 @@ pub(crate) async fn update_rollout(
 pub(crate) async fn list_workflow_versions(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Query(filter): Query<VersionFilter>,
+    OrionQuery(filter): OrionQuery<VersionFilter>,
 ) -> Result<Json<Value>, OrionError> {
     // Verify workflow exists
     let _ = state.workflow_repo.get_by_id(&id).await?;
@@ -351,7 +351,7 @@ pub(crate) struct TestWorkflowRequest {
 pub(crate) async fn test_workflow(
     State(state): State<AppState>,
     Path(id): Path<String>,
-    Json(req): Json<TestWorkflowRequest>,
+    OrionJson(req): OrionJson<TestWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
     use crate::storage::repositories::workflows::workflow_to_dataflow;
 
@@ -416,6 +416,7 @@ pub(crate) async fn test_workflow(
 
 /// Query parameters accepted by all three /import endpoints (B6).
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub(crate) struct ImportQuery {
     /// When true, validates each item and reports what would happen
     /// without writing to the database. The response shape mirrors
@@ -437,9 +438,9 @@ pub(crate) struct ImportQuery {
 #[tracing::instrument(skip(state, workflows, principal), fields(count = workflows.len()))]
 pub(crate) async fn import_workflows(
     State(state): State<AppState>,
-    Query(query): Query<ImportQuery>,
+    OrionQuery(query): OrionQuery<ImportQuery>,
     principal: Option<Extension<AdminPrincipal>>,
-    Json(workflows): Json<Vec<CreateWorkflowRequest>>,
+    OrionJson(workflows): OrionJson<Vec<CreateWorkflowRequest>>,
 ) -> Result<Json<Value>, OrionError> {
     if query.dry_run {
         // Validate each item against the same checks the create endpoint
@@ -516,7 +517,7 @@ pub(crate) async fn import_workflows(
 #[tracing::instrument(skip(state))]
 pub(crate) async fn export_workflows(
     State(state): State<AppState>,
-    Query(filter): Query<WorkflowFilter>,
+    OrionQuery(filter): OrionQuery<WorkflowFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let workflows = state.workflow_repo.list(&filter).await?;
     let data: Vec<WorkflowResponse> = workflows

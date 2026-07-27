@@ -1,10 +1,11 @@
 use axum::Json;
 use axum::extract::State;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::errors::OrionError;
 use crate::server::extract::OrionQuery;
+use crate::server::routes::response_helpers::paginated_response;
 use crate::server::state::AppState;
 use crate::storage::repositories::audit_logs::AuditLogFilter;
 
@@ -69,7 +70,7 @@ fn parse_timestamp(field: &str, raw: &str) -> Result<chrono::NaiveDateTime, Orio
         ("end_time" = Option<String>, Query, description = "Exclusive upper bound on `created_at`, RFC 3339"),
     ),
     responses(
-        (status = 200, description = "Paginated audit log entries with total count"),
+        (status = 200, description = "Paginated audit log entries: `{data, total, limit, offset}`"),
         (status = 400, description = "Unknown query parameter or malformed timestamp"),
     )
 )]
@@ -99,14 +100,9 @@ pub(crate) async fn list_audit_logs(
 
     let page = state.audit_log_repo.list_paginated(&filter).await?;
 
-    Ok(Json(json!({
-        "data": page.data,
-        "pagination": {
-            "offset": page.offset,
-            "limit": page.limit,
-            "total": page.total,
-        }
-    })))
+    Ok(paginated_response(
+        page.data, page.total, page.limit, page.offset,
+    ))
 }
 
 #[cfg(test)]
