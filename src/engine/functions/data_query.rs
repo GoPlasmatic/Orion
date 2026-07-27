@@ -12,7 +12,8 @@ use serde_json::Value;
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, es_request, extract_output_path, profile_handler, require_op_allowed,
+    apply_output, es_request, extract_output_path, is_mongo, profile_handler,
+    require_op_allowed,
     require_str_field, resolve_connector, resolve_params, timed_query, to_exec_error,
 };
 use super::db_read::rows_to_json;
@@ -161,12 +162,6 @@ impl AsyncFunctionHandler for DataQueryHandler {
     }
 }
 
-/// A connector targets MongoDB when its connection string uses a `mongodb`
-/// scheme; otherwise it is a SQL connector (dialect from the URL scheme).
-fn is_mongo(conn: &str) -> bool {
-    conn.starts_with("mongodb://") || conn.starts_with("mongodb+srv://")
-}
-
 /// Execute an Elasticsearch search: POST the rendered body to
 /// `{url}/{index}/_search` and return the `_source` of each hit as a JSON array.
 async fn run_es_search(
@@ -179,9 +174,7 @@ async fn run_es_search(
         .await?
         .json(&eq.body);
 
-    let resp = req.send().await.map_err(to_exec_error)?;
-    let status = resp.status();
-    let body: Value = super::connector_helpers::read_es_body(resp, es.max_response_size).await?;
+    let (status, body) = super::connector_helpers::send_es(req, es.max_response_size).await?;
     if !status.is_success() {
         return Err(DataflowError::function_execution(
             format!("Elasticsearch search failed ({status}): {body}"),

@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, es_request, extract_output_path, profile_handler, require_op_allowed,
+    apply_output, es_request, es_write_error, extract_output_path, is_mongo, profile_handler,
+    require_op_allowed, send_es,
     require_str_field, resolve_connector, resolve_params, timed_query, to_exec_error,
 };
 use super::db_read::rows_to_json;
@@ -152,11 +153,6 @@ impl DataWriteHandler {
     }
 }
 
-/// A connector targets MongoDB when its connection string uses a `mongodb` scheme.
-fn is_mongo(conn: &str) -> bool {
-    conn.starts_with("mongodb://") || conn.starts_with("mongodb+srv://")
-}
-
 /// Execute a rendered SQL write. When `returning` is requested the statement
 /// returns rows (`fetch_all`); otherwise it is a plain `execute` returning the
 /// affected-row count (and `last_insert_id` where the driver reports one).
@@ -268,26 +264,6 @@ fn es_url(base: &str, segments: &[&str], query: &[(&str, &str)]) -> Result<Strin
         url.query_pairs_mut().append_pair(k, v);
     }
     Ok(url.into())
-}
-
-/// Send an ES request and parse its JSON body. Returns the status alongside so
-/// callers can treat specific non-2xx statuses as semantic (`op_type=create`
-/// treats 409 as the "conflict → do nothing" no-op).
-async fn send_es(
-    req: reqwest::RequestBuilder,
-    max_response_size: usize,
-) -> Result<(reqwest::StatusCode, Value), DataflowError> {
-    let resp = req.send().await.map_err(to_exec_error)?;
-    let status = resp.status();
-    let body: Value = super::connector_helpers::read_es_body(resp, max_response_size).await?;
-    Ok((status, body))
-}
-
-fn es_write_error(status: reqwest::StatusCode, body: &Value) -> DataflowError {
-    DataflowError::function_execution(
-        format!("Elasticsearch write failed ({status}): {body}"),
-        None,
-    )
 }
 
 /// Execute a rendered Elasticsearch write and normalise its result to the same

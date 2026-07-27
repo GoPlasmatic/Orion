@@ -36,6 +36,31 @@ pub(crate) fn apply_client_auth(
     }
 }
 
+/// Merge the config-file topic mappings with the DB-driven ones: every active
+/// Kafka-protocol or async channel that names a `topic` gets a mapping, unless
+/// a config-file entry already claims that topic. Startup and engine reload
+/// both consume exactly this list, so the consumer subscribes identically on
+/// both paths.
+pub fn merge_kafka_topics(
+    config: &crate::config::KafkaIngestConfig,
+    channels: &[crate::storage::models::Channel],
+) -> Vec<crate::config::TopicMapping> {
+    let mut all_topics = config.topics.clone();
+    for ch in channels {
+        if (ch.protocol == crate::storage::models::ChannelProtocol::Kafka.as_str()
+            || ch.channel_type == "async")
+            && let Some(ref topic) = ch.topic
+            && !all_topics.iter().any(|t| t.topic == *topic)
+        {
+            all_topics.push(crate::config::TopicMapping {
+                topic: topic.clone(),
+                channel: ch.name.clone(),
+            });
+        }
+    }
+    all_topics
+}
+
 /// Probe broker reachability: connect with the configured brokers + auth and
 /// fetch cluster metadata. Returns the number of brokers visible. Blocking
 /// (librdkafka metadata fetch) — used by the `test-connectivity` CLI

@@ -10,7 +10,7 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::http_common::{self, build_url};
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
+use crate::connector::ConnectorRegistry;
 
 /// Executes HTTP requests against named connectors with retry support.
 pub struct HttpCallHandler {
@@ -28,22 +28,13 @@ impl AsyncFunctionHandler for HttpCallHandler {
         input: &HttpCallConfig,
     ) -> dataflow_rs::Result<TaskOutcome> {
         crate::engine::profile::record("http_call", Some(&input.connector), async move {
-            let connector_config = self.registry.get(&input.connector).await.ok_or_else(|| {
-                DataflowError::function_execution(
-                    format!("Connector '{}' not found", input.connector),
-                    None,
-                )
-            })?;
-
-            let http_config = match connector_config.as_ref() {
-                ConnectorConfig::Http(c) => c,
-                _ => {
-                    return Err(DataflowError::Validation(format!(
-                        "Connector '{}' is not an HTTP connector",
-                        input.connector
-                    )));
-                }
-            };
+            let connector_config =
+                super::connector_helpers::resolve_connector(&self.registry, &input.connector)
+                    .await?;
+            let http_config = super::connector_helpers::require_http_connector(
+                connector_config.as_ref(),
+                &input.connector,
+            )?;
 
             let path = super::resolve_path(&input.path, input.compiled_path_logic.as_deref(), ctx)?;
             let url = build_url(&http_config.url, path.as_deref());

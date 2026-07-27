@@ -409,20 +409,7 @@ async fn restart_kafka_consumer_if_needed(
 ) {
     use std::collections::HashSet;
 
-    // Build merged topic list: config-file + DB async channels
-    let mut all_topics = state.config.kafka.topics.clone();
-    for ch in channels {
-        if (ch.protocol == crate::storage::models::ChannelProtocol::Kafka.as_str()
-            || ch.channel_type == "async")
-            && let Some(ref topic) = ch.topic
-            && !all_topics.iter().any(|t| t.topic == *topic)
-        {
-            all_topics.push(crate::config::TopicMapping {
-                topic: topic.clone(),
-                channel: ch.name.clone(),
-            });
-        }
-    }
+    let all_topics = crate::kafka::merge_kafka_topics(&state.config.kafka, channels);
 
     let new_topic_set: HashSet<String> = all_topics.iter().map(|t| t.topic.clone()).collect();
 

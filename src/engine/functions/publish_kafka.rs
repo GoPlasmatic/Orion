@@ -8,7 +8,7 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
-use crate::connector::{ConnectorConfig, ConnectorRegistry};
+use crate::connector::ConnectorRegistry;
 
 /// Kafka publish handler.
 pub struct PublishKafkaHandler {
@@ -28,21 +28,13 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
         input: &PublishKafkaConfig,
     ) -> dataflow_rs::Result<TaskOutcome> {
         crate::engine::profile::record("publish_kafka", Some(&input.connector), async move {
-            let connector = self.registry.get(&input.connector).await.ok_or_else(|| {
-                DataflowError::function_execution(
-                    format!("Connector '{}' not found", input.connector),
-                    None,
-                )
-            })?;
-            let kafka_config = match connector.as_ref() {
-                ConnectorConfig::Kafka(k) => k,
-                _ => {
-                    return Err(DataflowError::Validation(format!(
-                        "Connector '{}' is not a Kafka connector",
-                        input.connector
-                    )));
-                }
-            };
+            let connector =
+                super::connector_helpers::resolve_connector(&self.registry, &input.connector)
+                    .await?;
+            let kafka_config = super::connector_helpers::require_kafka_connector(
+                connector.as_ref(),
+                &input.connector,
+            )?;
 
             let producers = match &self.producers {
                 Some(p) => p,

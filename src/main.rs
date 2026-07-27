@@ -149,20 +149,7 @@ fn start_kafka_ingest(
         return Ok(None);
     }
 
-    // Merge config-file topics with DB-driven async channels.
-    let mut all_topics = kafka_config.topics.clone();
-    for ch in channels {
-        if (ch.protocol == orion::storage::models::ChannelProtocol::Kafka.as_str()
-            || ch.channel_type == "async")
-            && let Some(ref topic) = ch.topic
-            && !all_topics.iter().any(|t| t.topic == *topic)
-        {
-            all_topics.push(orion::config::TopicMapping {
-                topic: topic.clone(),
-                channel: ch.name.clone(),
-            });
-        }
-    }
+    let all_topics = orion::kafka::merge_kafka_topics(kafka_config, channels);
 
     if all_topics.is_empty() {
         return Ok(None);

@@ -6,7 +6,7 @@ use dataflow_rs::engine::task_context::TaskContext;
 use serde_json::{Map, Value};
 
 use crate::connector::{
-    AuthConfig, CacheConnectorConfig, ConnectorConfig, ConnectorRegistry, DbConnectorConfig,
+    CacheConnectorConfig, ConnectorConfig, ConnectorRegistry, DbConnectorConfig,
     EsConnectorConfig, OperationGates,
 };
 
@@ -47,11 +47,7 @@ pub async fn es_request(
 
     let mut req = client.request(method, url);
     if let Some(auth) = &es.auth {
-        req = match auth {
-            AuthConfig::Basic { username, password } => req.basic_auth(username, Some(password)),
-            AuthConfig::Bearer { token } => req.bearer_auth(token),
-            AuthConfig::ApiKey { header, key } => req.header(header.as_str(), key.as_str()),
-        };
+        req = super::http_common::apply_auth(req, auth);
     }
     if let Some(ms) = es.request_timeout_ms {
         req = req.timeout(Duration::from_millis(ms));
@@ -89,6 +85,27 @@ pub async fn read_es_body(
         ));
     }
     serde_json::from_slice(&bytes).map_err(to_exec_error)
+}
+
+/// Send an ES request and parse its JSON body. Returns the status alongside so
+/// callers can treat specific non-2xx statuses as semantic (`op_type=create`
+/// treats 409 as the "conflict → do nothing" no-op).
+pub async fn send_es(
+    req: reqwest::RequestBuilder,
+    max_response_size: usize,
+) -> Result<(reqwest::StatusCode, Value), DataflowError> {
+    let resp = req.send().await.map_err(to_exec_error)?;
+    let status = resp.status();
+    let body: Value = read_es_body(resp, max_response_size).await?;
+    Ok((status, body))
+}
+
+/// Uniform error for a non-2xx Elasticsearch write response.
+pub fn es_write_error(status: reqwest::StatusCode, body: &Value) -> DataflowError {
+    DataflowError::function_execution(
+        format!("Elasticsearch write failed ({status}): {body}"),
+        None,
+    )
 }
 
 /// Wrap a handler body with profile recording, peeking the `connector`
@@ -129,6 +146,12 @@ pub fn require_str_field<'a>(
     })
 }
 
+/// A connector targets MongoDB when its connection string uses a `mongodb`
+/// scheme; otherwise it is a SQL connector (dialect from the URL scheme).
+pub fn is_mongo(conn: &str) -> bool {
+    conn.starts_with("mongodb://") || conn.starts_with("mongodb+srv://")
+}
+
 /// Looks up a connector by name in the registry, returning a function-execution
 /// error if not found.
 pub async fn resolve_connector(
@@ -150,6 +173,34 @@ pub fn require_db_connector<'a>(
         ConnectorConfig::Db(c) => Ok(c),
         _ => Err(DataflowError::Validation(format!(
             "Connector '{name}' is not a database connector"
+        ))),
+    }
+}
+
+/// Extracts the `HttpConnectorConfig` from a `ConnectorConfig`, returning a
+/// validation error if the connector is not an HTTP type.
+pub fn require_http_connector<'a>(
+    config: &'a ConnectorConfig,
+    name: &str,
+) -> Result<&'a crate::connector::HttpConnectorConfig, DataflowError> {
+    match config {
+        ConnectorConfig::Http(c) => Ok(c),
+        _ => Err(DataflowError::Validation(format!(
+            "Connector '{name}' is not an HTTP connector"
+        ))),
+    }
+}
+
+/// Extracts the `KafkaConnectorConfig` from a `ConnectorConfig`, returning a
+/// validation error if the connector is not a Kafka type.
+pub fn require_kafka_connector<'a>(
+    config: &'a ConnectorConfig,
+    name: &str,
+) -> Result<&'a crate::connector::KafkaConnectorConfig, DataflowError> {
+    match config {
+        ConnectorConfig::Kafka(c) => Ok(c),
+        _ => Err(DataflowError::Validation(format!(
+            "Connector '{name}' is not a Kafka connector"
         ))),
     }
 }
