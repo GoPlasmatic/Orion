@@ -7,7 +7,6 @@
 
 mod common;
 
-mod admin_channel_update_test;
 mod admin_channels_test;
 mod admin_connectors_test;
 mod admin_workflows_test;
