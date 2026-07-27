@@ -2,18 +2,12 @@ use std::sync::Arc;
 
 use clap::Parser;
 use tokio::sync::RwLock;
-use tracing_subscriber::EnvFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 
-use orion::config::{self, LogFormat};
+use orion::config;
 use orion::connector::ConnectorRegistry;
 use orion::server::state::AppState;
-use orion::storage::repositories::channels::{ChannelRepository, SqlChannelRepository};
-use orion::storage::repositories::connectors::SqlConnectorRepository;
-use orion::storage::repositories::traces::SqlTraceRepository;
-use orion::storage::repositories::workflows::{SqlWorkflowRepository, WorkflowRepository};
 
+mod bootstrap;
 mod cli;
 
 #[derive(Parser)]
@@ -189,22 +183,6 @@ fn start_kafka_ingest(
     Ok(Some(handle))
 }
 
-/// Initialise a plain `tracing_subscriber::fmt` subscriber (no OpenTelemetry).
-fn init_fmt_subscriber(level: &str, format: &LogFormat) {
-    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
-    match format {
-        LogFormat::Json => {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
-                .json()
-                .init();
-        }
-        LogFormat::Pretty => {
-            tracing_subscriber::fmt().with_env_filter(env_filter).init();
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() {
     if let Err(err) = run().await {
@@ -247,41 +225,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         None => {} // Continue to start the server
     }
 
-    // Init tracing subscriber with optional OpenTelemetry layer.
-    //
-    // When `tracing.enabled = true`, an additional OpenTelemetry layer is added
-    // that exports all spans via OTLP. Existing `#[instrument]` annotations
-    // automatically become distributed-trace-compatible with zero changes.
-    let _otel_provider = {
-        let env_filter = EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
-        if config.tracing.enabled {
-            let (provider, tracer) = orion::server::otel::init_otel_pipeline(
-                &config.tracing,
-                &config.cluster.instance_id,
-            )?;
-            match config.logging.format {
-                LogFormat::Json => {
-                    tracing_subscriber::registry()
-                        .with(env_filter)
-                        .with(tracing_subscriber::fmt::layer().json())
-                        .with(tracing_opentelemetry::layer().with_tracer(tracer))
-                        .init();
-                }
-                LogFormat::Pretty => {
-                    tracing_subscriber::registry()
-                        .with(env_filter)
-                        .with(tracing_subscriber::fmt::layer())
-                        .with(tracing_opentelemetry::layer().with_tracer(tracer))
-                        .init();
-                }
-            }
-            Some(provider)
-        } else {
-            init_fmt_subscriber(&config.logging.level, &config.logging.format);
-            None
-        }
-    };
+    // Init tracing subscriber with optional OpenTelemetry layer (see
+    // `bootstrap::init_observability`). The provider is flushed at shutdown.
+    let _otel_provider = bootstrap::init_observability(&config)?;
 
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
@@ -292,16 +238,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Init metrics (gated by config)
-    let metrics_handle = if config.metrics.enabled {
-        let handle = orion::metrics::init_metrics();
-        tracing::info!("Prometheus metrics initialized");
-        handle
-    } else {
-        // Create a no-op handle that still works but doesn't install a global recorder
-        metrics_exporter_prometheus::PrometheusBuilder::new()
-            .build_recorder()
-            .handle()
-    };
+    let metrics_handle = bootstrap::init_metrics_handle(&config);
 
     // Install sqlx Any drivers for external connector pools (must be before any pool creation)
     sqlx::any::install_default_drivers();
@@ -329,13 +266,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create repositories
-    let workflow_repo = Arc::new(SqlWorkflowRepository::new(pool.clone()));
-    let channel_repo = Arc::new(SqlChannelRepository::new(pool.clone()));
-    let connector_repo = Arc::new(SqlConnectorRepository::new(pool.clone()));
-    let trace_repo = Arc::new(SqlTraceRepository::new(pool.clone()));
-    let audit_log_repo = Arc::new(
-        orion::storage::repositories::audit_logs::SqlAuditLogRepository::new(pool.clone()),
-    );
+    let repos = bootstrap::Repositories::new(&pool);
 
     // Channel registry
     let channel_registry = Arc::new(if config.cluster.enabled {
@@ -349,7 +280,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         config.engine.circuit_breaker.clone(),
     ));
     let connector_count = connector_registry
-        .load_from_repo(connector_repo.as_ref())
+        .load_from_repo(repos.connectors.as_ref())
         .await?;
     tracing::info!(count = connector_count, "Connectors loaded");
 
@@ -436,7 +367,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     // Load active channels and workflows, build engine
-    let channels = channel_repo.list_active().await?;
+    let channels = repos.channels.list_active().await?;
     let total_active = channels.len();
     let channels = orion::engine::filter_channels(channels, &config.channels);
     // F32: a wrong include/exclude pattern silently drops a channel; the
@@ -448,7 +379,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "Channel include/exclude filters applied"
         );
     }
-    let active_workflows = workflow_repo.list_active().await?;
+    let active_workflows = repos.workflows.list_active().await?;
     let (workflows, engine_issues) =
         orion::engine::build_engine_workflows(&channels, &active_workflows);
     let load_issues = channel_registry
@@ -507,90 +438,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         cluster.enabled.then(|| cluster.instance_id.as_str()),
     )?;
 
-    // Start trace persistence queue (async/batch modes). A no-op queue is
-    // returned for `sync` / `off`, so callers can submit unconditionally.
-    let (trace_persistence_queue, trace_persistence_handle) =
-        orion::queue::trace_persistence::start(
-            &config.tracing.storage,
-            trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
-        );
-    tracing::info!(
-        mode = ?config.tracing.storage.mode,
-        max_pending = config.tracing.storage.max_pending,
-        "Trace persistence queue started"
-    );
-
-    // Start trace queue worker pool (with DLQ for failed async traces).
-    // The pool needs the persistence queue + channel registry so it can route
-    // status / result writes through the configured mode.
-    let dlq_repo: Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository> =
-        Arc::new(orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()));
-    let (trace_queue, worker_handle) = orion::queue::start_workers(
-        &config.queue,
+    // Start the background tasks: trace persistence queue, trace queue
+    // worker pool (with DLQ for failed async traces), trace + audit-log
+    // cleanup, and the DLQ retry consumer.
+    let (trace_persistence_queue, trace_queue, mut task_handles) = bootstrap::start_background_tasks(
+        &config,
         engine.clone(),
-        trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
-        Some(dlq_repo.clone()),
+        &repos,
         channel_registry.clone(),
-        trace_persistence_queue.clone(),
-        config.tracing.storage.clone(),
-        config.engine.rollout_sticky_header.clone(),
+        &cluster,
     );
-
-    tracing::info!(
-        workers = config.queue.workers,
-        buffer = config.queue.buffer_size,
-        "Trace queue started"
-    );
-
-    // Cluster-mode single-flight gate for background jobs (None on a single node).
-    let job_lease_gate = cluster.enabled.then(|| {
-        Arc::new(orion::cluster::JobLeaseGate::new(
-            cluster.repo.clone(),
-            cluster.instance_id.clone(),
-        ))
-    });
-
-    // Start trace cleanup task
-    let trace_cleanup_handle = orion::queue::start_trace_cleanup(
-        config.queue.trace_retention_hours,
-        config.queue.trace_cleanup_interval_secs,
-        trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
-        job_lease_gate.clone(),
-    );
-
-    // Start audit-log cleanup task
-    let audit_cleanup_handle = orion::queue::audit_cleanup::start_audit_cleanup(
-        config.queue.audit_retention_days,
-        config.queue.trace_cleanup_interval_secs,
-        audit_log_repo.clone()
-            as Arc<dyn orion::storage::repositories::audit_logs::AuditLogRepository>,
-        job_lease_gate.clone(),
-    );
-
-    // Start DLQ retry consumer
-    let dlq_retry_handle = if config.queue.dlq_retry_enabled {
-        let handle = orion::queue::start_dlq_retry(
-            orion::queue::DlqRetryOptions {
-                poll_interval_secs: config.queue.dlq_poll_interval_secs,
-                batch_size: config.queue.dlq_batch_size,
-                lease_secs: config.queue.dlq_lease_secs,
-                claimant: cluster.instance_id.clone(),
-                lease_gate: job_lease_gate.clone(),
-            },
-            dlq_repo.clone(),
-            trace_queue.clone(),
-            trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
-            channel_registry.clone(),
-        );
-        tracing::info!(
-            poll_interval_secs = config.queue.dlq_poll_interval_secs,
-            max_retries = config.queue.dlq_max_retries,
-            "DLQ retry consumer started"
-        );
-        Some(handle)
-    } else {
-        None
-    };
 
     // Set initial active rules gauge
     orion::metrics::set_active_workflows(active_workflows.len() as f64);
@@ -615,16 +472,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let state = AppState::new(orion::server::state::AppStateInner {
         engine,
-        channel_repo: channel_repo
-            as Arc<dyn orion::storage::repositories::channels::ChannelRepository>,
-        workflow_repo: workflow_repo
-            as Arc<dyn orion::storage::repositories::workflows::WorkflowRepository>,
-        connector_repo: connector_repo
-            as Arc<dyn orion::storage::repositories::connectors::ConnectorRepository>,
-        trace_repo: trace_repo as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
-        trace_dlq_repo: dlq_repo,
-        audit_log_repo: audit_log_repo
-            as Arc<dyn orion::storage::repositories::audit_logs::AuditLogRepository>,
+        channel_repo: repos.channels,
+        workflow_repo: repos.workflows,
+        connector_repo: repos.connectors,
+        trace_repo: repos.traces,
+        trace_dlq_repo: repos.trace_dlq,
+        audit_log_repo: repos.audit_logs,
         connector_registry,
         cache_pool,
         channel_registry,
@@ -646,7 +499,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Cluster background tasks (epoch watcher). Empty when disabled.
-    let cluster_task_handles = orion::cluster::start_cluster_tasks(&state);
+    task_handles.cluster_task_handles = orion::cluster::start_cluster_tasks(&state);
 
     let router = orion::server::build_router(state);
 
@@ -708,30 +561,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         handle.shutdown().await;
     }
 
-    if let Some(handle) = trace_cleanup_handle {
-        tracing::info!("Stopping trace cleanup task...");
-        handle.abort();
-    }
-
-    if let Some(handle) = audit_cleanup_handle {
-        tracing::info!("Stopping audit log cleanup task...");
-        handle.abort();
-    }
-
-    if let Some(handle) = dlq_retry_handle {
-        tracing::info!("Stopping DLQ retry consumer...");
-        handle.abort();
-    }
-
-    for handle in cluster_task_handles {
-        handle.abort();
-    }
-
-    tracing::info!("Shutting down trace queue workers...");
-    worker_handle.shutdown().await;
-
-    tracing::info!("Draining trace persistence queue...");
-    trace_persistence_handle.shutdown().await;
+    task_handles.shutdown().await;
 
     // Flush pending OTel spans before exit
     if let Some(provider) = _otel_provider {
