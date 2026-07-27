@@ -196,8 +196,14 @@ pub fn start_dlq_retry(
                             }
                         } else {
                             metrics::record_trace_dlq_retry("failed");
-                            // Exponential backoff: 1s, 2s, 4s, 8s, 16s, ...
-                            let delay_secs = 1i64 << new_retry_count;
+                            // Exponential backoff: 1s, 2s, 4s, 8s, 16s, …
+                            // capped at 2^16s (~18h). Unclamped, a large
+                            // dlq_max_retries overflows the shift (Q4):
+                            // panic in debug, nonsense in release — either
+                            // way the retry task dies for the process
+                            // lifetime. The validator bounds the config,
+                            // this bounds the arithmetic.
+                            let delay_secs = 1i64 << new_retry_count.min(16);
                             let next_retry = chrono::Utc::now()
                                 .naive_utc()
                                 .checked_add_signed(chrono::Duration::seconds(delay_secs))

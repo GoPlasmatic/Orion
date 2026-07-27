@@ -78,6 +78,15 @@ impl QueueConfig {
                     .to_string(),
             });
         }
+        // Backoff is 2^retry_count seconds; 2^16 (~18h) is already beyond any
+        // useful retry cadence, and unbounded values overflow the shift (Q4).
+        if self.dlq_max_retries > 16 {
+            return Err(OrionError::Config {
+                message: "queue.dlq_max_retries must be <= 16 (backoff is \
+                          2^retries seconds — 2^16 is ~18 hours between attempts)"
+                    .to_string(),
+            });
+        }
         if self.dlq_batch_size < 1 {
             return Err(OrionError::Config {
                 message: "queue.dlq_batch_size must be >= 1".to_string(),
@@ -113,5 +122,22 @@ mod tests {
             ..Default::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_bounds_dlq_max_retries_against_shift_overflow() {
+        // Q4: the backoff is `1i64 << retry_count` — 63+ overflows. The
+        // validator stops at 16 (~18h between attempts), the shift itself
+        // is clamped as defence in depth.
+        let config = QueueConfig {
+            dlq_max_retries: 17,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        let config = QueueConfig {
+            dlq_max_retries: 16,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
     }
 }
