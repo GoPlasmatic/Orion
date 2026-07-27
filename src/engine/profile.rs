@@ -421,7 +421,10 @@ mod tests {
         let v = collector.to_json();
         // B3 shape lock: top-level version + totals_ms + iterable phases[].
         assert_eq!(v["version"], 1);
-        assert!(v["totals_ms"].as_f64().expect("test") > 0.0);
+        // `totals_ms` is wall-clock since the collector was created, rounded to
+        // 2dp — on a fast machine the whole test body fits inside 5us and it
+        // rounds to exactly 0.00, so this locks the shape, not a lower bound.
+        assert!(v["totals_ms"].as_f64().expect("test") >= 0.0);
         let phases = v["phases"].as_array().expect("phases must be an array");
         let phase_names: Vec<&str> = phases.iter().filter_map(|p| p["name"].as_str()).collect();
         // All four phases (set above) should appear in order.
