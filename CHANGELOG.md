@@ -98,6 +98,41 @@ for the cluster architecture.
 
 ### Added
 
+- **Kafka SASL/TLS authentication** — `[kafka.auth]` (`security_protocol`,
+  `sasl_mechanism`, `sasl_username`, `sasl_password`, `ssl_ca_location`) plus a
+  `kafka.extra_config` passthrough for arbitrary librdkafka properties, applied
+  to both the consumer and the producer. Orion can now connect to Confluent
+  Cloud, MSK, Aiven, and any secured broker; previously PLAINTEXT was the only
+  reachable configuration. Do not set `enable.auto.commit` via the passthrough —
+  it would defeat the at-least-once guarantee below.
+- **Message data in every connector function** — `db_read`, `db_write`,
+  `cache_read`, `cache_write`, and `mongo_read` now resolve `{"var": "…"}`
+  references in their `key`, `value`, `ttl_secs`, `params`, and `filter` inputs,
+  so keys, bind parameters, and Mongo filters can depend on the message instead
+  of being fixed constants. `data_query`/`data_write` share the same resolver.
+  `connector` and raw `query` text stay literal by design.
+- **Trace DLQ operator API** — `/api/v1/admin/trace-dlq` with paginated list
+  (payload-free projection), get-by-id, requeue, and purge. Failed async traces
+  were previously invisible and unreplayable.
+- **Audit-log filtering** — `action`, `resource_type`, `resource_id`,
+  `principal`, and time-range filters on `GET /api/v1/admin/audit-logs`; unknown
+  query parameters are now rejected with 400 rather than silently ignored. The
+  `details` column is populated (starting with `request_id`) — it was dead
+  before, and writing to it produced malformed SQL.
+- **Audit-log retention** — `queue.audit_retention_days` (default 90, `0` keeps
+  forever) with a lease-gated cleanup job. The table previously grew forever
+  with no supported way to prune it.
+- **Operational metrics** — `trace_dlq_depth`, `trace_dlq_retries_total`,
+  `trace_queue_rejected_total{reason}`, and `trace_persistence_failures_total`.
+  The three conditions most worth alerting on were previously invisible.
+- **Rate-limit proxy trust** — `rate_limit.trusted_proxies` (CIDR list, empty by
+  default). Forwarded headers are honoured only from listed peers; otherwise the
+  TCP peer address is the client identity.
+- **Hashed admin keys** — `admin_auth.api_keys` accepts `sha256:<64-hex>`
+  entries so keys need not sit in config as plaintext. Plaintext still works.
+- **Bounded in-memory cache** — `engine.max_memory_cache_entries` (default
+  100 000, `0` = unbounded) with LRU eviction. The dedup store and response
+  cache were previously unbounded maps reachable from workflow config alone.
 - **`[cluster]` config section** — `enabled`, `redis_url`,
   `epoch_poll_interval_ms`, `instance_id` (auto-generated UUID when empty).
   Cluster mode requires Postgres/MySQL storage and a shared Redis; startup
@@ -149,6 +184,80 @@ for the cluster architecture.
 
 ### Fixed
 
+- **The async path and Kafka ingest bypassed every per-channel control.**
+  CORS, `validation_logic`, deduplication, and backpressure lived only in the
+  sync HTTP path, so appending `/async` to a URL defeated a channel's input
+  contract, and `channel_call` skipped the target channel's guards entirely.
+  All ingress paths now share one guard layer, and an async request holds its
+  backpressure permit for the whole of processing, so `max_concurrent` bounds
+  sync and async traffic together.
+- **The response cache could serve one caller's data to another.** The key
+  hashed only the request body, so for a REST channel with a path parameter and
+  an empty body (`GET /orders/{id}`) every id collided onto one entry. Method,
+  route parameters, and query string are now part of the key.
+- **Kafka messages were lost on failure.** Offsets committed unconditionally,
+  so with the DLQ disabled (the default) a workflow error, timeout, or unmapped
+  topic silently discarded the message. Delivery is now at-least-once: offsets
+  advance only on success or a confirmed DLQ write, and UTF-8-decode failures,
+  empty payloads, and unmapped topics are dead-lettered instead of dropped.
+- **Poison messages retried forever.** A failing async trace re-entered the DLQ
+  as a fresh row at `retry_count = 0`, so `dlq_max_retries` could never be
+  reached and each cycle inserted another `traces` row. The retry count now
+  travels with the message and exhausts as documented.
+- **The trace queue blocked instead of shedding.** A full buffer parked the
+  request indefinitely; it now returns 503, as the configuration already
+  documented.
+- **Postgres DLQ retry and exhaustion silently failed.** Clearing a claim lease
+  bound a TEXT parameter to a `timestamp` column (Postgres error 42804) and all
+  three call sites discarded the error, so in cluster mode on Postgres entries
+  never backed off, never exhausted, and were re-claimed forever.
+- **SSRF protection was incomplete.** Redirects were followed without
+  re-validation (reaching cloud metadata via a 302), the validated DNS result
+  was discarded and re-resolved (rebinding), IPv6 private ranges were largely
+  unchecked, and the Elasticsearch connector skipped validation entirely.
+  Redirects are now followed manually with per-hop validation, connections are
+  pinned to validated addresses, and the private-range coverage is complete.
+- **Rate limiting was trivially bypassed.** The client identity came from
+  unvalidated forwarded headers with no peer-address fallback, so direct
+  clients shared one bucket and proxied clients could mint a new identity per
+  request. See `rate_limit.trusted_proxies` above.
+- **Channels with broken configuration served unguarded.** An unparseable
+  `config_json` silently loaded a default (no rate limit, validation, dedup,
+  backpressure, timeout, or cache) and an uncompilable `validation_logic` was
+  dropped with a warning. Both now refuse to load the channel.
+- **`db_read` turned unreadable columns into `null`.** `REAL`/`float4` and blob
+  columns silently read back as null on every SQL read path; genuinely
+  unsupported types now error rather than looking like a NULL value.
+- **Unimplemented secret schemes were used as literal passwords.**
+  `vault://…`, `aws-sm://…`, and friends passed through verbatim as the
+  credential; they are now rejected at connector load.
+- **Credentials embedded in URLs leaked through the admin API.** Masking was a
+  flat key-name denylist that missed `url` and `brokers[]`, so
+  `redis://:PASSWORD@host` was returned in full. Masking is recursive and
+  strips userinfo from URL-shaped values at any depth.
+- **A restart of cluster Redis broke every node permanently.** The shared
+  connection never re-established, silently disabling distributed dedup,
+  response caching, and rate limiting until pods restarted.
+- **An open circuit breaker returned 500 `ENGINE_ERROR`** instead of the
+  documented 503 `CIRCUIT_OPEN`, so callers could not distinguish shed load
+  from a server fault and the DLQ retry classifier never saw it as retryable.
+  Timeouts and 503s are now classified retryable.
+- **Internal error detail leaked to anonymous callers.** Success bodies
+  embedded raw upstream URLs, sqlx errors, and connector names; the data plane
+  now returns a code, a generic message, and a request id, with full detail
+  kept in the persisted trace.
+- **Unbounded Prometheus label cardinality.** Rate-limit rejections were
+  labelled with a spoofable client IP, and channel-labelled metrics accepted any
+  attacker-supplied path segment.
+- **`PUT /channels/{id}` ran no validation at all**, and `PUT /connectors/{id}`
+  skipped config validation unless the type was resent. Both now validate
+  against the stored record.
+- **A CORS list mixing `"*"` with explicit origins passed validation and then
+  panicked at router build**, killing the server at boot; `PATCH` was missing
+  from the allowed methods, making the admin status and rollout endpoints
+  unusable cross-origin.
+- **Admin API keys were compared with an early length check**, leaking key
+  length by timing.
 - **TLS was unusable — `server.tls.enabled = true` panicked at boot.**
   `RustlsConfig::from_pem_file` failed with *"Could not automatically determine
   the process-level CryptoProvider"*: rustls 0.23 auto-selects a backend only
