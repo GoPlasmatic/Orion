@@ -446,49 +446,17 @@ pub(crate) async fn import_workflows(
         // Validate each item against the same checks the create endpoint
         // would run; never touch the DB. Useful for CI: check that a
         // bulk export still loads cleanly without mutating state.
-        let mut would_create = 0u64;
-        let mut would_fail = 0u64;
-        let mut errors = Vec::new();
-        for (i, wf) in workflows.iter().enumerate() {
-            match crate::validation::validate_create_workflow(wf) {
-                Ok(()) => would_create += 1,
-                Err(e) => {
-                    would_fail += 1;
-                    errors.push(json!({
-                        "index": i,
-                        "error": e.to_string(),
-                    }));
-                }
-            }
-        }
-        return Ok(Json(json!({
-            "dry_run": true,
-            "would_create": would_create,
-            "would_fail": would_fail,
-            "imported": 0,
-            "failed": would_fail,
-            "errors": errors,
-        })));
+        let (would_create, would_fail, errors) = super::fold_import_results(
+            workflows
+                .iter()
+                .map(crate::validation::validate_create_workflow),
+        );
+        return Ok(super::dry_run_response(would_create, would_fail, errors));
     }
 
     let results = state.workflow_repo.bulk_create(&workflows).await?;
-
-    let mut imported = 0u64;
-    let mut failed = 0u64;
-    let mut errors = Vec::new();
-
-    for (i, result) in results.into_iter().enumerate() {
-        match result {
-            Ok(_) => imported += 1,
-            Err(e) => {
-                failed += 1;
-                errors.push(json!({
-                    "index": i,
-                    "error": e.to_string(),
-                }));
-            }
-        }
-    }
+    let (imported, failed, errors) =
+        super::fold_import_results(results.into_iter().map(|r| r.map(|_| ())));
 
     audit_log_draft_only(
         &state.audit_log_repo,
@@ -498,11 +466,7 @@ pub(crate) async fn import_workflows(
         &format!("{imported} imported"),
     );
 
-    Ok(Json(json!({
-        "imported": imported,
-        "failed": failed,
-        "errors": errors,
-    })))
+    Ok(super::import_response(imported, failed, errors))
 }
 
 #[utoipa::path(

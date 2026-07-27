@@ -43,6 +43,102 @@ pub(crate) use workflows::{
     test_workflow, update_rollout, update_workflow, validate_workflow,
 };
 
+/// Fold per-item outcomes into the shared bulk-import counters:
+/// `(succeeded, failed, [{index, error}])`.
+pub(crate) fn fold_import_results<E: std::fmt::Display>(
+    results: impl IntoIterator<Item = Result<(), E>>,
+) -> (u64, u64, Vec<serde_json::Value>) {
+    let mut ok = 0u64;
+    let mut failed = 0u64;
+    let mut errors = Vec::new();
+    for (i, r) in results.into_iter().enumerate() {
+        match r {
+            Ok(()) => ok += 1,
+            Err(e) => {
+                failed += 1;
+                errors.push(json!({"index": i, "error": e.to_string()}));
+            }
+        }
+    }
+    (ok, failed, errors)
+}
+
+/// Per-item driver for the `Vec<Value>` import endpoints: deserialize each
+/// item (so a single shape/enum typo becomes one failed entry instead of
+/// aborting the whole batch), validate it, and — unless `dry_run` — create it.
+/// Dry-run is pure validation: no DB reads, so name conflicts are not
+/// detected there (they surface as Conflict on the real import).
+pub(crate) async fn import_items<T, V, C, Fut>(
+    items: Vec<serde_json::Value>,
+    dry_run: bool,
+    validate: V,
+    create: C,
+) -> (u64, u64, Vec<serde_json::Value>)
+where
+    T: serde::de::DeserializeOwned,
+    V: Fn(&T) -> Result<(), crate::errors::OrionError>,
+    C: Fn(T) -> Fut,
+    Fut: std::future::Future<Output = Result<(), crate::errors::OrionError>>,
+{
+    let mut ok = 0u64;
+    let mut failed = 0u64;
+    let mut errors = Vec::new();
+    for (i, item) in items.into_iter().enumerate() {
+        let mut fail = |e: String| {
+            failed += 1;
+            errors.push(json!({"index": i, "error": e}));
+        };
+        let parsed: T = match serde_json::from_value(item) {
+            Ok(v) => v,
+            Err(e) => {
+                fail(e.to_string());
+                continue;
+            }
+        };
+        if let Err(e) = validate(&parsed) {
+            fail(e.to_string());
+            continue;
+        }
+        if dry_run {
+            ok += 1;
+        } else if let Err(e) = create(parsed).await {
+            fail(e.to_string());
+        } else {
+            ok += 1;
+        }
+    }
+    (ok, failed, errors)
+}
+
+/// The `?dry_run=true` response envelope shared by all three import endpoints.
+pub(crate) fn dry_run_response(
+    would_create: u64,
+    would_fail: u64,
+    errors: Vec<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(json!({
+        "dry_run": true,
+        "would_create": would_create,
+        "would_fail": would_fail,
+        "imported": 0,
+        "failed": would_fail,
+        "errors": errors,
+    }))
+}
+
+/// The real-import response envelope shared by all three import endpoints.
+pub(crate) fn import_response(
+    imported: u64,
+    failed: u64,
+    errors: Vec<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(json!({
+        "imported": imported,
+        "failed": failed,
+        "errors": errors,
+    }))
+}
+
 /// Shared version filter used by both channel and workflow version endpoints.
 #[derive(Debug, Deserialize)]
 pub(crate) struct VersionFilter {

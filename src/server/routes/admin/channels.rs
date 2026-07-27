@@ -258,71 +258,21 @@ pub(crate) async fn import_channels(
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {
+    // Each create runs through the same validation + persistence as the
+    // singular POST endpoint, so behavior matches.
+    let repo = state.channel_repo.clone();
+    let (imported, failed, errors) = super::import_items::<CreateChannelRequest, _, _, _>(
+        items,
+        query.dry_run,
+        crate::validation::validate_create_channel,
+        |ch| {
+            let repo = repo.clone();
+            async move { repo.create(&ch).await.map(|_| ()) }
+        },
+    )
+    .await;
     if query.dry_run {
-        // Dry-run is pure validation: no DB reads, so name conflicts are not
-        // detected here (they surface as Conflict on the real import).
-        let mut would_create = 0u64;
-        let mut would_fail = 0u64;
-        let mut errors = Vec::new();
-        for (i, item) in items.into_iter().enumerate() {
-            // Deserialize per-item so a single shape/enum typo becomes one
-            // would_fail entry instead of aborting the whole batch.
-            let ch = match serde_json::from_value::<CreateChannelRequest>(item) {
-                Ok(ch) => ch,
-                Err(e) => {
-                    would_fail += 1;
-                    errors.push(serde_json::json!({"index": i, "error": e.to_string()}));
-                    continue;
-                }
-            };
-            match crate::validation::validate_create_channel(&ch) {
-                Ok(()) => would_create += 1,
-                Err(e) => {
-                    would_fail += 1;
-                    errors.push(serde_json::json!({
-                        "index": i,
-                        "error": e.to_string(),
-                    }));
-                }
-            }
-        }
-        return Ok(Json(serde_json::json!({
-            "dry_run": true,
-            "would_create": would_create,
-            "would_fail": would_fail,
-            "imported": 0,
-            "failed": would_fail,
-            "errors": errors,
-        })));
-    }
-
-    // No bulk_create on ChannelRepository today — loop create per item and
-    // collect outcomes. Each create runs through the same validation +
-    // persistence as the singular POST endpoint, so behavior matches.
-    let mut imported = 0u64;
-    let mut failed = 0u64;
-    let mut errors = Vec::new();
-    for (i, item) in items.into_iter().enumerate() {
-        let ch = match serde_json::from_value::<CreateChannelRequest>(item) {
-            Ok(ch) => ch,
-            Err(e) => {
-                failed += 1;
-                errors.push(serde_json::json!({"index": i, "error": e.to_string()}));
-                continue;
-            }
-        };
-        if let Err(e) = crate::validation::validate_create_channel(&ch) {
-            failed += 1;
-            errors.push(serde_json::json!({"index": i, "error": e.to_string()}));
-            continue;
-        }
-        match state.channel_repo.create(&ch).await {
-            Ok(_) => imported += 1,
-            Err(e) => {
-                failed += 1;
-                errors.push(serde_json::json!({"index": i, "error": e.to_string()}));
-            }
-        }
+        return Ok(super::dry_run_response(imported, failed, errors));
     }
     audit_log_draft_only(
         &state.audit_log_repo,
@@ -331,9 +281,5 @@ pub(crate) async fn import_channels(
         "channel",
         &format!("{imported} imported"),
     );
-    Ok(Json(serde_json::json!({
-        "imported": imported,
-        "failed": failed,
-        "errors": errors,
-    })))
+    Ok(super::import_response(imported, failed, errors))
 }
