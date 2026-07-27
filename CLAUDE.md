@@ -118,7 +118,7 @@ HTTP Request → Axum Router → Data Route Handler
   - **Connectors:** CRUD, reload, circuit breakers (list/reset)
   - **Engine:** status, reload
   - **Audit logs:** list with filtering
-  - **Backup/Restore:** database export and import
+  - **Backups:** create and list SQLite backups (`VACUUM INTO`, refused in cluster mode). There is **no restore endpoint** — restore is an offline stop/replace-file/start procedure; PostgreSQL and MySQL have no in-product backup and rely on operator snapshot/PITR tooling. See `docs/src/features/maintainability.md`.
 - **Data** (`/api/v1/data/`): Dynamic handler `/{*path}` — resolves to channel via REST route match or name lookup. Supports sync and async (trailing `/async`). Trace list/get endpoints.
 - **Operational:** `GET /health`, `GET /healthz` (liveness), `GET /readyz` (readiness), `GET /metrics`
 - **API docs:** `GET /docs` (Swagger UI), `GET /api/v1/openapi.json`

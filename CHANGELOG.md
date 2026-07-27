@@ -10,7 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Multi-instance (HA) support: N replicas of `orion-server` behind a load
 balancer, sharing one Postgres/MySQL + Redis, behave as a single logical
 system. With `cluster.enabled = false` (the default) behavior is unchanged.
-See `multi-instance-ha.md` for the full plan.
+See [Scalability](https://goplasmatic.github.io/Orion/features/scalability.html)
+and [Availability](https://goplasmatic.github.io/Orion/features/availability.html)
+for the cluster architecture.
 
 > **Upgrading from 0.3.0?** Read the
 > [Upgrade Guide](https://goplasmatic.github.io/Orion/getting-started/upgrading.html).
@@ -147,6 +149,15 @@ See `multi-instance-ha.md` for the full plan.
 
 ### Fixed
 
+- **TLS was unusable — `server.tls.enabled = true` panicked at boot.**
+  `RustlsConfig::from_pem_file` failed with *"Could not automatically determine
+  the process-level CryptoProvider"*: rustls 0.23 auto-selects a backend only
+  when exactly one is enabled, and Orion's dependency graph enables both
+  (`axum-server` + `reqwest` pull `rustls/aws-lc-rs`; `mongodb` + `sqlx` pull
+  `rustls/ring`). The server now installs the `aws-lc-rs` provider explicitly
+  before loading certificates. **If you tried HTTPS, hit the panic, and
+  terminated TLS at a proxy instead, it works now.** Covered by new TLS
+  integration tests — the test debt was the bug.
 - **MySQL as Orion's own storage backend never worked** — the migration set
   used mysql-client `DELIMITER` directives, TEXT columns with defaults, and
   TEXT primary keys, none of which MySQL/sqlx accept. Rewritten with the
@@ -286,6 +297,7 @@ Earlier release. See the Git history for details.
 
 Initial release.
 
+[1.0.0]: https://github.com/GoPlasmatic/Orion/compare/v0.3.0...v1.0.0
 [0.3.0]: https://github.com/GoPlasmatic/Orion/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/GoPlasmatic/Orion/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/GoPlasmatic/Orion/compare/v0.1.0...v0.1.1
