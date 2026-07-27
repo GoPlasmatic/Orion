@@ -120,7 +120,15 @@ fn setup_kafka_producer(
         &kafka_config.auth,
         &kafka_config.extra_config,
     )?);
-    orion::engine::register_kafka_publisher(custom_functions, connector_registry, producer.clone());
+    // F13: per-connector producers resolve through this cache; the global
+    // brokers map back to the producer created here.
+    let producers = Arc::new(orion::kafka::producer::KafkaProducerCache::new(
+        kafka_config.brokers.join(","),
+        producer.clone(),
+        kafka_config.auth.clone(),
+        kafka_config.extra_config.clone(),
+    ));
+    orion::engine::register_kafka_publisher(custom_functions, connector_registry, producers);
     tracing::info!("Kafka producer initialized");
     Ok(Some(producer))
 }

@@ -13,6 +13,74 @@ pub struct KafkaProducer {
     producer: FutureProducer,
 }
 
+/// Per-broker-set producer cache (F13).
+///
+/// `publish_kafka` resolved its connector and then published through the one
+/// globally configured producer regardless — so workflows naming connectors
+/// for different clusters all wrote to the same one. Producers are keyed by
+/// the connector's broker list; the globally configured brokers resolve to
+/// the shared producer rather than a second connection to the same cluster.
+pub struct KafkaProducerCache {
+    global_brokers: String,
+    global: std::sync::Arc<KafkaProducer>,
+    auth: KafkaAuthConfig,
+    extra_config: HashMap<String, String>,
+    by_brokers: tokio::sync::RwLock<HashMap<String, std::sync::Arc<KafkaProducer>>>,
+}
+
+impl KafkaProducerCache {
+    pub fn new(
+        global_brokers: String,
+        global: std::sync::Arc<KafkaProducer>,
+        auth: KafkaAuthConfig,
+        extra_config: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            global_brokers: normalize_brokers(&global_brokers),
+            global,
+            auth,
+            extra_config,
+            by_brokers: tokio::sync::RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// The producer for `brokers`, creating and caching one on first use.
+    /// An empty list means "use the globally configured cluster".
+    pub async fn for_brokers(
+        &self,
+        brokers: &[String],
+    ) -> Result<std::sync::Arc<KafkaProducer>, OrionError> {
+        if brokers.is_empty() {
+            return Ok(self.global.clone());
+        }
+        let key = normalize_brokers(&brokers.join(","));
+        if key == self.global_brokers {
+            return Ok(self.global.clone());
+        }
+        if let Some(p) = self.by_brokers.read().await.get(&key) {
+            return Ok(p.clone());
+        }
+        let producer =
+            std::sync::Arc::new(KafkaProducer::new(&key, &self.auth, &self.extra_config)?);
+        let mut map = self.by_brokers.write().await;
+        // Another task may have raced us here; prefer the stored one so a
+        // single producer per cluster stays the invariant.
+        Ok(map.entry(key).or_insert(producer).clone())
+    }
+}
+
+/// Order- and whitespace-insensitive broker-list key, so `a,b` and `b, a`
+/// share one producer.
+fn normalize_brokers(brokers: &str) -> String {
+    let mut parts: Vec<&str> = brokers
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    parts.sort_unstable();
+    parts.join(",")
+}
+
 impl KafkaProducer {
     /// Create a new producer connected to the given broker list, using the
     /// shared `[kafka.auth]` / `kafka.extra_config` client settings.

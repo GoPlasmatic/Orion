@@ -8,12 +8,14 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
-use crate::connector::ConnectorRegistry;
+use crate::connector::{ConnectorConfig, ConnectorRegistry};
 
 /// Kafka publish handler.
 pub struct PublishKafkaHandler {
     pub registry: Arc<ConnectorRegistry>,
-    pub producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
+    /// Producer cache keyed by the connector's broker list (F13). `None`
+    /// when Kafka is disabled.
+    pub producers: Option<Arc<crate::kafka::producer::KafkaProducerCache>>,
 }
 
 #[async_trait]
@@ -26,15 +28,23 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
         input: &PublishKafkaConfig,
     ) -> dataflow_rs::Result<TaskOutcome> {
         crate::engine::profile::record("publish_kafka", Some(&input.connector), async move {
-            // Verify connector exists.
-            let _connector = self.registry.get(&input.connector).await.ok_or_else(|| {
+            let connector = self.registry.get(&input.connector).await.ok_or_else(|| {
                 DataflowError::function_execution(
                     format!("Connector '{}' not found", input.connector),
                     None,
                 )
             })?;
+            let kafka_config = match connector.as_ref() {
+                ConnectorConfig::Kafka(k) => k,
+                _ => {
+                    return Err(DataflowError::Validation(format!(
+                        "Connector '{}' is not a Kafka connector",
+                        input.connector
+                    )));
+                }
+            };
 
-            let producer = match &self.producer {
+            let producers = match &self.producers {
                 Some(p) => p,
                 None => {
                     return Err(DataflowError::FunctionExecution {
@@ -47,6 +57,21 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
                     });
                 }
             };
+            // F13: publish to the cluster the *connector* names, not the one
+            // globally configured. Empty brokers keep the previous meaning:
+            // the global cluster.
+            let producer = producers
+                .for_brokers(&kafka_config.brokers)
+                .await
+                .map_err(|e| {
+                    DataflowError::function_execution(
+                        format!(
+                            "Failed to create Kafka producer for connector '{}': {e}",
+                            input.connector
+                        ),
+                        None,
+                    )
+                })?;
 
             let key = if let Some(compiled) = input.compiled_key_logic.as_deref() {
                 let result: Value = ctx

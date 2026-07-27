@@ -40,6 +40,16 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
 /// multi-node harnesses (tests/cluster) can hold the state itself — e.g. to
 /// spawn cluster tasks or inspect the channel registry directly.
 pub async fn test_state_with_config(config: AppConfig) -> AppState {
+    test_state_inner(config, None).await
+}
+
+/// `test_state_with_config` with the Kafka publisher registered against
+/// `brokers`, so `publish_kafka` can be driven through a workflow (T3).
+pub async fn test_state_with_kafka(config: AppConfig, brokers: &str) -> AppState {
+    test_state_inner(config, Some(brokers.to_string())).await
+}
+
+async fn test_state_inner(config: AppConfig, kafka_brokers: Option<String>) -> AppState {
     // Install sqlx Any drivers for external connector pools (db_read/db_write tests)
     sqlx::any::install_default_drivers();
 
@@ -100,7 +110,7 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
     let engine = Arc::new(RwLock::new(Arc::new(
         dataflow_rs::Engine::builder().build().unwrap(),
     )));
-    let custom_functions = orion::engine::build_custom_functions(
+    let mut custom_functions = orion::engine::build_custom_functions(
         connector_registry.clone(),
         http_client.clone(),
         engine.clone(),
@@ -112,6 +122,28 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
         sql_pool_cache.clone(),
         mongo_pool_cache.clone(),
     );
+    let kafka_producer = kafka_brokers.map(|brokers| {
+        let producer = Arc::new(
+            orion::kafka::producer::KafkaProducer::new(
+                &brokers,
+                &orion::config::KafkaAuthConfig::default(),
+                &std::collections::HashMap::new(),
+            )
+            .expect("kafka producer"),
+        );
+        let producers = Arc::new(orion::kafka::producer::KafkaProducerCache::new(
+            brokers,
+            producer.clone(),
+            orion::config::KafkaAuthConfig::default(),
+            std::collections::HashMap::new(),
+        ));
+        orion::engine::register_kafka_publisher(
+            &mut custom_functions,
+            connector_registry.clone(),
+            producers,
+        );
+        producer
+    });
     let built_engine = dataflow_rs::Engine::new(vec![], custom_functions).unwrap();
     *engine.write().await = Arc::new(built_engine);
 
@@ -182,7 +214,7 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
         sql_pool_cache,
         mongo_pool_cache,
         kafka_consumer_handle: Arc::new(tokio::sync::Mutex::new(None)),
-        kafka_producer: None,
+        kafka_producer,
         trace_persistence_queue: trace_persistence_queue_for_workers,
         cluster,
     })

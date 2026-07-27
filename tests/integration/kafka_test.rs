@@ -925,3 +925,177 @@ async fn test_consumer_broker_disconnect_recovery() {
     handle.shutdown().await;
     // Success = consumer survived broker outage and resumed processing
 }
+
+// ============================================================
+// publish_kafka through a workflow (T3) + connector broker routing (F13)
+// ============================================================
+
+/// T3: `publish_kafka` had no test at any level — connector resolution, key
+/// and value JSONLogic, and the error envelope were all unexercised. F13:
+/// the handler used to resolve the connector and throw it away, publishing
+/// to the globally configured cluster no matter which connector was named.
+#[tokio::test]
+#[ignore]
+async fn publish_kafka_publishes_to_the_connectors_brokers() {
+    use tower::ServiceExt;
+
+    let (_container, brokers) = start_kafka().await;
+    let topic = "t3-publish-topic";
+
+    // The global producer points at a broker that does not exist. If the
+    // handler ignored the connector (F13), the publish would fail; the
+    // message only lands because the connector's brokers are honoured.
+    let state = crate::common::test_state_with_kafka(
+        orion::config::AppConfig::default(),
+        "127.0.0.1:1", // deliberately dead global cluster
+    )
+    .await;
+    let app = orion::server::build_router(state);
+
+    crate::common::create_connector(
+        &app,
+        serde_json::json!({
+            "id": "t3-kafka",
+            "name": "t3-kafka",
+            "connector_type": "kafka",
+            "config": {
+                "type": "kafka",
+                "brokers": [brokers.clone()],
+                "topic": topic
+            }
+        }),
+    )
+    .await;
+
+    crate::common::create_and_activate_channel(
+        &app,
+        "t3-publish-ch",
+        crate::common::workflow_with_tasks(
+            "T3 Publish",
+            serde_json::json!([
+                {
+                    // The request body lands in `payload`; copy it into
+                    // `data` so the publish logic can address it.
+                    "id": "t0",
+                    "name": "Parse payload",
+                    "function": {
+                        "name": "parse_json",
+                        "input": { "source": "payload", "target": "input" }
+                    }
+                },
+                {
+                    "id": "t1",
+                    "name": "Publish",
+                    "function": {
+                        "name": "publish_kafka",
+                        "input": {
+                            "connector": "t3-kafka",
+                            "topic": topic,
+                            "key_logic": { "var": "data.input.order_id" },
+                            "value_logic": { "var": "data.input" }
+                        }
+                    }
+                }
+            ]),
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(crate::common::json_request(
+            "POST",
+            "/api/v1/data/t3-publish-ch",
+            Some(serde_json::json!({"data": {"order_id": "ORD-1", "amount": 42}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::OK,
+        "publish must succeed against the connector's brokers: {:?}",
+        crate::common::body_json(resp).await
+    );
+
+    // Consume it back to prove where it landed, and that key/value logic ran.
+    let consumer: StreamConsumer = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .set("group.id", "t3-verify")
+        .set("auto.offset.reset", "earliest")
+        .set("enable.auto.commit", "false")
+        .create()
+        .unwrap();
+    consumer.subscribe(&[topic]).unwrap();
+
+    // Transient BrokerTransportFailure while the consumer discovers the
+    // cluster is normal right after container start; retry until the
+    // deadline rather than failing the assertion on it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(45);
+    let (key, payload) = loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "message must arrive on the connector's cluster"
+        );
+        match tokio::time::timeout(Duration::from_secs(10), consumer.recv()).await {
+            Ok(Ok(msg)) => {
+                let key = msg.key().map(|k| String::from_utf8_lossy(k).to_string());
+                let payload: serde_json::Value =
+                    serde_json::from_slice(msg.payload().expect("payload")).unwrap();
+                break (key, payload);
+            }
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "consumer recv failed, retrying");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(_) => {}
+        }
+    };
+    assert_eq!(key.as_deref(), Some("ORD-1"), "key_logic must be applied");
+    assert_eq!(payload["order_id"], "ORD-1");
+    assert_eq!(payload["amount"], 42);
+}
+
+/// T3: a workflow naming a non-Kafka connector must fail with a validation
+/// error, not an opaque one.
+#[tokio::test]
+#[ignore]
+async fn publish_kafka_rejects_a_non_kafka_connector() {
+    use tower::ServiceExt;
+
+    let (_container, brokers) = start_kafka().await;
+    let state =
+        crate::common::test_state_with_kafka(orion::config::AppConfig::default(), &brokers).await;
+    let app = orion::server::build_router(state);
+
+    crate::common::create_connector(&app, crate::common::db_connector("t3-not-kafka")).await;
+    crate::common::create_and_activate_channel(
+        &app,
+        "t3-wrong-conn-ch",
+        crate::common::workflow_with_tasks(
+            "T3 Wrong Connector",
+            serde_json::json!([{
+                "id": "t1",
+                "name": "Publish",
+                "continue_on_error": true,
+                "function": {
+                    "name": "publish_kafka",
+                    "input": { "connector": "t3-not-kafka", "topic": "whatever" }
+                }
+            }]),
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(crate::common::json_request(
+            "POST",
+            "/api/v1/data/t3-wrong-conn-ch",
+            Some(serde_json::json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    let body = crate::common::body_json(resp).await;
+    let errors = body["errors"].as_array().expect("task errors");
+    assert!(!errors.is_empty(), "expected a task error, got {body}");
+}

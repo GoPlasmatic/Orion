@@ -120,7 +120,7 @@ pub fn build_custom_functions(
         "publish_kafka".to_string(),
         Box::new(functions::publish_kafka::PublishKafkaHandler {
             registry: registry.clone(),
-            producer: None,
+            producers: None,
         }),
     );
 
@@ -207,13 +207,13 @@ pub fn build_custom_functions(
 pub fn register_kafka_publisher(
     fns: &mut HashMap<String, dataflow_rs::BoxedFunctionHandler>,
     registry: Arc<ConnectorRegistry>,
-    producer: Arc<crate::kafka::producer::KafkaProducer>,
+    producers: Arc<crate::kafka::producer::KafkaProducerCache>,
 ) {
     fns.insert(
         "publish_kafka".to_string(),
         Box::new(functions::publish_kafka::PublishKafkaHandler {
             registry,
-            producer: Some(producer),
+            producers: Some(producers),
         }),
     );
 }
