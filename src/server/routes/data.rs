@@ -517,9 +517,22 @@ use crate::engine::utils::{FNV1A_SEED, fnv1a_feed};
 fn compute_cache_key(
     channel: &str,
     data: &Value,
+    metadata: &Value,
     cache_cfg: &crate::channel::ChannelCacheConfig,
 ) -> String {
     let mut h: u64 = FNV1A_SEED;
+
+    // The request's route identity must always distinguish keys: for a REST
+    // channel like `GET /orders/{id}` the body is empty, so hashing only the
+    // body would serve the first caller's response to every id.
+    if let Some(method) = metadata.get("http_method").and_then(Value::as_str) {
+        fnv1a_feed(&mut h, method.as_bytes());
+    }
+    fnv1a_feed(&mut h, &[0]);
+    fnv1a_feed_object_sorted(&mut h, metadata.get("params"));
+    fnv1a_feed(&mut h, &[0]);
+    fnv1a_feed_object_sorted(&mut h, metadata.get("query"));
+    fnv1a_feed(&mut h, &[0]);
 
     if let Some(ref fields) = cache_cfg.cache_key_fields {
         // Hash selected fields directly — no intermediate Map or clones
@@ -536,6 +549,20 @@ fn compute_cache_key(
     };
 
     format!("cache:{channel}:{h:016x}")
+}
+
+/// Feed an optional JSON object into the FNV-1a state in sorted-key order,
+/// so the key is independent of map iteration and query-string order.
+fn fnv1a_feed_object_sorted(h: &mut u64, v: Option<&Value>) {
+    if let Some(Value::Object(map)) = v {
+        let mut keys: Vec<&String> = map.keys().collect();
+        keys.sort_unstable();
+        for k in keys {
+            fnv1a_feed(h, k.as_bytes());
+            let bytes = serde_json::to_vec(&map[k.as_str()]).unwrap_or_default();
+            fnv1a_feed(h, &bytes);
+        }
+    }
 }
 
 /// Build an HTTP response from a pre-serialized JSON string, avoiding
@@ -569,6 +596,7 @@ enum CachePrecheck {
 async fn check_response_cache(
     channel: &str,
     data: &Value,
+    metadata: &Value,
     channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
 ) -> CachePrecheck {
     let Some(cfg) = channel_config else {
@@ -583,7 +611,7 @@ async fn check_response_cache(
     let Some(ref cache) = cfg.response_cache else {
         return CachePrecheck::Miss(None);
     };
-    let key = compute_cache_key(channel, data, cache_cfg);
+    let key = compute_cache_key(channel, data, metadata, cache_cfg);
     match cache.get(&key).await {
         Ok(Some(cached)) => {
             metrics::record_cache_hit(channel);
@@ -661,7 +689,8 @@ async fn process_sync_for_channel(
     let profile = profile_requested.then(crate::engine::profile::ProfileCollector::new);
 
     // Response cache check — return early on cache hit (zero serialization)
-    let cache_context = match check_response_cache(channel, &data, &channel_config).await {
+    let cache_context = match check_response_cache(channel, &data, &metadata, &channel_config).await
+    {
         CachePrecheck::Hit(response) => return Ok(response),
         CachePrecheck::Miss(ctx) => ctx,
     };
@@ -1056,5 +1085,114 @@ mod tests {
             .expect("dedup check should pass");
         let keys = seen.lock().expect("test lock poisoned");
         assert_eq!(keys.as_slice(), ["dedup:orders:token-1"]);
+    }
+
+    // ---- Response cache key (proposal N1) ----
+
+    fn cache_cfg(fields: Option<Vec<String>>) -> crate::channel::ChannelCacheConfig {
+        crate::channel::ChannelCacheConfig {
+            enabled: true,
+            ttl_secs: Some(60),
+            cache_key_fields: fields,
+            connector: None,
+        }
+    }
+
+    fn meta(
+        method: &str,
+        params: serde_json::Value,
+        query: serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "http_method": method,
+            "params": params,
+            "query": query,
+            "headers": {},
+        })
+    }
+
+    #[test]
+    fn test_cache_key_distinguishes_route_params() {
+        let data = serde_json::json!({});
+        let a = super::compute_cache_key(
+            "orders",
+            &data,
+            &meta("GET", serde_json::json!({"id": "1"}), serde_json::json!({})),
+            &cache_cfg(None),
+        );
+        let b = super::compute_cache_key(
+            "orders",
+            &data,
+            &meta("GET", serde_json::json!({"id": "2"}), serde_json::json!({})),
+            &cache_cfg(None),
+        );
+        assert_ne!(a, b, "different path params must not share a cache entry");
+    }
+
+    #[test]
+    fn test_cache_key_distinguishes_query_and_method() {
+        let data = serde_json::json!({});
+        let base = meta(
+            "GET",
+            serde_json::json!({}),
+            serde_json::json!({"page": "1"}),
+        );
+        let a = super::compute_cache_key("orders", &data, &base, &cache_cfg(None));
+        let b = super::compute_cache_key(
+            "orders",
+            &data,
+            &meta(
+                "GET",
+                serde_json::json!({}),
+                serde_json::json!({"page": "2"}),
+            ),
+            &cache_cfg(None),
+        );
+        let c = super::compute_cache_key(
+            "orders",
+            &data,
+            &meta(
+                "POST",
+                serde_json::json!({}),
+                serde_json::json!({"page": "1"}),
+            ),
+            &cache_cfg(None),
+        );
+        assert_ne!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_cache_key_stable_for_identical_requests() {
+        let data = serde_json::json!({"order_id": 7});
+        let m = meta(
+            "GET",
+            serde_json::json!({"id": "1"}),
+            serde_json::json!({"expand": "items"}),
+        );
+        let a = super::compute_cache_key("orders", &data, &m, &cache_cfg(None));
+        let b = super::compute_cache_key("orders", &data, &m, &cache_cfg(None));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_cache_key_folds_route_identity_with_key_fields() {
+        // Even with cache_key_fields selecting body fields, route identity
+        // must still distinguish keys.
+        let data = serde_json::json!({"tenant": "acme"});
+        let fields = Some(vec!["tenant".to_string()]);
+        let a = super::compute_cache_key(
+            "orders",
+            &data,
+            &meta("GET", serde_json::json!({"id": "1"}), serde_json::json!({})),
+            &cache_cfg(fields.clone()),
+        );
+        let b = super::compute_cache_key(
+            "orders",
+            &data,
+            &meta("GET", serde_json::json!({"id": "2"}), serde_json::json!({})),
+            &cache_cfg(fields),
+        );
+        assert_ne!(a, b);
     }
 }
