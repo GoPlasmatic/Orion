@@ -2,9 +2,9 @@
 //! renders to a real backend. Phase 1 is scalar SQL in identity mode; see
 //! `proposals/query-dialect.md` for the full design and later phases.
 //!
-//! Pipeline: [`spec::parse`] (envelope) → [`lower::lower`] (filter → [`ir::Cond`])
-//! → [`backend::sql::render`] (`Cond` → `sea_query::SelectStatement`) →
-//! [`backend::sql::build_for`] (dialect-specific `(sql, values)` for `AnyPool`).
+//! Pipeline: [`spec::parse`] (envelope) → [`lower::lower_with`] (filter →
+//! [`ir::Cond`]) → [`backend::sql::render`] (`Cond` → `sea_query::SelectStatement`)
+//! → [`backend::sql::build_for`] (dialect-specific `(sql, values)` for `AnyPool`).
 
 pub mod backend;
 pub mod error;
@@ -19,8 +19,6 @@ pub use backend::SqlDialect;
 pub use error::QueryError;
 pub use lower::Params;
 pub use schema::EntityRegistry;
-pub use spec::QuerySpec;
-pub use write::{ResolvedWrite, WriteError, WriteOp, resolve_write};
 
 use ir::Cond;
 use sea_query::SelectStatement;
@@ -29,7 +27,9 @@ use serde_json::Value as Json;
 /// Parse the envelope, lower the filter (identity mode), and render a SQL
 /// `SelectStatement` for `dialect`, enforcing the configured page-size bounds.
 /// `params` are concrete (already message-resolved) values substituted for
-/// `{"param": ..}` nodes.
+/// `{"param": ..}` nodes. Test convenience — production goes through
+/// [`plan_sql`], which additionally resolves `include`s.
+#[cfg(test)]
 pub fn translate_sql(
     query: &Json,
     params: &Params,
@@ -49,6 +49,7 @@ pub fn translate_sql(
 
 /// Schema-aware variant: resolves fields and relations through `reg` (renames,
 /// type hints, allowlist, and the relation declarations `some`/`all`/`none` need).
+#[cfg(test)]
 pub fn translate_sql_with_schema(
     query: &Json,
     params: &Params,
@@ -187,16 +188,4 @@ pub fn translate_es(
     };
     let index = reg.physical_table(&spec.source);
     backend::es::render(&spec, &cond, &index, default_limit, max_limit)
-}
-
-/// Validate a query against `dialect` without retaining the rendered output.
-/// A query that validates clean cannot then fail in [`translate_sql`].
-pub fn validate_sql(
-    query: &Json,
-    params: &Params,
-    dialect: SqlDialect,
-    default_limit: u64,
-    max_limit: u64,
-) -> Result<(), QueryError> {
-    translate_sql(query, params, dialect, default_limit, max_limit).map(|_| ())
 }

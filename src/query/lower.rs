@@ -33,7 +33,9 @@ enum Operand {
     Val(Value),
 }
 
-/// Lower a `filter` in identity mode (no schema).
+/// Lower a `filter` in identity mode (no schema). Test convenience —
+/// production always goes through [`lower_with`] with a real registry.
+#[cfg(test)]
 pub fn lower(filter: &Json, params: &Params) -> Result<Cond, QueryError> {
     lower_with(filter, params, &EntityRegistry::default(), "")
 }

@@ -66,8 +66,11 @@ fn default_true() -> bool {
 pub struct Relation {
     /// Target entity name.
     pub to: String,
+    /// Declared cardinality. Optional and assertion-only: query planning keys
+    /// off `through` (present = many-to-many), so a declared `kind` is checked
+    /// against the relation's shape at parse time rather than trusted.
     #[serde(default)]
-    pub kind: Cardinality,
+    pub kind: Option<Cardinality>,
     /// Column on the current entity (the join's local side).
     pub local: String,
     /// Column on the target (or junction) referencing the current entity.
@@ -83,11 +86,10 @@ pub struct Relation {
     pub es: EsStorage,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Cardinality {
     HasOne,
-    #[default]
     HasMany,
     ManyToMany,
 }
@@ -104,8 +106,27 @@ pub struct Junction {
 impl EntityRegistry {
     /// Parse an inline schema JSON value into a registry.
     pub fn from_json(v: &serde_json::Value) -> Result<Self, QueryError> {
-        serde_json::from_value(v.clone())
-            .map_err(|e| QueryError::InvalidEnvelope(format!("invalid schema: {e}")))
+        let reg: Self = serde_json::from_value(v.clone())
+            .map_err(|e| QueryError::InvalidEnvelope(format!("invalid schema: {e}")))?;
+        for (entity, ent) in &reg.entities {
+            for (name, rel) in &ent.relations {
+                let mismatch = match rel.kind {
+                    Some(Cardinality::ManyToMany) if rel.through.is_none() => {
+                        Some("kind 'many_to_many' requires a 'through' junction")
+                    }
+                    Some(Cardinality::HasOne | Cardinality::HasMany) if rel.through.is_some() => {
+                        Some("a 'through' junction requires kind 'many_to_many'")
+                    }
+                    _ => None,
+                };
+                if let Some(why) = mismatch {
+                    return Err(QueryError::InvalidEnvelope(format!(
+                        "invalid schema: relation '{entity}.{name}': {why}"
+                    )));
+                }
+            }
+        }
+        Ok(reg)
     }
 
     /// Physical table/collection/index for an entity (declared, else the name).
@@ -208,5 +229,53 @@ impl EntityRegistry {
             },
             rel.to.clone(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn schema_with_relation(rel: serde_json::Value) -> serde_json::Value {
+        json!({ "entities": { "users": {
+            "columns": {},
+            "relations": { "orders": rel }
+        }}})
+    }
+
+    #[test]
+    fn kind_matching_shape_is_accepted() {
+        let reg = EntityRegistry::from_json(&schema_with_relation(json!({
+            "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id"
+        })))
+        .expect("has_many without through is valid");
+        assert!(reg.entities.contains_key("users"));
+
+        EntityRegistry::from_json(&schema_with_relation(json!({
+            "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "id",
+            "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id" }
+        })))
+        .expect("many_to_many with through is valid");
+    }
+
+    #[test]
+    fn many_to_many_without_through_is_rejected() {
+        let err = EntityRegistry::from_json(&schema_with_relation(json!({
+            "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "tag_id"
+        })))
+        .expect_err("many_to_many needs a junction");
+        assert!(err.to_string().contains("users.orders"), "{err}");
+        assert!(err.to_string().contains("requires a 'through'"), "{err}");
+    }
+
+    #[test]
+    fn through_with_single_valued_kind_is_rejected() {
+        let err = EntityRegistry::from_json(&schema_with_relation(json!({
+            "to": "tags", "kind": "has_many", "local": "id", "foreign": "id",
+            "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id" }
+        })))
+        .expect_err("through implies many_to_many");
+        assert!(err.to_string().contains("requires kind 'many_to_many'"), "{err}");
     }
 }
