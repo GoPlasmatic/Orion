@@ -14,7 +14,11 @@ pub struct QueueConfig {
     pub shutdown_timeout_secs: u64,
     /// How long to retain completed/failed traces in hours (0 = forever).
     pub trace_retention_hours: u64,
-    /// How often to run the trace cleanup task in seconds.
+    /// How long to retain admin audit-log entries in days (0 = forever).
+    /// Audit rows are written by every admin mutation and are never otherwise
+    /// removed, so leaving this at 0 makes `audit_logs` grow without bound.
+    pub audit_retention_days: u64,
+    /// How often to run the trace and audit-log cleanup tasks in seconds.
     pub trace_cleanup_interval_secs: u64,
     /// Maximum time in milliseconds for processing a single async trace.
     pub processing_timeout_ms: u64,
@@ -44,6 +48,7 @@ impl Default for QueueConfig {
             buffer_size: 1000,
             shutdown_timeout_secs: 30,
             trace_retention_hours: 72,
+            audit_retention_days: 90,
             trace_cleanup_interval_secs: 3600,
             processing_timeout_ms: 60_000,
             max_result_size_bytes: 1_048_576,    // 1 MB

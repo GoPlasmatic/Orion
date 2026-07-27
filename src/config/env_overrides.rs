@@ -202,6 +202,12 @@ where
     );
     env_parsed!(
         env_var,
+        "ORION_QUEUE__AUDIT_RETENTION_DAYS",
+        config.queue.audit_retention_days,
+        u64
+    );
+    env_parsed!(
+        env_var,
         "ORION_QUEUE__TRACE_CLEANUP_INTERVAL_SECS",
         config.queue.trace_cleanup_interval_secs,
         u64
@@ -696,6 +702,7 @@ mod tests {
         env.insert("ORION_QUEUE__WORKERS", "8");
         env.insert("ORION_QUEUE__BUFFER_SIZE", "2000");
         env.insert("ORION_QUEUE__SHUTDOWN_TIMEOUT_SECS", "60");
+        env.insert("ORION_QUEUE__AUDIT_RETENTION_DAYS", "30");
         env.insert("ORION_QUEUE__DLQ_RETRY_ENABLED", "false");
         env.insert("ORION_QUEUE__DLQ_MAX_RETRIES", "9");
         env.insert("ORION_QUEUE__DLQ_POLL_INTERVAL_SECS", "45");
@@ -751,6 +758,7 @@ mod tests {
         assert_eq!(config.queue.workers, 8);
         assert_eq!(config.queue.buffer_size, 2000);
         assert_eq!(config.queue.shutdown_timeout_secs, 60);
+        assert_eq!(config.queue.audit_retention_days, 30);
         assert!(!config.queue.dlq_retry_enabled);
         assert_eq!(config.queue.dlq_max_retries, 9);
         assert_eq!(config.queue.dlq_poll_interval_secs, 45);

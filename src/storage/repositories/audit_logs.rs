@@ -27,6 +27,10 @@ pub trait AuditLogRepository: Send + Sync {
 
     /// Count total audit log entries.
     async fn count(&self) -> Result<i64, OrionError>;
+
+    /// Delete audit log entries older than the given number of days.
+    /// Returns the count deleted.
+    async fn delete_older_than(&self, days: u64) -> Result<u64, OrionError>;
 }
 
 pub struct SqlAuditLogRepository {
@@ -132,14 +136,45 @@ impl AuditLogRepository for SqlAuditLogRepository {
         })
         .await
     }
+
+    async fn delete_older_than(&self, days: u64) -> Result<u64, OrionError> {
+        crate::metrics::timed_db_op("audit_logs.delete_older_than", async {
+            let cutoff = chrono::Duration::try_days(days as i64)
+                .and_then(|d| chrono::Utc::now().naive_utc().checked_sub_signed(d))
+                .unwrap_or(chrono::NaiveDateTime::MIN);
+
+            let (sql, values) = build_sqlx(
+                Query::delete()
+                    .from_table(AuditLogs::Table)
+                    .and_where(Expr::col(AuditLogs::CreatedAt).lt(cutoff)),
+            );
+
+            let rows_affected = self.pool.execute_query(&sql, values).await?;
+            Ok(rows_affected)
+        })
+        .await
+    }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     async fn test_repo() -> SqlAuditLogRepository {
         SqlAuditLogRepository::new(crate::storage::test_sqlite_pool().await)
+    }
+
+    /// Backdate every row for `resource_id`, since `created_at` is set by a
+    /// column default and cannot be supplied through `insert`.
+    pub(crate) async fn backdate(pool: &DbPool, resource_id: &str, days: i64) {
+        let when = chrono::Utc::now().naive_utc() - chrono::Duration::days(days);
+        let (sql, values) = build_sqlx(
+            Query::update()
+                .table(AuditLogs::Table)
+                .value(AuditLogs::CreatedAt, when)
+                .and_where(Expr::col(AuditLogs::ResourceId).eq(resource_id)),
+        );
+        pool.execute_query(&sql, values).await.expect("backdate");
     }
 
     #[tokio::test]
@@ -173,6 +208,42 @@ mod tests {
         assert_eq!(entry.resource_type, "workflow");
         assert_eq!(entry.resource_id, "wf-1");
         assert_eq!(entry.details.as_deref(), Some(details));
+        assert_eq!(repo.count().await.expect("count"), 1);
+    }
+
+    /// D2: nothing removed audit rows before this, so the table grew forever.
+    #[tokio::test]
+    async fn test_delete_older_than_removes_only_expired_rows() {
+        let pool = crate::storage::test_sqlite_pool().await;
+        let repo = SqlAuditLogRepository::new(pool.clone());
+
+        repo.insert("admin...", "create", "workflow", "old", None)
+            .await
+            .expect("insert old");
+        repo.insert("admin...", "create", "workflow", "recent", None)
+            .await
+            .expect("insert recent");
+        backdate(&pool, "old", 120).await;
+        backdate(&pool, "recent", 10).await;
+
+        let deleted = repo.delete_older_than(90).await.expect("cleanup");
+        assert_eq!(deleted, 1, "only the 120-day-old row is past retention");
+
+        let entries = repo.list_paginated(0, 10).await.expect("list");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].resource_id, "recent");
+    }
+
+    #[tokio::test]
+    async fn test_delete_older_than_keeps_everything_when_nothing_expired() {
+        let pool = crate::storage::test_sqlite_pool().await;
+        let repo = SqlAuditLogRepository::new(pool.clone());
+
+        repo.insert("admin...", "create", "workflow", "wf-1", None)
+            .await
+            .expect("insert");
+
+        assert_eq!(repo.delete_older_than(1).await.expect("cleanup"), 0);
         assert_eq!(repo.count().await.expect("count"), 1);
     }
 }

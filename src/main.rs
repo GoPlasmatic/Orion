@@ -651,6 +651,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         job_lease_gate.clone(),
     );
 
+    // Start audit-log cleanup task
+    let audit_cleanup_handle = orion::queue::audit_cleanup::start_audit_cleanup(
+        config.queue.audit_retention_days,
+        config.queue.trace_cleanup_interval_secs,
+        audit_log_repo.clone()
+            as Arc<dyn orion::storage::repositories::audit_logs::AuditLogRepository>,
+        job_lease_gate.clone(),
+    );
+
     // Start DLQ retry consumer
     let dlq_retry_handle = if config.queue.dlq_retry_enabled {
         let dlq_for_retry: Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository> =
@@ -797,6 +806,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(handle) = trace_cleanup_handle {
         tracing::info!("Stopping trace cleanup task...");
+        handle.abort();
+    }
+
+    if let Some(handle) = audit_cleanup_handle {
+        tracing::info!("Stopping audit log cleanup task...");
         handle.abort();
     }
 

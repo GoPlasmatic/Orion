@@ -94,7 +94,8 @@ workers = 4                    # Concurrent async trace workers
 buffer_size = 1000             # Channel buffer for pending traces
 # shutdown_timeout_secs = 30    # Timeout for in-flight jobs during shutdown
 # trace_retention_hours = 72    # How long to keep completed traces (0 = disabled)
-# trace_cleanup_interval_secs = 3600  # Cleanup check interval
+# audit_retention_days = 90     # How long to keep admin audit-log entries (0 = keep forever)
+# trace_cleanup_interval_secs = 3600  # Cleanup check interval (traces and audit logs)
 # processing_timeout_ms = 60000  # Per-trace processing timeout
 # max_result_size_bytes = 1048576  # Max size of trace result (1 MB)
 # max_queue_memory_bytes = 104857600  # Max memory for queued traces (100 MB)
@@ -220,3 +221,4 @@ All capabilities are compiled into a single binary and controlled at runtime:
 - Enable TLS via the `server.tls` section
 - Enable circuit breakers: `engine.circuit_breaker.enabled = true`
 - Set trace retention: `queue.trace_retention_hours` for trace data lifecycle management
+- Set audit retention: `queue.audit_retention_days` (default 90) — audit rows are written by every admin mutation and are only removed by this job
