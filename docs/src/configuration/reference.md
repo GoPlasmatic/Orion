@@ -170,6 +170,17 @@ instance_id = "${HOSTNAME}"
 | `engine.cache_cleanup_interval_secs` | `60` | `ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS` | Sweep interval for expired in-memory cache entries. |
 | `engine.max_memory_cache_entries` | `100000` | `ORION_ENGINE__MAX_MEMORY_CACHE_ENTRIES` | Lower it on a memory-constrained host. `0` removes the bound. |
 | `engine.rollout_sticky_header` | `""` | `ORION_ENGINE__ROLLOUT_STICKY_HEADER` | Set to the header that identifies a caller (e.g. `"x-user-id"`) so canary rollouts are stable per caller. |
+| `engine.fail_on_connector_load_error` | `false` | `ORION_ENGINE__FAIL_ON_CONNECTOR_LOAD_ERROR` | **Set to `true` in production.** Refuse to start when an enabled connector cannot be loaded — see below. |
+
+### Connector load failures
+
+An enabled connector whose config cannot be loaded — a missing `env://DB_PASSWORD`, an unparseable `config_json`, an unresolvable secret reference — is skipped. It is then simply *absent*: every workflow using it returns a 500 at request time, which may be hours after the deploy that broke it.
+
+Three surfaces report this:
+
+- `GET /health` sets `components.connectors` to `degraded` and lists the failures under `connectors.failed_to_load`. The overall status becomes `degraded`, but the HTTP status stays **200** — the rest of the instance is serving, and a 503 would pull the node out of its load balancer over a connector nothing in flight may be using. Alert on the field, not the status code.
+- `GET /api/v1/admin/connectors` gives every row a `load_status` of `loaded`, `failed`, or `disabled`, with `load_error` and `load_error_stage` on the failures.
+- `engine.fail_on_connector_load_error = true` refuses to start at all, so a bad rollout fails where the orchestrator will catch it. This is startup only — a hot reload never takes a running process down.
 
 **`max_memory_cache_entries`** bounds the shared in-memory cache — the default dedup store, the default response cache, and every `backend = "memory"` cache connector — with LRU eviction on insert. Setting `0` disables the bound, at which point entries written without a TTL are never reclaimed; only do that when the key set is known to be finite.
 

@@ -36,6 +36,17 @@ pub struct EngineConfig {
     /// forwarded client IP (`x-forwarded-for` / `x-real-ip`); with neither,
     /// the bucket is random per request.
     pub rollout_sticky_header: String,
+    /// Refuse to start when an enabled connector cannot be loaded — a missing
+    /// `env://DB_PASSWORD`, an unparseable config, an unresolvable secret
+    /// reference (F16).
+    ///
+    /// Default `false` keeps the historical behaviour: the connector is
+    /// skipped with a log line and every workflow using it fails at request
+    /// time instead. Set `true` in production so a bad rollout fails at boot,
+    /// where the orchestrator will catch it, rather than hours later in
+    /// request traffic. Only affects startup — a reload never takes the
+    /// process down.
+    pub fail_on_connector_load_error: bool,
 }
 
 impl Default for EngineConfig {
@@ -51,6 +62,7 @@ impl Default for EngineConfig {
             cache_cleanup_interval_secs: 60,
             max_memory_cache_entries: 100_000,
             rollout_sticky_header: String::new(),
+            fail_on_connector_load_error: false,
         }
     }
 }

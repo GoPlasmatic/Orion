@@ -840,7 +840,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated list of connectors"
+            "description": "Paginated list of connectors. Each row carries `load_status`: `loaded` when the connector is live in the registry, `failed` (with `load_error`) when it is enabled but could not be loaded, and `disabled` when it is not enabled. A `failed` connector is absent at request time, so every workflow using it returns a 500."
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",

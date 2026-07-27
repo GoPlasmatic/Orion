@@ -64,8 +64,22 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     // Collect circuit breaker states
     let cb_states = state.connector_registry.circuit_breaker_states().await;
 
+    // F16: enabled connectors that failed to load are absent from the
+    // registry, so every workflow using one fails at request time. Report
+    // them here rather than leaving a boot-time log line as the only signal.
+    let connector_issues = state.connector_registry.load_issues().await;
+
+    // Degraded, not unhealthy: the rest of the instance still serves traffic,
+    // and returning 503 would take a node out of its load balancer over a
+    // connector that may be used by nothing currently in flight.
     let overall_healthy = db_healthy && engine_healthy;
-    let status_str = if overall_healthy { "ok" } else { "degraded" };
+    let status_str = if !overall_healthy {
+        "degraded"
+    } else if connector_issues.is_empty() {
+        "ok"
+    } else {
+        "degraded"
+    };
     let http_status = if overall_healthy {
         StatusCode::OK
     } else {
@@ -82,9 +96,11 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         "components": {
             "database": if db_healthy { "ok" } else { "error" },
             "engine": if engine_healthy { "ok" } else { "error" },
+            "connectors": if connector_issues.is_empty() { "ok" } else { "degraded" },
         },
         "connectors": {
             "circuit_breakers": cb_states,
+            "failed_to_load": connector_issues,
         }
     });
 

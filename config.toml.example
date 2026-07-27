@@ -103,6 +103,13 @@
                                            # forwarded client IP; with neither, each request is
                                            # bucketed at random and a caller can flip versions
                                            # between requests.
+# fail_on_connector_load_error = false     # Refuse to start when an enabled connector cannot be
+                                           # loaded (missing env://VAR, unparseable config,
+                                           # unresolvable secret). Default false skips it with a
+                                           # log line, so every workflow using it fails at request
+                                           # time instead — possibly hours later. Set true in
+                                           # production so a bad rollout fails at boot. Startup
+                                           # only; a hot reload never takes the process down.
 
 # [engine.circuit_breaker]
 # Sheds load to a failing dependency after `failure_threshold` consecutive

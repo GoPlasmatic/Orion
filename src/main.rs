@@ -472,6 +472,28 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     tracing::info!(count = connector_count, "Connectors loaded");
 
+    // F16: an enabled connector that fails to load is absent from the
+    // registry, so the failure surfaces as a 500 on the first request that
+    // needs it — possibly hours after the deploy that caused it. Operators who
+    // would rather have the rollout fail at boot opt in here.
+    let connector_issues = connector_registry.load_issues().await;
+    if !connector_issues.is_empty() && config.engine.fail_on_connector_load_error {
+        let detail = connector_issues
+            .iter()
+            .map(|i| format!("{} ({}): {}", i.connector, i.stage, i.reason))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(orion::errors::OrionError::Config {
+            message: format!(
+                "refused to start: {} enabled connector(s) failed to load: {detail}. \
+                 Set engine.fail_on_connector_load_error = false to start anyway \
+                 (they will fail at request time instead).",
+                connector_issues.len()
+            ),
+        }
+        .into());
+    }
+
     // Create a shared HTTP client. Redirects are off: execute_request follows
     // them manually with per-hop SSRF validation. The pinned resolver connects
     // to the exact addresses SSRF validation vetted (no DNS rebinding between

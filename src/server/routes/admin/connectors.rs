@@ -49,7 +49,11 @@ async fn evict_connector_pools(state: &AppState, connector_name: &str) {
     tag = "Connectors",
     params(ConnectorFilter),
     responses(
-        (status = 200, description = "Paginated list of connectors"),
+        (status = 200, description = "Paginated list of connectors. Each row carries \
+            `load_status`: `loaded` when the connector is live in the registry, \
+            `failed` (with `load_error`) when it is enabled but could not be loaded, \
+            and `disabled` when it is not enabled. A `failed` connector is absent at \
+            request time, so every workflow using it returns a 500."),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -58,9 +62,34 @@ pub(crate) async fn list_connectors(
     Query(filter): Query<ConnectorFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let result = state.connector_repo.list_paginated(&filter).await?;
-    let masked: Vec<_> = result.data.iter().map(mask_connector).collect();
+    // F16: a connector that failed to load is simply missing from the
+    // registry, so a list that reports only the stored rows shows a healthy
+    // fleet while requests using it 500. Join the two views here.
+    let issues = state.connector_registry.load_issues().await;
+    let rows: Vec<Value> = result
+        .data
+        .iter()
+        .map(|connector| {
+            let mut row = serde_json::to_value(mask_connector(connector))
+                .unwrap_or_else(|_| json!({"id": connector.id}));
+            let issue = issues.iter().find(|i| i.connector == connector.name);
+            if let Some(obj) = row.as_object_mut() {
+                let status = match (connector.enabled, issue) {
+                    (false, _) => "disabled",
+                    (true, Some(_)) => "failed",
+                    (true, None) => "loaded",
+                };
+                obj.insert("load_status".to_string(), json!(status));
+                if let Some(issue) = issue {
+                    obj.insert("load_error".to_string(), json!(issue.reason));
+                    obj.insert("load_error_stage".to_string(), json!(issue.stage));
+                }
+            }
+            row
+        })
+        .collect();
     Ok(paginated_response(
-        masked,
+        rows,
         result.total,
         result.limit,
         result.offset,

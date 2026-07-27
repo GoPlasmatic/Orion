@@ -481,6 +481,12 @@ where
         config.engine.cache_cleanup_interval_secs,
         u64
     );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__FAIL_ON_CONNECTOR_LOAD_ERROR",
+        config.engine.fail_on_connector_load_error,
+        bool
+    );
 
     // Circuit breaker
     env_parsed!(

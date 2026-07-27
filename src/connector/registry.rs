@@ -39,6 +39,25 @@ pub struct ConnectorRegistry {
     configs: RwLock<HashMap<String, Arc<ConnectorConfig>>>,
     circuit_breakers: RwLock<HashMap<String, BreakerEntry>>,
     cb_config: CircuitBreakerConfig,
+    load_issues: RwLock<Vec<ConnectorLoadIssue>>,
+}
+
+/// An enabled connector that could not be loaded into the registry (F16).
+///
+/// A connector that fails to load does not fail anything at load time — it is
+/// simply absent, so every workflow using it returns a 500 at request time,
+/// possibly hours later. Recording the failures makes the degraded set
+/// visible on `/health` and on `GET /api/v1/admin/connectors` instead of
+/// leaving a log line as the only evidence.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ConnectorLoadIssue {
+    pub connector: String,
+    pub connector_id: String,
+    /// Which step failed: `env_substitution`, `json_parse`,
+    /// `secret_resolution` or `deserialize`. A bounded set, so it is safe as
+    /// a metric or log label.
+    pub stage: &'static str,
+    pub reason: String,
 }
 
 impl Default for ConnectorRegistry {
@@ -53,7 +72,14 @@ impl ConnectorRegistry {
             configs: RwLock::new(HashMap::new()),
             circuit_breakers: RwLock::new(HashMap::new()),
             cb_config,
+            load_issues: RwLock::new(Vec::new()),
         }
+    }
+
+    /// The connectors that failed to load on the most recent load (F16).
+    /// Empty when every enabled connector loaded.
+    pub async fn load_issues(&self) -> Vec<ConnectorLoadIssue> {
+        self.load_issues.read().await.clone()
     }
 
     /// Get or create a circuit breaker for the given key (e.g. "channel:connector").
@@ -126,6 +152,10 @@ impl ConnectorRegistry {
     }
 
     /// Load all enabled connectors from the repository into the registry.
+    ///
+    /// Connectors that fail to load are skipped, as before, but are now also
+    /// recorded as [`ConnectorLoadIssue`]s so the degraded set is reportable
+    /// (F16) rather than existing only as a log line.
     pub async fn load_from_repo(
         &self,
         repo: &dyn ConnectorRepository,
@@ -134,6 +164,7 @@ impl ConnectorRegistry {
 
         // Build new map outside the lock to avoid holding it during deserialization
         let mut new_configs = HashMap::new();
+        let mut issues: Vec<ConnectorLoadIssue> = Vec::new();
         for connector in &connectors {
             // Resolve ${VAR} / ${VAR:-default} placeholders against the process
             // environment so connector configs can reference secrets without
@@ -153,6 +184,12 @@ impl ConnectorRegistry {
                         error = %e,
                         "Failed to resolve env vars in connector config, skipping"
                     );
+                    issues.push(ConnectorLoadIssue {
+                        connector: connector.name.clone(),
+                        connector_id: connector.id.clone(),
+                        stage: "env_substitution",
+                        reason: e.to_string(),
+                    });
                     continue;
                 }
             };
@@ -169,6 +206,12 @@ impl ConnectorRegistry {
                         error = %e,
                         "Failed to parse connector config JSON, skipping"
                     );
+                    issues.push(ConnectorLoadIssue {
+                        connector: connector.name.clone(),
+                        connector_id: connector.id.clone(),
+                        stage: "json_parse",
+                        reason: e.to_string(),
+                    });
                     continue;
                 }
             };
@@ -184,7 +227,29 @@ impl ConnectorRegistry {
                     error = %e,
                     "Failed to resolve secret reference in connector config, skipping"
                 );
+                issues.push(ConnectorLoadIssue {
+                    connector: connector.name.clone(),
+                    connector_id: connector.id.clone(),
+                    stage: "secret_resolution",
+                    reason: e.to_string(),
+                });
                 continue;
+            }
+            // `ConnectorConfig` is internally tagged on `type`, but the type
+            // lives in its own column and the create/update API takes it as
+            // `connector_type` alongside the config. Inject it, exactly as
+            // `validate_connector_config` does, so the column is the single
+            // source of truth.
+            //
+            // Without this, a connector authored the documented way — with no
+            // redundant `"type"` inside `config` — failed to deserialize with
+            // "missing field `type`" and silently never loaded, which is the
+            // shape every example and every admin UI produces.
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "type".to_string(),
+                    serde_json::Value::String(connector.connector_type.clone()),
+                );
             }
             match serde_json::from_value::<ConnectorConfig>(value) {
                 Ok(config) => {
@@ -197,6 +262,12 @@ impl ConnectorRegistry {
                         error = %e,
                         "Failed to parse connector config, skipping"
                     );
+                    issues.push(ConnectorLoadIssue {
+                        connector: connector.name.clone(),
+                        connector_id: connector.id.clone(),
+                        stage: "deserialize",
+                        reason: e.to_string(),
+                    });
                 }
             }
         }
@@ -204,6 +275,16 @@ impl ConnectorRegistry {
         // Minimal write lock — just swap
         let count = new_configs.len();
         *self.configs.write().await = new_configs;
+        if !issues.is_empty() {
+            tracing::error!(
+                degraded = issues.len(),
+                loaded = count,
+                "Some enabled connectors failed to load; every workflow using \
+                 one will fail at request time. See /health and \
+                 GET /api/v1/admin/connectors for the list."
+            );
+        }
+        *self.load_issues.write().await = issues;
         Ok(count)
     }
 
