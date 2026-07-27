@@ -1,6 +1,6 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
-use sea_query::{Asterisk, Condition, Expr, Order, Query};
+use sea_query::{Condition, Expr, Query};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -12,10 +12,31 @@ use crate::storage::{
 };
 
 use super::helpers::{
-    clamp_pagination, count_where, ensure_absent, fetch_required, fetch_required_tx,
+    clamp_pagination, fetch_required, fetch_required_tx,
     optional_string_value, parse_sort_order,
 };
 use super::helpers::PaginatedResult;
+use super::versioned::{self, VersionedSpec};
+
+/// The versioned-lifecycle spec shared machinery operates on.
+fn spec() -> VersionedSpec {
+    use sea_query::IntoIden;
+    VersionedSpec {
+        table: Channels::Table.into_iden(),
+        id_col: Channels::ChannelId.into_iden(),
+        version_col: Channels::Version.into_iden(),
+        status_col: Channels::Status.into_iden(),
+        priority_col: Channels::Priority.into_iden(),
+        label: "Channel",
+        noun: "channel",
+    }
+}
+
+impl versioned::HasVersion for Channel {
+    fn version(&self) -> i64 {
+        self.version
+    }
+}
 
 // -- DTOs --
 
@@ -124,22 +145,7 @@ impl SqlChannelRepository {
     /// Fetch one specific version — internal helper for the lifecycle
     /// methods; the admin API only exposes latest/list forms.
     async fn get_version(&self, channel_id: &str, version: i64) -> Result<Channel, OrionError> {
-        let (sql, values) = build_sqlx(
-            Query::select()
-                .column(Asterisk)
-                .from(Channels::Table)
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .and_where(Expr::col(Channels::Version).eq(version)),
-        );
-
-        self.pool
-            .fetch_optional_as::<Channel>(&sql, values)
-            .await?
-            .ok_or_else(|| {
-                OrionError::NotFound(format!(
-                    "Channel '{channel_id}' version {version} not found"
-                ))
-            })
+        versioned::get_version(&self.pool, &spec(), channel_id, version).await
     }
 
     pub fn new(pool: DbPool) -> Self {
@@ -147,15 +153,6 @@ impl SqlChannelRepository {
     }
 }
 
-/// Build the UPDATE query that archives all active versions of a channel.
-fn archive_active_channels_query(channel_id: &str) -> (String, sea_query_binder::SqlxValues) {
-    let mut q = Query::update();
-    q.table(Channels::Table)
-        .value(Channels::Status, EntityStatus::Archived.as_str())
-        .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-        .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()));
-    build_sqlx(&mut q)
-}
 
 /// Fields needed to materialise one row of the `channels` table — used by
 /// `build_channel_insert` to avoid a 15-argument positional signature across
@@ -283,19 +280,7 @@ impl ChannelRepository for SqlChannelRepository {
 
     async fn get_by_id(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.get_by_id", async {
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Channels::Table)
-                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                    .order_by(Channels::Version, Order::Desc)
-                    .limit(1),
-            );
-
-            self.pool
-                .fetch_optional_as::<Channel>(&sql, values)
-                .await?
-                .ok_or_else(|| OrionError::NotFound(format!("Channel '{channel_id}' not found")))
+            versioned::get_latest(&self.pool, &spec(), channel_id).await
         })
         .await
     }
@@ -308,9 +293,7 @@ impl ChannelRepository for SqlChannelRepository {
             let cond = build_condition(filter);
             let (limit, offset) = clamp_pagination(filter.limit, filter.offset);
 
-            let total = count_where(&self.pool, CurrentChannels::Table, cond.clone()).await?;
-
-            // Sort column mapping
+            use sea_query::IntoIden;
             let sort_iden = match filter.sort_by.as_deref() {
                 Some("name") => Channels::Name,
                 Some("status") => Channels::Status,
@@ -321,25 +304,16 @@ impl ChannelRepository for SqlChannelRepository {
                 _ => Channels::Priority,
             };
             let order = parse_sort_order(filter.sort_order.as_deref());
-
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(CurrentChannels::Table)
-                    .cond_where(cond)
-                    .order_by(sort_iden, order)
-                    .limit(limit as u64)
-                    .offset(offset as u64),
-            );
-
-            let data = self.pool.fetch_all_as::<Channel>(&sql, values).await?;
-
-            Ok(PaginatedResult {
-                data,
-                total,
+            versioned::paginate(
+                &self.pool,
+                CurrentChannels::Table.into_iden(),
+                cond,
+                sort_iden.into_iden(),
+                order,
                 limit,
                 offset,
-            })
+            )
+            .await
         })
         .await
     }
@@ -350,18 +324,12 @@ impl ChannelRepository for SqlChannelRepository {
         req: &UpdateChannelRequest,
     ) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.update_draft", async {
-            let (draft_sql, draft_values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Channels::Table)
-                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str())),
-            );
-
-            let existing: Channel = fetch_required(&self.pool, &draft_sql, draft_values, || {
-                OrionError::BadRequest(format!("No draft version found for channel '{channel_id}'"))
-            })
-            .await?;
+            let (draft_sql, draft_values) = versioned::draft_query(&spec(), channel_id);
+            let existing: Channel =
+                fetch_required(&self.pool, &draft_sql, draft_values, || {
+                    versioned::no_draft_err(&spec(), channel_id)
+                })
+                .await?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let description = req
@@ -432,36 +400,14 @@ impl ChannelRepository for SqlChannelRepository {
 
     async fn delete(&self, channel_id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("channels.delete", async {
-            let (sql, values) = build_sqlx(
-                Query::delete()
-                    .from_table(Channels::Table)
-                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id)),
-            );
-
-            let rows_affected = self.pool.execute_query(&sql, values).await?;
-
-            if rows_affected == 0 {
-                return Err(OrionError::NotFound(format!(
-                    "Channel '{channel_id}' not found"
-                )));
-            }
-
-            Ok(())
+            versioned::delete_all_versions(&self.pool, &spec(), channel_id).await
         })
         .await
     }
 
     async fn list_active(&self) -> Result<Vec<Channel>, OrionError> {
         crate::metrics::timed_db_op("channels.list_active", async {
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Channels::Table)
-                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
-                    .order_by(Channels::Priority, Order::Desc),
-            );
-
-            Ok(self.pool.fetch_all_as::<Channel>(&sql, values).await?)
+            versioned::list_active(&self.pool, &spec()).await
         })
         .await
     }
@@ -470,22 +416,15 @@ impl ChannelRepository for SqlChannelRepository {
         crate::metrics::timed_db_op("channels.activate", async {
             let mut tx = self.pool.begin_tx().await?;
 
-            // Find the draft version
-            let (draft_sql, draft_values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Channels::Table)
-                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str())),
-            );
-
+            let (draft_sql, draft_values) = versioned::draft_query(&spec(), channel_id);
             let draft: Channel = fetch_required_tx(&mut tx, &draft_sql, draft_values, || {
-                OrionError::BadRequest(format!("No draft version found for channel '{channel_id}'"))
+                versioned::no_draft_err(&spec(), channel_id)
             })
             .await?;
 
             // Archive current active versions
-            let (archive_sql, archive_values) = archive_active_channels_query(channel_id);
+            let (archive_sql, archive_values) =
+                versioned::archive_actives_query(&spec(), channel_id, None);
             tx.execute_query(&archive_sql, archive_values).await?;
 
             // Activate the draft
@@ -508,50 +447,14 @@ impl ChannelRepository for SqlChannelRepository {
 
     async fn archive(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.archive", async {
-            let (active_sql, active_values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Channels::Table)
-                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
-                    .order_by(Channels::Version, Order::Desc)
-                    .limit(1),
-            );
-
-            let active: Channel = fetch_required(&self.pool, &active_sql, active_values, || {
-                OrionError::BadRequest(format!(
-                    "No active version found for channel '{channel_id}'"
-                ))
-            })
-            .await?;
-
-            let (archive_sql, archive_values) = archive_active_channels_query(channel_id);
-            self.pool
-                .execute_query(&archive_sql, archive_values)
-                .await?;
-
-            self.get_version(channel_id, active.version).await
+            versioned::archive_latest_active(&self.pool, &spec(), channel_id).await
         })
         .await
     }
 
     async fn create_new_version(&self, channel_id: &str) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.create_new_version", async {
-            // Check no draft already exists
-            let (draft_sql, draft_values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Channels::Table)
-                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str())),
-            );
-
-            ensure_absent::<Channel>(&self.pool, &draft_sql, draft_values, || {
-                OrionError::Conflict(format!(
-                    "Channel '{channel_id}' already has a draft version"
-                ))
-            })
-            .await?;
+            versioned::ensure_no_draft::<Channel>(&self.pool, &spec(), channel_id).await?;
 
             // Find the latest version to copy from
             let latest = self.get_by_id(channel_id).await?;
@@ -596,40 +499,14 @@ impl ChannelRepository for SqlChannelRepository {
         limit: i64,
         offset: i64,
     ) -> Result<PaginatedResult<Channel>, OrionError> {
-        let limit = limit.clamp(1, 1000);
-        let offset = offset.max(0);
-
-        let total = count_where(
-            &self.pool,
-            Channels::Table,
-            Condition::all().add(Expr::col(Channels::ChannelId).eq(channel_id)),
-        )
-        .await?;
-
-        let (sql, values) = build_sqlx(
-            Query::select()
-                .column(Asterisk)
-                .from(Channels::Table)
-                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                .order_by(Channels::Version, Order::Desc)
-                .limit(limit as u64)
-                .offset(offset as u64),
-        );
-
-        let data = self.pool.fetch_all_as::<Channel>(&sql, values).await?;
-
-        Ok(PaginatedResult {
-            data,
-            total,
-            limit,
-            offset,
-        })
+        versioned::list_versions(&self.pool, &spec(), channel_id, limit, offset).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sea_query::Asterisk;
 
     /// Initialize the DB backend for unit tests that call `build_sqlx`.
     fn init_test_backend() {

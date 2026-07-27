@@ -3,6 +3,7 @@ pub mod channels;
 pub mod cluster;
 pub mod connectors;
 pub mod helpers;
+pub(crate) mod versioned;
 pub mod trace_dlq;
 pub mod traces;
 pub mod workflows;

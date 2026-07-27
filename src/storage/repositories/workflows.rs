@@ -12,11 +12,32 @@ use crate::storage::{
 };
 
 use super::helpers::{
-    clamp_pagination, count_where, ensure_absent, fetch_required, fetch_required_tx,
+    clamp_pagination, ensure_absent, fetch_required, fetch_required_tx,
     optional_string_value, parse_sort_order,
 };
 
 pub use super::helpers::PaginatedResult;
+use super::versioned::{self, VersionedSpec};
+
+/// The versioned-lifecycle spec shared machinery operates on.
+fn spec() -> VersionedSpec {
+    use sea_query::IntoIden;
+    VersionedSpec {
+        table: Workflows::Table.into_iden(),
+        id_col: Workflows::WorkflowId.into_iden(),
+        version_col: Workflows::Version.into_iden(),
+        status_col: Workflows::Status.into_iden(),
+        priority_col: Workflows::Priority.into_iden(),
+        label: "Workflow",
+        noun: "workflow",
+    }
+}
+
+impl versioned::HasVersion for Workflow {
+    fn version(&self) -> i64 {
+        self.version
+    }
+}
 
 // -- DTOs --
 
@@ -134,22 +155,7 @@ impl SqlWorkflowRepository {
     /// Fetch one specific version — internal helper for the lifecycle
     /// methods; the admin API only exposes latest/list forms.
     async fn get_version(&self, workflow_id: &str, version: i64) -> Result<Workflow, OrionError> {
-        let (sql, values) = build_sqlx(
-            Query::select()
-                .column(Asterisk)
-                .from(Workflows::Table)
-                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .and_where(Expr::col(Workflows::Version).eq(version)),
-        );
-
-        self.pool
-            .fetch_optional_as::<Workflow>(&sql, values)
-            .await?
-            .ok_or_else(|| {
-                OrionError::NotFound(format!(
-                    "Workflow '{workflow_id}' version {version} not found"
-                ))
-            })
+        versioned::get_version(&self.pool, &spec(), workflow_id, version).await
     }
 
     pub fn new(pool: DbPool) -> Self {
@@ -216,7 +222,7 @@ async fn activate_full_rollout(
     active_versions: &[Workflow],
 ) -> Result<(), OrionError> {
     if !active_versions.is_empty() {
-        let (sql, values) = archive_active_workflows_query(workflow_id, None);
+        let (sql, values) = versioned::archive_actives_query(&spec(), workflow_id, None);
         tx.execute_query(&sql, values).await?;
     }
     let (sql, values) = activate_workflow_version_query(workflow_id, draft_version, 100);
@@ -237,7 +243,7 @@ async fn activate_partial_rollout(
     if let Some(primary_active) = active_versions.first() {
         if active_versions.len() > 1 {
             let (sql, values) =
-                archive_active_workflows_query(workflow_id, Some(primary_active.version));
+                versioned::archive_actives_query(&spec(), workflow_id, Some(primary_active.version));
             tx.execute_query(&sql, values).await?;
         }
         let (sql, values) =
@@ -294,23 +300,6 @@ fn activate_workflow_version_query(
     build_sqlx(&mut q)
 }
 
-/// Build the UPDATE query that archives all active versions of a workflow.
-/// `exclude_version`, when set, leaves that specific version untouched
-/// (used by partial-rollout activation to preserve the primary active row).
-fn archive_active_workflows_query(
-    workflow_id: &str,
-    exclude_version: Option<i64>,
-) -> (String, sea_query_binder::SqlxValues) {
-    let mut q = Query::update();
-    q.table(Workflows::Table)
-        .value(Workflows::Status, EntityStatus::Archived.as_str())
-        .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-        .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()));
-    if let Some(v) = exclude_version {
-        q.and_where(Expr::col(Workflows::Version).ne(v));
-    }
-    build_sqlx(&mut q)
-}
 
 fn build_condition(filter: &WorkflowFilter) -> Condition {
     let mut cond = Condition::all();
@@ -364,19 +353,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
     async fn get_by_id(&self, workflow_id: &str) -> Result<Workflow, OrionError> {
         crate::metrics::timed_db_op("workflows.get_by_id", async {
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Workflows::Table)
-                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                    .order_by(Workflows::Version, Order::Desc)
-                    .limit(1),
-            );
-
-            self.pool
-                .fetch_optional_as::<Workflow>(&sql, values)
-                .await?
-                .ok_or_else(|| OrionError::NotFound(format!("Workflow '{workflow_id}' not found")))
+            versioned::get_latest(&self.pool, &spec(), workflow_id).await
         })
         .await
     }
@@ -403,9 +380,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let cond = build_condition(filter);
             let (limit, offset) = clamp_pagination(filter.limit, filter.offset);
 
-            let total = count_where(&self.pool, CurrentWorkflows::Table, cond.clone()).await?;
-
-            // Sort column mapping
+            use sea_query::IntoIden;
             let sort_iden = match filter.sort_by.as_deref() {
                 Some("name") => Workflows::Name,
                 Some("status") => Workflows::Status,
@@ -414,25 +389,16 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 _ => Workflows::Priority,
             };
             let order = parse_sort_order(filter.sort_order.as_deref());
-
-            // Data
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(CurrentWorkflows::Table)
-                    .cond_where(cond)
-                    .order_by(sort_iden, order)
-                    .limit(limit as u64)
-                    .offset(offset as u64),
-            );
-            let data = self.pool.fetch_all_as::<Workflow>(&sql, values).await?;
-
-            Ok(PaginatedResult {
-                data,
-                total,
+            versioned::paginate(
+                &self.pool,
+                CurrentWorkflows::Table.into_iden(),
+                cond,
+                sort_iden.into_iden(),
+                order,
                 limit,
                 offset,
-            })
+            )
+            .await
         })
         .await
     }
@@ -443,19 +409,9 @@ impl WorkflowRepository for SqlWorkflowRepository {
         req: &UpdateWorkflowRequest,
     ) -> Result<Workflow, OrionError> {
         crate::metrics::timed_db_op("workflows.update_draft", async {
-            // Fetch existing draft
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Workflows::Table)
-                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                    .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str())),
-            );
-
+            let (sql, values) = versioned::draft_query(&spec(), workflow_id);
             let existing: Workflow = fetch_required(&self.pool, &sql, values, || {
-                OrionError::BadRequest(format!(
-                    "No draft version found for workflow '{workflow_id}'"
-                ))
+                versioned::no_draft_err(&spec(), workflow_id)
             })
             .await?;
 
@@ -505,36 +461,14 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
     async fn delete(&self, workflow_id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("workflows.delete", async {
-            let (sql, values) = build_sqlx(
-                Query::delete()
-                    .from_table(Workflows::Table)
-                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id)),
-            );
-
-            let rows_affected = self.pool.execute_query(&sql, values).await?;
-
-            if rows_affected == 0 {
-                return Err(OrionError::NotFound(format!(
-                    "Workflow '{workflow_id}' not found"
-                )));
-            }
-
-            Ok(())
+            versioned::delete_all_versions(&self.pool, &spec(), workflow_id).await
         })
         .await
     }
 
     async fn list_active(&self) -> Result<Vec<Workflow>, OrionError> {
         crate::metrics::timed_db_op("workflows.list_active", async {
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Workflows::Table)
-                    .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
-                    .order_by(Workflows::Priority, Order::Desc),
-            );
-
-            Ok(self.pool.fetch_all_as::<Workflow>(&sql, values).await?)
+            versioned::list_active(&self.pool, &spec()).await
         })
         .await
     }
@@ -549,19 +483,9 @@ impl WorkflowRepository for SqlWorkflowRepository {
         crate::metrics::timed_db_op("workflows.activate", async {
             let mut tx = self.pool.begin_tx().await?;
 
-            // Fetch draft version
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Workflows::Table)
-                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                    .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str())),
-            );
-
+            let (sql, values) = versioned::draft_query(&spec(), workflow_id);
             let draft: Workflow = fetch_required_tx(&mut tx, &sql, values, || {
-                OrionError::BadRequest(format!(
-                    "No draft version found for workflow '{workflow_id}'"
-                ))
+                versioned::no_draft_err(&spec(), workflow_id)
             })
             .await?;
 
@@ -600,30 +524,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
     async fn archive(&self, workflow_id: &str) -> Result<Workflow, OrionError> {
         crate::metrics::timed_db_op("workflows.archive", async {
-            // Fetch latest active version
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Workflows::Table)
-                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                    .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Active.as_str()))
-                    .order_by(Workflows::Version, Order::Desc)
-                    .limit(1),
-            );
-
-            let active: Workflow = fetch_required(&self.pool, &sql, values, || {
-                OrionError::BadRequest(format!(
-                    "No active version found for workflow '{workflow_id}'"
-                ))
-            })
-            .await?;
-
-            // Archive all active versions
-            let (sql, values) = archive_active_workflows_query(workflow_id, None);
-
-            self.pool.execute_query(&sql, values).await?;
-
-            self.get_version(workflow_id, active.version).await
+            versioned::archive_latest_active(&self.pool, &spec(), workflow_id).await
         })
         .await
     }
@@ -806,34 +707,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
         limit: i64,
         offset: i64,
     ) -> Result<PaginatedResult<Workflow>, OrionError> {
-        let limit = limit.clamp(1, 1000);
-        let offset = offset.max(0);
-
-        let total = count_where(
-            &self.pool,
-            Workflows::Table,
-            Condition::all().add(Expr::col(Workflows::WorkflowId).eq(workflow_id)),
-        )
-        .await?;
-
-        // Data
-        let (sql, values) = build_sqlx(
-            Query::select()
-                .column(Asterisk)
-                .from(Workflows::Table)
-                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                .order_by(Workflows::Version, Order::Desc)
-                .limit(limit as u64)
-                .offset(offset as u64),
-        );
-        let data = self.pool.fetch_all_as::<Workflow>(&sql, values).await?;
-
-        Ok(PaginatedResult {
-            data,
-            total,
-            limit,
-            offset,
-        })
+        versioned::list_versions(&self.pool, &spec(), workflow_id, limit, offset).await
     }
 
     async fn ping(&self) -> Result<(), OrionError> {
