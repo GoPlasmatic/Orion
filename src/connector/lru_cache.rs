@@ -168,16 +168,16 @@ mod tests {
         });
 
         let create = |v: u32| async move { Ok::<u32, ()>(v) };
-        cache.get_or_create("a", || create(1)).await.unwrap();
-        cache.get_or_create("b", || create(2)).await.unwrap();
+        cache.get_or_create("a", || create(1)).await.expect("test");
+        cache.get_or_create("b", || create(2)).await.expect("test");
 
         // Explicit evict.
         cache.evict("a").await;
         assert_eq!(closed.load(AtomicOrdering::SeqCst), 1);
 
         // Capacity eviction: cache is at max 2 after c + d insert once.
-        cache.get_or_create("c", || create(3)).await.unwrap();
-        cache.get_or_create("d", || create(4)).await.unwrap();
+        cache.get_or_create("c", || create(3)).await.expect("test");
+        cache.get_or_create("d", || create(4)).await.expect("test");
         assert_eq!(
             closed.load(AtomicOrdering::SeqCst),
             2,
