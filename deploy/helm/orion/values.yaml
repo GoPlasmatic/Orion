@@ -24,6 +24,26 @@ serviceAccount:
   annotations: {}
   name: ""
 
+# Runtime environment for Orion's config validation. The default
+# "production" forces admin auth on and refuses permissive CORS at boot.
+# devStack installs always run as "development" regardless of this value.
+env: production
+
+# Admin API authentication. With env=production (the default) Orion refuses
+# to boot without keys, so an install must provide either an existing Secret
+# holding a comma-separated `api-keys` entry, or inline apiKeys (rendered
+# into a chart-managed Secret). Generate one with: openssl rand -hex 32
+adminAuth:
+  enabled: true
+  existingSecret: ""
+  apiKeys: []
+
+# CORS origins for browser clients of the admin API (e.g. the Orion-ui
+# dashboard). Empty means no cross-origin access — the secure default.
+# Orion rejects a "*" wildcard in production at boot.
+cors:
+  allowedOrigins: []
+
 # Orion cluster-mode coordination (multi-instance HA).
 cluster:
   enabled: true

@@ -19,6 +19,11 @@ LB_URL="${LB_URL:-http://localhost:8080/health}"
 VICTIM="${VICTIM:-orion-a}"
 DURATION_SECS="${DURATION_SECS:-25}"
 
+# The HA compose enforces admin auth (proposal P1). The drill only hits
+# unauthenticated endpoints, so a throwaway key suffices when the caller
+# didn't provide one — compose interpolation needs it set for every command.
+export ORION_ADMIN_API_KEYS="${ORION_ADMIN_API_KEYS:-drill-only-throwaway-admin-key}"
+
 cd "$(dirname "$0")/../.."
 
 if [[ "${START_STACK:-0}" == "1" ]]; then

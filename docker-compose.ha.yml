@@ -1,8 +1,14 @@
 # Orion HA reference topology (multi-instance-ha B4):
 # nginx load balancer → 2× orion (cluster mode) → shared Postgres + Redis.
 #
+#   export ORION_ADMIN_API_KEYS="$(openssl rand -hex 32)"
 #   docker compose -f docker-compose.ha.yml up -d --wait
 #   curl http://localhost:8080/health
+#
+# The stack is a production shape, so it boots with ORION_ENV=production:
+# admin auth is enforced (ORION_ADMIN_API_KEYS is required) and CORS
+# defaults to no cross-origin access (set ORION_CORS_ALLOWED_ORIGINS to a
+# comma-separated origin list for browser dashboards).
 #
 # Demonstrates the recommended production shape:
 #   - storage.auto_migrate=false on the replicas; a one-shot `migrate`
@@ -45,6 +51,10 @@ x-orion-env: &orion-env
   ORION_SERVER__SHUTDOWN_DRAIN_SECS: "10"
   ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS: "20"
   ORION_LOGGING__FORMAT: "json"
+  ORION_ENV: "production"
+  ORION_ADMIN_AUTH__ENABLED: "true"
+  ORION_ADMIN_AUTH__API_KEYS: "${ORION_ADMIN_API_KEYS:?set ORION_ADMIN_API_KEYS (comma-separated admin API keys)}"
+  ORION_CORS__ALLOWED_ORIGINS: "${ORION_CORS_ALLOWED_ORIGINS:-}"
 
 services:
   postgres:

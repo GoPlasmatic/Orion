@@ -77,6 +77,20 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
+{{/* Effective runtime environment: devStack always runs as development. */}}
+{{- define "orion.environment" -}}
+{{- if .Values.devStack.enabled }}development{{- else }}{{ .Values.env }}{{- end }}
+{{- end }}
+
+{{/* Name of the Secret carrying the admin API keys. */}}
+{{- define "orion.adminAuthSecretName" -}}
+{{- if .Values.adminAuth.existingSecret }}
+{{- .Values.adminAuth.existingSecret }}
+{{- else }}
+{{- printf "%s-admin-auth" (include "orion.fullname" .) }}
+{{- end }}
+{{- end }}
+
 {{/* Shared ORION_* environment for the server and migrate containers. */}}
 {{- define "orion.env" -}}
 - name: ORION_STORAGE__URL
@@ -110,6 +124,21 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.logging.format | quote }}
 - name: ORION_LOGGING__LEVEL
   value: {{ .Values.logging.level | quote }}
+- name: ORION_ENV
+  value: {{ include "orion.environment" . | quote }}
+{{- if or .Values.adminAuth.existingSecret .Values.adminAuth.apiKeys }}
+- name: ORION_ADMIN_AUTH__ENABLED
+  value: {{ .Values.adminAuth.enabled | quote }}
+- name: ORION_ADMIN_AUTH__API_KEYS
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "orion.adminAuthSecretName" . }}
+      key: api-keys
+{{- else if and .Values.adminAuth.enabled (not .Values.devStack.enabled) }}
+{{- fail "adminAuth.existingSecret or adminAuth.apiKeys is required: the chart defaults to a production install with admin auth enforced. Set devStack.enabled=true for a throwaway dev install." }}
+{{- end }}
+- name: ORION_CORS__ALLOWED_ORIGINS
+  value: {{ join "," .Values.cors.allowedOrigins | quote }}
 {{- with .Values.extraEnv }}
 {{ toYaml . }}
 {{- end }}
