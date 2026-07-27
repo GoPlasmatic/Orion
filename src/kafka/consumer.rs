@@ -1,3 +1,16 @@
+//! Kafka ingestion consumer.
+//!
+//! Delivery guarantee: **at-least-once**. A message's offset is committed
+//! only after the message was either processed successfully or its payload
+//! was confirmed written to the DLQ. On any other outcome (processing
+//! failure with the DLQ disabled, or a failed DLQ write) the offset stays
+//! uncommitted and the consumer retries the same message in place with
+//! capped exponential backoff. Messages are handled sequentially, so no
+//! later offset — which would implicitly commit earlier ones — is ever
+//! committed past an unresolved failure; a restart redelivers from the
+//! failed message. Enable `kafka.dlq` to avoid head-of-line blocking on
+//! poison messages (e.g. payloads that will never parse).
+
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -189,22 +202,46 @@ pub fn start_consumer(
     })
 }
 
+/// Outcome of processing a single Kafka message, deciding whether its
+/// offset may be committed (see the module doc for the delivery guarantee).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MsgOutcome {
+    /// Processed successfully.
+    Processed,
+    /// Processing failed but the payload was confirmed written to the DLQ.
+    DeadLettered,
+    /// Processing failed and the payload is not preserved anywhere (DLQ
+    /// disabled, or the DLQ write itself failed).
+    Failed,
+}
+
+impl MsgOutcome {
+    /// Whether the message's offset may be committed. Committing an offset
+    /// implicitly commits every earlier offset on the partition, so this
+    /// must be true only when the message no longer needs redelivery.
+    fn commits_offset(self) -> bool {
+        matches!(self, MsgOutcome::Processed | MsgOutcome::DeadLettered)
+    }
+}
+
 /// Decode + parse + dispatch a single Kafka message. Wraps the entire
 /// per-message lifecycle: topic → channel lookup, payload UTF-8 decode,
-/// JSON parse, W3C trace context extraction, engine dispatch with timeout,
-/// and the match on the processing outcome (timeout / engine error /
-/// workflow errors / success). Every failure branch routes through
+/// JSON parse, W3C trace context extraction, channel validation_logic,
+/// engine dispatch with timeout, and the match on the processing outcome
+/// (timeout / engine error / workflow errors / success). Every failure
+/// branch routes through
 /// [`report_failure_and_dlq`]. The outer `consume_loop` is responsible
-/// for backpressure, shutdown, and offset commit after this returns.
+/// for backpressure, shutdown, retries, and offset commit after this
+/// returns.
 async fn process_one_kafka_message(
     ctx: &ConsumeLoopContext,
     msg: &rdkafka::message::BorrowedMessage<'_>,
-) {
+) -> MsgOutcome {
     let topic = msg.topic().to_string();
     let channel = match ctx.topic_map.get(&topic) {
         Some(ch) => ch.clone(),
         None => {
-            report_failure_and_dlq(
+            return report_failure_and_dlq(
                 ctx,
                 FailureReport {
                     channel: "unknown",
@@ -217,14 +254,13 @@ async fn process_one_kafka_message(
                 },
             )
             .await;
-            return;
         }
     };
 
     let payload = match msg.payload_view::<str>() {
         Some(Ok(text)) => text,
         Some(Err(e)) => {
-            report_failure_and_dlq(
+            return report_failure_and_dlq(
                 ctx,
                 FailureReport {
                     channel: &channel,
@@ -237,10 +273,9 @@ async fn process_one_kafka_message(
                 },
             )
             .await;
-            return;
         }
         None => {
-            report_failure_and_dlq(
+            return report_failure_and_dlq(
                 ctx,
                 FailureReport {
                     channel: &channel,
@@ -253,14 +288,13 @@ async fn process_one_kafka_message(
                 },
             )
             .await;
-            return;
         }
     };
 
     let data: serde_json::Value = match serde_json::from_str(payload) {
         Ok(v) => v,
         Err(e) => {
-            report_failure_and_dlq(
+            return report_failure_and_dlq(
                 ctx,
                 FailureReport {
                     channel: &channel,
@@ -273,7 +307,6 @@ async fn process_one_kafka_message(
                 },
             )
             .await;
-            return;
         }
     };
 
@@ -284,8 +317,9 @@ async fn process_one_kafka_message(
     // S1: apply the target channel's validation_logic before dispatch,
     // mirroring the HTTP ingress path. CORS / dedup / response cache are
     // HTTP-transport concerns and don't apply here. Failures are not
-    // silently dropped — they record metrics, log, and route to the DLQ
-    // when one is configured.
+    // silently dropped — they record metrics, log, route to the DLQ when
+    // one is configured, and commit the offset only on a confirmed DLQ
+    // write (same outcome model as every other failure class).
     let metadata = kafka_metadata_value(&channel, &topic, msg);
     let channel_runtime = ctx.channel_registry.get_by_name(&channel).await;
     if let Err(e) = crate::channel::guards::validate_input(
@@ -295,7 +329,7 @@ async fn process_one_kafka_message(
         &metadata,
         &ctx.datalogic,
     ) {
-        report_failure_and_dlq(
+        return report_failure_and_dlq(
             ctx,
             FailureReport {
                 channel: &channel,
@@ -308,7 +342,6 @@ async fn process_one_kafka_message(
             },
         )
         .await;
-        return;
     }
 
     let start = Instant::now();
@@ -340,7 +373,7 @@ async fn process_one_kafka_message(
                     ),
                 },
             )
-            .await;
+            .await
         }
         Ok(Err(e)) => {
             report_failure_and_dlq(
@@ -355,7 +388,7 @@ async fn process_one_kafka_message(
                     dlq_reason: &format!("Processing error: {e}"),
                 },
             )
-            .await;
+            .await
         }
         Ok(Ok(())) if message.has_errors() => {
             // v3 contract: workflow failures are pushed to
@@ -378,7 +411,7 @@ async fn process_one_kafka_message(
                     dlq_reason: &format!("Workflow errors: {summary}"),
                 },
             )
-            .await;
+            .await
         }
         Ok(Ok(())) => {
             let duration = start.elapsed().as_secs_f64();
@@ -389,6 +422,7 @@ async fn process_one_kafka_message(
                 channel = %channel,
                 "Kafka message processed successfully"
             );
+            MsgOutcome::Processed
         }
     }
 }
@@ -471,8 +505,10 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
             msg_result = ctx.consumer.recv() => {
                 match msg_result {
                     Ok(msg) => {
-                        process_one_kafka_message(&ctx, &msg).await;
-                        commit_offset(&ctx.consumer, &msg);
+                        if !process_until_committed(&ctx, &msg, &mut shutdown_rx).await {
+                            tracing::info!("Kafka consumer shutting down");
+                            break;
+                        }
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "Kafka consumer error");
@@ -490,7 +526,59 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
     tracing::info!("Kafka consumer stopped");
 }
 
-/// Commit the offset for a consumed message, logging any errors.
+/// Initial delay between in-place retries of an uncommittable message.
+const INITIAL_RETRY_BACKOFF_MS: u64 = 1_000;
+/// Cap for the exponential retry backoff.
+const MAX_RETRY_BACKOFF_MS: u64 = 60_000;
+
+/// Double the retry backoff, capped at [`MAX_RETRY_BACKOFF_MS`].
+fn next_backoff_ms(current_ms: u64) -> u64 {
+    current_ms.saturating_mul(2).min(MAX_RETRY_BACKOFF_MS)
+}
+
+/// Process one message until its offset can be committed, retrying it in
+/// place with capped exponential backoff while the outcome is
+/// [`MsgOutcome::Failed`] (see the module doc for the delivery guarantee).
+/// Returns `false` when shutdown was requested mid-retry — the offset is
+/// left uncommitted so the message is redelivered after restart.
+async fn process_until_committed(
+    ctx: &ConsumeLoopContext,
+    msg: &rdkafka::message::BorrowedMessage<'_>,
+    shutdown_rx: &mut watch::Receiver<bool>,
+) -> bool {
+    let mut backoff_ms = INITIAL_RETRY_BACKOFF_MS;
+    let mut attempt: u64 = 0;
+    loop {
+        let outcome = process_one_kafka_message(ctx, msg).await;
+        if outcome.commits_offset() {
+            commit_offset(&ctx.consumer, msg);
+            return true;
+        }
+        attempt += 1;
+        metrics::record_error("kafka_retry");
+        tracing::error!(
+            topic = %msg.topic(),
+            partition = msg.partition(),
+            offset = msg.offset(),
+            attempt,
+            backoff_ms,
+            "Kafka message failed without a confirmed DLQ write; offset not committed, retrying in place"
+        );
+        tokio::select! {
+            _ = shutdown_rx.changed() => {
+                if *shutdown_rx.borrow() {
+                    return false;
+                }
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {}
+        }
+        backoff_ms = next_backoff_ms(backoff_ms);
+    }
+}
+
+/// Commit the offset for a consumed message, logging any errors. Async
+/// commit failures only risk redelivery (the offset is re-committed on the
+/// next message or restored by rebalance), never message loss.
 fn commit_offset(consumer: &StreamConsumer, msg: &rdkafka::message::BorrowedMessage<'_>) {
     use rdkafka::consumer::CommitMode;
     if let Err(e) = consumer.commit_message(msg, CommitMode::Async) {
@@ -598,10 +686,14 @@ struct FailureReport<'a> {
 
 /// Record failure metrics and ship the original payload to the DLQ.
 /// Used by every failure branch in [`process_one_kafka_message`]
-/// (unmapped topic, UTF-8 decode, empty payload, JSON parse, processing
-/// timeout, engine error, workflow errors) to keep metric / log / DLQ
-/// behaviour consistent.
-async fn report_failure_and_dlq(ctx: &ConsumeLoopContext, failure: FailureReport<'_>) {
+/// (unmapped topic, UTF-8 decode, empty payload, JSON parse, channel
+/// validation, processing timeout, engine error, workflow errors) to keep
+/// metric / log / DLQ / commit behaviour consistent. Returns [`MsgOutcome::DeadLettered`] only
+/// when the DLQ write was confirmed, [`MsgOutcome::Failed`] otherwise.
+async fn report_failure_and_dlq(
+    ctx: &ConsumeLoopContext,
+    failure: FailureReport<'_>,
+) -> MsgOutcome {
     metrics::record_message(failure.channel, failure.message_status);
     metrics::record_error(failure.error_kind);
     tracing::error!(
@@ -611,7 +703,7 @@ async fn report_failure_and_dlq(ctx: &ConsumeLoopContext, failure: FailureReport
         "{}",
         failure.log_msg
     );
-    send_to_dlq(
+    let dead_lettered = send_to_dlq(
         &ctx.dlq_producer,
         &ctx.dlq_topic,
         failure.topic,
@@ -619,6 +711,11 @@ async fn report_failure_and_dlq(ctx: &ConsumeLoopContext, failure: FailureReport
         failure.dlq_reason,
     )
     .await;
+    if dead_lettered {
+        MsgOutcome::DeadLettered
+    } else {
+        MsgOutcome::Failed
+    }
 }
 
 /// Build a DLQ envelope message from error context. The original payload
@@ -633,36 +730,44 @@ fn build_dlq_message(source_topic: &str, payload: &[u8], error: &str) -> serde_j
     })
 }
 
-/// Send a failed message to the dead-letter queue if configured.
+/// Send a failed message to the dead-letter queue if configured. Returns
+/// `true` only when the DLQ producer confirmed delivery — the caller uses
+/// this to decide whether the source offset may be committed.
 async fn send_to_dlq(
     producer: &Option<Arc<KafkaProducer>>,
     dlq_topic: &Option<String>,
     source_topic: &str,
     payload: &[u8],
     error: &str,
-) {
-    if let (Some(producer), Some(topic)) = (producer, dlq_topic) {
-        let dlq_message = build_dlq_message(source_topic, payload, error);
+) -> bool {
+    let (Some(producer), Some(topic)) = (producer, dlq_topic) else {
+        return false;
+    };
+    let dlq_message = build_dlq_message(source_topic, payload, error);
 
-        // Infallible: the envelope is a `serde_json::Value` built from
-        // string-keyed literals via `json!`, which cannot fail to serialise.
-        let dlq_payload =
-            serde_json::to_string(&dlq_message).expect("DLQ envelope is always serialisable");
-        if let Err(e) = producer
-            .send(topic, Some(source_topic), dlq_payload.as_bytes())
-            .await
-        {
+    // Infallible: the envelope is a `serde_json::Value` built from
+    // string-keyed literals via `json!`, which cannot fail to serialise.
+    let dlq_payload =
+        serde_json::to_string(&dlq_message).expect("DLQ envelope is always serialisable");
+    match producer
+        .send(topic, Some(source_topic), dlq_payload.as_bytes())
+        .await
+    {
+        Err(e) => {
             tracing::error!(
                 dlq_topic = %topic,
                 error = %e,
                 "Failed to send message to DLQ"
             );
-        } else {
+            false
+        }
+        Ok(()) => {
             tracing::debug!(
                 dlq_topic = %topic,
                 source_topic = %source_topic,
                 "Message sent to DLQ"
             );
+            true
         }
     }
 }
@@ -735,5 +840,31 @@ mod tests {
         assert_eq!(msg["source_topic"], "topic");
         assert_eq!(msg["error"], "empty message");
         assert_eq!(msg["original_payload"], "");
+    }
+
+    #[test]
+    fn test_outcome_commit_decision() {
+        // Only a successful run or a confirmed DLQ write may advance the
+        // offset — anything else must leave the message for redelivery.
+        assert!(MsgOutcome::Processed.commits_offset());
+        assert!(MsgOutcome::DeadLettered.commits_offset());
+        assert!(!MsgOutcome::Failed.commits_offset());
+    }
+
+    #[test]
+    fn test_retry_backoff_doubles_and_caps() {
+        let mut backoff = INITIAL_RETRY_BACKOFF_MS;
+        assert_eq!(backoff, 1_000);
+        backoff = next_backoff_ms(backoff);
+        assert_eq!(backoff, 2_000);
+        backoff = next_backoff_ms(backoff);
+        assert_eq!(backoff, 4_000);
+        while backoff < MAX_RETRY_BACKOFF_MS {
+            backoff = next_backoff_ms(backoff);
+        }
+        assert_eq!(backoff, MAX_RETRY_BACKOFF_MS);
+        // Capped: further retries never exceed the max, and no overflow
+        assert_eq!(next_backoff_ms(MAX_RETRY_BACKOFF_MS), MAX_RETRY_BACKOFF_MS);
+        assert_eq!(next_backoff_ms(u64::MAX), MAX_RETRY_BACKOFF_MS);
     }
 }
