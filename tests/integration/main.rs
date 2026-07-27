@@ -36,6 +36,7 @@ mod error_envelope_test;
 mod error_paths_test;
 mod es_test;
 mod function_schema_test;
+mod ingress_guards_test;
 mod kafka_test;
 mod mongodb_test;
 mod mysql_test;

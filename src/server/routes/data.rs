@@ -270,9 +270,39 @@ async fn dynamic_handler(
         .collect();
     metadata["headers"] = Value::Object(header_map);
 
+    // Per-channel ingress guards apply before the sync/async split (S1):
+    // appending `/async` must not bypass CORS, validation_logic,
+    // deduplication, or backpressure. The response cache stays sync-only —
+    // async submissions always return 202.
+    let channel_runtime = state.channel_registry.get_by_name(&channel).await;
+    guards::check_cors_origin(
+        &channel,
+        &channel_runtime,
+        headers.get("origin").and_then(|v| v.to_str().ok()),
+    )?;
+    guards::validate_input(
+        &channel,
+        &channel_runtime,
+        &req.data,
+        &metadata,
+        &state.datalogic,
+    )?;
+    guards::check_deduplication(&channel, &channel_runtime, |name| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    })
+    .await?;
+
     if is_async {
+        // Acquired before the pending trace is created so rejected requests
+        // leave no trace row. The permit rides inside the queued message and
+        // is held by the worker for the duration of processing, so a
+        // channel's `max_concurrent` bounds sync and async work together.
+        let backpressure_permit = guards::acquire_backpressure(&channel, &channel_runtime)?;
+
         // Resolve the effective trace config (channel override > global default).
-        let channel_runtime = state.channel_registry.get_by_name(&channel).await;
         let effective_trace = channel_runtime
             .as_ref()
             .map(|c| c.trace_storage)
@@ -329,6 +359,7 @@ async fn dynamic_handler(
                 metadata,
                 trace_headers,
                 profile_requested,
+                backpressure_permit,
             })
             .await?;
 
@@ -340,7 +371,7 @@ async fn dynamic_handler(
         &channel,
         req.data,
         metadata,
-        &headers,
+        channel_runtime,
         profile_requested,
     )
     .await
@@ -426,6 +457,8 @@ async fn persist_trace_and_cache(
 }
 
 /// Core sync processing logic shared between simple HTTP and REST routes.
+/// CORS, validation, and dedup have already been applied by the caller
+/// (`dynamic_handler`) before the sync/async split.
 ///
 /// Returns a pre-serialized `Response` so the JSON is serialized exactly once
 /// (or zero times on cache hit).
@@ -434,25 +467,9 @@ async fn process_sync_for_channel(
     channel: &str,
     data: Value,
     metadata: Value,
-    headers: &axum::http::HeaderMap,
+    channel_config: Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
     profile_requested: bool,
 ) -> Result<Response, OrionError> {
-    let channel_config = state.channel_registry.get_by_name(channel).await;
-
-    guards::check_cors_origin(
-        channel,
-        &channel_config,
-        headers.get("origin").and_then(|v| v.to_str().ok()),
-    )?;
-    guards::validate_input(channel, &channel_config, &data, &metadata, &state.datalogic)?;
-    guards::check_deduplication(channel, &channel_config, |name| {
-        headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-    })
-    .await?;
-
     let profile = profile_requested.then(crate::engine::profile::ProfileCollector::new);
 
     // Response cache check — return early on cache hit (zero serialization)
@@ -699,267 +716,4 @@ pub(crate) async fn get_trace(
     }
 
     Ok(Json(response))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use async_trait::async_trait;
-
-    use crate::channel::registry::EffectiveTraceConfig;
-    use crate::channel::{ChannelConfig, ChannelRuntimeConfig, DeduplicationConfig};
-    use crate::config::TracingStorageConfig;
-    use crate::connector::cache_backend::CacheBackend;
-    use crate::errors::OrionError;
-    use crate::storage::models::Channel;
-
-    /// Dedup-store stub with a fixed `check_and_insert` outcome.
-    enum StubOutcome {
-        New,
-        Duplicate,
-        BackendError,
-    }
-
-    struct StubDedupBackend {
-        outcome: StubOutcome,
-    }
-
-    #[async_trait]
-    impl CacheBackend for StubDedupBackend {
-        async fn get(&self, _key: &str) -> Result<Option<String>, OrionError> {
-            Ok(None)
-        }
-        async fn set(&self, _key: &str, _value: &str) -> Result<(), OrionError> {
-            Ok(())
-        }
-        async fn set_ex(&self, _key: &str, _value: &str, _ttl: u64) -> Result<(), OrionError> {
-            Ok(())
-        }
-        async fn check_and_insert(&self, _key: &str, _window: u64) -> Result<bool, OrionError> {
-            match self.outcome {
-                StubOutcome::New => Ok(true),
-                StubOutcome::Duplicate => Ok(false),
-                StubOutcome::BackendError => {
-                    Err(OrionError::Internal("dedup backend down".to_string()))
-                }
-            }
-        }
-    }
-
-    /// Dedup-store stub that records every key passed to `check_and_insert`.
-    struct CapturingDedupBackend {
-        seen: Arc<std::sync::Mutex<Vec<String>>>,
-    }
-
-    #[async_trait]
-    impl CacheBackend for CapturingDedupBackend {
-        async fn get(&self, _key: &str) -> Result<Option<String>, OrionError> {
-            Ok(None)
-        }
-        async fn set(&self, _key: &str, _value: &str) -> Result<(), OrionError> {
-            Ok(())
-        }
-        async fn set_ex(&self, _key: &str, _value: &str, _ttl: u64) -> Result<(), OrionError> {
-            Ok(())
-        }
-        async fn check_and_insert(&self, key: &str, _window: u64) -> Result<bool, OrionError> {
-            self.seen
-                .lock()
-                .expect("test lock poisoned")
-                .push(key.to_string());
-            Ok(true)
-        }
-    }
-
-    fn dedup_runtime(outcome: StubOutcome) -> Option<Arc<ChannelRuntimeConfig>> {
-        dedup_runtime_with_store(Arc::new(StubDedupBackend { outcome }))
-    }
-
-    fn dedup_runtime_with_store(store: Arc<dyn CacheBackend>) -> Option<Arc<ChannelRuntimeConfig>> {
-        let now = chrono::Utc::now().naive_utc();
-        Some(Arc::new(ChannelRuntimeConfig {
-            channel: Channel {
-                channel_id: "ch_test".to_string(),
-                version: 1,
-                name: "test-channel".to_string(),
-                description: None,
-                channel_type: "sync".to_string(),
-                protocol: "rest".to_string(),
-                methods: None,
-                route_pattern: None,
-                topic: None,
-                consumer_group: None,
-                transport_config_json: "{}".to_string(),
-                workflow_id: None,
-                config_json: "{}".to_string(),
-                status: "active".to_string(),
-                priority: 0,
-                created_at: now,
-                updated_at: now,
-            },
-            parsed_config: ChannelConfig {
-                deduplication: Some(DeduplicationConfig {
-                    header: "idempotency-key".to_string(),
-                    window_secs: Some(60),
-                    connector: None,
-                }),
-                ..Default::default()
-            },
-            rate_limiter: None,
-            rate_limit_key_logic: None,
-            validation_logic: None,
-            backpressure_semaphore: None,
-            dedup_store: Some(store),
-            response_cache: None,
-            trace_storage: EffectiveTraceConfig::resolve(&TracingStorageConfig::default(), None),
-        }))
-    }
-
-    fn idempotency_headers() -> axum::http::HeaderMap {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("idempotency-key", "token-1".parse().expect("test header"));
-        headers
-    }
-
-    #[tokio::test]
-    async fn test_dedup_new_key_passes() {
-        let cfg = dedup_runtime(StubOutcome::New);
-        let result = super::check_deduplication("test-channel", &cfg, &idempotency_headers()).await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_dedup_duplicate_rejected() {
-        let cfg = dedup_runtime(StubOutcome::Duplicate);
-        let result = super::check_deduplication("test-channel", &cfg, &idempotency_headers()).await;
-        assert!(matches!(result, Err(OrionError::Conflict(_))));
-    }
-
-    #[tokio::test]
-    async fn test_dedup_fails_open_on_backend_error() {
-        let cfg = dedup_runtime(StubOutcome::BackendError);
-        let result = super::check_deduplication("test-channel", &cfg, &idempotency_headers()).await;
-        assert!(result.is_ok(), "backend errors must fail open, not 409");
-    }
-
-    #[tokio::test]
-    async fn test_dedup_key_is_channel_scoped() {
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let cfg = dedup_runtime_with_store(Arc::new(CapturingDedupBackend { seen: seen.clone() }));
-        super::check_deduplication("orders", &cfg, &idempotency_headers())
-            .await
-            .expect("dedup check should pass");
-        let keys = seen.lock().expect("test lock poisoned");
-        assert_eq!(keys.as_slice(), ["dedup:orders:token-1"]);
-    }
-
-    // ---- Response cache key (proposal N1) ----
-
-    fn cache_cfg(fields: Option<Vec<String>>) -> crate::channel::ChannelCacheConfig {
-        crate::channel::ChannelCacheConfig {
-            enabled: true,
-            ttl_secs: Some(60),
-            cache_key_fields: fields,
-            connector: None,
-        }
-    }
-
-    fn meta(
-        method: &str,
-        params: serde_json::Value,
-        query: serde_json::Value,
-    ) -> serde_json::Value {
-        serde_json::json!({
-            "http_method": method,
-            "params": params,
-            "query": query,
-            "headers": {},
-        })
-    }
-
-    #[test]
-    fn test_cache_key_distinguishes_route_params() {
-        let data = serde_json::json!({});
-        let a = super::compute_cache_key(
-            "orders",
-            &data,
-            &meta("GET", serde_json::json!({"id": "1"}), serde_json::json!({})),
-            &cache_cfg(None),
-        );
-        let b = super::compute_cache_key(
-            "orders",
-            &data,
-            &meta("GET", serde_json::json!({"id": "2"}), serde_json::json!({})),
-            &cache_cfg(None),
-        );
-        assert_ne!(a, b, "different path params must not share a cache entry");
-    }
-
-    #[test]
-    fn test_cache_key_distinguishes_query_and_method() {
-        let data = serde_json::json!({});
-        let base = meta(
-            "GET",
-            serde_json::json!({}),
-            serde_json::json!({"page": "1"}),
-        );
-        let a = super::compute_cache_key("orders", &data, &base, &cache_cfg(None));
-        let b = super::compute_cache_key(
-            "orders",
-            &data,
-            &meta(
-                "GET",
-                serde_json::json!({}),
-                serde_json::json!({"page": "2"}),
-            ),
-            &cache_cfg(None),
-        );
-        let c = super::compute_cache_key(
-            "orders",
-            &data,
-            &meta(
-                "POST",
-                serde_json::json!({}),
-                serde_json::json!({"page": "1"}),
-            ),
-            &cache_cfg(None),
-        );
-        assert_ne!(a, b);
-        assert_ne!(a, c);
-    }
-
-    #[test]
-    fn test_cache_key_stable_for_identical_requests() {
-        let data = serde_json::json!({"order_id": 7});
-        let m = meta(
-            "GET",
-            serde_json::json!({"id": "1"}),
-            serde_json::json!({"expand": "items"}),
-        );
-        let a = super::compute_cache_key("orders", &data, &m, &cache_cfg(None));
-        let b = super::compute_cache_key("orders", &data, &m, &cache_cfg(None));
-        assert_eq!(a, b);
-    }
-
-    #[test]
-    fn test_cache_key_folds_route_identity_with_key_fields() {
-        // Even with cache_key_fields selecting body fields, route identity
-        // must still distinguish keys.
-        let data = serde_json::json!({"tenant": "acme"});
-        let fields = Some(vec!["tenant".to_string()]);
-        let a = super::compute_cache_key(
-            "orders",
-            &data,
-            &meta("GET", serde_json::json!({"id": "1"}), serde_json::json!({})),
-            &cache_cfg(fields.clone()),
-        );
-        let b = super::compute_cache_key(
-            "orders",
-            &data,
-            &meta("GET", serde_json::json!({"id": "2"}), serde_json::json!({})),
-            &cache_cfg(fields),
-        );
-        assert_ne!(a, b);
-    }
 }

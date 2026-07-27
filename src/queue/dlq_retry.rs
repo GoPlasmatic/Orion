@@ -114,6 +114,7 @@ pub fn start_dlq_retry(
                         metadata,
                         trace_headers: std::collections::HashMap::new(),
                         profile_requested: false,
+                        backpressure_permit: None,
                     })
                     .await;
 

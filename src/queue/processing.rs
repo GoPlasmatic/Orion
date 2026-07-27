@@ -192,7 +192,11 @@ async fn route_set_result(
 
 /// Process a single queued trace.
 #[tracing::instrument(skip_all, fields(trace_id = %msg.trace_id, channel = %msg.channel))]
-async fn process_trace(msg: QueueMessage, ctx: ProcessingContext) {
+async fn process_trace(mut msg: QueueMessage, ctx: ProcessingContext) {
+    // Hold the channel's backpressure permit (acquired at submission) for
+    // the duration of processing; released on return.
+    let _backpressure_permit = msg.backpressure_permit.take();
+
     let ProcessingContext {
         engine,
         trace_repo,

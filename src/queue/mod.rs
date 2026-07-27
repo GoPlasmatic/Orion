@@ -88,6 +88,11 @@ pub struct QueueMessage {
     /// embeds the result under `metadata._orion_profile` before persisting
     /// the trace's `result_json`.
     pub profile_requested: bool,
+    /// Per-channel backpressure permit acquired at submission time (S1).
+    /// The worker holds it for the duration of processing so a channel's
+    /// `max_concurrent` bounds sync and async work together. `None` when
+    /// the channel has no backpressure config, or for DLQ resubmissions.
+    pub backpressure_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 /// In-memory trace queue backed by a tokio mpsc channel.
