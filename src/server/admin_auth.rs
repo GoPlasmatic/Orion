@@ -43,18 +43,20 @@ impl AdminPrincipal {
 /// True when `path` — an Axum `MatchedPath` template such as
 /// `/api/v1/admin/channels/{id}` — is behind admin authentication.
 ///
-/// Trace endpoints return full input/result payloads, so they are guarded like
-/// admin routes. Channel traffic cannot collide with the traces prefix: its
-/// `MatchedPath` is always the `/api/v1/data/{*path}` catch-all template.
+/// The trace *list* returns rows for every caller, so it is guarded like
+/// admin routes. The single-trace GET is **not** in this set (R12): its
+/// handler enforces its own two-lane rule — a valid admin credential, or the
+/// per-submission capability token returned with the async 202 — so a
+/// data-plane caller can poll its own result without holding an admin key.
+/// Channel traffic cannot collide with the traces prefix: its `MatchedPath`
+/// is always the `/api/v1/data/{*path}` catch-all template.
 ///
 /// The OpenAPI `SecurityAddon` (`server::routes::openapi`) applies the spec's
 /// `security` requirement through this same predicate, so the documented
 /// surface cannot drift from what the middleware enforces. The templates it
 /// feeds in are OpenAPI path keys, which are byte-identical to Axum's.
 pub(crate) fn is_guarded_path(path: &str) -> bool {
-    path.starts_with("/api/v1/admin")
-        || path == "/metrics"
-        || path.starts_with("/api/v1/data/traces")
+    path.starts_with("/api/v1/admin") || path == "/metrics" || path == "/api/v1/data/traces"
 }
 
 /// Middleware that authenticates admin API requests.
@@ -127,6 +129,24 @@ pub(crate) fn headers_present_valid_key(
         .admin_keys()
         .into_iter()
         .any(|key| constant_time_eq(&presented, &key.digest))
+}
+
+/// SHA-256 hex of an async-trace capability token (R12). The trace row
+/// stores this instead of the token itself.
+pub(crate) fn hash_trace_token(token: &str) -> String {
+    hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+/// Constant-time check of a presented trace token against the stored hash.
+pub(crate) fn trace_token_matches(presented: &str, stored_hash: &str) -> bool {
+    let presented: [u8; 32] = Sha256::digest(presented.as_bytes()).into();
+    let Ok(decoded) = hex::decode(stored_hash) else {
+        return false;
+    };
+    let Ok(stored) = <[u8; 32]>::try_from(decoded) else {
+        return false;
+    };
+    constant_time_eq(&presented, &stored)
 }
 
 /// Extract the API key from the request headers based on the configured header.

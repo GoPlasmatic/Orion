@@ -143,7 +143,7 @@ async fn poison_message_converges_on_dlq_max_retries() {
     );
 
     let trace = trace_repo
-        .create_pending("poison", None, "async", Some("{}"))
+        .create_pending("poison", None, "async", Some("{}"), None)
         .await
         .expect("pending trace");
     trace_queue

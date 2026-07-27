@@ -58,6 +58,7 @@ pub trait TraceRepository: Send + Sync {
         channel_id: Option<&str>,
         mode: &str,
         input_json: Option<&str>,
+        access_token_hash: Option<&str>,
     ) -> Result<Trace, OrionError>;
     async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError>;
     async fn update_status(
@@ -154,12 +155,14 @@ impl TraceRepository for SqlTraceRepository {
         channel_id: Option<&str>,
         mode: &str,
         input_json: Option<&str>,
+        access_token_hash: Option<&str>,
     ) -> Result<Trace, OrionError> {
         crate::metrics::timed_db_op("traces.create_pending", async {
             let id = uuid::Uuid::new_v4().to_string();
 
             let input_val = super::helpers::optional_string_value(input_json);
             let channel_id_val = super::helpers::optional_string_value(channel_id);
+            let token_hash_val = super::helpers::optional_string_value(access_token_hash);
 
             let (sql, values) = build_sqlx(
                 Query::insert()
@@ -171,6 +174,7 @@ impl TraceRepository for SqlTraceRepository {
                         Traces::ChannelId,
                         Traces::Mode,
                         Traces::InputJson,
+                        Traces::AccessTokenHash,
                     ])
                     .values_panic([
                         Expr::val(id.as_str()).into(),
@@ -179,6 +183,7 @@ impl TraceRepository for SqlTraceRepository {
                         Expr::val(channel_id_val).into(),
                         Expr::val(mode).into(),
                         Expr::val(input_val).into(),
+                        Expr::val(token_hash_val).into(),
                     ]),
             );
 
@@ -570,7 +575,7 @@ mod tests {
 
         // Create a pending trace
         let trace = repo
-            .create_pending("orders", Some("ch_orders"), "async", None)
+            .create_pending("orders", Some("ch_orders"), "async", None, None)
             .await
             .expect("test");
 

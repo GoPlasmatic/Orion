@@ -183,8 +183,9 @@ async fn test_data_async_processing() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
 
-    let body = poll_trace_until_done(&app, &trace_id, 20).await;
+    let body = poll_trace_until_done(&app, &trace_id, 20, Some(&token)).await;
     assert_eq!(body["status"], "completed");
 }
 

@@ -210,7 +210,10 @@ async fn test_webhook_async_processing() {
     assert!(!trace_id.is_empty(), "trace_id should not be empty");
 
     // ---- Step 3: Poll until the trace reaches a terminal state ----
-    let trace = poll_trace_until_done(&app, trace_id, 30).await;
+    let token = body["trace_token"]
+        .as_str()
+        .expect("Response should contain a trace_token");
+    let trace = poll_trace_until_done(&app, trace_id, 30, Some(token)).await;
 
     assert_eq!(
         trace["status"], "completed",

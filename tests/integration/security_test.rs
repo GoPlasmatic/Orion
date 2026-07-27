@@ -430,29 +430,116 @@ async fn test_traces_list_requires_admin_key() {
 }
 
 #[tokio::test]
-async fn test_trace_get_requires_admin_key() {
+async fn test_trace_get_requires_admin_key_or_token() {
     let mut config = orion::config::AppConfig::default();
     config.admin_auth.enabled = true;
     config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
-    let app = common::test_app_with_config(config).await;
+    let state = common::test_state_with_config(config).await;
+    let app = orion::server::build_router(state.clone());
 
-    // Without a key → 401
+    // Seed a token-bearing async trace via the repository (the admin API
+    // requires the key this test is about).
+    use sha2::Digest;
+    let token = "r12-capability-token";
+    let token_hash = hex::encode(sha2::Sha256::digest(token.as_bytes()));
+    let trace = state
+        .trace_repo
+        .create_pending("r12-guarded", None, "async", None, Some(&token_hash))
+        .await
+        .unwrap();
+    let trace_id = trace.id;
+
+    // Missing trace → 404 regardless of credentials.
     let resp = app
         .clone()
         .oneshot(json_request("GET", "/api/v1/data/traces/some-id", None))
         .await
         .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Real trace, no key and no token → 401 (R12, handler-enforced).
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/data/traces/{trace_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    // With the admin key → auth passes; trace is absent → 404
+    // The admin key grants access without the token…
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/data/traces/some-id")
+        .uri(format!("/api/v1/data/traces/{trace_id}"))
         .header("Authorization", "Bearer test-secret-key")
         .body(Body::empty())
         .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // …and the capability token grants access without the key, so a
+    // data-plane caller can poll its own submission under admin auth.
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/data/traces/{trace_id}"))
+        .header("x-trace-token", token)
+        .body(Body::empty())
+        .unwrap();
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_trace_token_scopes_reads_on_default_config() {
+    // Default config: admin auth off. R12's whole point — one caller must
+    // not be able to read another's async result just by knowing/enumerating
+    // trace ids.
+    let app = common::test_app().await;
+
+    common::create_and_activate_channel(&app, "r12-open", common::simple_log_workflow("R12 Open"))
+        .await;
+    let (trace_id, token) = common::submit_async(
+        &app,
+        "/api/v1/data/r12-open/async",
+        json!({"data": {"secret_payload": "for-my-eyes-only"}}),
+    )
+    .await;
+
+    // No token → 401 even with auth disabled.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/data/traces/{trace_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Wrong token → 401.
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/data/traces/{trace_id}"))
+        .header("x-trace-token", "not-the-token")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // Right token via the query-param form → 200.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/data/traces/{trace_id}?token={token}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]

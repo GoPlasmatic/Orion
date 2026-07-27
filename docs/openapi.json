@@ -2640,6 +2640,7 @@
         "tags": [
           "Data"
         ],
+        "description": "Fetch one trace. Access follows a two-lane rule (R12): present either a valid admin credential, or — for async submissions — the `trace_token` returned with the 202, via the `x-trace-token` header or `?token=` query parameter. Traces without a token (sync traces, DLQ retries, rows from before 1.0.1) are admin-plane only when admin auth is enabled.",
         "operationId": "get_trace",
         "parameters": [
           {
@@ -2650,6 +2651,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "token",
+            "in": "query",
+            "description": "The capability token returned with the async 202. Alternative to the\n`x-trace-token` header for clients that cannot set headers.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2657,7 +2670,7 @@
             "description": "Trace status and result"
           },
           "401": {
-            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "description": "Missing or wrong trace token / admin credential",
             "content": {
               "application/json": {
                 "schema": {
@@ -2686,15 +2699,7 @@
               }
             }
           }
-        },
-        "security": [
-          {
-            "admin_bearer": []
-          },
-          {
-            "admin_api_key": []
-          }
-        ]
+        }
       }
     },
     "/api/v1/data/{channel}": {
@@ -2856,7 +2861,7 @@
           "Data"
         ],
         "summary": "Submit to a channel asynchronously",
-        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v1/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: CORS, `validation_logic`, deduplication, and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v1/data/traces/{id}` with the returned `trace_id` for the result. That endpoint is admin-authenticated even though this one is not.",
+        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v1/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: CORS, `validation_logic`, deduplication, and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v1/data/traces/{id}` with the returned `trace_id` for the result, presenting the returned `trace_token` via the `x-trace-token` header or `?token=` query parameter. The token scopes the poll to this submission (R12); an admin credential also works.",
         "operationId": "submit_channel_request_async",
         "parameters": [
           {
@@ -3120,6 +3125,13 @@
               "null"
             ],
             "description": "Id to poll via `GET /api/v1/data/traces/{id}`, or `null` when trace\npersistence is disabled for the channel (see the `Warning` header)."
+          },
+          "trace_token": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Capability token scoping the poll to this submission (R12): present\nit via the `x-trace-token` header or `?token=` query parameter.\nShown once, here — only its hash is stored. `null` whenever\n`trace_id` is."
           }
         }
       },

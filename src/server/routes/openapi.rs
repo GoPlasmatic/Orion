@@ -329,11 +329,19 @@ mod tests {
 
     /// Every operation the admin-auth middleware guards must advertise the
     /// requirement, and nothing else may.
+    ///
+    /// One path enforces auth in its handler rather than the middleware:
+    /// `GET /api/v1/data/traces/{id}` (R12) accepts *either* an admin
+    /// credential or the per-submission `trace_token`, so it documents a 401
+    /// without being in `is_guarded_path`. It is pinned here explicitly so a
+    /// new unguarded-but-401 route still fails this test until reviewed.
     #[test]
     fn security_matches_the_middleware_guard() {
+        const HANDLER_ENFORCED_401: &[&str] = &["/api/v1/data/traces/{id}"];
         let spec = spec();
         for (path, item) in &spec.paths.paths {
             let expected = is_guarded_path(path);
+            let handler_enforced = HANDLER_ENFORCED_401.contains(&path.as_str());
             for (method, operation) in [
                 ("get", &item.get),
                 ("put", &item.put),
@@ -349,7 +357,7 @@ mod tests {
                 );
                 assert_eq!(
                     operation.responses.responses.contains_key("401"),
-                    expected,
+                    expected || handler_enforced,
                     "{method} {path}: 401 response does not match is_guarded_path()"
                 );
             }

@@ -62,9 +62,10 @@ async fn test_async_trace_completes_successfully() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
 
     // Poll until completion
-    let trace = poll_trace_until_done(&app, &trace_id, 30).await;
+    let trace = poll_trace_until_done(&app, &trace_id, 30, Some(&token)).await;
     assert_eq!(trace["status"], "completed");
     assert!(trace.get("message").is_some());
 }
@@ -86,9 +87,10 @@ async fn test_async_trace_with_no_matching_channel() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
 
     // Trace should still complete (no-op)
-    let trace = poll_trace_until_done(&app, &trace_id, 30).await;
+    let trace = poll_trace_until_done(&app, &trace_id, 30, Some(&token)).await;
     assert_eq!(trace["status"], "completed");
 }
 
@@ -139,12 +141,15 @@ async fn test_multiple_concurrent_async_traces() {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
         let body = body_json(resp).await;
-        trace_ids.push(body["trace_id"].as_str().unwrap().to_string());
+        trace_ids.push((
+            body["trace_id"].as_str().unwrap().to_string(),
+            body["trace_token"].as_str().unwrap().to_string(),
+        ));
     }
 
     // Wait for all traces to complete
-    for trace_id in &trace_ids {
-        let trace = poll_trace_until_done(&app, trace_id, 40).await;
+    for (trace_id, token) in &trace_ids {
+        let trace = poll_trace_until_done(&app, trace_id, 40, Some(token)).await;
         let status = trace["status"].as_str().unwrap();
         assert!(
             status == "completed" || status == "failed",
@@ -246,9 +251,10 @@ async fn test_trace_list_filter_by_status() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
 
     // Wait for completion
-    poll_trace_until_done(&app, &trace_id, 30).await;
+    poll_trace_until_done(&app, &trace_id, 30, Some(&token)).await;
 
     // Filter by completed status
     let resp = app
@@ -358,8 +364,9 @@ async fn test_get_completed_trace_with_result() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
 
-    let body = poll_trace_until_done(&app, &trace_id, 40).await;
+    let body = poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
     assert_eq!(body["status"], "completed");
     assert!(body.get("message").is_some());
     assert!(body.get("started_at").is_some());
@@ -404,12 +411,11 @@ async fn test_credential_headers_masked_at_rest_in_async_trace() {
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
-    let trace_id = body_json(resp).await["trace_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let submit = body_json(resp).await;
+    let trace_id = submit["trace_id"].as_str().unwrap().to_string();
+    let token = submit["trace_token"].as_str().unwrap().to_string();
 
-    let trace = poll_trace_until_done(&app, &trace_id, 40).await;
+    let trace = poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
     assert_eq!(trace["status"], "completed");
 
     let row = state.trace_repo.get_by_id(&trace_id).await.unwrap();
@@ -470,13 +476,13 @@ async fn test_trace_read_does_not_expose_request_context() {
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
-    let trace_id = body_json(resp).await["trace_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let submit = body_json(resp).await;
+    let trace_id = submit["trace_id"].as_str().unwrap().to_string();
+    let token = submit["trace_token"].as_str().unwrap().to_string();
 
-    // An anonymous caller polls the trace (default config: no admin auth).
-    let trace = poll_trace_until_done(&app, &trace_id, 40).await;
+    // The submitter polls with its capability token (default config: no
+    // admin auth) — R12 requires the token even here.
+    let trace = poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
     assert_eq!(trace["status"], "completed");
 
     // The message is served, but without the submitter's request context.

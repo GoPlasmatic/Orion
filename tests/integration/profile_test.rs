@@ -275,8 +275,9 @@ async fn profile_async_embedded_in_trace() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = common::body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
 
-    let final_trace = common::poll_trace_until_done(&app, &trace_id, 40).await;
+    let final_trace = common::poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
     assert_eq!(final_trace["status"], "completed");
 
     // result_json is exposed under the `message` key by the trace polling

@@ -551,24 +551,53 @@ pub async fn create_rest_channel(
     ch_id
 }
 
+/// Submit to an async endpoint and return `(trace_id, trace_token)` from the
+/// 202. The token is required to poll the trace (R12).
+pub async fn submit_async(
+    app: &axum::Router,
+    uri: &str,
+    body: serde_json::Value,
+) -> (String, String) {
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", uri, Some(body)))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::ACCEPTED);
+    let body = body_json(resp).await;
+    let trace_id = body["trace_id"]
+        .as_str()
+        .expect("202 must carry trace_id")
+        .to_string();
+    let token = body["trace_token"]
+        .as_str()
+        .expect("202 must carry trace_token")
+        .to_string();
+    (trace_id, token)
+}
+
 /// Poll a trace until it reaches a terminal status or max iterations.
+/// `token` is the `trace_token` from the async 202; `None` works only for
+/// tokenless traces (sync rows) or when presenting admin credentials is
+/// unnecessary (auth disabled).
 pub async fn poll_trace_until_done(
     app: &axum::Router,
     trace_id: &str,
     max_polls: usize,
+    token: Option<&str>,
 ) -> serde_json::Value {
     let mut body = serde_json::json!(null);
     for _ in 0..max_polls {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let resp = app
-            .clone()
-            .oneshot(json_request(
-                "GET",
-                &format!("/api/v1/data/traces/{}", trace_id),
-                None,
-            ))
-            .await
-            .unwrap();
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(format!("/api/v1/data/traces/{}", trace_id))
+            .header("content-type", "application/json");
+        if let Some(t) = token {
+            builder = builder.header("x-trace-token", t);
+        }
+        let req = builder.body(Body::empty()).unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
         body = body_json(resp).await;
         let status = body["status"].as_str().unwrap_or("");

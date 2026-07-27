@@ -103,9 +103,10 @@ async fn test_inflight_trace_completes_on_shutdown() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
 
     // Poll until the trace reaches a terminal state
-    let result = common::poll_trace_until_done(&app, &trace_id, 40).await;
+    let result = common::poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
     let status = result["status"].as_str().unwrap_or("");
     assert!(
         status == "completed" || status == "failed",

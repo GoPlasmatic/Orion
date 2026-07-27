@@ -350,6 +350,11 @@ pub struct Trace {
     /// pipelines without re-running them in dry-run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_trace_json: Option<String>,
+    /// SHA-256 hash of the capability token returned with the async 202
+    /// (R12). Never serialized — the hash is a credential-verifier and no
+    /// API surface has a reason to show it.
+    #[serde(default, skip_serializing)]
+    pub access_token_hash: Option<String>,
 }
 
 // -- Trace DLQ model --

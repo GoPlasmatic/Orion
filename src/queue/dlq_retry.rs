@@ -110,6 +110,10 @@ pub fn start_dlq_retry(
                         channel_id.as_deref(),
                         "async",
                         Some(&entry.payload_json),
+                        // Operator-plane row: the original submitter's token
+                        // died with the failed trace; reads follow the admin
+                        // trust model (R12).
+                        None,
                     )
                     .await
                 {
@@ -366,6 +370,7 @@ mod tests {
             created_at: now,
             updated_at: now,
             task_trace_json: None,
+            access_token_hash: None,
         }
     }
 
@@ -377,6 +382,7 @@ mod tests {
             _channel_id: Option<&str>,
             _mode: &str,
             _input_json: Option<&str>,
+            _access_token_hash: Option<&str>,
         ) -> Result<Trace, OrionError> {
             Ok(make_trace(&uuid::Uuid::new_v4().to_string(), channel))
         }

@@ -324,9 +324,10 @@ async fn async_request_with_task_details_captures_and_returns_task_trace_json() 
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap().to_string();
+    let token = body["trace_token"].as_str().unwrap().to_string();
 
     // poll_trace_until_done hits the single-trace GET endpoint.
-    let body = poll_trace_until_done(&app, &trace_id, 40).await;
+    let body = poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
     assert_eq!(
         body["status"], "completed",
         "trace did not complete: {body:?}"

@@ -10,13 +10,15 @@ The data API handles runtime request processing: routing messages to channels, e
 | `POST` | `/api/v1/data/{channel}/async` | Submit for async processing (returns trace ID) |
 | `ANY` | `/api/v1/data/{path...}` | REST route matching: method + path matched against channel route patterns |
 | `ANY` | `/api/v1/data/{path...}/async` | Async submission via REST route matching |
-| `GET` | `/api/v1/data/traces` | List traces. Filter with `?status=`, `?channel=`, `?mode=` |
-| `GET` | `/api/v1/data/traces/{id}` | Poll async trace result |
+| `GET` | `/api/v1/data/traces` | List traces (payload-free rows). Filter with `?status=`, `?channel=`, `?mode=` |
+| `GET` | `/api/v1/data/traces/{id}` | Poll one trace. Requires the submission's `trace_token` or an admin credential |
 
-> **Note:** the two trace endpoints return full request/response payloads, so
-> when admin auth is enabled (`[admin_auth]`) they require the admin API key —
-> same as `/api/v1/admin/*` and `/metrics`. Channel endpoints stay
-> unauthenticated.
+> **Note:** the trace *list* is guarded like `/api/v1/admin/*` and `/metrics`
+> when admin auth is enabled (`[admin_auth]`), and its rows carry no payloads.
+> The single-trace GET follows a two-lane rule instead: a valid admin
+> credential always works, and an async submission's `trace_token` grants
+> access to that one trace — so data-plane callers can poll their own results
+> without holding an admin key. Channel endpoints stay unauthenticated.
 
 ## Route Resolution
 
@@ -88,19 +90,25 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders/async \
   -d '{ "data": { "order_id": "ORD-456" } }'
 ```
 
-**Response:** returns immediately with a trace ID:
+**Response:** returns immediately with a trace ID and a capability token:
 
 ```json
 {
   "trace_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "pending"
+  "trace_token": "b1946ac92492d2347c6235b4d2611184"
 }
 ```
 
-**Poll for the result:**
+The token is shown once, here — only its hash is stored. It scopes the poll
+to this submission: without it (or an admin credential), the trace is not
+readable, so one caller can never read another's async result.
+
+**Poll for the result** (header form, or `?token=` for clients that cannot
+set headers):
 
 ```bash
-curl -s http://localhost:8080/api/v1/data/traces/550e8400-e29b-41d4-a716-446655440000
+curl -s http://localhost:8080/api/v1/data/traces/550e8400-e29b-41d4-a716-446655440000 \
+  -H "x-trace-token: b1946ac92492d2347c6235b4d2611184"
 ```
 
 **Trace statuses:** `pending` → `completed` or `failed`.
@@ -120,11 +128,16 @@ curl -s "http://localhost:8080/api/v1/data/traces?channel=orders&status=complete
 curl -s "http://localhost:8080/api/v1/data/traces?mode=async"
 ```
 
-Get a specific trace:
+Get a specific trace (async traces need their `trace_token`; sync traces
+follow the admin trust model):
 
 ```bash
-curl -s http://localhost:8080/api/v1/data/traces/{trace-id}
+curl -s "http://localhost:8080/api/v1/data/traces/{trace-id}?token={trace-token}"
 ```
+
+List rows are payload-free projections — `input_json`, `result_json` and
+`task_trace_json` are served only by the single-trace GET, and the served
+message omits the submitter's request context (`context.metadata`).
 
 ## Operational Endpoints
 

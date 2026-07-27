@@ -50,9 +50,10 @@ async fn test_async_trace_result_persisted() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap();
+    let token = body["trace_token"].as_str().unwrap();
 
     // Poll until completed
-    let trace = poll_trace_until_done(&app, trace_id, 40).await;
+    let trace = poll_trace_until_done(&app, trace_id, 40, Some(token)).await;
     assert_eq!(trace["status"], "completed");
 
     // The trace message context should contain the mapped data
@@ -84,9 +85,10 @@ async fn test_async_trace_no_matching_workflow_completes() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
     let body = body_json(resp).await;
     let trace_id = body["trace_id"].as_str().unwrap();
+    let token = body["trace_token"].as_str().unwrap();
 
     // Trace should complete (engine processes it as no-op)
-    let trace = poll_trace_until_done(&app, trace_id, 40).await;
+    let trace = poll_trace_until_done(&app, trace_id, 40, Some(token)).await;
     assert_eq!(trace["status"], "completed");
 }
 
@@ -116,10 +118,9 @@ async fn test_async_traces_complete_independently() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
-    let trace_id_1 = body_json(resp).await["trace_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let body1 = body_json(resp).await;
+    let trace_id_1 = body1["trace_id"].as_str().unwrap().to_string();
+    let token_1 = body1["trace_token"].as_str().unwrap().to_string();
 
     let resp = app
         .clone()
@@ -131,17 +132,16 @@ async fn test_async_traces_complete_independently() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
-    let trace_id_2 = body_json(resp).await["trace_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let body2 = body_json(resp).await;
+    let trace_id_2 = body2["trace_id"].as_str().unwrap().to_string();
+    let token_2 = body2["trace_token"].as_str().unwrap().to_string();
 
     // Both should be different trace IDs
     assert_ne!(trace_id_1, trace_id_2);
 
     // Both should complete
-    let trace1 = poll_trace_until_done(&app, &trace_id_1, 40).await;
-    let trace2 = poll_trace_until_done(&app, &trace_id_2, 40).await;
+    let trace1 = poll_trace_until_done(&app, &trace_id_1, 40, Some(&token_1)).await;
+    let trace2 = poll_trace_until_done(&app, &trace_id_2, 40, Some(&token_2)).await;
     assert_eq!(trace1["status"], "completed");
     assert_eq!(trace2["status"], "completed");
 }

@@ -402,8 +402,11 @@ pub(crate) async fn dynamic_handler(
             if matches!(effective_trace.mode, crate::config::TraceStorageMode::Off) {
                 metrics::record_trace_dropped("off");
                 let id = uuid::Uuid::new_v4().to_string();
-                let mut resp =
-                    (StatusCode::ACCEPTED, Json(json!({ "trace_id": null }))).into_response();
+                let mut resp = (
+                    StatusCode::ACCEPTED,
+                    Json(json!({ "trace_id": null, "trace_token": null })),
+                )
+                    .into_response();
                 if let Ok(value) = axum::http::HeaderValue::from_str(&format!(
                     "299 - \"Trace persistence disabled for channel '{channel}'\""
                 )) {
@@ -415,13 +418,28 @@ pub(crate) async fn dynamic_handler(
                 let channel_id = channel_runtime
                     .as_ref()
                     .map(|c| c.channel.channel_id.as_str());
+                // R12: mint an opaque capability token for this submission.
+                // Only its hash is stored; the plaintext exists once, in this
+                // 202. Polling requires it (or an admin credential), so a
+                // caller can read its own async result but nobody else's.
+                let token = uuid::Uuid::new_v4().simple().to_string();
+                let token_hash = crate::server::admin_auth::hash_trace_token(&token);
                 let trace = state
                     .trace_repo
-                    .create_pending(&channel, channel_id, "async", input_json.as_deref())
+                    .create_pending(
+                        &channel,
+                        channel_id,
+                        "async",
+                        input_json.as_deref(),
+                        Some(&token_hash),
+                    )
                     .await?;
                 let id = trace.id.clone();
-                let resp =
-                    (StatusCode::ACCEPTED, Json(json!({ "trace_id": trace.id }))).into_response();
+                let resp = (
+                    StatusCode::ACCEPTED,
+                    Json(json!({ "trace_id": trace.id, "trace_token": token })),
+                )
+                    .into_response();
                 (id, resp)
             };
 
@@ -476,7 +494,9 @@ CORS, `validation_logic`, deduplication, and backpressure. The response cache \
 is sync-only, so an async submission never returns a cached body.
 
 Poll `GET /api/v1/data/traces/{id}` with the returned `trace_id` for the \
-result. That endpoint is admin-authenticated even though this one is not.",
+result, presenting the returned `trace_token` via the `x-trace-token` header \
+or `?token=` query parameter. The token scopes the poll to this submission \
+(R12); an admin credential also works.",
     params(
         ("channel" = String, Path, description = "Channel name, or the first segment of a REST channel's registered route pattern."),
     ),
@@ -869,6 +889,11 @@ pub(crate) struct AsyncSubmitResponse {
     /// Id to poll via `GET /api/v1/data/traces/{id}`, or `null` when trace
     /// persistence is disabled for the channel (see the `Warning` header).
     trace_id: Option<String>,
+    /// Capability token scoping the poll to this submission (R12): present
+    /// it via the `x-trace-token` header or `?token=` query parameter.
+    /// Shown once, here — only its hash is stored. `null` whenever
+    /// `trace_id` is.
+    trace_token: Option<String>,
 }
 
 // ============================================================
@@ -930,22 +955,69 @@ pub(crate) async fn list_traces(
     })))
 }
 
+/// Query parameters for `GET /traces/{id}`.
+#[derive(Deserialize, utoipa::IntoParams)]
+pub(crate) struct TraceAccessQuery {
+    /// The capability token returned with the async 202. Alternative to the
+    /// `x-trace-token` header for clients that cannot set headers.
+    token: Option<String>,
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/data/traces/{id}",
     tag = "Data",
-    params(("id" = String, Path, description = "Trace ID")),
+    description = "\
+Fetch one trace. Access follows a two-lane rule (R12): present either a \
+valid admin credential, or — for async submissions — the `trace_token` \
+returned with the 202, via the `x-trace-token` header or `?token=` query \
+parameter. Traces without a token (sync traces, DLQ retries, rows from \
+before 1.0.1) are admin-plane only when admin auth is enabled.",
+    params(
+        ("id" = String, Path, description = "Trace ID"),
+        TraceAccessQuery,
+    ),
     responses(
         (status = 200, description = "Trace status and result"),
+        (status = 401, description = "Missing or wrong trace token / admin credential", body = ErrorResponse),
         (status = 404, description = "Trace not found", body = ErrorResponse),
     )
 )]
-#[tracing::instrument(skip(state))]
+#[tracing::instrument(skip(state, headers, query))]
 pub(crate) async fn get_trace(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Query(query): Query<TraceAccessQuery>,
+    headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, OrionError> {
     let trace = state.trace_repo.get_by_id(&id).await?;
+
+    // R12 access rule. Lane 1: a valid admin credential (only meaningful when
+    // admin auth is enabled — the middleware no longer guards this route, so
+    // the check happens here). Lane 2: the per-submission capability token.
+    // Tokenless traces stay on the admin trust model: open when auth is
+    // disabled (the whole admin plane is), admin-only when enabled.
+    let auth_cfg = &state.config.admin_auth;
+    let is_admin = auth_cfg.enabled
+        && crate::server::admin_auth::headers_present_valid_key(&headers, auth_cfg);
+    if !is_admin {
+        let presented = headers
+            .get("x-trace-token")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+            .or_else(|| query.token.clone());
+        let allowed = match trace.access_token_hash.as_deref() {
+            Some(stored) => presented
+                .as_deref()
+                .is_some_and(|t| crate::server::admin_auth::trace_token_matches(t, stored)),
+            None => !auth_cfg.enabled,
+        };
+        if !allowed {
+            return Err(OrionError::Unauthorized(
+                "This trace requires its trace_token (returned with the async 202) or an admin credential".into(),
+            ));
+        }
+    }
 
     let mut response = json!({
         "id": trace.id,

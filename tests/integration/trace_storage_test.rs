@@ -315,17 +315,16 @@ async fn async_trace_records_channel_id() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
-    let trace_id = body_json(resp).await["trace_id"]
-        .as_str()
-        .unwrap()
-        .to_string();
+    let submit = body_json(resp).await;
+    let trace_id = submit["trace_id"].as_str().unwrap().to_string();
+    let token = submit["trace_token"].as_str().unwrap().to_string();
 
     // The pending row is inserted before the 202, so channel_id is already set.
     let resp = app
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/data/traces/{trace_id}"),
+            &format!("/api/v1/data/traces/{trace_id}?token={token}"),
             None,
         ))
         .await
