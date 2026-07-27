@@ -247,6 +247,41 @@ pub fn set_trace_queue_memory_bytes(bytes: f64) {
     gauge!("trace_queue_memory_bytes").set(bytes);
 }
 
+/// Count a submission the queue refused. `reason` is `"full"` (the bounded
+/// buffer is at capacity) or `"memory"` (`max_queue_memory_bytes` exceeded).
+/// Both surface to the caller as 503, so without this counter shedding is
+/// indistinguishable from any other upstream error (O2).
+pub fn record_trace_queue_rejected(reason: &'static str) {
+    if !is_enabled() {
+        return;
+    }
+    counter!("trace_queue_rejected_total", "reason" => reason).increment(1);
+}
+
+// ---------------------------------------------------------------------------
+// Trace DLQ metrics
+// ---------------------------------------------------------------------------
+
+/// Set the number of rows in the trace DLQ. Refreshed by the DLQ retry loop
+/// on every poll tick, so it stops updating if `queue.dlq_retry_enabled` is
+/// false — which is itself the condition that makes the DLQ grow.
+pub fn set_trace_dlq_depth(depth: f64) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("trace_dlq_depth").set(depth);
+}
+
+/// Count a DLQ entry reaching a terminal state for this cycle. `outcome` is
+/// `"retried"` (resubmitted for another attempt), `"exhausted"` (gave up), or
+/// `"failed"` (the retry attempt itself could not be made).
+pub fn record_trace_dlq_retry(outcome: &'static str) {
+    if !is_enabled() {
+        return;
+    }
+    counter!("trace_dlq_retries_total", "outcome" => outcome).increment(1);
+}
+
 // ---------------------------------------------------------------------------
 // Trace persistence queue metrics
 // ---------------------------------------------------------------------------
@@ -274,6 +309,16 @@ pub fn record_trace_persistence_batch_size(size: usize) {
         return;
     }
     histogram!("trace_persistence_batch_size").record(size as f64);
+}
+
+/// Count a trace-storage write the persistence workers could not complete.
+/// These writes are dropped after the failure (Q6 covers retrying them), so
+/// this counter is the only signal that traces are being lost (O2).
+pub fn record_trace_persistence_failure() {
+    if !is_enabled() {
+        return;
+    }
+    counter!("trace_persistence_failures_total").increment(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +503,78 @@ mod tests {
         ensure_recorder();
         record_rate_limit_rejected("orders");
         record_rate_limit_rejected("admin");
+    }
+
+    /// Render into a *local* recorder so the assertions see only what this
+    /// test emitted — the global recorder is shared with every other test in
+    /// the binary.
+    fn render_local(f: impl FnOnce()) -> String {
+        set_enabled(true);
+        let recorder = PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, f);
+        handle.render()
+    }
+
+    #[test]
+    fn test_record_trace_queue_rejected() {
+        let out = render_local(|| {
+            record_trace_queue_rejected("full");
+            record_trace_queue_rejected("full");
+            record_trace_queue_rejected("memory");
+        });
+        assert!(
+            out.contains(r#"trace_queue_rejected_total{reason="full"} 2"#),
+            "missing full-queue rejections in:\n{out}"
+        );
+        assert!(
+            out.contains(r#"trace_queue_rejected_total{reason="memory"} 1"#),
+            "missing memory rejections in:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_record_trace_dlq_retry() {
+        let out = render_local(|| {
+            record_trace_dlq_retry("retried");
+            record_trace_dlq_retry("exhausted");
+            record_trace_dlq_retry("failed");
+            record_trace_dlq_retry("exhausted");
+        });
+        assert!(
+            out.contains(r#"trace_dlq_retries_total{outcome="retried"} 1"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"trace_dlq_retries_total{outcome="exhausted"} 2"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"trace_dlq_retries_total{outcome="failed"} 1"#),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn test_set_trace_dlq_depth() {
+        let out = render_local(|| {
+            set_trace_dlq_depth(7.0);
+            set_trace_dlq_depth(4.0);
+        });
+        assert!(
+            out.contains("trace_dlq_depth 4"),
+            "gauge must hold the latest value:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_record_trace_persistence_failure() {
+        let out = render_local(|| {
+            record_trace_persistence_failure();
+            record_trace_persistence_failure();
+            record_trace_persistence_failure();
+        });
+        assert!(out.contains("trace_persistence_failures_total 3"), "{out}");
     }
 
     #[test]

@@ -542,6 +542,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
                         "Failed to enqueue failed trace to DLQ"
                     );
                 } else if exhausted {
+                    metrics::record_trace_dlq_retry("exhausted");
                     tracing::warn!(
                         trace_id = %trace_id,
                         retry_count = dlq_retry_count,

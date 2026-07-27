@@ -298,6 +298,7 @@ async fn dispatch_one(trace_repo: &Arc<dyn TraceRepository>, task: TracePersiste
             .map(|_| ()),
     };
     if let Err(e) = result {
+        crate::metrics::record_trace_persistence_failure();
         tracing::warn!(error = %e, "trace_persistence: write failed");
     }
 }
@@ -307,15 +308,27 @@ async fn flush_batches(
     completed: &mut Vec<TraceCompletedRow>,
     results: &mut Vec<TraceResultRow>,
 ) {
+    // Both arms clear the batch even on error (Q6 covers retrying instead of
+    // discarding); the counter is what makes the discarded rows visible.
     if !completed.is_empty() {
         if let Err(e) = trace_repo.store_completed_batch(completed).await {
-            tracing::warn!(error = %e, "trace_persistence: store_completed_batch failed");
+            crate::metrics::record_trace_persistence_failure();
+            tracing::warn!(
+                error = %e,
+                dropped = completed.len(),
+                "trace_persistence: store_completed_batch failed"
+            );
         }
         completed.clear();
     }
     if !results.is_empty() {
         if let Err(e) = trace_repo.set_result_batch(results).await {
-            tracing::warn!(error = %e, "trace_persistence: set_result_batch failed");
+            crate::metrics::record_trace_persistence_failure();
+            tracing::warn!(
+                error = %e,
+                dropped = results.len(),
+                "trace_persistence: set_result_batch failed"
+            );
         }
         results.clear();
     }

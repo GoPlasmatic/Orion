@@ -169,6 +169,7 @@ impl TraceQueue {
         if self.max_memory_bytes > 0 {
             let current = self.memory_bytes.load(Ordering::Relaxed);
             if current + payload_size > self.max_memory_bytes {
+                metrics::record_trace_queue_rejected("memory");
                 return Err(crate::errors::OrionError::ServiceUnavailable(format!(
                     "Trace queue memory limit exceeded ({} + {} > {} bytes)",
                     current, payload_size, self.max_memory_bytes
@@ -182,6 +183,7 @@ impl TraceQueue {
                 // backpressure permit it carried — a shed submission must not
                 // hold a slice of the channel's `max_concurrent`.
                 mpsc::error::TrySendError::Full(_) => {
+                    metrics::record_trace_queue_rejected("full");
                     crate::errors::OrionError::ServiceUnavailable(format!(
                         "Trace queue is full ({} messages pending)",
                         self.pending_count.load(Ordering::Relaxed)

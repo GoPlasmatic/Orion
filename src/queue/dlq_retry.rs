@@ -44,6 +44,17 @@ pub fn start_dlq_retry(
         loop {
             interval.tick().await;
 
+            // Refresh the depth gauge before the single-flight gate: the count
+            // is a cheap read and every node should report its own view of the
+            // DLQ, not just whichever one wins the lease this tick (O2).
+            match dlq_repo
+                .count(&crate::storage::repositories::trace_dlq::TraceDlqFilter::default())
+                .await
+            {
+                Ok(depth) => metrics::set_trace_dlq_depth(depth as f64),
+                Err(e) => tracing::warn!(error = %e, "DLQ retry: failed to read DLQ depth"),
+            }
+
             if let Some(ref gate) = opts.lease_gate
                 && !gate.try_acquire("dlq_retry", job_lease_ttl).await
             {
@@ -70,6 +81,7 @@ pub fn start_dlq_retry(
                             error = %e,
                             "DLQ retry: corrupt payload, marking exhausted"
                         );
+                        metrics::record_trace_dlq_retry("exhausted");
                         if let Err(e) = dlq_repo.mark_exhausted(&entry.id).await {
                             tracing::error!(
                                 dlq_id = %entry.id,
@@ -108,6 +120,7 @@ pub fn start_dlq_retry(
                             error = %e,
                             "DLQ retry: failed to create pending trace"
                         );
+                        metrics::record_trace_dlq_retry("failed");
                         continue;
                     }
                 };
@@ -134,6 +147,7 @@ pub fn start_dlq_retry(
                 match submit_result {
                     Ok(()) => {
                         // Successfully re-submitted — remove from DLQ
+                        metrics::record_trace_dlq_retry("retried");
                         if let Err(e) = dlq_repo.remove(&entry.id).await {
                             tracing::error!(
                                 dlq_id = %entry.id,
@@ -162,6 +176,7 @@ pub fn start_dlq_retry(
                         // invisible while entries were re-claimed forever.
                         if new_retry_count >= entry.max_retries {
                             metrics::record_error("dlq_exhausted");
+                            metrics::record_trace_dlq_retry("exhausted");
                             if let Err(e) = dlq_repo.mark_exhausted(&entry.id).await {
                                 tracing::error!(
                                     dlq_id = %entry.id,
@@ -176,6 +191,7 @@ pub fn start_dlq_retry(
                                 );
                             }
                         } else {
+                            metrics::record_trace_dlq_retry("failed");
                             // Exponential backoff: 1s, 2s, 4s, 8s, 16s, ...
                             let delay_secs = 1i64 << new_retry_count;
                             let next_retry = chrono::Utc::now()
@@ -219,6 +235,7 @@ mod tests {
         removed_ids: Vec<String>,
         exhausted_ids: Vec<String>,
         retried: Vec<(String, String)>, // (id, next_retry_at)
+        count_calls: usize,
     }
 
     struct MockDlqRepo {
@@ -308,7 +325,9 @@ mod tests {
             &self,
             _filter: &crate::storage::repositories::trace_dlq::TraceDlqFilter,
         ) -> Result<i64, OrionError> {
-            Ok(self.state.lock().expect("test").entries_to_return.len() as i64)
+            let mut state = self.state.lock().expect("test");
+            state.count_calls += 1;
+            Ok(state.entries_to_return.len() as i64)
         }
 
         async fn get_by_id(&self, _id: &str) -> Result<TraceDlqEntry, OrionError> {
@@ -502,6 +521,39 @@ mod tests {
             state.removed_ids.contains(&"e1".to_string()),
             "entry should be removed after successful retry, removed: {:?}",
             state.removed_ids
+        );
+    }
+
+    /// O2: `trace_dlq_depth` is refreshed from this loop, so the count has to
+    /// run on every tick — including ticks that claim nothing.
+    #[tokio::test(start_paused = true)]
+    async fn test_depth_is_refreshed_every_tick() {
+        let dlq_repo = Arc::new(MockDlqRepo::new(vec![]));
+        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
+        let (queue, _rx) = make_test_queue(10);
+
+        let handle = start_dlq_retry(
+            DlqRetryOptions {
+                poll_interval_secs: 1,
+                batch_size: 20,
+                lease_secs: 60,
+                claimant: "test-node".to_string(),
+                lease_gate: None,
+            },
+            dlq_repo.clone(),
+            queue,
+            trace_repo,
+            Arc::new(crate::channel::ChannelRegistry::new()),
+        );
+
+        advance_and_yield(Duration::from_secs(1)).await;
+        advance_and_yield(Duration::from_secs(1)).await;
+        advance_and_yield(Duration::from_secs(1)).await;
+        handle.abort();
+
+        assert!(
+            dlq_repo.state.lock().expect("test").count_calls >= 2,
+            "the depth gauge must be refreshed on every poll tick"
         );
     }
 
