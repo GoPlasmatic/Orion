@@ -1285,3 +1285,99 @@ async fn test_update_workflow_with_description() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ============================================================
+// R5: workflows that cannot run are rejected, not deferred
+// ============================================================
+
+#[tokio::test]
+async fn test_create_rejects_unknown_function() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "unknown-fn-wf",
+                "tasks": [{
+                    "id": "t1",
+                    "name": "typo",
+                    "function": { "name": "http_calll", "input": { "connector": "c", "output": "data.x" } }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    // Previously 201 with only a lint warning — the workflow then failed at
+    // its first request (R5).
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(
+        body.to_string().contains("http_calll"),
+        "error must name the unknown function, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_activate_rejects_missing_connector() {
+    let app = common::test_app().await;
+
+    // Create is allowed (connectors and workflows may be authored in either
+    // order) …
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "needs-conn-wf",
+                "tasks": [{
+                    "id": "t1",
+                    "name": "read",
+                    "function": { "name": "db_read", "input": {
+                        "connector": "not-yet-created-db",
+                        "query": "SELECT 1",
+                        "output": "data.r"
+                    }}
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let wf_id = body_json(resp).await["data"]["workflow_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // …activation is the gate.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(
+        body.to_string().contains("not-yet-created-db"),
+        "error must name the missing connector, got {body}"
+    );
+
+    // With the connector present, activation succeeds.
+    common::create_connector(&app, common::db_connector("not-yet-created-db")).await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}

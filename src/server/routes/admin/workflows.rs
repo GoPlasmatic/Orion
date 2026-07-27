@@ -161,6 +161,13 @@ pub(crate) async fn change_workflow_status(
     let action = StatusAction::parse(req.status)?;
     let workflow = match action {
         StatusAction::Activate => {
+            // R5: refuse to activate a workflow that cannot run. Connector
+            // references stay a warning at create time (connectors and
+            // workflows may be authored in either order) — activation is
+            // the gate, because from here the workflow serves traffic and
+            // a missing connector is a guaranteed runtime 500.
+            let draft = state.workflow_repo.get_by_id(&id).await?;
+            ensure_workflow_connectors_exist(&state, &draft).await?;
             let rollout_pct = req.rollout_percentage.unwrap_or(100);
             state.workflow_repo.activate(&id, rollout_pct).await?
         }
@@ -175,6 +182,56 @@ pub(crate) async fn change_workflow_status(
     )
     .await?;
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
+}
+
+/// R5: every connector a workflow's tasks reference must exist before the
+/// workflow may activate. Missing connectors were previously a warning at
+/// create and unchecked at activate, so the workflow failed at its first
+/// request instead.
+async fn ensure_workflow_connectors_exist(
+    state: &AppState,
+    workflow: &crate::storage::models::Workflow,
+) -> Result<(), OrionError> {
+    let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
+        return Ok(()); // unparseable tasks are caught elsewhere
+    };
+    let Some(tasks) = tasks.as_array() else {
+        return Ok(());
+    };
+    let mut missing = Vec::new();
+    for task in tasks {
+        let function = task.get("function");
+        let fn_name = function
+            .and_then(|f| f.get("name"))
+            .and_then(|n| n.as_str())
+            .unwrap_or("");
+        if !crate::engine::CONNECTOR_FUNCTIONS.contains(&fn_name) {
+            continue;
+        }
+        if let Some(connector) = function
+            .and_then(|f| f.get("input"))
+            .and_then(|i| i.get("connector"))
+            .and_then(|c| c.as_str())
+            && state.connector_registry.get(connector).await.is_none()
+            && !missing.contains(&connector.to_string())
+        {
+            missing.push(connector.to_string());
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(OrionError::validation(format!(
+            "Cannot activate workflow '{}': connector(s) {} not found — create \
+             them first, or fix the reference",
+            workflow.workflow_id,
+            missing
+                .iter()
+                .map(|m| format!("'{m}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
+    }
 }
 
 // ============================================================

@@ -41,9 +41,12 @@ pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), Orion
 }
 
 /// Walk the `tasks` array and collect schema-validation errors for each task's
-/// `function.input` against the schema registered for `function.name`. Tasks
-/// whose function has no registered schema are skipped (unknown functions
-/// remain a warning, not a hard error, to leave room for plugins).
+/// `function.input` against the schema registered for `function.name`.
+///
+/// R5: an unknown `function.name` is a hard error here (create/update) — the
+/// function set is closed, so such a workflow can only fail at its first
+/// request. The advisory `/validate` endpoint keeps reporting it as a
+/// warning for pre-flight linting of drafts written against newer versions.
 ///
 /// Public so the `/api/v1/admin/workflows/validate` endpoint can reuse it.
 pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldError> {
@@ -58,6 +61,17 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
             .and_then(|n| n.as_str())
             .unwrap_or("");
         if fn_name.is_empty() {
+            continue;
+        }
+        if !crate::engine::KNOWN_FUNCTIONS.contains(&fn_name) {
+            errors.push(FieldError::new(
+                format!("tasks[{i}].function.name"),
+                "unknown_function",
+                format!(
+                    "Unknown function '{fn_name}' — this workflow would be accepted \
+                     and then fail at its first request"
+                ),
+            ));
             continue;
         }
         let input = function

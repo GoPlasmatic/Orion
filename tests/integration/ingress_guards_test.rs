@@ -324,7 +324,20 @@ async fn test_error_body_is_sanitized_but_trace_keeps_detail() {
             }
         }]
     });
+    // R5 blocks activating against a missing connector — create then delete
+    // it so the runtime failure path is still exercised.
+    let conn_id = common::create_connector(&app, common::db_connector("ghost-db-g1")).await;
     common::create_and_activate_channel(&app, "g1-errors-ch", workflow).await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let resp = app
         .clone()

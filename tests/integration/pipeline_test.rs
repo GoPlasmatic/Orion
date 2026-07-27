@@ -430,7 +430,20 @@ async fn test_continue_on_error() {
         ]
     });
 
+    // R5 blocks activating against a missing connector — create then delete
+    // it so the mid-pipeline failure is still exercised.
+    let conn_id = common::create_connector(&app, common::db_connector("ghost-db")).await;
     common::create_and_activate_channel(&app, "continue-err", workflow).await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
     let resp = app
         .clone()
