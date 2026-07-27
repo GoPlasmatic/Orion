@@ -19,6 +19,8 @@ struct ConsumeLoopContext {
     consumer: Arc<StreamConsumer>,
     topic_map: HashMap<String, String>,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    channel_registry: Arc<crate::channel::ChannelRegistry>,
+    datalogic: Arc<datalogic_rs::Engine>,
     dlq_producer: Option<Arc<KafkaProducer>>,
     dlq_topic: Option<String>,
     processing_timeout_ms: u64,
@@ -96,6 +98,8 @@ impl ConsumerHandle {
 pub fn start_consumer(
     config: &KafkaIngestConfig,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    channel_registry: Arc<crate::channel::ChannelRegistry>,
+    datalogic: Arc<datalogic_rs::Engine>,
     dlq_producer: Option<Arc<KafkaProducer>>,
     dlq_topic: Option<String>,
     instance_id: Option<&str>,
@@ -164,6 +168,8 @@ pub fn start_consumer(
         consumer: consumer.clone(),
         topic_map,
         engine,
+        channel_registry,
+        datalogic,
         dlq_producer,
         dlq_topic,
         processing_timeout_ms,
@@ -240,9 +246,39 @@ async fn process_one_kafka_message(
     // parent of the current tracing span (held for the rest of this scope).
     let _parent_cx = extract_kafka_trace_context(msg);
 
+    // S1: apply the target channel's validation_logic before dispatch,
+    // mirroring the HTTP ingress path. CORS / dedup / response cache are
+    // HTTP-transport concerns and don't apply here. Failures are not
+    // silently dropped — they record metrics, log, and route to the DLQ
+    // when one is configured.
+    let metadata = kafka_metadata_value(&topic, msg);
+    let channel_runtime = ctx.channel_registry.get_by_name(&channel).await;
+    if let Err(e) = crate::channel::guards::validate_input(
+        &channel,
+        &channel_runtime,
+        &data,
+        &metadata,
+        &ctx.datalogic,
+    ) {
+        report_failure_and_dlq(
+            ctx,
+            FailureReport {
+                channel: &channel,
+                topic: &topic,
+                payload: payload.as_bytes(),
+                message_status: "error",
+                error_kind: "kafka_validation",
+                log_msg: "Kafka message rejected by channel validation_logic",
+                dlq_reason: &format!("Validation failed: {e}"),
+            },
+        )
+        .await;
+        return;
+    }
+
     let start = Instant::now();
     let mut message = dataflow_rs::Message::from_value(&data);
-    inject_kafka_metadata(&mut message, &topic, msg);
+    crate::engine::utils::merge_metadata(&mut message, &metadata);
 
     // Clone the inner Arc<Engine> and release the lock immediately.
     let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
@@ -427,38 +463,25 @@ fn commit_offset(consumer: &StreamConsumer, msg: &rdkafka::message::BorrowedMess
     }
 }
 
-/// Inject Kafka-specific metadata (topic, key, partition, offset) into a dataflow message.
-fn inject_kafka_metadata(
-    message: &mut dataflow_rs::Message,
+/// Build the Kafka-specific metadata object (topic, key, partition, offset)
+/// for an ingested message. Used both as validation_logic context and as the
+/// metadata merged into the dispatched dataflow message, so validation sees
+/// exactly what the workflow will see.
+fn kafka_metadata_value(
     topic: &str,
     msg: &rdkafka::message::BorrowedMessage<'_>,
-) {
-    use dataflow_rs::engine::utils::set_nested_value;
-    use datavalue::OwnedDataValue;
+) -> serde_json::Value {
     use rdkafka::Message as KafkaMsg;
 
-    set_nested_value(
-        &mut message.context,
-        "metadata.kafka_topic",
-        OwnedDataValue::from(topic.to_string()),
-    );
+    let mut meta = serde_json::json!({
+        "kafka_topic": topic,
+        "kafka_partition": msg.partition(),
+        "kafka_offset": msg.offset(),
+    });
     if let Some(key) = msg.key().and_then(|k| std::str::from_utf8(k).ok()) {
-        set_nested_value(
-            &mut message.context,
-            "metadata.kafka_key",
-            OwnedDataValue::from(key.to_string()),
-        );
+        meta["kafka_key"] = serde_json::json!(key);
     }
-    set_nested_value(
-        &mut message.context,
-        "metadata.kafka_partition",
-        OwnedDataValue::from_i64(msg.partition() as i64),
-    );
-    set_nested_value(
-        &mut message.context,
-        "metadata.kafka_offset",
-        OwnedDataValue::from_i64(msg.offset()),
-    );
+    meta
 }
 
 /// Periodically poll committed offsets and high watermarks to compute consumer lag.

@@ -130,6 +130,8 @@ fn start_kafka_ingest(
     kafka_config: &config::KafkaIngestConfig,
     channels: &[orion::storage::models::Channel],
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    channel_registry: Arc<orion::channel::ChannelRegistry>,
+    datalogic: Arc<datalogic_rs::Engine>,
     kafka_producer: Option<Arc<orion::kafka::producer::KafkaProducer>>,
     instance_id: Option<&str>,
 ) -> Result<Option<orion::kafka::consumer::ConsumerHandle>, Box<dyn std::error::Error>> {
@@ -170,6 +172,8 @@ fn start_kafka_ingest(
     let handle = orion::kafka::consumer::start_consumer(
         &merged_config,
         engine,
+        channel_registry,
+        datalogic,
         dlq_producer,
         dlq_topic,
         instance_id,
@@ -578,6 +582,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         &config.kafka,
         &channels,
         engine.clone(),
+        channel_registry.clone(),
+        datalogic_engine.clone(),
         kafka_producer.clone(),
         cluster.enabled.then(|| cluster.instance_id.as_str()),
     )?;

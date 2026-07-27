@@ -369,6 +369,8 @@ async fn restart_kafka_consumer_if_needed(
     match crate::kafka::consumer::start_consumer(
         &merged_config,
         state.engine.clone(),
+        state.channel_registry.clone(),
+        state.datalogic.clone(),
         dlq_producer,
         dlq_topic,
         static_member,

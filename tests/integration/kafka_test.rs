@@ -37,6 +37,16 @@ fn empty_engine() -> Arc<RwLock<Arc<dataflow_rs::Engine>>> {
     )))
 }
 
+/// Empty channel registry for consumer tests (no per-channel guards configured).
+fn test_registry() -> Arc<orion::channel::ChannelRegistry> {
+    Arc::new(orion::channel::ChannelRegistry::new())
+}
+
+/// Shared datalogic engine for consumer tests.
+fn test_datalogic() -> Arc<datalogic_rs::Engine> {
+    Arc::new(datalogic_rs::Engine::new())
+}
+
 /// Build a test Kafka config for the given broker.
 fn test_kafka_config(brokers: &str, topic: &str, channel: &str) -> KafkaIngestConfig {
     KafkaIngestConfig {
@@ -103,7 +113,16 @@ async fn test_consumer_starts_and_stops() {
     let config = test_kafka_config(&brokers, "test-lifecycle", "test-channel");
     let engine = empty_engine();
 
-    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        test_registry(),
+        test_datalogic(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Consumer should be running — give it a moment
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -124,7 +143,16 @@ async fn test_consumer_processes_valid_message() {
     let engine = empty_engine();
 
     // Start consumer
-    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        test_registry(),
+        test_datalogic(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Produce a message
     let producer: FutureProducer = ClientConfig::new()
@@ -166,6 +194,8 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
     let handle = consumer::start_consumer(
         &config,
         engine,
+        test_registry(),
+        test_datalogic(),
         Some(dlq_producer),
         Some(dlq_topic.clone()),
         None,
@@ -250,7 +280,16 @@ async fn test_consumer_metadata_injection() {
     let config = test_kafka_config(&brokers, topic, channel);
     let engine = empty_engine();
 
-    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        test_registry(),
+        test_datalogic(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Produce a message with a key
     let producer: FutureProducer = ClientConfig::new()
@@ -296,7 +335,16 @@ async fn test_concurrent_message_processing() {
     // Initialize metrics so we can verify counts
     let _ = orion::metrics::init_metrics();
 
-    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        test_registry(),
+        test_datalogic(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Produce messages concurrently
     let producer: FutureProducer = ClientConfig::new()
@@ -353,7 +401,16 @@ async fn test_consumer_backpressure_under_load() {
     };
     let engine = empty_engine();
 
-    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        test_registry(),
+        test_datalogic(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &brokers)
@@ -415,7 +472,16 @@ async fn test_consumer_multiple_topics() {
     };
     let engine = empty_engine();
 
-    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        test_registry(),
+        test_datalogic(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &brokers)
@@ -503,7 +569,16 @@ async fn test_consumer_partition_rebalance() {
         lag_poll_interval_secs: 0,
         session_timeout_ms: 45_000,
     };
-    let handle_a = consumer::start_consumer(&config_a, engine.clone(), None, None, None).unwrap();
+    let handle_a = consumer::start_consumer(
+        &config_a,
+        engine.clone(),
+        test_registry(),
+        test_datalogic(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Produce initial batch of messages across partitions
     let producer: FutureProducer = ClientConfig::new()
@@ -533,7 +608,16 @@ async fn test_consumer_partition_rebalance() {
         group_id: group_id.clone(),
         ..config_a.clone()
     };
-    let handle_b = consumer::start_consumer(&config_b, engine.clone(), None, None, None).unwrap();
+    let handle_b = consumer::start_consumer(
+        &config_b,
+        engine.clone(),
+        test_registry(),
+        test_datalogic(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Wait for rebalance to complete
     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -595,7 +679,16 @@ async fn test_consumer_broker_disconnect_recovery() {
     let config = test_kafka_config(&brokers, topic, channel);
     let engine = empty_engine();
 
-    let handle = consumer::start_consumer(&config, engine, None, None, None).unwrap();
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        test_registry(),
+        test_datalogic(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
 
     // Produce initial messages
     let producer: FutureProducer = ClientConfig::new()
