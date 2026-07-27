@@ -206,7 +206,7 @@ async fn dlq_row_claimed_by_exactly_one_node() {
     let repo_b = SqlTraceDlqRepository::new(h.state_b.db_pool.clone());
 
     repo_a
-        .enqueue("trace-x", "orders", "{}", "{}", "boom", 5)
+        .enqueue("trace-x", "orders", "{}", "{}", "boom", 0, 5)
         .await
         .expect("enqueue");
     let orion::storage::DbPool::Postgres(pg) = &h.state_a.db_pool else {

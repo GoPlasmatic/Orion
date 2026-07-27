@@ -104,7 +104,7 @@ async fn postgres_dlq_claim_single_winner() {
     let repo = std::sync::Arc::new(SqlTraceDlqRepository::new(pool.clone()));
 
     let entry = repo
-        .enqueue("trace-1", "orders", "{}", "{}", "boom", 5)
+        .enqueue("trace-1", "orders", "{}", "{}", "boom", 0, 5)
         .await
         .expect("enqueue");
     let DbPool::Postgres(pg) = &pool else {

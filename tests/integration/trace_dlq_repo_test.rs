@@ -22,6 +22,7 @@ async fn test_enqueue_and_claim_pending() {
             r#"{"key":"value"}"#,
             r#"{}"#,
             "engine error",
+            0,
             5,
         )
         .await
@@ -47,7 +48,7 @@ async fn test_record_retry_increments_count() {
     let repo = dlq_repo().await;
 
     let entry = repo
-        .enqueue("trace-2", "ch", r#"{"a":1}"#, r#"{}"#, "err", 5)
+        .enqueue("trace-2", "ch", r#"{"a":1}"#, r#"{}"#, "err", 0, 5)
         .await
         .unwrap();
 
@@ -70,7 +71,7 @@ async fn test_mark_exhausted() {
     let repo = dlq_repo().await;
 
     let entry = repo
-        .enqueue("trace-3", "ch", r#"{"b":2}"#, r#"{}"#, "err", 3)
+        .enqueue("trace-3", "ch", r#"{"b":2}"#, r#"{}"#, "err", 0, 3)
         .await
         .unwrap();
 
@@ -87,7 +88,7 @@ async fn test_remove() {
     let repo = dlq_repo().await;
 
     let entry = repo
-        .enqueue("trace-4", "ch", r#"{"c":3}"#, r#"{}"#, "err", 5)
+        .enqueue("trace-4", "ch", r#"{"c":3}"#, r#"{}"#, "err", 0, 5)
         .await
         .unwrap();
 
@@ -104,7 +105,7 @@ async fn test_claim_pending_respects_next_retry_at() {
     let repo = dlq_repo().await;
 
     let _entry = repo
-        .enqueue("trace-5", "ch", r#"{"d":4}"#, r#"{}"#, "err", 5)
+        .enqueue("trace-5", "ch", r#"{"d":4}"#, r#"{}"#, "err", 0, 5)
         .await
         .unwrap();
 

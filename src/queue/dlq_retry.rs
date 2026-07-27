@@ -105,17 +105,23 @@ pub fn start_dlq_retry(
                     }
                 };
 
-                // Submit to the trace queue
+                // Submit to the trace queue. The row is deleted below once the
+                // submit succeeds, so the attempt this resubmission represents
+                // travels with the message — a repeat failure re-enters the
+                // DLQ at `retry_count + 1` rather than 0 (Q3).
                 let submit_result = trace_queue
-                    .submit(QueueMessage {
-                        trace_id: new_trace.id.clone(),
-                        channel: entry.channel.clone(),
-                        payload,
-                        metadata,
-                        trace_headers: std::collections::HashMap::new(),
-                        profile_requested: false,
-                        backpressure_permit: None,
-                    })
+                    .submit_dlq_retry(
+                        QueueMessage {
+                            trace_id: new_trace.id.clone(),
+                            channel: entry.channel.clone(),
+                            payload,
+                            metadata,
+                            trace_headers: std::collections::HashMap::new(),
+                            profile_requested: false,
+                            backpressure_permit: None,
+                        },
+                        entry.retry_count + 1,
+                    )
                     .await;
 
                 match submit_result {
@@ -214,6 +220,7 @@ mod tests {
             _payload_json: &str,
             _metadata_json: &str,
             _error_message: &str,
+            _retry_count: i64,
             _max_retries: i64,
         ) -> Result<TraceDlqEntry, OrionError> {
             unimplemented!("not needed for retry tests")
@@ -371,14 +378,17 @@ mod tests {
 
     fn make_test_queue(
         buffer_size: usize,
-    ) -> (TraceQueue, tokio::sync::mpsc::Receiver<QueueMessage>) {
-        let (tx, rx) = tokio::sync::mpsc::channel::<QueueMessage>(buffer_size);
+    ) -> (
+        TraceQueue,
+        tokio::sync::mpsc::Receiver<crate::queue::QueuedItem>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::channel::<crate::queue::QueuedItem>(buffer_size);
         let queue = TraceQueue::new_for_test(tx);
         (queue, rx)
     }
 
     fn make_closed_queue() -> TraceQueue {
-        let (tx, rx) = tokio::sync::mpsc::channel::<QueueMessage>(1);
+        let (tx, rx) = tokio::sync::mpsc::channel::<crate::queue::QueuedItem>(1);
         drop(rx); // receiver dropped → send will fail
         TraceQueue::new_for_test(tx)
     }
@@ -438,6 +448,42 @@ mod tests {
             state.removed_ids.contains(&"e1".to_string()),
             "entry should be removed after successful retry, removed: {:?}",
             state.removed_ids
+        );
+    }
+
+    /// Q3 regression: the resubmitted message must carry the attempt it
+    /// represents. Without it the worker re-enqueues at 0 on failure and the
+    /// entry never converges on `max_retries`.
+    #[tokio::test(start_paused = true)]
+    async fn test_resubmission_carries_originating_retry_count() {
+        let entry = make_dlq_entry("e5", r#"{"ok":true}"#, 2, 5);
+        let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
+        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
+        let (queue, mut rx) = make_test_queue(10);
+
+        let handle = start_dlq_retry(
+            DlqRetryOptions {
+                poll_interval_secs: 1,
+                batch_size: 20,
+                lease_secs: 60,
+                claimant: "test-node".to_string(),
+                lease_gate: None,
+            },
+            dlq_repo.clone(),
+            queue,
+            trace_repo,
+            Arc::new(crate::channel::ChannelRegistry::new()),
+        );
+
+        advance_and_yield(Duration::from_secs(1)).await;
+        advance_and_yield(Duration::from_secs(1)).await;
+
+        let item = rx.try_recv().expect("entry should have been resubmitted");
+        handle.abort();
+
+        assert_eq!(
+            item.dlq_retry_count, 3,
+            "resubmission must carry retry_count + 1"
         );
     }
 

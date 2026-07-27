@@ -96,13 +96,26 @@ pub struct QueueMessage {
     pub backpressure_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
+/// A queued message plus the bookkeeping submitters never set themselves.
+///
+/// `dlq_retry_count` is how many DLQ cycles this message's lineage has already
+/// burned: 0 for a fresh submission, the originating row's count + 1 for a DLQ
+/// resubmission. Carrying it forward is what makes `queue.dlq_max_retries`
+/// enforceable — the retry loop deletes the DLQ row once resubmission
+/// succeeds, so without it every workflow failure re-entered the DLQ at 0 and
+/// a deterministically-failing message looped forever (Q3).
+pub(crate) struct QueuedItem {
+    pub(crate) msg: QueueMessage,
+    pub(crate) dlq_retry_count: i64,
+}
+
 /// In-memory trace queue backed by a tokio mpsc channel.
 ///
 /// Traces are submitted via `submit()` and processed by a semaphore-limited
 /// worker pool that runs in the background.
 #[derive(Clone)]
 pub struct TraceQueue {
-    sender: mpsc::Sender<QueueMessage>,
+    sender: mpsc::Sender<QueuedItem>,
     pending_count: Arc<AtomicUsize>,
     memory_bytes: Arc<AtomicUsize>,
     max_memory_bytes: usize,
@@ -111,7 +124,7 @@ pub struct TraceQueue {
 impl TraceQueue {
     /// Create a TraceQueue for testing. The receiver must be consumed elsewhere.
     #[cfg(test)]
-    pub(crate) fn new_for_test(sender: mpsc::Sender<QueueMessage>) -> Self {
+    pub(crate) fn new_for_test(sender: mpsc::Sender<QueuedItem>) -> Self {
         Self {
             sender,
             pending_count: Arc::new(AtomicUsize::new(0)),
@@ -121,14 +134,36 @@ impl TraceQueue {
     }
 
     /// Submit a trace to the queue for background processing.
-    ///
+    pub async fn submit(&self, msg: QueueMessage) -> Result<(), crate::errors::OrionError> {
+        self.enqueue(QueuedItem {
+            msg,
+            dlq_retry_count: 0,
+        })
+        .await
+    }
+
+    /// Re-submit a message claimed from the DLQ, carrying the retry count its
+    /// lineage has already spent so a repeat failure re-enters the DLQ one
+    /// step closer to exhaustion instead of back at zero (Q3).
+    pub(crate) async fn submit_dlq_retry(
+        &self,
+        msg: QueueMessage,
+        dlq_retry_count: i64,
+    ) -> Result<(), crate::errors::OrionError> {
+        self.enqueue(QueuedItem {
+            msg,
+            dlq_retry_count,
+        })
+        .await
+    }
+
     /// Sheds rather than waits. `buffer_size` is a shed threshold, not a
     /// waiting room: awaiting capacity here parks the calling HTTP handler for
     /// as long as the workers stay behind, turning saturation into unbounded
     /// request latency instead of the documented 503 (Q1).
-    pub async fn submit(&self, msg: QueueMessage) -> Result<(), crate::errors::OrionError> {
+    async fn enqueue(&self, item: QueuedItem) -> Result<(), crate::errors::OrionError> {
         // Estimate payload memory (approximate — excludes struct overhead)
-        let payload_size = msg.payload.to_string().len() + msg.metadata.to_string().len();
+        let payload_size = item.msg.payload.to_string().len() + item.msg.metadata.to_string().len();
 
         // Check memory limit before enqueueing
         if self.max_memory_bytes > 0 {
@@ -141,7 +176,7 @@ impl TraceQueue {
             }
         }
 
-        if let Err(err) = self.sender.try_send(msg) {
+        if let Err(err) = self.sender.try_send(item) {
             return Err(match err {
                 // The rejected message is dropped here, releasing the
                 // backpressure permit it carried — a shed submission must not
@@ -170,7 +205,7 @@ impl TraceQueue {
 
 /// Handle returned from `start_workers` to manage the worker lifecycle.
 pub struct WorkerHandle {
-    _sender: mpsc::Sender<QueueMessage>,
+    _sender: mpsc::Sender<QueuedItem>,
     join_handle: tokio::task::JoinHandle<()>,
     shutdown_timeout_secs: u64,
 }
@@ -218,7 +253,7 @@ pub fn start_workers(
     let shutdown_timeout_secs = config.shutdown_timeout_secs;
     let max_queue_memory_bytes = config.max_queue_memory_bytes;
 
-    let (tx, rx) = mpsc::channel::<QueueMessage>(buffer_size);
+    let (tx, rx) = mpsc::channel::<QueuedItem>(buffer_size);
     let pending_count = Arc::new(AtomicUsize::new(0));
     let active_workers = Arc::new(AtomicUsize::new(0));
     let memory_bytes = Arc::new(AtomicUsize::new(0));
@@ -282,7 +317,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_rejects_when_buffer_is_full() {
-        let (tx, _rx) = mpsc::channel::<QueueMessage>(1);
+        let (tx, _rx) = mpsc::channel::<QueuedItem>(1);
         let queue = TraceQueue::new_for_test(tx);
 
         queue.submit(test_message("t1")).await.expect("first fits");
@@ -309,7 +344,7 @@ mod tests {
             .try_acquire_owned()
             .expect("permit available");
 
-        let (tx, _rx) = mpsc::channel::<QueueMessage>(1);
+        let (tx, _rx) = mpsc::channel::<QueuedItem>(1);
         let queue = TraceQueue::new_for_test(tx);
         queue.submit(test_message("t1")).await.expect("first fits");
 
@@ -326,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn submit_reports_closed_queue_separately() {
-        let (tx, rx) = mpsc::channel::<QueueMessage>(1);
+        let (tx, rx) = mpsc::channel::<QueuedItem>(1);
         drop(rx);
         let queue = TraceQueue::new_for_test(tx);
 

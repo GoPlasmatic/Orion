@@ -11,6 +11,14 @@ use crate::storage::{DbPool, build_sqlx};
 #[async_trait]
 pub trait TraceDlqRepository: Send + Sync {
     /// Enqueue a failed trace for later retry.
+    ///
+    /// `retry_count` seeds the new row rather than always starting at 0: the
+    /// retry loop deletes a row once resubmission succeeds, so a message that
+    /// fails again must re-enter carrying what its lineage already spent, or
+    /// `max_retries` is never reached (Q3). A row seeded at
+    /// `retry_count >= max_retries` is born exhausted — `claim_pending` skips
+    /// it, which is exactly the state `mark_exhausted` writes.
+    #[allow(clippy::too_many_arguments)]
     async fn enqueue(
         &self,
         trace_id: &str,
@@ -18,6 +26,7 @@ pub trait TraceDlqRepository: Send + Sync {
         payload_json: &str,
         metadata_json: &str,
         error_message: &str,
+        retry_count: i64,
         max_retries: i64,
     ) -> Result<TraceDlqEntry, OrionError>;
 
@@ -69,6 +78,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         payload_json: &str,
         metadata_json: &str,
         error_message: &str,
+        retry_count: i64,
         max_retries: i64,
     ) -> Result<TraceDlqEntry, OrionError> {
         crate::metrics::timed_db_op("trace_dlq.enqueue", async {
@@ -91,6 +101,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                         TraceDlq::PayloadJson,
                         TraceDlq::MetadataJson,
                         TraceDlq::ErrorMessage,
+                        TraceDlq::RetryCount,
                         TraceDlq::MaxRetries,
                         TraceDlq::NextRetryAt,
                     ])
@@ -101,6 +112,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                         Expr::val(payload_json).into(),
                         Expr::val(metadata_json).into(),
                         Expr::val(error_message).into(),
+                        Expr::val(retry_count.max(0)).into(),
                         Expr::val(max_retries).into(),
                         Expr::val(next_retry).into(),
                     ]),
@@ -296,22 +308,26 @@ mod tests {
         SqlTraceDlqRepository::new(crate::storage::test_sqlite_pool().await)
     }
 
-    async fn enqueue_due(repo: &SqlTraceDlqRepository, trace_id: &str) -> String {
-        let entry = repo
-            .enqueue(trace_id, "orders", "{}", "{}", "boom", 5)
-            .await
-            .expect("enqueue");
-        // Entries become due 1s after enqueue — backdate to now-2s.
+    /// Entries become due 1s after enqueue — backdate to now-2s.
+    async fn make_due(repo: &SqlTraceDlqRepository, id: &str) {
         let DbPool::Sqlite(p) = &repo.pool else {
             unreachable!("sqlite expected");
         };
         sqlx::query(
             "UPDATE trace_dlq SET next_retry_at = datetime('now', '-2 seconds') WHERE id = ?",
         )
-        .bind(&entry.id)
+        .bind(id)
         .execute(p)
         .await
         .expect("backdate");
+    }
+
+    async fn enqueue_due(repo: &SqlTraceDlqRepository, trace_id: &str) -> String {
+        let entry = repo
+            .enqueue(trace_id, "orders", "{}", "{}", "boom", 0, 5)
+            .await
+            .expect("enqueue");
+        make_due(repo, &entry.id).await;
         entry.id
     }
 
@@ -379,6 +395,60 @@ mod tests {
         let claimed = repo.claim_pending("node-b", 10, 60).await.expect("claim");
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].retry_count, 1);
+    }
+
+    /// Q3 regression. Replays the retry loop's full cycle — claim, resubmit
+    /// (carrying `retry_count + 1`), delete the old row, worker fails again,
+    /// re-enqueue seeded with the carried count — and asserts it terminates.
+    /// Before the carry, every re-enqueue landed at 0 and this loop never
+    /// stopped producing claimable rows.
+    #[tokio::test]
+    async fn test_poison_message_converges_on_max_retries() {
+        let repo = test_repo().await;
+        let max_retries = 3;
+
+        let first = repo
+            .enqueue("t-poison", "orders", "{}", "{}", "boom", 0, max_retries)
+            .await
+            .expect("enqueue");
+        make_due(&repo, &first.id).await;
+
+        let mut cycles = 0;
+        while let Some(claimed) = repo
+            .claim_pending("node-a", 10, 60)
+            .await
+            .expect("claim")
+            .into_iter()
+            .next()
+        {
+            cycles += 1;
+            assert!(
+                cycles <= max_retries + 1,
+                "poison message is still claimable after {cycles} cycles"
+            );
+
+            let carried = claimed.retry_count + 1;
+            repo.remove(&claimed.id).await.expect("remove");
+            let requeued = repo
+                .enqueue(
+                    "t-poison",
+                    "orders",
+                    "{}",
+                    "{}",
+                    "boom",
+                    carried,
+                    max_retries,
+                )
+                .await
+                .expect("re-enqueue");
+            assert_eq!(requeued.retry_count, carried, "carried count must persist");
+            make_due(&repo, &requeued.id).await;
+        }
+
+        assert_eq!(
+            cycles, max_retries,
+            "a poison message must be retried exactly max_retries times"
+        );
     }
 
     #[tokio::test]

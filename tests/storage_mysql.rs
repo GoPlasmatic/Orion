@@ -115,7 +115,7 @@ async fn mysql_dlq_claim_leases_rows() {
     let repo = SqlTraceDlqRepository::new(pool.clone());
 
     let entry = repo
-        .enqueue("trace-1", "orders", "{}", "{}", "boom", 5)
+        .enqueue("trace-1", "orders", "{}", "{}", "boom", 0, 5)
         .await
         .expect("enqueue");
     let orion::storage::DbPool::Mysql(mysql) = &pool else {

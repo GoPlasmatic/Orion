@@ -9,7 +9,7 @@ use crate::storage::models;
 use crate::storage::repositories::trace_dlq::TraceDlqRepository;
 use crate::storage::repositories::traces::TraceRepository;
 
-use super::QueueMessage;
+use super::QueuedItem;
 
 /// Serialize a finished message to JSON, embedding the per-request profile
 /// JSON under `_orion.profile` when one is provided (B3 shape lock —
@@ -67,10 +67,10 @@ pub(super) struct ProcessingContext {
 
 /// Main dispatcher loop: receives traces from the channel and spawns processing
 /// tasks, limited by a semaphore to `max_workers` concurrent traces.
-pub(super) async fn dispatcher_loop(mut rx: mpsc::Receiver<QueueMessage>, ctx: DispatcherContext) {
+pub(super) async fn dispatcher_loop(mut rx: mpsc::Receiver<QueuedItem>, ctx: DispatcherContext) {
     let semaphore = Arc::new(Semaphore::new(ctx.max_workers));
 
-    while let Some(msg) = rx.recv().await {
+    while let Some(item) = rx.recv().await {
         // Acquire a permit — blocks if all workers are busy
         let permit = match semaphore.clone().acquire_owned().await {
             Ok(p) => p,
@@ -78,7 +78,8 @@ pub(super) async fn dispatcher_loop(mut rx: mpsc::Receiver<QueueMessage>, ctx: D
         };
 
         // Estimate payload size for memory accounting
-        let estimated_size = msg.payload.to_string().len() + msg.metadata.to_string().len();
+        let estimated_size =
+            item.msg.payload.to_string().len() + item.msg.metadata.to_string().len();
 
         // Dequeued — decrement pending, increment active
         let pending = ctx
@@ -96,7 +97,7 @@ pub(super) async fn dispatcher_loop(mut rx: mpsc::Receiver<QueueMessage>, ctx: D
 
         tokio::spawn(async move {
             let _permit = permit; // guard: dropped on scope exit, even on panic
-            process_trace(msg, processing).await;
+            process_trace(item, processing).await;
             let active = active_counter
                 .fetch_sub(1, Ordering::Relaxed)
                 .saturating_sub(1);
@@ -191,8 +192,12 @@ async fn route_set_result(
 }
 
 /// Process a single queued trace.
-#[tracing::instrument(skip_all, fields(trace_id = %msg.trace_id, channel = %msg.channel))]
-async fn process_trace(mut msg: QueueMessage, ctx: ProcessingContext) {
+#[tracing::instrument(skip_all, fields(trace_id = %item.msg.trace_id, channel = %item.msg.channel))]
+async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
+    let QueuedItem {
+        mut msg,
+        dlq_retry_count,
+    } = item;
     // Hold the channel's backpressure permit (acquired at submission) for
     // the duration of processing; released on return.
     let _backpressure_permit = msg.backpressure_permit.take();
@@ -508,11 +513,17 @@ async fn process_trace(mut msg: QueueMessage, ctx: ProcessingContext) {
             )
             .await;
 
-            // Enqueue to DLQ for retry
+            // Enqueue to DLQ for retry. The new row starts at the retry count
+            // this message's lineage already spent, so `dlq_max_retries`
+            // converges instead of resetting on every failure (Q3). A row born
+            // at `retry_count >= max_retries` is exhausted by the same
+            // predicate `mark_exhausted` writes — invisible to `claim_pending`,
+            // still visible to operators.
             if let Some(ref dlq) = dlq_repo
                 && let Some(ref payload) = payload_json_for_dlq
             {
                 let metadata = metadata_json_for_dlq.as_deref().unwrap_or("{}");
+                let exhausted = dlq_retry_count >= dlq_max_retries;
                 if let Err(dlq_err) = dlq
                     .enqueue(
                         &trace_id,
@@ -520,6 +531,7 @@ async fn process_trace(mut msg: QueueMessage, ctx: ProcessingContext) {
                         payload,
                         metadata,
                         &error_str,
+                        dlq_retry_count,
                         dlq_max_retries,
                     )
                     .await
@@ -529,8 +541,19 @@ async fn process_trace(mut msg: QueueMessage, ctx: ProcessingContext) {
                         error = %dlq_err,
                         "Failed to enqueue failed trace to DLQ"
                     );
+                } else if exhausted {
+                    tracing::warn!(
+                        trace_id = %trace_id,
+                        retry_count = dlq_retry_count,
+                        max_retries = dlq_max_retries,
+                        "Failed trace exhausted its DLQ retries, no further attempts"
+                    );
                 } else {
-                    tracing::info!(trace_id = %trace_id, "Failed trace enqueued to DLQ for retry");
+                    tracing::info!(
+                        trace_id = %trace_id,
+                        retry_count = dlq_retry_count,
+                        "Failed trace enqueued to DLQ for retry"
+                    );
                 }
             }
         }
