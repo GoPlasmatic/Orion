@@ -1020,3 +1020,51 @@ async fn test_update_connector_type_and_invalid_config_rejected() {
         );
     }
 }
+
+/// Retry counts are exponents in the backoff schedule, so an unbounded value
+/// is a config-reachable multi-hour stall (and arithmetic on it has to stay
+/// overflow-safe) — the same bound Q4 put on `queue.dlq_max_retries`.
+#[tokio::test]
+async fn test_connector_retry_count_is_bounded() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "huge-retry",
+                "name": "huge-retry",
+                "connector_type": "http",
+                "config": {
+                    "type": "http",
+                    "url": "https://api.example.com",
+                    "retry": {"max_retries": 4294967295u32, "retry_delay_ms": 1000}
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // 16 is accepted.
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "ok-retry",
+                "name": "ok-retry",
+                "connector_type": "http",
+                "config": {
+                    "type": "http",
+                    "url": "https://api.example.com",
+                    "retry": {"max_retries": 16, "retry_delay_ms": 1000}
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+}

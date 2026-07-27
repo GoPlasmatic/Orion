@@ -1063,11 +1063,9 @@ async fn publish_kafka_publishes_to_the_connectors_brokers() {
 async fn publish_kafka_rejects_a_non_kafka_connector() {
     use tower::ServiceExt;
 
-    let state = crate::common::test_state_with_kafka(
-        orion::config::AppConfig::default(),
-        "127.0.0.1:9092",
-    )
-    .await;
+    let state =
+        crate::common::test_state_with_kafka(orion::config::AppConfig::default(), "127.0.0.1:9092")
+            .await;
     let app = orion::server::build_router(state);
 
     crate::common::create_connector(&app, crate::common::db_connector("t3-not-kafka")).await;

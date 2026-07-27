@@ -46,6 +46,23 @@ pub fn validate_connector_config(
         }
     }
 
+    // Retry counts are exponents in the backoff schedule (2^attempt), so an
+    // unbounded value is a config-reachable multi-hour stall, and arithmetic
+    // on it has to stay overflow-safe. Same bound Q4 put on dlq_max_retries.
+    if let Some(retry) = match &parsed {
+        ConnectorConfig::Http(c) => Some(&c.retry),
+        ConnectorConfig::Db(c) => Some(&c.retry),
+        ConnectorConfig::Cache(c) => Some(&c.retry),
+        ConnectorConfig::Es(c) => Some(&c.retry),
+        _ => None,
+    } && retry.max_retries > 16
+    {
+        return Err(OrionError::BadRequest(format!(
+            "retry.max_retries must be <= 16 (backoff doubles per attempt), got {}",
+            retry.max_retries
+        )));
+    }
+
     // For Cache connectors, validate backend and url requirement
     if let ConnectorConfig::Cache(cache_config) = &parsed {
         if !crate::connector::VALID_CACHE_BACKENDS.contains(&cache_config.backend.as_str()) {

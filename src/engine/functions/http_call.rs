@@ -73,7 +73,7 @@ impl AsyncFunctionHandler for HttpCallHandler {
                 // Bound the whole loop by the task's own timeout budget, so
                 // one http_call cannot outlive the channel deadline it sits
                 // under (attempts + backoff were previously unbounded).
-                deadline: Some(timeout.saturating_mul(retry_config.max_retries + 1)),
+                deadline: Some(timeout.saturating_mul(retry_config.max_retries.saturating_add(1))),
             };
             let response_body = if self.registry.circuit_breaker_enabled() {
                 let channel = super::extract_channel(ctx.message());
