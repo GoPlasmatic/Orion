@@ -10,6 +10,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 use orion::config::{self, LogFormat};
+use orion::connector::ConnectorRegistry;
 use orion::storage::repositories::channels::{ChannelRepository, SqlChannelRepository};
 use orion::storage::repositories::connectors::{ConnectorRepository, SqlConnectorRepository};
 use orion::storage::repositories::traces::{SqlTraceRepository, TraceRepository};
@@ -110,6 +111,310 @@ impl Repositories {
                 orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
             ),
         }
+    }
+}
+
+/// Construct the Kafka producer and wire it into the engine's
+/// `publish_kafka` handler. Returns `None` when Kafka is disabled or no
+/// brokers are configured.
+fn setup_kafka_producer(
+    kafka_config: &config::KafkaIngestConfig,
+    custom_functions: &mut std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    connector_registry: Arc<ConnectorRegistry>,
+) -> Result<Option<Arc<orion::kafka::producer::KafkaProducer>>, Box<dyn std::error::Error>> {
+    if !kafka_config.enabled || kafka_config.brokers.is_empty() {
+        return Ok(None);
+    }
+    let producer = Arc::new(orion::kafka::producer::KafkaProducer::new(
+        &kafka_config.brokers.join(","),
+        &kafka_config.auth,
+        &kafka_config.extra_config,
+    )?);
+    // F13: per-connector producers resolve through this cache; the global
+    // brokers map back to the producer created here.
+    let producers = Arc::new(orion::kafka::producer::KafkaProducerCache::new(
+        kafka_config.brokers.join(","),
+        producer.clone(),
+        kafka_config.auth.clone(),
+        kafka_config.extra_config.clone(),
+    ));
+    orion::engine::register_kafka_publisher(custom_functions, connector_registry, producers);
+    tracing::info!("Kafka producer initialized");
+    Ok(Some(producer))
+}
+
+/// The engine's serving components, built in one pass by
+/// [`build_engine_components`]: connector registry (with the F16 fail-fast
+/// check), shared HTTP client, datalogic engine, the pre-created engine
+/// lock, cache + external connector pool caches, the custom function
+/// handlers, and the Kafka producer.
+pub(crate) struct EngineComponents {
+    pub(crate) connector_registry: Arc<ConnectorRegistry>,
+    pub(crate) http_client: reqwest::Client,
+    pub(crate) datalogic: Arc<datalogic_rs::Engine>,
+    pub(crate) engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    pub(crate) cache_pool: Arc<orion::connector::cache_backend::CachePool>,
+    pub(crate) sql_pool_cache: Arc<orion::connector::pool_cache::SqlPoolCache>,
+    pub(crate) mongo_pool_cache: Arc<orion::connector::mongo_pool::MongoPoolCache>,
+    pub(crate) custom_functions:
+        std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
+    pub(crate) kafka_producer: Option<Arc<orion::kafka::producer::KafkaProducer>>,
+}
+
+/// Build the [`EngineComponents`]: load the connector registry, create the
+/// shared HTTP client, the datalogic engine, the engine lock (pre-created so
+/// the `channel_call` handler can reference it), the cache + external pool
+/// caches, the custom function handlers, and the Kafka producer.
+pub(crate) async fn build_engine_components(
+    config: &config::AppConfig,
+    repos: &Repositories,
+    channel_registry: Arc<orion::channel::ChannelRegistry>,
+) -> Result<EngineComponents, Box<dyn std::error::Error>> {
+    // Load connectors
+    let connector_registry = Arc::new(ConnectorRegistry::new(
+        config.engine.circuit_breaker.clone(),
+    ));
+    let connector_count = connector_registry
+        .load_from_repo(repos.connectors.as_ref())
+        .await?;
+    tracing::info!(count = connector_count, "Connectors loaded");
+
+    // F16: an enabled connector that fails to load is absent from the
+    // registry, so the failure surfaces as a 500 on the first request that
+    // needs it — possibly hours after the deploy that caused it. Operators who
+    // would rather have the rollout fail at boot opt in here.
+    let connector_issues = connector_registry.load_issues().await;
+    if !connector_issues.is_empty() && config.engine.fail_on_connector_load_error {
+        let detail = connector_issues
+            .iter()
+            .map(|i| format!("{} ({}): {}", i.connector, i.stage, i.reason))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(orion::errors::OrionError::Config {
+            message: format!(
+                "refused to start: {} enabled connector(s) failed to load: {detail}. \
+                 Set engine.fail_on_connector_load_error = false to start anyway \
+                 (they will fail at request time instead).",
+                connector_issues.len()
+            ),
+        }
+        .into());
+    }
+
+    // Create a shared HTTP client. Redirects are off: execute_request follows
+    // them manually with per-hop SSRF validation. The pinned resolver connects
+    // to the exact addresses SSRF validation vetted (no DNS rebinding between
+    // check and connect).
+    let http_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(
+            config.engine.global_http_timeout_secs,
+        ))
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(std::sync::Arc::new(orion::validation::PinnedDnsResolver))
+        .build()
+        .map_err(|e| {
+            orion::errors::OrionError::Internal(format!("Failed to build HTTP client: {e}"))
+        })?;
+
+    // Shared datalogic engine — used by handlers for template evaluation and
+    // by the channel registry to pre-compile per-channel JSONLogic.
+    let datalogic_engine = Arc::new(datalogic_rs::Engine::new());
+
+    // Create the engine lock early so channel_call handler can reference it.
+    // We'll populate it with the real engine after building workflows.
+    let engine: Arc<RwLock<Arc<dataflow_rs::Engine>>> = Arc::new(RwLock::new(Arc::new(
+        dataflow_rs::Engine::builder().build()?,
+    )));
+
+    // Build cache pool (memory backend always available, redis always compiled)
+    let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
+        config.engine.max_pool_cache_entries,
+        config.engine.cache_cleanup_interval_secs,
+        config.engine.max_memory_cache_entries,
+    ));
+
+    // Create external connector pool caches (shared with AppState for eviction on update/delete)
+    let sql_pool_cache = Arc::new(orion::connector::pool_cache::SqlPoolCache::new(
+        config.engine.max_pool_cache_entries,
+    ));
+    let mongo_pool_cache = Arc::new(orion::connector::mongo_pool::MongoPoolCache::new(
+        config.engine.max_pool_cache_entries,
+    ));
+
+    // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
+    let mut custom_functions = orion::engine::build_custom_functions(
+        connector_registry.clone(),
+        http_client.clone(),
+        engine.clone(),
+        channel_registry.clone(),
+        &config.engine,
+        &config.query,
+        &config.write,
+        cache_pool.clone(),
+        sql_pool_cache.clone(),
+        mongo_pool_cache.clone(),
+    );
+
+    let kafka_producer = setup_kafka_producer(
+        &config.kafka,
+        &mut custom_functions,
+        connector_registry.clone(),
+    )?;
+
+    Ok(EngineComponents {
+        connector_registry,
+        http_client,
+        datalogic: datalogic_engine,
+        engine,
+        cache_pool,
+        sql_pool_cache,
+        mongo_pool_cache,
+        custom_functions,
+        kafka_producer,
+    })
+}
+
+impl EngineComponents {
+    /// Load active channels and workflows, build the engine's workflow set,
+    /// reload the channel registry (quarantining channels that fail to
+    /// load), and populate the pre-created engine lock. Returns the loaded
+    /// channels (the Kafka topic merge needs them) and the active-workflow
+    /// count (for the gauge).
+    pub(crate) async fn load_channels_and_build_engine(
+        &mut self,
+        config: &config::AppConfig,
+        repos: &Repositories,
+        channel_registry: &orion::channel::ChannelRegistry,
+    ) -> Result<(Vec<orion::storage::models::Channel>, usize), Box<dyn std::error::Error>> {
+        // Load active channels and workflows, build engine
+        let channels = repos.channels.list_active().await?;
+        let total_active = channels.len();
+        let channels = orion::engine::filter_channels(channels, &config.channels);
+        // F32: a wrong include/exclude pattern silently drops a channel; the
+        // resolved list makes the filter's effect visible at boot.
+        if !config.channels.include.is_empty() || !config.channels.exclude.is_empty() {
+            tracing::info!(
+                resolved = ?channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+                filtered_out = total_active - channels.len(),
+                "Channel include/exclude filters applied"
+            );
+        }
+        let active_workflows = repos.workflows.list_active().await?;
+        let (workflows, engine_issues) =
+            orion::engine::build_engine_workflows(&channels, &active_workflows);
+        let load_issues = channel_registry
+            .reload(
+                &channels,
+                &self.connector_registry,
+                &self.cache_pool,
+                &self.datalogic,
+                &config.tracing.storage,
+                engine_issues,
+            )
+            .await;
+        if !load_issues.is_empty() {
+            // A channel whose stored config or validation_logic no longer loads
+            // (any mode), or whose shared backend cannot be built (cluster mode),
+            // must never be served unguarded. It is quarantined: absent from the
+            // registry and the route table, and refused at every ingress with a
+            // 503. Booting anyway is the F35 change — the alternative was that one
+            // broken row stopped the whole instance, including every channel that
+            // is fine.
+            for issue in &load_issues {
+                tracing::error!(
+                    channel = %issue.channel,
+                    reason = %issue.reason,
+                    "Channel quarantined: it will be refused at every ingress until fixed"
+                );
+            }
+        }
+
+        let channel_names: std::collections::HashSet<&str> =
+            workflows.iter().map(|w| w.channel.as_str()).collect();
+
+        tracing::info!(
+            workflows = active_workflows.len(),
+            channels = channel_names.len(),
+            "Workflows loaded"
+        );
+
+        // Populate the pre-created engine lock with the real engine
+        let built_engine =
+            dataflow_rs::Engine::new(workflows, std::mem::take(&mut self.custom_functions))?;
+        *orion::engine::acquire_engine_write(&self.engine).await = Arc::new(built_engine);
+
+        Ok((channels, active_workflows.len()))
+    }
+}
+
+/// Start the Kafka consumer in a background task. Merges config-file topic
+/// mappings with DB-driven async-channel topics. Returns `None` when Kafka
+/// is disabled or the merged topic list is empty.
+pub(crate) fn start_kafka_ingest(
+    kafka_config: &config::KafkaIngestConfig,
+    channels: &[orion::storage::models::Channel],
+    engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    channel_registry: Arc<orion::channel::ChannelRegistry>,
+    datalogic: Arc<datalogic_rs::Engine>,
+    kafka_producer: Option<Arc<orion::kafka::producer::KafkaProducer>>,
+    instance_id: Option<&str>,
+) -> Result<Option<orion::kafka::consumer::ConsumerHandle>, Box<dyn std::error::Error>> {
+    if !kafka_config.enabled {
+        return Ok(None);
+    }
+
+    let all_topics = orion::kafka::merge_kafka_topics(kafka_config, channels);
+
+    if all_topics.is_empty() {
+        return Ok(None);
+    }
+
+    let merged_config = orion::config::KafkaIngestConfig {
+        topics: all_topics,
+        ..kafka_config.clone()
+    };
+
+    let (dlq_producer, dlq_topic) = if kafka_config.dlq.enabled {
+        (kafka_producer, Some(kafka_config.dlq.topic.clone()))
+    } else {
+        (None, None)
+    };
+
+    let handle = orion::kafka::consumer::start_consumer(
+        &merged_config,
+        engine,
+        channel_registry,
+        datalogic,
+        dlq_producer,
+        dlq_topic,
+        instance_id,
+    )?;
+
+    tracing::info!(
+        config_topics = kafka_config.topics.len(),
+        db_topics = merged_config.topics.len() - kafka_config.topics.len(),
+        total_topics = merged_config.topics.len(),
+        group_id = %kafka_config.group_id,
+        "Kafka consumer started"
+    );
+
+    Ok(Some(handle))
+}
+
+/// Build rate limiter (if enabled).
+pub(crate) fn build_rate_limit_state(
+    config: &config::AppConfig,
+) -> Option<Arc<orion::server::rate_limit::RateLimitState>> {
+    if config.rate_limit.enabled {
+        let rls = orion::server::rate_limit::RateLimitState::from_config(&config.rate_limit);
+        tracing::info!(
+            default_rps = config.rate_limit.default_rps,
+            default_burst = config.rate_limit.default_burst,
+            "Rate limiting enabled"
+        );
+        Some(Arc::new(rls))
+    } else {
+        None
     }
 }
 
