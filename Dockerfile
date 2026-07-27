@@ -9,7 +9,8 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Builder stage: cache dependencies, then build
 FROM rust:1.93-slim AS builder
 
-RUN apt-get update && apt-get install -y pkg-config cmake g++ curl libcurl4-openssl-dev && rm -rf /var/lib/apt/lists/*
+# perl is required by rdkafka's vendored OpenSSL build (kafka.auth TLS/SASL)
+RUN apt-get update && apt-get install -y pkg-config cmake g++ curl libcurl4-openssl-dev perl && rm -rf /var/lib/apt/lists/*
 RUN cargo install cargo-chef --locked
 
 WORKDIR /app

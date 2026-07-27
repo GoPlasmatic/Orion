@@ -16,9 +16,19 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::kafka::Kafka;
 use tokio::sync::RwLock;
 
-use orion::config::{DlqConfig, KafkaIngestConfig, TopicMapping};
+use orion::config::{DlqConfig, KafkaAuthConfig, KafkaIngestConfig, TopicMapping};
 use orion::kafka::consumer;
 use orion::kafka::producer::KafkaProducer;
+
+/// Build an Orion producer with default (plaintext) auth for tests.
+fn plain_producer(brokers: &str) -> KafkaProducer {
+    KafkaProducer::new(
+        brokers,
+        &KafkaAuthConfig::default(),
+        &std::collections::HashMap::new(),
+    )
+    .unwrap()
+}
 
 /// Start a Kafka container and return the broker address.
 async fn start_kafka() -> (testcontainers::ContainerAsync<Kafka>, String) {
@@ -64,7 +74,7 @@ fn test_kafka_config(brokers: &str, topic: &str, channel: &str) -> KafkaIngestCo
         processing_timeout_ms: 5_000,
         max_inflight: 10,
         lag_poll_interval_secs: 0, // disable in tests — no real broker to query
-        session_timeout_ms: 45_000,
+        ..Default::default()
     }
 }
 
@@ -77,7 +87,7 @@ fn test_kafka_config(brokers: &str, topic: &str, channel: &str) -> KafkaIngestCo
 async fn test_producer_send_message() {
     let (_container, brokers) = start_kafka().await;
 
-    let producer = KafkaProducer::new(&brokers).unwrap();
+    let producer = plain_producer(&brokers);
     let topic = "test-producer-send";
 
     // Send a message — should not error
@@ -92,7 +102,7 @@ async fn test_producer_send_message() {
 async fn test_producer_send_without_key() {
     let (_container, brokers) = start_kafka().await;
 
-    let producer = KafkaProducer::new(&brokers).unwrap();
+    let producer = plain_producer(&brokers);
     let topic = "test-producer-no-key";
 
     let result = producer
@@ -189,7 +199,7 @@ async fn test_consumer_sends_invalid_json_to_dlq() {
     let engine = empty_engine();
 
     // Create DLQ producer
-    let dlq_producer = Arc::new(KafkaProducer::new(&brokers).unwrap());
+    let dlq_producer = Arc::new(plain_producer(&brokers));
 
     let handle = consumer::start_consumer(
         &config,
@@ -468,7 +478,7 @@ async fn test_consumer_multiple_topics() {
         processing_timeout_ms: 5_000,
         max_inflight: 10,
         lag_poll_interval_secs: 0,
-        session_timeout_ms: 45_000,
+        ..Default::default()
     };
     let engine = empty_engine();
 
@@ -567,7 +577,7 @@ async fn test_consumer_partition_rebalance() {
         processing_timeout_ms: 5_000,
         max_inflight: 10,
         lag_poll_interval_secs: 0,
-        session_timeout_ms: 45_000,
+        ..Default::default()
     };
     let handle_a = consumer::start_consumer(
         &config_a,

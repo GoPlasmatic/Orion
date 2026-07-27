@@ -115,6 +115,9 @@ pub fn start_consumer(
             .set("group.instance.id", id)
             .set("session.timeout.ms", config.session_timeout_ms.to_string());
     }
+    // Applied last so kafka.extra_config can override any of the above
+    super::apply_client_auth(&mut client_config, &config.auth, &config.extra_config);
+
     let consumer: StreamConsumer =
         client_config
             .create()
@@ -649,11 +652,7 @@ mod tests {
                     channel: "event-channel".into(),
                 },
             ],
-            dlq: crate::config::DlqConfig::default(),
-            processing_timeout_ms: 60_000,
-            max_inflight: 10,
-            lag_poll_interval_secs: 30,
-            session_timeout_ms: 45_000,
+            ..Default::default()
         };
 
         let topic_map: HashMap<String, String> = config

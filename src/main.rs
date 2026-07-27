@@ -117,6 +117,8 @@ fn setup_kafka_producer(
     }
     let producer = Arc::new(orion::kafka::producer::KafkaProducer::new(
         &kafka_config.brokers.join(","),
+        &kafka_config.auth,
+        &kafka_config.extra_config,
     )?);
     orion::engine::register_kafka_publisher(custom_functions, connector_registry, producer.clone());
     tracing::info!("Kafka producer initialized");

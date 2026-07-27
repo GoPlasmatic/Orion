@@ -18,7 +18,7 @@ mod write;
 pub use admin_auth::AdminAuthConfig;
 pub use cluster::ClusterConfig;
 pub use engine::EngineConfig;
-pub use kafka::{DlqConfig, KafkaIngestConfig, TopicMapping};
+pub use kafka::{DlqConfig, KafkaAuthConfig, KafkaIngestConfig, TopicMapping};
 pub use logging::{LogFormat, LoggingConfig};
 pub use observability::{
     AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageMode, TracingConfig,

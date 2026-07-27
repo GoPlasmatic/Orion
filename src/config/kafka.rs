@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::errors::OrionError;
@@ -16,6 +18,15 @@ pub struct KafkaIngestConfig {
     pub topics: Vec<TopicMapping>,
     /// Dead-letter queue configuration.
     pub dlq: DlqConfig,
+    /// Authentication / TLS settings applied to every Kafka client
+    /// (consumer, producer, DLQ producer).
+    pub auth: KafkaAuthConfig,
+    /// Raw librdkafka properties applied to every Kafka client after all
+    /// Orion-managed settings, so entries here override anything —
+    /// including `[kafka.auth]`. Free-form maps do not fit the
+    /// `ORION_SECTION__KEY` env-override scheme, so there is no
+    /// `ORION_KAFKA__EXTRA_CONFIG`; set this via TOML only.
+    pub extra_config: HashMap<String, String>,
     /// Maximum time in milliseconds for processing a single Kafka message.
     pub processing_timeout_ms: u64,
     /// Maximum number of in-flight messages being processed concurrently.
@@ -38,6 +49,8 @@ impl Default for KafkaIngestConfig {
             group_id: "orion".to_string(),
             topics: vec![],
             dlq: DlqConfig::default(),
+            auth: KafkaAuthConfig::default(),
+            extra_config: HashMap::new(),
             processing_timeout_ms: 60_000,
             max_inflight: 100,
             lag_poll_interval_secs: 30,
@@ -85,6 +98,7 @@ impl KafkaIngestConfig {
                 message: "kafka.max_inflight must be > 0".to_string(),
             });
         }
+        self.auth.validate()?;
         // Topics can be empty in config when async channels provide them from DB
         let mut seen_topics = std::collections::HashSet::new();
         let mut seen_channels = std::collections::HashSet::new();
@@ -120,6 +134,77 @@ pub struct TopicMapping {
     pub channel: String,
 }
 
+/// Accepted values for `kafka.auth.security_protocol` (librdkafka
+/// `security.protocol`).
+const VALID_SECURITY_PROTOCOLS: [&str; 4] = ["plaintext", "ssl", "sasl_plaintext", "sasl_ssl"];
+
+/// Accepted values for `kafka.auth.sasl_mechanism` (librdkafka
+/// `sasl.mechanism`). GSSAPI/OAUTHBEARER are not supported — librdkafka is
+/// built without libsasl2.
+const VALID_SASL_MECHANISMS: [&str; 3] = ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"];
+
+/// Authentication / encryption settings shared by every Kafka client Orion
+/// creates (ingest consumer, `publish_kafka` producer, DLQ producer). Each
+/// field maps 1:1 onto a librdkafka property; unset fields leave librdkafka
+/// defaults (plaintext, no auth) untouched.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KafkaAuthConfig {
+    /// librdkafka `security.protocol`: `plaintext`, `ssl`, `sasl_plaintext`,
+    /// or `sasl_ssl` (case-insensitive).
+    pub security_protocol: Option<String>,
+    /// librdkafka `sasl.mechanism`: `PLAIN`, `SCRAM-SHA-256`, or
+    /// `SCRAM-SHA-512` (case-insensitive).
+    pub sasl_mechanism: Option<String>,
+    /// librdkafka `sasl.username`.
+    pub sasl_username: Option<String>,
+    /// librdkafka `sasl.password`.
+    pub sasl_password: Option<String>,
+    /// librdkafka `ssl.ca.location` — CA certificate bundle path for broker
+    /// certificate verification. Unset uses the bundled/system trust store.
+    pub ssl_ca_location: Option<String>,
+}
+
+impl KafkaAuthConfig {
+    fn validate(&self) -> Result<(), OrionError> {
+        if let Some(protocol) = &self.security_protocol {
+            let normalized = protocol.to_lowercase();
+            if !VALID_SECURITY_PROTOCOLS.contains(&normalized.as_str()) {
+                return Err(OrionError::Config {
+                    message: format!(
+                        "kafka.auth.security_protocol '{protocol}' is invalid, expected one of: {}",
+                        VALID_SECURITY_PROTOCOLS.join(", ")
+                    ),
+                });
+            }
+            if normalized.starts_with("sasl")
+                && (self.sasl_mechanism.is_none()
+                    || self.sasl_username.is_none()
+                    || self.sasl_password.is_none())
+            {
+                return Err(OrionError::Config {
+                    message: format!(
+                        "kafka.auth.security_protocol '{protocol}' requires sasl_mechanism, \
+                         sasl_username, and sasl_password to be set"
+                    ),
+                });
+            }
+        }
+        if let Some(mechanism) = &self.sasl_mechanism {
+            let normalized = mechanism.to_uppercase();
+            if !VALID_SASL_MECHANISMS.contains(&normalized.as_str()) {
+                return Err(OrionError::Config {
+                    message: format!(
+                        "kafka.auth.sasl_mechanism '{mechanism}' is invalid, expected one of: {}",
+                        VALID_SASL_MECHANISMS.join(", ")
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DlqConfig {
@@ -135,5 +220,89 @@ impl Default for DlqConfig {
             enabled: false,
             topic: "orion-dlq".to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn enabled_config(auth: KafkaAuthConfig) -> KafkaIngestConfig {
+        KafkaIngestConfig {
+            enabled: true,
+            auth,
+            ..KafkaIngestConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_auth_default_is_valid() {
+        assert!(
+            enabled_config(KafkaAuthConfig::default())
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_auth_sasl_ssl_with_credentials_is_valid() {
+        let auth = KafkaAuthConfig {
+            security_protocol: Some("SASL_SSL".to_string()),
+            sasl_mechanism: Some("scram-sha-512".to_string()),
+            sasl_username: Some("user".to_string()),
+            sasl_password: Some("pass".to_string()),
+            ssl_ca_location: None,
+        };
+        assert!(enabled_config(auth).validate().is_ok());
+    }
+
+    #[test]
+    fn test_auth_sasl_protocol_requires_credentials() {
+        let auth = KafkaAuthConfig {
+            security_protocol: Some("sasl_plaintext".to_string()),
+            sasl_mechanism: Some("PLAIN".to_string()),
+            sasl_username: Some("user".to_string()),
+            sasl_password: None,
+            ssl_ca_location: None,
+        };
+        let err = enabled_config(auth).validate().expect_err("test");
+        assert!(err.to_string().contains("sasl_password"));
+    }
+
+    #[test]
+    fn test_auth_invalid_security_protocol() {
+        let auth = KafkaAuthConfig {
+            security_protocol: Some("kerberos".to_string()),
+            ..KafkaAuthConfig::default()
+        };
+        let err = enabled_config(auth).validate().expect_err("test");
+        assert!(err.to_string().contains("security_protocol"));
+    }
+
+    #[test]
+    fn test_auth_invalid_sasl_mechanism() {
+        let auth = KafkaAuthConfig {
+            security_protocol: Some("sasl_ssl".to_string()),
+            sasl_mechanism: Some("GSSAPI".to_string()),
+            sasl_username: Some("user".to_string()),
+            sasl_password: Some("pass".to_string()),
+            ssl_ca_location: None,
+        };
+        let err = enabled_config(auth).validate().expect_err("test");
+        assert!(err.to_string().contains("sasl_mechanism"));
+    }
+
+    #[test]
+    fn test_auth_not_validated_when_kafka_disabled() {
+        let auth = KafkaAuthConfig {
+            security_protocol: Some("bogus".to_string()),
+            ..KafkaAuthConfig::default()
+        };
+        let config = KafkaIngestConfig {
+            enabled: false,
+            auth,
+            ..KafkaIngestConfig::default()
+        };
+        assert!(config.validate().is_ok());
     }
 }

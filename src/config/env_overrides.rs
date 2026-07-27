@@ -44,6 +44,15 @@ where
         };
     }
 
+    /// Apply a string env override to an `Option<String>` field.
+    macro_rules! env_opt_str {
+        ($env_var:expr, $key:expr, $field:expr) => {
+            if let Ok(v) = $env_var($key) {
+                $field = Some(v);
+            }
+        };
+    }
+
     // Environment
     env_str!(env_var, "ORION_ENV", config.environment);
 
@@ -548,6 +557,33 @@ where
         bool
     );
     env_str!(env_var, "ORION_KAFKA__DLQ__TOPIC", config.kafka.dlq.topic);
+    env_opt_str!(
+        env_var,
+        "ORION_KAFKA__AUTH__SECURITY_PROTOCOL",
+        config.kafka.auth.security_protocol
+    );
+    env_opt_str!(
+        env_var,
+        "ORION_KAFKA__AUTH__SASL_MECHANISM",
+        config.kafka.auth.sasl_mechanism
+    );
+    env_opt_str!(
+        env_var,
+        "ORION_KAFKA__AUTH__SASL_USERNAME",
+        config.kafka.auth.sasl_username
+    );
+    env_opt_str!(
+        env_var,
+        "ORION_KAFKA__AUTH__SASL_PASSWORD",
+        config.kafka.auth.sasl_password
+    );
+    env_opt_str!(
+        env_var,
+        "ORION_KAFKA__AUTH__SSL_CA_LOCATION",
+        config.kafka.auth.ssl_ca_location
+    );
+    // kafka.extra_config has no env override — free-form maps don't fit the
+    // ORION_SECTION__KEY scheme (see the field's doc comment).
 
     // CORS
     if let Ok(v) = env_var("ORION_CORS__ALLOWED_ORIGINS") {
@@ -845,6 +881,37 @@ mod tests {
         assert_eq!(
             config.rate_limit.trusted_proxies,
             vec!["10.0.0.0/8", "192.168.1.1"]
+        );
+    }
+
+    #[test]
+    fn test_env_override_kafka_auth() {
+        let mut env = HashMap::new();
+        env.insert("ORION_KAFKA__AUTH__SECURITY_PROTOCOL", "sasl_ssl");
+        env.insert("ORION_KAFKA__AUTH__SASL_MECHANISM", "SCRAM-SHA-256");
+        env.insert("ORION_KAFKA__AUTH__SASL_USERNAME", "svc-orion");
+        env.insert("ORION_KAFKA__AUTH__SASL_PASSWORD", "s3cret");
+        env.insert("ORION_KAFKA__AUTH__SSL_CA_LOCATION", "/etc/kafka/ca.pem");
+
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
+
+        assert_eq!(
+            config.kafka.auth.security_protocol.as_deref(),
+            Some("sasl_ssl")
+        );
+        assert_eq!(
+            config.kafka.auth.sasl_mechanism.as_deref(),
+            Some("SCRAM-SHA-256")
+        );
+        assert_eq!(
+            config.kafka.auth.sasl_username.as_deref(),
+            Some("svc-orion")
+        );
+        assert_eq!(config.kafka.auth.sasl_password.as_deref(), Some("s3cret"));
+        assert_eq!(
+            config.kafka.auth.ssl_ca_location.as_deref(),
+            Some("/etc/kafka/ca.pem")
         );
     }
 

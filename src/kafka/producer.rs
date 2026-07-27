@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::time::Duration;
 
 use rdkafka::ClientConfig;
 use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
+use crate::config::KafkaAuthConfig;
 use crate::errors::OrionError;
 
 /// Thread-safe shared Kafka producer wrapping rdkafka's FutureProducer.
@@ -12,20 +14,30 @@ pub struct KafkaProducer {
 }
 
 impl KafkaProducer {
-    /// Create a new producer connected to the given broker list.
-    pub fn new(brokers: &str) -> Result<Self, OrionError> {
-        let producer: FutureProducer = ClientConfig::new()
+    /// Create a new producer connected to the given broker list, using the
+    /// shared `[kafka.auth]` / `kafka.extra_config` client settings.
+    pub fn new(
+        brokers: &str,
+        auth: &KafkaAuthConfig,
+        extra_config: &HashMap<String, String>,
+    ) -> Result<Self, OrionError> {
+        let mut client_config = ClientConfig::new();
+        client_config
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "30000")
             .set("acks", "all")
             .set("compression.type", "lz4")
             .set("linger.ms", "5")
-            .set("batch.size", "65536")
-            .create()
-            .map_err(|e| OrionError::InternalSource {
-                context: "Failed to create Kafka producer".to_string(),
-                source: Box::new(e),
-            })?;
+            .set("batch.size", "65536");
+        super::apply_client_auth(&mut client_config, auth, extra_config);
+
+        let producer: FutureProducer =
+            client_config
+                .create()
+                .map_err(|e| OrionError::InternalSource {
+                    context: "Failed to create Kafka producer".to_string(),
+                    source: Box::new(e),
+                })?;
 
         Ok(Self { producer })
     }

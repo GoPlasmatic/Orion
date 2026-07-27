@@ -70,6 +70,16 @@
 # brokers = ["localhost:9092"]
 # group_id = "orion"
 
+# [kafka.auth]                  # Broker authentication/TLS, applied to every Kafka client
+# security_protocol = "sasl_ssl"  # plaintext | ssl | sasl_plaintext | sasl_ssl
+# sasl_mechanism = "SCRAM-SHA-256"  # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
+# sasl_username = "orion"
+# sasl_password = "secret"      # or ORION_KAFKA__AUTH__SASL_PASSWORD env var
+# ssl_ca_location = "/etc/kafka/ca.pem"  # optional; system trust store when unset
+
+# [kafka.extra_config]          # Raw librdkafka properties, applied last (override anything)
+# "client.id" = "orion"
+
 [rate_limit]
 # enabled = false               # Enable request rate limiting
 # default_rps = 100             # Default requests per second

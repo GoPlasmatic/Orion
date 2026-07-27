@@ -69,7 +69,9 @@ rand = { version = "0.10", default-features = false, features = ["std", "std_rng
 governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
 dashmap = "6"
 tower = { version = "0.5", default-features = false, features = ["util"] }
-rdkafka = { version = "0.39", default-features = false, features = ["cmake-build", "tokio"] }
+# ssl-vendored statically links OpenSSL into librdkafka so TLS / SASL_SSL /
+# SCRAM work without a system OpenSSL at runtime (kafka.auth support).
+rdkafka = { version = "0.39", default-features = false, features = ["cmake-build", "tokio", "ssl-vendored"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
