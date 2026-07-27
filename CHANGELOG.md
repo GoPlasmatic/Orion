@@ -58,6 +58,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Egress correctness round (proposal F8, F10–F13, F17).** `http_call` no
+  longer retries non-idempotent methods by default — a timed-out POST was
+  re-sent up to 3× with no idempotency key; set the new HTTP-connector
+  `retry_non_idempotent` to restore the old behaviour. Retries are also
+  bounded by a deadline instead of running attempts plus backoff past the
+  channel timeout. `publish_kafka` now publishes to the brokers its
+  connector names rather than always the globally configured cluster.
+  `db_read`/`mongo_read` enforce `query.max_limit` as a hard row cap, every
+  MongoDB path honours `query_timeout_ms`, Elasticsearch responses respect a
+  new `max_response_size` on the ES connector, and evicted connector pools
+  are closed instead of leaking their connections on every connector edit
+  and cluster epoch resync.
 - **Routing and rollout truth (proposal F30, F33, R5, F32).** Channels whose
   workflows cannot be built — missing or unconvertible workflow, or rollout
   percentages that don't sum to 100 — are now quarantined with the reason on
