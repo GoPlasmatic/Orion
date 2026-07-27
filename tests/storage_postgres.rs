@@ -133,3 +133,91 @@ async fn postgres_dlq_claim_single_winner() {
     assert_eq!(reclaimed.len(), 1);
     assert_eq!(reclaimed[0].id, entry.id);
 }
+
+/// D1: `record_retry` and `mark_exhausted` clear `claimed_until`, a timestamp
+/// column. Binding a NULL *string* there is a 42804 type mismatch on postgres,
+/// and every call site discarded the error — so on postgres both writes failed
+/// silently and entries were re-claimed forever. SQLite's dynamic typing hides
+/// this entirely, which is why the coverage has to live here.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_postgres -- --ignored"]
+async fn postgres_dlq_record_retry_and_mark_exhausted_persist() {
+    use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqRepository};
+
+    let (_container, pool) = postgres_pool().await;
+    let repo = SqlTraceDlqRepository::new(pool.clone());
+    let DbPool::Postgres(pg) = &pool else {
+        panic!("postgres expected");
+    };
+
+    // -- record_retry --
+    let entry = repo
+        .enqueue("trace-retry", "orders", "{}", "{}", "boom", 0, 5)
+        .await
+        .expect("enqueue");
+    sqlx::query("UPDATE trace_dlq SET next_retry_at = LOCALTIMESTAMP - interval '2 seconds'")
+        .execute(pg)
+        .await
+        .expect("backdate");
+    let claimed = repo.claim_pending("node-a", 10, 60).await.expect("claim");
+    assert_eq!(claimed.len(), 1, "entry must be claimable before the retry");
+
+    let next_retry = chrono::Utc::now().naive_utc() - chrono::Duration::seconds(2);
+    repo.record_retry(&entry.id, next_retry)
+        .await
+        .expect("record_retry must succeed on postgres");
+
+    let (retry_count, claimed_by, claimed_until): (
+        i64,
+        Option<String>,
+        Option<chrono::NaiveDateTime>,
+    ) = sqlx::query_as(
+        "SELECT retry_count, claimed_by, claimed_until FROM trace_dlq WHERE id = $1",
+    )
+    .bind(&entry.id)
+    .fetch_one(pg)
+    .await
+    .expect("read back");
+    assert_eq!(retry_count, 1, "record_retry must increment retry_count");
+    assert!(claimed_by.is_none(), "record_retry must release the claim");
+    assert!(claimed_until.is_none(), "record_retry must clear the lease");
+
+    // Lease released and due again -> another node can claim it.
+    let reclaimed = repo.claim_pending("node-b", 10, 60).await.expect("reclaim");
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].retry_count, 1);
+
+    // -- mark_exhausted --
+    repo.mark_exhausted(&entry.id)
+        .await
+        .expect("mark_exhausted must succeed on postgres");
+
+    let (retry_count, max_retries, claimed_until): (i64, i64, Option<chrono::NaiveDateTime>) =
+        sqlx::query_as(
+            "SELECT retry_count, max_retries, claimed_until FROM trace_dlq WHERE id = $1",
+        )
+        .bind(&entry.id)
+        .fetch_one(pg)
+        .await
+        .expect("read back");
+    assert_eq!(
+        retry_count, max_retries,
+        "mark_exhausted must retire the entry"
+    );
+    assert!(
+        claimed_until.is_none(),
+        "mark_exhausted must clear the lease"
+    );
+
+    sqlx::query("UPDATE trace_dlq SET next_retry_at = LOCALTIMESTAMP - interval '2 seconds'")
+        .execute(pg)
+        .await
+        .expect("backdate");
+    assert!(
+        repo.claim_pending("node-c", 10, 60)
+            .await
+            .expect("claim")
+            .is_empty(),
+        "an exhausted entry must never be claimed again"
+    );
+}

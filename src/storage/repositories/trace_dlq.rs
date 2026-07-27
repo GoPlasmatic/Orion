@@ -249,9 +249,12 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                         TraceDlq::ClaimedBy,
                         super::helpers::optional_string_value(None),
                     )
+                    // `claimed_until` is a timestamp: a NULL *string* param is
+                    // a 42804 type mismatch on postgres (D1). Bind the chrono
+                    // NULL, same as `next_retry_at` binds a chrono value.
                     .value(
                         TraceDlq::ClaimedUntil,
-                        super::helpers::optional_string_value(None),
+                        sea_query::Value::ChronoDateTime(None),
                     )
                     .and_where(Expr::col(TraceDlq::Id).eq(id)),
             );
@@ -286,9 +289,10 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                         TraceDlq::ClaimedBy,
                         super::helpers::optional_string_value(None),
                     )
+                    // See `record_retry`: chrono NULL, not a string NULL (D1).
                     .value(
                         TraceDlq::ClaimedUntil,
-                        super::helpers::optional_string_value(None),
+                        sea_query::Value::ChronoDateTime(None),
                     )
                     .and_where(Expr::col(TraceDlq::Id).eq(id)),
             );

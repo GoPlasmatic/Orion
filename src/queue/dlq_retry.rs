@@ -70,7 +70,14 @@ pub fn start_dlq_retry(
                             error = %e,
                             "DLQ retry: corrupt payload, marking exhausted"
                         );
-                        let _ = dlq_repo.mark_exhausted(&entry.id).await;
+                        if let Err(e) = dlq_repo.mark_exhausted(&entry.id).await {
+                            tracing::error!(
+                                dlq_id = %entry.id,
+                                error = %e,
+                                "DLQ retry: failed to mark corrupt entry exhausted — \
+                                 it will be re-claimed when its lease expires"
+                            );
+                        }
                         continue;
                     }
                 };
@@ -150,13 +157,24 @@ pub fn start_dlq_retry(
                             "DLQ retry: failed to resubmit, scheduling next retry"
                         );
                         let new_retry_count = entry.retry_count + 1;
+                        // Both writes clear the claim lease. Swallowing their
+                        // errors is what let D1's postgres type mismatch stay
+                        // invisible while entries were re-claimed forever.
                         if new_retry_count >= entry.max_retries {
                             metrics::record_error("dlq_exhausted");
-                            let _ = dlq_repo.mark_exhausted(&entry.id).await;
-                            tracing::warn!(
-                                dlq_id = %entry.id,
-                                "DLQ retry: max retries exhausted, giving up"
-                            );
+                            if let Err(e) = dlq_repo.mark_exhausted(&entry.id).await {
+                                tracing::error!(
+                                    dlq_id = %entry.id,
+                                    error = %e,
+                                    "DLQ retry: failed to retire exhausted entry — \
+                                     it will be re-claimed when its lease expires"
+                                );
+                            } else {
+                                tracing::warn!(
+                                    dlq_id = %entry.id,
+                                    "DLQ retry: max retries exhausted, giving up"
+                                );
+                            }
                         } else {
                             // Exponential backoff: 1s, 2s, 4s, 8s, 16s, ...
                             let delay_secs = 1i64 << new_retry_count;
@@ -164,7 +182,14 @@ pub fn start_dlq_retry(
                                 .naive_utc()
                                 .checked_add_signed(chrono::Duration::seconds(delay_secs))
                                 .unwrap_or(chrono::Utc::now().naive_utc());
-                            let _ = dlq_repo.record_retry(&entry.id, next_retry).await;
+                            if let Err(e) = dlq_repo.record_retry(&entry.id, next_retry).await {
+                                tracing::error!(
+                                    dlq_id = %entry.id,
+                                    error = %e,
+                                    "DLQ retry: failed to record backoff — entry keeps its \
+                                     old next_retry_at and will be re-claimed on lease expiry"
+                                );
+                            }
                         }
                     }
                 }
