@@ -20,6 +20,9 @@ use crate::connector::mongo_pool::MongoPoolCache;
 pub struct MongoReadHandler {
     pub pool_cache: Arc<MongoPoolCache>,
     pub registry: Arc<ConnectorRegistry>,
+    /// Hard row cap, from `query.max_limit` (F10): an unbounded `find` must
+    /// not OOM the process.
+    pub max_rows: usize,
 }
 
 #[async_trait]
@@ -57,8 +60,27 @@ impl AsyncFunctionHandler for MongoReadHandler {
                 .map_err(to_exec_error)?;
 
             let coll = client.database(database).collection::<Document>(collection);
-            let cursor = coll.find(filter_doc).await.map_err(to_exec_error)?;
-            let docs: Vec<Document> = cursor.try_collect().await.map_err(to_exec_error)?;
+            let max_rows = self.max_rows;
+            let docs: Vec<Document> = super::connector_helpers::timed_query(
+                db_config.query_timeout_ms,
+                "mongo_read",
+                async {
+                    // F11: the Mongo driver has no per-query timeout of its
+                    // own here — timed_query bounds connect + find + drain.
+                    let mut cursor = coll.find(filter_doc).await.map_err(|e| e.to_string())?;
+                    let mut docs: Vec<Document> = Vec::new();
+                    while let Some(doc) = cursor.try_next().await.map_err(|e| e.to_string())? {
+                        if docs.len() >= max_rows {
+                            return Err(format!(
+                                "mongo_read result exceeds query.max_limit ({max_rows}                                  documents) — add a filter/limit or raise the cap"
+                            ));
+                        }
+                        docs.push(doc);
+                    }
+                    Ok(docs)
+                },
+            )
+            .await?;
 
             let result: Vec<Value> = docs
                 .iter()

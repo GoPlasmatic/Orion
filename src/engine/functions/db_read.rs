@@ -21,6 +21,10 @@ use crate::connector::pool_cache::SqlPoolCache;
 pub struct DbReadHandler {
     pub pool_cache: Arc<SqlPoolCache>,
     pub registry: Arc<ConnectorRegistry>,
+    /// Hard row cap, from `query.max_limit` (F10). Raw SQL can't have a
+    /// LIMIT injected reliably, so rows are streamed and counted — one
+    /// `SELECT * FROM big_table` must not OOM the process.
+    pub max_rows: usize,
 }
 
 #[async_trait]
@@ -53,11 +57,21 @@ impl AsyncFunctionHandler for DbReadHandler {
 
             let sqlx_query = bind_json_params(sqlx::query(query), &params);
 
-            let rows: Vec<AnyRow> = timed_query(
-                db_config.query_timeout_ms,
-                "db_read",
-                sqlx_query.fetch_all(&pool),
-            )
+            let max_rows = self.max_rows;
+            let rows: Vec<AnyRow> = timed_query(db_config.query_timeout_ms, "db_read", async {
+                use futures::TryStreamExt;
+                let mut stream = sqlx_query.fetch(&pool);
+                let mut rows: Vec<AnyRow> = Vec::new();
+                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                    if rows.len() >= max_rows {
+                        return Err(format!(
+                            "db_read result exceeds query.max_limit ({max_rows} rows) —                              add a LIMIT to the query or raise the cap"
+                        ));
+                    }
+                    rows.push(row);
+                }
+                Ok(rows)
+            })
             .await?;
 
             let result = rows_to_json(&rows)?;

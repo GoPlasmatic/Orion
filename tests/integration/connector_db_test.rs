@@ -433,3 +433,126 @@ async fn test_db_invalid_sql_returns_error() {
         body
     );
 }
+
+/// F10: db_read must refuse result sets beyond query.max_limit instead of
+/// buffering them unbounded — one `SELECT * FROM big_table` used to be an
+/// OOM waiting to happen.
+#[tokio::test]
+async fn test_db_read_row_cap_enforced() {
+    let mut config = orion::config::AppConfig::default();
+    config.query.max_limit = 2;
+    let app = common::test_app_with_config(config).await;
+
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite(
+            "db-row-cap",
+            "sqlite:file:test_db_read_row_cap?mode=memory&cache=shared",
+        ),
+    )
+    .await;
+
+    common::create_and_activate_channel(
+        &app,
+        "ch-row-cap-setup",
+        common::workflow_with_tasks(
+            "Row Cap Setup",
+            json!([
+                {
+                    "id": "t1",
+                    "name": "Create",
+                    "function": { "name": "db_write", "input": {
+                        "connector": "db-row-cap",
+                        "query": "CREATE TABLE IF NOT EXISTS cap_items (id INTEGER PRIMARY KEY)",
+                        "output": "data.create"
+                    }}
+                },
+                {
+                    "id": "t2",
+                    "name": "Fill",
+                    "function": { "name": "db_write", "input": {
+                        "connector": "db-row-cap",
+                        "query": "INSERT INTO cap_items (id) VALUES (1), (2), (3)",
+                        "output": "data.fill"
+                    }}
+                }
+            ]),
+        ),
+    )
+    .await;
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/ch-row-cap-setup",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    common::create_and_activate_channel(
+        &app,
+        "ch-row-cap-read",
+        common::workflow_with_tasks(
+            "Row Cap Read",
+            json!([
+                {
+                    "id": "t1",
+                    "name": "Read all",
+                    "function": { "name": "db_read", "input": {
+                        "connector": "db-row-cap",
+                        "query": "SELECT * FROM cap_items",
+                        "output": "data.rows"
+                    }}
+                }
+            ]),
+        ),
+    )
+    .await;
+
+    // 3 rows > max_limit 2 → the task fails rather than buffering unbounded.
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/ch-row-cap-read",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    // A capped query still works.
+    common::create_and_activate_channel(
+        &app,
+        "ch-row-cap-limited",
+        common::workflow_with_tasks(
+            "Row Cap Limited",
+            json!([
+                {
+                    "id": "t1",
+                    "name": "Read limited",
+                    "function": { "name": "db_read", "input": {
+                        "connector": "db-row-cap",
+                        "query": "SELECT * FROM cap_items LIMIT 2",
+                        "output": "data.rows"
+                    }}
+                }
+            ]),
+        ),
+    )
+    .await;
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/ch-row-cap-limited",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(body["data"]["rows"].as_array().map(|a| a.len()), Some(2));
+}

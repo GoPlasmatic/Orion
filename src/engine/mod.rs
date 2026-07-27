@@ -130,6 +130,7 @@ pub fn build_custom_functions(
         Box::new(functions::db_read::DbReadHandler {
             pool_cache: sql_pool_cache.clone(),
             registry: registry.clone(),
+            max_rows: query_config.max_limit as usize,
         }),
     );
     fns.insert(
@@ -193,6 +194,7 @@ pub fn build_custom_functions(
         Box::new(functions::mongo_read::MongoReadHandler {
             pool_cache: mongo_pool_cache,
             registry: registry.clone(),
+            max_rows: query_config.max_limit as usize,
         }),
     );
 
