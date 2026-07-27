@@ -51,6 +51,28 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+  # rust-version in Cargo.toml is a public stability promise; this job is
+  # the only thing that keeps it honest (proposal T9).
+  msrv:
+    name: MSRV (1.88)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@1.88
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+
+      - name: Check on MSRV
+        run: cargo check --all-targets
+
   examples:
     name: Examples
     runs-on: ubuntu-22.04
