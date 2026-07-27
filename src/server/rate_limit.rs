@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use crate::channel::{KeyedLimiter, build_keyed_limiter};
 use crate::config::RateLimitConfig;
 use crate::metrics;
+use crate::server::AppState;
 
 /// Holds platform-level rate limiters (global defaults + endpoint-level).
 /// Per-channel rate limiters live in `ChannelRegistry` and are built from DB config.
@@ -85,15 +86,40 @@ fn forwarded_client_ip(req: &Request) -> Option<String> {
     .map(str::to_string)
 }
 
-/// Extract channel name from a data route path like `/api/v1/data/{channel}`.
-fn extract_channel_from_path(uri_path: &str) -> Option<&str> {
+/// Normalise a data-plane URI to the route path `dynamic_handler` resolves
+/// against: the `/api/v1/data/` prefix and any `/async` suffix removed.
+///
+/// Returns `None` for the trace endpoints, which are real routes rather than
+/// channels.
+fn data_route_path(uri_path: &str) -> Option<&str> {
     let path = uri_path.strip_prefix("/api/v1/data/")?;
-    // Take the first segment after /api/v1/data/
-    let channel = path.split('/').next()?;
-    if channel.is_empty() || channel == "traces" {
+    let path = path.strip_suffix("/async").unwrap_or(path);
+    let path = path.trim_matches('/').trim();
+    if path.is_empty() || path == "traces" || path.starts_with("traces/") {
         return None;
     }
-    Some(channel)
+    Some(path)
+}
+
+/// Resolve which channel a data request targets, by the same two rules
+/// `dynamic_handler` uses: the REST route table first, then a bare channel
+/// name.
+///
+/// S9: this used to take the first path segment and look it up by name. For a
+/// REST-routed channel that segment is the route prefix (`orders` in
+/// `GET /orders/{id}`), not the channel name, so the lookup missed, the
+/// per-channel limiter was never found, and the channel silently fell through
+/// to the platform-wide limiter — the configured limit simply did not apply.
+async fn resolve_data_channel(state: &AppState, method: &str, uri_path: &str) -> Option<String> {
+    let route_path = data_route_path(uri_path)?;
+    if let Some(matched) = state.channel_registry.match_route(method, route_path).await {
+        return Some(matched.channel_name);
+    }
+    // Backward-compatible single-segment channel name, as in `dynamic_handler`.
+    if !route_path.contains('/') {
+        return Some(route_path.to_string());
+    }
+    None
 }
 
 /// Determine the route group from the matched path.
@@ -149,10 +175,12 @@ pub async fn rate_limit_middleware(
     // For data routes, check per-channel limiter from ChannelRegistry first
     if let RouteGroup::Data = &route_group {
         let uri_path = req.uri().path().to_string();
-        if let Some(channel) = extract_channel_from_path(&uri_path)
-            && let Some(channel_config) = state.channel_registry.get_by_name(channel).await
+        let method = req.method().as_str().to_string();
+        if let Some(channel) = resolve_data_channel(&state, &method, &uri_path).await
+            && let Some(channel_config) = state.channel_registry.get_by_name(&channel).await
             && let Some(ref limiter) = channel_config.rate_limiter
         {
+            let channel = channel.as_str();
             // Compute rate limit key from key_logic or default to client_ip
             let key = if let Some(ref compiled) = channel_config.rate_limit_key_logic {
                 let context = build_rate_limit_context(&client_ip, channel, &req);
@@ -399,34 +427,55 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_channel_from_path_valid() {
+    fn test_data_route_path_valid() {
+        assert_eq!(data_route_path("/api/v1/data/orders"), Some("orders"));
+    }
+
+    /// The `/async` suffix is stripped, not treated as a second segment —
+    /// otherwise `orders/async` would never match the `orders` route (S9).
+    #[test]
+    fn test_data_route_path_strips_async_suffix() {
+        assert_eq!(data_route_path("/api/v1/data/orders/async"), Some("orders"));
         assert_eq!(
-            extract_channel_from_path("/api/v1/data/orders"),
-            Some("orders")
+            data_route_path("/api/v1/data/orders/42/async"),
+            Some("orders/42")
+        );
+    }
+
+    /// S9: the multi-segment path is kept whole so the route table can match
+    /// it. The old helper returned just `"orders"` here, which is the route
+    /// prefix rather than the channel name.
+    #[test]
+    fn test_data_route_path_keeps_rest_segments() {
+        assert_eq!(
+            data_route_path("/api/v1/data/orders/ORD-1"),
+            Some("orders/ORD-1")
         );
     }
 
     #[test]
-    fn test_extract_channel_from_path_with_subpath() {
-        assert_eq!(
-            extract_channel_from_path("/api/v1/data/orders/async"),
-            Some("orders")
-        );
+    fn test_data_route_path_traces_excluded() {
+        assert_eq!(data_route_path("/api/v1/data/traces"), None);
+        assert_eq!(data_route_path("/api/v1/data/traces/abc123"), None);
     }
 
     #[test]
-    fn test_extract_channel_from_path_traces_excluded() {
-        assert_eq!(extract_channel_from_path("/api/v1/data/traces"), None);
+    fn test_data_route_path_wrong_prefix() {
+        assert_eq!(data_route_path("/api/v1/admin/workflows"), None);
     }
 
     #[test]
-    fn test_extract_channel_from_path_wrong_prefix() {
-        assert_eq!(extract_channel_from_path("/api/v1/admin/workflows"), None);
+    fn test_data_route_path_empty_channel() {
+        assert_eq!(data_route_path("/api/v1/data/"), None);
     }
 
+    /// `/api/v1/data/async` is a channel *named* `async`, not an async
+    /// submission with no channel — only a `/async` suffix on a non-empty
+    /// path is a submission. Mirrors `dynamic_handler`, whose `strip_suffix`
+    /// does not match a bare `"async"` either.
     #[test]
-    fn test_extract_channel_from_path_empty_channel() {
-        assert_eq!(extract_channel_from_path("/api/v1/data/"), None);
+    fn test_data_route_path_bare_async_is_a_channel_name() {
+        assert_eq!(data_route_path("/api/v1/data/async"), Some("async"));
     }
 
     #[test]

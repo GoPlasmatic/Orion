@@ -404,3 +404,223 @@ async fn test_rate_limit_uses_x_real_ip_fallback() {
     let resp2 = app.oneshot(req2).await.unwrap();
     assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
 }
+
+/// S9: a REST-routed channel's own rate limit must actually apply.
+///
+/// The middleware used to take the first path segment and look it up as a
+/// channel name. For `GET /orders/{id}` on a channel named `s9-orders-get`
+/// that lookup asked for a channel called `orders`, found nothing, and fell
+/// through to the platform limiter — so the configured limit silently never
+/// applied. The platform limits here are deliberately huge, so the only thing
+/// that can produce a 429 is the channel's own limiter.
+#[tokio::test]
+async fn test_rate_limit_applies_to_rest_routed_channel() {
+    let app = common::test_app_with_config(AppConfig {
+        rate_limit: RateLimitConfig {
+            enabled: true,
+            default_rps: 1000,
+            default_burst: 500,
+            endpoints: EndpointRateLimits {
+                admin_rps: Some(1000),
+                data_rps: Some(1000),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(serde_json::json!({
+                "name": "s9-wf",
+                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "s9"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = common::body_json(resp).await;
+    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The channel name and its route prefix are deliberately different — that
+    // difference is the whole bug.
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(serde_json::json!({
+                "name": "s9-orders-get",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": ["GET"],
+                "route_pattern": "/orders/{id}",
+                "workflow_id": wf_id,
+                "config": {
+                    "rate_limit": {
+                        "requests_per_second": 1,
+                        "burst": 1,
+                        "key_logic": { "var": "client_ip" }
+                    }
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = common::body_json(resp).await;
+    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let get_order = || {
+        Request::builder()
+            .method("GET")
+            .uri("/api/v1/data/orders/ORD-1")
+            .header("x-forwarded-for", "10.0.0.77")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let resp1 = app.clone().oneshot(get_order()).await.unwrap();
+    assert_ne!(
+        resp1.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the first request must be allowed through"
+    );
+
+    let resp2 = app.clone().oneshot(get_order()).await.unwrap();
+    assert_eq!(
+        resp2.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the channel's own limit must apply to a REST-routed path"
+    );
+}
+
+/// The same channel reached through its `/async` submission path is still the
+/// same channel, so the limit follows it there too.
+#[tokio::test]
+async fn test_rate_limit_applies_to_rest_routed_async_path() {
+    let app = common::test_app_with_config(AppConfig {
+        rate_limit: RateLimitConfig {
+            enabled: true,
+            default_rps: 1000,
+            default_burst: 500,
+            endpoints: EndpointRateLimits {
+                admin_rps: Some(1000),
+                data_rps: Some(1000),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(serde_json::json!({
+                "name": "s9-async-wf",
+                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "s9"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    let body = common::body_json(resp).await;
+    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(serde_json::json!({
+                "name": "s9-events-post",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": ["POST"],
+                "route_pattern": "/events/{kind}",
+                "workflow_id": wf_id,
+                "config": {
+                    "rate_limit": {
+                        "requests_per_second": 1,
+                        "burst": 1,
+                        "key_logic": { "var": "client_ip" }
+                    }
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = common::body_json(resp).await;
+    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let post_event = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/data/events/click/async")
+            .header("x-forwarded-for", "10.0.0.88")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"data":{"a":1}}"#))
+            .unwrap()
+    };
+
+    let resp1 = app.clone().oneshot(post_event()).await.unwrap();
+    assert_ne!(resp1.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    let resp2 = app.clone().oneshot(post_event()).await.unwrap();
+    assert_eq!(
+        resp2.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "the /async submission path resolves to the same channel"
+    );
+}
