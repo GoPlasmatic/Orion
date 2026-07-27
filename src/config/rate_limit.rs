@@ -11,6 +11,13 @@ pub struct RateLimitConfig {
     pub default_rps: u32,
     #[serde(default = "default_burst")]
     pub default_burst: u32,
+    /// CIDR blocks (or bare IPs) of reverse proxies whose `X-Forwarded-For` /
+    /// `X-Real-IP` headers are trusted for client identification. When the
+    /// direct peer is not in this list — including the default empty list —
+    /// forwarded headers are ignored and the peer IP is the client identity,
+    /// so untrusted clients cannot mint a fresh rate-limit bucket per request
+    /// by spoofing the header (S8).
+    pub trusted_proxies: Vec<String>,
     #[serde(default)]
     pub endpoints: EndpointRateLimits,
 }
@@ -35,8 +42,37 @@ impl RateLimitConfig {
                 "rate_limit.default_burst (required when rate limiting is enabled)",
             )?;
         }
+        for entry in &self.trusted_proxies {
+            parse_proxy_entry(entry).map_err(|reason| OrionError::Config {
+                message: format!("rate_limit.trusted_proxies: invalid entry '{entry}': {reason}"),
+            })?;
+        }
         Ok(())
     }
+
+    /// The `trusted_proxies` entries parsed into networks. Invalid entries
+    /// are skipped — `validate()` rejects them at config load, so this only
+    /// drops entries when validation was bypassed (e.g. hand-built configs
+    /// in tests).
+    pub fn parsed_trusted_proxies(&self) -> Vec<ipnet::IpNet> {
+        self.trusted_proxies
+            .iter()
+            .filter_map(|entry| parse_proxy_entry(entry).ok())
+            .collect()
+    }
+}
+
+/// Parse one trusted-proxy entry: a CIDR block (`10.0.0.0/8`) or a bare IP
+/// (`10.0.0.1`, treated as /32 or /128).
+fn parse_proxy_entry(entry: &str) -> Result<ipnet::IpNet, &'static str> {
+    let entry = entry.trim();
+    if let Ok(net) = entry.parse::<ipnet::IpNet>() {
+        return Ok(net);
+    }
+    entry
+        .parse::<std::net::IpAddr>()
+        .map(ipnet::IpNet::from)
+        .map_err(|_| "expected an IP address or CIDR block (e.g. \"10.0.0.0/8\")")
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -44,4 +80,51 @@ impl RateLimitConfig {
 pub struct EndpointRateLimits {
     pub admin_rps: Option<u32>,
     pub data_rps: Option<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config_with_proxies(entries: &[&str]) -> RateLimitConfig {
+        RateLimitConfig {
+            trusted_proxies: entries.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_validate_accepts_cidr_and_bare_ip() {
+        let config = config_with_proxies(&["10.0.0.0/8", "192.168.1.1", "fd00::/8", "::1"]);
+        assert!(config.validate().is_ok());
+        assert_eq!(config.parsed_trusted_proxies().len(), 4);
+    }
+
+    #[test]
+    fn test_validate_rejects_malformed_entry() {
+        for bad in ["not-an-ip", "10.0.0.0/33", "10.0.0/8", ""] {
+            let config = config_with_proxies(&[bad]);
+            let err = config.validate().expect_err("should reject");
+            assert!(
+                err.to_string().contains("trusted_proxies"),
+                "error for '{bad}' should mention trusted_proxies: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_bare_ip_parses_as_host_network() {
+        let config = config_with_proxies(&["192.168.1.1"]);
+        let nets = config.parsed_trusted_proxies();
+        assert_eq!(nets.len(), 1);
+        assert_eq!(nets[0].prefix_len(), 32);
+    }
+
+    #[test]
+    fn test_default_has_no_trusted_proxies() {
+        let config = RateLimitConfig::default();
+        assert!(config.trusted_proxies.is_empty());
+        assert!(config.parsed_trusted_proxies().is_empty());
+        assert!(config.validate().is_ok());
+    }
 }

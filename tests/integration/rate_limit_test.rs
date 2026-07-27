@@ -154,6 +154,7 @@ async fn test_rate_limit_channel_specific_from_db() {
                 admin_rps: Some(1000),
                 data_rps: Some(1000),
             },
+            ..Default::default()
         },
         ..Default::default()
     })
@@ -275,6 +276,7 @@ async fn test_rate_limit_custom_key_logic_by_header() {
                 admin_rps: Some(1000),
                 data_rps: Some(1000),
             },
+            ..Default::default()
         },
         ..Default::default()
     })

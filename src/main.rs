@@ -766,7 +766,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
         axum_server::bind_rustls(bind_addr, rustls_config)
             .handle(handle)
-            .serve(router.into_make_service())
+            .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
             .await?;
     } else {
         serve_plain_http(
@@ -876,7 +876,11 @@ async fn serve_plain_http(
         .await;
         let _ = drained_tx.send(());
     };
-    let serve = axum::serve(listener, router).with_graceful_shutdown(gate);
+    let serve = axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(gate);
     if force_timeout_secs == 0 {
         serve.await?;
     } else {

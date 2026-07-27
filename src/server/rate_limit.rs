@@ -1,9 +1,11 @@
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
-use axum::extract::{MatchedPath, Request, State};
+use axum::extract::{ConnectInfo, MatchedPath, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use ipnet::IpNet;
 use serde_json::{Value, json};
 
 use crate::channel::{KeyedLimiter, build_keyed_limiter};
@@ -16,6 +18,7 @@ pub struct RateLimitState {
     default_limiter: Arc<KeyedLimiter>,
     admin_limiter: Option<Arc<KeyedLimiter>>,
     data_limiter: Option<Arc<KeyedLimiter>>,
+    trusted_proxies: Vec<IpNet>,
 }
 
 impl RateLimitState {
@@ -40,17 +43,46 @@ impl RateLimitState {
             default_limiter,
             admin_limiter,
             data_limiter,
+            trusted_proxies: config.parsed_trusted_proxies(),
         }
     }
 }
 
-/// Extract client IP from proxy headers or connection info.
-fn extract_client_ip(req: &Request) -> String {
+/// Resolve the client identity used as the rate-limit key (S8).
+///
+/// The direct peer IP (from `ConnectInfo`) is authoritative. Forwarded
+/// headers are honored only when the peer is inside `trusted_proxies` —
+/// otherwise any client could mint a fresh rate-limit bucket per request by
+/// spoofing `X-Forwarded-For`. When no `ConnectInfo` is present (e.g.
+/// `tower::oneshot` in tests), falls back to the header-only behavior.
+fn extract_client_ip(req: &Request, trusted_proxies: &[IpNet]) -> String {
+    // to_canonical: a server bound on `[::]` sees IPv4 peers as v4-mapped
+    // IPv6 (`::ffff:1.2.3.4`), which would never match an IPv4 CIDR.
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_canonical());
+    match peer {
+        Some(ip) if peer_is_trusted(&ip, trusted_proxies) => {
+            forwarded_client_ip(req).unwrap_or_else(|| ip.to_string())
+        }
+        Some(ip) => ip.to_string(),
+        None => forwarded_client_ip(req).unwrap_or_else(|| "unknown".to_string()),
+    }
+}
+
+fn peer_is_trusted(peer: &IpAddr, trusted_proxies: &[IpNet]) -> bool {
+    trusted_proxies.iter().any(|net| net.contains(peer))
+}
+
+/// Client IP claimed by proxy headers: first `X-Forwarded-For` hop, else
+/// `X-Real-IP` (shared policy in `engine::utils`). Only meaningful when the
+/// direct peer is a trusted proxy.
+fn forwarded_client_ip(req: &Request) -> Option<String> {
     crate::engine::utils::first_forwarded_value(|name| {
         req.headers().get(name).and_then(|v| v.to_str().ok())
     })
-    .unwrap_or("unknown")
-    .to_string()
+    .map(str::to_string)
 }
 
 /// Extract channel name from a data route path like `/api/v1/data/{channel}`.
@@ -96,7 +128,7 @@ pub async fn rate_limit_middleware(
         None => return next.run(req).await,
     };
 
-    let client_ip = extract_client_ip(&req);
+    let client_ip = extract_client_ip(&req, &rate_limit_state.trusted_proxies);
     let path = matched_path
         .as_ref()
         .map(|m: &MatchedPath| m.as_str())
@@ -212,13 +244,29 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
 
+    /// Attach a `ConnectInfo` peer address, as the serve layer does at runtime.
+    fn with_peer(mut req: Request<Body>, peer: &str) -> Request<Body> {
+        let addr: SocketAddr = peer.parse().expect("test");
+        req.extensions_mut().insert(ConnectInfo(addr));
+        req
+    }
+
+    fn nets(entries: &[&str]) -> Vec<IpNet> {
+        entries
+            .iter()
+            .map(|e| e.parse::<IpNet>().expect("test"))
+            .collect()
+    }
+
+    // -- No ConnectInfo (tower::oneshot tests): legacy header-only fallback --
+
     #[test]
     fn test_extract_client_ip_from_xff() {
         let req = Request::builder()
             .header("x-forwarded-for", "192.168.1.1, 10.0.0.1")
             .body(Body::empty())
             .expect("test");
-        assert_eq!(extract_client_ip(&req), "192.168.1.1");
+        assert_eq!(extract_client_ip(&req, &[]), "192.168.1.1");
     }
 
     #[test]
@@ -227,7 +275,7 @@ mod tests {
             .header("x-forwarded-for", "203.0.113.5")
             .body(Body::empty())
             .expect("test");
-        assert_eq!(extract_client_ip(&req), "203.0.113.5");
+        assert_eq!(extract_client_ip(&req, &[]), "203.0.113.5");
     }
 
     #[test]
@@ -236,7 +284,7 @@ mod tests {
             .header("x-real-ip", "10.0.0.5")
             .body(Body::empty())
             .expect("test");
-        assert_eq!(extract_client_ip(&req), "10.0.0.5");
+        assert_eq!(extract_client_ip(&req, &[]), "10.0.0.5");
     }
 
     #[test]
@@ -246,13 +294,13 @@ mod tests {
             .header("x-real-ip", "5.6.7.8")
             .body(Body::empty())
             .expect("test");
-        assert_eq!(extract_client_ip(&req), "1.2.3.4");
+        assert_eq!(extract_client_ip(&req, &[]), "1.2.3.4");
     }
 
     #[test]
     fn test_extract_client_ip_no_headers() {
         let req = Request::builder().body(Body::empty()).expect("test");
-        assert_eq!(extract_client_ip(&req), "unknown");
+        assert_eq!(extract_client_ip(&req, &[]), "unknown");
     }
 
     #[test]
@@ -261,7 +309,7 @@ mod tests {
             .header("x-forwarded-for", "")
             .body(Body::empty())
             .expect("test");
-        assert_eq!(extract_client_ip(&req), "unknown");
+        assert_eq!(extract_client_ip(&req, &[]), "unknown");
     }
 
     #[test]
@@ -270,7 +318,72 @@ mod tests {
             .header("x-real-ip", "  ")
             .body(Body::empty())
             .expect("test");
-        assert_eq!(extract_client_ip(&req), "unknown");
+        assert_eq!(extract_client_ip(&req, &[]), "unknown");
+    }
+
+    // -- With ConnectInfo: trusted-proxy gating (S8) --
+
+    #[test]
+    fn test_untrusted_peer_ignores_forwarded_headers() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "1.2.3.4")
+            .header("x-real-ip", "5.6.7.8")
+            .body(Body::empty())
+            .expect("test");
+        let req = with_peer(req, "203.0.113.9:5000");
+        // Default empty trust list: spoofed headers cannot mint an identity
+        assert_eq!(extract_client_ip(&req, &[]), "203.0.113.9");
+    }
+
+    #[test]
+    fn test_trusted_peer_uses_forwarded_header() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "1.2.3.4, 10.0.0.1")
+            .body(Body::empty())
+            .expect("test");
+        let req = with_peer(req, "10.0.0.7:5000");
+        assert_eq!(extract_client_ip(&req, &nets(&["10.0.0.0/8"])), "1.2.3.4");
+    }
+
+    #[test]
+    fn test_trusted_peer_without_headers_falls_back_to_peer() {
+        let req = Request::builder().body(Body::empty()).expect("test");
+        let req = with_peer(req, "10.0.0.7:5000");
+        assert_eq!(extract_client_ip(&req, &nets(&["10.0.0.0/8"])), "10.0.0.7");
+    }
+
+    #[test]
+    fn test_peer_outside_trusted_cidr_ignores_headers() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "1.2.3.4")
+            .body(Body::empty())
+            .expect("test");
+        let req = with_peer(req, "192.0.2.33:5000");
+        assert_eq!(
+            extract_client_ip(&req, &nets(&["10.0.0.0/8"])),
+            "192.0.2.33"
+        );
+    }
+
+    #[test]
+    fn test_v4_mapped_v6_peer_matches_v4_cidr() {
+        // A server bound on [::] sees IPv4 peers as ::ffff:a.b.c.d
+        let req = Request::builder()
+            .header("x-forwarded-for", "1.2.3.4")
+            .body(Body::empty())
+            .expect("test");
+        let req = with_peer(req, "[::ffff:10.0.0.7]:5000");
+        assert_eq!(extract_client_ip(&req, &nets(&["10.0.0.0/8"])), "1.2.3.4");
+    }
+
+    #[test]
+    fn test_ipv6_trusted_proxy() {
+        let req = Request::builder()
+            .header("x-real-ip", "2001:db8::1")
+            .body(Body::empty())
+            .expect("test");
+        let req = with_peer(req, "[fd00::1]:5000");
+        assert_eq!(extract_client_ip(&req, &nets(&["fd00::/8"])), "2001:db8::1");
     }
 
     #[test]
@@ -352,10 +465,22 @@ mod tests {
                 admin_rps: Some(20),
                 data_rps: Some(200),
             },
+            ..Default::default()
         };
         let state = RateLimitState::from_config(&config);
         assert!(state.admin_limiter.is_some());
         assert!(state.data_limiter.is_some());
+    }
+
+    #[test]
+    fn test_from_config_parses_trusted_proxies() {
+        let config = RateLimitConfig {
+            enabled: true,
+            trusted_proxies: vec!["10.0.0.0/8".to_string(), "192.168.1.1".to_string()],
+            ..Default::default()
+        };
+        let state = RateLimitState::from_config(&config);
+        assert_eq!(state.trusted_proxies.len(), 2);
     }
 
     #[test]

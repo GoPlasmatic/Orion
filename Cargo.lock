@@ -2556,6 +2556,7 @@ dependencies = [
  "datavalue-rs",
  "futures",
  "governor",
+ "ipnet",
  "metrics",
  "metrics-exporter-prometheus",
  "mongodb",

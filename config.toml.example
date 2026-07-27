@@ -74,6 +74,11 @@
 # enabled = false               # Enable request rate limiting
 # default_rps = 100             # Default requests per second
 # default_burst = 50            # Default burst allowance
+# trusted_proxies = []          # CIDR blocks / IPs of reverse proxies whose
+                                # X-Forwarded-For / X-Real-IP headers identify the
+                                # client, e.g. ["10.0.0.0/8"]. Empty (default) =
+                                # never trust forwarded headers; the peer IP is
+                                # the rate-limit identity.
 
 # [rate_limit.endpoints]
 # admin_rps = 50                # Rate limit for admin routes

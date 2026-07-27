@@ -479,6 +479,13 @@ where
         config.rate_limit.default_burst,
         u32
     );
+    if let Ok(v) = env_var("ORION_RATE_LIMIT__TRUSTED_PROXIES") {
+        config.rate_limit.trusted_proxies = v
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
 
     // Kafka
     env_parsed!(env_var, "ORION_KAFKA__ENABLED", config.kafka.enabled, bool);
@@ -821,6 +828,23 @@ mod tests {
                 .expect_err("test")
                 .to_string()
                 .contains("ORION_METRICS__ENABLED")
+        );
+    }
+
+    #[test]
+    fn test_env_override_trusted_proxies() {
+        let mut env = HashMap::new();
+        env.insert(
+            "ORION_RATE_LIMIT__TRUSTED_PROXIES",
+            "10.0.0.0/8, 192.168.1.1",
+        );
+
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
+
+        assert_eq!(
+            config.rate_limit.trusted_proxies,
+            vec!["10.0.0.0/8", "192.168.1.1"]
         );
     }
 

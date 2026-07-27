@@ -62,6 +62,7 @@ datavalue = { package = "datavalue-rs", version = "0.2.3", features = ["serde_js
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 url = "2"
+ipnet = "2"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
 dashmap = "6"
