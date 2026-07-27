@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
-use sqlx::any::AnyRow;
-use sqlx::{Column, Row};
+use sqlx::any::{AnyRow, AnyTypeInfoKind};
+use sqlx::{Column, Row, ValueRef};
 
 use super::connector_helpers::{
     apply_output, bind_json_params, extract_output_path, profile_handler, require_db_connector,
@@ -59,7 +60,7 @@ impl AsyncFunctionHandler for DbReadHandler {
             )
             .await?;
 
-            let result = rows_to_json(&rows);
+            let result = rows_to_json(&rows)?;
 
             let output_path = extract_output_path(input);
             apply_output(ctx, output_path, result);
@@ -73,9 +74,13 @@ impl AsyncFunctionHandler for DbReadHandler {
 ///
 /// Column names are collected once from the first row and reused for all
 /// subsequent rows, eliminating O(rows × columns) string allocations.
-pub fn rows_to_json(rows: &[AnyRow]) -> Value {
+///
+/// Only a genuine SQL `NULL` becomes `Value::Null`. A value the driver cannot
+/// represent is an error, never a silent null — the two must stay
+/// distinguishable to the workflow reading the result.
+pub fn rows_to_json(rows: &[AnyRow]) -> Result<Value, DataflowError> {
     if rows.is_empty() {
-        return Value::Array(Vec::new());
+        return Ok(Value::Array(Vec::new()));
     }
 
     let col_names: Vec<String> = rows[0]
@@ -88,24 +93,83 @@ pub fn rows_to_json(rows: &[AnyRow]) -> Value {
     for row in rows {
         let mut obj = serde_json::Map::with_capacity(col_names.len());
         for (i, name) in col_names.iter().enumerate() {
-            let val = if let Ok(v) = row.try_get::<String, _>(i) {
-                Value::String(v)
-            } else if let Ok(v) = row.try_get::<i64, _>(i) {
-                Value::Number(v.into())
-            } else if let Ok(v) = row.try_get::<f64, _>(i) {
-                serde_json::Number::from_f64(v)
-                    .map(Value::Number)
-                    .unwrap_or(Value::Null)
-            } else if let Ok(v) = row.try_get::<bool, _>(i) {
-                Value::Bool(v)
-            } else if let Ok(None::<String>) = row.try_get::<Option<String>, _>(i) {
-                Value::Null
-            } else {
-                Value::Null
-            };
-            obj.insert(name.clone(), val);
+            obj.insert(name.clone(), column_to_json(row, i, name)?);
         }
         result.push(Value::Object(obj));
     }
-    Value::Array(result)
+    Ok(Value::Array(result))
+}
+
+/// Decode one column of one row into JSON, dispatching on the value's own type
+/// rather than probing candidate Rust types in turn.
+///
+/// The probe-cascade this replaced fell through to `Value::Null` for anything
+/// it did not recognise, so `REAL` and `BLOB` columns — and any future
+/// [`AnyTypeInfoKind`] — read back as null even though the query succeeded.
+/// Matching the kind exhaustively means a new kind is a compile error instead.
+fn column_to_json(row: &AnyRow, index: usize, name: &str) -> Result<Value, DataflowError> {
+    let raw = row.try_get_raw(index).map_err(|e| {
+        DataflowError::function_execution(
+            format!("db_read: column '{name}' is unreadable: {e}"),
+            None,
+        )
+    })?;
+    if raw.is_null() {
+        return Ok(Value::Null);
+    }
+    let kind = raw.type_info().kind();
+
+    let decode_err = |e: sqlx::Error| {
+        DataflowError::function_execution(
+            format!("db_read: column '{name}' ({kind:?}) failed to decode: {e}"),
+            None,
+        )
+    };
+
+    let value = match kind {
+        // Already handled above; a value whose own type info is NULL carries
+        // nothing to decode.
+        AnyTypeInfoKind::Null => Value::Null,
+        AnyTypeInfoKind::Bool => Value::Bool(row.try_get::<bool, _>(index).map_err(decode_err)?),
+        AnyTypeInfoKind::SmallInt | AnyTypeInfoKind::Integer | AnyTypeInfoKind::BigInt => {
+            Value::Number(row.try_get::<i64, _>(index).map_err(decode_err)?.into())
+        }
+        AnyTypeInfoKind::Real => float_to_json(
+            f64::from(row.try_get::<f32, _>(index).map_err(decode_err)?),
+            name,
+        )?,
+        AnyTypeInfoKind::Double => {
+            float_to_json(row.try_get::<f64, _>(index).map_err(decode_err)?, name)?
+        }
+        AnyTypeInfoKind::Text => {
+            Value::String(row.try_get::<String, _>(index).map_err(decode_err)?)
+        }
+        AnyTypeInfoKind::Blob => {
+            blob_to_json(row.try_get::<Vec<u8>, _>(index).map_err(decode_err)?)
+        }
+    };
+    Ok(value)
+}
+
+/// JSON has no NaN or infinity. Rather than emit null — indistinguishable from
+/// a SQL NULL — say so.
+fn float_to_json(v: f64, name: &str) -> Result<Value, DataflowError> {
+    serde_json::Number::from_f64(v)
+        .map(Value::Number)
+        .ok_or_else(|| {
+            DataflowError::function_execution(
+                format!("db_read: column '{name}' holds {v}, which JSON cannot represent"),
+                None,
+            )
+        })
+}
+
+/// Binary columns become a string: the UTF-8 text when the bytes are valid
+/// UTF-8 (MySQL reports `TEXT`/`JSON` columns as `BLOB`, so this is the common
+/// case), otherwise lowercase hex.
+fn blob_to_json(bytes: Vec<u8>) -> Value {
+    match String::from_utf8(bytes) {
+        Ok(s) => Value::String(s),
+        Err(e) => Value::String(hex::encode(e.into_bytes())),
+    }
 }

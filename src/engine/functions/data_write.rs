@@ -182,7 +182,7 @@ async fn execute_sql(
             sqlx::query_with(sql, values).fetch_all(pool),
         )
         .await?;
-        let returning = rows_to_json(&rows);
+        let returning = rows_to_json(&rows)?;
         let count = match &returning {
             Value::Array(a) => a.len(),
             _ => 0,

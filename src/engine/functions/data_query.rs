@@ -212,7 +212,7 @@ async fn run_sql_with_includes(
         sqlx::query_with(&sql, values).fetch_all(pool),
     )
     .await?;
-    let mut parents: Vec<Value> = match rows_to_json(&rows) {
+    let mut parents: Vec<Value> = match rows_to_json(&rows)? {
         Value::Array(a) => a,
         _ => Vec::new(),
     };
@@ -247,7 +247,7 @@ async fn run_sql_with_includes(
                 sqlx::query_with(&csql, cvalues).fetch_all(pool),
             )
             .await?;
-            let children = match rows_to_json(&crows) {
+            let children = match rows_to_json(&crows)? {
                 Value::Array(a) => a,
                 _ => Vec::new(),
             };
