@@ -24,7 +24,8 @@ Work through this list. Each row links to the section with the detail.
 | 4 | [Enable the Kafka DLQ](#4-kafka-delivery-is-now-at-least-once) | `kafka.enabled = true` |
 | 5 | [Supply admin API keys](#5-deployment-defaults-helm-and-ha-compose-now-require-admin-keys) | You deploy via the Helm chart or `docker-compose.ha.yml` |
 | 6 | [Back up before migrating](#6-database-migrations) | You are on PostgreSQL |
-| 7 | [Review the smaller changes](#7-smaller-behaviour-changes) | Always |
+| 7 | [Pass `trace_token` when polling async traces](#polling-an-async-trace-now-requires-the-token-returned-with-the-202) | You submit to `/async` and poll `GET /traces/{id}` without an admin key |
+| 8 | [Review the smaller changes](#7-smaller-behaviour-changes) | Always |
 
 **Take a database backup before upgrading.** Migrations run automatically at
 boot unless you set `storage.auto_migrate = false`.
@@ -431,6 +432,55 @@ orion-server migrate --dry-run
 ---
 
 ## 7. Smaller behaviour changes
+
+### Polling an async trace now requires the token returned with the 202
+
+**What changed.** `POST /api/v1/data/{channel}/async` returns a `trace_token`
+alongside `trace_id`, and `GET /api/v1/data/traces/{id}` requires it — via the
+`x-trace-token` header or a `?token=` query parameter — unless the caller
+presents an admin credential. Previously the endpoint was all-or-nothing admin
+auth: open to everyone on a default config (so any caller could read any other
+caller's payloads by walking trace ids) and closed to the submitter when admin
+auth was on.
+
+The trace *list* (`GET /api/v1/data/traces`) is unchanged in its auth but now
+returns payload-free rows — `input_json`, `result_json` and `task_trace_json`
+are served only by the single-trace GET, whose `message` also no longer
+includes the submitter's request context (`context.metadata`).
+
+**How you'll notice.** A polling client that ignores `trace_token` starts
+getting `401` on its next poll.
+
+**What to do.** Capture `trace_token` from the 202 and send it on each poll:
+
+```bash
+resp=$(curl -s -X POST http://orion:8080/api/v1/data/orders/async \
+  -H 'Content-Type: application/json' -d '{"data":{"order_id":1}}')
+id=$(jq -r .trace_id <<<"$resp"); tok=$(jq -r .trace_token <<<"$resp")
+curl -s "http://orion:8080/api/v1/data/traces/$id" -H "x-trace-token: $tok"
+```
+
+Operator tooling that already sends an admin key needs no change. Traces
+created before the upgrade have no token and stay on the admin trust model.
+The migration adding `traces.access_token_hash` runs automatically on all
+three backends.
+
+### Credential headers are masked in workflow metadata
+
+**What changed.** `metadata.headers` now carries `"******"` for
+`authorization`, `cookie`, `proxy-authorization` and `x-api-key`. Their
+plaintext values previously reached `traces.result_json` and
+`trace_dlq.metadata_json`.
+
+**How you'll notice.** `validation_logic` that compares a credential header's
+*value* stops matching. Testing header *presence* still works.
+
+**What to do.** If a channel used `rollout.sticky_header` pointing at a
+credential header, switch it to a non-credential header — otherwise every
+caller now hashes into the same rollout bucket. Rows written before the
+upgrade still contain plaintext headers at rest; the trace-read projection
+hides them from HTTP responses, and `queue.trace_retention_hours` ages them
+out.
 
 ### Response cache keys changed format
 
