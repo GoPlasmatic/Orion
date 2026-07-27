@@ -1,4 +1,5 @@
 pub mod config;
+pub mod guards;
 pub mod rate_limit_backend;
 pub mod registry;
 pub mod routing;

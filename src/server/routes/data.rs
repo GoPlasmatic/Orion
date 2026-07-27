@@ -8,6 +8,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::channel::guards::{self, CacheLookup, CacheStoreCtx};
 use crate::channel::registry::EffectiveTraceConfig;
 use crate::config::TraceStorageMode;
 use crate::errors::OrionError;
@@ -154,18 +155,6 @@ async fn run_engine_optionally_profiled(
             .await
     } else {
         run_engine_inner(engine, channel, message, timeout_ms, capture_trace).await
-    }
-}
-
-/// JSONLogic truthiness: false, null, 0, "", and [] are falsy; everything else is truthy.
-fn is_truthy(val: &serde_json::Value) -> bool {
-    match val {
-        serde_json::Value::Null => false,
-        serde_json::Value::Bool(b) => *b,
-        serde_json::Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0),
-        serde_json::Value::String(s) => !s.is_empty(),
-        serde_json::Value::Array(a) => !a.is_empty(),
-        serde_json::Value::Object(_) => true,
     }
 }
 
@@ -386,185 +375,6 @@ fn header_or_query_truthy(
     false
 }
 
-/// Check per-channel CORS: reject the request if the `Origin` header is present
-/// but not in the channel's allowed-origins list.
-fn check_cors_origin(
-    channel: &str,
-    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
-    headers: &axum::http::HeaderMap,
-) -> Result<(), OrionError> {
-    if let Some(cfg) = channel_config
-        && let Some(cors) = &cfg.parsed_config.cors
-        && let Some(allowed_origins) = &cors.allowed_origins
-        && let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok())
-        && !allowed_origins.iter().any(|o| o == "*" || o == origin)
-    {
-        return Err(OrionError::Forbidden(format!(
-            "Origin '{origin}' is not allowed for channel '{channel}'"
-        )));
-    }
-    Ok(())
-}
-
-/// Evaluate per-channel input validation logic (JSONLogic). Returns `Ok(())` when
-/// validation passes or no validation is configured.
-fn validate_input(
-    channel: &str,
-    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
-    data: &Value,
-    metadata: &Value,
-    datalogic: &datalogic_rs::Engine,
-) -> Result<(), OrionError> {
-    if let Some(cfg) = channel_config
-        && let Some(ref compiled) = cfg.validation_logic
-    {
-        let context = json!({ "data": data, "metadata": metadata });
-        match datalogic
-            .session()
-            .eval_into::<serde_json::Value, _>(compiled, &context)
-        {
-            Ok(result) => {
-                if !is_truthy(&result) {
-                    return Err(OrionError::BadRequest(
-                        "Input validation failed".to_string(),
-                    ));
-                }
-            }
-            Err(e) => {
-                tracing::warn!(channel = %channel, error = %e, "validation_logic evaluation failed, rejecting");
-                return Err(OrionError::BadRequest(format!(
-                    "Input validation error: {e}"
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Check per-channel request deduplication. Returns `Err(Conflict)` when a
-/// duplicate idempotency key is detected within the configured window.
-async fn check_deduplication(
-    channel: &str,
-    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
-    headers: &axum::http::HeaderMap,
-) -> Result<(), OrionError> {
-    if let Some(cfg) = channel_config
-        && let Some(ref dedup) = cfg.parsed_config.deduplication
-        && let Some(ref store) = cfg.dedup_store
-        && let Some(key) = headers.get(&dedup.header).and_then(|v| v.to_str().ok())
-    {
-        let window = dedup.window_secs.unwrap_or(300);
-        // Scope the key per channel (same format family as the response cache
-        // key at `compute_cache_key`) — raw tokens would collide across
-        // channels sharing a backend.
-        let scoped_key = format!("dedup:{channel}:{key}");
-        // Fail open on backend errors: a dedup-store outage must not reject
-        // every request with 409 — availability wins over strict idempotency.
-        let is_new = match store.check_and_insert(&scoped_key, window).await {
-            Ok(is_new) => is_new,
-            Err(e) => {
-                metrics::record_error("dedup_backend");
-                tracing::warn!(
-                    error = %e,
-                    header = %dedup.header,
-                    "Dedup backend error; failing open (request allowed without dedup check)"
-                );
-                true
-            }
-        };
-        if !is_new {
-            return Err(OrionError::Conflict(format!(
-                "Duplicate request: idempotency key '{key}' already seen"
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Acquire a per-channel backpressure permit. Returns `Err(ServiceUnavailable)`
-/// when the channel's concurrency limit has been reached.
-fn acquire_backpressure(
-    channel: &str,
-    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
-) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, OrionError> {
-    if let Some(cfg) = channel_config
-        && let Some(ref semaphore) = cfg.backpressure_semaphore
-    {
-        match semaphore.clone().try_acquire_owned() {
-            Ok(permit) => Ok(Some(permit)),
-            Err(_) => {
-                metrics::record_error("backpressure");
-                Err(OrionError::ServiceUnavailable(format!(
-                    "Channel '{channel}' is at capacity"
-                )))
-            }
-        }
-    } else {
-        Ok(None)
-    }
-}
-
-use crate::engine::utils::{FNV1A_SEED, fnv1a_feed};
-
-/// Compute a deterministic cache key from channel name and request data.
-///
-/// Uses FNV-1a (64-bit) rather than `std::collections::hash_map::DefaultHasher`
-/// because the cache key must be **stable across processes** (multiple
-/// orion-server instances sharing a Redis cache must agree on the key for the
-/// same request). `DefaultHasher` is `SipHash` keyed by a per-process random
-/// seed and would produce different keys per process. `ahash` likewise
-/// randomises its seed on construction. FNV-1a is unkeyed and deterministic.
-fn compute_cache_key(
-    channel: &str,
-    data: &Value,
-    metadata: &Value,
-    cache_cfg: &crate::channel::ChannelCacheConfig,
-) -> String {
-    let mut h: u64 = FNV1A_SEED;
-
-    // The request's route identity must always distinguish keys: for a REST
-    // channel like `GET /orders/{id}` the body is empty, so hashing only the
-    // body would serve the first caller's response to every id.
-    if let Some(method) = metadata.get("http_method").and_then(Value::as_str) {
-        fnv1a_feed(&mut h, method.as_bytes());
-    }
-    fnv1a_feed(&mut h, &[0]);
-    fnv1a_feed_object_sorted(&mut h, metadata.get("params"));
-    fnv1a_feed(&mut h, &[0]);
-    fnv1a_feed_object_sorted(&mut h, metadata.get("query"));
-    fnv1a_feed(&mut h, &[0]);
-
-    if let Some(ref fields) = cache_cfg.cache_key_fields {
-        // Hash selected fields directly — no intermediate Map or clones
-        for f in fields {
-            if let Some(v) = data.get(f) {
-                fnv1a_feed(&mut h, f.as_bytes());
-                let v_bytes = serde_json::to_vec(v).unwrap_or_default();
-                fnv1a_feed(&mut h, &v_bytes);
-            }
-        }
-    } else {
-        let bytes = serde_json::to_vec(data).unwrap_or_default();
-        fnv1a_feed(&mut h, &bytes);
-    };
-
-    format!("cache:{channel}:{h:016x}")
-}
-
-/// Feed an optional JSON object into the FNV-1a state in sorted-key order,
-/// so the key is independent of map iteration and query-string order.
-fn fnv1a_feed_object_sorted(h: &mut u64, v: Option<&Value>) {
-    if let Some(Value::Object(map)) = v {
-        let mut keys: Vec<&String> = map.keys().collect();
-        keys.sort_unstable();
-        for k in keys {
-            fnv1a_feed(h, k.as_bytes());
-            let bytes = serde_json::to_vec(&map[k.as_str()]).unwrap_or_default();
-            fnv1a_feed(h, &bytes);
-        }
-    }
-}
-
 /// Build an HTTP response from a pre-serialized JSON string, avoiding
 /// the double-serialization that `Json<Value>` would incur.
 fn json_response(status: StatusCode, body: String) -> Response {
@@ -573,59 +383,6 @@ fn json_response(status: StatusCode, body: String) -> Response {
         .header(axum::http::header::CONTENT_TYPE, "application/json")
         .body(axum::body::Body::from(body))
         .expect("valid HTTP response builder with static header")
-}
-
-/// Context carried from cache pre-check to post-success cache store.
-type CacheStoreCtx = (
-    String,
-    std::sync::Arc<dyn crate::connector::cache_backend::CacheBackend>,
-    u64,
-);
-
-/// Outcome of the response-cache pre-check.
-enum CachePrecheck {
-    /// Cache hit — caller should return this response immediately.
-    Hit(Response),
-    /// No cache hit. Carries the (key, backend, ttl) needed to store the
-    /// computed response on success, or `None` if caching is disabled.
-    Miss(Option<CacheStoreCtx>),
-}
-
-/// Check the response cache; return a hit or the context needed to store
-/// the eventual response on success.
-async fn check_response_cache(
-    channel: &str,
-    data: &Value,
-    metadata: &Value,
-    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
-) -> CachePrecheck {
-    let Some(cfg) = channel_config else {
-        return CachePrecheck::Miss(None);
-    };
-    let Some(ref cache_cfg) = cfg.parsed_config.cache else {
-        return CachePrecheck::Miss(None);
-    };
-    if !cache_cfg.enabled {
-        return CachePrecheck::Miss(None);
-    }
-    let Some(ref cache) = cfg.response_cache else {
-        return CachePrecheck::Miss(None);
-    };
-    let key = compute_cache_key(channel, data, metadata, cache_cfg);
-    match cache.get(&key).await {
-        Ok(Some(cached)) => {
-            metrics::record_cache_hit(channel);
-            CachePrecheck::Hit(json_response(StatusCode::OK, cached))
-        }
-        _ => {
-            metrics::record_cache_miss(channel);
-            CachePrecheck::Miss(Some((
-                key,
-                cache.clone(),
-                cache_cfg.ttl_secs.unwrap_or(300),
-            )))
-        }
-    }
 }
 
 /// Persist the completed trace through the configured storage mode and
@@ -682,20 +439,30 @@ async fn process_sync_for_channel(
 ) -> Result<Response, OrionError> {
     let channel_config = state.channel_registry.get_by_name(channel).await;
 
-    check_cors_origin(channel, &channel_config, headers)?;
-    validate_input(channel, &channel_config, &data, &metadata, &state.datalogic)?;
-    check_deduplication(channel, &channel_config, headers).await?;
+    guards::check_cors_origin(
+        channel,
+        &channel_config,
+        headers.get("origin").and_then(|v| v.to_str().ok()),
+    )?;
+    guards::validate_input(channel, &channel_config, &data, &metadata, &state.datalogic)?;
+    guards::check_deduplication(channel, &channel_config, |name| {
+        headers
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    })
+    .await?;
 
     let profile = profile_requested.then(crate::engine::profile::ProfileCollector::new);
 
     // Response cache check — return early on cache hit (zero serialization)
-    let cache_context = match check_response_cache(channel, &data, &metadata, &channel_config).await
-    {
-        CachePrecheck::Hit(response) => return Ok(response),
-        CachePrecheck::Miss(ctx) => ctx,
-    };
+    let cache_context =
+        match guards::check_response_cache(channel, &data, &metadata, &channel_config).await {
+            CacheLookup::Hit(cached) => return Ok(json_response(StatusCode::OK, cached)),
+            CacheLookup::Miss(ctx) => ctx,
+        };
 
-    let _backpressure_permit = acquire_backpressure(channel, &channel_config)?;
+    let _backpressure_permit = guards::acquire_backpressure(channel, &channel_config)?;
 
     let start = Instant::now();
     let engine = crate::engine::acquire_engine_read(&state.engine).await;
