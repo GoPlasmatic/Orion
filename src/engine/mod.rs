@@ -87,6 +87,7 @@ pub fn build_custom_functions(
     registry: Arc<ConnectorRegistry>,
     client: reqwest::Client,
     engine: Arc<tokio::sync::RwLock<Arc<dataflow_rs::Engine>>>,
+    channel_registry: Arc<crate::channel::ChannelRegistry>,
     engine_config: &crate::config::EngineConfig,
     query_config: &crate::config::QueryConfig,
     write_config: &crate::config::WriteConfig,
@@ -108,6 +109,7 @@ pub fn build_custom_functions(
         "channel_call".to_string(),
         Box::new(functions::channel_call::ChannelCallHandler {
             engine,
+            channel_registry,
             max_call_depth: engine_config.max_channel_call_depth,
             default_timeout_ms: engine_config.default_channel_call_timeout_ms,
         }),

@@ -113,6 +113,104 @@ async fn test_async_path_honors_deduplication() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 }
 
+// ============================================================
+// F14: channel_call enforces the target channel's guards
+// ============================================================
+
+/// A workflow whose single task channel_calls `target` with a fixed payload.
+fn channel_call_workflow(name: &str, target: &str, data: serde_json::Value) -> serde_json::Value {
+    json!({
+        "name": name,
+        "condition": true,
+        "tasks": [{
+            "id": "s1",
+            "name": "Call target",
+            "function": {
+                "name": "channel_call",
+                "input": {
+                    "channel": target,
+                    "data": data,
+                    "response_path": "data.target_result"
+                }
+            }
+        }]
+    })
+}
+
+#[tokio::test]
+async fn test_channel_call_enforces_target_validation_logic() {
+    let app = common::test_app().await;
+
+    common::create_and_activate_channel_with_config(
+        &app,
+        "guarded-target",
+        common::simple_log_workflow("Guarded Target WF"),
+        require_order_id_config(),
+    )
+    .await;
+
+    // Caller that sends data violating the target's validation_logic.
+    common::create_and_activate_channel(
+        &app,
+        "caller-invalid",
+        channel_call_workflow(
+            "Caller Invalid WF",
+            "guarded-target",
+            json!({"quantity": 1}),
+        ),
+    )
+    .await;
+
+    // Caller that satisfies the target's validation_logic.
+    common::create_and_activate_channel(
+        &app,
+        "caller-valid",
+        channel_call_workflow(
+            "Caller Valid WF",
+            "guarded-target",
+            json!({"order_id": "ORD-9"}),
+        ),
+    )
+    .await;
+
+    // The nested validation failure propagates as DataflowError::Validation,
+    // which the error envelope maps to 400.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/caller-invalid",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("validation"),
+        "channel_call violating target validation_logic must surface a validation error, got: {body}"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/caller-valid",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(
+        body["errors"].as_array().is_some_and(|e| e.is_empty()),
+        "valid channel_call must pass target validation, got: {body}"
+    );
+}
+
 #[tokio::test]
 async fn test_async_path_honors_cors_allowlist() {
     let app = common::test_app().await;

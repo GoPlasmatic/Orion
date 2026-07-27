@@ -7,8 +7,6 @@ use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::message::Message;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
-use dataflow_rs::engine::utils::set_nested_value;
-use datavalue::OwnedDataValue;
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -37,6 +35,10 @@ pub struct ChannelCallInput {
 /// Invokes another channel's workflow in-process (no HTTP round-trip).
 pub struct ChannelCallHandler {
     pub engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    /// Registry lookup for the target channel's ingress contract (F14).
+    /// Held as the shared Arc and consulted lazily per call, since the
+    /// registry is populated by reload after the engine is built.
+    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub max_call_depth: u32,
     pub default_timeout_ms: u64,
 }
@@ -129,49 +131,65 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                 (&*ctx.message().payload_arc().clone()).into()
             };
 
-            // Build a child message for the target channel.
-            let mut child_message = Message::from_value(&call_data);
-
-            // Propagate metadata from parent (overriding "channel" key with the new target).
-            if let Some(parent_meta) = ctx.message().metadata().as_object() {
-                for (k, v) in parent_meta {
-                    if k == "channel" {
-                        continue;
-                    }
-                    set_nested_value(
-                        &mut child_message.context,
-                        &format!("metadata.{k}"),
-                        v.clone(),
-                    );
-                }
-            }
-
-            // Set tracking metadata on child (after propagation so we override parent values).
+            // Build the child metadata as JSON once: parent metadata (minus
+            // the parent's "channel" key) plus call-tracking keys. Used both
+            // as the validation_logic context and as the metadata merged into
+            // the child message, so validation sees what the workflow sees.
             let child_depth = parent_depth + 1;
             let mut child_chain = parent_chain;
             child_chain.push(target_channel.clone());
 
-            set_nested_value(
-                &mut child_message.context,
-                &format!("metadata.{META_CALL_DEPTH}"),
-                OwnedDataValue::from_i64(child_depth as i64),
-            );
-            let chain_value: Value = serde_json::Value::Array(
-                child_chain
-                    .iter()
-                    .map(|s| Value::String(s.clone()))
-                    .collect(),
-            );
-            set_nested_value(
-                &mut child_message.context,
-                &format!("metadata.{META_CALL_CHAIN}"),
-                OwnedDataValue::from(&chain_value),
-            );
+            let mut child_meta: Value = ctx.message().metadata().into();
+            if !child_meta.is_object() {
+                child_meta = serde_json::json!({});
+            }
+            if let Some(obj) = child_meta.as_object_mut() {
+                obj.remove("channel");
+            }
+            child_meta[META_CALL_DEPTH] = serde_json::json!(child_depth);
+            child_meta[META_CALL_CHAIN] = serde_json::json!(child_chain);
+
+            // F14: enforce the target channel's ingress contract for
+            // in-process calls — validation_logic, backpressure, and
+            // timeout_ms. CORS, dedup, and the response cache are
+            // HTTP-transport concerns and don't apply here.
+            let target_runtime = self.channel_registry.get_by_name(&target_channel).await;
+            crate::channel::guards::validate_input(
+                &target_channel,
+                &target_runtime,
+                &call_data,
+                &child_meta,
+                ctx.datalogic(),
+            )
+            .map_err(|e| {
+                DataflowError::Validation(format!("channel_call to '{target_channel}': {e}"))
+            })?;
+            let _backpressure_permit =
+                crate::channel::guards::acquire_backpressure(&target_channel, &target_runtime)
+                    .map_err(|e| {
+                        DataflowError::function_execution(
+                            format!("channel_call to '{target_channel}': {e}"),
+                            None,
+                        )
+                    })?;
+
+            // Build a child message for the target channel.
+            let mut child_message = Message::from_value(&call_data);
+            crate::engine::utils::merge_metadata(&mut child_message, &child_meta);
 
             // Get current engine snapshot and process with timeout.
+            // Timeout precedence: explicit input > target channel's
+            // timeout_ms > engine default.
             let engine = crate::engine::acquire_engine_read(&self.engine).await;
-            let timeout =
-                Duration::from_millis(input.timeout_ms.unwrap_or(self.default_timeout_ms));
+            let timeout_ms = input
+                .timeout_ms
+                .or_else(|| {
+                    target_runtime
+                        .as_ref()
+                        .and_then(|c| c.parsed_config.timeout_ms)
+                })
+                .unwrap_or(self.default_timeout_ms);
+            let timeout = Duration::from_millis(timeout_ms);
 
             let process_result = tokio::time::timeout(
                 timeout,

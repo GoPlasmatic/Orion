@@ -307,6 +307,7 @@ pub(crate) async fn test_workflow(
         state.connector_registry.clone(),
         state.http_client.clone(),
         state.engine.clone(),
+        state.channel_registry.clone(),
         &state.config.engine,
         &state.config.query,
         &state.config.write,

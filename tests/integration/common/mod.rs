@@ -97,6 +97,7 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
         connector_registry.clone(),
         http_client.clone(),
         engine.clone(),
+        channel_registry.clone(),
         &config.engine,
         &config.query,
         &config.write,

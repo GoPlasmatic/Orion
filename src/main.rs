@@ -525,6 +525,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         connector_registry.clone(),
         http_client.clone(),
         engine.clone(),
+        channel_registry.clone(),
         &config.engine,
         &config.query,
         &config.write,
