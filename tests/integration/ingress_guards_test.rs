@@ -296,6 +296,93 @@ async fn test_metadata_channel_set_on_channel_call() {
     );
 }
 
+// ============================================================
+// G1: data-plane responses carry sanitized errors only
+// ============================================================
+
+#[tokio::test]
+async fn test_error_body_is_sanitized_but_trace_keeps_detail() {
+    let app = common::test_app().await;
+
+    // db_read against a nonexistent connector fails with a message naming
+    // the connector — internal detail that must not reach the caller.
+    let workflow = json!({
+        "name": "G1 Failing WF",
+        "condition": true,
+        "continue_on_error": true,
+        "tasks": [{
+            "id": "t1",
+            "name": "Failing DB read",
+            "continue_on_error": true,
+            "function": {
+                "name": "db_read",
+                "input": {
+                    "connector": "ghost-db-g1",
+                    "query": "SELECT 1",
+                    "output": "data.db_result"
+                }
+            }
+        }]
+    });
+    common::create_and_activate_channel(&app, "g1-errors-ch", workflow).await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/g1-errors-ch",
+            Some(json!({"data": {"x": 1}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+
+    let errors = body["errors"].as_array().expect("errors array");
+    assert!(!errors.is_empty(), "expected task errors, got: {body}");
+    let body_str = serde_json::to_string(&body).unwrap();
+    assert!(
+        !body_str.contains("ghost-db-g1"),
+        "connector name must not leak into the data-plane body: {body_str}"
+    );
+    assert!(errors[0]["code"].is_string(), "code is kept: {body}");
+    assert!(
+        body.get("request_id").is_some(),
+        "sanitized body carries a correlation id: {body}"
+    );
+
+    // The persisted trace keeps the full error detail for operators.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/data/traces?channel=g1-errors-ch&limit=1",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let list = body_json(resp).await;
+    let trace_id = list["data"][0]["id"].as_str().expect("trace id");
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/data/traces/{trace_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let trace = body_json(resp).await;
+    let trace_str = serde_json::to_string(&trace).unwrap();
+    assert!(
+        trace_str.contains("ghost-db-g1"),
+        "persisted trace must keep full error detail: {trace_str}"
+    );
+}
+
 #[tokio::test]
 async fn test_async_path_honors_cors_allowlist() {
     let app = common::test_app().await;

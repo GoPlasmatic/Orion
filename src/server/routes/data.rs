@@ -424,10 +424,15 @@ fn json_response(status: StatusCode, body: String) -> Response {
 /// fire-and-forget cache the serialized response if a cache context was
 /// produced by [`check_response_cache`]. Records the trace-store phase in
 /// the per-request profile when one is in scope.
+///
+/// `cache_body` is the client-facing serialization: cache hits are returned
+/// to callers verbatim, so the cached copy must be the sanitized envelope
+/// (G1), while the persisted trace keeps `trace.response_json` full detail.
 async fn persist_trace_and_cache(
     state: &AppState,
     channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
     trace: &CompletedTrace<'_>,
+    cache_body: &str,
     cache_context: &Option<CacheStoreCtx>,
     profile: Option<&std::sync::Arc<crate::engine::profile::ProfileCollector>>,
 ) {
@@ -454,10 +459,34 @@ async fn persist_trace_and_cache(
 
     // Fire-and-forget cache store
     if let Some((key, cache, ttl)) = cache_context
-        && let Err(e) = cache.set_ex(key, trace.response_json, *ttl).await
+        && let Err(e) = cache.set_ex(key, cache_body, *ttl).await
     {
         tracing::debug!(channel = trace.channel, error = %e, "Failed to cache response");
     }
+}
+
+/// Generic replacement for engine error messages on the data plane (G1).
+const SANITIZED_ERROR_MESSAGE: &str =
+    "Task processing failed; full detail is available in the trace";
+
+/// Map engine `ErrorInfo` entries to a client-safe shape: code and task_id
+/// only, with a generic message. Raw messages can embed upstream URLs,
+/// connector names, and driver errors, which must not reach anonymous
+/// data-plane callers — the persisted trace keeps the originals.
+fn sanitize_errors(errors: &[dataflow_rs::ErrorInfo]) -> Vec<Value> {
+    errors
+        .iter()
+        .map(|e| {
+            let mut entry = json!({
+                "code": e.code,
+                "message": SANITIZED_ERROR_MESSAGE,
+            });
+            if let Some(ref task_id) = e.task_id {
+                entry["task_id"] = json!(task_id);
+            }
+            entry
+        })
+        .collect()
 }
 
 /// Core sync processing logic shared between simple HTTP and REST routes.
@@ -551,10 +580,36 @@ async fn process_sync_for_channel(
                 "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
             });
 
-            // Serialize response exactly once — reused for size check, trace storage,
-            // cache, and the HTTP response body (no re-serialization by Axum).
+            // Serialize the full-detail envelope exactly once — reused for the
+            // size check, trace storage, and (on the error-free hot path) the
+            // cache and HTTP body with no re-serialization by Axum.
             let response_json = serde_json::to_string(&response)
                 .map_err(|e| OrionError::Internal(format!("Failed to serialize response: {e}")))?;
+
+            // G1: when workflow errors are present, the client-facing body
+            // (and the cached copy) carry sanitized entries plus a
+            // correlation id; the persisted trace keeps the full detail.
+            let has_errors = message.has_errors();
+            let public_response = if has_errors {
+                let request_id = crate::server::request_context::REQUEST_ID
+                    .try_with(|id| id.clone())
+                    .unwrap_or_default();
+                Some(json!({
+                    "id": message.id(),
+                    "status": "ok",
+                    "data": message.data(),
+                    "errors": sanitize_errors(message.errors()),
+                    "request_id": request_id,
+                }))
+            } else {
+                None
+            };
+            let public_json = match &public_response {
+                Some(v) => Some(serde_json::to_string(v).map_err(|e| {
+                    OrionError::Internal(format!("Failed to serialize response: {e}"))
+                })?),
+                None => None,
+            };
 
             let max_result_size = state.config.queue.max_result_size_bytes;
             if max_result_size > 0 && response_json.len() > max_result_size {
@@ -567,7 +622,6 @@ async fn process_sync_for_channel(
             }
 
             let input_json = serde_json::to_string(&data).ok();
-            let has_errors = message.has_errors();
             let task_trace_json = task_trace
                 .as_ref()
                 .and_then(|t| serde_json::to_string(t).ok());
@@ -585,6 +639,7 @@ async fn process_sync_for_channel(
                     has_errors,
                     task_trace_json: task_trace_json.as_deref(),
                 },
+                public_json.as_deref().unwrap_or(&response_json),
                 &cache_context,
                 profile.as_ref(),
             )
@@ -598,7 +653,7 @@ async fn process_sync_for_channel(
             // `_orion.task_trace`) can be added without colliding with
             // workflow-level output keys that callers control.
             if let Some(ref p) = profile {
-                let mut response_with_profile = response;
+                let mut response_with_profile = public_response.unwrap_or(response);
                 response_with_profile["_orion"] = json!({ "profile": p.to_json() });
                 let body = serde_json::to_string(&response_with_profile).map_err(|e| {
                     OrionError::Internal(format!("Failed to serialize response: {e}"))
@@ -606,7 +661,10 @@ async fn process_sync_for_channel(
                 return Ok(json_response(StatusCode::OK, body));
             }
 
-            Ok(json_response(StatusCode::OK, response_json))
+            Ok(json_response(
+                StatusCode::OK,
+                public_json.unwrap_or(response_json),
+            ))
         }
         Err(e) => {
             remove_rollout_bucket(&mut message);
