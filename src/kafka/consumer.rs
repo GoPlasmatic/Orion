@@ -64,21 +64,21 @@ impl ConsumerHandle {
 
     /// Pause all assigned partitions (blocks message delivery without leaving consumer group).
     pub fn pause(&self) -> Result<(), OrionError> {
-        let assignment = self
-            .consumer
-            .assignment()
-            .map_err(|e| OrionError::Internal(format!("Failed to get consumer assignment: {e}")))?;
-        if assignment.count() == 0 {
-            return Ok(());
-        }
-        self.consumer.pause(&assignment).map_err(|e| {
-            OrionError::Internal(format!("Failed to pause consumer partitions: {e}"))
-        })?;
-        Ok(())
+        self.with_assignment("pause", |c, a| c.pause(a))
     }
 
     /// Resume all assigned partitions.
     pub fn resume(&self) -> Result<(), OrionError> {
+        self.with_assignment("resume", |c, a| c.resume(a))
+    }
+
+    /// Fetch the current assignment and apply `op` to it; a consumer with no
+    /// assigned partitions is a no-op. Shared plumbing for pause/resume.
+    fn with_assignment(
+        &self,
+        op: &str,
+        f: impl Fn(&StreamConsumer, &rdkafka::TopicPartitionList) -> rdkafka::error::KafkaResult<()>,
+    ) -> Result<(), OrionError> {
         let assignment = self
             .consumer
             .assignment()
@@ -86,10 +86,9 @@ impl ConsumerHandle {
         if assignment.count() == 0 {
             return Ok(());
         }
-        self.consumer.resume(&assignment).map_err(|e| {
-            OrionError::Internal(format!("Failed to resume consumer partitions: {e}"))
-        })?;
-        Ok(())
+        f(&self.consumer, &assignment).map_err(|e| {
+            OrionError::Internal(format!("Failed to {op} consumer partitions: {e}"))
+        })
     }
 
     /// Get the set of topics this consumer is subscribed to.
@@ -457,20 +456,6 @@ async fn process_one_kafka_message(
 fn extract_kafka_trace_context(
     msg: &rdkafka::message::BorrowedMessage<'_>,
 ) -> opentelemetry::Context {
-    use opentelemetry::propagation::TextMapPropagator;
-    use opentelemetry_sdk::propagation::TraceContextPropagator;
-    use tracing_opentelemetry::OpenTelemetrySpanExt;
-
-    struct KafkaHeaderExtractor(HashMap<String, String>);
-    impl opentelemetry::propagation::Extractor for KafkaHeaderExtractor {
-        fn get(&self, key: &str) -> Option<&str> {
-            self.0.get(key).map(|v| v.as_str())
-        }
-        fn keys(&self) -> Vec<&str> {
-            self.0.keys().map(|k| k.as_str()).collect()
-        }
-    }
-
     let mut header_map = HashMap::new();
     if let Some(headers) = msg.headers() {
         for idx in 0..headers.count() {
@@ -481,11 +466,7 @@ fn extract_kafka_trace_context(
             }
         }
     }
-
-    let propagator = TraceContextPropagator::new();
-    let cx = propagator.extract(&KafkaHeaderExtractor(header_map));
-    let _ = tracing::Span::current().set_parent(cx.clone());
-    cx
+    crate::server::trace_context::set_parent_from_map(&header_map)
 }
 
 async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<bool>) {

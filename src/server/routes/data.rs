@@ -20,9 +20,7 @@ use crate::server::routes::openapi::ErrorResponse;
 use crate::server::state::AppState;
 use crate::storage::repositories::traces::{TraceCompletedRow, TraceFilter};
 
-// Re-export from engine utils for backward compatibility
-pub(crate) use crate::engine::utils::merge_metadata;
-use crate::engine::utils::{inject_rollout_bucket, remove_rollout_bucket};
+use crate::engine::utils::{inject_rollout_bucket, merge_metadata, remove_rollout_bucket};
 
 /// Request headers whose values are credentials, masked before the header
 /// map enters workflow metadata (S10). `http::HeaderName` is always

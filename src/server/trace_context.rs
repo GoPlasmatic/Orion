@@ -29,6 +29,31 @@ impl opentelemetry::propagation::Extractor for HeaderExtractor<'_> {
     }
 }
 
+/// [`opentelemetry::propagation::Extractor`] over a plain string map — the
+/// shape Kafka headers and queued trace headers arrive in.
+struct MapExtractor<'a>(&'a HashMap<String, String>);
+
+impl opentelemetry::propagation::Extractor for MapExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).map(|v| v.as_str())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
+    }
+}
+
+/// Extract a W3C trace context from a string header map and attach it as the
+/// parent of the current tracing span. Returns the propagated context so the
+/// caller can keep it in scope. Shared by the Kafka consumer and the async
+/// trace queue; uses the cached [`PROPAGATOR`] instead of building one per
+/// message.
+pub fn set_parent_from_map(headers: &HashMap<String, String>) -> opentelemetry::Context {
+    let cx = PROPAGATOR.extract(&MapExtractor(headers));
+    let _ = Span::current().set_parent(cx.clone());
+    cx
+}
+
 /// Axum middleware that extracts W3C Trace Context (`traceparent`/`tracestate`)
 /// from inbound HTTP requests and sets the extracted context as the parent of
 /// a new span.

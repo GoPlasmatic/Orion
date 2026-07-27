@@ -166,10 +166,8 @@ impl ChannelRegistry {
 
     pub fn with_cluster(cluster: ClusterBackends) -> Self {
         Self {
-            by_name: RwLock::new(HashMap::new()),
-            route_table: RwLock::new(RouteTable::default()),
-            quarantined: RwLock::new(HashMap::new()),
             cluster: Some(cluster),
+            ..Self::new()
         }
     }
 

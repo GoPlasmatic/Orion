@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{RwLock, Semaphore, mpsc};
 
+use crate::config::TraceStorageMode;
 use crate::metrics;
 use crate::storage::models;
 use crate::storage::repositories::trace_dlq::TraceDlqRepository;
@@ -146,10 +147,10 @@ async fn route_set_trace_status(
     message: Option<&str>,
 ) {
     match mode {
-        crate::config::TraceStorageMode::Sync => {
+        TraceStorageMode::Sync => {
             set_trace_status(trace_repo, trace_id, status, message).await;
         }
-        crate::config::TraceStorageMode::Async | crate::config::TraceStorageMode::Batch => {
+        TraceStorageMode::Async | TraceStorageMode::Batch => {
             persistence_queue
                 .submit(crate::queue::TracePersistenceTask::UpdateStatus {
                     id: trace_id.to_string(),
@@ -158,7 +159,7 @@ async fn route_set_trace_status(
                 })
                 .await;
         }
-        crate::config::TraceStorageMode::Off => {}
+        TraceStorageMode::Off => {}
     }
 }
 
@@ -173,8 +174,8 @@ async fn route_set_result(
     task_trace_json: Option<String>,
 ) -> bool {
     match mode {
-        crate::config::TraceStorageMode::Sync => false, // caller handles inline write
-        crate::config::TraceStorageMode::Async | crate::config::TraceStorageMode::Batch => {
+        TraceStorageMode::Sync => false, // caller handles inline write
+        TraceStorageMode::Async | TraceStorageMode::Batch => {
             persistence_queue
                 .submit(crate::queue::TracePersistenceTask::SetResult(
                     crate::storage::repositories::traces::TraceResultRow {
@@ -187,7 +188,7 @@ async fn route_set_result(
                 .await;
             true
         }
-        crate::config::TraceStorageMode::Off => true,
+        TraceStorageMode::Off => true,
     }
 }
 
@@ -228,25 +229,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     let trace_mode = effective_trace.mode;
     // Restore W3C trace context from the originating request so this span
     // appears as a child in the caller's distributed trace.
-    {
-        use opentelemetry::propagation::TextMapPropagator;
-        use opentelemetry_sdk::propagation::TraceContextPropagator;
-        use tracing_opentelemetry::OpenTelemetrySpanExt;
-
-        struct MapExtractor<'a>(&'a std::collections::HashMap<String, String>);
-        impl opentelemetry::propagation::Extractor for MapExtractor<'_> {
-            fn get(&self, key: &str) -> Option<&str> {
-                self.0.get(key).map(|v| v.as_str())
-            }
-            fn keys(&self) -> Vec<&str> {
-                self.0.keys().map(|k| k.as_str()).collect()
-            }
-        }
-
-        let propagator = TraceContextPropagator::new();
-        let cx = propagator.extract(&MapExtractor(&msg.trace_headers));
-        let _ = tracing::Span::current().set_parent(cx);
-    }
+    let _cx = crate::server::trace_context::set_parent_from_map(&msg.trace_headers);
 
     let trace_id = msg.trace_id;
     let channel = msg.channel;
@@ -266,7 +249,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
 
     // Mark as running. In sync mode this blocks; in async/batch it enqueues;
     // in off mode it's a no-op since no DB row exists.
-    if matches!(trace_mode, crate::config::TraceStorageMode::Sync) {
+    if matches!(trace_mode, TraceStorageMode::Sync) {
         if let Err(e) = trace_repo
             .update_status(&trace_id, models::TRACE_STATUS_RUNNING, None)
             .await
@@ -305,7 +288,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
         }
     } else if matches!(
         trace_mode,
-        crate::config::TraceStorageMode::Async | crate::config::TraceStorageMode::Batch
+        TraceStorageMode::Async | TraceStorageMode::Batch
     ) {
         persistence_queue
             .submit(crate::queue::TracePersistenceTask::UpdateStatus {

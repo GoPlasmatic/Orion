@@ -385,7 +385,7 @@ pub(crate) async fn test_workflow(
     }
 
     let mut message = dataflow_rs::Message::from_value(&payload);
-    super::super::data::merge_metadata(&mut message, &req.metadata);
+    crate::engine::utils::merge_metadata(&mut message, &req.metadata);
 
     let trace = test_engine
         .process_message_with_trace(&mut message)
@@ -742,48 +742,22 @@ fn validate_workflow_condition(
 
 /// Validate that the workflow can be converted to a dataflow-rs workflow.
 fn validate_dataflow_conversion(req: &CreateWorkflowRequest, errors: &mut Vec<ValidationIssue>) {
-    use crate::storage::repositories::workflows::workflow_to_dataflow;
+    use crate::storage::repositories::workflows::{synthetic_workflow, workflow_to_dataflow};
 
-    let temp_workflow = crate::storage::models::Workflow {
-        workflow_id: "temp-validate".to_string(),
-        name: req.name.clone(),
-        description: req.description.clone(),
-        priority: req.priority,
-        version: 1,
-        status: crate::storage::models::EntityStatus::Active
-            .as_str()
-            .to_string(),
-        rollout_percentage: 100,
-        condition_json: serde_json::to_string(&req.condition).unwrap_or_else(|e| {
-            errors.push(ValidationIssue {
-                field: "condition".to_string(),
-                message: format!("Failed to serialize condition: {e}"),
-            });
-            String::new()
-        }),
-        tasks_json: serde_json::to_string(&req.tasks).unwrap_or_else(|e| {
-            errors.push(ValidationIssue {
-                field: "tasks".to_string(),
-                message: format!("Failed to serialize tasks: {e}"),
-            });
-            String::new()
-        }),
-        tags: serde_json::to_string(&req.tags).unwrap_or_else(|e| {
-            errors.push(ValidationIssue {
-                field: "tags".to_string(),
-                message: format!("Failed to serialize tags: {e}"),
-            });
-            String::new()
-        }),
-        continue_on_error: req.continue_on_error,
-        created_at: chrono::Utc::now().naive_utc(),
-        updated_at: chrono::Utc::now().naive_utc(),
-    };
-
-    if let Err(e) = workflow_to_dataflow(&temp_workflow, "__validate__") {
-        errors.push(ValidationIssue {
+    match synthetic_workflow(req, "temp-validate") {
+        Ok(w) => {
+            if let Err(e) = workflow_to_dataflow(&w, "__validate__") {
+                errors.push(ValidationIssue {
+                    field: "(root)".to_string(),
+                    message: format!("Failed to convert to dataflow workflow: {e}"),
+                });
+            }
+        }
+        // Serializing request fields back to JSON cannot realistically fail,
+        // but surface it rather than swallow it.
+        Err(e) => errors.push(ValidationIssue {
             field: "(root)".to_string(),
-            message: format!("Failed to convert to dataflow workflow: {e}"),
-        });
+            message: format!("Failed to serialize workflow fields: {e}"),
+        }),
     }
 }

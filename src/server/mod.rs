@@ -268,7 +268,6 @@ pub async fn shutdown_signal() {
         _ = terminate => {},
     }
 
-    eprintln!("\nShutdown signal received, starting graceful shutdown...");
     tracing::info!("Shutdown signal received, starting graceful shutdown");
 }
 

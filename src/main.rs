@@ -842,7 +842,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    eprintln!("Orion shut down cleanly");
     tracing::info!("Orion shut down cleanly");
     Ok(())
 }
@@ -994,7 +993,6 @@ async fn run_dry_run(
     workflow_path: &str,
     input_path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use orion::storage::models::{EntityStatus, Workflow};
     use orion::storage::repositories::workflows::{CreateWorkflowRequest, workflow_to_dataflow};
 
     let raw = std::fs::read_to_string(workflow_path)
@@ -1011,22 +1009,10 @@ async fn run_dry_run(
 
     // Build a synthetic Workflow row from the request to reuse the
     // existing dataflow conversion. Version + timestamps are placeholders.
-    let now = chrono::Utc::now().naive_utc();
-    let synthetic = Workflow {
-        workflow_id: req.workflow_id.clone().unwrap_or_else(|| "dry-run".into()),
-        version: 1,
-        name: req.name.clone(),
-        description: req.description.clone(),
-        priority: req.priority,
-        status: EntityStatus::Active.as_str().to_string(),
-        rollout_percentage: 100,
-        condition_json: serde_json::to_string(&req.condition)?,
-        tasks_json: serde_json::to_string(&req.tasks)?,
-        tags: serde_json::to_string(&req.tags)?,
-        continue_on_error: req.continue_on_error,
-        created_at: now,
-        updated_at: now,
-    };
+    let synthetic = orion::storage::repositories::workflows::synthetic_workflow(
+        &req,
+        req.workflow_id.as_deref().unwrap_or("dry-run"),
+    )?;
     let df_workflow = workflow_to_dataflow(&synthetic, "__dry_run__")?;
     let engine = dataflow_rs::Engine::new(vec![df_workflow], std::collections::HashMap::new())?;
     let mut message = dataflow_rs::Message::from_value(&input);

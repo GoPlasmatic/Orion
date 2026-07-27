@@ -843,6 +843,31 @@ impl WorkflowRepository for SqlWorkflowRepository {
     }
 }
 
+/// Build an in-memory, never-persisted `Workflow` (active v1, 100% rollout)
+/// from a create request. For the dry-run and validate paths, which need to
+/// exercise `workflow_to_dataflow` without touching the database.
+pub fn synthetic_workflow(
+    req: &CreateWorkflowRequest,
+    id: &str,
+) -> Result<Workflow, serde_json::Error> {
+    let now = chrono::Utc::now().naive_utc();
+    Ok(Workflow {
+        workflow_id: id.to_string(),
+        version: 1,
+        name: req.name.clone(),
+        description: req.description.clone(),
+        priority: req.priority,
+        status: crate::storage::models::EntityStatus::Active.as_str().to_string(),
+        rollout_percentage: 100,
+        condition_json: serde_json::to_string(&req.condition)?,
+        tasks_json: serde_json::to_string(&req.tasks)?,
+        tags: serde_json::to_string(&req.tags)?,
+        continue_on_error: req.continue_on_error,
+        created_at: now,
+        updated_at: now,
+    })
+}
+
 /// Convert a Workflow DB model to a dataflow-rs Workflow via JSON deserialization.
 /// The `channel_name` parameter is supplied externally (from the Channel entity).
 pub fn workflow_to_dataflow(

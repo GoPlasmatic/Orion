@@ -2,7 +2,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, MatchedPath, Request, State};
-use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use ipnet::IpNet;
@@ -276,25 +275,22 @@ fn build_rate_limit_context(client_ip: &str, channel: &str, req: &Request) -> Va
 }
 
 fn rate_limited_response() -> Response {
-    let body = json!({
-        "error": {
-            "code": "RATE_LIMITED",
-            "message": "Too many requests"
-        }
-    });
-    (
-        StatusCode::TOO_MANY_REQUESTS,
-        [("retry-after", "1")],
-        axum::Json(body),
-    )
-        .into_response()
+    // Route through OrionError so the 429 carries the same envelope
+    // (request_id included) as every other error, then add retry-after.
+    let mut resp =
+        crate::errors::OrionError::RateLimited("Too many requests".to_string()).into_response();
+    resp.headers_mut().insert(
+        "retry-after",
+        axum::http::HeaderValue::from_static("1"),
+    );
+    resp
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::body::Body;
-    use axum::http::Request;
+    use axum::http::{Request, StatusCode};
 
     /// Attach a `ConnectInfo` peer address, as the serve layer does at runtime.
     fn with_peer(mut req: Request<Body>, peer: &str) -> Request<Body> {
