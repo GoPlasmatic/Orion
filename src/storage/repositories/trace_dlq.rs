@@ -303,7 +303,7 @@ mod tests {
             .expect("enqueue");
         // Entries become due 1s after enqueue — backdate to now-2s.
         let DbPool::Sqlite(p) = &repo.pool else {
-            panic!("sqlite expected");
+            unreachable!("sqlite expected");
         };
         sqlx::query(
             "UPDATE trace_dlq SET next_retry_at = datetime('now', '-2 seconds') WHERE id = ?",
@@ -343,7 +343,7 @@ mod tests {
 
         // Force-expire the lease → reclaimable by another node.
         let DbPool::Sqlite(p) = &repo.pool else {
-            panic!("sqlite expected");
+            unreachable!("sqlite expected");
         };
         sqlx::query("UPDATE trace_dlq SET claimed_until = datetime('now', '-1 seconds')")
             .execute(p)

@@ -301,7 +301,7 @@ mod tests {
         );
         // Force-expire the lease.
         let DbPool::Sqlite(p) = &repo.pool else {
-            panic!("sqlite expected");
+            unreachable!("sqlite expected");
         };
         sqlx::query("UPDATE job_leases SET expires_at = datetime('now', '-10 seconds')")
             .execute(p)
