@@ -195,3 +195,134 @@ async fn failed_running_write_routes_message_to_dlq() {
         "trace must leave `pending` once its message is routed to the DLQ"
     );
 }
+
+// ============================================================
+// Q7: batch/async workers must actually run in parallel
+// ============================================================
+
+/// Records the maximum number of concurrently in-flight `update_status`
+/// calls. With the old shared `Arc<Mutex<Receiver>>`, N workers serialized
+/// behind one lock and this could never exceed 1.
+struct ConcurrencyProbeRepo {
+    current: Arc<std::sync::atomic::AtomicUsize>,
+    max_seen: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+fn fake_trace(id: &str) -> Trace {
+    let now = chrono::Utc::now().naive_utc();
+    Trace {
+        id: id.to_string(),
+        channel: "probe".to_string(),
+        channel_id: None,
+        mode: "async".to_string(),
+        status: "running".to_string(),
+        input_json: None,
+        result_json: None,
+        error_message: None,
+        duration_ms: None,
+        started_at: None,
+        completed_at: None,
+        created_at: now,
+        updated_at: now,
+        task_trace_json: None,
+        access_token_hash: None,
+    }
+}
+
+#[async_trait]
+impl TraceRepository for ConcurrencyProbeRepo {
+    async fn create_pending(
+        &self,
+        _channel: &str,
+        _channel_id: Option<&str>,
+        _mode: &str,
+        _input_json: Option<&str>,
+        _access_token_hash: Option<&str>,
+    ) -> Result<Trace, OrionError> {
+        unimplemented!()
+    }
+    async fn get_by_id(&self, _id: &str) -> Result<Trace, OrionError> {
+        unimplemented!()
+    }
+    async fn update_status(
+        &self,
+        id: &str,
+        _status: &str,
+        _error_message: Option<&str>,
+    ) -> Result<Trace, OrionError> {
+        let now = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_seen.fetch_max(now, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        self.current.fetch_sub(1, Ordering::SeqCst);
+        Ok(fake_trace(id))
+    }
+    async fn set_result(
+        &self,
+        _id: &str,
+        _result_json: &str,
+        _duration_ms: f64,
+        _task_trace_json: Option<&str>,
+    ) -> Result<(), OrionError> {
+        unimplemented!()
+    }
+    async fn store_completed(
+        &self,
+        _channel: &str,
+        _channel_id: Option<&str>,
+        _mode: &str,
+        _input_json: Option<&str>,
+        _result_json: &str,
+        _duration_ms: f64,
+        _task_trace_json: Option<&str>,
+    ) -> Result<String, OrionError> {
+        unimplemented!()
+    }
+    async fn list_paginated(
+        &self,
+        _filter: &TraceFilter,
+    ) -> Result<PaginatedResult<Trace>, OrionError> {
+        unimplemented!()
+    }
+    async fn delete_older_than(&self, _hours: u64) -> Result<u64, OrionError> {
+        unimplemented!()
+    }
+}
+
+#[tokio::test]
+async fn persistence_workers_run_in_parallel() {
+    let current = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let max_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let repo: Arc<dyn TraceRepository> = Arc::new(ConcurrencyProbeRepo {
+        current: current.clone(),
+        max_seen: max_seen.clone(),
+    });
+
+    let config = orion::config::TracingStorageConfig {
+        mode: orion::config::TraceStorageMode::Async,
+        async_workers: 2,
+        ..Default::default()
+    };
+    let (queue, handle) = orion::queue::trace_persistence::start(&config, repo);
+
+    for i in 0..2 {
+        assert!(
+            queue
+                .submit(orion::queue::TracePersistenceTask::UpdateStatus {
+                    id: format!("t{i}"),
+                    status: "completed".to_string(),
+                    error_message: None,
+                })
+                .await
+        );
+    }
+    // Drop the queue's sender clones so the workers see channel-closed and
+    // drain instead of idling until the shutdown timeout.
+    drop(queue);
+    handle.shutdown().await;
+
+    assert_eq!(
+        max_seen.load(Ordering::SeqCst),
+        2,
+        "2 async_workers must process 2 queued writes concurrently (Q7)"
+    );
+}

@@ -43,11 +43,18 @@ pub enum TracePersistenceTask {
 }
 
 /// Handle clients use to submit work. Cheap to clone — shares the underlying
-/// sender. When `disabled` is true (mode = `Sync` or `Off`), `submit` is a
+/// senders. When `disabled` is true (mode = `Sync` or `Off`), `submit` is a
 /// no-op so call sites can stay shape-uniform.
+///
+/// Q7: each worker owns its own receiver (one channel per worker) and
+/// `submit` fans out round-robin. The previous shared `Arc<Mutex<Receiver>>`
+/// serialized all workers behind one lock — which the batch worker held
+/// across its flush-interval `timeout(recv)` — so `async_workers`/
+/// `batch_workers` > 1 delivered no parallelism at all.
 #[derive(Clone)]
 pub struct TracePersistenceQueue {
-    sender: Option<mpsc::Sender<TracePersistenceTask>>,
+    senders: Vec<mpsc::Sender<TracePersistenceTask>>,
+    next: Arc<AtomicUsize>,
     pending: Arc<AtomicUsize>,
     overflow_policy: AsyncOnOverflow,
     overflow_block_timeout: Duration,
@@ -58,7 +65,8 @@ impl TracePersistenceQueue {
     /// `Ok(false)`.
     pub fn disabled() -> Self {
         Self {
-            sender: None,
+            senders: Vec::new(),
+            next: Arc::new(AtomicUsize::new(0)),
             pending: Arc::new(AtomicUsize::new(0)),
             overflow_policy: AsyncOnOverflow::Drop,
             overflow_block_timeout: Duration::ZERO,
@@ -69,15 +77,32 @@ impl TracePersistenceQueue {
     /// dropped (queue full or queue disabled). Never errors — overflow is
     /// surfaced via `trace_dropped_total{reason="overflow"}`.
     pub async fn submit(&self, task: TracePersistenceTask) -> bool {
-        let Some(sender) = self.sender.as_ref() else {
+        if self.senders.is_empty() {
             return false;
-        };
+        }
+        let start = self.next.fetch_add(1, Ordering::Relaxed);
         let send_result = match self.overflow_policy {
-            AsyncOnOverflow::Drop => sender.try_send(task).map_err(|e| match e {
-                mpsc::error::TrySendError::Full(_) => "full",
-                mpsc::error::TrySendError::Closed(_) => "closed",
-            }),
+            AsyncOnOverflow::Drop => {
+                // Round-robin, falling through to the other workers when the
+                // preferred one is full — a stalled worker should not drop
+                // tasks while its siblings sit idle.
+                let mut task = task;
+                let mut outcome = Err("full");
+                for i in 0..self.senders.len() {
+                    let sender = &self.senders[(start + i) % self.senders.len()];
+                    match sender.try_send(task) {
+                        Ok(()) => {
+                            outcome = Ok(());
+                            break;
+                        }
+                        Err(mpsc::error::TrySendError::Full(t))
+                        | Err(mpsc::error::TrySendError::Closed(t)) => task = t,
+                    }
+                }
+                outcome
+            }
             AsyncOnOverflow::Block => {
+                let sender = &self.senders[start % self.senders.len()];
                 match tokio::time::timeout(self.overflow_block_timeout, sender.send(task)).await {
                     Ok(Ok(())) => Ok(()),
                     Ok(Err(_)) => Err("closed"),
@@ -99,9 +124,9 @@ impl TracePersistenceQueue {
     }
 }
 
-/// Lifecycle handle. Drop the inner sender on shutdown and await drain.
+/// Lifecycle handle. Drop the inner senders on shutdown and await drain.
 pub struct PersistenceWorkerHandle {
-    _sender: Option<mpsc::Sender<TracePersistenceTask>>,
+    _senders: Vec<mpsc::Sender<TracePersistenceTask>>,
     join: Vec<tokio::task::JoinHandle<()>>,
     shutdown_timeout: Duration,
 }
@@ -109,7 +134,7 @@ pub struct PersistenceWorkerHandle {
 impl PersistenceWorkerHandle {
     pub fn noop() -> Self {
         Self {
-            _sender: None,
+            _senders: Vec::new(),
             join: Vec::new(),
             shutdown_timeout: Duration::ZERO,
         }
@@ -118,7 +143,7 @@ impl PersistenceWorkerHandle {
     /// Drop the producer side and wait for workers to drain, bounded by
     /// `shutdown_timeout`.
     pub async fn shutdown(self) {
-        drop(self._sender);
+        drop(self._senders);
         if self.join.is_empty() {
             return;
         }
@@ -154,13 +179,16 @@ pub fn start(
         }
     };
 
-    let (tx, rx) = mpsc::channel::<TracePersistenceTask>(config.max_pending.max(1));
-    let rx = Arc::new(tokio::sync::Mutex::new(rx));
+    // One channel per worker (Q7); `max_pending` stays the total bound by
+    // splitting the capacity across workers.
+    let per_worker_capacity = (config.max_pending.max(1) / worker_count).max(1);
     let pending = Arc::new(AtomicUsize::new(0));
 
+    let mut senders = Vec::with_capacity(worker_count);
     let mut join = Vec::with_capacity(worker_count);
     for _ in 0..worker_count {
-        let rx = rx.clone();
+        let (tx, rx) = mpsc::channel::<TracePersistenceTask>(per_worker_capacity);
+        senders.push(tx);
         let pending = pending.clone();
         let trace_repo = trace_repo.clone();
         let batch_size = config.batch_size.max(1);
@@ -175,13 +203,14 @@ pub fn start(
     }
 
     let queue = TracePersistenceQueue {
-        sender: Some(tx.clone()),
+        senders: senders.clone(),
+        next: Arc::new(AtomicUsize::new(0)),
         pending,
         overflow_policy: config.async_on_overflow,
         overflow_block_timeout: Duration::from_millis(config.overflow_block_timeout_ms),
     };
     let handle = PersistenceWorkerHandle {
-        _sender: Some(tx),
+        _senders: senders,
         join,
         shutdown_timeout: Duration::from_secs(30),
     };
@@ -189,16 +218,11 @@ pub fn start(
 }
 
 async fn run_async_worker(
-    rx: Arc<tokio::sync::Mutex<mpsc::Receiver<TracePersistenceTask>>>,
+    mut rx: mpsc::Receiver<TracePersistenceTask>,
     pending: Arc<AtomicUsize>,
     trace_repo: Arc<dyn TraceRepository>,
 ) {
-    loop {
-        let task = {
-            let mut rx = rx.lock().await;
-            rx.recv().await
-        };
-        let Some(task) = task else { return };
+    while let Some(task) = rx.recv().await {
         let n = pending.fetch_sub(1, Ordering::Relaxed).saturating_sub(1);
         metrics::set_trace_persistence_queue_depth(n as f64);
         dispatch_one(&trace_repo, task).await;
@@ -206,7 +230,7 @@ async fn run_async_worker(
 }
 
 async fn run_batch_worker(
-    rx: Arc<tokio::sync::Mutex<mpsc::Receiver<TracePersistenceTask>>>,
+    mut rx: mpsc::Receiver<TracePersistenceTask>,
     pending: Arc<AtomicUsize>,
     trace_repo: Arc<dyn TraceRepository>,
     batch_size: usize,
@@ -219,10 +243,7 @@ async fn run_batch_worker(
     loop {
         let now = Instant::now();
         let until = deadline.saturating_duration_since(now);
-        let recv = {
-            let mut rx = rx.lock().await;
-            tokio::time::timeout(until, rx.recv()).await
-        };
+        let recv = tokio::time::timeout(until, rx.recv()).await;
 
         match recv {
             Ok(Some(task)) => {
