@@ -1,3 +1,10 @@
+//! Coverage for the SQLite backup endpoints (`POST`/`GET /api/v1/admin/backups`).
+//!
+//! There is no restore endpoint to test: restore is the offline
+//! stop → replace the database file → start procedure documented in
+//! `docs/src/features/maintainability.md` (O5/C20). This file was named
+//! `backup_restore_test.rs` while covering only create/list/contains-data.
+
 use crate::common;
 
 use crate::common::{body_json, json_request};
@@ -39,6 +46,31 @@ async fn backup_test_app(base_dir: &str, backup_dir: &str) -> axum::Router {
         ..Default::default()
     };
     common::test_app_with_config(config).await
+}
+
+// ============================================================
+// 0. There is no restore endpoint (O5)
+// ============================================================
+
+/// The docs used to tell operators to `POST /api/v1/admin/restore` (and
+/// `/backup`, singular). Neither route exists — pin that so the claim cannot
+/// silently reappear in the docs.
+#[tokio::test]
+async fn test_restore_endpoint_does_not_exist() {
+    let app = common::test_app().await;
+
+    for path in ["/api/v1/admin/restore", "/api/v1/admin/backup"] {
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", path, None))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::NOT_FOUND,
+            "{path} must not be a registered route"
+        );
+    }
 }
 
 // ============================================================

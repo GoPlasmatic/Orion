@@ -12,8 +12,8 @@ Full CRUD operations for all entities through a RESTful admin API:
 | **Channels** | Create, read, update, delete, status management, versioning |
 | **Connectors** | Create, read, update, delete, reload, circuit breaker inspection/reset |
 | **Engine** | Status, hot-reload |
-| **Audit logs** | List with filtering by action and resource type |
-| **Backup** | Database export and restore |
+| **Audit logs** | List with filtering by action, resource type, resource ID, principal, and time range |
+| **Backup** | Create and list SQLite backups (no restore endpoint — see below) |
 
 **Version management:** both workflows and channels support the draft → active → archived lifecycle. Filter by status:
 
@@ -169,16 +169,48 @@ on the `queue.trace_cleanup_interval_secs` cadence and deletes entries older
 than `queue.audit_retention_days` (default `90`; set `0` to keep forever). In
 cluster mode the job is lease-gated so only one replica performs the delete.
 
-**Database backup and restore:**
+**Database backup:** in-product backup covers **SQLite only**. It is a
+`VACUUM INTO` of a consistent copy of the database into a timestamped file in
+`storage.backup_dir`, and it is refused in cluster mode (the file would land on
+one arbitrary replica).
 
 ```bash
-# Export backup
-curl -s -X POST http://localhost:8080/api/v1/admin/backup -o backup.json
+# Create a backup — writes storage.backup_dir/orion_backup_<timestamp>.db
+curl -s -X POST http://localhost:8080/api/v1/admin/backups
 
-# Restore from backup
-curl -s -X POST http://localhost:8080/api/v1/admin/restore \
-  -H "Content-Type: application/json" -d @backup.json
+# List the backups currently on this node
+curl -s http://localhost:8080/api/v1/admin/backups
 ```
+
+| Backend | In-product backup | Restore |
+|---------|-------------------|---------|
+| SQLite | `POST /api/v1/admin/backups` (`VACUUM INTO`), single node only | Stop the server, replace the database file, start it again |
+| PostgreSQL | Not provided — use your snapshot/PITR tooling (`pg_dump`, `pg_basebackup`, RDS/Cloud SQL automated backups) | Restore with the same tooling, then start Orion |
+| MySQL | Not provided — use your snapshot/PITR tooling (`mysqldump`, binlog PITR, managed-service backups) | Restore with the same tooling, then start Orion |
+
+> There is **no restore endpoint**. Restoring replaces the database Orion is
+> actively serving from, so it is an offline operation, not an API call.
+
+**Restore procedure (SQLite):**
+
+```bash
+# 1. Stop Orion (SIGTERM drains in-flight requests).
+systemctl stop orion          # or: docker compose stop orion
+
+# 2. Put the backup in place of the live database (storage.url path).
+cp /var/lib/orion/backups/orion_backup_20260727_101500.db /var/lib/orion/orion.db
+
+# 3. Start Orion. Migrations run at boot unless storage.auto_migrate = false,
+#    in which case run `orion-server migrate` first.
+systemctl start orion
+
+# 4. Confirm readiness.
+curl -sf http://localhost:8080/readyz
+```
+
+For PostgreSQL and MySQL the same shape applies — stop the replicas, restore
+the snapshot with the database's own tooling, run `orion-server migrate` if
+`storage.auto_migrate = false`, then start the replicas.
 
 **Config validation CLI:** validate your configuration without starting the server:
 

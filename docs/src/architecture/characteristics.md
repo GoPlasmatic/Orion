@@ -80,7 +80,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
 | [Admin APIs](../features/maintainability.md#admin-apis) | Full CRUD for all entities · Version management · Engine control · OpenAPI / Swagger UI |
 | [CI/CD Integration](../features/maintainability.md#cicd-integration) | Bulk import & export · Pre-deploy validation · GitOps-friendly |
 | [Testing](../features/maintainability.md#testing) | Dry-run execution · Workflow validation · Step-by-step traces |
-| [Operations](../features/maintainability.md#operations) | Audit logging · Database backup & restore · Config validation CLI |
+| [Operations](../features/maintainability.md#operations) | Audit logging (filterable, with retention) · SQLite backup endpoint · Config validation CLI |
 
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script>
@@ -205,7 +205,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
         { name: 'Testing', link: '../features/maintainability.html#testing',
           children: ['Dry-run execution', 'Workflow validation', 'Step-by-step traces'] },
         { name: 'Operations', link: '../features/maintainability.html#operations',
-          children: ['Audit logging', 'Database backup & restore', 'Config validation CLI'] }
+          children: ['Audit logging', 'SQLite backup endpoint', 'Config validation CLI'] }
       ]
     }
   ];

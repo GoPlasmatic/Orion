@@ -14,7 +14,7 @@ mod admin_workflows_test;
 mod async_trace_edge_test;
 mod async_traces_test;
 mod audit_log_test;
-mod backup_restore_test;
+mod backup_test;
 mod bulk_import_test;
 mod channel_call_test;
 mod channel_config_test;
