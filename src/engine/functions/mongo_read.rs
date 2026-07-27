@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use super::connector_helpers::{
     apply_output, extract_output_path, profile_handler, require_db_connector, require_op_allowed,
-    require_str_field, resolve_connector, to_exec_error,
+    require_str_field, resolve_connector, resolve_value, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -31,17 +31,20 @@ impl AsyncFunctionHandler for MongoReadHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
+        // The filter is folded against the message context before the handler
+        // body takes `ctx` mutably; `{"var": ..}` nodes may sit at any depth of
+        // the document, so a per-request query is expressible.
+        let filter_val = input
+            .get("filter")
+            .map(|f| resolve_value(f, ctx))
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        let filter_doc = bson::to_document(&filter_val)
+            .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {e}")))?;
+
         profile_handler("mongo_read", input, async move {
             let connector_name = require_str_field(input, "connector", "mongo_read")?;
             let database = require_str_field(input, "database", "mongo_read")?;
             let collection = require_str_field(input, "collection", "mongo_read")?;
-
-            let filter_val = input
-                .get("filter")
-                .cloned()
-                .unwrap_or(Value::Object(serde_json::Map::new()));
-            let filter_doc = bson::to_document(&filter_val)
-                .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {e}")))?;
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
             let db_config = require_db_connector(&connector_config, connector_name)?;

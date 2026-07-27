@@ -142,30 +142,130 @@ pub fn apply_output(ctx: &mut TaskContext<'_>, output_path: &str, new_value: Val
     ctx.set_json(output_path, &new_value);
 }
 
+/// Fold `{"var": ..}` nodes in a workflow-authored input against the message
+/// context. This is the single convention every connector handler uses to read
+/// request data.
+///
+/// dataflow-rs precompiles a task's `input` once at engine build, so a handler
+/// receives the literal workflow JSON rather than anything evaluated per
+/// message. Handlers that need message data must therefore resolve it
+/// themselves.
+///
+/// * `{"var": "data.id"}` → the value at that dot-path over the unified
+///   `{data, metadata, temp_data}` context, or `null` when it does not resolve.
+/// * `{"var": ["data.id", <default>]}` → the same, falling back to `<default>`
+///   when the path is absent (JSONLogic's two-argument `var` form).
+/// * Objects and arrays are walked recursively, so a `{"var": ..}` node is
+///   folded wherever it appears — including inside a positional bind-parameter
+///   array or a nested filter document.
+/// * Every other value is a literal and is cloned unchanged.
+///
+/// Values pulled out of the message are **not** re-scanned, so request data can
+/// never inject a `{"var": ..}` node of its own.
+pub fn resolve_value(value: &Value, ctx: &TaskContext<'_>) -> Value {
+    match value {
+        Value::Object(o) => {
+            if o.len() == 1
+                && let Some(spec) = o.get("var")
+            {
+                return resolve_var(spec, ctx);
+            }
+            Value::Object(
+                o.iter()
+                    .map(|(k, v)| (k.clone(), resolve_value(v, ctx)))
+                    .collect(),
+            )
+        }
+        Value::Array(a) => Value::Array(a.iter().map(|v| resolve_value(v, ctx)).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Look up the payload of a `{"var": ..}` node. Accepts the string form
+/// (`"data.id"`) and the JSONLogic array form (`["data.id", <default>]`).
+fn resolve_var(spec: &Value, ctx: &TaskContext<'_>) -> Value {
+    let (path, default) = match spec {
+        Value::String(p) => (p.as_str(), Value::Null),
+        Value::Array(a) => match a.first().and_then(|v| v.as_str()) {
+            Some(p) => (p, a.get(1).cloned().unwrap_or(Value::Null)),
+            None => return Value::Null,
+        },
+        _ => return Value::Null,
+    };
+    ctx.get(path).map(Value::from).unwrap_or(default)
+}
+
 /// Resolve a `params` object into concrete values for the query/write dialects.
 ///
-/// A value shaped like `{"var": "path"}` is looked up in the message context
-/// (dot-path over `{data, metadata, temp_data}`); anything else is used as a
-/// literal. A lookup that does not resolve yields null. Shared by `data_query`
-/// and `data_write` (folded into `{"param": ..}` nodes before translation).
+/// Thin wrapper over [`resolve_value`] that requires the result to be an
+/// object. Shared by `data_query` and `data_write`, which fold the returned map
+/// into the `{"param": ..}` nodes of a filter before translation.
 pub fn resolve_params(params: Option<&Value>, ctx: &TaskContext<'_>) -> Map<String, Value> {
-    let mut out = Map::new();
-    let Some(Value::Object(map)) = params else {
-        return out;
-    };
-    for (name, spec) in map {
-        let resolved = match spec {
-            Value::Object(o) if o.len() == 1 && o.contains_key("var") => {
-                match o.get("var").and_then(|v| v.as_str()) {
-                    Some(path) => ctx.get(path).map(Value::from).unwrap_or(Value::Null),
-                    None => Value::Null,
-                }
-            }
-            other => other.clone(),
-        };
-        out.insert(name.clone(), resolved);
+    match params.map(|p| resolve_value(p, ctx)) {
+        Some(Value::Object(map)) => map,
+        _ => Map::new(),
     }
-    out
+}
+
+/// Resolve a required input field and coerce the result to a string.
+///
+/// Scalars stringify; `null`, objects, and arrays are rejected so an
+/// unresolvable `{"var": ..}` surfaces as an error instead of silently becoming
+/// the literal key `"null"`.
+pub fn resolve_required_str(
+    input: &Value,
+    field: &str,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<String, DataflowError> {
+    let Some(raw) = input.get(field) else {
+        return Err(DataflowError::Validation(format!(
+            "{handler_name} requires '{field}' field"
+        )));
+    };
+    match resolve_value(raw, ctx) {
+        Value::String(s) => Ok(s),
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Bool(b) => Ok(b.to_string()),
+        other => Err(DataflowError::Validation(format!(
+            "{handler_name} '{field}' must resolve to a string or number, got {}",
+            json_type_name(&other)
+        ))),
+    }
+}
+
+/// Resolve the positional `params` array bound to a raw-SQL statement.
+///
+/// Absent or null yields no binds. Anything that resolves to a non-array is an
+/// error rather than being dropped, which would leave the statement's
+/// placeholders unbound.
+pub fn resolve_bind_params(
+    input: &Value,
+    handler_name: &str,
+    ctx: &TaskContext<'_>,
+) -> Result<Vec<Value>, DataflowError> {
+    match input.get("params") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(raw) => match resolve_value(raw, ctx) {
+            Value::Array(a) => Ok(a),
+            other => Err(DataflowError::Validation(format!(
+                "{handler_name} 'params' must resolve to an array of bind values, got {}",
+                json_type_name(&other)
+            ))),
+        },
+    }
+}
+
+/// Name a JSON value's type for error messages.
+pub fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 /// Bind a slice of JSON values to a sqlx query, matching each value type to

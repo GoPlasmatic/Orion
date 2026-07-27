@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::connector_helpers::{
     apply_output, extract_output_path, profile_handler, require_cache_connector, require_str_field,
-    resolve_connector, to_exec_error,
+    resolve_connector, resolve_required_str, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -28,9 +28,13 @@ impl AsyncFunctionHandler for CacheReadHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
+        // Resolve the key against the message context before the handler body
+        // takes `ctx` mutably — `{"var": "data.id"}` is the whole point of a
+        // per-request cache lookup.
+        let key = resolve_required_str(input, "key", "cache_read", ctx)?;
+
         profile_handler("cache_read", input, async move {
             let connector_name = require_str_field(input, "connector", "cache_read")?;
-            let key = require_str_field(input, "key", "cache_read")?;
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
             let cache_config = require_cache_connector(&connector_config, connector_name)?;
@@ -41,7 +45,7 @@ impl AsyncFunctionHandler for CacheReadHandler {
                 .await
                 .map_err(to_exec_error)?;
 
-            let value = backend.get(key).await.map_err(to_exec_error)?;
+            let value = backend.get(&key).await.map_err(to_exec_error)?;
 
             let result = match value {
                 Some(v) => serde_json::from_str::<Value>(&v).unwrap_or(Value::String(v)),

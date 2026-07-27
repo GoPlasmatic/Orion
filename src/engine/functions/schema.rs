@@ -65,6 +65,13 @@ pub struct FieldSchema {
     pub description: &'static str,
     pub kind: FieldKind,
     pub required: bool,
+    /// Whether the handler folds `{"var": ..}` nodes in this field against the
+    /// message context before use (see
+    /// `connector_helpers::resolve_value`). Resolvable fields accept a
+    /// `{"var": ..}` node in place of a literal of their declared `kind`;
+    /// everything else — connector names, SQL text, output paths — stays
+    /// literal by design.
+    pub resolvable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,18 +88,21 @@ const CACHE_READ_FIELDS: &[FieldSchema] = &[
         description: "Name of the cache connector to read from.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "key",
-        description: "Cache key to look up.",
+        description: "Cache key to look up. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::String,
         required: true,
+        resolvable: true,
     },
     FieldSchema {
         name: "output",
         description: "Dotted path in the message where the result is stored. Defaults to \"data\".",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
 ];
 
@@ -102,24 +112,28 @@ const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
         description: "Name of the cache connector to write to.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "key",
-        description: "Cache key to set.",
+        description: "Cache key to set. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::String,
         required: true,
+        resolvable: true,
     },
     FieldSchema {
         name: "value",
-        description: "Value to store. May be any JSON value.",
+        description: "Value to store. May be any JSON value. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::Any,
         required: true,
+        resolvable: true,
     },
     FieldSchema {
         name: "ttl_secs",
-        description: "Time-to-live in seconds. Omit for no expiry.",
+        description: "Time-to-live in seconds. Omit for no expiry. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::Number,
         required: false,
+        resolvable: true,
     },
 ];
 
@@ -129,24 +143,28 @@ const DB_READ_FIELDS: &[FieldSchema] = &[
         description: "Name of the SQL connector to query.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "query",
         description: "SQL query. Use $1, $2, ... placeholders bound from `params`.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "params",
-        description: "Array of values to bind to query placeholders.",
+        description: "Array of values to bind to query placeholders, in order. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::Array,
         required: false,
+        resolvable: true,
     },
     FieldSchema {
         name: "output",
         description: "Dotted path in the message where rows are written. Defaults to \"data\".",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
 ];
 
@@ -156,24 +174,28 @@ const DB_WRITE_FIELDS: &[FieldSchema] = &[
         description: "Name of the SQL connector to execute against.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "query",
         description: "INSERT/UPDATE/DELETE statement.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "params",
-        description: "Array of values to bind to query placeholders.",
+        description: "Array of values to bind to query placeholders, in order. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::Array,
         required: false,
+        resolvable: true,
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where the rows-affected count is written.",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
 ];
 
@@ -183,18 +205,21 @@ const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         description: "Name of the db (SQL/MongoDB) or es (Elasticsearch) connector to query.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "query",
         description: "Backend-neutral query envelope: source/filter/fields/sort/limit/skip/include.",
         kind: FieldKind::Object,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "database",
         description: "MongoDB database name (required for MongoDB connectors).",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "schema",
@@ -202,6 +227,7 @@ const DATA_QUERY_FIELDS: &[FieldSchema] = &[
                       enabling some/all/none and typed coercion.",
         kind: FieldKind::Object,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "params",
@@ -209,12 +235,14 @@ const DATA_QUERY_FIELDS: &[FieldSchema] = &[
                       A value of {\"var\": \"path\"} is read from the message context.",
         kind: FieldKind::Object,
         required: false,
+        resolvable: true,
     },
     FieldSchema {
         name: "output",
         description: "Dotted path in the message where rows are written. Defaults to \"data\".",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
 ];
 
@@ -224,30 +252,35 @@ const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         description: "Name of the db (SQL/MongoDB) or es (Elasticsearch) connector to write to.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "op",
         description: "Mutation kind: \"insert\", \"update\", \"delete\", or \"upsert\".",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "target",
         description: "Logical entity to write to (schema-resolved to a table/collection).",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "values",
         description: "Row object, or array of row objects (bulk), for insert/upsert.",
         kind: FieldKind::Any,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "set",
         description: "Object of column → value assignments for update/upsert.",
         kind: FieldKind::Object,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "filter",
@@ -255,36 +288,42 @@ const DATA_WRITE_FIELDS: &[FieldSchema] = &[
                       update/delete without it is rejected unless \"all\": true is set.",
         kind: FieldKind::Object,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "on_conflict",
         description: "Upsert conflict clause: { \"target\": [cols], \"action\": \"update\"|\"nothing\" }.",
         kind: FieldKind::Object,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "returning",
         description: "Column names to return from mutated rows (Postgres/SQLite only).",
         kind: FieldKind::Array,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "all",
         description: "Acknowledge an intentionally unfiltered update/delete (affects every row).",
         kind: FieldKind::Bool,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "database",
         description: "MongoDB database name (required for MongoDB connectors).",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "schema",
         description: "Optional inline entity schema (renames, allowlist, writable flag).",
         kind: FieldKind::Object,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "params",
@@ -292,12 +331,14 @@ const DATA_WRITE_FIELDS: &[FieldSchema] = &[
                       A value of {\"var\": \"path\"} is read from the message context.",
         kind: FieldKind::Object,
         required: false,
+        resolvable: true,
     },
     FieldSchema {
         name: "output",
         description: "Dotted path in the message where the write result is written. Defaults to \"data\".",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
 ];
 
@@ -307,30 +348,35 @@ const MONGO_READ_FIELDS: &[FieldSchema] = &[
         description: "Name of the MongoDB connector.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "database",
         description: "Mongo database name.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "collection",
         description: "Mongo collection name.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "filter",
-        description: "Mongo find() filter document. Defaults to {}.",
+        description: "Mongo find() filter document. Defaults to {}. Accepts {\"var\": \"path\"} to read the value from the message.",
         kind: FieldKind::Object,
         required: false,
+        resolvable: true,
     },
     FieldSchema {
         name: "output",
         description: "Dotted path where matched documents are written.",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
 ];
 
@@ -340,36 +386,42 @@ const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         description: "Target channel name to invoke. Mutually exclusive with channel_logic.",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "channel_logic",
         description: "JSONLogic expression evaluating to the target channel name.",
         kind: FieldKind::Any,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "data",
         description: "Static payload to pass to the target channel.",
         kind: FieldKind::Any,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "data_logic",
         description: "JSONLogic expression evaluating to the payload to pass.",
         kind: FieldKind::Any,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "response_path",
         description: "Dotted path where the called channel's response is stored.",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "timeout_ms",
         description: "Per-call timeout in milliseconds.",
         kind: FieldKind::Number,
         required: false,
+        resolvable: false,
     },
 ];
 
@@ -379,54 +431,63 @@ const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         description: "Name of the HTTP connector to call.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "method",
         description: "HTTP method (GET, POST, PUT, DELETE, PATCH). Defaults to GET.",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "path",
         description: "Static path appended to the connector's base URL.",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "path_logic",
         description: "JSONLogic expression evaluated to derive the request path.",
         kind: FieldKind::Any,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "headers",
         description: "Additional request headers.",
         kind: FieldKind::Object,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "body",
         description: "Static request body (any JSON value).",
         kind: FieldKind::Any,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "body_logic",
         description: "JSONLogic expression evaluated to derive the request body.",
         kind: FieldKind::Any,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "response_path",
         description: "Dotted path where the response body is written. Omit to discard it.",
         kind: FieldKind::String,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "timeout_ms",
         description: "Request timeout in milliseconds. Defaults to 30000.",
         kind: FieldKind::Number,
         required: false,
+        resolvable: false,
     },
 ];
 
@@ -436,24 +497,28 @@ const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
         description: "Name of the Kafka connector to publish through.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "topic",
         description: "Target topic name.",
         kind: FieldKind::String,
         required: true,
+        resolvable: false,
     },
     FieldSchema {
         name: "key_logic",
         description: "JSONLogic expression to derive the message key.",
         kind: FieldKind::Any,
         required: false,
+        resolvable: false,
     },
     FieldSchema {
         name: "value_logic",
         description: "JSONLogic expression to derive the message value.",
         kind: FieldKind::Any,
         required: false,
+        resolvable: false,
     },
 ];
 
@@ -531,6 +596,15 @@ pub fn find(name: &str) -> Option<&'static FunctionSchema> {
     REGISTRY.iter().find(|s| s.name == name)
 }
 
+/// A `{"var": ..}` node — the one shape a `resolvable` field may carry in
+/// place of a literal of its declared kind. Nodes nested deeper are not checked
+/// here: the declared kind still describes the field's own shape, and the
+/// resolver folds `{"var": ..}` at any depth inside it.
+fn is_var_node(v: &Value) -> bool {
+    v.as_object()
+        .is_some_and(|o| o.len() == 1 && o.contains_key("var"))
+}
+
 /// Validate a function's `input` JSON against the registered schema for
 /// `function_name`. `task_path` is the dotted prefix used to build field
 /// paths (e.g. `"tasks[2]"`). Returns an empty `Vec` when the function
@@ -569,7 +643,7 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
                     field.kind.as_str()
                 ),
             )),
-            (Some(v), _) if !field.kind.matches(v) => {
+            (Some(v), _) if !field.kind.matches(v) && !(field.resolvable && is_var_node(v)) => {
                 errors.push(
                     FieldError::new(
                         format!("{task_path}.function.input.{}", field.name),

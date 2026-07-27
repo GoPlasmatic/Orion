@@ -8,7 +8,8 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    profile_handler, require_cache_connector, require_str_field, resolve_connector, to_exec_error,
+    json_type_name, profile_handler, require_cache_connector, require_str_field, resolve_connector,
+    resolve_required_str, resolve_value, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -25,12 +26,25 @@ impl AsyncFunctionHandler for CacheWriteHandler {
 
     async fn execute(
         &self,
-        _ctx: &mut TaskContext<'_>,
+        ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
+        // Key, value, and TTL are all resolved against the message context up
+        // front: the handler body below takes `ctx` mutably, and without this
+        // the whole task could only ever write one constant.
+        let key = resolve_required_str(input, "key", "cache_write", ctx)?;
+        let value = match input.get("value") {
+            Some(v) => resolve_value(v, ctx),
+            None => {
+                return Err(DataflowError::Validation(
+                    "cache_write requires 'value'".into(),
+                ));
+            }
+        };
+        let ttl = resolve_ttl_secs(input, ctx)?;
+
         profile_handler("cache_write", input, async move {
             let connector_name = require_str_field(input, "connector", "cache_write")?;
-            let key = require_str_field(input, "key", "cache_write")?;
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
             let cache_config = require_cache_connector(&connector_config, connector_name)?;
@@ -41,27 +55,20 @@ impl AsyncFunctionHandler for CacheWriteHandler {
                 .await
                 .map_err(to_exec_error)?;
 
-            let value_str = match input.get("value") {
-                Some(Value::String(s)) => s.clone(),
-                Some(v) => serde_json::to_string(v).map_err(|e| {
+            let value_str = match value {
+                Value::String(s) => s,
+                other => serde_json::to_string(&other).map_err(|e| {
                     DataflowError::Validation(format!("Failed to serialize value for cache: {e}"))
                 })?,
-                None => {
-                    return Err(DataflowError::Validation(
-                        "cache_write requires 'value'".into(),
-                    ));
-                }
             };
-
-            let ttl = input.get("ttl_secs").and_then(|v| v.as_u64());
 
             if let Some(ttl) = ttl {
                 backend
-                    .set_ex(key, &value_str, ttl)
+                    .set_ex(&key, &value_str, ttl)
                     .await
                     .map_err(to_exec_error)?;
             } else {
-                backend.set(key, &value_str).await.map_err(to_exec_error)?;
+                backend.set(&key, &value_str).await.map_err(to_exec_error)?;
             }
 
             tracing::debug!(
@@ -73,5 +80,35 @@ impl AsyncFunctionHandler for CacheWriteHandler {
             Ok(TaskOutcome::Success)
         })
         .await
+    }
+}
+
+/// Resolve `ttl_secs` to whole seconds. Absent or null means "no expiry"; a
+/// value that resolves to something uninterpretable is an error rather than a
+/// silent fall-through to a key that never expires.
+fn resolve_ttl_secs(input: &Value, ctx: &TaskContext<'_>) -> Result<Option<u64>, DataflowError> {
+    let Some(raw) = input.get("ttl_secs") else {
+        return Ok(None);
+    };
+    match resolve_value(raw, ctx) {
+        Value::Null => Ok(None),
+        Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                Ok(Some(u))
+            } else if let Some(f) = n.as_f64()
+                && f >= 0.0
+                && f.fract() == 0.0
+            {
+                Ok(Some(f as u64))
+            } else {
+                Err(DataflowError::Validation(format!(
+                    "cache_write 'ttl_secs' must be a non-negative whole number of seconds, got {n}"
+                )))
+            }
+        }
+        other => Err(DataflowError::Validation(format!(
+            "cache_write 'ttl_secs' must resolve to a number, got {}",
+            json_type_name(&other)
+        ))),
     }
 }

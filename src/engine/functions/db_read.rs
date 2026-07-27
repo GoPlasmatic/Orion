@@ -10,7 +10,8 @@ use sqlx::{Column, Row};
 
 use super::connector_helpers::{
     apply_output, bind_json_params, extract_output_path, profile_handler, require_db_connector,
-    require_op_allowed, require_str_field, resolve_connector, timed_query, to_exec_error,
+    require_op_allowed, require_str_field, resolve_bind_params, resolve_connector, timed_query,
+    to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
@@ -30,10 +31,14 @@ impl AsyncFunctionHandler for DbReadHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
+        // Bind values are resolved against the message context first; the SQL
+        // text itself is never message-derived, so parameters stay the only
+        // request-controlled part of the statement.
+        let params = resolve_bind_params(input, "db_read", ctx)?;
+
         profile_handler("db_read", input, async move {
             let connector_name = require_str_field(input, "connector", "db_read")?;
             let query = require_str_field(input, "query", "db_read")?;
-            let params = input.get("params").and_then(|v| v.as_array());
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
             let db_config = require_db_connector(&connector_config, connector_name)?;
@@ -45,12 +50,7 @@ impl AsyncFunctionHandler for DbReadHandler {
                 .await
                 .map_err(to_exec_error)?;
 
-            let sqlx_query = sqlx::query(query);
-            let sqlx_query = if let Some(params) = params {
-                bind_json_params(sqlx_query, params)
-            } else {
-                sqlx_query
-            };
+            let sqlx_query = bind_json_params(sqlx::query(query), &params);
 
             let rows: Vec<AnyRow> = timed_query(
                 db_config.query_timeout_ms,

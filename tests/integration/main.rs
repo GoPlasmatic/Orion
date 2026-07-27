@@ -33,6 +33,7 @@ mod data_query_test;
 mod data_roundtrip_test;
 mod data_write_test;
 mod drain_test;
+mod dynamic_inputs_test;
 mod error_envelope_test;
 mod error_paths_test;
 mod es_test;
