@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Credential headers are masked before entering workflow metadata.**
+  `authorization`, `cookie`, `proxy-authorization` and `x-api-key` arrive in
+  `metadata.headers` as `"******"` — previously their plaintext values were
+  persisted into `traces.result_json` (async) and `trace_dlq.metadata_json`.
+  Header *presence* is still testable from `validation_logic`. If a channel
+  used `rollout.sticky_header` with a credential header, switch to a
+  non-credential header — all callers now hash to one bucket otherwise.
+- **Trace reads no longer expose the submitter's request context.**
+  `GET /api/v1/data/traces/{id}` strips `context.metadata` (the request
+  header map) from the served message, and `GET /api/v1/data/traces` returns
+  payload-free rows — `input_json`, `result_json` and `task_trace_json` are
+  served only by the single-trace GET. Rows written before this release
+  still hold plaintext headers at rest; the projection covers reads of them.
+- **Async trace reads are scoped to the submitter.** The 202 from
+  `POST /{channel}/async` now carries a one-time-shown `trace_token`;
+  polling `GET /traces/{id}` requires it (`x-trace-token` header or
+  `?token=`) or an admin credential. Update polling clients to pass the
+  token. Sync traces and pre-upgrade rows keep the admin trust model.
+  New migration adds `traces.access_token_hash` on all three backends.
+- **`/health` serves topology detail only to authorized callers** when
+  admin auth is enabled: anonymous callers get status, version, uptime and
+  coarse per-component states; `git_hash`, `build_timestamp`,
+  `workflows_loaded`, the circuit-breaker map, connector load failures and
+  quarantined channels (names and reasons) require the admin key. With auth
+  disabled the body is unchanged.
+
 ### Added
 
 - `engine.fail_on_connector_load_error` (default `false`): refuse to start when
