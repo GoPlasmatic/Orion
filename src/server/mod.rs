@@ -220,7 +220,10 @@ fn build_cors(config: &CorsConfig) -> CorsLayer {
                 axum::http::Method::GET,
                 axum::http::Method::POST,
                 axum::http::Method::PUT,
+                axum::http::Method::PATCH,
                 axum::http::Method::DELETE,
+                axum::http::Method::HEAD,
+                axum::http::Method::OPTIONS,
             ])
             .allow_headers([
                 axum::http::header::CONTENT_TYPE,
@@ -229,6 +232,10 @@ fn build_cors(config: &CorsConfig) -> CorsLayer {
                 axum::http::HeaderName::from_static("x-api-key"),
                 axum::http::HeaderName::from_static("idempotency-key"),
                 axum::http::HeaderName::from_static("x-request-id"),
+            ])
+            .expose_headers([
+                axum::http::HeaderName::from_static("x-request-id"),
+                axum::http::header::RETRY_AFTER,
             ])
     }
 }
