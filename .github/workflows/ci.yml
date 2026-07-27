@@ -133,6 +133,30 @@ jobs:
         if: failure()
         run: cat /tmp/orion-examples.log || true
 
+  # The full default suite on its own job (proposal T8): unit and integration
+  # signal must not ride the coverage job, whose hand-rolled swapfile and
+  # OOM exposure can wipe all of it at once. Container-gated tests stay in
+  # integration-containers.
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+
+      - name: Run tests
+        run: cargo test --all-targets
+
   audit:
     name: Security Audit
     runs-on: ubuntu-22.04
@@ -154,6 +178,10 @@ jobs:
   coverage:
     name: Test Coverage
     runs-on: ubuntu-22.04
+    # Non-blocking (proposal T8): pass/fail signal comes from the `test` job;
+    # this one only produces the lcov artifact and is allowed to fall over
+    # (it needs manual disk-freeing and a swapfile to survive the runner).
+    continue-on-error: true
     permissions:
       contents: read
     steps:
