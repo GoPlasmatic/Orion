@@ -45,6 +45,19 @@ on:
       - "**[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
+  # HAND-MAINTAINED (survives `dist init` regeneration only if re-added):
+  # publishing must not outrun CI (proposal T10). Same gate as
+  # crates-publish.yml and docker-release.yml — the `host` job below refuses
+  # to create the GitHub Release (and thus the Homebrew publish) unless CI
+  # passed for this commit. Skipped on pull_request runs, which only plan.
+  ci-gate:
+    name: CI Gate
+    if: ${{ !github.event.pull_request }}
+    uses: ./.github/workflows/ci-gate.yml
+    permissions:
+      actions: read
+      contents: read
+
   # Run 'dist plan' (or host) to determine what tasks we need to do
   plan:
     runs-on: "ubuntu-22.04"
@@ -217,8 +230,11 @@ jobs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
-    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+      - ci-gate
+    # Only run if we're "publishing", only if plan, local and global didn't fail
+    # (skipped is fine), and only if the CI gate confirmed a green CI run for
+    # this commit (hand-maintained condition — see the ci-gate job above)
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && needs.ci-gate.result == 'success' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
