@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sea_query::{Asterisk, Expr, Order, Query};
+use sea_query::{Asterisk, Expr, Order, Query, SimpleExpr};
 
 use crate::errors::OrionError;
 use crate::storage::models::AuditLogEntry;
@@ -52,31 +52,34 @@ impl AuditLogRepository for SqlAuditLogRepository {
         crate::metrics::timed_db_op("audit_logs.insert", async {
             let id = uuid::Uuid::new_v4().to_string();
 
-            let mut query = Query::insert()
-                .into_table(AuditLogs::Table)
-                .columns([
-                    AuditLogs::Id,
-                    AuditLogs::Principal,
-                    AuditLogs::Action,
-                    AuditLogs::ResourceType,
-                    AuditLogs::ResourceId,
-                ])
-                .values_panic([
-                    Expr::val(id.as_str()).into(),
-                    Expr::val(principal).into(),
-                    Expr::val(action).into(),
-                    Expr::val(resource_type).into(),
-                    Expr::val(resource_id).into(),
-                ])
-                .to_owned();
-
+            // `columns()` REPLACES the column list and `values_panic()` appends
+            // a whole new row — so the optional `details` column has to be folded
+            // into a single columns/values pair, not added in a second call.
+            let mut columns = vec![
+                AuditLogs::Id,
+                AuditLogs::Principal,
+                AuditLogs::Action,
+                AuditLogs::ResourceType,
+                AuditLogs::ResourceId,
+            ];
+            let mut row: Vec<SimpleExpr> = vec![
+                Expr::val(id.as_str()).into(),
+                Expr::val(principal).into(),
+                Expr::val(action).into(),
+                Expr::val(resource_type).into(),
+                Expr::val(resource_id).into(),
+            ];
             if let Some(d) = details {
-                query
-                    .columns([AuditLogs::Details])
-                    .values_panic([Expr::val(d).into()]);
+                columns.push(AuditLogs::Details);
+                row.push(Expr::val(d).into());
             }
 
-            let (sql, values) = build_sqlx(&mut query);
+            let (sql, values) = build_sqlx(
+                Query::insert()
+                    .into_table(AuditLogs::Table)
+                    .columns(columns)
+                    .values_panic(row),
+            );
             self.pool.execute_query(&sql, values).await?;
             Ok(())
         })
@@ -128,5 +131,48 @@ impl AuditLogRepository for SqlAuditLogRepository {
             Ok(row.0)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn test_repo() -> SqlAuditLogRepository {
+        SqlAuditLogRepository::new(crate::storage::test_sqlite_pool().await)
+    }
+
+    #[tokio::test]
+    async fn test_insert_without_details_persists() {
+        let repo = test_repo().await;
+        repo.insert("admin...", "create", "workflow", "wf-1", None)
+            .await
+            .expect("insert without details");
+
+        let entries = repo.list_paginated(0, 10).await.expect("list");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].action, "create");
+        assert!(entries[0].details.is_none());
+    }
+
+    /// D3: `columns()` replaces rather than appends, so the old two-call form
+    /// produced `INSERT INTO audit_logs ("details") VALUES (5 values), (1 value)`.
+    #[tokio::test]
+    async fn test_insert_with_details_persists_and_reads_back() {
+        let repo = test_repo().await;
+        let details = r#"{"request_id":"req-123"}"#;
+        repo.insert("admin...", "activate", "workflow", "wf-1", Some(details))
+            .await
+            .expect("insert with details must build valid SQL");
+
+        let entries = repo.list_paginated(0, 10).await.expect("list");
+        assert_eq!(entries.len(), 1, "exactly one row, not two");
+        let entry = &entries[0];
+        assert_eq!(entry.principal, "admin...");
+        assert_eq!(entry.action, "activate");
+        assert_eq!(entry.resource_type, "workflow");
+        assert_eq!(entry.resource_id, "wf-1");
+        assert_eq!(entry.details.as_deref(), Some(details));
+        assert_eq!(repo.count().await.expect("count"), 1);
     }
 }

@@ -389,7 +389,51 @@ async fn test_audit_pagination() {
 }
 
 // ============================================================
-// 6. Import workflows generates audit entry
+// 6. `details` is populated end-to-end (D3)
+// ============================================================
+
+/// Before D3 the `Some(details)` branch built malformed SQL, so the column was
+/// dead. Every audit write now carries the request-scoped id.
+#[tokio::test]
+async fn test_audit_details_carries_request_id() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/admin/engine/reload", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    wait_for_audit().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/audit-logs", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let entry = body["data"]
+        .as_array()
+        .expect("data should be an array")
+        .iter()
+        .find(|e| e["resource_type"] == "engine")
+        .expect("reload must produce an audit entry")
+        .clone();
+
+    let details = entry["details"]
+        .as_str()
+        .expect("details must be persisted");
+    let parsed: serde_json::Value = serde_json::from_str(details).expect("details is JSON");
+    assert!(
+        parsed["request_id"].as_str().is_some_and(|s| !s.is_empty()),
+        "details should carry the request id, got {details}"
+    );
+}
+
+// ============================================================
+// 7. Import workflows generates audit entry
 // ============================================================
 
 #[tokio::test]

@@ -9,6 +9,7 @@ pub(crate) mod workflows;
 use axum::Router;
 use axum::routing::{get, patch, post};
 use serde::Deserialize;
+use serde_json::json;
 use std::sync::Arc;
 
 use axum::Extension;
@@ -68,6 +69,14 @@ fn audit_log(
     );
     crate::metrics::record_admin_audit(action, resource_type);
 
+    // Read the request-scoped id here: `tokio::spawn` below starts a fresh
+    // task that does not inherit task-locals.
+    let details = crate::server::request_context::REQUEST_ID
+        .try_with(|id| id.clone())
+        .ok()
+        .filter(|id| !id.is_empty())
+        .map(|id| json!({ "request_id": id }).to_string());
+
     // Fire-and-forget DB persistence — audit logging must never block admin responses
     let repo = repo.clone();
     let who = who.to_string();
@@ -76,7 +85,13 @@ fn audit_log(
     let resource_id = resource_id.to_string();
     tokio::spawn(async move {
         if let Err(e) = repo
-            .insert(&who, &action, &resource_type, &resource_id, None)
+            .insert(
+                &who,
+                &action,
+                &resource_type,
+                &resource_id,
+                details.as_deref(),
+            )
             .await
         {
             tracing::warn!(error = %e, "Failed to persist audit log entry");
