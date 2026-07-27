@@ -123,6 +123,8 @@ impl OrionError {
             OrionError::CircuitOpen { .. } => true,
             OrionError::RateLimited(_) => true,
             OrionError::Queue(_) => true,
+            OrionError::ServiceUnavailable(_) => true,
+            OrionError::Timeout { .. } => true,
             _ => false,
         }
     }
@@ -474,6 +476,20 @@ mod tests {
             channel: "orders".to_string(),
         };
         assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_timeout_retryable() {
+        let err = OrionError::Timeout {
+            channel: "orders".to_string(),
+            timeout_ms: 5000,
+        };
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn test_service_unavailable_retryable() {
+        assert!(OrionError::ServiceUnavailable("queue full".to_string()).is_retryable());
     }
 
     #[test]
