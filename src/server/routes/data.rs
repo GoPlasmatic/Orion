@@ -1009,6 +1009,12 @@ pub(crate) async fn get_trace(
     // the check happens here). Lane 2: the per-submission capability token.
     // Tokenless traces stay on the admin trust model: open when auth is
     // disabled (the whole admin plane is), admin-only when enabled.
+    //
+    // A missing trace 404s before this check, so an unauthorized caller can
+    // distinguish "exists" from "does not exist". Deliberate: trace ids are
+    // v4 UUIDs, so there is nothing to enumerate (the id-listing endpoint is
+    // admin-guarded, and its rows carry no payloads since S14), and the
+    // distinction is what makes a wrong-id-vs-wrong-token mistake debuggable.
     let auth_cfg = &state.config.admin_auth;
     let is_admin = auth_cfg.enabled
         && crate::server::admin_auth::headers_present_valid_key(&headers, auth_cfg);
