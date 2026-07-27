@@ -2605,6 +2605,7 @@ dependencies = [
  "rdkafka",
  "redis",
  "reqwest",
+ "rustls",
  "sea-query",
  "sea-query-binder",
  "serde",

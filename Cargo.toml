@@ -82,8 +82,12 @@ mongodb = { version = "3", default-features = false, features = ["compat-3-0-0",
 redis = { version = "1.3", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
-# TLS support
+# TLS support. `rustls` is a direct dependency only so `server::tls` can install
+# a process-level CryptoProvider: the graph enables both `rustls/aws-lc-rs`
+# (axum-server, reqwest) and `rustls/ring` (mongodb, sqlx), which makes rustls
+# refuse to pick one on its own.
 axum-server = { version = "0.8", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
 
 # OpenTelemetry
 opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
