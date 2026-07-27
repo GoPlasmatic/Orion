@@ -26,6 +26,7 @@ mod circuit_breaker_test;
 mod cli_subcommands_test;
 mod cluster_epoch_test;
 mod concurrency_test;
+mod config_docs_drift_test;
 mod connector_cache_test;
 mod connector_db_test;
 mod connector_ops_test;
