@@ -1,4 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 /// Check if an IP address is private, loopback, link-local, or otherwise internal.
 pub fn is_private_ip(ip: &IpAddr) -> bool {
@@ -49,24 +52,105 @@ fn nat64_embedded_v4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
     })
 }
 
-/// Validate that a URL does not target private/internal IP addresses (SSRF protection).
-/// Resolves the hostname and checks all resolved addresses; a host that fails to
-/// resolve is an error (never silently allowed through).
-pub async fn validate_url_not_private(url: &str) -> Result<(), String> {
+/// How long a validated lookup stays pinned for [`PinnedDnsResolver`]. The gap
+/// between validation and connection inside a single request is microseconds;
+/// 30s comfortably covers it (including retries within one call) while still
+/// letting legitimate DNS changes propagate.
+const PIN_TTL: Duration = Duration::from_secs(30);
+/// Cache bound: past this, expired entries are purged and, if the cache is
+/// still full, the soonest-expiring entry is evicted.
+const PIN_MAX_ENTRIES: usize = 1024;
+
+struct PinnedEntry {
+    addrs: Vec<SocketAddr>,
+    expires: Instant,
+}
+
+static PINNED_LOOKUPS: LazyLock<Mutex<HashMap<String, PinnedEntry>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn pin_lock() -> MutexGuard<'static, HashMap<String, PinnedEntry>> {
+    // Entries are plain data — a panic mid-update cannot corrupt them, so a
+    // poisoned lock is safe to keep using.
+    PINNED_LOOKUPS.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn pin_validated(host: &str, addrs: &[SocketAddr]) {
+    let mut map = pin_lock();
+    if map.len() >= PIN_MAX_ENTRIES {
+        let now = Instant::now();
+        map.retain(|_, e| e.expires > now);
+    }
+    if map.len() >= PIN_MAX_ENTRIES
+        && let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, e)| e.expires)
+            .map(|(k, _)| k.clone())
+    {
+        map.remove(&oldest);
+    }
+    map.insert(
+        host.to_ascii_lowercase(),
+        PinnedEntry {
+            addrs: addrs.to_vec(),
+            expires: Instant::now() + PIN_TTL,
+        },
+    );
+}
+
+fn pinned_addrs(host: &str) -> Option<Vec<SocketAddr>> {
+    let map = pin_lock();
+    map.get(&host.to_ascii_lowercase())
+        .filter(|e| e.expires > Instant::now())
+        .map(|e| e.addrs.clone())
+}
+
+/// DNS resolver for the shared reqwest client: hosts that just passed
+/// [`validate_url_not_private`] resolve to the exact addresses that were vetted
+/// (resolve once, connect to the same addresses — closing the DNS-rebinding
+/// TOCTOU between validation and connection). Hosts with no pinned entry
+/// (connectors with `allow_private_urls: true`, or an expired pin) fall back
+/// to system DNS.
+pub struct PinnedDnsResolver;
+
+impl reqwest::dns::Resolve for PinnedDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            if let Some(addrs) = pinned_addrs(name.as_str()) {
+                return Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs);
+            }
+            // reqwest replaces port 0 with the URL's actual port.
+            let addrs: Vec<SocketAddr> =
+                tokio::net::lookup_host((name.as_str(), 0)).await?.collect();
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// Validate that a URL does not target private/internal IP addresses (SSRF
+/// protection), returning the addresses that were vetted.
+///
+/// Resolves the hostname and checks all resolved addresses; a host that fails
+/// to resolve is an error (never silently allowed through). Validated lookups
+/// are pinned so that a client built with [`PinnedDnsResolver`] connects to
+/// these exact addresses rather than re-resolving (DNS-rebinding protection).
+pub async fn validate_url_not_private(url: &str) -> Result<Vec<SocketAddr>, String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL '{url}': {e}"))?;
 
     let host = match parsed.host() {
         Some(h) => h,
         None => return Err(format!("URL '{url}' has no host")),
     };
+    let port = parsed.port_or_known_default().unwrap_or(80);
 
+    // IP-literal URLs involve no DNS at connect time, so no pinning is needed.
     let check_ip = |ip: IpAddr| {
         if is_private_ip(&ip) {
             Err(format!(
                 "URL '{url}' targets private/internal IP address {ip}"
             ))
         } else {
-            Ok(())
+            Ok(vec![SocketAddr::new(ip, port)])
         }
     };
 
@@ -74,14 +158,17 @@ pub async fn validate_url_not_private(url: &str) -> Result<(), String> {
         url::Host::Ipv4(ip) => check_ip(IpAddr::V4(ip)),
         url::Host::Ipv6(ip) => check_ip(IpAddr::V6(ip)),
         url::Host::Domain(domain) => {
-            let port = parsed.port_or_known_default().unwrap_or(80);
-            let addrs = tokio::net::lookup_host((domain, port))
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((domain, port))
                 .await
-                .map_err(|e| format!("Failed to resolve host '{domain}' for URL '{url}': {e}"))?;
+                .map_err(|e| format!("Failed to resolve host '{domain}' for URL '{url}': {e}"))?
+                .collect();
 
-            let mut resolved_any = false;
-            for socket_addr in addrs {
-                resolved_any = true;
+            if addrs.is_empty() {
+                return Err(format!(
+                    "Host '{domain}' for URL '{url}' resolved to no addresses"
+                ));
+            }
+            for socket_addr in &addrs {
                 if is_private_ip(&socket_addr.ip()) {
                     return Err(format!(
                         "URL '{}' resolves to private/internal IP address {}",
@@ -90,12 +177,8 @@ pub async fn validate_url_not_private(url: &str) -> Result<(), String> {
                     ));
                 }
             }
-            if !resolved_any {
-                return Err(format!(
-                    "Host '{domain}' for URL '{url}' resolved to no addresses"
-                ));
-            }
-            Ok(())
+            pin_validated(domain, &addrs);
+            Ok(addrs)
         }
     }
 }
@@ -340,5 +423,46 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn test_validate_url_returns_vetted_addrs_for_ip_literal() {
+        let addrs = validate_url_not_private("https://8.8.8.8/api")
+            .await
+            .expect("test");
+        assert_eq!(addrs, vec!["8.8.8.8:443".parse().expect("test")]);
+    }
+
+    #[test]
+    fn test_pin_roundtrip_is_case_insensitive() {
+        let addr: SocketAddr = "93.184.216.34:80".parse().expect("test");
+        pin_validated("Pin-Roundtrip.Example", &[addr]);
+        assert_eq!(pinned_addrs("pin-roundtrip.example"), Some(vec![addr]));
+        assert_eq!(pinned_addrs("never-pinned.example"), None);
+    }
+
+    #[tokio::test]
+    async fn test_resolver_returns_pinned_addrs() {
+        use reqwest::dns::Resolve;
+        let addr: SocketAddr = "93.184.216.34:443".parse().expect("test");
+        pin_validated("resolver-pin.example", &[addr]);
+        let resolved: Vec<SocketAddr> = PinnedDnsResolver
+            .resolve("resolver-pin.example".parse().expect("test"))
+            .await
+            .expect("test")
+            .collect();
+        assert_eq!(resolved, vec![addr]);
+    }
+
+    #[tokio::test]
+    async fn test_resolver_falls_back_to_system_dns_when_unpinned() {
+        use reqwest::dns::Resolve;
+        let resolved: Vec<SocketAddr> = PinnedDnsResolver
+            .resolve("localhost".parse().expect("test"))
+            .await
+            .expect("test")
+            .collect();
+        assert!(!resolved.is_empty());
+        assert!(resolved.iter().all(|a| a.ip().is_loopback()));
     }
 }

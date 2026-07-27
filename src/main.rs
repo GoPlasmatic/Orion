@@ -486,11 +486,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     tracing::info!(count = connector_count, "Connectors loaded");
 
-    // Create a shared HTTP client
+    // Create a shared HTTP client. Redirects are off: execute_request follows
+    // them manually with per-hop SSRF validation. The pinned resolver connects
+    // to the exact addresses SSRF validation vetted (no DNS rebinding between
+    // check and connect).
     let http_client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(
             config.engine.global_http_timeout_secs,
         ))
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(std::sync::Arc::new(orion::validation::PinnedDnsResolver))
         .build()
         .map_err(|e| {
             orion::errors::OrionError::Internal(format!("Failed to build HTTP client: {e}"))

@@ -54,10 +54,16 @@ pub fn set_nested(value: &mut Value, path: &str, new_val: Value) {
     }
 }
 
+/// Redirect-hop cap for the manual follower in [`execute_request`]. The shared
+/// client is built with `redirect::Policy::none()` (see main.rs), so every hop
+/// returns here and passes SSRF validation before being followed.
+const MAX_REDIRECTS: usize = 5;
+
 /// Execute an HTTP request with connector config applied.
 ///
 /// Builds the request with connector headers, auth, optional task-level headers,
-/// optional body, and timeout. Returns the parsed JSON response.
+/// optional body, and timeout. Returns the parsed JSON response. Redirects are
+/// followed manually (up to [`MAX_REDIRECTS`]) with SSRF re-validation per hop.
 #[tracing::instrument(skip(client, task_headers, http_config, body))]
 pub async fn execute_request(
     client: &reqwest::Client,
@@ -68,58 +74,147 @@ pub async fn execute_request(
     body: Option<&Value>,
     timeout: Duration,
 ) -> dataflow_rs::Result<Value> {
-    // SSRF protection: block requests to private/internal IPs unless explicitly allowed
-    if !http_config.allow_private_urls
-        && let Err(msg) = crate::validation::validate_url_not_private(url).await
-    {
+    let original = url::Url::parse(url)
+        .map_err(|e| DataflowError::Validation(format!("Invalid URL '{url}': {e}")))?;
+    let mut current = original.clone();
+    let mut method = method.clone();
+    let mut body = body;
+
+    for _ in 0..=MAX_REDIRECTS {
+        // SSRF protection: block requests to private/internal IPs.
+        // `allow_private_urls` exempts only the connector's own endpoint — a
+        // redirect is server-controlled data, so any hop leaving the original
+        // host:port is validated even for private-allowed connectors.
+        let own_endpoint = same_endpoint(&current, &original);
+        if !(http_config.allow_private_urls && own_endpoint)
+            && let Err(msg) = crate::validation::validate_url_not_private(current.as_str()).await
+        {
+            return Err(DataflowError::function_execution(
+                format!("SSRF protection: {msg}"),
+                None,
+            ));
+        }
+
+        let mut req = client
+            .request(method.clone(), current.clone())
+            .timeout(timeout);
+
+        // Inject W3C trace context headers (traceparent/tracestate) for distributed tracing
+        {
+            let mut trace_headers = std::collections::HashMap::new();
+            crate::server::trace_context::inject_trace_context(&mut trace_headers);
+            for (k, v) in &trace_headers {
+                req = req.header(k, v);
+            }
+        }
+
+        // Connector headers, auth, and task headers can carry credentials —
+        // they go only to the connector's own endpoint, never on a cross-host hop.
+        if own_endpoint {
+            // Apply connector default headers (lowest priority)
+            for (k, v) in &http_config.headers {
+                req = req.header(k, v);
+            }
+
+            // Apply auth headers (override connector defaults)
+            if let Some(ref auth) = http_config.auth {
+                req = apply_auth(req, auth);
+            }
+        }
+
+        // Apply default content-type and body
+        if let Some(b) = body {
+            req = req.header("content-type", "application/json").json(b);
+        }
+
+        // Apply task-level headers LAST (highest priority — workflow developer's explicit choice wins)
+        if own_endpoint && let Some(headers) = task_headers {
+            for (k, v) in headers {
+                req = req.header(k, v);
+            }
+        }
+
+        let response = req.send().await.map_err(|e| {
+            if e.is_timeout() {
+                DataflowError::Timeout(format!("HTTP request to {current} timed out"))
+            } else {
+                DataflowError::Io(format!("HTTP request to {current} failed: {e}"))
+            }
+        })?;
+
+        if let Some(next) = redirect_target(&response, &current)? {
+            // Mirror reqwest's default policy: 301/302/303 turn a non-GET/HEAD
+            // request into a bodyless GET; 307/308 re-send method and body.
+            if matches!(response.status().as_u16(), 301..=303)
+                && method != reqwest::Method::GET
+                && method != reqwest::Method::HEAD
+            {
+                method = reqwest::Method::GET;
+                body = None;
+            }
+            current = next;
+            continue;
+        }
+
+        return read_json_response(response, &current, http_config.max_response_size).await;
+    }
+
+    Err(DataflowError::function_execution(
+        format!("Stopped after {MAX_REDIRECTS} redirects requesting {url}"),
+        None,
+    ))
+}
+
+/// Same scheme-default-aware host:port — the boundary within which connector
+/// credentials and the `allow_private_urls` exemption apply.
+fn same_endpoint(a: &url::Url, b: &url::Url) -> bool {
+    a.host_str().is_some()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
+/// The target of a redirect response, resolved against the current URL.
+/// `None` when the response is not a followable redirect.
+fn redirect_target(
+    response: &reqwest::Response,
+    current: &url::Url,
+) -> dataflow_rs::Result<Option<url::Url>> {
+    if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+        return Ok(None);
+    }
+    let Some(location) = response.headers().get(reqwest::header::LOCATION) else {
+        return Ok(None);
+    };
+    let location = location.to_str().map_err(|_| {
+        DataflowError::function_execution(
+            format!("Redirect from {current} has a non-ASCII Location header"),
+            None,
+        )
+    })?;
+    let next = current.join(location).map_err(|e| {
+        DataflowError::function_execution(
+            format!("Redirect from {current} has invalid Location '{location}': {e}"),
+            None,
+        )
+    })?;
+    if !matches!(next.scheme(), "http" | "https") {
         return Err(DataflowError::function_execution(
-            format!("SSRF protection: {msg}"),
+            format!(
+                "Redirect from {current} targets unsupported scheme '{}'",
+                next.scheme()
+            ),
             None,
         ));
     }
+    Ok(Some(next))
+}
 
-    let mut req = client.request(method.clone(), url).timeout(timeout);
-
-    // Inject W3C trace context headers (traceparent/tracestate) for distributed tracing
-    {
-        let mut trace_headers = std::collections::HashMap::new();
-        crate::server::trace_context::inject_trace_context(&mut trace_headers);
-        for (k, v) in &trace_headers {
-            req = req.header(k, v);
-        }
-    }
-
-    // Apply connector default headers (lowest priority)
-    for (k, v) in &http_config.headers {
-        req = req.header(k, v);
-    }
-
-    // Apply auth headers (override connector defaults)
-    if let Some(ref auth) = http_config.auth {
-        req = apply_auth(req, auth);
-    }
-
-    // Apply default content-type and body
-    if let Some(b) = body {
-        req = req.header("content-type", "application/json").json(b);
-    }
-
-    // Apply task-level headers LAST (highest priority — workflow developer's explicit choice wins)
-    if let Some(headers) = task_headers {
-        for (k, v) in headers {
-            req = req.header(k, v);
-        }
-    }
-
-    let response = req.send().await.map_err(|e| {
-        if e.is_timeout() {
-            DataflowError::Timeout(format!("HTTP request to {url} timed out"))
-        } else {
-            DataflowError::Io(format!("HTTP request to {url} failed: {e}"))
-        }
-    })?;
-
-    let max_size = http_config.max_response_size;
+/// Read a (non-redirect) response body as JSON, enforcing `max_size`.
+async fn read_json_response(
+    response: reqwest::Response,
+    url: &url::Url,
+    max_size: usize,
+) -> dataflow_rs::Result<Value> {
     let status = response.status();
 
     // Check Content-Length hint before reading body
@@ -579,6 +674,165 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.expect_err("test").to_string().contains("failed"));
+    }
+
+    /// Mirrors the production client (main.rs): the manual follower in
+    /// `execute_request` only sees 3xx responses when reqwest doesn't follow.
+    fn redirectless_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("test")
+    }
+
+    fn localhost_config(addr: std::net::SocketAddr) -> HttpConnectorConfig {
+        HttpConnectorConfig {
+            url: format!("http://{}", addr),
+            method: String::new(),
+            headers: std::collections::HashMap::new(),
+            auth: None,
+            retry: crate::connector::RetryConfig::default(),
+            max_response_size: 10 * 1024 * 1024,
+            allow_private_urls: true, // Tests use localhost
+        }
+    }
+
+    async fn spawn_mock(app: axum::Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test");
+        let addr = listener.local_addr().expect("test");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("test");
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn test_redirect_to_private_target_refused() {
+        // allow_private_urls covers only the connector's own endpoint; a
+        // redirect pointing anywhere else must still pass SSRF validation.
+        let mock_app = axum::Router::new().route(
+            "/redirect",
+            axum::routing::get(|| async {
+                (
+                    axum::http::StatusCode::FOUND,
+                    [(
+                        axum::http::header::LOCATION,
+                        "http://169.254.169.254/latest/meta-data",
+                    )],
+                )
+            }),
+        );
+        let addr = spawn_mock(mock_app).await;
+
+        let result = execute_request(
+            &redirectless_client(),
+            &reqwest::Method::GET,
+            &format!("http://{}/redirect", addr),
+            None,
+            &localhost_config(addr),
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        let err = result.expect_err("test").to_string();
+        assert!(err.contains("SSRF protection"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_redirect_followed_within_own_endpoint() {
+        let mock_app = axum::Router::new()
+            .route(
+                "/a",
+                axum::routing::get(|| async {
+                    (
+                        axum::http::StatusCode::FOUND,
+                        [(axum::http::header::LOCATION, "/b")],
+                    )
+                }),
+            )
+            .route(
+                "/b",
+                axum::routing::get(|| async { axum::Json(serde_json::json!({"hop": "b"})) }),
+            );
+        let addr = spawn_mock(mock_app).await;
+
+        let result = execute_request(
+            &redirectless_client(),
+            &reqwest::Method::GET,
+            &format!("http://{}/a", addr),
+            None,
+            &localhost_config(addr),
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert_eq!(result.expect("test")["hop"], "b");
+    }
+
+    #[tokio::test]
+    async fn test_redirect_loop_is_capped() {
+        let mock_app = axum::Router::new().route(
+            "/loop",
+            axum::routing::get(|| async {
+                (
+                    axum::http::StatusCode::FOUND,
+                    [(axum::http::header::LOCATION, "/loop")],
+                )
+            }),
+        );
+        let addr = spawn_mock(mock_app).await;
+
+        let result = execute_request(
+            &redirectless_client(),
+            &reqwest::Method::GET,
+            &format!("http://{}/loop", addr),
+            None,
+            &localhost_config(addr),
+            None,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        let err = result.expect_err("test").to_string();
+        assert!(err.contains("redirects"), "unexpected error: {err}");
+    }
+
+    #[tokio::test]
+    async fn test_redirect_303_downgrades_post_to_get() {
+        let mock_app = axum::Router::new()
+            .route(
+                "/submit",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::SEE_OTHER,
+                        [(axum::http::header::LOCATION, "/done")],
+                    )
+                }),
+            )
+            .route(
+                "/done",
+                // GET-only: the hop only succeeds if the method was downgraded
+                axum::routing::get(|| async { axum::Json(serde_json::json!({"done": true})) }),
+            );
+        let addr = spawn_mock(mock_app).await;
+
+        let body = serde_json::json!({"data": "payload"});
+        let result = execute_request(
+            &redirectless_client(),
+            &reqwest::Method::POST,
+            &format!("http://{}/submit", addr),
+            None,
+            &localhost_config(addr),
+            Some(&body),
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+
+        assert_eq!(result.expect("test")["done"], true);
     }
 
     #[test]

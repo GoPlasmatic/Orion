@@ -89,7 +89,13 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
         config.engine.max_pool_cache_entries,
     ));
 
-    let http_client = reqwest::Client::new();
+    // Mirror the production client (main.rs): no auto-redirects (execute_request
+    // follows manually with SSRF re-validation) and pinned DNS resolution.
+    let http_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(orion::validation::PinnedDnsResolver))
+        .build()
+        .unwrap();
     let engine = Arc::new(RwLock::new(Arc::new(
         dataflow_rs::Engine::builder().build().unwrap(),
     )));
