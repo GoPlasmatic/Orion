@@ -61,10 +61,7 @@ pub(crate) async fn get_version<T: VersionedRow>(
     pool.fetch_optional_as::<T>(&sql, values)
         .await?
         .ok_or_else(|| {
-            OrionError::NotFound(format!(
-                "{} '{id}' version {version} not found",
-                spec.label
-            ))
+            OrionError::NotFound(format!("{} '{id}' version {version} not found", spec.label))
         })
 }
 
@@ -162,7 +159,10 @@ pub(crate) async fn list_versions<T: VersionedRow>(
 
 /// The `SELECT * WHERE id = ? AND status = 'draft'` both draft-consuming
 /// paths (update, activate) start from.
-pub(crate) fn draft_query(spec: &VersionedSpec, id: &str) -> (String, sea_query_binder::SqlxValues) {
+pub(crate) fn draft_query(
+    spec: &VersionedSpec,
+    id: &str,
+) -> (String, sea_query_binder::SqlxValues) {
     build_sqlx(
         Query::select()
             .column(Asterisk)
@@ -174,10 +174,7 @@ pub(crate) fn draft_query(spec: &VersionedSpec, id: &str) -> (String, sea_query_
 
 /// Uniform "no draft" wording for [`draft_query`] misses.
 pub(crate) fn no_draft_err(spec: &VersionedSpec, id: &str) -> OrionError {
-    OrionError::BadRequest(format!(
-        "No draft version found for {} '{id}'",
-        spec.noun
-    ))
+    OrionError::BadRequest(format!("No draft version found for {} '{id}'", spec.noun))
 }
 
 /// Reject `create_new_version` when a draft already exists (the single-draft
@@ -189,10 +186,7 @@ pub(crate) async fn ensure_no_draft<T: VersionedRow>(
 ) -> Result<(), OrionError> {
     let (sql, values) = draft_query(spec, id);
     super::helpers::ensure_absent::<T>(pool, &sql, values, || {
-        OrionError::Conflict(format!(
-            "{} '{id}' already has a draft version",
-            spec.label
-        ))
+        OrionError::Conflict(format!("{} '{id}' already has a draft version", spec.label))
     })
     .await
 }
@@ -233,10 +227,7 @@ pub(crate) async fn archive_latest_active<T: VersionedRow + HasVersion>(
             .limit(1),
     );
     let active: T = fetch_required(pool, &sql, values, || {
-        OrionError::BadRequest(format!(
-            "No active version found for {} '{id}'",
-            spec.noun
-        ))
+        OrionError::BadRequest(format!("No active version found for {} '{id}'", spec.noun))
     })
     .await?;
 

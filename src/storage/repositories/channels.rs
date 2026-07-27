@@ -11,11 +11,10 @@ use crate::storage::{
     schema::{Channels, CurrentChannels},
 };
 
-use super::helpers::{
-    clamp_pagination, fetch_required, fetch_required_tx,
-    optional_string_value, parse_sort_order,
-};
 use super::helpers::PaginatedResult;
+use super::helpers::{
+    clamp_pagination, fetch_required, fetch_required_tx, optional_string_value, parse_sort_order,
+};
 use super::versioned::{self, VersionedSpec};
 
 /// The versioned-lifecycle spec shared machinery operates on.
@@ -152,7 +151,6 @@ impl SqlChannelRepository {
         Self { pool }
     }
 }
-
 
 /// Fields needed to materialise one row of the `channels` table — used by
 /// `build_channel_insert` to avoid a 15-argument positional signature across
@@ -325,11 +323,10 @@ impl ChannelRepository for SqlChannelRepository {
     ) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.update_draft", async {
             let (draft_sql, draft_values) = versioned::draft_query(&spec(), channel_id);
-            let existing: Channel =
-                fetch_required(&self.pool, &draft_sql, draft_values, || {
-                    versioned::no_draft_err(&spec(), channel_id)
-                })
-                .await?;
+            let existing: Channel = fetch_required(&self.pool, &draft_sql, draft_values, || {
+                versioned::no_draft_err(&spec(), channel_id)
+            })
+            .await?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let description = req

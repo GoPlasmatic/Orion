@@ -279,10 +279,8 @@ fn rate_limited_response() -> Response {
     // (request_id included) as every other error, then add retry-after.
     let mut resp =
         crate::errors::OrionError::RateLimited("Too many requests".to_string()).into_response();
-    resp.headers_mut().insert(
-        "retry-after",
-        axum::http::HeaderValue::from_static("1"),
-    );
+    resp.headers_mut()
+        .insert("retry-after", axum::http::HeaderValue::from_static("1"));
     resp
 }
 

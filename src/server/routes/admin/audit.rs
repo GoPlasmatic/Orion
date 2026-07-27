@@ -101,7 +101,10 @@ pub(crate) async fn list_audit_logs(
     let page = state.audit_log_repo.list_paginated(&filter).await?;
 
     Ok(paginated_response(
-        page.data, page.total, page.limit, page.offset,
+        page.data,
+        page.total,
+        page.limit,
+        page.offset,
     ))
 }
 

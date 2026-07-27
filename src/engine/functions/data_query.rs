@@ -12,8 +12,7 @@ use serde_json::Value;
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, es_request, extract_output_path, is_mongo, profile_handler,
-    require_op_allowed,
+    apply_output, es_request, extract_output_path, is_mongo, profile_handler, require_op_allowed,
     require_str_field, resolve_connector, resolve_params, timed_query, to_exec_error,
 };
 use super::db_read::rows_to_json;

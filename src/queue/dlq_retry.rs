@@ -229,9 +229,9 @@ mod tests {
     use super::*;
     use crate::errors::OrionError;
     use crate::storage::models::{Trace, TraceDlqEntry};
+    use crate::storage::repositories::helpers::PaginatedResult;
     use crate::storage::repositories::trace_dlq::TraceDlqRepository;
     use crate::storage::repositories::traces::TraceRepository;
-    use crate::storage::repositories::helpers::PaginatedResult;
     use async_trait::async_trait;
     use std::sync::Mutex;
 

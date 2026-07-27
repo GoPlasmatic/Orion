@@ -12,8 +12,8 @@ use crate::storage::{
 };
 
 use super::helpers::{
-    clamp_pagination, ensure_absent, fetch_required, fetch_required_tx,
-    optional_string_value, parse_sort_order,
+    clamp_pagination, ensure_absent, fetch_required, fetch_required_tx, optional_string_value,
+    parse_sort_order,
 };
 
 pub use super::helpers::PaginatedResult;
@@ -242,8 +242,11 @@ async fn activate_partial_rollout(
 ) -> Result<(), OrionError> {
     if let Some(primary_active) = active_versions.first() {
         if active_versions.len() > 1 {
-            let (sql, values) =
-                versioned::archive_actives_query(&spec(), workflow_id, Some(primary_active.version));
+            let (sql, values) = versioned::archive_actives_query(
+                &spec(),
+                workflow_id,
+                Some(primary_active.version),
+            );
             tx.execute_query(&sql, values).await?;
         }
         let (sql, values) =
@@ -299,7 +302,6 @@ fn activate_workflow_version_query(
         .and_where(Expr::col(Workflows::Version).eq(version));
     build_sqlx(&mut q)
 }
-
 
 fn build_condition(filter: &WorkflowFilter) -> Condition {
     let mut cond = Condition::all();
@@ -731,7 +733,9 @@ pub fn synthetic_workflow(
         name: req.name.clone(),
         description: req.description.clone(),
         priority: req.priority,
-        status: crate::storage::models::EntityStatus::Active.as_str().to_string(),
+        status: crate::storage::models::EntityStatus::Active
+            .as_str()
+            .to_string(),
         rollout_percentage: 100,
         condition_json: serde_json::to_string(&req.condition)?,
         tasks_json: serde_json::to_string(&req.tasks)?,

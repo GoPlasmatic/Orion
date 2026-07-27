@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use super::connector_helpers::{
     apply_output, extract_output_path, profile_handler, require_db_connector, require_op_allowed,
-    require_str_field, resolve_connector, resolve_value, to_exec_error, timed_query,
+    require_str_field, resolve_connector, resolve_value, timed_query, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -61,10 +61,8 @@ impl AsyncFunctionHandler for MongoReadHandler {
 
             let coll = client.database(database).collection::<Document>(collection);
             let max_rows = self.max_rows;
-            let docs: Vec<Document> = timed_query(
-                db_config.query_timeout_ms,
-                "mongo_read",
-                async {
+            let docs: Vec<Document> =
+                timed_query(db_config.query_timeout_ms, "mongo_read", async {
                     // F11: the Mongo driver has no per-query timeout of its
                     // own here — timed_query bounds connect + find + drain.
                     let mut cursor = coll.find(filter_doc).await.map_err(|e| e.to_string())?;
@@ -79,9 +77,8 @@ impl AsyncFunctionHandler for MongoReadHandler {
                         docs.push(doc);
                     }
                     Ok(docs)
-                },
-            )
-            .await?;
+                })
+                .await?;
 
             let result: Vec<Value> = docs
                 .iter()

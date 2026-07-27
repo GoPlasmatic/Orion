@@ -101,10 +101,7 @@ impl ClusterRepository for SqlClusterRepository {
         crate::metrics::timed_db_op("cluster.bump_epoch", async {
             let update = Query::update()
                 .table(ConfigEpoch::Table)
-                .value(
-                    ConfigEpoch::Epoch,
-                    Expr::col(ConfigEpoch::Epoch).add(1),
-                )
+                .value(ConfigEpoch::Epoch, Expr::col(ConfigEpoch::Epoch).add(1))
                 .to_owned();
             self.update_epoch_row(update, ConfigEpoch::Epoch).await
         })
@@ -287,7 +284,10 @@ mod tests {
                 .to_owned(),
         );
         let (sql, _) = insert.build(PostgresQueryBuilder);
-        assert!(sql.contains("ON CONFLICT (\"job_name\") DO NOTHING"), "{sql}");
+        assert!(
+            sql.contains("ON CONFLICT (\"job_name\") DO NOTHING"),
+            "{sql}"
+        );
     }
 
     #[tokio::test]

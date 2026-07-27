@@ -3,9 +3,9 @@ use async_trait::async_trait;
 use sea_query::{Asterisk, Expr, Order, Query};
 use serde::Deserialize;
 
+use super::helpers::PaginatedResult;
 use crate::errors::OrionError;
 use crate::storage::models::Connector;
-use super::helpers::PaginatedResult;
 use crate::storage::{build_sqlx, schema::Connectors};
 
 // -- DTOs --

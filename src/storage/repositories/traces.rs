@@ -3,9 +3,9 @@ use async_trait::async_trait;
 use sea_query::{Asterisk, Condition, Expr, Query};
 use serde::Deserialize;
 
+use super::helpers::PaginatedResult;
 use crate::errors::OrionError;
 use crate::storage::models::{self, Trace};
-use super::helpers::PaginatedResult;
 use crate::storage::{build_sqlx, schema::Traces};
 
 #[derive(Debug, Default, Deserialize)]

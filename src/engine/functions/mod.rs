@@ -275,10 +275,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_succeeds_first_try() {
-        let result = retry(3, 1, || async {
-            Ok(serde_json::json!({"ok": true}))
-        })
-        .await;
+        let result = retry(3, 1, || async { Ok(serde_json::json!({"ok": true})) }).await;
         assert!(result.is_ok());
         assert_eq!(result.expect("test"), serde_json::json!({"ok": true}));
     }

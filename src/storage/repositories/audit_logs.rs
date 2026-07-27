@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use chrono::NaiveDateTime;
 use sea_query::{Asterisk, Condition, Expr, Order, Query, SimpleExpr};
 
+use super::helpers::PaginatedResult;
 use crate::errors::OrionError;
 use crate::storage::models::AuditLogEntry;
-use super::helpers::PaginatedResult;
 use crate::storage::schema::AuditLogs;
 use crate::storage::{DbPool, build_sqlx};
 

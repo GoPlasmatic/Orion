@@ -6,8 +6,8 @@ use dataflow_rs::engine::task_context::TaskContext;
 use serde_json::{Map, Value};
 
 use crate::connector::{
-    CacheConnectorConfig, ConnectorConfig, ConnectorRegistry, DbConnectorConfig,
-    EsConnectorConfig, OperationGates,
+    CacheConnectorConfig, ConnectorConfig, ConnectorRegistry, DbConnectorConfig, EsConnectorConfig,
+    OperationGates,
 };
 
 /// Reject the call when the connector's operation gates disable `op` — the

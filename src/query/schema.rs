@@ -276,6 +276,9 @@ mod tests {
             "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id" }
         })))
         .expect_err("through implies many_to_many");
-        assert!(err.to_string().contains("requires kind 'many_to_many'"), "{err}");
+        assert!(
+            err.to_string().contains("requires kind 'many_to_many'"),
+            "{err}"
+        );
     }
 }

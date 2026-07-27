@@ -190,11 +190,7 @@ fn env_override_names() -> BTreeSet<String> {
             .iter()
             .find_map(|prefix| trimmed.strip_prefix(prefix));
         if let Some(rest) = rest {
-            let path = rest
-                .split([':', ')'])
-                .next()
-                .unwrap_or("")
-                .trim();
+            let path = rest.split([':', ')']).next().unwrap_or("").trim();
             if !path.is_empty() {
                 names.insert(format!("ORION_{}", path.to_uppercase().replace('.', "__")));
             }

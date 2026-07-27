@@ -521,7 +521,6 @@ impl ChannelRegistry {
 
         issues
     }
-
 }
 
 #[cfg(test)]

@@ -351,7 +351,6 @@ pub fn record_engine_lock_wait(d: Duration) {
     let _ = ORION_PROFILE.try_with(|c| c.set_engine_lock_wait(d));
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
