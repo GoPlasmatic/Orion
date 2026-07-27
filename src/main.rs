@@ -276,19 +276,6 @@ fn handle_validate_config(config: &config::AppConfig) -> Result<(), Box<dyn std:
             "disabled".to_string()
         }
     );
-    let features: &[&str] = &[
-        "db-sqlite",
-        "db-postgres",
-        "db-mysql",
-        "kafka",
-        "tls",
-        "otel",
-        "swagger-ui",
-        "connectors-sql",
-        "connectors-mongodb",
-        "connectors-redis",
-    ];
-    println!("  features:        {}", features.join(", "));
     Ok(())
 }
 
@@ -1072,8 +1059,9 @@ async fn run_dry_run(
     Ok(())
 }
 
-/// Probe the configured backends. Today: opens the database pool
-/// and runs migrations check + a no-op query. Avoids the "wrong DB
+/// Probe the configured backends: open the database pool and run the
+/// migrations check, and (if Kafka is enabled) fetch cluster metadata from
+/// the configured brokers with the configured auth. Avoids the "wrong
 /// credentials surface only at first request" footgun.
 async fn run_test_connectivity(
     config: &config::AppConfig,
@@ -1090,11 +1078,18 @@ async fn run_test_connectivity(
         pending.len()
     );
     if config.kafka.enabled {
-        println!(
-            "  kafka:           configured (brokers={})",
+        eprintln!(
+            "Probing Kafka brokers {} ...",
             config.kafka.brokers.join(",")
         );
-        println!("                   (Kafka broker reachability probe is not yet implemented)");
+        let kafka_config = config.kafka.clone();
+        let brokers = tokio::task::spawn_blocking(move || {
+            orion::kafka::probe_brokers(&kafka_config, std::time::Duration::from_secs(5))
+        })
+        .await
+        .map_err(|e| format!("kafka: probe task failed: {e}"))?
+        .map_err(|e| format!("kafka: {e}"))?;
+        println!("  kafka:           OK ({brokers} brokers visible)");
     } else {
         println!("  kafka:           disabled");
     }

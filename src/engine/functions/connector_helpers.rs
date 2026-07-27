@@ -72,7 +72,8 @@ pub async fn read_es_body(
     {
         return Err(DataflowError::function_execution(
             format!(
-                "Elasticsearch response declared Content-Length {len} exceeds                  limit of {max_size} bytes"
+                "Elasticsearch response declared Content-Length {len} exceeds \
+                 limit of {max_size} bytes"
             ),
             None,
         ));

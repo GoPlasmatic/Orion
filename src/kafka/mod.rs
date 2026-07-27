@@ -36,6 +36,28 @@ pub(crate) fn apply_client_auth(
     }
 }
 
+/// Probe broker reachability: connect with the configured brokers + auth and
+/// fetch cluster metadata. Returns the number of brokers visible. Blocking
+/// (librdkafka metadata fetch) — used by the `test-connectivity` CLI
+/// subcommand, where blocking for the timeout is fine.
+pub fn probe_brokers(
+    config: &crate::config::KafkaIngestConfig,
+    timeout: std::time::Duration,
+) -> Result<usize, String> {
+    use rdkafka::consumer::{BaseConsumer, Consumer};
+
+    let mut client = ClientConfig::new();
+    client.set("bootstrap.servers", config.brokers.join(","));
+    apply_client_auth(&mut client, &config.auth, &config.extra_config);
+    let consumer: BaseConsumer = client
+        .create()
+        .map_err(|e| format!("client construction failed: {e}"))?;
+    let metadata = consumer
+        .fetch_metadata(None, timeout)
+        .map_err(|e| format!("metadata fetch failed: {e}"))?;
+    Ok(metadata.brokers().len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

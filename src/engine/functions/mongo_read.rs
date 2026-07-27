@@ -72,7 +72,8 @@ impl AsyncFunctionHandler for MongoReadHandler {
                     while let Some(doc) = cursor.try_next().await.map_err(|e| e.to_string())? {
                         if docs.len() >= max_rows {
                             return Err(format!(
-                                "mongo_read result exceeds query.max_limit ({max_rows}                                  documents) — add a filter/limit or raise the cap"
+                                "mongo_read result exceeds query.max_limit ({max_rows} \
+                                 documents) — add a filter/limit or raise the cap"
                             ));
                         }
                         docs.push(doc);

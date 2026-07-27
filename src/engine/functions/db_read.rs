@@ -65,7 +65,8 @@ impl AsyncFunctionHandler for DbReadHandler {
                 while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
                     if rows.len() >= max_rows {
                         return Err(format!(
-                            "db_read result exceeds query.max_limit ({max_rows} rows) —                              add a LIMIT to the query or raise the cap"
+                            "db_read result exceeds query.max_limit ({max_rows} rows) — \
+                             add a LIMIT to the query or raise the cap"
                         ));
                     }
                     rows.push(row);
