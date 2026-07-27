@@ -1,10 +1,61 @@
 use async_trait::async_trait;
-use sea_query::{Asterisk, Expr, Query};
+use sea_query::{Asterisk, Condition, Expr, Query};
 
 use crate::errors::OrionError;
 use crate::storage::models::TraceDlqEntry;
 use crate::storage::schema::TraceDlq;
 use crate::storage::{DbPool, build_sqlx};
+
+use super::workflows::PaginatedResult;
+
+// -- DTOs --
+
+/// List-view projection. Deliberately omits `payload_json` / `metadata_json`:
+/// a DLQ listing would otherwise dump every failed request's body (and, until
+/// S10 lands, its headers) into one response. Payloads are served one at a
+/// time by `get_by_id`.
+#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+pub struct TraceDlqSummary {
+    pub id: String,
+    pub trace_id: String,
+    pub channel: String,
+    pub error_message: String,
+    pub retry_count: i64,
+    pub max_retries: i64,
+    pub next_retry_at: chrono::NaiveDateTime,
+    pub created_at: chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TraceDlqFilter {
+    pub channel: Option<String>,
+    /// `Some(true)` = only exhausted entries (`retry_count >= max_retries`),
+    /// `Some(false)` = only entries with retries left, `None` = both.
+    pub exhausted: Option<bool>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// Exhaustion is a column-to-column comparison, expressed the same way
+/// `claim_pending` expresses it so the two can never drift apart.
+const EXHAUSTED: &str = "retry_count >= max_retries";
+const NOT_EXHAUSTED: &str = "retry_count < max_retries";
+
+impl TraceDlqFilter {
+    fn condition(&self) -> Condition {
+        let mut cond = Condition::all();
+        if let Some(ref channel) = self.channel {
+            cond = cond.add(Expr::col(TraceDlq::Channel).eq(channel.as_str()));
+        }
+        match self.exhausted {
+            Some(true) => cond = cond.add(Expr::cust(EXHAUSTED)),
+            Some(false) => cond = cond.add(Expr::cust(NOT_EXHAUSTED)),
+            None => {}
+        }
+        cond
+    }
+}
 
 // -- Repository trait --
 
@@ -55,6 +106,31 @@ pub trait TraceDlqRepository: Send + Sync {
 
     /// Mark an entry as permanently failed by setting retry_count = max_retries.
     async fn mark_exhausted(&self, id: &str) -> Result<(), OrionError>;
+
+    // -- Operator surface (O4) --
+
+    /// Page through DLQ entries, newest first, without their payloads.
+    async fn list_paginated(
+        &self,
+        filter: &TraceDlqFilter,
+    ) -> Result<PaginatedResult<TraceDlqSummary>, OrionError>;
+
+    /// Count matching entries. Cheap enough to run on every DLQ retry tick,
+    /// which is where the `trace_dlq_depth` gauge is refreshed.
+    async fn count(&self, filter: &TraceDlqFilter) -> Result<i64, OrionError>;
+
+    /// Fetch one entry with its full payload and metadata.
+    async fn get_by_id(&self, id: &str) -> Result<TraceDlqEntry, OrionError>;
+
+    /// Reset an entry for immediate retry: `retry_count = 0`, due now, lease
+    /// released. The operator's manual replay for entries the automatic
+    /// backoff already gave up on.
+    async fn requeue(&self, id: &str) -> Result<TraceDlqEntry, OrionError>;
+
+    /// Delete exhausted entries older than `older_than_hours` (0 = every
+    /// exhausted entry). Nothing else removes them, so without this they
+    /// accumulate forever with full payloads.
+    async fn purge_exhausted(&self, older_than_hours: u64) -> Result<u64, OrionError>;
 }
 
 // -- SQL implementation --
@@ -299,6 +375,121 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
 
             self.pool.execute_query(&sql, values).await?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn list_paginated(
+        &self,
+        filter: &TraceDlqFilter,
+    ) -> Result<PaginatedResult<TraceDlqSummary>, OrionError> {
+        crate::metrics::timed_db_op("trace_dlq.list_paginated", async {
+            let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
+            let cond = filter.condition();
+
+            let total =
+                super::helpers::count_where(&self.pool, TraceDlq::Table, cond.clone()).await?;
+
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .columns([
+                        TraceDlq::Id,
+                        TraceDlq::TraceId,
+                        TraceDlq::Channel,
+                        TraceDlq::ErrorMessage,
+                        TraceDlq::RetryCount,
+                        TraceDlq::MaxRetries,
+                        TraceDlq::NextRetryAt,
+                        TraceDlq::CreatedAt,
+                        TraceDlq::UpdatedAt,
+                    ])
+                    .from(TraceDlq::Table)
+                    .cond_where(cond)
+                    .order_by(TraceDlq::CreatedAt, sea_query::Order::Desc)
+                    .limit(limit as u64)
+                    .offset(offset as u64),
+            );
+            let data = self
+                .pool
+                .fetch_all_as::<TraceDlqSummary>(&sql, values)
+                .await?;
+
+            Ok(PaginatedResult {
+                data,
+                total,
+                limit,
+                offset,
+            })
+        })
+        .await
+    }
+
+    async fn count(&self, filter: &TraceDlqFilter) -> Result<i64, OrionError> {
+        crate::metrics::timed_db_op("trace_dlq.count", async {
+            super::helpers::count_where(&self.pool, TraceDlq::Table, filter.condition()).await
+        })
+        .await
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<TraceDlqEntry, OrionError> {
+        crate::metrics::timed_db_op("trace_dlq.get_by_id", async {
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(TraceDlq::Table)
+                    .and_where(Expr::col(TraceDlq::Id).eq(id)),
+            );
+            super::helpers::fetch_required::<TraceDlqEntry>(&self.pool, &sql, values, || {
+                OrionError::NotFound(format!("DLQ entry '{id}' not found"))
+            })
+            .await
+        })
+        .await
+    }
+
+    async fn requeue(&self, id: &str) -> Result<TraceDlqEntry, OrionError> {
+        crate::metrics::timed_db_op("trace_dlq.requeue", async {
+            let now = chrono::Utc::now().naive_utc();
+            let (sql, values) = build_sqlx(
+                Query::update()
+                    .table(TraceDlq::Table)
+                    .value(TraceDlq::RetryCount, 0i64)
+                    .value(TraceDlq::NextRetryAt, now)
+                    .value(
+                        TraceDlq::ClaimedBy,
+                        super::helpers::optional_string_value(None),
+                    )
+                    // See `record_retry`: chrono NULL, not a string NULL (D1).
+                    .value(
+                        TraceDlq::ClaimedUntil,
+                        sea_query::Value::ChronoDateTime(None),
+                    )
+                    .and_where(Expr::col(TraceDlq::Id).eq(id)),
+            );
+
+            if self.pool.execute_query(&sql, values).await? == 0 {
+                return Err(OrionError::NotFound(format!("DLQ entry '{id}' not found")));
+            }
+            self.get_by_id(id).await
+        })
+        .await
+    }
+
+    async fn purge_exhausted(&self, older_than_hours: u64) -> Result<u64, OrionError> {
+        crate::metrics::timed_db_op("trace_dlq.purge_exhausted", async {
+            let cutoff = chrono::Utc::now()
+                .naive_utc()
+                .checked_sub_signed(chrono::Duration::hours(older_than_hours as i64))
+                .unwrap_or(chrono::NaiveDateTime::MIN);
+
+            let (sql, values) = build_sqlx(
+                Query::delete()
+                    .from_table(TraceDlq::Table)
+                    .and_where(Expr::cust(EXHAUSTED))
+                    .and_where(Expr::col(TraceDlq::CreatedAt).lt(cutoff)),
+            );
+
+            Ok(self.pool.execute_query(&sql, values).await?)
         })
         .await
     }

@@ -15,6 +15,7 @@ use crate::storage::DbPool;
 use crate::storage::repositories::audit_logs::AuditLogRepository;
 use crate::storage::repositories::channels::ChannelRepository;
 use crate::storage::repositories::connectors::ConnectorRepository;
+use crate::storage::repositories::trace_dlq::TraceDlqRepository;
 use crate::storage::repositories::traces::TraceRepository;
 use crate::storage::repositories::workflows::WorkflowRepository;
 
@@ -29,6 +30,9 @@ pub struct AppStateInner {
     pub workflow_repo: Arc<dyn WorkflowRepository>,
     pub connector_repo: Arc<dyn ConnectorRepository>,
     pub trace_repo: Arc<dyn TraceRepository>,
+    /// Backs the `/admin/trace-dlq` operator routes (O4). The same repository
+    /// instance the worker pool and the retry loop write to.
+    pub trace_dlq_repo: Arc<dyn TraceDlqRepository>,
     pub audit_log_repo: Arc<dyn AuditLogRepository>,
     pub connector_registry: Arc<ConnectorRegistry>,
     pub cache_pool: Arc<CachePool>,

@@ -28,6 +28,7 @@ pub(crate) struct ErrorDetail {
         (name = "Engine", description = "Engine control"),
         (name = "Functions", description = "Engine function schemas"),
         (name = "Audit", description = "Admin audit-log history"),
+        (name = "Trace DLQ", description = "Dead-letter queue inspection, replay, and purge"),
         (name = "Backups", description = "Database backup management (SQLite only)"),
         (name = "Data", description = "Data processing"),
         (name = "Operational", description = "Health and metrics"),
@@ -73,6 +74,11 @@ pub(crate) struct ErrorDetail {
         super::admin::functions::list_functions,
         // Audit logs
         super::admin::audit::list_audit_logs,
+        // Trace DLQ
+        super::admin::trace_dlq::list_trace_dlq,
+        super::admin::trace_dlq::get_trace_dlq_entry,
+        super::admin::trace_dlq::requeue_trace_dlq_entry,
+        super::admin::trace_dlq::purge_trace_dlq,
         // Backups
         super::admin::backups::create_backup,
         super::admin::backups::list_backups,

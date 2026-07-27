@@ -293,6 +293,35 @@ mod tests {
                 .push(id.to_string());
             Ok(())
         }
+
+        async fn list_paginated(
+            &self,
+            _filter: &crate::storage::repositories::trace_dlq::TraceDlqFilter,
+        ) -> Result<
+            PaginatedResult<crate::storage::repositories::trace_dlq::TraceDlqSummary>,
+            OrionError,
+        > {
+            unimplemented!("not needed for retry tests")
+        }
+
+        async fn count(
+            &self,
+            _filter: &crate::storage::repositories::trace_dlq::TraceDlqFilter,
+        ) -> Result<i64, OrionError> {
+            Ok(self.state.lock().expect("test").entries_to_return.len() as i64)
+        }
+
+        async fn get_by_id(&self, _id: &str) -> Result<TraceDlqEntry, OrionError> {
+            unimplemented!("not needed for retry tests")
+        }
+
+        async fn requeue(&self, _id: &str) -> Result<TraceDlqEntry, OrionError> {
+            unimplemented!("not needed for retry tests")
+        }
+
+        async fn purge_exhausted(&self, _older_than_hours: u64) -> Result<u64, OrionError> {
+            unimplemented!("not needed for retry tests")
+        }
     }
 
     // ----------------------------------------------------------------

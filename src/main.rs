@@ -598,15 +598,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Start trace queue worker pool (with DLQ for failed async traces).
     // The pool needs the persistence queue + channel registry so it can route
     // status / result writes through the configured mode.
-    let dlq_repo: Option<Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository>> =
-        Some(Arc::new(
-            orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
-        ));
+    let dlq_repo: Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository> =
+        Arc::new(orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()));
     let (trace_queue, worker_handle) = orion::queue::start_workers(
         &config.queue,
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
-        dlq_repo,
+        Some(dlq_repo.clone()),
         channel_registry.clone(),
         trace_persistence_queue.clone(),
         config.tracing.storage.clone(),
@@ -646,10 +644,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Start DLQ retry consumer
     let dlq_retry_handle = if config.queue.dlq_retry_enabled {
-        let dlq_for_retry: Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository> =
-            Arc::new(
-                orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
-            );
         let handle = orion::queue::start_dlq_retry(
             orion::queue::DlqRetryOptions {
                 poll_interval_secs: config.queue.dlq_poll_interval_secs,
@@ -658,7 +652,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 claimant: cluster.instance_id.clone(),
                 lease_gate: job_lease_gate.clone(),
             },
-            dlq_for_retry,
+            dlq_repo.clone(),
             trace_queue.clone(),
             trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
             channel_registry.clone(),
@@ -703,6 +697,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         connector_repo: connector_repo
             as Arc<dyn orion::storage::repositories::connectors::ConnectorRepository>,
         trace_repo: trace_repo as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+        trace_dlq_repo: dlq_repo,
         audit_log_repo: audit_log_repo
             as Arc<dyn orion::storage::repositories::audit_logs::AuditLogRepository>,
         connector_registry,

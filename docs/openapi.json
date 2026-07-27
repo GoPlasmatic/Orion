@@ -736,6 +736,137 @@
         }
       }
     },
+    "/api/v1/admin/trace-dlq": {
+      "get": {
+        "tags": [
+          "Trace DLQ"
+        ],
+        "operationId": "list_trace_dlq",
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "query",
+            "description": "Filter by channel name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "exhausted",
+            "in": "query",
+            "description": "true = only exhausted entries, false = only entries awaiting retry",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Pagination offset (default 0)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to [1, 1000] (default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated DLQ entries without payloads — fetch one by id for the payload"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/trace-dlq/purge": {
+      "post": {
+        "tags": [
+          "Trace DLQ"
+        ],
+        "operationId": "purge_trace_dlq",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Exhausted entries older than `older_than_hours` deleted"
+          },
+          "400": {
+            "description": "Missing or malformed `older_than_hours`"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/trace-dlq/{id}": {
+      "get": {
+        "tags": [
+          "Trace DLQ"
+        ],
+        "operationId": "get_trace_dlq_entry",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "DLQ entry id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "DLQ entry including the failed payload and metadata"
+          },
+          "404": {
+            "description": "No such DLQ entry"
+          }
+        }
+      }
+    },
+    "/api/v1/admin/trace-dlq/{id}/requeue": {
+      "post": {
+        "tags": [
+          "Trace DLQ"
+        ],
+        "operationId": "requeue_trace_dlq_entry",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "DLQ entry id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Entry reset to retry_count = 0 and scheduled for immediate retry"
+          },
+          "404": {
+            "description": "No such DLQ entry"
+          }
+        }
+      }
+    },
     "/api/v1/admin/workflows": {
       "get": {
         "tags": [
@@ -2128,6 +2259,10 @@
     {
       "name": "Audit",
       "description": "Admin audit-log history"
+    },
+    {
+      "name": "Trace DLQ",
+      "description": "Dead-letter queue inspection, replay, and purge"
     },
     {
       "name": "Backups",

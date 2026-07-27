@@ -4,6 +4,7 @@ pub(crate) mod channels;
 pub(crate) mod connectors;
 pub(crate) mod engine;
 pub(crate) mod functions;
+pub(crate) mod trace_dlq;
 pub(crate) mod workflows;
 
 use axum::Router;
@@ -33,6 +34,9 @@ pub(crate) use connectors::{
 };
 pub(crate) use engine::{engine_reload, engine_status};
 pub(crate) use functions::list_functions;
+pub(crate) use trace_dlq::{
+    get_trace_dlq_entry, list_trace_dlq, purge_trace_dlq, requeue_trace_dlq_entry,
+};
 pub(crate) use workflows::{
     change_workflow_status, create_new_workflow_version, create_workflow, delete_workflow,
     export_workflows, get_workflow, import_workflows, list_workflow_versions, list_workflows,
@@ -189,13 +193,20 @@ pub fn admin_routes() -> Router<AppState> {
 
     let function_routes = Router::new().route("/", get(list_functions));
 
+    let trace_dlq_routes = Router::new()
+        .route("/", get(list_trace_dlq))
+        .route("/purge", post(purge_trace_dlq))
+        .route("/{id}", get(get_trace_dlq_entry))
+        .route("/{id}/requeue", post(requeue_trace_dlq_entry));
+
     let mut router = Router::new()
         .nest("/channels", channel_routes)
         .nest("/workflows", workflow_routes)
         .nest("/connectors", connector_routes)
         .nest("/engine", engine_routes)
         .nest("/functions", function_routes)
-        .nest("/audit-logs", audit_routes);
+        .nest("/audit-logs", audit_routes)
+        .nest("/trace-dlq", trace_dlq_routes);
 
     let backup_routes = Router::new().route("/", post(create_backup).get(list_backups));
     router = router.nest("/backups", backup_routes);

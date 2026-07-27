@@ -116,10 +116,8 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
     *engine.write().await = Arc::new(built_engine);
 
     // Start a small worker pool for async trace tests
-    let dlq_repo: Option<Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository>> =
-        Some(Arc::new(
-            orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
-        ));
+    let dlq_repo: Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository> =
+        Arc::new(orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()));
     let test_queue_config = orion::config::QueueConfig {
         workers: 2,
         buffer_size: 100,
@@ -138,7 +136,7 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
         &test_queue_config,
         engine.clone(),
         trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
-        dlq_repo,
+        Some(dlq_repo.clone()),
         channel_registry.clone(),
         trace_persistence_queue_for_workers.clone(),
         config.tracing.storage.clone(),
@@ -167,6 +165,7 @@ pub async fn test_state_with_config(config: AppConfig) -> AppState {
         workflow_repo,
         connector_repo,
         trace_repo,
+        trace_dlq_repo: dlq_repo,
         audit_log_repo,
         connector_registry,
         cache_pool,
