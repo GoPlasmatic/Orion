@@ -190,11 +190,11 @@ pub fn start_consumer(
 }
 
 /// Decode + parse + dispatch a single Kafka message. Wraps the entire
-/// per-message lifecycle: payload UTF-8 decode (skips on failure), topic →
-/// channel lookup (skips unmapped topics), JSON parse (DLQ on failure),
-/// W3C trace context extraction, engine dispatch with timeout, and the
-/// 4-way match on the processing outcome (timeout / engine error /
-/// workflow errors / success). The outer `consume_loop` is responsible
+/// per-message lifecycle: topic → channel lookup, payload UTF-8 decode,
+/// JSON parse, W3C trace context extraction, engine dispatch with timeout,
+/// and the match on the processing outcome (timeout / engine error /
+/// workflow errors / success). Every failure branch routes through
+/// [`report_failure_and_dlq`]. The outer `consume_loop` is responsible
 /// for backpressure, shutdown, and offset commit after this returns.
 async fn process_one_kafka_message(
     ctx: &ConsumeLoopContext,
@@ -204,7 +204,19 @@ async fn process_one_kafka_message(
     let channel = match ctx.topic_map.get(&topic) {
         Some(ch) => ch.clone(),
         None => {
-            tracing::warn!(topic = %topic, "No channel mapping for topic, skipping");
+            report_failure_and_dlq(
+                ctx,
+                FailureReport {
+                    channel: "unknown",
+                    topic: &topic,
+                    payload: msg.payload().unwrap_or_default(),
+                    message_status: "error",
+                    error_kind: "kafka_unmapped_topic",
+                    log_msg: "No channel mapping for Kafka topic",
+                    dlq_reason: &format!("No channel mapping for topic '{topic}'"),
+                },
+            )
+            .await;
             return;
         }
     };
@@ -212,15 +224,35 @@ async fn process_one_kafka_message(
     let payload = match msg.payload_view::<str>() {
         Some(Ok(text)) => text,
         Some(Err(e)) => {
-            tracing::warn!(
-                topic = %topic,
-                error = %e,
-                "Failed to decode Kafka message payload as UTF-8, skipping"
-            );
+            report_failure_and_dlq(
+                ctx,
+                FailureReport {
+                    channel: &channel,
+                    topic: &topic,
+                    payload: msg.payload().unwrap_or_default(),
+                    message_status: "error",
+                    error_kind: "kafka_decode",
+                    log_msg: "Failed to decode Kafka message payload as UTF-8",
+                    dlq_reason: &format!("UTF-8 decode error: {e}"),
+                },
+            )
+            .await;
             return;
         }
         None => {
-            tracing::warn!(topic = %topic, "Empty Kafka message, skipping");
+            report_failure_and_dlq(
+                ctx,
+                FailureReport {
+                    channel: &channel,
+                    topic: &topic,
+                    payload: &[],
+                    message_status: "error",
+                    error_kind: "kafka_empty_payload",
+                    log_msg: "Empty Kafka message payload",
+                    dlq_reason: "Empty message payload",
+                },
+            )
+            .await;
             return;
         }
     };
@@ -228,17 +260,17 @@ async fn process_one_kafka_message(
     let data: serde_json::Value = match serde_json::from_str(payload) {
         Ok(v) => v,
         Err(e) => {
-            tracing::warn!(
-                topic = %topic,
-                error = %e,
-                "Failed to parse Kafka message as JSON, skipping"
-            );
-            send_to_dlq(
-                &ctx.dlq_producer,
-                &ctx.dlq_topic,
-                &topic,
-                payload.as_bytes(),
-                &format!("JSON parse error: {e}"),
+            report_failure_and_dlq(
+                ctx,
+                FailureReport {
+                    channel: &channel,
+                    topic: &topic,
+                    payload: payload.as_bytes(),
+                    message_status: "error",
+                    error_kind: "kafka_parse",
+                    log_msg: "Failed to parse Kafka message as JSON",
+                    dlq_reason: &format!("JSON parse error: {e}"),
+                },
             )
             .await;
             return;
@@ -565,9 +597,10 @@ struct FailureReport<'a> {
 }
 
 /// Record failure metrics and ship the original payload to the DLQ.
-/// Used by the 4 failure branches in the consume loop (UTF-8 decode,
-/// JSON parse, processing timeout, workflow error) to keep metric / log /
-/// DLQ behaviour consistent.
+/// Used by every failure branch in [`process_one_kafka_message`]
+/// (unmapped topic, UTF-8 decode, empty payload, JSON parse, processing
+/// timeout, engine error, workflow errors) to keep metric / log / DLQ
+/// behaviour consistent.
 async fn report_failure_and_dlq(ctx: &ConsumeLoopContext, failure: FailureReport<'_>) {
     metrics::record_message(failure.channel, failure.message_status);
     metrics::record_error(failure.error_kind);
@@ -588,7 +621,9 @@ async fn report_failure_and_dlq(ctx: &ConsumeLoopContext, failure: FailureReport
     .await;
 }
 
-/// Build a DLQ envelope message from error context.
+/// Build a DLQ envelope message from error context. The original payload
+/// is embedded lossy-decoded (the envelope is JSON text; any invalid
+/// UTF-8 bytes become U+FFFD replacement characters).
 fn build_dlq_message(source_topic: &str, payload: &[u8], error: &str) -> serde_json::Value {
     serde_json::json!({
         "source_topic": source_topic,
