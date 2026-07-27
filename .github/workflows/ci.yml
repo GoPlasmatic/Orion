@@ -271,9 +271,19 @@ jobs:
       # GitHub-hosted ubuntu runners ship Docker, so testcontainers spins up
       # ephemeral Postgres / MySQL / MongoDB / Elasticsearch / Kafka containers
       # on demand. The name filters run only the container-backed round-trip +
-      # raw-SQL + ES + Kafka tests and skip the still-localhost redis test.
+      # raw-SQL + ES tests and skip the still-localhost redis test.
       - name: Run container-backed integration tests
-        run: cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test kafka_test
+        run: cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test
+
+      # Kafka gets its own step: each test starts its own broker container, and
+      # sharing one invocation with the Postgres/MySQL/Mongo/ES containers
+      # starves them — producers fail with MessageTimedOut while brokers fight
+      # for CPU. Measured on the pre-existing suite (no changes): 4 Kafka
+      # failures in the combined run, 13/13 green when Kafka runs on its own.
+      # Scheduling pressure, not a defect. If this step is still flaky on a
+      # smaller runner, add `--test-threads=2`.
+      - name: Kafka container tests
+        run: cargo test --test integration -- --ignored kafka_test
 
       # Orion's own storage on Postgres / MySQL. Separate binaries (one
       # process each) because the storage backend is pinned per process via
