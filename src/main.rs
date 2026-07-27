@@ -571,8 +571,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !load_issues.is_empty() {
         // A channel whose stored config or validation_logic no longer loads
         // (any mode), or whose shared backend cannot be built (cluster mode),
-        // must not boot and silently serve unguarded.
-        return Err(orion::channel::ChannelLoadIssue::refusal_error(&load_issues).into());
+        // must never be served unguarded. It is quarantined: absent from the
+        // registry and the route table, and refused at every ingress with a
+        // 503. Booting anyway is the F35 change — the alternative was that one
+        // broken row stopped the whole instance, including every channel that
+        // is fine.
+        for issue in &load_issues {
+            tracing::error!(
+                channel = %issue.channel,
+                reason = %issue.reason,
+                "Channel quarantined: it will be refused at every ingress until fixed"
+            );
+        }
     }
 
     let channel_names: std::collections::HashSet<&str> =

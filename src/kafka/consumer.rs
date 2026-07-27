@@ -321,7 +321,27 @@ async fn process_one_kafka_message(
     // one is configured, and commit the offset only on a confirmed DLQ
     // write (same outcome model as every other failure class).
     let metadata = kafka_metadata_value(&channel, &topic, msg);
-    let channel_runtime = ctx.channel_registry.get_by_name(&channel).await;
+    // F35: a quarantined channel is refused here too. Routed to the DLQ
+    // rather than dropped, so the messages are replayable once the operator
+    // fixes the channel's stored config.
+    let channel_runtime = match ctx.channel_registry.require_serviceable(&channel).await {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            return report_failure_and_dlq(
+                ctx,
+                FailureReport {
+                    channel: &channel,
+                    topic: &topic,
+                    payload: payload.as_bytes(),
+                    message_status: "error",
+                    error_kind: "channel_quarantined",
+                    log_msg: "Kafka message for a channel that failed to load",
+                    dlq_reason: &e.to_string(),
+                },
+            )
+            .await;
+        }
+    };
     if let Err(e) = crate::channel::guards::validate_input(
         &channel,
         &channel_runtime,

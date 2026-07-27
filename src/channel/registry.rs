@@ -112,7 +112,7 @@ pub struct ChannelRuntimeConfig {
 /// - **Backend degradation (cluster mode only).** A dedup/response-cache
 ///   backend that would fall back to per-node memory is a correctness loss in
 ///   a cluster but an acceptable degradation on one node.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ChannelLoadIssue {
     pub channel: String,
     pub reason: String,
@@ -149,6 +149,14 @@ pub struct ClusterBackends {
 pub struct ChannelRegistry {
     by_name: RwLock<HashMap<String, Arc<ChannelRuntimeConfig>>>,
     route_table: RwLock<RouteTable>,
+    /// Channels that failed to load, by name, with the reason (F35).
+    ///
+    /// A quarantined channel is refused at every ingress rather than served
+    /// with none of its guards — that refusal is the whole point of N3/N4.
+    /// Keeping them here instead of aborting the reload confines the blast
+    /// radius to the broken channel: the other channels still load, and the
+    /// admin mutations that trigger a reload still work.
+    quarantined: RwLock<HashMap<String, String>>,
     /// `Some` = cluster mode (strict backend matrix in
     /// [`ChannelRegistry::reload`]: shared-Redis defaults and load errors
     /// instead of silent in-memory fallbacks).
@@ -166,6 +174,7 @@ impl ChannelRegistry {
         Self {
             by_name: RwLock::new(HashMap::new()),
             route_table: RwLock::new(RouteTable::new()),
+            quarantined: RwLock::new(HashMap::new()),
             cluster: None,
         }
     }
@@ -174,8 +183,45 @@ impl ChannelRegistry {
         Self {
             by_name: RwLock::new(HashMap::new()),
             route_table: RwLock::new(RouteTable::new()),
+            quarantined: RwLock::new(HashMap::new()),
             cluster: Some(cluster),
         }
+    }
+
+    /// Why a channel is quarantined, or `None` when it is serviceable (F35).
+    pub async fn quarantine_reason(&self, name: &str) -> Option<String> {
+        self.quarantined.read().await.get(name).cloned()
+    }
+
+    /// Every quarantined channel, for `/health` and the admin surface.
+    pub async fn quarantined(&self) -> Vec<ChannelLoadIssue> {
+        self.quarantined
+            .read()
+            .await
+            .iter()
+            .map(|(channel, reason)| ChannelLoadIssue {
+                channel: channel.clone(),
+                reason: reason.clone(),
+            })
+            .collect()
+    }
+
+    /// Look up a channel's runtime config, refusing quarantined channels.
+    ///
+    /// Every ingress path goes through this rather than [`Self::get_by_name`]:
+    /// a quarantined channel returns `Ok(None)` from a plain lookup, which is
+    /// indistinguishable from "no config" and would serve it with none of its
+    /// guards — the exact failure N3/N4 exist to prevent.
+    pub async fn require_serviceable(
+        &self,
+        name: &str,
+    ) -> Result<Option<Arc<ChannelRuntimeConfig>>, crate::errors::OrionError> {
+        if let Some(reason) = self.quarantine_reason(name).await {
+            return Err(crate::errors::OrionError::ServiceUnavailable(format!(
+                "Channel '{name}' failed to load and is not being served: {reason}"
+            )));
+        }
+        Ok(self.get_by_name(name).await)
     }
 
     /// Resolve a channel's dedup or response-cache backend — the full
@@ -261,11 +307,18 @@ impl ChannelRegistry {
     /// Builds per-channel rate limiters from `config_json.rate_limit` if configured.
     ///
     /// Returns the channels that were **not** loaded (see [`ChannelLoadIssue`]
-    /// for the two classes). A non-empty result leaves the registry
-    /// **untouched**: callers turn it into a hard error, and a partial swap
-    /// would drop the refused channel's runtime config while the engine still
-    /// routes to it — i.e. serve it with none of its guards, the exact failure
-    /// the refusal exists to prevent.
+    /// for the two classes). Those channels are **quarantined**: absent from
+    /// the registry and from the route table, and refused at every ingress by
+    /// [`Self::require_serviceable`]. The rest of the reload succeeds.
+    ///
+    /// This used to be all-or-nothing — a non-empty result left the registry
+    /// untouched and callers hard-failed. That kept a broken channel from
+    /// being served unguarded, which is right, but it also meant one channel
+    /// with an unparseable `config_json` failed *every* operation that
+    /// triggers a reload (activate, archive, delete, rollout) with a 500, and
+    /// stopped the cluster epoch watcher resyncing every node (F35). Refusing
+    /// the broken channel individually keeps the guarantee and drops the
+    /// blast radius to the one row that is actually broken.
     pub async fn reload(
         &self,
         channels: &[Channel],
@@ -425,17 +478,33 @@ impl ChannelRegistry {
             new_map.insert(channel.name.clone(), runtime);
         }
 
-        // All-or-nothing: see the doc comment. Callers hard-fail, and the
-        // previous (consistent) registry state is what keeps serving until
-        // the operator fixes the offending row.
-        if !issues.is_empty() {
-            return issues;
-        }
-
         *self.by_name.write().await = new_map;
 
-        // Rebuild the REST route table from active channels
-        *self.route_table.write().await = RouteTable::build(channels);
+        // Quarantined channels are excluded from the route table too, so
+        // their REST routes 404 rather than resolving to a channel that will
+        // then be refused — and so a broken channel cannot shadow the route
+        // of a working one.
+        let quarantined: HashMap<String, String> = issues
+            .iter()
+            .map(|i| (i.channel.clone(), i.reason.clone()))
+            .collect();
+        let serviceable: Vec<Channel> = channels
+            .iter()
+            .filter(|c| !quarantined.contains_key(&c.name))
+            .cloned()
+            .collect();
+        *self.route_table.write().await = RouteTable::build(&serviceable);
+        *self.quarantined.write().await = quarantined;
+
+        if !issues.is_empty() {
+            tracing::error!(
+                quarantined = issues.len(),
+                loaded = channels.len() - issues.len(),
+                "Some channels failed to load and are being refused at every \
+                 ingress. See /health for the list; the rest of the instance \
+                 is unaffected."
+            );
+        }
 
         issues
     }

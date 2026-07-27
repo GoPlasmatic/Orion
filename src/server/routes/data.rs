@@ -331,7 +331,9 @@ pub(crate) async fn dynamic_handler(
     // appending `/async` must not bypass CORS, validation_logic,
     // deduplication, or backpressure. The response cache stays sync-only —
     // async submissions always return 202.
-    let channel_runtime = state.channel_registry.get_by_name(&channel).await;
+    // F35: a channel that failed to load is quarantined, not silently
+    // config-less — serving it here would apply none of its guards.
+    let channel_runtime = state.channel_registry.require_serviceable(&channel).await?;
     guards::check_cors_origin(
         &channel,
         &channel_runtime,

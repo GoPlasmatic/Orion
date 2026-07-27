@@ -69,13 +69,17 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
     // them here rather than leaving a boot-time log line as the only signal.
     let connector_issues = state.connector_registry.load_issues().await;
 
+    // F35: channels that failed to load are quarantined — refused at every
+    // ingress — while the rest of the instance serves normally. This is the
+    // only signal that they are not being served.
+    let quarantined_channels = state.channel_registry.quarantined().await;
+
     // Degraded, not unhealthy: the rest of the instance still serves traffic,
     // and returning 503 would take a node out of its load balancer over a
-    // connector that may be used by nothing currently in flight.
+    // connector or channel that may be used by nothing currently in flight.
     let overall_healthy = db_healthy && engine_healthy;
-    let status_str = if !overall_healthy {
-        "degraded"
-    } else if connector_issues.is_empty() {
+    let fully_loaded = connector_issues.is_empty() && quarantined_channels.is_empty();
+    let status_str = if overall_healthy && fully_loaded {
         "ok"
     } else {
         "degraded"
@@ -97,10 +101,14 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
             "database": if db_healthy { "ok" } else { "error" },
             "engine": if engine_healthy { "ok" } else { "error" },
             "connectors": if connector_issues.is_empty() { "ok" } else { "degraded" },
+            "channels": if quarantined_channels.is_empty() { "ok" } else { "degraded" },
         },
         "connectors": {
             "circuit_breakers": cb_states,
             "failed_to_load": connector_issues,
+        },
+        "channels": {
+            "quarantined": quarantined_channels,
         }
     });
 
@@ -301,12 +309,16 @@ pub async fn reload_engine_with_opts(
                 .map_err(crate::errors::OrionError::Engine)?,
         );
 
-        // Rebuild the channel registry BEFORE swapping the engine. A refusal
-        // leaves the registry untouched, so bailing here also leaves the old
-        // engine in place: the alternative — new engine, refused channel
-        // absent from the registry — routes requests to that channel with
-        // none of its guards, which is what the refusal exists to prevent.
-        let issues = state
+        // Rebuild the channel registry BEFORE swapping the engine, so a
+        // channel is never reachable through the new engine before its guards
+        // exist. Channels that fail to load are quarantined — refused at every
+        // ingress — and the reload proceeds (F35). It used to abort here,
+        // which meant one unparseable `config_json` failed every activate,
+        // archive, delete and rollout with a 500, and stopped the cluster
+        // epoch watcher resyncing all nodes.
+        // The issue list is recorded on the registry itself (and reported via
+        // `/health`), so it is deliberately not propagated as an error here.
+        let _quarantined = state
             .channel_registry
             .reload(
                 &channels,
@@ -316,9 +328,6 @@ pub async fn reload_engine_with_opts(
                 &state.config.tracing.storage,
             )
             .await;
-        if !issues.is_empty() {
-            return Err(crate::channel::ChannelLoadIssue::refusal_error(&issues));
-        }
 
         let mut engine_write = tokio::time::timeout(
             std::time::Duration::from_secs(state.config.engine.reload_timeout_secs),

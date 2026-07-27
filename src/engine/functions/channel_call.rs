@@ -154,7 +154,18 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             // in-process calls — validation_logic, backpressure, and
             // timeout_ms. CORS, dedup, and the response cache are
             // HTTP-transport concerns and don't apply here.
-            let target_runtime = self.channel_registry.get_by_name(&target_channel).await;
+            // F35: refuse a quarantined target rather than calling it with
+            // none of its guards.
+            let target_runtime = self
+                .channel_registry
+                .require_serviceable(&target_channel)
+                .await
+                .map_err(|e| {
+                    DataflowError::function_execution(
+                        format!("channel_call to '{target_channel}': {e}"),
+                        None,
+                    )
+                })?;
             crate::channel::guards::validate_input(
                 &target_channel,
                 &target_runtime,
