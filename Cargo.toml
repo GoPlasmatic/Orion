@@ -138,3 +138,6 @@ lto = "thin"
 tokio = { version = "1", features = ["test-util"] }
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "mongo", "elastic_search", "redis"] }
+# In-process self-signed certificate generation for the TLS tests (no
+# external `openssl` CLI dependency).
+rcgen = "0.14"

@@ -9,13 +9,11 @@
 //!   3. one HTTPS round-trip against a bound server, chain-validated
 //!   4. a drain over TLS, mirroring `drain_test.rs` (plain HTTP)
 //!
-//! The certificate is generated at test time with the `openssl` CLI. When
-//! `openssl` is unavailable the TLS tests report a skip rather than failing —
-//! every CI runner and dev image used by this project ships it.
+//! The certificate is generated in-process with `rcgen`, so these tests
+//! always run — no external `openssl` dependency and no silent skip path.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -54,63 +52,20 @@ impl Drop for ScratchDir {
     }
 }
 
-fn openssl_available() -> bool {
-    Command::new("openssl")
-        .arg("version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Generate a self-signed P-256 leaf valid for `localhost` and `127.0.0.1`.
-/// Returns `None` when `openssl` is not on PATH so callers can skip.
-fn self_signed_pair(dir: &Path) -> Option<(String, String)> {
-    if !openssl_available() {
-        return None;
-    }
+/// Generate a self-signed P-256 leaf valid for `localhost` and `127.0.0.1`,
+/// written as PEM files under `dir`. Returns `(cert_path, key_path)`.
+fn self_signed_pair(dir: &Path) -> (String, String) {
+    let certified =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string(), "127.0.0.1".to_string()])
+            .expect("generate self-signed certificate");
     let cert = dir.join("cert.pem");
     let key = dir.join("key.pem");
-    let status = Command::new("openssl")
-        .args([
-            "req",
-            "-x509",
-            "-newkey",
-            "ec",
-            "-pkeyopt",
-            "ec_paramgen_curve:prime256v1",
-            "-nodes",
-            "-days",
-            "365",
-            "-subj",
-            "/CN=localhost",
-            "-addext",
-            "subjectAltName=DNS:localhost,IP:127.0.0.1",
-            // webpki rejects a trust anchor reused as the leaf unless the leaf
-            // carries serverAuth (`EkuError` otherwise).
-            "-addext",
-            "extendedKeyUsage=serverAuth",
-            "-keyout",
-        ])
-        .arg(&key)
-        .arg("-out")
-        .arg(&cert)
-        .output()
-        .ok()?;
-    if !status.status.success() {
-        eprintln!(
-            "openssl failed: {}",
-            String::from_utf8_lossy(&status.stderr)
-        );
-        return None;
-    }
-    Some((
+    std::fs::write(&cert, certified.cert.pem()).expect("write cert");
+    std::fs::write(&key, certified.signing_key.serialize_pem()).expect("write key");
+    (
         cert.to_string_lossy().into_owned(),
         key.to_string_lossy().into_owned(),
-    ))
-}
-
-fn skip(test: &str) {
-    eprintln!("SKIP {test}: `openssl` is not available to generate a test certificate");
+    )
 }
 
 /// Write a config file enabling TLS with the given paths and load it through
@@ -178,9 +133,7 @@ fn test_tls_config_rejects_blank_paths() {
 #[test]
 fn test_tls_config_accepts_existing_pair() {
     let dir = ScratchDir::new("cfg_ok");
-    let Some((cert, key)) = self_signed_pair(dir.path()) else {
-        return skip("test_tls_config_accepts_existing_pair");
-    };
+    let (cert, key) = self_signed_pair(dir.path());
     load_tls_config(dir.path(), &cert, &key).expect("a real pair must validate");
 }
 
@@ -191,9 +144,7 @@ fn test_tls_config_accepts_existing_pair() {
 #[tokio::test]
 async fn test_load_rustls_config_succeeds_on_real_pair() {
     let dir = ScratchDir::new("load_ok");
-    let Some((cert, key)) = self_signed_pair(dir.path()) else {
-        return skip("test_load_rustls_config_succeeds_on_real_pair");
-    };
+    let (cert, key) = self_signed_pair(dir.path());
     orion::server::tls::load_rustls_config(&cert, &key)
         .await
         .expect("valid PEM pair must load");
@@ -281,9 +232,7 @@ fn https_client(cert_path: &str) -> reqwest::Client {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_https_round_trip() {
     let dir = ScratchDir::new("roundtrip");
-    let Some((cert, key)) = self_signed_pair(dir.path()) else {
-        return skip("test_https_round_trip");
-    };
+    let (cert, key) = self_signed_pair(dir.path());
 
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
     let (addr, handle, task) = serve_tls(&cert, &key, state).await;
@@ -321,9 +270,7 @@ async fn test_https_round_trip() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_tls_drain_withdraws_readiness_before_stopping_accept() {
     let dir = ScratchDir::new("drain");
-    let Some((cert, key)) = self_signed_pair(dir.path()) else {
-        return skip("test_tls_drain_withdraws_readiness_before_stopping_accept");
-    };
+    let (cert, key) = self_signed_pair(dir.path());
 
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
     let ready = state.ready.clone();

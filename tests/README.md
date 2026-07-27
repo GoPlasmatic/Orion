@@ -1,111 +1,99 @@
 # Orion Test Suite
 
-## Unit and Integration Tests
+## Test Binaries
 
-Run all standard tests (no external services required):
+The suite is split into four test binaries. The storage backend is pinned per
+process (a global `DB_BACKEND` OnceLock), which is why the Postgres/MySQL
+storage tests and the cluster tests cannot live in the integration binary.
+
+| Binary | Location | Backend | Docker |
+|--------|----------|---------|--------|
+| `integration` | `tests/integration/` | in-memory SQLite | only for the `#[ignore]` tests |
+| `cluster` | `tests/cluster/` | Postgres + Redis testcontainers | required (all `#[ignore]`) |
+| `storage_postgres` | `tests/storage_postgres.rs` | Postgres testcontainer | required (all `#[ignore]`) |
+| `storage_mysql` | `tests/storage_mysql.rs` | MySQL testcontainer | required (all `#[ignore]`) |
+
+## Default Suite
 
 ```bash
 cargo test
 ```
 
-Tests run against an in-memory SQLite database constructed by `tests/integration/common::test_app()`, so no additional setup is needed for the default suite.
+No external services are needed: the integration tests run against an
+in-memory SQLite database built by `tests/integration/common::test_app()`,
+and drive the router directly with `tower::ServiceExt::oneshot()` (no HTTP
+listener). Container-gated tests are `#[ignore]` and skipped.
 
 ### Layout
 
-All integration tests are consolidated into a **single test binary** (`integration`) so the suite links once instead of ~43 times — this cuts the per-edit relink cost roughly 5×. Each former `tests/<name>_test.rs` file now lives at `tests/integration/<name>_test.rs` and is declared as a module in `tests/integration/main.rs`. Shared helpers live in `tests/integration/common/`.
+All integration tests link into a **single binary**: each file under
+`tests/integration/` is a module declared in `tests/integration/main.rs`, so
+the suite links once instead of ~60 times. Shared helpers live in
+`tests/integration/common/` (`mod.rs` for the app/channel/workflow builders,
+`dsl.rs` for the data-plane task DSL, `backends.rs` for the testcontainers
+harness); the same `common` module is reused by the `cluster` binary via
+`#[path]`.
 
-To add a test file: create `tests/integration/<name>_test.rs`, reference shared helpers via `crate::common::…`, and add a `mod <name>_test;` line to `tests/integration/main.rs`.
+To add a test file: create `tests/integration/<name>_test.rs`, use helpers
+via `crate::common::…`, and add `mod <name>_test;` to
+`tests/integration/main.rs`.
 
 ### What's Covered
 
-The consolidated `integration` binary exercises every public-facing surface of Orion:
-
-- **Admin API** — `admin_workflows_test`, `admin_connectors_test`, `bulk_import_test`,
-  `workflow_lifecycle_test`, `typed_enum_dtos_test`, `audit_log_test`, `backup_restore_test`
-- **Data path & routing** — `rest_routing_test`, `channel_call_test`, `channel_config_test`,
-  `channel_config_validation_test`, `pipeline_test`
-- **Resilience / scaling** — `rate_limit_test`, `concurrency_test`, `circuit_breaker_test`,
-  `pool_exhaustion_test`, `channel_dedup_test`, `channel_response_cache_test`
-- **Async + tracing** — `async_traces_test`, `async_trace_edge_test`, `task_trace_test`,
-  `trace_storage_test`, `trace_dlq_repo_test`, `profile_test`, `queue_durability_test`
-- **Connectors** — `connector_db_test`, `connector_cache_test`, `connector_redis_test`,
-  `mongodb_test`, `mysql_test`, `postgres_test`, `kafka_test`, `http_retry_test`
-- **CLI subcommands** — `cli_subcommands_test` covers `lint`, `dry-run`,
-  `test-connectivity`, and `validate-config`
-- **Errors & security** — `error_envelope_test`, `error_paths_test`,
-  `protocol_required_fields_test`, `secret_references_test` (env:// resolver),
-  `security_test`, `shutdown_test`
-- **Scenarios** — `scenario_api_gateway_test`, `scenario_ecommerce_test`,
-  `scenario_webhook_test` walk multi-step user journeys end-to-end
-- **OpenAPI** — `openapi_test` snapshots the generated spec to catch accidental breaks
-- **Function schemas** — `function_schema_test` verifies every workflow input schema
-
-Most tests use `tower::ServiceExt::oneshot()` against the in-memory router; no HTTP listener is started.
-
-## External Service Tests
-
-Some tests exercise real database and cache connectors (PostgreSQL, MySQL, MongoDB, Redis). These are marked `#[ignore]` so they are skipped during normal `cargo test` runs.
-
-### Start External Services
+Thematically: admin API CRUD/versioning/lifecycle for workflows, channels and
+connectors; data-plane routing and pipelines; the portable
+`data_query`/`data_write` dialects; resilience (rate limiting, dedup,
+response caching, circuit breakers, backpressure, drain/shutdown); async
+traces and the DLQ; security (auth, secret masking, SSRF, trace redaction);
+TLS (certificates are generated in-process with `rcgen`, so these always
+run); CLI subcommands; OpenAPI; and end-to-end scenario walks. For the full
+module-by-module list:
 
 ```bash
-docker compose -f docker-compose.test.yml up -d
+cargo test --test integration -- --list
 ```
 
-Wait for all services to become healthy:
+Filter by module name to run one file's tests:
 
 ```bash
-docker compose -f docker-compose.test.yml ps
+cargo test --test integration rest_routing_test
 ```
 
-### Run All External Tests
+## Container-Gated Tests
+
+Tests that need a real external service start their own ephemeral
+[testcontainers](https://rust.testcontainers.org/) (Postgres, MySQL, MongoDB,
+Elasticsearch, Redis, Kafka) — nothing to start manually, only Docker. They
+are `#[ignore]`d so the default run stays Docker-free:
 
 ```bash
-cargo test -- --ignored
+# Integration binary: portable-dialect round-trips, raw-SQL backends,
+# Mongo/ES connectors, Redis cache/dedup, Kafka channels
+cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test
+cargo test --test integration -- --ignored kafka_test
+
+# Orion's own storage on Postgres / MySQL
+cargo test --test storage_postgres -- --ignored
+cargo test --test storage_mysql -- --ignored
+
+# Multi-node cluster mode (two AppStates over shared Postgres + Redis)
+cargo test --test cluster -- --ignored --test-threads=1
 ```
 
-### Run a Specific External Test
-
-```bash
-cargo test test_postgres_db_write_and_read -- --ignored
-cargo test test_mysql -- --ignored
-cargo test test_redis -- --ignored
-cargo test test_mongo -- --ignored
-```
-
-### Run a Specific Test Module
-
-Since all tests share one binary, filter by the module name (the former file
-name) rather than a `--test` target:
-
-```bash
-cargo test postgres_test:: -- --ignored
-cargo test mysql_test:: -- --ignored
-cargo test connector_redis_test:: -- --ignored
-cargo test mongodb_test:: -- --ignored
-```
-
-### Stop External Services
-
-```bash
-docker compose -f docker-compose.test.yml down
-```
-
-## Service Ports
-
-| Service    | Port  | Credentials                  |
-|------------|-------|------------------------------|
-| PostgreSQL | 5432  | postgres / test              |
-| MySQL      | 3306  | root / test                  |
-| Redis      | 6379  | (no auth)                    |
-| MongoDB    | 27017 | (no auth)                    |
+CI runs exactly these invocations in the `integration-containers` job
+(`.github/workflows/ci.yml`); Kafka gets its own step because sharing one
+invocation with the other containers starves the brokers.
 
 ## Benchmarks
 
-Performance scenarios live in `tests/benchmark/` and use the [`hey`](https://github.com/rakyll/hey) HTTP load generator. Run all scenarios:
+Performance scenarios live in `tests/benchmark/` and use the
+[`hey`](https://github.com/rakyll/hey) HTTP load generator:
 
 ```bash
 BENCH_RELEASE=1 ./tests/benchmark/bench.sh
 ```
 
-Each run writes its results to `tests/benchmark/results/` next to the script — a `SUMMARY.md` (Markdown table) plus the raw per-scenario `hey` output. The directory is gitignored; results are local snapshots, not checked in. The headline numbers live in the README's [Performance](../README.md#performance) section.
+Each run writes a `SUMMARY.md` plus raw per-scenario `hey` output to
+`tests/benchmark/results/`. The directory is gitignored; results are local
+snapshots, not checked in. The headline numbers live in the README's
+[Performance](../README.md#performance) section.
