@@ -79,7 +79,7 @@ pub async fn admin_auth_middleware(
         return Ok(next.run(req).await);
     }
 
-    let token = extract_api_key(&req, &state.config.admin_auth)?;
+    let token = extract_api_key(req.headers(), &state.config.admin_auth)?;
 
     // Compare SHA-256 digests instead of raw keys: fixed width, so timing
     // reveals neither key length nor content (S11).
@@ -111,10 +111,30 @@ pub async fn admin_auth_middleware(
     Ok(next.run(req).await)
 }
 
-/// Extract the API key from the request based on the configured header.
-fn extract_api_key(req: &Request, config: &AdminAuthConfig) -> Result<String, OrionError> {
-    let header_value = req
-        .headers()
+/// True when the request headers present a valid admin credential. For
+/// surfaces that stay reachable without auth but serve a reduced body to
+/// anonymous callers (O9: `/health`'s topology detail). Failures are not an
+/// error here — they just mean "anonymous" — so nothing is logged or counted.
+pub(crate) fn headers_present_valid_key(
+    headers: &axum::http::HeaderMap,
+    config: &AdminAuthConfig,
+) -> bool {
+    let Ok(token) = extract_api_key(headers, config) else {
+        return false;
+    };
+    let presented: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+    config
+        .admin_keys()
+        .into_iter()
+        .any(|key| constant_time_eq(&presented, &key.digest))
+}
+
+/// Extract the API key from the request headers based on the configured header.
+fn extract_api_key(
+    headers: &axum::http::HeaderMap,
+    config: &AdminAuthConfig,
+) -> Result<String, OrionError> {
+    let header_value = headers
         .get(&config.header)
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| OrionError::Unauthorized(format!("Missing {} header", config.header)))?;

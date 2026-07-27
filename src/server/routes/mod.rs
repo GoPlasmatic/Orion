@@ -34,13 +34,23 @@ pub fn api_routes() -> Router<AppState> {
     get,
     path = "/health",
     tag = "Operational",
+    description = "\
+Detailed health report. Always reachable, but when `admin_auth.enabled` is \
+true the topology detail (`git_hash`, `build_timestamp`, `workflows_loaded`, \
+the circuit-breaker map, connector load failures and quarantined channels — \
+names and failure reasons) is included only for requests presenting a valid \
+admin credential; anonymous callers get status, version, uptime and coarse \
+per-component states. Probes should use `/healthz` and `/readyz`.",
     responses(
         (status = 200, description = "Service healthy"),
         (status = 503, description = "Service degraded"),
     )
 )]
-#[tracing::instrument(skip(state))]
-pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResponse {
+#[tracing::instrument(skip(state, headers))]
+pub(crate) async fn health_check(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
     let uptime = chrono::Utc::now() - state.start_time;
 
     // Check database connectivity
@@ -90,27 +100,39 @@ pub(crate) async fn health_check(State(state): State<AppState>) -> impl IntoResp
         StatusCode::SERVICE_UNAVAILABLE
     };
 
-    let body = json!({
+    // O9: names, failure reasons, build provenance and the breaker map are
+    // internal topology. They are served only when the caller could read the
+    // same detail from the admin plane anyway: either admin auth is disabled
+    // (dev — the whole admin API is open) or a valid admin key is presented.
+    // The coarse per-component states stay public so a monitor can see
+    // *that* something is degraded without learning *what*.
+    let auth_cfg = &state.config.admin_auth;
+    let show_detail = !auth_cfg.enabled
+        || crate::server::admin_auth::headers_present_valid_key(&headers, auth_cfg);
+
+    let mut body = json!({
         "status": status_str,
         "version": env!("CARGO_PKG_VERSION"),
-        "git_hash": env!("GIT_HASH"),
-        "build_timestamp": env!("BUILD_TIMESTAMP"),
         "uptime_seconds": uptime.num_seconds(),
-        "workflows_loaded": workflows_loaded,
         "components": {
             "database": if db_healthy { "ok" } else { "error" },
             "engine": if engine_healthy { "ok" } else { "error" },
             "connectors": if connector_issues.is_empty() { "ok" } else { "degraded" },
             "channels": if quarantined_channels.is_empty() { "ok" } else { "degraded" },
         },
-        "connectors": {
+    });
+    if show_detail {
+        body["git_hash"] = json!(env!("GIT_HASH"));
+        body["build_timestamp"] = json!(env!("BUILD_TIMESTAMP"));
+        body["workflows_loaded"] = json!(workflows_loaded);
+        body["connectors"] = json!({
             "circuit_breakers": cb_states,
             "failed_to_load": connector_issues,
-        },
-        "channels": {
+        });
+        body["channels"] = json!({
             "quarantined": quarantined_channels,
-        }
-    });
+        });
+    }
 
     (http_status, Json(body))
 }

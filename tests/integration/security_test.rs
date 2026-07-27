@@ -638,3 +638,76 @@ async fn test_metrics_endpoint_open_when_auth_disabled() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ============================================================
+// /health topology disclosure (O9)
+// ============================================================
+
+#[tokio::test]
+async fn test_health_hides_topology_from_anonymous_when_auth_enabled() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    let resp = app
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+
+    // Coarse signal stays public…
+    assert_eq!(body["status"], "ok");
+    assert!(body["components"]["database"].is_string());
+    // …but topology detail requires a credential (O9).
+    for key in [
+        "git_hash",
+        "build_timestamp",
+        "workflows_loaded",
+        "connectors",
+        "channels",
+    ] {
+        assert!(
+            body.get(key).is_none(),
+            "anonymous /health must not carry {key}, body={body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_health_serves_topology_with_admin_key() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["test-secret-key".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/health")
+        .header("Authorization", "Bearer test-secret-key")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(body["git_hash"].is_string());
+    assert!(body["connectors"]["circuit_breakers"].is_object());
+    assert!(body["channels"]["quarantined"].is_array());
+}
+
+#[tokio::test]
+async fn test_health_serves_topology_when_auth_disabled() {
+    // Auth off = the whole admin plane is open; /health hiding detail would
+    // protect nothing and would blind dev setups.
+    let app = common::test_app().await;
+
+    let resp = app
+        .oneshot(json_request("GET", "/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(body["git_hash"].is_string());
+    assert!(body["connectors"]["circuit_breakers"].is_object());
+}

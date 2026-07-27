@@ -2987,6 +2987,7 @@
         "tags": [
           "Operational"
         ],
+        "description": "Detailed health report. Always reachable, but when `admin_auth.enabled` is true the topology detail (`git_hash`, `build_timestamp`, `workflows_loaded`, the circuit-breaker map, connector load failures and quarantined channels — names and failure reasons) is included only for requests presenting a valid admin credential; anonymous callers get status, version, uptime and coarse per-component states. Probes should use `/healthz` and `/readyz`.",
         "operationId": "health_check",
         "responses": {
           "200": {
