@@ -79,6 +79,19 @@ impl TracingStorageConfig {
             TraceStorageMode::Batch => {
                 require_nonzero(self.max_pending as u64, "tracing.storage.max_pending")?;
                 require_nonzero(self.batch_size as u64, "tracing.storage.batch_size")?;
+                // Q8: the batch INSERT binds ~11 parameters per row and
+                // SQLite caps a statement at 32 766 binds — batch_size 3000
+                // made every flush fail, and the whole batch was discarded.
+                // 1000 rows ≈ 11 000 binds leaves comfortable headroom on
+                // every backend.
+                if self.batch_size > 1000 {
+                    return Err(OrionError::Config {
+                        message: "tracing.storage.batch_size must be <= 1000 (the batch \
+                                  INSERT binds ~11 parameters per row and SQLite caps a \
+                                  statement at 32 766 binds)"
+                            .to_string(),
+                    });
+                }
                 require_nonzero(
                     self.batch_flush_interval_ms,
                     "tracing.storage.batch_flush_interval_ms",
@@ -224,5 +237,29 @@ impl CorsConfig {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn batch_size_is_bounded_against_sqlite_bind_limit() {
+        // Q8: >1000 rows would exceed SQLITE_MAX_VARIABLE_NUMBER at ~11
+        // binds per row, making every flush fail (and, before Q6, silently
+        // discard the batch).
+        let config = TracingStorageConfig {
+            mode: TraceStorageMode::Batch,
+            batch_size: 1001,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        let config = TracingStorageConfig {
+            mode: TraceStorageMode::Batch,
+            batch_size: 1000,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
     }
 }

@@ -215,7 +215,7 @@ The async trace pipeline: `POST /{channel}/async` enqueues, workers execute, and
 | `queue.max_result_size_bytes` | `1048576` | `ORION_QUEUE__MAX_RESULT_SIZE_BYTES` | Raise for large results; oversized ones are rejected (sync) or failed (async). |
 | `queue.max_queue_memory_bytes` | `104857600` | `ORION_QUEUE__MAX_QUEUE_MEMORY_BYTES` | Total queued payload bytes before new submissions get `503`. |
 | `queue.dlq_retry_enabled` | `true` | `ORION_QUEUE__DLQ_RETRY_ENABLED` | Disable only to freeze the DLQ for inspection — note the `trace_dlq_depth` gauge stops updating with it. |
-| `queue.dlq_max_retries` | `5` | `ORION_QUEUE__DLQ_MAX_RETRIES` | Attempts before a row is marked exhausted. Must be ≥ 1; use `dlq_retry_enabled` to turn retries off. |
+| `queue.dlq_max_retries` | `5` | `ORION_QUEUE__DLQ_MAX_RETRIES` | Attempts before a row is marked exhausted. Must be 1–16 (backoff is 2^retries seconds); use `dlq_retry_enabled` to turn retries off. |
 | `queue.dlq_poll_interval_secs` | `30` | `ORION_QUEUE__DLQ_POLL_INTERVAL_SECS` | How often the retry worker polls. |
 | `queue.dlq_batch_size` | `20` | `ORION_QUEUE__DLQ_BATCH_SIZE` | Rows claimed per retry tick. Raise to drain a large backlog faster. |
 | `queue.dlq_lease_secs` | `60` | `ORION_QUEUE__DLQ_LEASE_SECS` | How long a claimed row stays leased to one node. |
@@ -425,7 +425,7 @@ Orion's own per-request trace records — rows in the `traces` table, read via `
 | `tracing.storage.async_on_overflow` | `"drop"` | `ORION_TRACING__STORAGE__ASYNC_ON_OVERFLOW` | `drop` or `block`. `block` applies backpressure to the request path. |
 | `tracing.storage.overflow_block_timeout_ms` | `100` | `ORION_TRACING__STORAGE__OVERFLOW_BLOCK_TIMEOUT_MS` | How long `block` waits for capacity before dropping anyway. |
 | `tracing.storage.async_workers` | `4` | `ORION_TRACING__STORAGE__ASYNC_WORKERS` | Worker count in `async` mode. |
-| `tracing.storage.batch_size` | `100` | `ORION_TRACING__STORAGE__BATCH_SIZE` | Rows per transaction in `batch` mode. |
+| `tracing.storage.batch_size` | `100` | `ORION_TRACING__STORAGE__BATCH_SIZE` | Rows per transaction in `batch` mode. Max 1000 — the batch INSERT binds ~11 parameters per row against SQLite's 32 766-bind statement cap. |
 | `tracing.storage.batch_flush_interval_ms` | `100` | `ORION_TRACING__STORAGE__BATCH_FLUSH_INTERVAL_MS` | How long a partial batch waits before flushing. |
 | `tracing.storage.batch_workers` | `4` | `ORION_TRACING__STORAGE__BATCH_WORKERS` | Worker count in `batch` mode; each owns an independent batch. |
 
