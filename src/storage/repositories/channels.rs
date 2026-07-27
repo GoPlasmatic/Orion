@@ -15,7 +15,7 @@ use super::helpers::{
     clamp_pagination, count_where, ensure_absent, fetch_required, fetch_required_tx,
     optional_string_value, parse_sort_order,
 };
-use super::workflows::PaginatedResult;
+use super::helpers::PaginatedResult;
 
 // -- DTOs --
 

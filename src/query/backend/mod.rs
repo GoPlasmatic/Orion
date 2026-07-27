@@ -5,7 +5,26 @@ pub mod es;
 pub mod mongo;
 pub mod sql;
 
+use crate::query::error::QueryError;
 use crate::storage::DbBackend;
+
+/// Resolve the effective page size: an explicit `limit` above `max_limit` is
+/// an error, no `limit` means the default clamped to the max. All three
+/// renderers share this so page-size policy cannot differ per backend.
+pub(crate) fn resolve_limit(
+    requested: Option<u64>,
+    default_limit: u64,
+    max_limit: u64,
+) -> Result<u64, QueryError> {
+    match requested {
+        Some(l) if l > max_limit => Err(QueryError::LimitExceeded {
+            requested: l,
+            max: max_limit,
+        }),
+        Some(l) => Ok(l),
+        None => Ok(default_limit.min(max_limit)),
+    }
+}
 
 /// The SQL dialect to render for. Chosen from the *connector's* connection-string
 /// scheme (via [`crate::storage::detect_backend`]) — never Orion's own storage

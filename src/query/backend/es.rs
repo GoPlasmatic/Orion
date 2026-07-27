@@ -39,16 +39,7 @@ pub fn render(
     default_limit: u64,
     max_limit: u64,
 ) -> Result<EsQuery, QueryError> {
-    let size = match spec.limit {
-        Some(l) if l > max_limit => {
-            return Err(QueryError::LimitExceeded {
-                requested: l,
-                max: max_limit,
-            });
-        }
-        Some(l) => l,
-        None => default_limit.min(max_limit),
-    };
+    let size = super::resolve_limit(spec.limit, default_limit, max_limit)?;
     let from = spec.skip.unwrap_or(0);
     if from.saturating_add(size) > MAX_RESULT_WINDOW {
         return Err(QueryError::FeatureUnsupportedByTarget {

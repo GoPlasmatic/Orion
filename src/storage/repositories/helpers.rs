@@ -1,5 +1,17 @@
+use serde::Serialize;
+
 use crate::errors::OrionError;
 use crate::storage::{DbPool, DbTransaction};
+
+/// One page of repository results plus the paging bookkeeping every admin
+/// list endpoint returns. Shared by all repositories.
+#[derive(Debug, Serialize)]
+pub struct PaginatedResult<T> {
+    pub data: Vec<T>,
+    pub total: i64,
+    pub limit: i64,
+    pub offset: i64,
+}
 
 /// Converts an `Option<&str>` to a `sea_query::Value::String`, mapping `None`
 /// to a SQL NULL string.  Replaces the repetitive

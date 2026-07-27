@@ -34,7 +34,7 @@ pub fn paginated_response<T: Serialize>(
 ///  Ok(paginated_response(data, result.total, result.limit, result.offset))`
 /// in admin list handlers.
 pub fn paginated_into<T, R, E>(
-    result: crate::storage::repositories::workflows::PaginatedResult<T>,
+    result: crate::storage::repositories::helpers::PaginatedResult<T>,
     map_fn: impl Fn(&T) -> Result<R, E>,
 ) -> Result<Json<Value>, E>
 where

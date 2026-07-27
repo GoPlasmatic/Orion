@@ -36,16 +36,7 @@ pub fn render(
     default_limit: u64,
     max_limit: u64,
 ) -> Result<MongoQuery, QueryError> {
-    let limit = match spec.limit {
-        Some(l) if l > max_limit => {
-            return Err(QueryError::LimitExceeded {
-                requested: l,
-                max: max_limit,
-            });
-        }
-        Some(l) => l,
-        None => default_limit.min(max_limit),
-    };
+    let limit = super::resolve_limit(spec.limit, default_limit, max_limit)?;
 
     let filter = match cond {
         Cond::True => Document::new(),

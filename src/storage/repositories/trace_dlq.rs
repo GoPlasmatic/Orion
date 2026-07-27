@@ -6,7 +6,7 @@ use crate::storage::models::TraceDlqEntry;
 use crate::storage::schema::TraceDlq;
 use crate::storage::{DbPool, build_sqlx};
 
-use super::workflows::PaginatedResult;
+use super::helpers::PaginatedResult;
 
 // -- DTOs --
 

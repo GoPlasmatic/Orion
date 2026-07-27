@@ -4,7 +4,7 @@ use sea_query::{Asterisk, Condition, Expr, Order, Query, SimpleExpr};
 
 use crate::errors::OrionError;
 use crate::storage::models::AuditLogEntry;
-use crate::storage::repositories::workflows::PaginatedResult;
+use super::helpers::PaginatedResult;
 use crate::storage::schema::AuditLogs;
 use crate::storage::{DbPool, build_sqlx};
 

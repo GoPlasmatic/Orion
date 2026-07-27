@@ -231,7 +231,7 @@ mod tests {
     use crate::storage::models::{Trace, TraceDlqEntry};
     use crate::storage::repositories::trace_dlq::TraceDlqRepository;
     use crate::storage::repositories::traces::TraceRepository;
-    use crate::storage::repositories::workflows::PaginatedResult;
+    use crate::storage::repositories::helpers::PaginatedResult;
     use async_trait::async_trait;
     use std::sync::Mutex;
 

@@ -107,20 +107,7 @@ pub fn json_key_to_sea(v: &serde_json::Value) -> Option<SeaValue> {
     }
 }
 
-fn resolve_limit(
-    requested: Option<u64>,
-    default_limit: u64,
-    max_limit: u64,
-) -> Result<u64, QueryError> {
-    match requested {
-        Some(l) if l > max_limit => Err(QueryError::LimitExceeded {
-            requested: l,
-            max: max_limit,
-        }),
-        Some(l) => Ok(l),
-        None => Ok(default_limit.min(max_limit)),
-    }
-}
+use super::resolve_limit;
 
 /// Render a `Cond` as a single boolean `SimpleExpr`. Composing on `SimpleExpr`
 /// (rather than `Condition`) keeps `and`/`or`/`not`, EXISTS subqueries, and the

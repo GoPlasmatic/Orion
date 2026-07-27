@@ -1,11 +1,11 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
-use sea_query::{Asterisk, Condition, Expr, Func, Query};
+use sea_query::{Asterisk, Condition, Expr, Query};
 use serde::Deserialize;
 
 use crate::errors::OrionError;
 use crate::storage::models::{self, Trace};
-use crate::storage::repositories::workflows::PaginatedResult;
+use super::helpers::PaginatedResult;
 use crate::storage::{build_sqlx, schema::Traces};
 
 #[derive(Debug, Default, Deserialize)]
@@ -46,6 +46,60 @@ pub struct TraceResultRow {
     /// Optional per-task execution trace JSON. Populated only when the
     /// channel has `config.tracing.task_details = true` (A2).
     pub task_trace_json: Option<String>,
+}
+
+/// The 11 columns every completed-trace INSERT writes. The singular and batch
+/// paths share this (and [`completed_values`]) so they cannot diverge.
+fn completed_columns() -> [Traces; 11] {
+    [
+        Traces::Id,
+        Traces::Status,
+        Traces::Channel,
+        Traces::ChannelId,
+        Traces::Mode,
+        Traces::InputJson,
+        Traces::ResultJson,
+        Traces::DurationMs,
+        Traces::StartedAt,
+        Traces::CompletedAt,
+        Traces::TaskTraceJson,
+    ]
+}
+
+/// One completed-trace row's values, in [`completed_columns`] order.
+fn completed_values(
+    row: &TraceCompletedRow,
+    id: &str,
+    now: chrono::NaiveDateTime,
+) -> [sea_query::SimpleExpr; 11] {
+    let input_val = super::helpers::optional_string_value(row.input_json.as_deref());
+    let task_trace_val = super::helpers::optional_string_value(row.task_trace_json.as_deref());
+    let channel_id_val = super::helpers::optional_string_value(row.channel_id.as_deref());
+    [
+        Expr::val(id).into(),
+        Expr::val("completed").into(),
+        Expr::val(row.channel.as_str()).into(),
+        Expr::val(channel_id_val).into(),
+        Expr::val(row.mode.as_str()).into(),
+        Expr::val(input_val).into(),
+        Expr::val(row.result_json.as_str()).into(),
+        Expr::val(row.duration_ms).into(),
+        Expr::val(now).into(),
+        Expr::val(now).into(),
+        Expr::val(task_trace_val).into(),
+    ]
+}
+
+/// The UPDATE both result-write paths share, for the same reason.
+fn result_update(row: &TraceResultRow) -> sea_query::UpdateStatement {
+    let task_trace_val = super::helpers::optional_string_value(row.task_trace_json.as_deref());
+    Query::update()
+        .table(Traces::Table)
+        .value(Traces::ResultJson, row.result_json.as_str())
+        .value(Traces::DurationMs, row.duration_ms)
+        .value(Traces::TaskTraceJson, task_trace_val)
+        .and_where(Expr::col(Traces::Id).eq(row.id.as_str()))
+        .to_owned()
 }
 
 // -- Repository trait --
@@ -264,16 +318,13 @@ impl TraceRepository for SqlTraceRepository {
         task_trace_json: Option<&str>,
     ) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("traces.set_result", async {
-            let task_trace_val = super::helpers::optional_string_value(task_trace_json);
-            let (sql, values) = build_sqlx(
-                Query::update()
-                    .table(Traces::Table)
-                    .value(Traces::ResultJson, result_json)
-                    .value(Traces::DurationMs, duration_ms)
-                    .value(Traces::TaskTraceJson, task_trace_val)
-                    .and_where(Expr::col(Traces::Id).eq(id)),
-            );
-
+            let row = TraceResultRow {
+                id: id.to_string(),
+                result_json: result_json.to_string(),
+                duration_ms,
+                task_trace_json: task_trace_json.map(str::to_string),
+            };
+            let (sql, values) = build_sqlx(&mut result_update(&row));
             self.pool.execute_query(&sql, values).await?;
             Ok(())
         })
@@ -293,40 +344,21 @@ impl TraceRepository for SqlTraceRepository {
         crate::metrics::timed_db_op("traces.store_completed", async {
             let id = uuid::Uuid::new_v4().to_string();
             let now = chrono::Utc::now().naive_utc();
-
-            let input_val = super::helpers::optional_string_value(input_json);
-            let task_trace_val = super::helpers::optional_string_value(task_trace_json);
-            let channel_id_val = super::helpers::optional_string_value(channel_id);
+            let row = TraceCompletedRow {
+                channel: channel.to_string(),
+                channel_id: channel_id.map(str::to_string),
+                mode: mode.to_string(),
+                input_json: input_json.map(str::to_string),
+                result_json: result_json.to_string(),
+                duration_ms,
+                task_trace_json: task_trace_json.map(str::to_string),
+            };
 
             let (sql, values) = build_sqlx(
                 Query::insert()
                     .into_table(Traces::Table)
-                    .columns([
-                        Traces::Id,
-                        Traces::Status,
-                        Traces::Channel,
-                        Traces::ChannelId,
-                        Traces::Mode,
-                        Traces::InputJson,
-                        Traces::ResultJson,
-                        Traces::DurationMs,
-                        Traces::StartedAt,
-                        Traces::CompletedAt,
-                        Traces::TaskTraceJson,
-                    ])
-                    .values_panic([
-                        Expr::val(id.as_str()).into(),
-                        Expr::val("completed").into(),
-                        Expr::val(channel).into(),
-                        Expr::val(channel_id_val).into(),
-                        Expr::val(mode).into(),
-                        Expr::val(input_val).into(),
-                        Expr::val(result_json).into(),
-                        Expr::val(duration_ms).into(),
-                        Expr::val(now).into(),
-                        Expr::val(now).into(),
-                        Expr::val(task_trace_val).into(),
-                    ]),
+                    .columns(completed_columns())
+                    .values_panic(completed_values(&row, &id, now)),
             );
 
             self.pool.execute_query(&sql, values).await?;
@@ -347,39 +379,12 @@ impl TraceRepository for SqlTraceRepository {
             let now = chrono::Utc::now().naive_utc();
             let mut ids = Vec::with_capacity(rows.len());
             let mut insert = Query::insert();
-            insert.into_table(Traces::Table).columns([
-                Traces::Id,
-                Traces::Status,
-                Traces::Channel,
-                Traces::ChannelId,
-                Traces::Mode,
-                Traces::InputJson,
-                Traces::ResultJson,
-                Traces::DurationMs,
-                Traces::StartedAt,
-                Traces::CompletedAt,
-                Traces::TaskTraceJson,
-            ]);
+            insert
+                .into_table(Traces::Table)
+                .columns(completed_columns());
             for row in rows {
                 let id = uuid::Uuid::new_v4().to_string();
-                let input_val = super::helpers::optional_string_value(row.input_json.as_deref());
-                let task_trace_val =
-                    super::helpers::optional_string_value(row.task_trace_json.as_deref());
-                let channel_id_val =
-                    super::helpers::optional_string_value(row.channel_id.as_deref());
-                insert.values_panic([
-                    Expr::val(id.as_str()).into(),
-                    Expr::val("completed").into(),
-                    Expr::val(row.channel.as_str()).into(),
-                    Expr::val(channel_id_val).into(),
-                    Expr::val(row.mode.as_str()).into(),
-                    Expr::val(input_val).into(),
-                    Expr::val(row.result_json.as_str()).into(),
-                    Expr::val(row.duration_ms).into(),
-                    Expr::val(now).into(),
-                    Expr::val(now).into(),
-                    Expr::val(task_trace_val).into(),
-                ]);
+                insert.values_panic(completed_values(row, &id, now));
                 ids.push(id);
             }
             let (sql, values) = build_sqlx(&mut insert);
@@ -397,16 +402,7 @@ impl TraceRepository for SqlTraceRepository {
         crate::metrics::timed_db_op("traces.set_result_batch", async {
             let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
             for row in rows {
-                let task_trace_val =
-                    super::helpers::optional_string_value(row.task_trace_json.as_deref());
-                let (sql, values) = build_sqlx(
-                    Query::update()
-                        .table(Traces::Table)
-                        .value(Traces::ResultJson, row.result_json.as_str())
-                        .value(Traces::DurationMs, row.duration_ms)
-                        .value(Traces::TaskTraceJson, task_trace_val)
-                        .and_where(Expr::col(Traces::Id).eq(row.id.as_str())),
-                );
+                let (sql, values) = build_sqlx(&mut result_update(row));
                 tx.execute_query(&sql, values).await?;
             }
             tx.commit().await.map_err(OrionError::Storage)?;
@@ -434,14 +430,8 @@ impl TraceRepository for SqlTraceRepository {
                 cond = cond.add(Expr::col(Traces::Mode).eq(mode.as_str()));
             }
 
-            // COUNT query
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .expr(Func::count(Expr::col(Asterisk)))
-                    .from(Traces::Table)
-                    .cond_where(cond.clone()),
-            );
-            let (total,): (i64,) = self.pool.fetch_one_as::<(i64,)>(&sql, values).await?;
+            let total =
+                super::helpers::count_where(&self.pool, Traces::Table, cond.clone()).await?;
 
             // Sort column mapping
             let sort_iden = match filter.sort_by.as_deref() {

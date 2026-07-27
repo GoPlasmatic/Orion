@@ -16,13 +16,7 @@ use super::helpers::{
     optional_string_value, parse_sort_order,
 };
 
-#[derive(Debug, Serialize)]
-pub struct PaginatedResult<T> {
-    pub data: Vec<T>,
-    pub total: i64,
-    pub limit: i64,
-    pub offset: i64,
-}
+pub use super::helpers::PaginatedResult;
 
 // -- DTOs --
 

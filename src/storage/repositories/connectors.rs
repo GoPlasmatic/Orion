@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use crate::errors::OrionError;
 use crate::storage::models::Connector;
-use crate::storage::repositories::workflows::PaginatedResult;
+use super::helpers::PaginatedResult;
 use crate::storage::{build_sqlx, schema::Connectors};
 
 // -- DTOs --
