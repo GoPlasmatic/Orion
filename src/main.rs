@@ -428,23 +428,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Init database. With auto_migrate = false (multi-replica deploys) a
     // stale schema is a hard startup error — a replica must never serve
     // against pending migrations; `orion-server migrate` is the deploy step.
-    let pool = if config.storage.auto_migrate {
-        orion::storage::init_pool(&config.storage).await?
-    } else {
-        let pool = orion::storage::init_pool_no_migrate(&config.storage).await?;
-        let pending = orion::storage::pending_migrations(&pool).await?;
-        if !pending.is_empty() {
-            return Err(orion::errors::OrionError::Config {
-                message: format!(
-                    "{} pending migration(s) and storage.auto_migrate = false — \
-                     run `orion-server migrate` first",
-                    pending.len()
-                ),
-            }
-            .into());
-        }
-        pool
-    };
+    let pool = orion::storage::init_pool_for_startup(&config.storage).await?;
     tracing::info!(path = %config.storage.url, "Database initialized");
     if config.cluster.enabled && config.storage.auto_migrate {
         tracing::warn!(

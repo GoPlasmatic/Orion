@@ -297,6 +297,31 @@ pub async fn init_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
     Ok(pool)
 }
 
+/// Initialize the pool the way the server does at boot.
+///
+/// With `auto_migrate = false` (the multi-replica deploy shape) a stale schema
+/// is a hard startup error — a replica must never serve against pending
+/// migrations. `orion-server migrate` is the deploy step that clears it, and
+/// this refusal is what the Helm pre-upgrade Job and the compose `migrate`
+/// service rely on. Kept out of `main` so it is reachable from tests (T5).
+pub async fn init_pool_for_startup(config: &StorageConfig) -> Result<DbPool, OrionError> {
+    if config.auto_migrate {
+        return init_pool(config).await;
+    }
+    let pool = init_pool_no_migrate(config).await?;
+    let pending = pending_migrations(&pool).await?;
+    if !pending.is_empty() {
+        return Err(OrionError::Config {
+            message: format!(
+                "{} pending migration(s) and storage.auto_migrate = false — \
+                 run `orion-server migrate` first",
+                pending.len()
+            ),
+        });
+    }
+    Ok(pool)
+}
+
 /// Initialize the database connection pool without running migrations.
 pub async fn init_pool_no_migrate(config: &StorageConfig) -> Result<DbPool, OrionError> {
     let backend = detect_backend(&config.url)?;

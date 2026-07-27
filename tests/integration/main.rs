@@ -42,6 +42,7 @@ mod es_test;
 mod function_schema_test;
 mod ingress_guards_test;
 mod kafka_test;
+mod migration_guard_test;
 mod mongodb_test;
 mod mysql_test;
 mod openapi_test;
