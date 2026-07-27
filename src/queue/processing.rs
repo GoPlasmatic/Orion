@@ -203,28 +203,15 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // the duration of processing; released on return.
     let _backpressure_permit = msg.backpressure_permit.take();
 
-    let ProcessingContext {
-        engine,
-        trace_repo,
-        dlq_repo,
-        processing_timeout_ms,
-        max_result_size_bytes,
-        dlq_max_retries,
-        rollout_sticky_header,
-        channel_registry,
-        persistence_queue,
-        global_trace_storage,
-    } = ctx;
-
     // Resolve effective trace-storage config for this channel (channel
     // override > global default). In `Off` mode skip all trace writes; the
     // workflow still runs but no DB rows are touched.
-    let channel_runtime = channel_registry.get_by_name(&msg.channel).await;
+    let channel_runtime = ctx.channel_registry.get_by_name(&msg.channel).await;
     // O1: unregistered channel names (arbitrary path segments on the async
     // route) must not become Prometheus label values.
     let channel_registered = channel_runtime.is_some();
     let effective_trace = channel_runtime.map(|c| c.trace_storage).unwrap_or_else(|| {
-        crate::channel::registry::EffectiveTraceConfig::resolve(&global_trace_storage, None)
+        crate::channel::registry::EffectiveTraceConfig::resolve(&ctx.global_trace_storage, None)
     });
     let trace_mode = effective_trace.mode;
     // Restore W3C trace context from the originating request so this span
@@ -249,69 +236,34 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
 
     // Mark as running. In sync mode this blocks; in async/batch it enqueues;
     // in off mode it's a no-op since no DB row exists.
-    if matches!(trace_mode, TraceStorageMode::Sync) {
-        if let Err(e) = trace_repo
-            .update_status(&trace_id, models::TRACE_STATUS_RUNNING, None)
-            .await
-        {
-            // Q5: a transient DB error here used to drop the message
-            // entirely — trace stuck `pending` forever, work silently
-            // undone. Route it through the DLQ instead so the retry
-            // worker re-runs it once the DB recovers. Best-effort: the
-            // enqueue writes to the same DB, but it happens later and
-            // retries again from the DLQ poll loop.
-            tracing::error!(
-                trace_id = %trace_id,
-                error = %e,
-                "Failed to update trace status to running — routing to DLQ"
-            );
-            metrics::record_error("trace_status_write");
-            enqueue_dlq_row(
-                &dlq_repo,
-                &payload_json_for_dlq,
-                &metadata_json_for_dlq,
-                &trace_id,
-                &channel,
-                &format!("Failed to mark trace running: {e}"),
-                dlq_retry_count,
-                dlq_max_retries,
-            )
-            .await;
-            let _ = trace_repo
-                .update_status(
-                    &trace_id,
-                    models::TRACE_STATUS_FAILED,
-                    Some("Could not start processing; routed to DLQ"),
-                )
-                .await;
-            return;
-        }
-    } else if matches!(
+    if !mark_running(
+        &ctx,
         trace_mode,
-        TraceStorageMode::Async | TraceStorageMode::Batch
-    ) {
-        persistence_queue
-            .submit(crate::queue::TracePersistenceTask::UpdateStatus {
-                id: trace_id.clone(),
-                status: models::TRACE_STATUS_RUNNING.to_string(),
-                error_message: None,
-            })
-            .await;
+        &trace_id,
+        &channel,
+        &payload_json_for_dlq,
+        &metadata_json_for_dlq,
+        dlq_retry_count,
+    )
+    .await
+    {
+        return;
     }
 
     // Build message
     let mut message = dataflow_rs::Message::from_value(&msg.payload);
     crate::engine::utils::merge_metadata(&mut message, &msg.metadata);
     let sticky_identity =
-        crate::engine::utils::rollout_identity(&msg.metadata, &rollout_sticky_header);
+        crate::engine::utils::rollout_identity(&msg.metadata, &ctx.rollout_sticky_header);
     crate::engine::utils::inject_rollout_bucket(&mut message, sticky_identity);
 
     // Clone the inner Arc<Engine> and release the lock immediately
-    let engine_ref = crate::engine::acquire_engine_read(&engine).await;
+    let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
     // A2: capture the per-task execution trace when the channel opted in via
     // `config.tracing.task_details = true`. Both arms resolve to the same
     // `(Result, Option<ExecutionTrace>)` shape so the timeout handling is shared.
     let capture_trace = effective_trace.task_details;
+    let processing_timeout_ms = ctx.processing_timeout_ms;
     let workflow_start = Instant::now();
     let timeout_outcome = crate::engine::run_for_channel(
         &engine_ref,
@@ -344,7 +296,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     };
     let task_trace_json = crate::engine::utils::serialize_task_trace_capped(
         task_trace.as_ref(),
-        max_result_size_bytes,
+        ctx.max_result_size_bytes,
         &trace_id,
     );
 
@@ -376,157 +328,277 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
             metrics::record_message_duration(metrics_channel, duration_secs);
             metrics::record_channel_execution(metrics_channel);
 
-            let result_json = match serialize_result_with_profile(&message, profile.as_ref()) {
-                Ok(json) => json,
-                Err(e) => {
-                    tracing::error!(trace_id = %trace_id, error = %e, "Failed to serialize trace result");
-                    route_set_trace_status(
-                        trace_mode,
-                        trace_repo.as_ref(),
-                        &persistence_queue,
-                        &trace_id,
-                        models::TRACE_STATUS_FAILED,
-                        Some(&format!("Result serialization failed: {e}")),
-                    )
-                    .await;
-                    return;
-                }
-            };
-
-            // Enforce result size limit
-            if max_result_size_bytes > 0 && result_json.len() > max_result_size_bytes {
-                tracing::warn!(
-                    trace_id = %trace_id,
-                    result_bytes = result_json.len(),
-                    limit_bytes = max_result_size_bytes,
-                    "Trace result exceeds size limit"
-                );
-                metrics::record_error("result_size_exceeded");
-                route_set_trace_status(
-                    trace_mode,
-                    trace_repo.as_ref(),
-                    &persistence_queue,
-                    &trace_id,
-                    models::TRACE_STATUS_FAILED,
-                    Some(&format!(
-                        "Result size {} bytes exceeds limit of {} bytes",
-                        result_json.len(),
-                        max_result_size_bytes
-                    )),
-                )
-                .await;
-                return;
-            }
-
-            // Apply filters via the shared `EffectiveTraceConfig::should_drop`.
-            // This branch handles the success path → no errors.
-            let should_persist_result = match effective_trace.should_drop(false) {
-                Some(reason) => {
-                    metrics::record_trace_dropped(reason);
-                    false
-                }
-                None => true,
-            };
-
-            let result_saved = if !should_persist_result {
-                // Treat as saved for state-machine purposes — we won't write,
-                // but we also don't want to mark FAILED.
-                true
-            } else if route_set_result(
-                trace_mode,
-                &persistence_queue,
+            persist_success(
+                &ctx,
+                &effective_trace,
                 &trace_id,
-                result_json.clone(),
+                &message,
+                profile.as_ref(),
                 duration_ms,
-                task_trace_json.clone(),
+                task_trace_json,
             )
-            .await
-            {
-                // Async / batch / off: the queue accepted (or off mode skipped).
-                true
-            } else {
-                // Sync mode: retry inline with backoff.
-                let mut ok = false;
-                for attempt in 0..3 {
-                    match trace_repo
-                        .set_result(
-                            &trace_id,
-                            &result_json,
-                            duration_ms,
-                            task_trace_json.as_deref(),
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            ok = true;
-                            break;
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                trace_id = %trace_id, error = %e, attempt = attempt + 1,
-                                "Failed to save trace result, retrying"
-                            );
-                            tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
-                        }
-                    }
-                }
-                ok
-            };
-
-            if result_saved {
-                route_set_trace_status(
-                    trace_mode,
-                    trace_repo.as_ref(),
-                    &persistence_queue,
-                    &trace_id,
-                    models::TRACE_STATUS_COMPLETED,
-                    None,
-                )
-                .await;
-            } else {
-                tracing::error!(trace_id = %trace_id, "Failed to save trace result after 3 attempts, marking as failed");
-                route_set_trace_status(
-                    trace_mode,
-                    trace_repo.as_ref(),
-                    &persistence_queue,
-                    &trace_id,
-                    models::TRACE_STATUS_FAILED,
-                    Some("Result persistence failed after retries"),
-                )
-                .await;
-            }
+            .await;
         }
         Err(e) => {
             metrics::record_message(metrics_channel, "error");
             metrics::record_error("engine");
 
-            let error_str = e.to_string();
-            route_set_trace_status(
+            handle_failure(
+                &ctx,
                 trace_mode,
-                trace_repo.as_ref(),
-                &persistence_queue,
-                &trace_id,
-                models::TRACE_STATUS_FAILED,
-                Some(&error_str),
-            )
-            .await;
-
-            // Enqueue to DLQ for retry. The new row starts at the retry count
-            // this message's lineage already spent, so `dlq_max_retries`
-            // converges instead of resetting on every failure (Q3).
-            enqueue_dlq_row(
-                &dlq_repo,
-                &payload_json_for_dlq,
-                &metadata_json_for_dlq,
                 &trace_id,
                 &channel,
-                &error_str,
+                &e.to_string(),
+                &payload_json_for_dlq,
+                &metadata_json_for_dlq,
                 dlq_retry_count,
-                dlq_max_retries,
             )
             .await;
         }
     }
+}
+
+/// Mark the trace as running before the engine runs. The sync mode writes
+/// inline; async/batch enqueue and off is a no-op, via the non-sync arms of
+/// [`route_set_trace_status`]. Returns `false` when processing must stop:
+/// a failed sync-mode write routes the message to the DLQ (Q5) instead of
+/// dropping it, so the retry worker re-runs it once the DB recovers.
+async fn mark_running(
+    ctx: &ProcessingContext,
+    trace_mode: TraceStorageMode,
+    trace_id: &str,
+    channel: &str,
+    payload_json_for_dlq: &Option<String>,
+    metadata_json_for_dlq: &Option<String>,
+    dlq_retry_count: i64,
+) -> bool {
+    if matches!(trace_mode, TraceStorageMode::Sync) {
+        if let Err(e) = ctx
+            .trace_repo
+            .update_status(trace_id, models::TRACE_STATUS_RUNNING, None)
+            .await
+        {
+            // Q5: a transient DB error here used to drop the message
+            // entirely — trace stuck `pending` forever, work silently
+            // undone. Route it through the DLQ instead so the retry
+            // worker re-runs it once the DB recovers. Best-effort: the
+            // enqueue writes to the same DB, but it happens later and
+            // retries again from the DLQ poll loop.
+            tracing::error!(
+                trace_id = %trace_id,
+                error = %e,
+                "Failed to update trace status to running — routing to DLQ"
+            );
+            metrics::record_error("trace_status_write");
+            enqueue_dlq_row(
+                &ctx.dlq_repo,
+                payload_json_for_dlq,
+                metadata_json_for_dlq,
+                trace_id,
+                channel,
+                &format!("Failed to mark trace running: {e}"),
+                dlq_retry_count,
+                ctx.dlq_max_retries,
+            )
+            .await;
+            let _ = ctx
+                .trace_repo
+                .update_status(
+                    trace_id,
+                    models::TRACE_STATUS_FAILED,
+                    Some("Could not start processing; routed to DLQ"),
+                )
+                .await;
+            return false;
+        }
+    } else {
+        route_set_trace_status(
+            trace_mode,
+            ctx.trace_repo.as_ref(),
+            &ctx.persistence_queue,
+            trace_id,
+            models::TRACE_STATUS_RUNNING,
+            None,
+        )
+        .await;
+    }
+    true
+}
+
+/// The success arm of [`process_trace`]: serialize the finished message
+/// (embedding the profile when requested), enforce the result size limit,
+/// route the result write through the configured persistence mode (with
+/// inline retries in sync mode), and set the final trace status.
+async fn persist_success(
+    ctx: &ProcessingContext,
+    effective_trace: &crate::channel::registry::EffectiveTraceConfig,
+    trace_id: &str,
+    message: &dataflow_rs::Message,
+    profile: Option<&Arc<crate::engine::profile::ProfileCollector>>,
+    duration_ms: f64,
+    task_trace_json: Option<String>,
+) {
+    let trace_mode = effective_trace.mode;
+
+    let result_json = match serialize_result_with_profile(message, profile) {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!(trace_id = %trace_id, error = %e, "Failed to serialize trace result");
+            route_set_trace_status(
+                trace_mode,
+                ctx.trace_repo.as_ref(),
+                &ctx.persistence_queue,
+                trace_id,
+                models::TRACE_STATUS_FAILED,
+                Some(&format!("Result serialization failed: {e}")),
+            )
+            .await;
+            return;
+        }
+    };
+
+    // Enforce result size limit
+    if ctx.max_result_size_bytes > 0 && result_json.len() > ctx.max_result_size_bytes {
+        tracing::warn!(
+            trace_id = %trace_id,
+            result_bytes = result_json.len(),
+            limit_bytes = ctx.max_result_size_bytes,
+            "Trace result exceeds size limit"
+        );
+        metrics::record_error("result_size_exceeded");
+        route_set_trace_status(
+            trace_mode,
+            ctx.trace_repo.as_ref(),
+            &ctx.persistence_queue,
+            trace_id,
+            models::TRACE_STATUS_FAILED,
+            Some(&format!(
+                "Result size {} bytes exceeds limit of {} bytes",
+                result_json.len(),
+                ctx.max_result_size_bytes
+            )),
+        )
+        .await;
+        return;
+    }
+
+    // Apply filters via the shared `EffectiveTraceConfig::should_drop`.
+    // This branch handles the success path → no errors.
+    let should_persist_result = match effective_trace.should_drop(false) {
+        Some(reason) => {
+            metrics::record_trace_dropped(reason);
+            false
+        }
+        None => true,
+    };
+
+    let result_saved = if !should_persist_result {
+        // Treat as saved for state-machine purposes — we won't write,
+        // but we also don't want to mark FAILED.
+        true
+    } else if route_set_result(
+        trace_mode,
+        &ctx.persistence_queue,
+        trace_id,
+        result_json.clone(),
+        duration_ms,
+        task_trace_json.clone(),
+    )
+    .await
+    {
+        // Async / batch / off: the queue accepted (or off mode skipped).
+        true
+    } else {
+        // Sync mode: retry inline with backoff.
+        let mut ok = false;
+        for attempt in 0..3 {
+            match ctx
+                .trace_repo
+                .set_result(
+                    trace_id,
+                    &result_json,
+                    duration_ms,
+                    task_trace_json.as_deref(),
+                )
+                .await
+            {
+                Ok(_) => {
+                    ok = true;
+                    break;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        trace_id = %trace_id, error = %e, attempt = attempt + 1,
+                        "Failed to save trace result, retrying"
+                    );
+                    tokio::time::sleep(Duration::from_millis(100 * (attempt + 1))).await;
+                }
+            }
+        }
+        ok
+    };
+
+    if result_saved {
+        route_set_trace_status(
+            trace_mode,
+            ctx.trace_repo.as_ref(),
+            &ctx.persistence_queue,
+            trace_id,
+            models::TRACE_STATUS_COMPLETED,
+            None,
+        )
+        .await;
+    } else {
+        tracing::error!(trace_id = %trace_id, "Failed to save trace result after 3 attempts, marking as failed");
+        route_set_trace_status(
+            trace_mode,
+            ctx.trace_repo.as_ref(),
+            &ctx.persistence_queue,
+            trace_id,
+            models::TRACE_STATUS_FAILED,
+            Some("Result persistence failed after retries"),
+        )
+        .await;
+    }
+}
+
+/// The failure arm of [`process_trace`]: mark the trace failed through the
+/// configured persistence mode and enqueue the message to the DLQ for retry.
+#[allow(clippy::too_many_arguments)]
+async fn handle_failure(
+    ctx: &ProcessingContext,
+    trace_mode: TraceStorageMode,
+    trace_id: &str,
+    channel: &str,
+    error_str: &str,
+    payload_json_for_dlq: &Option<String>,
+    metadata_json_for_dlq: &Option<String>,
+    dlq_retry_count: i64,
+) {
+    route_set_trace_status(
+        trace_mode,
+        ctx.trace_repo.as_ref(),
+        &ctx.persistence_queue,
+        trace_id,
+        models::TRACE_STATUS_FAILED,
+        Some(error_str),
+    )
+    .await;
+
+    // Enqueue to DLQ for retry. The new row starts at the retry count
+    // this message's lineage already spent, so `dlq_max_retries`
+    // converges instead of resetting on every failure (Q3).
+    enqueue_dlq_row(
+        &ctx.dlq_repo,
+        payload_json_for_dlq,
+        metadata_json_for_dlq,
+        trace_id,
+        channel,
+        error_str,
+        dlq_retry_count,
+        ctx.dlq_max_retries,
+    )
+    .await;
 }
 
 /// Enqueue a failed message into the trace DLQ. Shared by the engine-error
