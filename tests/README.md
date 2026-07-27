@@ -27,9 +27,9 @@ The consolidated `integration` binary exercises every public-facing surface of O
 - **Resilience / scaling** — `rate_limit_test`, `concurrency_test`, `circuit_breaker_test`,
   `pool_exhaustion_test`, `channel_dedup_test`, `channel_response_cache_test`
 - **Async + tracing** — `async_traces_test`, `async_trace_edge_test`, `task_trace_test`,
-  `trace_storage_test`, `trace_dlq_repo_test`, `profile_test`
+  `trace_storage_test`, `trace_dlq_repo_test`, `profile_test`, `queue_durability_test`
 - **Connectors** — `connector_db_test`, `connector_cache_test`, `connector_redis_test`,
-  `mongodb_test`, `mysql_test`, `postgres_test`, `kafka_test`
+  `mongodb_test`, `mysql_test`, `postgres_test`, `kafka_test`, `http_retry_test`
 - **CLI subcommands** — `cli_subcommands_test` covers `lint`, `dry-run`,
   `test-connectivity`, and `validate-config`
 - **Errors & security** — `error_envelope_test`, `error_paths_test`,
