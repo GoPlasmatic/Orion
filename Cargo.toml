@@ -33,9 +33,12 @@ path = "src/main.rs"
 name = "orion"
 path = "src/lib.rs"
 
-# All integration tests are consolidated into a single binary so the suite
-# links once instead of ~43 times. New test files go in tests/integration/ and
-# are declared as modules in tests/integration/main.rs.
+# The SQLite-backed integration tests are consolidated into a single binary so
+# the suite links once instead of ~43 times. New test files go in
+# tests/integration/ and are declared as modules in tests/integration/main.rs.
+# Three more test binaries exist: `cluster` below, plus the auto-discovered
+# tests/storage_postgres.rs and tests/storage_mysql.rs (separate binaries
+# because the storage backend is pinned per process by a OnceLock).
 [[test]]
 name = "integration"
 path = "tests/integration/main.rs"
@@ -56,13 +59,13 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
 sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
-tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "propagate-header", "catch-panic", "compression-gzip", "set-header"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
 toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
 clap = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "tracing-log", "env-filter", "json"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal", "test-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -130,5 +133,8 @@ inherits = "release"
 lto = "thin"
 
 [dev-dependencies]
+# test-util (paused clocks, time::advance) is test-only; feature unification
+# gives the in-crate #[cfg(test)] modules access without shipping it in release.
+tokio = { version = "1", features = ["test-util"] }
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "mongo", "elastic_search", "redis"] }

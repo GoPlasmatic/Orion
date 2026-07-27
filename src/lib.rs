@@ -1,3 +1,15 @@
+//! Orion — declarative services runtime.
+//!
+//! This crate is the implementation of the `orion-server` binary: business
+//! logic exposed as channels (service endpoints) and workflows (dataflow-rs
+//! task pipelines) behind a REST API, shipped as a single binary with an
+//! embedded SQLite database (PostgreSQL/MySQL selectable at runtime).
+//!
+//! The library target exists for the binary and the integration test suite.
+//! It is not a supported embedding API: module layout and signatures may
+//! change between releases without semver ceremony. If you want to run
+//! Orion, use the binary — see the
+//! [documentation](https://goplasmatic.github.io/Orion/) for operating it.
 #![warn(clippy::unwrap_used, clippy::panic)]
 
 pub mod channel;

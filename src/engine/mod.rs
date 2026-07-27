@@ -144,10 +144,11 @@ pub const CONNECTOR_FUNCTIONS: &[&str] = &[
 
 /// Build the custom function handlers for the dataflow-rs engine.
 ///
-/// Registers the seven Orion-specific handlers (`http_call`, `channel_call`,
-/// `db_read`, `db_write`, `cache_read`, `cache_write`, `mongo_read`) plus a
-/// stub `publish_kafka`. Call [`register_kafka_publisher`] afterwards to swap
-/// the stub for the real Kafka-backed handler once the producer is initialised.
+/// Registers the nine Orion-specific handlers (`http_call`, `channel_call`,
+/// `db_read`, `db_write`, `data_query`, `data_write`, `cache_read`,
+/// `cache_write`, `mongo_read`) plus a stub `publish_kafka`. Call
+/// [`register_kafka_publisher`] afterwards to swap the stub for the real
+/// Kafka-backed handler once the producer is initialised.
 #[allow(clippy::too_many_arguments)]
 pub fn build_custom_functions(
     registry: Arc<ConnectorRegistry>,

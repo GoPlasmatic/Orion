@@ -157,6 +157,11 @@ jobs:
       - name: Run tests
         run: cargo test --all-targets
 
+      # --all-targets silently skips doctests; the config structs carry
+      # heavily documented examples that would otherwise never compile.
+      - name: Run doctests
+        run: cargo test --doc
+
   audit:
     name: Security Audit
     runs-on: ubuntu-22.04

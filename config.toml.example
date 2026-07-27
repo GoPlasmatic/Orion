@@ -46,7 +46,7 @@
 # key_path = ""                      # PEM private key, e.g. "/etc/orion/tls/tls.key"
 
 # [server.compression]
-# Response compression (gzip/br/zstd). Off by default: the layer is
+# Response compression (gzip). Off by default: the layer is
 # unconditional once inserted and runs DEFLATE per response regardless of size,
 # which costs CPU without saving bytes on small JSON bodies. Turn it on when
 # responses are typically large.

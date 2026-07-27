@@ -68,7 +68,7 @@ impl IngestConfig {
     }
 }
 
-/// Response compression (gzip/br/zstd) configuration.
+/// Response compression (gzip) configuration.
 ///
 /// Disabled by default: tower-http's `CompressionLayer` is unconditional once
 /// inserted and runs DEFLATE per response regardless of payload size, which
