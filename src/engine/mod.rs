@@ -243,36 +243,40 @@ pub fn filter_channels(
         .collect()
 }
 
-/// Simple glob matching supporting `*` wildcards.
+/// Glob matching supporting `*` wildcards, with real backtracking.
+///
+/// F32: the previous successive-`find` implementation diverged from glob
+/// semantics on patterns needing backtracking (`a*bc` vs `abxbc` matched the
+/// first `b` and failed) — and a wrong `channels.include`/`exclude` pattern
+/// silently drops a channel. This is the standard two-pointer matcher:
+/// linear scan with a single saved star position to retry from.
 fn glob_match(pattern: &str, name: &str) -> bool {
-    let parts: Vec<&str> = pattern.split('*').collect();
-    if parts.len() == 1 {
-        // No wildcard — exact match
-        return pattern == name;
-    }
-
-    let mut pos = 0;
-    for (i, part) in parts.iter().enumerate() {
-        if part.is_empty() {
-            continue;
-        }
-        if let Some(found) = name[pos..].find(part) {
-            if i == 0 && found != 0 {
-                // First segment must be a prefix match
-                return false;
-            }
-            pos += found + part.len();
+    let p: Vec<char> = pattern.chars().collect();
+    let n: Vec<char> = name.chars().collect();
+    let (mut pi, mut ni) = (0usize, 0usize);
+    let mut star: Option<usize> = None;
+    let mut mark = 0usize;
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ni;
+            pi += 1;
+        } else if let Some(s) = star {
+            // Backtrack: let the last `*` swallow one more character.
+            pi = s + 1;
+            mark += 1;
+            ni = mark;
         } else {
             return false;
         }
     }
-
-    // If pattern ends with *, remaining chars are fine. Otherwise name must be fully consumed.
-    if pattern.ends_with('*') {
-        true
-    } else {
-        pos == name.len()
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
     }
+    pi == p.len()
 }
 
 /// Convert active channels and their workflows to dataflow-rs workflows for the engine.
@@ -427,6 +431,23 @@ mod tests {
         assert!(glob_match("pre*suf", "presuf"));
         assert!(glob_match("pre*suf", "pre-middle-suf"));
         assert!(!glob_match("pre*suf", "pre-middle"));
+    }
+
+    /// F32: cases the old successive-`find` matcher got wrong.
+    #[test]
+    fn test_glob_match_backtracking() {
+        // The old matcher bound `b` to the first occurrence and failed.
+        assert!(glob_match("a*bc", "abxbc"));
+        assert!(glob_match("a*bc", "abcbc"));
+        assert!(!glob_match("a*bc", "abxbd"));
+    }
+
+    #[test]
+    fn test_glob_match_multi_star() {
+        assert!(glob_match("a*b*c", "a-x-b-y-c"));
+        assert!(glob_match("*orders*", "internal-orders-debug"));
+        assert!(!glob_match("a*b*c", "a-x-c-y-b"));
+        assert!(glob_match("**", "anything"));
     }
 
     fn make_channel(name: &str) -> Channel {

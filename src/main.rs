@@ -556,7 +556,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load active channels and workflows, build engine
     let channels = channel_repo.list_active().await?;
+    let total_active = channels.len();
     let channels = orion::engine::filter_channels(channels, &config.channels);
+    // F32: a wrong include/exclude pattern silently drops a channel; the
+    // resolved list makes the filter's effect visible at boot.
+    if !config.channels.include.is_empty() || !config.channels.exclude.is_empty() {
+        tracing::info!(
+            resolved = ?channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            filtered_out = total_active - channels.len(),
+            "Channel include/exclude filters applied"
+        );
+    }
     let active_workflows = workflow_repo.list_active().await?;
     let (workflows, engine_issues) =
         orion::engine::build_engine_workflows(&channels, &active_workflows);
