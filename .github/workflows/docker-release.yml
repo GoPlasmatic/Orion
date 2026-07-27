@@ -25,6 +25,17 @@ env:
   GHCR_IMAGE: ghcr.io/goplasmatic/orion
 
 jobs:
+  # Releases must not outrun CI (proposal T10): the tagged commit needs a
+  # successful CI run before anything is built or pushed.
+  ci-gate:
+    name: CI Gate
+    uses: ./.github/workflows/ci-gate.yml
+    with:
+      skip: ${{ inputs.dry_run || false }}
+    permissions:
+      actions: read
+      contents: read
+
   # Determine version once, share across jobs
   prepare:
     name: Prepare
@@ -48,7 +59,7 @@ jobs:
   # Build per-platform images natively in parallel
   build:
     name: Build (${{ matrix.platform }})
-    needs: prepare
+    needs: [prepare, ci-gate]
     strategy:
       fail-fast: false
       matrix:

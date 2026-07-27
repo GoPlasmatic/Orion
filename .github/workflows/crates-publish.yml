@@ -9,8 +9,17 @@ on:
       - "**[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
+  # Publishing must not outrun CI (proposal T10).
+  ci-gate:
+    name: CI Gate
+    uses: ./.github/workflows/ci-gate.yml
+    permissions:
+      actions: read
+      contents: read
+
   publish:
     name: Publish to crates.io
+    needs: ci-gate
     runs-on: ubuntu-22.04
     # Skip prereleases (tags containing alpha, beta, rc, pre)
     if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'pre') }}

@@ -1,0 +1,39 @@
+# Reusable gate: release workflows call this to require a successful CI run
+# for the commit being released (proposal T10). Tags can otherwise outrun CI
+# entirely — a build break would be discovered mid-release.
+name: CI Gate
+
+on:
+  workflow_call:
+    inputs:
+      skip:
+        description: "Skip the gate (dry runs)"
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify:
+    name: Verify CI passed for this commit
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check for a successful CI run on this SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SKIP: ${{ inputs.skip }}
+        run: |
+          if [ "$SKIP" = "true" ]; then
+            echo "Gate skipped (dry run)."
+            exit 0
+          fi
+          successes=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=completed" \
+            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          if [ "${successes}" = "0" ]; then
+            echo "::error::No successful CI run found for ${GITHUB_SHA}. Let CI pass on this commit before releasing."
+            exit 1
+          fi
+          echo "CI passed for ${GITHUB_SHA} (${successes} successful run(s))."

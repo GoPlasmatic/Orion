@@ -175,6 +175,33 @@ jobs:
       - name: Run audit
         run: cargo audit
 
+  # The image build breaks independently of cargo (system deps like the
+  # rdkafka toolchain, base-image drift). Building on every PR keeps that
+  # from being discovered mid-release (proposal T10). No push — the release
+  # workflow owns publishing; the shared gha cache scope keeps this cheap
+  # and warms the release build.
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=linux/amd64
+          cache-to: type=gha,scope=linux/amd64,mode=max
+
   coverage:
     name: Test Coverage
     runs-on: ubuntu-22.04
