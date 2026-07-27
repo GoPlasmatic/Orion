@@ -103,6 +103,17 @@ enum RouteGroup {
     Operational,
 }
 
+impl RouteGroup {
+    /// Bounded label for rejection metrics (O1) — never client-derived.
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Admin => "admin",
+            Self::Data => "data",
+            Self::Operational => "operational",
+        }
+    }
+}
+
 fn classify_route(path: &str) -> RouteGroup {
     if path.starts_with("/api/v1/admin") {
         RouteGroup::Admin
@@ -160,7 +171,8 @@ pub async fn rate_limit_middleware(
             };
 
             if !limiter.check(key).await {
-                metrics::record_rate_limit_rejected(&client_ip);
+                // Registry-confirmed channel name — bounded cardinality (O1)
+                metrics::record_rate_limit_rejected(channel);
                 return rate_limited_response();
             }
             // Channel-specific limiter passed; skip the group/default limiter
@@ -182,7 +194,7 @@ pub async fn rate_limit_middleware(
     };
 
     if limiter.check_key(&client_ip).is_err() {
-        metrics::record_rate_limit_rejected(&client_ip);
+        metrics::record_rate_limit_rejected(route_group.label());
         return rate_limited_response();
     }
 

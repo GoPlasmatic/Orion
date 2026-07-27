@@ -184,12 +184,15 @@ pub fn record_channel_execution(channel: &str) {
     counter!("channel_executions_total", "channel" => channel.to_owned()).increment(1);
 }
 
-/// Record a rate-limit rejection.
-pub fn record_rate_limit_rejected(client: &str) {
+/// Record a rate-limit rejection. `scope` must come from a bounded set — a
+/// registry-confirmed channel name or a route-group label, never
+/// client-controlled input like the client IP, which spoofed
+/// `X-Forwarded-For` values would turn into unbounded label cardinality (O1).
+pub fn record_rate_limit_rejected(scope: &str) {
     if !is_enabled() {
         return;
     }
-    counter!("rate_limit_rejections_total", "client" => client.to_owned()).increment(1);
+    counter!("rate_limit_rejections_total", "scope" => scope.to_owned()).increment(1);
 }
 
 /// Record a response cache hit.
@@ -453,7 +456,8 @@ mod tests {
     #[test]
     fn test_record_rate_limit_rejected() {
         ensure_recorder();
-        record_rate_limit_rejected("192.168.1.1");
+        record_rate_limit_rejected("orders");
+        record_rate_limit_rejected("admin");
     }
 
     #[test]
