@@ -136,22 +136,19 @@ async fn test_breaker_trips_after_threshold() {
     }
 
     // 4th request — circuit breaker should now be open and reject immediately.
+    // F5: shedding a dependency is a retryable 503, distinguishable from the
+    // 500 the upstream failures above produced.
     let (status, body) = send_data_request(&app, "cb-trip").await;
     assert_eq!(
         status,
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "4th request should be rejected by the open circuit breaker"
+        StatusCode::SERVICE_UNAVAILABLE,
+        "4th request should be rejected by the open circuit breaker with 503"
     );
-    // The error body should mention the engine error (circuit breaker fires a DataflowError)
-    let error_msg = body["error"]["message"]
-        .as_str()
-        .unwrap_or("")
-        .to_lowercase();
+    assert_eq!(body["error"]["code"], json!("CIRCUIT_OPEN"));
+    let error_msg = body["error"]["message"].as_str().unwrap_or("");
     assert!(
-        error_msg.contains("engine")
-            || error_msg.contains("error")
-            || error_msg.contains("internal"),
-        "Expected engine/internal error, got: {}",
+        error_msg.contains("failing-api") && error_msg.contains("cb-trip"),
+        "Expected the connector and channel in the message, got: {}",
         error_msg
     );
 

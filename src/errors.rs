@@ -315,6 +315,28 @@ impl IntoResponse for OrionError {
     }
 }
 
+/// Marker prefixed to the message of the `DataflowError` an open circuit
+/// breaker returns.
+///
+/// `AsyncFunctionHandler` must return a `DataflowError`, and dataflow-rs 3.0's
+/// enum is closed, `Serialize`, and has no extension point — so the breaker
+/// rejection travels as `Http { status: 503 }`, the one variant whose
+/// `retryable()` is already true *because* it is a 503, and which survives
+/// serialization into `message.errors` / trace rows / DLQ payloads. The marker
+/// is what separates an Orion breaker rejection from a genuine downstream 503
+/// relayed by `http_call`; only the former becomes `CIRCUIT_OPEN`.
+pub const CIRCUIT_OPEN_MARKER: &str = "orion.circuit_open: ";
+
+/// Build the error an open breaker returns from a function handler.
+pub fn circuit_open_dataflow_error(connector: &str, channel: &str) -> dataflow_rs::DataflowError {
+    dataflow_rs::DataflowError::Http {
+        status: 503,
+        message: format!(
+            "{CIRCUIT_OPEN_MARKER}Circuit breaker open for connector '{connector}' on channel '{channel}'"
+        ),
+    }
+}
+
 /// Map DataflowError variants to appropriate HTTP status codes and sanitized messages.
 fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'static str, String) {
     use dataflow_rs::DataflowError;
@@ -323,6 +345,19 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
             (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone())
         }
         DataflowError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, "TIMEOUT_ERROR", msg.clone()),
+        // Must precede the catch-all: a shed dependency is a 503 the client
+        // can retry, not a 500 server bug.
+        DataflowError::Http {
+            status: 503,
+            message,
+        } if message.starts_with(CIRCUIT_OPEN_MARKER) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "CIRCUIT_OPEN",
+            message
+                .strip_prefix(CIRCUIT_OPEN_MARKER)
+                .unwrap_or(message)
+                .to_string(),
+        ),
         other => {
             // Surface unhandled DataflowError variants so a dataflow-rs upgrade
             // that adds new variants doesn't silently degrade them to a generic
@@ -705,6 +740,42 @@ mod tests {
     fn test_validation_not_retryable() {
         let err = OrionError::validation("x").field("y", "REQUIRED", "z");
         assert!(!err.is_retryable());
+    }
+
+    // ---- F5: an open breaker surfaces as 503 CIRCUIT_OPEN end-to-end ----
+
+    #[tokio::test]
+    async fn test_engine_circuit_open_returns_503_with_code() {
+        let err = OrionError::Engine(circuit_open_dataflow_error("orders-api", "orders"));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_to_value(response).await;
+        assert_eq!(body["error"]["code"], "CIRCUIT_OPEN");
+        let message = body["error"]["message"].as_str().expect("test");
+        assert!(
+            !message.contains(CIRCUIT_OPEN_MARKER),
+            "the internal marker must not reach the client: {message}"
+        );
+        assert!(message.contains("orders-api") && message.contains("orders"));
+    }
+
+    #[test]
+    fn test_engine_circuit_open_is_retryable() {
+        let err = OrionError::Engine(circuit_open_dataflow_error("api", "orders"));
+        assert!(
+            err.is_retryable(),
+            "DLQ retry must classify a shed dependency as retryable"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_downstream_503_is_not_reported_as_circuit_open() {
+        // A genuine 503 relayed by http_call keeps the generic engine mapping.
+        let err = OrionError::Engine(dataflow_rs::DataflowError::http(503, "Service Unavailable"));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = body_to_value(response).await;
+        assert_eq!(body["error"]["code"], "ENGINE_ERROR");
     }
 
     #[tokio::test]

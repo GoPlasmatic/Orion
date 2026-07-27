@@ -95,9 +95,11 @@ where
 {
     if !breaker.check() {
         crate::metrics::record_circuit_breaker_rejection(connector, channel);
-        return Err(DataflowError::function_execution(
-            format!("Circuit breaker open for connector '{connector}' on channel '{channel}'"),
-            None,
+        // Carries through the engine to a 503 CIRCUIT_OPEN (see
+        // `crate::errors::CIRCUIT_OPEN_MARKER`); `function_execution` used to
+        // land in the catch-all and surface as a 500 ENGINE_ERROR.
+        return Err(crate::errors::circuit_open_dataflow_error(
+            connector, channel,
         ));
     }
 
@@ -340,13 +342,11 @@ mod tests {
         )
         .await;
 
-        assert!(result.is_err());
-        assert!(
-            result
-                .expect_err("test")
-                .to_string()
-                .contains("Circuit breaker open")
-        );
+        let err = result.expect_err("test");
+        assert!(err.to_string().contains("Circuit breaker open"));
+        // F5: the carrier must be retryable and recognisable as CIRCUIT_OPEN.
+        assert!(err.retryable(), "an open breaker is a retry-later signal");
+        assert!(matches!(err, DataflowError::Http { status: 503, .. },));
     }
 
     #[tokio::test]
