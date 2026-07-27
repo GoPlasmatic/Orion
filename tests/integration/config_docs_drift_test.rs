@@ -65,31 +65,21 @@ const NO_DEFAULT: &[&str] = &[
 ];
 
 /// Settings where the derived `Default` and the `#[serde(default = "…")]`
-/// attribute disagree, so "the default" depends on whether the config file
-/// declares the section at all. Sorted, because the assertion compares in
-/// `BTreeMap` order.
+/// attribute disagree, so "the default" would depend on whether the config file
+/// declares the section at all. **This list must stay empty.**
 ///
-/// - `AppConfig` derives `Default` (giving `environment = ""`) but annotates
-///   the field with `#[serde(default = "default_environment")]` (giving
-///   `"development"`). Both are non-production, so `is_production()` agrees.
-/// - `RateLimitConfig` derives `Default` (giving `0`) but annotates these two
-///   fields with `#[serde(default = "default_rps")]` / `"default_burst"`
-///   (giving `100` / `50`).
+/// It is not a suppression list — it exists so that
+/// [`derived_and_serde_defaults_agree`] can name exactly which settings broke
+/// the rule. Start Orion with no config file and the derived `Default` applies;
+/// declare a section and omit a key and the serde default applies. A reference
+/// page can only state one number, so the two have to be the same value.
 ///
-/// Start Orion with no config file at all and the derived values apply;
-/// declare the section and omit the key and the serde values apply. Both
-/// documents state the serde values, because that is what every path a user
-/// actually takes produces — and rate limiting is off by default, so `0` is
-/// only reachable by enabling it via env var with no config file, which fails
-/// validation with a clear message. This list exists so the inconsistency is
-/// visible in the test suite rather than silently absorbed; if the structs are
-/// ever reconciled, [`derived_and_serde_defaults_agree`] fails and the entry
-/// should be deleted.
-const SERDE_DEFAULT_DIFFERS: &[&str] = &[
-    "environment",
-    "rate_limit.default_burst",
-    "rate_limit.default_rps",
-];
+/// F36 was the case that motivated the rule: `RateLimitConfig` derived
+/// `Default` (`0`/`0`) while its serde defaults were `100`/`50`, so
+/// `ORION_RATE_LIMIT__ENABLED=true` with no config file failed startup
+/// validation. Both structs now implement `Default` by hand in terms of their
+/// `default_*` functions.
+const SERDE_DEFAULT_DIFFERS: &[&str] = &[];
 
 /// Marker for "this setting has no env override" in the reference table.
 const NONE_MARKER: &str = "—";
@@ -518,26 +508,35 @@ fn reference_page_matches_env_overrides() {
     assert!(problems.is_empty(), "{}", problems.join("\n  "));
 }
 
-/// Pins the one place where "the default" is ambiguous. Everything outside
-/// [`SERDE_DEFAULT_DIFFERS`] must mean the same thing whether or not the config
-/// file declares the section, so the documents can state a single value.
+/// Every setting must mean the same thing whether or not the config file
+/// declares its section, so the documents can state a single value (F36).
 #[test]
 fn derived_and_serde_defaults_agree() {
     let derived = derived_defaults();
     let documented = documented_defaults();
-    let divergent: Vec<&String> = documented
+    let divergent: Vec<String> = documented
         .iter()
         .filter(|(path, value)| derived.get(*path) != Some(*value))
-        .map(|(path, _)| path)
+        .map(|(path, documented_value)| {
+            let derived_value = derived
+                .get(path)
+                .map_or_else(|| "absent".to_string(), |v| format!("{v:?}"));
+            format!(
+                "{path}: no config file gives {derived_value}, \
+                 empty section gives {documented_value:?}"
+            )
+        })
         .collect();
     let expected: Vec<&str> = SERDE_DEFAULT_DIFFERS.to_vec();
 
     assert_eq!(
-        divergent, expected,
-        "the set of settings whose derived Default disagrees with their \
-         #[serde(default = \"…\")] has changed. A config reference cannot state \
-         one default for these — either reconcile the structs and shrink \
-         SERDE_DEFAULT_DIFFERS, or extend it and say so in the docs."
+        divergent.len(),
+        expected.len(),
+        "a setting's derived Default disagrees with its #[serde(default = \"…\")], \
+         so \"the default\" depends on how the config was produced and no reference \
+         page can state it. Implement Default by hand in terms of the default_* \
+         function, as AppConfig and RateLimitConfig do:\n  {}",
+        divergent.join("\n  ")
     );
 }
 

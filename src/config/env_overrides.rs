@@ -53,6 +53,21 @@ where
         };
     }
 
+    /// Apply a parsed env override to an `Option<T>` field. An empty value
+    /// clears the setting, which is the only way to say "no limit" from an
+    /// environment that already has the variable set.
+    macro_rules! env_opt_parsed {
+        ($env_var:expr, $key:expr, $field:expr, $ty:ty) => {
+            if let Ok(v) = $env_var($key) {
+                $field = if v.trim().is_empty() {
+                    None
+                } else {
+                    Some(parse_env::<$ty>($key, &v)?)
+                };
+            }
+        };
+    }
+
     // Environment
     env_str!(env_var, "ORION_ENV", config.environment);
 
@@ -86,6 +101,12 @@ where
         env_var,
         "ORION_SERVER__TLS__KEY_PATH",
         config.server.tls.key_path
+    );
+    env_parsed!(
+        env_var,
+        "ORION_SERVER__COMPRESSION__ENABLED",
+        config.server.compression.enabled,
+        bool
     );
 
     // Storage
@@ -454,6 +475,12 @@ where
         "ORION_ENGINE__ROLLOUT_STICKY_HEADER",
         config.engine.rollout_sticky_header
     );
+    env_parsed!(
+        env_var,
+        "ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS",
+        config.engine.cache_cleanup_interval_secs,
+        u64
+    );
 
     // Circuit breaker
     env_parsed!(
@@ -507,6 +534,18 @@ where
             .filter(|s| !s.is_empty())
             .collect();
     }
+    env_opt_parsed!(
+        env_var,
+        "ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS",
+        config.rate_limit.endpoints.admin_rps,
+        u32
+    );
+    env_opt_parsed!(
+        env_var,
+        "ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS",
+        config.rate_limit.endpoints.data_rps,
+        u32
+    );
 
     // Kafka
     env_parsed!(env_var, "ORION_KAFKA__ENABLED", config.kafka.enabled, bool);
@@ -731,6 +770,10 @@ mod tests {
         env.insert("ORION_RATE_LIMIT__ENABLED", "true");
         env.insert("ORION_RATE_LIMIT__DEFAULT_RPS", "200");
         env.insert("ORION_RATE_LIMIT__DEFAULT_BURST", "100");
+        env.insert("ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS", "5");
+        env.insert("ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS", "500");
+        env.insert("ORION_SERVER__COMPRESSION__ENABLED", "true");
+        env.insert("ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS", "15");
         env.insert("ORION_KAFKA__ENABLED", "true");
         env.insert("ORION_KAFKA__BROKERS", "broker1:9092,broker2:9092");
         env.insert("ORION_KAFKA__GROUP_ID", "my-group");
@@ -787,6 +830,10 @@ mod tests {
         assert!(config.rate_limit.enabled);
         assert_eq!(config.rate_limit.default_rps, 200);
         assert_eq!(config.rate_limit.default_burst, 100);
+        assert_eq!(config.rate_limit.endpoints.admin_rps, Some(5));
+        assert_eq!(config.rate_limit.endpoints.data_rps, Some(500));
+        assert!(config.server.compression.enabled);
+        assert_eq!(config.engine.cache_cleanup_interval_secs, 15);
         assert!(config.kafka.enabled);
         assert_eq!(config.kafka.brokers, vec!["broker1:9092", "broker2:9092"]);
         assert_eq!(config.kafka.group_id, "my-group");
@@ -809,6 +856,35 @@ mod tests {
             vec!["orders-*".to_string(), "payments-*".to_string()]
         );
         assert_eq!(config.channels.exclude, vec!["internal-*".to_string()]);
+    }
+
+    /// F37: an `Option<u32>` endpoint limit is cleared, not left at its
+    /// previous value, when the variable is present but empty — the only way
+    /// to express "no separate limit" from an environment that already sets it.
+    #[test]
+    fn test_env_override_empty_endpoint_limit_clears_it() {
+        let mut env = HashMap::new();
+        env.insert("ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS", "");
+
+        let mut config = AppConfig::default();
+        config.rate_limit.endpoints.admin_rps = Some(10);
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
+
+        assert_eq!(config.rate_limit.endpoints.admin_rps, None);
+    }
+
+    #[test]
+    fn test_env_override_invalid_endpoint_limit_errors() {
+        let mut env = HashMap::new();
+        env.insert("ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS", "lots");
+
+        let mut config = AppConfig::default();
+        let err = apply_env_overrides_with(&mut config, make_env_reader(&env))
+            .expect_err("a non-numeric endpoint limit must be rejected");
+        assert!(
+            err.to_string()
+                .contains("ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS")
+        );
     }
 
     #[test]

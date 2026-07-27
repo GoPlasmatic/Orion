@@ -3,7 +3,13 @@ use serde::{Deserialize, Serialize};
 use crate::config::validation::require_nonzero;
 use crate::errors::OrionError;
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// `Default` is implemented by hand rather than derived so that it agrees with
+/// the `#[serde(default = "…")]` attributes below. A derived `Default` would
+/// give `0`/`0` while a config file declaring `[rate_limit]` and omitting the
+/// keys gives `100`/`50` — so `ORION_RATE_LIMIT__ENABLED=true` with no config
+/// file (the pure-env shape the Helm chart and Docker image encourage) failed
+/// startup validation with "must be > 0" (F36).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RateLimitConfig {
     pub enabled: bool,
@@ -28,6 +34,18 @@ fn default_rps() -> u32 {
 
 fn default_burst() -> u32 {
     50
+}
+
+impl Default for RateLimitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_rps: default_rps(),
+            default_burst: default_burst(),
+            trusted_proxies: Vec::new(),
+            endpoints: EndpointRateLimits::default(),
+        }
+    }
 }
 
 impl RateLimitConfig {
@@ -118,6 +136,34 @@ mod tests {
         let nets = config.parsed_trusted_proxies();
         assert_eq!(nets.len(), 1);
         assert_eq!(nets[0].prefix_len(), 32);
+    }
+
+    /// F36: enabling rate limiting with no config file at all — the pure-env
+    /// deployment shape — used to fail validation, because the derived
+    /// `Default` gave `0`/`0` while the serde defaults gave `100`/`50`.
+    #[test]
+    fn test_enabled_on_derived_default_passes_validation() {
+        let config = RateLimitConfig {
+            enabled: true,
+            ..Default::default()
+        };
+        assert_eq!(config.default_rps, 100);
+        assert_eq!(config.default_burst, 50);
+        config
+            .validate()
+            .expect("enabling rate limiting without a config file must validate");
+    }
+
+    /// The derived `Default` and the value a config file that declares the
+    /// section but sets nothing produces must be the same config.
+    #[test]
+    fn test_derived_default_matches_empty_section() {
+        let from_file: RateLimitConfig =
+            toml::from_str("").expect("an empty rate_limit section must deserialize");
+        let derived = RateLimitConfig::default();
+        assert_eq!(from_file.default_rps, derived.default_rps);
+        assert_eq!(from_file.default_burst, derived.default_burst);
+        assert_eq!(from_file.enabled, derived.enabled);
     }
 
     #[test]

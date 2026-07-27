@@ -37,7 +37,14 @@ use std::path::Path;
 use crate::errors::OrionError;
 
 /// Top-level application configuration.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+///
+/// `Default` is implemented by hand rather than derived so that it agrees with
+/// the `#[serde(default = "…")]` attributes below. A derived `Default` would
+/// give `environment = ""` while a config file declaring no `environment` key
+/// gives `"development"`, making "the default" depend on how the config was
+/// produced (F36). `config_docs_drift_test` asserts the two agree for every
+/// setting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     /// Deployment environment (e.g. "development", "production").
@@ -65,6 +72,30 @@ pub struct AppConfig {
 
 fn default_environment() -> String {
     "development".to_string()
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            environment: default_environment(),
+            server: ServerConfig::default(),
+            storage: StorageConfig::default(),
+            ingest: IngestConfig::default(),
+            engine: EngineConfig::default(),
+            queue: QueueConfig::default(),
+            query: QueryConfig::default(),
+            write: WriteConfig::default(),
+            kafka: KafkaIngestConfig::default(),
+            logging: LoggingConfig::default(),
+            metrics: MetricsConfig::default(),
+            cors: CorsConfig::default(),
+            tracing: TracingConfig::default(),
+            rate_limit: RateLimitConfig::default(),
+            channels: ChannelLoadingConfig::default(),
+            admin_auth: AdminAuthConfig::default(),
+            cluster: ClusterConfig::default(),
+        }
+    }
 }
 
 impl AppConfig {

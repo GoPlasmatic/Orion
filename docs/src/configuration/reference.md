@@ -101,9 +101,9 @@ Both files must exist and be readable at startup; Orion refuses to boot otherwis
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `server.compression.enabled` | `false` | — | Enable when responses are typically large. |
+| `server.compression.enabled` | `false` | `ORION_SERVER__COMPRESSION__ENABLED` | Enable when responses are typically large. |
 
-Off by default because the layer is unconditional once inserted: it runs DEFLATE on every response regardless of size, which costs CPU without saving bytes on small JSON bodies (a ~100 B response can grow slightly after gzip overhead). This setting has no environment variable — it must be set in the config file.
+Off by default because the layer is unconditional once inserted: it runs DEFLATE on every response regardless of size, which costs CPU without saving bytes on small JSON bodies (a ~100 B response can grow slightly after gzip overhead).
 
 ## Storage
 
@@ -167,7 +167,7 @@ instance_id = "${HOSTNAME}"
 | `engine.default_channel_call_timeout_ms` | `30000` | `ORION_ENGINE__DEFAULT_CHANNEL_CALL_TIMEOUT_MS` | Default deadline for `channel_call` when the task sets none. |
 | `engine.global_http_timeout_secs` | `30` | `ORION_ENGINE__GLOBAL_HTTP_TIMEOUT_SECS` | Safety net for every outbound HTTP request; shorter connector or task timeouts still win. |
 | `engine.max_pool_cache_entries` | `100` | `ORION_ENGINE__MAX_POOL_CACHE_ENTRIES` | Raise only with more than ~100 distinct external connectors. LRU-evicted. |
-| `engine.cache_cleanup_interval_secs` | `60` | — | Sweep interval for expired in-memory cache entries. No environment variable — config file only. |
+| `engine.cache_cleanup_interval_secs` | `60` | `ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS` | Sweep interval for expired in-memory cache entries. |
 | `engine.max_memory_cache_entries` | `100000` | `ORION_ENGINE__MAX_MEMORY_CACHE_ENTRIES` | Lower it on a memory-constrained host. `0` removes the bound. |
 | `engine.rollout_sticky_header` | `""` | `ORION_ENGINE__ROLLOUT_STICKY_HEADER` | Set to the header that identifies a caller (e.g. `"x-user-id"`) so canary rollouts are stable per caller. |
 
@@ -317,8 +317,8 @@ Platform-level limits, applied per client identity. Per-channel limits are separ
 | `rate_limit.default_rps` | `100` | `ORION_RATE_LIMIT__DEFAULT_RPS` | Sustained requests per second per client. |
 | `rate_limit.default_burst` | `50` | `ORION_RATE_LIMIT__DEFAULT_BURST` | Burst allowance above the sustained rate. |
 | `rate_limit.trusted_proxies` | `[]` | `ORION_RATE_LIMIT__TRUSTED_PROXIES` | **Set this if Orion sits behind a load balancer** — see below. |
-| `rate_limit.endpoints.admin_rps` | — | — | Separate limit for the admin API; unset means it uses `default_rps`. |
-| `rate_limit.endpoints.data_rps` | — | — | Separate limit for the data plane; unset means it uses `default_rps`. |
+| `rate_limit.endpoints.admin_rps` | — | `ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS` | Separate limit for the admin API; unset means it uses `default_rps`. Set the variable to an empty string to clear it. |
+| `rate_limit.endpoints.data_rps` | — | `ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS` | Separate limit for the data plane; unset means it uses `default_rps`. Set the variable to an empty string to clear it. |
 
 **`trusted_proxies` changes behaviour for every proxied deployment.** The direct peer IP is authoritative. `X-Forwarded-For` and `X-Real-IP` are honoured *only* when the peer address falls inside one of these CIDR blocks (bare IPs are accepted and treated as `/32` or `/128`). The default is empty, which means **forwarded headers are never trusted**.
 
@@ -327,7 +327,7 @@ The consequence in both directions:
 - **Behind a load balancer with this unset**, every request appears to come from the balancer, so all clients share a single rate-limit bucket and the limit effectively applies to your whole fleet at once. List the balancer's subnet — `trusted_proxies = ["10.0.0.0/8"]` — to get per-client limiting back.
 - **List a network you do not control** and clients on it can spoof `X-Forwarded-For` to mint a fresh bucket per request, which is exactly no rate limiting at all. List only the addresses of proxies you operate.
 
-The two endpoint limits have no environment variables and must be set in the config file.
+Both endpoint limits are optional, so their environment variables are three-state: unset leaves the config-file value alone, a number sets the limit, and an empty string clears it back to "use `default_rps`".
 
 ## Channel Loading
 
