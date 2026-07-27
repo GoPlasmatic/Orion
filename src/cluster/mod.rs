@@ -30,8 +30,15 @@ pub struct ClusterRuntime {
     /// node list; it names lease holders, DLQ claimants, Kafka static
     /// membership, and log lines.
     pub instance_id: String,
-    /// Shared Redis connection from `cluster.redis_url` (None when disabled).
-    pub redis: Option<redis::aio::MultiplexedConnection>,
+    /// Shared Redis handle from `cluster.redis_url` (None when disabled).
+    ///
+    /// A `ConnectionManager`, not a `MultiplexedConnection`: this handle is
+    /// cloned into the default cache backend and every channel's rate
+    /// limiter, and a multiplexed connection does not re-establish itself, so
+    /// one Redis restart would break shared dedup (failing open), the shared
+    /// response cache, and cluster rate limiting on every node until the pods
+    /// were restarted.
+    pub redis: Option<redis::aio::ConnectionManager>,
     /// Default shared cache backend (dedup/response-cache) on that Redis.
     pub default_cache: Option<Arc<dyn CacheBackend>>,
     /// Epoch/lease coordination repository (always present; harmless when
@@ -96,13 +103,16 @@ pub async fn init_cluster_runtime(
             redis::Client::open(config.redis_url.as_str()).map_err(|e| OrionError::Config {
                 message: format!("cluster.redis_url is invalid: {e}"),
             })?;
-        let conn = client
-            .get_multiplexed_async_connection()
-            .await
-            .map_err(|e| OrionError::InternalSource {
-                context: "Failed to connect to cluster Redis (cluster.redis_url)".to_string(),
-                source: Box::new(e),
-            })?;
+        // Eager connect: a cluster node whose coordination Redis is
+        // unreachable at boot must fail fast rather than start degraded.
+        let conn =
+            client
+                .get_connection_manager()
+                .await
+                .map_err(|e| OrionError::InternalSource {
+                    context: "Failed to connect to cluster Redis (cluster.redis_url)".to_string(),
+                    source: Box::new(e),
+                })?;
         let cache: Arc<dyn CacheBackend> = Arc::new(
             crate::connector::cache_backend::RedisCacheBackend::new(conn.clone()),
         );

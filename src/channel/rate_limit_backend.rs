@@ -47,18 +47,13 @@ impl RateLimitBackend for LocalRateLimitBackend {
 /// burst, mapping the per-channel `requests_per_second`/`burst` config onto
 /// a one-second window.
 pub struct RedisRateLimitBackend {
-    conn: redis::aio::MultiplexedConnection,
+    conn: redis::aio::ConnectionManager,
     scope: String,
     limit_per_window: u32,
 }
 
 impl RedisRateLimitBackend {
-    pub fn new(
-        conn: redis::aio::MultiplexedConnection,
-        scope: String,
-        rps: u32,
-        burst: u32,
-    ) -> Self {
+    pub fn new(conn: redis::aio::ConnectionManager, scope: String, rps: u32, burst: u32) -> Self {
         Self {
             conn,
             scope,

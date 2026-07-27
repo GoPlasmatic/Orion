@@ -1,11 +1,11 @@
-use redis::aio::MultiplexedConnection;
+use redis::aio::ConnectionManager;
 
 use super::lru_cache::LruCache;
 use crate::connector::CacheConnectorConfig;
 use crate::errors::OrionError;
 
 pub struct RedisPoolCache {
-    cache: LruCache<MultiplexedConnection>,
+    cache: LruCache<ConnectionManager>,
 }
 
 impl RedisPoolCache {
@@ -19,7 +19,7 @@ impl RedisPoolCache {
         &self,
         connector_name: &str,
         config: &CacheConnectorConfig,
-    ) -> Result<MultiplexedConnection, OrionError> {
+    ) -> Result<ConnectionManager, OrionError> {
         let url = config
             .url
             .as_deref()
@@ -38,7 +38,7 @@ impl RedisPoolCache {
                         source: Box::new(e),
                     })?;
                 client
-                    .get_multiplexed_async_connection()
+                    .get_connection_manager()
                     .await
                     .map_err(|e| OrionError::InternalSource {
                         context: format!("Failed to connect to Redis '{connector_name}'"),

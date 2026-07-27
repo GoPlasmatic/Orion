@@ -136,7 +136,7 @@ pub struct ClusterBackends {
     /// Default dedup/response-cache backend (the shared cluster Redis).
     pub default_cache: Option<Arc<dyn CacheBackend>>,
     /// Connection for shared rate-limit windows.
-    pub redis: Option<redis::aio::MultiplexedConnection>,
+    pub redis: Option<redis::aio::ConnectionManager>,
 }
 
 /// In-memory registry of active channels, rebuilt on engine reload.

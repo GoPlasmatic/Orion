@@ -227,11 +227,11 @@ impl CacheBackend for MemoryCacheBackend {
 // ============================================================
 
 pub struct RedisCacheBackend {
-    conn: redis::aio::MultiplexedConnection,
+    conn: redis::aio::ConnectionManager,
 }
 
 impl RedisCacheBackend {
-    pub fn new(conn: redis::aio::MultiplexedConnection) -> Self {
+    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
         Self { conn }
     }
 }

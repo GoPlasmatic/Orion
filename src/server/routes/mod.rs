@@ -118,7 +118,36 @@ pub(crate) async fn liveness_check() -> impl IntoResponse {
     (StatusCode::OK, Json(json!({ "status": "ok" })))
 }
 
-/// Readiness probe — checks DB, engine, and startup readiness.
+/// PING the shared cluster Redis. `None` outside cluster mode (there is no
+/// shared Redis to check); `Some(false)` when this node cannot reach it.
+///
+/// Readiness has to cover it because the degradation is silent: dedup fails
+/// open, the shared response cache misses, and cluster rate limiting stops
+/// enforcing — all with 200s on the data plane. A node in that state must
+/// leave the load-balancer rotation.
+async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
+    let mut conn = state.cluster.redis.clone()?;
+    let ping = async move {
+        let pong: redis::RedisResult<String> = redis::cmd("PING").query_async(&mut conn).await;
+        match pong {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(error = %e, "Cluster Redis ping failed; reporting not ready");
+                false
+            }
+        }
+    };
+    Some(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
+            ping,
+        )
+        .await
+        .unwrap_or(false),
+    )
+}
+
+/// Readiness probe — checks DB, engine, cluster Redis, and startup readiness.
 /// Use for Kubernetes `readinessProbe`.
 pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse {
     use std::sync::atomic::Ordering;
@@ -131,21 +160,27 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     .await
     .is_ok();
     let initialized = state.ready.load(Ordering::Acquire);
+    let redis_healthy = cluster_redis_healthy(&state).await;
 
-    let all_ready = db_healthy && engine_healthy && initialized;
+    let all_ready = db_healthy && engine_healthy && initialized && redis_healthy.unwrap_or(true);
     let http_status = if all_ready {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
 
+    let mut components = json!({
+        "database": if db_healthy { "ok" } else { "error" },
+        "engine": if engine_healthy { "ok" } else { "error" },
+        "initialized": initialized,
+    });
+    if let Some(healthy) = redis_healthy {
+        components["cluster_redis"] = json!(if healthy { "ok" } else { "error" });
+    }
+
     let body = json!({
         "status": if all_ready { "ready" } else { "not_ready" },
-        "components": {
-            "database": if db_healthy { "ok" } else { "error" },
-            "engine": if engine_healthy { "ok" } else { "error" },
-            "initialized": initialized,
-        }
+        "components": components,
     });
 
     (http_status, Json(body))
