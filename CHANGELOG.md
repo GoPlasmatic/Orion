@@ -5,6 +5,63 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `engine.fail_on_connector_load_error` (default `false`): refuse to start when
+  an enabled connector cannot be loaded, so a bad rollout fails at boot where
+  the orchestrator catches it rather than at request time hours later. Startup
+  only — a hot reload never takes a running process down.
+- `GET /health` reports two new degraded states: `components.connectors` with
+  the failures under `connectors.failed_to_load`, and `components.channels`
+  with the quarantined set under `channels.quarantined`. Both keep the HTTP
+  status at 200 — alert on the fields, not the status code, since a 503 would
+  pull the node out of its load balancer over something nothing in flight may
+  be using.
+- `GET /api/v1/admin/connectors` gives every row a `load_status` (`loaded`,
+  `failed`, `disabled`) plus `load_error` and `load_error_stage`.
+- Environment overrides for the four settings that had none:
+  `ORION_SERVER__COMPRESSION__ENABLED`,
+  `ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS`,
+  `ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS` and `…__DATA_RPS`. The two endpoint
+  limits are optional, so their variables are three-state: unset keeps the
+  config-file value, a number sets it, an empty string clears it.
+
+### Fixed
+
+- **Connectors authored the documented way never loaded.** `ConnectorConfig` is
+  internally tagged on `type`, but the type lives in its own column and the API
+  takes it as a sibling `connector_type` — so a config without a redundant
+  `"type"` inside it failed to deserialize and the connector was silently
+  skipped. That is the shape every example, the OpenAPI spec and any admin UI
+  produce. The stored column is now the single source of truth.
+- **A connector `GET` → edit → `PUT` round-trip persisted `"******"` as the
+  credential.** Fields returned masked are now restored from the stored row,
+  and a mask with no stored counterpart is a 400 naming the field instead of a
+  silent credential overwrite.
+- **Per-channel rate limits never applied to REST-routed channels.** The
+  middleware matched the first path segment against channel names; for a REST
+  channel that segment is the route prefix, so the limiter was never found and
+  the channel fell through to the platform-wide limit. Channel resolution now
+  mirrors the data handler exactly, including the `/async` suffix.
+- **One broken channel made the instance unmanageable.** A channel whose stored
+  config no longer parses used to fail *every* admin operation that triggers a
+  reload — activate, archive, delete, rollout — with a 500, and stopped the
+  cluster epoch watcher resyncing all nodes. Such channels are now quarantined
+  individually: still refused at every ingress (with a 503 naming the reason,
+  and routed to the DLQ on the Kafka path), but the rest of the reload
+  succeeds. Boot no longer aborts over one bad row either.
+- **Connectors that failed to load vanished without a signal.** Env
+  substitution, JSON parsing, secret resolution and deserialization failures
+  are now recorded and reported on `/health` and the admin list.
+- **`ORION_RATE_LIMIT__ENABLED=true` with no config file failed startup
+  validation.** `RateLimitConfig` and `AppConfig` derived `Default` while also
+  carrying `#[serde(default = "…")]` attributes with different values, so "the
+  default" depended on how the config was produced. Both now implement
+  `Default` in terms of their `default_*` functions, and the config-docs drift
+  test fails on any future divergence.
+
 ## [1.0.0] - 2026-07-26
 
 Multi-instance (HA) support: N replicas of `orion-server` behind a load
