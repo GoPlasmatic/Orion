@@ -625,3 +625,135 @@ async fn test_update_connector_enabled_flag() {
     let body = body_json(resp).await;
     assert_eq!(body["data"]["enabled"], false);
 }
+
+// ============================================================
+// R4: config-only updates are validated against the stored type
+// ============================================================
+
+#[tokio::test]
+async fn test_update_connector_config_only_invalid_rejected() {
+    let app = common::test_app().await;
+
+    // Create a db connector (stored type: db)
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "r4-db-conn",
+                "name": "r4-db",
+                "connector_type": "db",
+                "config": {"connection_string": "sqlite::memory:", "driver": "sqlite"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Config-only update (no connector_type) that is invalid for type db
+    // (missing connection_string) must be rejected, not silently persisted.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/r4-db-conn",
+            Some(json!({"config": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("connector config"),
+        "expected connector config error, got {body:?}"
+    );
+
+    // The stored config must be unchanged
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/connectors/r4-db-conn",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let config_json = body["data"]["config_json"].as_str().unwrap();
+    assert!(
+        config_json.contains("\"driver\":\"sqlite\""),
+        "stored config should be unchanged, got {config_json}"
+    );
+}
+
+#[tokio::test]
+async fn test_update_connector_config_only_valid_accepted() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "r4-db-conn-ok",
+                "name": "r4-db-ok",
+                "connector_type": "db",
+                "config": {"connection_string": "sqlite::memory:", "driver": "sqlite"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // A valid config-only update still passes
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/r4-db-conn-ok",
+            Some(json!({"config": {"connection_string": "sqlite:file.db", "driver": "sqlite"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_update_connector_config_only_wrong_shape_for_stored_type() {
+    let app = common::test_app().await;
+
+    // Create a cache connector; then try to push an invalid backend via a
+    // config-only update.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "r4-cache-conn",
+                "name": "r4-cache",
+                "connector_type": "cache",
+                "config": {"backend": "memory"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/r4-cache-conn",
+            Some(json!({"config": {"backend": "memcached"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

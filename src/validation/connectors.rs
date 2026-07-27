@@ -4,7 +4,10 @@ use crate::storage::repositories::connectors::{CreateConnectorRequest, UpdateCon
 
 use super::common::{validate_id, validate_name};
 
-fn validate_connector_config(
+/// Validate a connector `config` blob against an explicit type. Public so the
+/// update handler can validate a config-only update against the stored
+/// connector's type (R4).
+pub fn validate_connector_config(
     connector_type: ConnectorType,
     config: &serde_json::Value,
 ) -> Result<(), OrionError> {
@@ -82,7 +85,10 @@ pub fn validate_update_connector(req: &UpdateConnectorRequest) -> Result<(), Ori
     if let Some(ref name) = req.name {
         validate_name(name, "Name")?;
     }
-    // If both type and config are provided, validate config against the new type
+    // If both type and config are provided, validate config against the new
+    // type. A config without a type is validated by the update handler
+    // against the stored connector's type (R4) — the stored row is not
+    // available here.
     if let (Some(ct), Some(config)) = (req.connector_type, req.config.as_ref()) {
         validate_connector_config(ct, config)?;
     }
@@ -236,5 +242,34 @@ mod tests {
             enabled: None,
         };
         assert!(validate_update_connector(&req).is_ok());
+    }
+
+    // R4: config-without-type passes `validate_update_connector` (the stored
+    // type is not available here) — the update handler validates it against
+    // the stored connector's type via `validate_connector_config`.
+
+    #[test]
+    fn test_connector_config_db_missing_connection_string() {
+        assert!(validate_connector_config(ConnectorType::Db, &json!({})).is_err());
+    }
+
+    #[test]
+    fn test_connector_config_db_valid() {
+        let config = json!({"connection_string": "sqlite::memory:", "driver": "sqlite"});
+        assert!(validate_connector_config(ConnectorType::Db, &config).is_ok());
+    }
+
+    #[test]
+    fn test_connector_config_cache_invalid_backend() {
+        let config = json!({"backend": "memcached"});
+        assert!(validate_connector_config(ConnectorType::Cache, &config).is_err());
+    }
+
+    #[test]
+    fn test_connector_config_cache_redis_requires_url() {
+        let config = json!({"backend": "redis"});
+        assert!(validate_connector_config(ConnectorType::Cache, &config).is_err());
+        let config = json!({"backend": "redis", "url": "redis://localhost:6379"});
+        assert!(validate_connector_config(ConnectorType::Cache, &config).is_ok());
     }
 }

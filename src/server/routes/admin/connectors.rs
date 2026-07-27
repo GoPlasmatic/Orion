@@ -136,6 +136,21 @@ pub(crate) async fn update_connector(
     OrionJson(req): OrionJson<UpdateConnectorRequest>,
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_connector(&req)?;
+    // R4: a config-only update (no connector_type in the request) must still
+    // be validated — against the stored connector's type.
+    if req.connector_type.is_none()
+        && let Some(ref config) = req.config
+    {
+        let stored = state.connector_repo.get_by_id(&id).await?;
+        let stored_type: crate::connector::ConnectorType =
+            serde_json::from_value(Value::String(stored.connector_type.clone())).map_err(|_| {
+                OrionError::Internal(format!(
+                    "Stored connector '{id}' has unknown type '{}'",
+                    stored.connector_type
+                ))
+            })?;
+        crate::validation::validate_connector_config(stored_type, config)?;
+    }
     let connector = state.connector_repo.update(&id, &req).await?;
     evict_connector_pools(&state, &connector.name).await;
     audit_log(
