@@ -12,6 +12,88 @@ balancer, sharing one Postgres/MySQL + Redis, behave as a single logical
 system. With `cluster.enabled = false` (the default) behavior is unchanged.
 See `multi-instance-ha.md` for the full plan.
 
+> **Upgrading from 0.3.0?** Read the
+> [Upgrade Guide](https://goplasmatic.github.io/Orion/getting-started/upgrading.html).
+> It expands every item in Breaking below into what changed, how you'll notice,
+> and what to do — with the SQL and PromQL to check your deployment first.
+
+### Breaking
+
+- **Rate-limit client identity is the TCP peer address.** Forwarded headers
+  (`X-Forwarded-For` / `X-Real-IP`) are honored only when the peer falls inside
+  the new `rate_limit.trusted_proxies` CIDR list, which is **empty by default**.
+  Deployments behind a proxy, load balancer, or ingress that do not configure it
+  will collapse every client into a single bucket. Applies when
+  `rate_limit.enabled = true` (still `false` by default), and to per-channel
+  `key_logic` expressions referencing `client_ip`. A malformed entry is a hard
+  startup error even when rate limiting is disabled.
+- **Metrics labels changed — dashboards and alerts will break silently.**
+  `rate_limit_rejections_total` lost its unbounded `client` label and gained
+  `scope` (channel name, or `admin` / `data` / `operational`). Channel-labelled
+  metrics (`messages_total`, `message_duration_seconds`,
+  `channel_executions_total`) now emit the literal `_unknown` for unregistered
+  channels on the HTTP and queue paths. No metric was renamed or removed.
+- **Channels with unparseable `config_json` or uncompilable `validation_logic`
+  refuse to load, in all modes.** Previously a warning, after which the channel
+  served with its validation, dedup, rate limit, cache, and backpressure guards
+  silently disabled. A stored config that was quietly broken now exits the
+  process at startup, and fails engine reload — plus every admin mutation that
+  triggers one — with `500 CONFIG_ERROR`. Registry rebuilds are all-or-nothing,
+  so a refusal leaves the running engine untouched.
+- **Kafka delivery is at-least-once.** Offsets advance only on successful
+  processing or a *confirmed* DLQ write. With `kafka.dlq.enabled = false` (the
+  default) a poison message now blocks the consumer and retries with capped
+  backoff (1s → 60s) instead of being dropped; because messages are processed
+  sequentially, this halts every subscribed partition on that instance.
+  **Enabling `[kafka.dlq]` is the recommended action.**
+- **Data-plane error bodies are sanitized.** Entries in `errors[]` are reduced
+  to a code, a fixed generic message, and an optional `task_id`; correlate via
+  the top-level `request_id` (also the `x-request-id` header) and read full
+  detail from the persisted trace. Cached responses store the sanitized body.
+- **Response cache keys fold in method, route params, and query string.**
+  Existing cached entries are orphaned — never mis-served — and expire by
+  `cache.ttl_secs` (default 300s).
+- **Open circuit breakers return `503 CIRCUIT_OPEN`** instead of
+  `500 ENGINE_ERROR`. No `Retry-After` header. With `continue_on_error: true`
+  the request still returns `200` with a sanitized `TASK_ERROR`; alert on
+  `circuit_breaker_rejections_total` rather than the status code.
+- **A full trace queue returns `503`** (code `SERVICE_UNAVAILABLE`, message
+  `Trace queue is full …`) on the async submission path instead of blocking
+  indefinitely. Sized by `queue.buffer_size` / `queue.max_queue_memory_bytes`.
+- **Unimplemented secret schemes are rejected.** `vault://`, `aws-sm://`,
+  `gcp-sm://`, and `azure-kv://` in connector configs were passed through and
+  **used as literal passwords**; the connector is now skipped at load with an
+  `ERROR` log. A connector that appeared to work was never authenticating as
+  intended — rotate the credential.
+- **`GET /api/v1/admin/connectors` redacts userinfo inside URL-shaped values**
+  at any depth (`https://user:******@host`), which finally covers `url` and
+  `brokers[]`. Credential-free URLs are still returned in full. Do not
+  round-trip a connector config through `GET` → `PUT`: updates replace
+  `config_json` wholesale and would persist the mask.
+- **`GET /api/v1/admin/audit-logs` rejects unknown query parameters with `400`**
+  instead of silently returning unfiltered results. No other endpoint changed.
+- **`db_read` returns values for `float4`/`REAL` and blob columns** instead of
+  `null`, and errors on genuinely undecodable columns and non-finite floats.
+  Blobs stringify as UTF-8 when valid, else lowercase hex. Also affects
+  `data_query` and `data_write`'s `RETURNING` path. A `null` in a result now
+  means only SQL NULL.
+- **Trace read endpoints require admin auth.** `GET /api/v1/data/traces` and
+  `/traces/{id}` return `401` for previously-open callers when
+  `admin_auth.enabled = true`. No effect when admin auth is disabled.
+- **Rollout bucketing is caller-stable, not random per request** — see Added.
+  A canary now exposes a stable subset of callers rather than re-drawing on
+  every call; aggregate percentages are unchanged.
+- **The Helm chart and HA compose default to `ORION_ENV=production` and require
+  admin API keys.** `helm install` without `adminAuth.apiKeys` or
+  `adminAuth.existingSecret` fails at template time by design
+  (`devStack.enabled=true` is the dev escape hatch); `docker compose -f
+  docker-compose.ha.yml up` aborts without `ORION_ADMIN_API_KEYS`. Note that
+  `environment = "production"` also rejects the CORS wildcard, and the default
+  `cors.allowed_origins` is `["*"]` — set explicit origins before flipping.
+- **Removed:** the unread `backpressure.queue_depth` channel-config field.
+  Stored configs still carrying the key deserialize normally (there is no
+  `deny_unknown_fields`), so this needs no migration.
+
 ### Added
 
 - **`[cluster]` config section** — `enabled`, `redis_url`,

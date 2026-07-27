@@ -13,6 +13,7 @@
 - [MCP Server Setup](./tutorials/mcp-setup.md)
 - [Orion + Claude Code](./tutorials/claude-code.md)
 - [Prompt Pack (any LLM)](./getting-started/prompt-pack.md)
+- [Upgrading to 1.0.0](./getting-started/upgrading.md)
 
 # Architecture
 
