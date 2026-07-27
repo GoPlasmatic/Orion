@@ -15,10 +15,12 @@
 //!    the suite until it appears in both documents — this is what C1/C3 were.
 //! 3. **No document invents a setting.** A key that is not a real field fails,
 //!    which is how `server.workers` (C4) survived for so long.
-//! 4. **Every env override is documented, and only real ones.** The `ORION_*`
-//!    literals in `src/config/env_overrides.rs` are the source of truth for the
-//!    reference page's env-var column; a row claiming "no env var" (`—`) is
-//!    checked against the same list.
+//! 4. **Every env override is documented, and only real ones.** The overrides
+//!    in `src/config/env_overrides.rs` are the source of truth for the
+//!    reference page's env-var column: the `ov*!(path)` one-liners (whose
+//!    variable names derive from the field path) plus the hand-written
+//!    `"ORION_*"` literals for the alias/enum/list/pair shapes. A row claiming
+//!    "no env var" (`—`) is checked against the same list.
 //!
 //! ## Conventions this relies on
 //!
@@ -159,8 +161,11 @@ fn flatten(prefix: &str, value: &toml::Value, out: &mut BTreeMap<String, toml::V
     }
 }
 
-/// Every `ORION_*` literal in `env_overrides.rs`, excluding its test module
-/// (which names the same vars again, plus nothing new).
+/// Every env override `env_overrides.rs` honours, excluding its test module.
+/// Two shapes exist: `ov*!(path ...)` one-liners whose variable name derives
+/// from the field path (the same `ORION_SECTION__KEY` rule as
+/// [`expected_env_name`]), and hand-written `"ORION_*"` literals for the
+/// alias/enum/list/pair special cases.
 fn env_override_names() -> BTreeSet<String> {
     let source = read(ENV_OVERRIDES_RS);
     let production = source
@@ -174,10 +179,29 @@ fn env_override_names() -> BTreeSet<String> {
         let end = rest
             .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
             .unwrap_or(rest.len());
-        names.insert(rest[..end].to_string());
+        // Skip the bare "ORION_" prefix literal inside env_key itself.
+        if end > "ORION_".len() {
+            names.insert(rest[..end].to_string());
+        }
+    }
+    for line in production.lines() {
+        let trimmed = line.trim();
+        let rest = ["ov!(", "ov_opt!(", "ov_opt_str!(", "ov_list!("]
+            .iter()
+            .find_map(|prefix| trimmed.strip_prefix(prefix));
+        if let Some(rest) = rest {
+            let path = rest
+                .split([':', ')'])
+                .next()
+                .unwrap_or("")
+                .trim();
+            if !path.is_empty() {
+                names.insert(format!("ORION_{}", path.to_uppercase().replace('.', "__")));
+            }
+        }
     }
     assert!(
-        names.len() > 50,
+        names.len() > 90,
         "env-override extraction found only {} names — the parser is broken, not the docs",
         names.len()
     );
