@@ -369,6 +369,7 @@ shared HTTP client — no dedicated ES driver:
 | `auth` | `null` | Authentication config (bearer, basic, or apikey) |
 | `request_timeout_ms` | `null` | Per-request timeout |
 | `retry` | 3 retries, 1000ms | Retry with exponential backoff |
+| `max_response_size` | 10 MB | Maximum response body size to prevent OOM |
 | `allow_private_urls` | `false` | Allow private/internal IPs (SSRF protection) |
 | `operations` | all allowed | [Operation gates](#operation-gates) |
 

@@ -181,7 +181,7 @@ async fn run_es_search(
 
     let resp = req.send().await.map_err(to_exec_error)?;
     let status = resp.status();
-    let body: Value = resp.json().await.map_err(to_exec_error)?;
+    let body: Value = super::connector_helpers::read_es_body(resp, es.max_response_size).await?;
     if !status.is_success() {
         return Err(DataflowError::function_execution(
             format!("Elasticsearch search failed ({status}): {body}"),

@@ -59,6 +59,37 @@ pub async fn es_request(
     Ok(req)
 }
 
+/// Read an ES response body as JSON, enforcing the connector's
+/// `max_response_size` (F12) — the same guard `execute_request` applies to
+/// `http_call` responses. Without it a large `_search` result was buffered
+/// wholesale.
+pub async fn read_es_body(
+    resp: reqwest::Response,
+    max_size: usize,
+) -> Result<Value, DataflowError> {
+    if let Some(len) = resp.content_length()
+        && len as usize > max_size
+    {
+        return Err(DataflowError::function_execution(
+            format!(
+                "Elasticsearch response declared Content-Length {len} exceeds                  limit of {max_size} bytes"
+            ),
+            None,
+        ));
+    }
+    let bytes = resp.bytes().await.map_err(to_exec_error)?;
+    if bytes.len() > max_size {
+        return Err(DataflowError::function_execution(
+            format!(
+                "Elasticsearch response body is {} bytes, exceeding limit of {max_size} bytes",
+                bytes.len()
+            ),
+            None,
+        ));
+    }
+    serde_json::from_slice(&bytes).map_err(to_exec_error)
+}
+
 /// Wrap a handler body with profile recording, peeking the `connector`
 /// field from `input` to label the sample. Replaces the
 /// `let connector_peek = input.get("connector").and_then(...);
@@ -325,6 +356,7 @@ mod tests {
 
     fn es_config(allow_private_urls: bool) -> EsConnectorConfig {
         EsConnectorConfig {
+            max_response_size: 10 * 1024 * 1024,
             url: "http://127.0.0.1:9200".to_string(),
             auth: None,
             request_timeout_ms: None,

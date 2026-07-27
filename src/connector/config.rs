@@ -201,6 +201,11 @@ pub struct EsConnectorConfig {
     /// Allow requests to private/internal IP addresses. Default false (SSRF protection).
     #[serde(default)]
     pub allow_private_urls: bool,
+    /// Maximum response body size in bytes (F12), same default as the HTTP
+    /// connector — an unbounded ES response was the one egress read left
+    /// without a cap.
+    #[serde(default = "default_max_response_size")]
+    pub max_response_size: usize,
     /// Which operations workflows may run through this connector.
     #[serde(default)]
     pub operations: OperationGates,

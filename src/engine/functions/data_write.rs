@@ -275,10 +275,11 @@ fn es_url(base: &str, segments: &[&str], query: &[(&str, &str)]) -> Result<Strin
 /// treats 409 as the "conflict → do nothing" no-op).
 async fn send_es(
     req: reqwest::RequestBuilder,
+    max_response_size: usize,
 ) -> Result<(reqwest::StatusCode, Value), DataflowError> {
     let resp = req.send().await.map_err(to_exec_error)?;
     let status = resp.status();
-    let body: Value = resp.json().await.map_err(to_exec_error)?;
+    let body: Value = super::connector_helpers::read_es_body(resp, max_response_size).await?;
     Ok((status, body))
 }
 
@@ -311,7 +312,7 @@ async fn run_es_write(
                 .await?
                 .header("Content-Type", "application/x-ndjson")
                 .body(bulk_ndjson(&docs));
-            let (status, body) = send_es(req).await?;
+            let (status, body) = send_es(req, es.max_response_size).await?;
             if !status.is_success() {
                 return Err(es_write_error(status, &body));
             }
@@ -361,7 +362,7 @@ async fn run_es_write(
             let req = es_request(client, es, reqwest::Method::POST, &url)
                 .await?
                 .json(&body);
-            let (status, resp) = send_es(req).await?;
+            let (status, resp) = send_es(req, es.max_response_size).await?;
             if !status.is_success() {
                 return Err(es_write_error(status, &resp));
             }
@@ -380,7 +381,7 @@ async fn run_es_write(
             let req = es_request(client, es, reqwest::Method::PUT, &url)
                 .await?
                 .json(&doc);
-            let (status, resp) = send_es(req).await?;
+            let (status, resp) = send_es(req, es.max_response_size).await?;
             if status == reqwest::StatusCode::CONFLICT {
                 // The document exists — `action: "nothing"` semantics.
                 return Ok(json!({ "matched": 1, "modified": 0 }));
@@ -407,7 +408,7 @@ async fn run_by_query(
     let req = es_request(client, es, reqwest::Method::POST, &url)
         .await?
         .json(body);
-    let (status, resp) = send_es(req).await?;
+    let (status, resp) = send_es(req, es.max_response_size).await?;
     if !status.is_success() {
         return Err(es_write_error(status, &resp));
     }
