@@ -285,6 +285,48 @@ async fn test_unfiltered_update_rejected() {
 }
 
 #[tokio::test]
+async fn test_vacuous_filter_does_not_bypass_the_unfiltered_guard() {
+    // A filter that matches every row must be treated as no filter at all.
+    // Before proposal W1 the guard keyed on the presence of the `filter` key,
+    // so any of these deleted the whole table while skipping both the
+    // `"all": true` acknowledgement and `write.allow_unfiltered`.
+    for (label, vacuous) in [
+        ("empty and", json!({ "and": [] })),
+        ("negated empty or", json!({ "!": { "or": [] } })),
+        ("nested empty and", json!({ "and": [{ "and": [] }] })),
+    ] {
+        let conn = "dw-vac";
+        let app = sqlite_app(conn, "dw_vac").await;
+
+        let tasks = vec![
+            ddl(
+                conn,
+                "t_ddl",
+                "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, status TEXT)",
+            ),
+            dw(
+                conn,
+                "t_w",
+                json!({ "op": "delete", "target": "users", "filter": vacuous }),
+            ),
+        ];
+        common::create_and_activate_channel(
+            &app,
+            "ch-dw-vac",
+            common::workflow_with_tasks("dw", json!(tasks)),
+        )
+        .await;
+
+        let (status, body) = post(&app, "ch-dw-vac", json!({ "data": {} })).await;
+        assert!(
+            is_rejection(status, &body),
+            "a '{label}' filter restricts nothing and must be rejected as unfiltered, \
+             got status={status} body={body}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_unfiltered_update_allowed_with_all_and_config() {
     // With write.allow_unfiltered on and `"all": true`, an unfiltered update runs.
     let config = AppConfig {

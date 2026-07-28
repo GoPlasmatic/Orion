@@ -135,7 +135,7 @@ impl DataWriteHandler {
             }
             .into());
         }
-        if matches!(w.op, WriteOp::Update | WriteOp::Delete) && !w.filter_present {
+        if matches!(w.op, WriteOp::Update | WriteOp::Delete) && !w.effective_filter {
             if !w.all {
                 return Err(WriteError::UnfilteredMutation {
                     op: w.op.as_str().to_string(),

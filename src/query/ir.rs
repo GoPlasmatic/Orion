@@ -62,6 +62,46 @@ pub enum Cond {
     },
 }
 
+impl Cond {
+    /// Whether this condition is satisfied by *every* row, i.e. it excludes
+    /// nothing.
+    ///
+    /// This is the predicate the unfiltered-mutation guard keys on. It must be
+    /// semantic rather than structural: `{"and": []}` lowers to [`Cond::True`],
+    /// but `{"!": {"or": []}}` lowers to `Not(False)` and `{"and": [{"and": []}]}`
+    /// to `And([True])` — all three match every row, and only the first is
+    /// literally `Cond::True`. Treating just the literal node as unfiltered let
+    /// the other shapes drive an unbounded `DELETE`/`UPDATE`.
+    ///
+    /// Deliberately conservative: anything not provably total returns `false`,
+    /// so an unrecognised shape is treated as a real filter rather than waved
+    /// through as vacuous.
+    pub fn is_always_true(&self) -> bool {
+        match self {
+            Cond::True => true,
+            Cond::False => false,
+            // An empty `And` is vacuously true — `all` over an empty set.
+            Cond::And(items) => items.iter().all(Cond::is_always_true),
+            Cond::Or(items) => items.iter().any(Cond::is_always_true),
+            Cond::Not(inner) => inner.is_always_false(),
+            _ => false,
+        }
+    }
+
+    /// Dual of [`Cond::is_always_true`]: satisfied by no row at all.
+    pub fn is_always_false(&self) -> bool {
+        match self {
+            Cond::False => true,
+            Cond::True => false,
+            Cond::And(items) => items.iter().any(Cond::is_always_false),
+            // An empty `Or` is vacuously false — `any` over an empty set.
+            Cond::Or(items) => items.iter().all(Cond::is_always_false),
+            Cond::Not(inner) => inner.is_always_true(),
+            _ => false,
+        }
+    }
+}
+
 /// Relation quantifier. `Any` = `some`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Quant {

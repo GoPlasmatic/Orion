@@ -73,8 +73,16 @@ pub struct ResolvedWrite {
     pub set: Vec<(String, ir::Value)>,
     /// Lowered `filter` for `update`/`delete` (`None` when no `filter` was given).
     pub cond: Option<Cond>,
-    /// Whether a (non-null) `filter` key was present — drives the unfiltered guard.
-    pub filter_present: bool,
+    /// Whether the lowered filter actually restricts the affected rows — this,
+    /// not the mere presence of a `filter` key, drives the unfiltered guard.
+    ///
+    /// A filter that is satisfied by every row (`{"and": []}`, `{"!": {"or": []}}`,
+    /// `{"and": [{"and": []}]}`, …) restricts nothing: the statement affects the
+    /// whole table whether the renderer omits the `WHERE` clause or emits a
+    /// tautology. Keying the guard on key *presence* let any of these skip both
+    /// the `"all": true` acknowledgement and `write.allow_unfiltered`.
+    /// See [`Cond::is_always_true`].
+    pub effective_filter: bool,
     pub conflict: Option<ResolvedConflict>,
     /// Physical column names to return from mutated rows.
     pub returning: Vec<String>,
@@ -192,12 +200,14 @@ pub fn resolve_write(
     let set = parse_set(input.get("set"), params, reg, &target)?;
 
     // Filter (update / delete) — the query dialect's filter, lowered to `Cond`.
+    // The guard is computed from the *lowered* condition: a filter that folds to
+    // `Cond::True` restricts nothing and must be treated as unfiltered.
     let filter_node = input.get("filter").filter(|v| !v.is_null());
-    let filter_present = filter_node.is_some();
     let cond = match filter_node {
         Some(f) => Some(lower_with(f, params, reg, &target)?),
         None => None,
     };
+    let effective_filter = cond.as_ref().is_some_and(|c| !c.is_always_true());
 
     let conflict = parse_conflict(input.get("on_conflict"), reg, &target)?;
     let returning = parse_returning(input.get("returning"), reg, &target)?;
@@ -246,7 +256,7 @@ pub fn resolve_write(
         rows,
         set,
         cond,
-        filter_present,
+        effective_filter,
         conflict,
         returning,
         all,
@@ -600,9 +610,9 @@ mod tests {
     #[test]
     fn delete_without_filter_resolves_with_filter_absent() {
         // The unfiltered guard itself lives in the handler; resolve_write
-        // must faithfully report filter_present/all so the guard can act.
+        // must faithfully report effective_filter/all so the guard can act.
         let resolved = resolve(json!({ "op": "delete", "target": "orders" })).expect("resolves");
-        assert!(!resolved.filter_present);
+        assert!(!resolved.effective_filter);
         assert!(!resolved.all);
 
         let resolved =
@@ -611,5 +621,53 @@ mod tests {
             resolved.all,
             "the 'all' acknowledgement must survive parsing"
         );
+    }
+
+    #[test]
+    fn a_filter_that_folds_to_true_does_not_count_as_filtered() {
+        // Every renderer omits the WHERE clause for `Cond::True`, so a filter
+        // that lowers to it affects the whole table. Keying the guard on the
+        // presence of the `filter` key let these skip both `"all": true` and
+        // `write.allow_unfiltered` — an unbounded DELETE from one token.
+        for vacuous in [
+            json!({ "and": [] }),
+            json!({ "!": { "or": [] } }),
+            json!({ "and": [{ "and": [] }] }),
+        ] {
+            let resolved = resolve(json!({
+                "op": "delete",
+                "target": "orders",
+                "filter": vacuous.clone(),
+            }))
+            .expect("resolves");
+            assert!(
+                !resolved.effective_filter,
+                "filter {vacuous} restricts nothing and must not satisfy the guard"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_filter_counts_as_filtered() {
+        let resolved = resolve(json!({
+            "op": "delete",
+            "target": "orders",
+            "filter": { "==": [{ "field": "status" }, "cancelled"] },
+        }))
+        .expect("resolves");
+        assert!(resolved.effective_filter);
+    }
+
+    #[test]
+    fn an_unsatisfiable_filter_still_counts_as_filtered() {
+        // `Cond::False` restricts everything, which is the opposite problem —
+        // it must not be mistaken for "no filter" and trip the guard.
+        let resolved = resolve(json!({
+            "op": "delete",
+            "target": "orders",
+            "filter": { "or": [] },
+        }))
+        .expect("resolves");
+        assert!(resolved.effective_filter);
     }
 }
