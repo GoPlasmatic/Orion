@@ -11,6 +11,18 @@ on:
 permissions:
   contents: read
 
+# One group per PR: superseded pushes cancel the in-flight run — ten jobs
+# including two full test suites, a Docker build, and a container matrix.
+# Branch pushes (main, release/**, v*) group by COMMIT instead, so no two
+# pushes ever share a group and every pushed SHA runs to completion. This
+# cannot be done by queueing on a shared ref group: GitHub keeps at most
+# one running plus one pending run per group and CANCELS an older pending
+# run even with cancel-in-progress false — which would leave a SHA with no
+# completed run for the release-time ci-gate lookup to find.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -168,8 +180,12 @@ jobs:
       - name: Run doctests
         run: cargo test --doc
 
-  audit:
-    name: Security Audit
+  # Advisories AND license compatibility / bans / source policy over the
+  # whole tree (proposal T12) — deny.toml is the policy, including the one
+  # documented advisory ignore. Prebuilt binary + registry cache keep it
+  # fast; unlike the old `cargo audit` job, warnings-as-configured fail it.
+  deny:
+    name: Dependency Check (cargo-deny)
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -180,11 +196,36 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install cargo-audit
-        uses: taiki-e/install-action@cargo-audit
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Run audit
-        run: cargo audit
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Run cargo-deny
+        run: cargo deny check
+
+  # docs.yml only fires on merges touching docs/**, so without this a PR
+  # can break the book (dangling SUMMARY entry, bad include) and nobody
+  # notices until after merge. book.toml sets create-missing = false, so a
+  # missing SUMMARY target fails the build here instead of fabricating an
+  # empty page (proposal T25).
+  book:
+    name: Book (mdbook)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install mdbook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.5.2
+
+      - name: Build book
+        run: mdbook build docs
 
   # The image build breaks independently of cargo (system deps like the
   # rdkafka toolchain, base-image drift). Building on every PR keeps that
@@ -210,6 +251,10 @@ jobs:
           context: .
           platforms: linux/amd64
           push: false
+          # Same build-arg the release build passes (.dockerignore excludes
+          # .git/), so this job exercises the exact release build shape.
+          build-args: |
+            GIT_HASH=${{ github.sha }}
           cache-from: type=gha,scope=linux/amd64
           cache-to: type=gha,scope=linux/amd64,mode=max
 

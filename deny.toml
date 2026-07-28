@@ -1,0 +1,66 @@
+# cargo-deny configuration (proposal T12): advisories, license
+# compatibility, bans and source policy for the full dependency tree.
+# CI runs `cargo deny check` in the deny job; run it locally with:
+#   cargo install cargo-deny --locked && cargo deny check
+
+[graph]
+# Orion has no features — check the tree exactly as it builds.
+all-features = false
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071 — Marvin timing sidechannel in the `rsa` crate
+    # (no fixed release exists). Re-evaluated 2026-07-27 (proposal T11), now
+    # that MySQL is a live, container-tested backend rather than "we only
+    # use SQLite":
+    #
+    # `rsa` enters via sqlx-mysql's auth handshake, where the CLIENT
+    # encrypts the password with the SERVER's public key
+    # (caching_sha2_password / sha256_password over non-TLS connections).
+    # Marvin leaks timing from PRIVATE-key operations (decrypt/sign);
+    # Orion performs none — the private key lives on the MySQL server.
+    # Residual risk: on-path attackers reading password ciphertexts on
+    # untrusted networks; `?ssl-mode=REQUIRED` on the storage.url removes
+    # the RSA path entirely (the password rides inside TLS instead).
+    # Revisit if `rsa` ships a fix or sqlx swaps it out.
+    { id = "RUSTSEC-2023-0071", reason = "client-side RSA encrypt only (sqlx-mysql handshake); Marvin needs private-key ops" },
+]
+
+[licenses]
+version = 2
+# Permissive licenses compatible with distributing an Apache-2.0 project
+# as binaries and containers. Add here deliberately — no copyleft beyond
+# the weak file-level MPL-2.0.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[bans]
+# The ~600-crate tree inevitably carries duplicate minor versions; a hard
+# deny would be permanent noise. Wildcard requirements stay denied.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

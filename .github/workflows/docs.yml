@@ -25,8 +25,12 @@ jobs:
         with:
           persist-credentials: false
 
+      # Same pinned version as the ci.yml book job — the PR check must
+      # exercise the exact mdbook that deploys.
       - name: Install mdBook
-        uses: taiki-e/install-action@mdbook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.5.2
 
       - name: Build book
         run: mdbook build docs

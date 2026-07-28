@@ -68,8 +68,9 @@ are `#[ignore]`d so the default run stays Docker-free:
 
 ```bash
 # Integration binary: portable-dialect round-trips, raw-SQL backends,
-# Mongo/ES connectors, Redis cache/dedup, Kafka channels
-cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test
+# Mongo/ES connectors, Redis cache/dedup, column-type matrix, dynamic
+# inputs, Kafka channels
+cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test
 cargo test --test integration -- --ignored kafka_test
 
 # Orion's own storage on Postgres / MySQL

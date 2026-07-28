@@ -46,6 +46,7 @@ Reports are especially welcome for Orion's security-relevant surfaces:
 - Input validation, payload limits, and deserialization of untrusted JSON
 - Rate limiting, backpressure, and other abuse-prevention mechanisms
 
-Dependency advisories are tracked automatically (`cargo audit` runs in CI and
-Dependabot security updates are enabled) — no need to report those unless you
-can show Orion is exploitable through one.
+Dependency advisories are tracked automatically (`cargo deny check` runs in
+CI — advisories, licenses, bans, and sources per `deny.toml` — and Dependabot
+keeps crate and Actions versions current per `.github/dependabot.yml`) — no
+need to report those unless you can show Orion is exploitable through one.

@@ -7,7 +7,9 @@ src = "src"
 
 [build]
 build-dir = "book"
-create-missing = true
+# Fail on SUMMARY.md entries with no file instead of fabricating empty
+# pages (proposal T25).
+create-missing = false
 
 [output.html]
 additional-css = ["css/plasmatic.css", "css/custom.css", "css/asciinema-player.css"]
