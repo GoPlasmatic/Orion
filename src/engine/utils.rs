@@ -118,14 +118,37 @@ pub fn inject_rollout_bucket(message: &mut dataflow_rs::Message, identity: Optio
     );
 }
 
+/// Key injected for rollout routing and stripped again before the caller sees it.
+const ROLLOUT_BUCKET_KEY: &str = "_rollout_bucket";
+
 /// Remove the `_rollout_bucket` field from message data after processing.
-/// v3 has no `unset`; we write `Null` which downstream callers treat as absent.
+///
+/// dataflow-rs v3 has no `unset`, so this can only overwrite the key with
+/// `Null`. That is enough for workflow logic — which treats null as absent —
+/// but **not** for anything that serialises `data`: see
+/// [`data_without_rollout_bucket`], which every response and persistence path
+/// must use instead of `message.data()` directly.
 pub fn remove_rollout_bucket(message: &mut dataflow_rs::Message) {
     set_nested_value(
         &mut message.context,
         "data._rollout_bucket",
         OwnedDataValue::Null,
     );
+}
+
+/// The message's `data` as JSON, with the synthetic `_rollout_bucket` key gone.
+///
+/// Because [`remove_rollout_bucket`] can only null the key rather than delete
+/// it, every success body used to carry `data._rollout_bucket: null` — a field
+/// the caller never sent — and it was persisted into `traces.result_json` too
+/// (proposal F31). Stripping happens here, at the serialisation boundary, so
+/// there is one place to keep correct.
+pub fn data_without_rollout_bucket(message: &dataflow_rs::Message) -> Value {
+    let mut data = serde_json::to_value(message.data()).unwrap_or(Value::Null);
+    if let Some(obj) = data.as_object_mut() {
+        obj.remove(ROLLOUT_BUCKET_KEY);
+    }
+    data
 }
 
 #[cfg(test)]
@@ -236,5 +259,42 @@ mod tests {
             .map(|v| v.is_null())
             .unwrap_or(true);
         assert!(is_absent, "bucket should be removed or null");
+    }
+
+    /// Build a message whose `context.data` is `data` — the shape the request
+    /// path actually produces (`Message::from_value` fills `payload`, not
+    /// `context`).
+    fn message_with_data(data: Value) -> dataflow_rs::Message {
+        let mut msg = dataflow_rs::Message::from_value(&json!({}));
+        set_nested_value(&mut msg.context, "data", OwnedDataValue::from(&data));
+        msg
+    }
+
+    #[test]
+    fn rollout_bucket_never_reaches_the_serialized_body() {
+        // The key can only be nulled, not deleted, so it used to serialise into
+        // every success body and into traces.result_json as a field the caller
+        // never sent (F31). The response view must not contain it at all.
+        let mut msg = message_with_data(json!({"order_id": 7}));
+        inject_rollout_bucket(&mut msg, Some("caller-1"));
+        assert!(
+            msg.data().get("_rollout_bucket").is_some(),
+            "precondition: routing injected the bucket"
+        );
+        remove_rollout_bucket(&mut msg);
+
+        let body = data_without_rollout_bucket(&msg);
+        assert_eq!(
+            body,
+            json!({"order_id": 7}),
+            "the response body must be exactly what the caller sent"
+        );
+    }
+
+    #[test]
+    fn data_view_survives_non_object_data() {
+        // `data` need not be an object; stripping must not panic or corrupt it.
+        let msg = message_with_data(json!([1, 2, 3]));
+        assert_eq!(data_without_rollout_bucket(&msg), json!([1, 2, 3]));
     }
 }

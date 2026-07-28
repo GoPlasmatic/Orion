@@ -55,12 +55,14 @@ impl AsyncFunctionHandler for CacheWriteHandler {
                 .await
                 .map_err(to_exec_error)?;
 
-            let value_str = match value {
-                Value::String(s) => s,
-                other => serde_json::to_string(&other).map_err(|e| {
-                    DataflowError::Validation(format!("Failed to serialize value for cache: {e}"))
-                })?,
-            };
+            // Always JSON-encode, including strings, so `cache_read` is the
+            // exact inverse. Storing strings raw made the round-trip lossy:
+            // writing "123" stored `123`, which read back as the *number* 123,
+            // and "true"/"null" likewise changed type — silently breaking any
+            // downstream JSONLogic comparison (proposal N13).
+            let value_str = serde_json::to_string(&value).map_err(|e| {
+                DataflowError::Validation(format!("Failed to serialize value for cache: {e}"))
+            })?;
 
             if let Some(ttl) = ttl {
                 backend

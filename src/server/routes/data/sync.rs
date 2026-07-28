@@ -262,7 +262,7 @@ pub(super) async fn process_sync_for_channel(
             let response = json!({
                 "id": message.id(),
                 "status": "ok",
-                "data": message.data(),
+                "data": crate::engine::utils::data_without_rollout_bucket(&message),
                 "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
             });
 
@@ -283,7 +283,7 @@ pub(super) async fn process_sync_for_channel(
                 Some(json!({
                     "id": message.id(),
                     "status": "ok",
-                    "data": message.data(),
+                    "data": crate::engine::utils::data_without_rollout_bucket(&message),
                     "errors": sanitize_errors(message.errors()),
                     "request_id": request_id,
                 }))

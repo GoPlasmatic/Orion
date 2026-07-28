@@ -152,6 +152,26 @@ pub fn is_mongo(conn: &str) -> bool {
     conn.starts_with("mongodb://") || conn.starts_with("mongodb+srv://")
 }
 
+/// Refuse a MongoDB connector for a handler that speaks SQL.
+///
+/// `require_db_connector` only checks the `ConnectorConfig` variant, and both
+/// SQL and MongoDB connectors are `Db`. Without this, a `mongodb://` string
+/// reached `AnyPool` and surfaced as an opaque driver error rather than a
+/// validation one — the mirror of the `mongo_read` gap (proposal F29).
+pub fn reject_mongo_connector(
+    function: &str,
+    connector_name: &str,
+    db_config: &crate::connector::DbConnectorConfig,
+) -> Result<(), DataflowError> {
+    if is_mongo(&db_config.connection_string) {
+        return Err(DataflowError::Validation(format!(
+            "{function} requires a SQL connector, but '{connector_name}' is a MongoDB \
+             connector — use mongo_read or data_query for MongoDB"
+        )));
+    }
+    Ok(())
+}
+
 /// Looks up a connector by name in the registry, returning a function-execution
 /// error if not found.
 pub async fn resolve_connector(

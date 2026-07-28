@@ -10,8 +10,9 @@ use mongodb::bson::{self, Document};
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, extract_output_path, profile_handler, require_db_connector, require_op_allowed,
-    require_str_field, resolve_connector, resolve_value, timed_query, to_exec_error,
+    apply_output, extract_output_path, is_mongo, profile_handler, require_db_connector,
+    require_op_allowed, require_str_field, resolve_connector, resolve_value, timed_query,
+    to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -51,6 +52,16 @@ impl AsyncFunctionHandler for MongoReadHandler {
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
             let db_config = require_db_connector(&connector_config, connector_name)?;
+            // `require_db_connector` only checks the ConnectorConfig variant, so
+            // a SQL connector reached the Mongo driver and produced an opaque
+            // driver error instead of a validation one. `data_query` already
+            // makes this distinction; `mongo_read` did not (proposal F29).
+            if !is_mongo(&db_config.connection_string) {
+                return Err(DataflowError::Validation(format!(
+                    "mongo_read requires a MongoDB connector, but '{connector_name}' has a \
+                     non-MongoDB connection string (expected a mongodb:// or mongodb+srv:// URL)"
+                )));
+            }
             require_op_allowed(&db_config.operations, "read", connector_name)?;
 
             let client = self

@@ -7,9 +7,9 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, bind_json_params, extract_output_path, profile_handler, require_db_connector,
-    require_op_allowed, require_str_field, resolve_bind_params, resolve_connector, timed_query,
-    to_exec_error,
+    apply_output, bind_json_params, extract_output_path, profile_handler, reject_mongo_connector,
+    require_db_connector, require_op_allowed, require_str_field, resolve_bind_params,
+    resolve_connector, timed_query, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
@@ -41,6 +41,7 @@ impl AsyncFunctionHandler for DbWriteHandler {
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
             let db_config = require_db_connector(&connector_config, connector_name)?;
+            reject_mongo_connector("db_write", connector_name, db_config)?;
             // Raw SQL cannot be classified per-op; it has its own gate.
             require_op_allowed(&db_config.operations, "raw_write", connector_name)?;
 

@@ -47,6 +47,10 @@ impl AsyncFunctionHandler for CacheReadHandler {
 
             let value = backend.get(&key).await.map_err(to_exec_error)?;
 
+            // `cache_write` JSON-encodes everything, so parsing is its exact
+            // inverse. The raw-string fallback is kept deliberately: a key
+            // written by something other than Orion may hold a bare string,
+            // and surfacing that as a string beats failing the task.
             let result = match value {
                 Some(v) => serde_json::from_str::<Value>(&v).unwrap_or(Value::String(v)),
                 None => Value::Null,

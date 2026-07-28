@@ -166,6 +166,40 @@ async fn test_channel_without_timeout_succeeds() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+#[tokio::test]
+async fn test_response_body_carries_no_internal_rollout_key() {
+    // Rollout routing injects `data._rollout_bucket` and can only null it again
+    // (dataflow-rs v3 has no `unset`), so every success body used to carry
+    // `"_rollout_bucket": null` — a field the caller never sent, also persisted
+    // into traces.result_json (proposal F31).
+    let app = common::test_app().await;
+
+    common::create_and_activate_channel(
+        &app,
+        "no-leak-ch",
+        common::simple_log_workflow("No Leak Workflow"),
+    )
+    .await;
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/no-leak-ch",
+            Some(json!({"data": {"key": "value"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = common::body_json(resp).await;
+    let data = body["data"].as_object().expect("data object");
+    assert!(
+        !data.contains_key("_rollout_bucket"),
+        "internal routing key leaked into the response: {}",
+        body["data"]
+    );
+}
+
 // ============================================================
 // Per-channel input validation via validation_logic
 // ============================================================

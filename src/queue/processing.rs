@@ -19,11 +19,20 @@ fn serialize_result_with_profile(
     message: &dataflow_rs::Message,
     profile: Option<&Arc<crate::engine::profile::ProfileCollector>>,
 ) -> Result<String, serde_json::Error> {
-    let Some(p) = profile else {
-        return serde_json::to_string(message);
-    };
     let mut v = serde_json::to_value(message)?;
-    if let Some(obj) = v.as_object_mut() {
+    // The rollout key can only be nulled, not deleted (see
+    // engine::utils::remove_rollout_bucket), so strip it here or it is
+    // persisted into traces.result_json as a field the caller never sent (F31).
+    if let Some(data) = v
+        .get_mut("context")
+        .and_then(|c| c.get_mut("data"))
+        .and_then(|d| d.as_object_mut())
+    {
+        data.remove("_rollout_bucket");
+    }
+    if let Some(p) = profile
+        && let Some(obj) = v.as_object_mut()
+    {
         obj.insert(
             "_orion".to_string(),
             serde_json::json!({ "profile": p.to_json() }),
