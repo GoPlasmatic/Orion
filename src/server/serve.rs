@@ -124,12 +124,7 @@ pub async fn serve_plain_http(
     // timeout counts from that point, bounding the in-flight wait.
     let (drained_tx, drained_rx) = tokio::sync::oneshot::channel::<()>();
     let gate = async move {
-        super::drain::drain_gate(
-            shutdown,
-            ready,
-            std::time::Duration::from_secs(drain_secs),
-        )
-        .await;
+        super::drain::drain_gate(shutdown, ready, std::time::Duration::from_secs(drain_secs)).await;
         let _ = drained_tx.send(());
     };
     let serve = axum::serve(
