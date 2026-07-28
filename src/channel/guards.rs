@@ -74,10 +74,14 @@ pub fn validate_input(
                 }
             }
             Err(e) => {
+                // The detail is logged, not returned: it describes the shape of
+                // the channel's own `validation_logic`, and the data plane is
+                // anonymous (proposal G4). The failed-predicate arm above is
+                // already opaque; these two must agree.
                 tracing::warn!(channel = %channel, error = %e, "validation_logic evaluation failed, rejecting");
-                return Err(OrionError::BadRequest(format!(
-                    "Input validation error: {e}"
-                )));
+                return Err(OrionError::BadRequest(
+                    "Input validation failed".to_string(),
+                ));
             }
         }
     }

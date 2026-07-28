@@ -226,8 +226,11 @@ pub(crate) async fn archive_latest_active<T: VersionedRow + HasVersion>(
             .order_by(spec.version_col.clone(), Order::Desc)
             .limit(1),
     );
+    // 404, not 400: every sibling lookup in this module maps a missing row to
+    // NotFound, and "which status code does a missing entity give?" should not
+    // depend on which repository method you happened to call (proposal G7).
     let active: T = fetch_required(pool, &sql, values, || {
-        OrionError::BadRequest(format!("No active version found for {} '{id}'", spec.noun))
+        OrionError::NotFound(format!("No active version found for {} '{id}'", spec.noun))
     })
     .await?;
 

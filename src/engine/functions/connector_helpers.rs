@@ -20,7 +20,8 @@ pub fn require_op_allowed(
 ) -> Result<(), DataflowError> {
     if !gates.allows(op) {
         return Err(DataflowError::Validation(format!(
-            "operation '{op}' is disabled on connector '{connector_name}'"
+            "{}operation '{op}' is disabled on connector '{connector_name}'",
+            crate::errors::CONNECTOR_DETAIL_MARKER
         )));
     }
     Ok(())
@@ -192,7 +193,8 @@ pub fn require_db_connector<'a>(
     match config {
         ConnectorConfig::Db(c) => Ok(c),
         _ => Err(DataflowError::Validation(format!(
-            "Connector '{name}' is not a database connector"
+            "{}Connector '{name}' is not a database connector",
+            crate::errors::CONNECTOR_DETAIL_MARKER
         ))),
     }
 }
@@ -206,7 +208,8 @@ pub fn require_http_connector<'a>(
     match config {
         ConnectorConfig::Http(c) => Ok(c),
         _ => Err(DataflowError::Validation(format!(
-            "Connector '{name}' is not an HTTP connector"
+            "{}Connector '{name}' is not an HTTP connector",
+            crate::errors::CONNECTOR_DETAIL_MARKER
         ))),
     }
 }
@@ -220,7 +223,8 @@ pub fn require_kafka_connector<'a>(
     match config {
         ConnectorConfig::Kafka(c) => Ok(c),
         _ => Err(DataflowError::Validation(format!(
-            "Connector '{name}' is not a Kafka connector"
+            "{}Connector '{name}' is not a Kafka connector",
+            crate::errors::CONNECTOR_DETAIL_MARKER
         ))),
     }
 }
@@ -234,7 +238,8 @@ pub fn require_cache_connector<'a>(
     match config {
         ConnectorConfig::Cache(c) => Ok(c),
         _ => Err(DataflowError::Validation(format!(
-            "Connector '{name}' is not a cache connector"
+            "{}Connector '{name}' is not a cache connector",
+            crate::errors::CONNECTOR_DETAIL_MARKER
         ))),
     }
 }

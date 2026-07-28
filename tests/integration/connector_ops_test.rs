@@ -243,3 +243,39 @@ async fn test_disabled_read_rejects_data_query_and_db_read() {
     assert_eq!(status, StatusCode::OK, "body = {body}");
     assert_eq!(body["status"], "ok", "write-only connector: {body}");
 }
+
+#[tokio::test]
+async fn gate_rejection_does_not_name_the_connector_to_the_caller() {
+    // The data plane is anonymous. A gate message like "operation 'read' is
+    // disabled on connector 'prod-billing-db'" hands out connector inventory
+    // for free, so it is logged and kept on the trace but redacted from the
+    // response (proposal G3).
+    let app = app_with_gated(
+        "ops_leak",
+        "ops-leak-admin",
+        "ops-leak-secret",
+        json!({ "read": false }),
+    )
+    .await;
+
+    let (status, body) = run_task(
+        &app,
+        "ch-ops-leak",
+        dq("ops-leak-secret", "t_q", json!({ "source": "users" })),
+    )
+    .await;
+
+    assert!(
+        is_gate_rejection(status, &body),
+        "the gate must still reject: status={status} body={body}"
+    );
+    let rendered = body.to_string();
+    assert!(
+        !rendered.contains("ops-leak-secret"),
+        "the connector name must not reach an anonymous caller: {rendered}"
+    );
+    assert!(
+        !rendered.contains("disabled on connector"),
+        "the gate detail must not reach an anonymous caller: {rendered}"
+    );
+}

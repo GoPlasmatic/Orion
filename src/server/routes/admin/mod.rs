@@ -45,8 +45,13 @@ pub(crate) use workflows::{
 
 /// Fold per-item outcomes into the shared bulk-import counters:
 /// `(succeeded, failed, [{index, error}])`.
-pub(crate) fn fold_import_results<E: std::fmt::Display>(
-    results: impl IntoIterator<Item = Result<(), E>>,
+///
+/// Per-item errors go through `OrionError::client_message`, not `to_string`:
+/// these strings are embedded in a **200** body, so they bypass the redaction
+/// `IntoResponse` would otherwise apply and would leak raw sqlx driver text
+/// (proposal G5).
+pub(crate) fn fold_import_results(
+    results: impl IntoIterator<Item = Result<(), crate::errors::OrionError>>,
 ) -> (u64, u64, Vec<serde_json::Value>) {
     let mut ok = 0u64;
     let mut failed = 0u64;
@@ -56,7 +61,7 @@ pub(crate) fn fold_import_results<E: std::fmt::Display>(
             Ok(()) => ok += 1,
             Err(e) => {
                 failed += 1;
-                errors.push(json!({"index": i, "error": e.to_string()}));
+                errors.push(json!({"index": i, "error": e.client_message()}));
             }
         }
     }
@@ -96,13 +101,13 @@ where
             }
         };
         if let Err(e) = validate(&parsed) {
-            fail(e.to_string());
+            fail(e.client_message());
             continue;
         }
         if dry_run {
             ok += 1;
         } else if let Err(e) = create(parsed).await {
-            fail(e.to_string());
+            fail(e.client_message());
         } else {
             ok += 1;
         }

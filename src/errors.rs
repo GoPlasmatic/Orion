@@ -151,71 +151,44 @@ impl OrionError {
     }
 }
 
-/// Log a 5xx-category error with the user-facing message exposed to the
-/// caller (the existing behaviour for `Internal` / `Config`), then return the
-/// response tuple. Used by variants whose internal message is safe to surface.
-fn log_internal_5xx(
-    category: &'static str,
-    code: &'static str,
-    message: String,
-) -> (StatusCode, &'static str, String) {
-    tracing::error!(
-        error.category = category,
-        error.message = %message,
-        "{category} error"
-    );
-    (StatusCode::INTERNAL_SERVER_ERROR, code, message)
-}
-
-/// Log a 5xx-category error with full internal detail, but return a
-/// sanitised generic message to the caller. Used by variants whose
-/// internal error string may leak sensitive data (DB driver errors, queue
-/// internals).
-fn sanitised_5xx(
-    category: &'static str,
-    code: &'static str,
-    log_detail: impl std::fmt::Display,
-    user_message: &'static str,
-) -> (StatusCode, &'static str, String) {
-    tracing::error!(
-        error.category = category,
-        error = %log_detail,
-        "{category} error"
-    );
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        code,
-        user_message.to_string(),
-    )
-}
-
-impl IntoResponse for OrionError {
-    fn into_response(self) -> Response {
-        // Pull the validation details out before consuming `self` in the match,
-        // since the response body needs them as a separate JSON field.
-        let validation_details = match &self {
-            OrionError::Validation { details, .. } if !details.is_empty() => Some(details.clone()),
-            _ => None,
-        };
-
-        let (status, code, message) = match self {
-            OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg),
-            OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg),
+impl OrionError {
+    /// The HTTP status, error code, and **client-safe** message for this error.
+    ///
+    /// This is the single place the redaction policy lives. It used to be a
+    /// per-arm convention inside `IntoResponse` — three different 5xx shapes
+    /// coexisted, and whether an internal string reached the client was decided
+    /// one arm at a time. That is how G2, G3, G5 and G8 each became true
+    /// independently, and why nothing outside `IntoResponse` could ask "is this
+    /// message safe to show?" — which is what let the bulk-import handlers
+    /// embed raw driver text in a 200 body.
+    ///
+    /// Does not log: callers that surface the error (`IntoResponse`) log the
+    /// internal detail separately via [`OrionError::log_internal_detail`].
+    pub fn response_parts(&self) -> (StatusCode, &'static str, String) {
+        match self {
+            OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
+            OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             OrionError::Validation { code, message, .. } => {
-                (StatusCode::BAD_REQUEST, code, message)
+                (StatusCode::BAD_REQUEST, code, message.clone())
             }
-            OrionError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg),
-            OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg),
-            OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg),
+            OrionError::Unauthorized(msg) => {
+                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg.clone())
+            }
+            OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
+            OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
             OrionError::UnsupportedMediaType(msg) => (
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "UNSUPPORTED_MEDIA_TYPE",
-                msg,
+                msg.clone(),
             ),
-            OrionError::ServiceUnavailable(msg) => {
-                (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE", msg)
+            OrionError::ServiceUnavailable(msg) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+                msg.clone(),
+            ),
+            OrionError::RateLimited(msg) => {
+                (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", msg.clone())
             }
-            OrionError::RateLimited(msg) => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", msg),
             OrionError::Timeout {
                 channel,
                 timeout_ms,
@@ -227,45 +200,102 @@ impl IntoResponse for OrionError {
                 ),
             ),
             OrionError::ResponseTooLarge(msg) => {
-                (StatusCode::BAD_GATEWAY, "RESPONSE_TOO_LARGE", msg)
+                (StatusCode::BAD_GATEWAY, "RESPONSE_TOO_LARGE", msg.clone())
             }
-            OrionError::Internal(msg) => log_internal_5xx("internal", "INTERNAL_ERROR", msg),
-            OrionError::Config { message } => log_internal_5xx("config", "CONFIG_ERROR", message),
-            OrionError::Queue(msg) => sanitised_5xx(
-                "queue",
+            // G2: `Internal` and `Config` used to return their message verbatim.
+            // Reachable `Config` messages carry filesystem paths (TLS cert/key)
+            // and whole database URLs — `detect_backend` is called on a
+            // *connector's* connection string at request time, so a DSN with
+            // credentials could round-trip into a 500 body.
+            OrionError::Internal(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "An internal error occurred".to_string(),
+            ),
+            OrionError::Config { .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "CONFIG_ERROR",
+                "A configuration error occurred".to_string(),
+            ),
+            OrionError::Queue(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
                 "QUEUE_ERROR",
-                msg,
-                "An internal queue error occurred",
+                "An internal queue error occurred".to_string(),
             ),
-            OrionError::InternalSource { context, source } => {
-                tracing::error!(
-                    error.category = "internal",
-                    error.context = %context,
-                    error.source = %source,
-                    "Internal error"
-                );
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "INTERNAL_ERROR",
-                    "An internal error occurred".to_string(),
-                )
-            }
-            OrionError::Storage(e) => sanitised_5xx(
-                "storage",
+            OrionError::InternalSource { .. } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "An internal error occurred".to_string(),
+            ),
+            OrionError::Storage(_) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
                 "STORAGE_ERROR",
-                e,
-                "An internal storage error occurred",
+                "An internal storage error occurred".to_string(),
             ),
-            OrionError::Engine(e) => {
-                tracing::error!(error.category = "engine", error = %e, "Engine error");
-                engine_error_response(&e)
-            }
-            OrionError::Serialization(e) => (
+            OrionError::Engine(e) => engine_error_response(e),
+            // G8: this variant is reached both by inbound parse failures (a
+            // genuine 400) and by outbound *serialize* failures, which are
+            // server bugs. The raw serde message also carries byte offsets and
+            // type names, so it is not surfaced.
+            OrionError::Serialization(_) => (
                 StatusCode::BAD_REQUEST,
                 "SERIALIZATION_ERROR",
-                e.to_string(),
+                "Request body could not be processed".to_string(),
             ),
+        }
+    }
+
+    /// The client-safe message alone. Use this anywhere an error string is
+    /// embedded in a response body outside `IntoResponse` — notably the bulk
+    /// import handlers, which report per-item failures inside a 200.
+    pub fn client_message(&self) -> String {
+        self.response_parts().2
+    }
+
+    /// Emit the internal detail to the log for the variants whose client-facing
+    /// message is redacted. No-op for variants that surface their own message.
+    fn log_internal_detail(&self) {
+        match self {
+            OrionError::Internal(msg) => {
+                tracing::error!(error.category = "internal", error = %msg, "internal error")
+            }
+            OrionError::Config { message } => {
+                tracing::error!(error.category = "config", error = %message, "config error")
+            }
+            OrionError::Queue(msg) => {
+                tracing::error!(error.category = "queue", error = %msg, "queue error")
+            }
+            OrionError::Storage(e) => {
+                tracing::error!(error.category = "storage", error = %e, "storage error")
+            }
+            OrionError::Serialization(e) => {
+                tracing::error!(error.category = "serialization", error = %e, "serialization error")
+            }
+            OrionError::InternalSource { context, source } => tracing::error!(
+                error.category = "internal",
+                error.context = %context,
+                error.source = %source,
+                "Internal error"
+            ),
+            OrionError::Engine(e) => {
+                tracing::error!(error.category = "engine", error = %e, "Engine error")
+            }
+            _ => {}
+        }
+    }
+}
+
+impl IntoResponse for OrionError {
+    fn into_response(self) -> Response {
+        // Pull the validation details out before consuming `self` in the match,
+        // since the response body needs them as a separate JSON field.
+        let validation_details = match &self {
+            OrionError::Validation { details, .. } if !details.is_empty() => Some(details.clone()),
+            _ => None,
         };
+
+        self.log_internal_detail();
+        let (status, code, message) = self.response_parts();
 
         let mut error_obj = serde_json::Map::new();
         error_obj.insert("code".to_string(), Value::String(code.to_string()));
@@ -305,6 +335,13 @@ impl IntoResponse for OrionError {
 /// relayed by `http_call`; only the former becomes `CIRCUIT_OPEN`.
 pub const CIRCUIT_OPEN_MARKER: &str = "orion.circuit_open: ";
 
+/// Prefix marking a `DataflowError::Validation` message that names a connector
+/// or other internal topology. Such messages are redacted before they reach a
+/// caller (the data plane is anonymous) but are logged and stored on the trace
+/// in full. Same mechanism as [`CIRCUIT_OPEN_MARKER`]; the prefix is stripped
+/// from anything that does get surfaced.
+pub const CONNECTOR_DETAIL_MARKER: &str = "orion.connector_detail: ";
+
 /// Build the error an open breaker returns from a function handler.
 pub fn circuit_open_dataflow_error(connector: &str, channel: &str) -> dataflow_rs::DataflowError {
     dataflow_rs::DataflowError::Http {
@@ -319,6 +356,21 @@ pub fn circuit_open_dataflow_error(connector: &str, channel: &str) -> dataflow_r
 fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'static str, String) {
     use dataflow_rs::DataflowError;
     match e {
+        // G3: validation messages that name a connector must not reach the
+        // anonymous data plane — "operation 'delete' is disabled on connector
+        // 'prod-billing-db'" hands out connector inventory for free. Producers
+        // tag those with CONNECTOR_DETAIL_MARKER; the detail is logged and kept
+        // on the trace, and the caller gets a generic message.
+        //
+        // Untagged validation messages are workflow-structural and safe —
+        // "max call depth 10 exceeded", "'delete' has no filter" — and stay
+        // verbatim, because they are what makes a misconfigured workflow
+        // diagnosable from the response.
+        DataflowError::Validation(msg) if msg.starts_with(CONNECTOR_DETAIL_MARKER) => (
+            StatusCode::BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "Request validation failed".to_string(),
+        ),
         DataflowError::Validation(msg) => {
             (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone())
         }

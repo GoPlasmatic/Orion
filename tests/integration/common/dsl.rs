@@ -65,8 +65,30 @@ pub fn is_rejection(_status: StatusCode, body: &Value) -> bool {
     errors || error
 }
 
-/// [`is_rejection`] plus the per-connector operation-gate message — the
-/// rejection must name the disabled operation's connector.
+/// [`is_rejection`] restricted to a validation-class refusal.
+///
+/// This deliberately does **not** assert the connector's name appears in the
+/// body: operation-gate messages name the connector, and the data plane is
+/// anonymous, so that detail is redacted before it reaches the caller and kept
+/// in the log and the trace instead (proposal G3). Asserting on the leaked
+/// text is what pinned the leak as expected behaviour.
 pub fn is_gate_rejection(status: StatusCode, body: &Value) -> bool {
-    is_rejection(status, body) && body.to_string().contains("disabled on connector")
+    if !is_rejection(status, body) {
+        return false;
+    }
+    let code_of = |v: &Value| {
+        v.get("code")
+            .and_then(|c| c.as_str())
+            .map(str::to_string)
+            .unwrap_or_default()
+    };
+    let envelope_is_validation = body
+        .get("error")
+        .map(|e| code_of(e) == "VALIDATION_ERROR")
+        .unwrap_or(false);
+    let task_error_is_validation = body
+        .get("errors")
+        .and_then(|e| e.as_array())
+        .is_some_and(|a| a.iter().any(|e| code_of(e).contains("Validation")));
+    envelope_is_validation || task_error_is_validation
 }
