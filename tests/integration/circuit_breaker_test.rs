@@ -277,8 +277,10 @@ async fn test_breaker_reset_via_admin_api() {
 #[tokio::test]
 async fn test_breaker_half_open_recovery() {
     let addr = start_failing_server().await;
-    // Use recovery_timeout_secs=1 so we can sleep briefly and observe half-open
-    let app = common::test_app_with_config(cb_config(2, 1)).await;
+    // 300s cooldown crossed by pause–advance–resume instead of a 1s cooldown
+    // and a real sleep: the breaker measures cooldowns on tokio's clock, and
+    // the large value keeps timer auto-advance from crossing it early.
+    let app = common::test_app_with_config(cb_config(2, 300)).await;
 
     create_http_connector(&app, "halfopen-api", addr).await;
     common::create_and_activate_channel(
@@ -316,8 +318,10 @@ async fn test_breaker_half_open_recovery() {
         "breaker '{key}' should be open after threshold failures, got {state:?}"
     );
 
-    // Wait for recovery timeout to elapse (1 second + margin)
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Advance the paused clock past the cooldown — no wall time burned.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(301)).await;
+    tokio::time::resume();
 
     // The next request should be allowed through (half-open probe).
     // Since the mock server still returns 500, the probe will fail and

@@ -207,7 +207,10 @@ async fn test_cache_expires_after_ttl() {
         json!({
             "cache": {
                 "enabled": true,
-                "ttl_secs": 1
+                // 300s + pause–advance–resume instead of a 1s TTL and a real
+                // sleep: expiry runs on tokio's clock, and the large TTL
+                // keeps timer auto-advance from crossing it early.
+                "ttl_secs": 300
             }
         }),
     )
@@ -229,8 +232,10 @@ async fn test_cache_expires_after_ttl() {
     let body_a = body_json(resp).await;
     assert_eq!(body_a["status"], "ok");
 
-    // Wait for the 1-second TTL to expire
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Advance the paused clock past the TTL — no wall time burned.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(301)).await;
+    tokio::time::resume();
 
     // Same request after expiry — should still return 200 (fresh execution)
     let resp = app

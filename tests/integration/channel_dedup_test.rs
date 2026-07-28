@@ -93,7 +93,10 @@ async fn test_dedup_allows_after_window() {
         json!({
             "deduplication": {
                 "header": "Idempotency-Key",
-                "window_secs": 1
+                // 300s + pause–advance–resume instead of a 1s window and a
+                // real sleep: expiry runs on tokio's clock, and the large
+                // window keeps timer auto-advance from crossing it early.
+                "window_secs": 300
             }
         }),
     )
@@ -113,8 +116,10 @@ async fn test_dedup_allows_after_window() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Wait for the 1-second dedup window to expire
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Advance the paused clock past the dedup window — no wall time burned.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(301)).await;
+    tokio::time::resume();
 
     // Same key after expiry — should succeed (window expired)
     let resp = app

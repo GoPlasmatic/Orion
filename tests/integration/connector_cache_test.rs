@@ -108,15 +108,19 @@ async fn test_cache_read_missing_key() {
     assert!(body["data"]["result"].is_null());
 }
 
-/// Write a key with a short TTL, verify it is readable immediately, then
-/// verify it has expired after sleeping past the TTL.
+/// Write a key with a TTL, verify it is readable immediately, then verify it
+/// has expired after advancing the (pausable) clock past the TTL.
+///
+/// The TTL is 300s and expiry is driven by pause–advance–resume rather than
+/// a real sleep: the store's clock is `tokio::time::Instant`, and the large
+/// TTL keeps incidental timer auto-advance from ever crossing it early.
 #[tokio::test]
 async fn test_cache_write_with_ttl_expiry() {
     let app = common::test_app().await;
 
     common::create_connector(&app, common::cache_connector_memory("ttl-cache")).await;
 
-    // Channel that writes a key with 1-second TTL
+    // Channel that writes a key with a 300-second TTL
     common::create_and_activate_channel(
         &app,
         "cache-ttl-write",
@@ -132,7 +136,7 @@ async fn test_cache_write_with_ttl_expiry() {
                             "connector": "ttl-cache",
                             "key": "ephemeral",
                             "value": "short-lived",
-                            "ttl_secs": 1
+                            "ttl_secs": 300
                         }
                     }
                 }
@@ -191,8 +195,10 @@ async fn test_cache_write_with_ttl_expiry() {
     let body = common::body_json(resp).await;
     assert_eq!(body["data"]["val"], "short-lived");
 
-    // Wait for TTL to expire
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    // Advance the paused clock past the TTL — no wall time burned.
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(301)).await;
+    tokio::time::resume();
 
     // Read again -- should be null
     let resp = app
