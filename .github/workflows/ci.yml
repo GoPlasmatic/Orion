@@ -70,8 +70,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
 
-      - name: Check on MSRV
-        run: cargo check --all-targets
+      # Run the suite, not just `cargo check`: the promise is that a
+      # contributor on 1.88 can build AND test, which also keeps
+      # dev-dependencies honest about the MSRV.
+      - name: Test on MSRV
+        run: cargo test
 
   examples:
     name: Examples
