@@ -25,6 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **Every metric is renamed with an `orion_` prefix** — `messages_total` is now
+  `orion_messages_total`, and so on for all 33 families. The bare names were
+  generic enough to collide in a shared registry (`errors_total`,
+  `active_workflows`, `db_pool_size`). **Update dashboards and alert rules
+  before upgrading.**
+- **Histograms are now real Prometheus histograms.** Without configured buckets
+  the exporter rendered all seven `*_seconds` families as *summaries with
+  pre-computed quantiles*, which cannot be aggregated across replicas —
+  directly at odds with cluster mode. Queries using
+  `histogram_quantile()` over `_bucket` series now work; queries reading the
+  old summary quantiles must be rewritten.
+- **In cluster mode every metric carries an `instance` label** identifying the
+  replica. Recording rules that aggregate without `by`/`without` may need
+  updating.
 - **Plaintext `admin_auth.api_keys` entries must be at least 32 characters.**
   Previously `api_keys = ["a"]` was a valid production credential. Shorter keys
   are a hard config error when `environment` starts with `prod`, and a warning
@@ -61,6 +75,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recursion depth and cycle guards are now covered by tests.
 - TTL stores and circuit-breaker cooldowns use a monotonic, pausable clock, so
   a wall-clock step no longer extends or shortens either.
+
+### Added
+
+- **`orion_build_info{version, git_hash, build_timestamp}`** — the standard way
+  to answer "which build is each replica running?" from Prometheus. Previously
+  that information existed only in `--version`, one boot log line, and the
+  admin-gated `/health` body, none of which a scrape can join against.
+- **`orion_admin_auth_failures_total{reason}`** — rejected admin credentials,
+  split out from the shared `errors_total{type="auth_failure"}` so credential
+  guessing can be alerted on without also matching `panic`, `dedup_backend`
+  and a dozen other unrelated call sites.
 
 ### Changed
 

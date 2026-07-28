@@ -69,7 +69,7 @@ default**, which means "trust nothing".
 **How you'll notice.** If Orion sits behind a proxy, LB, ingress controller, or
 service mesh, the TCP peer is always that hop — so **every client collapses
 into a single bucket** and legitimate traffic starts getting `429`s far below
-the configured rate. Watch `rate_limit_rejections_total` climb while real
+the configured rate. Watch `orion_rate_limit_rejections_total` climb while real
 request volume is unchanged.
 
 **What to do.** List the addresses your proxies connect from, as CIDR blocks or
@@ -113,7 +113,7 @@ Two things to know:
 **What changed.** Two label changes, both intended to bound Prometheus
 cardinality.
 
-**`rate_limit_rejections_total` lost its `client` label and gained `scope`.**
+**`orion_rate_limit_rejections_total` lost its `client` label and gained `scope`.**
 The metric name is unchanged. The old label carried a raw client IP — unbounded
 cardinality. `scope` takes one of a small, bounded set of values:
 
@@ -130,9 +130,9 @@ label is the literal string `_unknown` (leading underscore) instead of the
 caller-supplied name — otherwise anyone could inflate the metric cardinality by
 POSTing to arbitrary paths. Three metrics are capped:
 
-- `messages_total{channel, status}`
-- `message_duration_seconds{channel}`
-- `channel_executions_total{channel}`
+- `orion_messages_total{channel, status}`
+- `orion_message_duration_seconds{channel}`
+- `orion_channel_executions_total{channel}`
 
 The cap applies to the HTTP and async-queue paths. Kafka ingest is deliberately
 exempt — its channel set comes from operator configuration and is already
@@ -172,10 +172,10 @@ there:
 
 | Metric | Type | Why you want it |
 |--------|------|-----------------|
-| `trace_queue_rejected_total{reason}` | counter | `reason="full"` or `"memory"` — async submissions being shed with a `503`. See [Queue-full](#queue-full-now-returns-503-instead-of-hanging) |
-| `trace_dlq_depth` | gauge | Backlog of failed traces. **Only refreshed by the DLQ retry loop, so it stops updating when `queue.dlq_retry_enabled = false`** — exactly the setting that lets the backlog grow |
-| `trace_dlq_retries_total{outcome}` | counter | `retried` / `exhausted` / `failed` |
-| `trace_persistence_failures_total` | counter | The only signal that trace writes are being dropped |
+| `orion_trace_queue_rejected_total{reason}` | counter | `reason="full"` or `"memory"` — async submissions being shed with a `503`. See [Queue-full](#queue-full-now-returns-503-instead-of-hanging) |
+| `orion_trace_dlq_depth` | gauge | Backlog of failed traces. **Only refreshed by the DLQ retry loop, so it stops updating when `queue.dlq_retry_enabled = false`** — exactly the setting that lets the backlog grow |
+| `orion_trace_dlq_retries_total{outcome}` | counter | `retried` / `exhausted` / `failed` |
+| `orion_trace_persistence_failures_total` | counter | The only signal that trace writes are being dropped |
 
 No metrics were renamed or removed.
 
@@ -203,7 +203,7 @@ single-node and cluster mode.
   and updates do not reload, so you can still edit your way out.)
 - **In cluster mode**, the epoch watcher logs
   `Epoch watcher: resync failed; will retry`, increments
-  `errors_total{type="epoch_watcher"}`, and stops advancing — nodes quietly
+  `orion_errors_total{type="epoch_watcher"}`, and stops advancing — nodes quietly
   stop picking up *any* config change.
 
 Log lines to grep for:
@@ -281,7 +281,7 @@ simply lost. Offsets now advance only on **successful processing** or a
 decode failure, JSON parse failure, unmapped topic, empty payload, timeout,
 engine error, workflow errors) leaves the offset uncommitted and retries the
 same message in place, with backoff starting at 1s and doubling to a 60s cap.
-Each retry cycle increments `errors_total{type="kafka_retry"}`.
+Each retry cycle increments `orion_errors_total{type="kafka_retry"}`.
 
 **How you'll notice.** With `kafka.dlq.enabled = false` — which is still the
 default — a permanently-poison message **stalls the consumer indefinitely**.
@@ -291,7 +291,7 @@ sequentially, this halts **every partition of every subscribed topic** on that
 instance, not just the poison message's partition. Restarting does not help —
 the offset was never committed, so the same message is redelivered.
 
-Symptoms: consumer lag climbing on all partitions, `errors_total{type="kafka_retry"}`
+Symptoms: consumer lag climbing on all partitions, `orion_errors_total{type="kafka_retry"}`
 incrementing on a ~60s cadence, and the same message logged repeatedly.
 
 **What to do.** Enable the dead-letter queue. This is the recommended action
@@ -566,7 +566,7 @@ retryable.
 > request returns **HTTP 200** with a sanitised `TASK_ERROR` entry, and the
 > string `CIRCUIT_OPEN` appears nowhere in the response — the breaker rejection
 > is visible only in the persisted trace and in
-> `circuit_breaker_rejections_total{connector, channel}`. Alert on the metric,
+> `orion_circuit_breaker_rejections_total{connector, channel}`. Alert on the metric,
 > not on the status code, if your workflows use `continue_on_error: true`.
 
 ### Queue-full now returns 503 instead of hanging
@@ -579,7 +579,7 @@ waiting for capacity — an unbounded hang under load. It now sheds immediately.
 *not* `QUEUE_FULL`. Disambiguate from other 503s by the message
 (`Trace queue is full (N messages pending)` or
 `Trace queue memory limit exceeded …`) or, better, by
-`trace_queue_rejected_total{reason="full"|"memory"}`.
+`orion_trace_queue_rejected_total{reason="full"|"memory"}`.
 
 **What to do.** Make async clients retry on `503`. Size the queue with
 `queue.buffer_size` (default `1000`) and `queue.max_queue_memory_bytes`

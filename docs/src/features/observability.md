@@ -53,19 +53,31 @@ enabled = true
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `messages_total` | Counter | `channel`, `status` | Total messages processed |
-| `message_duration_seconds` | Histogram | `channel` | Processing latency |
-| `active_workflows` | Gauge | — | Workflows loaded in engine |
-| `errors_total` | Counter | `type` | Errors encountered |
-| `http_requests_total` | Counter | `method`, `path`, `status` | HTTP requests served |
-| `http_request_duration_seconds` | Histogram | `method`, `path`, `status` | HTTP request latency |
-| `db_query_duration_seconds` | Histogram | `operation` | Database query latency |
-| `engine_reloads_total` | Counter | `status` | Engine reload events |
-| `engine_reload_duration_seconds` | Histogram | — | Engine reload latency |
-| `circuit_breaker_trips_total` | Counter | `connector`, `channel` | Circuit breaker trip events |
-| `circuit_breaker_rejections_total` | Counter | `connector`, `channel` | Requests rejected by open breakers |
-| `channel_executions_total` | Counter | `channel` | Channel invocations |
-| `rate_limit_rejections_total` | Counter | `client` | Rate-limited requests |
+| `orion_build_info` | Gauge | `version`, `git_hash`, `build_timestamp` | Always `1`. Join against it to see which build each replica runs. |
+| `orion_messages_total` | Counter | `channel`, `status` | Total messages processed |
+| `orion_message_duration_seconds` | Histogram | `channel` | Processing latency |
+| `orion_active_workflows` | Gauge | — | Workflows loaded in engine |
+| `orion_errors_total` | Counter | `type` | Errors encountered |
+| `orion_admin_auth_failures_total` | Counter | `reason` | Rejected admin credentials (`missing_or_malformed`, `invalid_key`, `locked_out`) |
+| `orion_http_requests_total` | Counter | `method`, `path`, `status` | HTTP requests served |
+| `orion_http_request_duration_seconds` | Histogram | `method`, `path`, `status` | HTTP request latency |
+| `orion_db_query_duration_seconds` | Histogram | `operation` | Database query latency |
+| `orion_engine_reloads_total` | Counter | `status` | Engine reload events |
+| `orion_engine_reload_duration_seconds` | Histogram | — | Engine reload latency |
+| `orion_circuit_breaker_trips_total` | Counter | `connector`, `channel` | Circuit breaker trip events |
+| `orion_circuit_breaker_rejections_total` | Counter | `connector`, `channel` | Requests rejected by open breakers |
+| `orion_channel_executions_total` | Counter | `channel` | Channel invocations |
+| `orion_rate_limit_rejections_total` | Counter | `client` | Rate-limited requests |
+
+All metrics carry the `orion_` prefix so they cannot collide in a shared
+registry, and in cluster mode every series also carries an `instance` label
+identifying the replica.
+
+Histograms are exported as real Prometheus histograms with explicit buckets,
+so `histogram_quantile()` aggregates correctly **across replicas**. (Without
+configured buckets the exporter emits pre-computed per-instance quantiles,
+which cannot be aggregated — a latency figure summed over a cluster would be
+meaningless.)
 
 ## Distributed Tracing
 

@@ -74,7 +74,16 @@ pub fn init_metrics_handle(
     config: &config::AppConfig,
 ) -> metrics_exporter_prometheus::PrometheusHandle {
     if config.metrics.enabled {
-        let handle = crate::metrics::init_metrics();
+        // Label every metric with this node's identity in cluster mode, so a
+        // scrape target set that changes under you (rolling deploy, HPA) still
+        // attributes series to the right replica.
+        let instance = config
+            .cluster
+            .enabled
+            .then_some(config.cluster.instance_id.as_str())
+            .filter(|id| !id.is_empty());
+        let handle = crate::metrics::init_metrics_with_instance(instance);
+        crate::metrics::record_build_info();
         tracing::info!("Prometheus metrics initialized");
         handle
     } else {

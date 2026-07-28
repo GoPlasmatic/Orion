@@ -25,13 +25,57 @@ fn is_enabled() -> bool {
 /// Must be called once at startup before any metrics are recorded.
 /// Falls back to a local recorder handle if the global recorder is already installed.
 pub fn init_metrics() -> PrometheusHandle {
+    init_metrics_with_instance(None)
+}
+
+/// Latency buckets, in seconds, spanning sub-millisecond in-process work
+/// (engine lock waits) through multi-second external calls.
+///
+/// Setting buckets is not cosmetic: without them
+/// `metrics-exporter-prometheus` renders every `histogram!` as a **summary
+/// with pre-computed quantiles**, which cannot be aggregated across replicas.
+/// That directly contradicts cluster mode, where the whole point is N
+/// replicas behind one load balancer (proposal O13).
+const LATENCY_BUCKETS: &[f64] = &[
+    0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0,
+];
+
+/// Buckets for batch-size histograms, which count rows rather than seconds.
+const SIZE_BUCKETS: &[f64] = &[1.0, 5.0, 10.0, 25.0, 50.0, 100.0, 250.0, 500.0, 1000.0];
+
+/// Initialize the Prometheus metrics recorder and return a handle for rendering.
+///
+/// Must be called once at startup before any metrics are recorded.
+/// Falls back to a local recorder handle if the global recorder is already installed.
+///
+/// `instance_id` is stamped on every metric as an `instance` label so
+/// per-replica attribution does not depend entirely on the scrape config.
+pub fn init_metrics_with_instance(instance_id: Option<&str>) -> PrometheusHandle {
     set_enabled(true);
-    PrometheusBuilder::new()
-        .install_recorder()
-        .unwrap_or_else(|_| {
-            // Recorder already installed (e.g., parallel tests) — create a standalone handle
-            PrometheusBuilder::new().build_recorder().handle()
-        })
+    let build = || {
+        let mut b = PrometheusBuilder::new();
+        // Suffix matching: one call covers every `*_seconds` family.
+        b = b
+            .set_buckets_for_metric(
+                metrics_exporter_prometheus::Matcher::Suffix("_seconds".to_string()),
+                LATENCY_BUCKETS,
+            )
+            .expect("latency buckets are non-empty and finite");
+        b = b
+            .set_buckets_for_metric(
+                metrics_exporter_prometheus::Matcher::Suffix("_batch_size".to_string()),
+                SIZE_BUCKETS,
+            )
+            .expect("size buckets are non-empty and finite");
+        if let Some(id) = instance_id {
+            b = b.add_global_label("instance", id);
+        }
+        b
+    };
+    build().install_recorder().unwrap_or_else(|_| {
+        // Recorder already installed (e.g., parallel tests) — create a standalone handle
+        build().build_recorder().handle()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -43,7 +87,8 @@ pub fn record_message(channel: &str, status: &'static str) {
     if !is_enabled() {
         return;
     }
-    counter!("messages_total", "channel" => channel.to_owned(), "status" => status).increment(1);
+    counter!("orion_messages_total", "channel" => channel.to_owned(), "status" => status)
+        .increment(1);
 }
 
 /// Increment the errors_total counter.
@@ -51,7 +96,27 @@ pub fn record_error(error_type: &'static str) {
     if !is_enabled() {
         return;
     }
-    counter!("errors_total", "type" => error_type).increment(1);
+    counter!("orion_errors_total", "type" => error_type).increment(1);
+}
+
+/// Publish the build-identity gauge, always `1`.
+///
+/// The standard way to answer "which version is each replica running?" from
+/// Prometheus — the rollout and canary query. Previously `GIT_HASH` and
+/// `BUILD_TIMESTAMP` surfaced only in `--version`, one boot log line, and the
+/// admin-gated `/health` body, none of which a scrape can join against
+/// (proposal O11).
+pub fn record_build_info() {
+    if !is_enabled() {
+        return;
+    }
+    gauge!(
+        "orion_build_info",
+        "version" => env!("CARGO_PKG_VERSION"),
+        "git_hash" => env!("GIT_HASH"),
+        "build_timestamp" => env!("BUILD_TIMESTAMP"),
+    )
+    .set(1.0);
 }
 
 /// Record a rejected admin-API authentication attempt.
@@ -67,7 +132,7 @@ pub fn record_admin_auth_failure(reason: &'static str) {
     if !is_enabled() {
         return;
     }
-    counter!("admin_auth_failures_total", "reason" => reason).increment(1);
+    counter!("orion_admin_auth_failures_total", "reason" => reason).increment(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +144,8 @@ pub fn record_message_duration(channel: &str, duration_secs: f64) {
     if !is_enabled() {
         return;
     }
-    histogram!("message_duration_seconds", "channel" => channel.to_owned()).record(duration_secs);
+    histogram!("orion_message_duration_seconds", "channel" => channel.to_owned())
+        .record(duration_secs);
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +158,7 @@ pub fn record_circuit_breaker_trip(connector: &str, channel: &str) {
         return;
     }
     counter!(
-        "circuit_breaker_trips_total",
+        "orion_circuit_breaker_trips_total",
         "connector" => connector.to_owned(),
         "channel" => channel.to_owned()
     )
@@ -105,7 +171,7 @@ pub fn record_circuit_breaker_rejection(connector: &str, channel: &str) {
         return;
     }
     counter!(
-        "circuit_breaker_rejections_total",
+        "orion_circuit_breaker_rejections_total",
         "connector" => connector.to_owned(),
         "channel" => channel.to_owned()
     )
@@ -117,7 +183,7 @@ pub fn set_active_workflows(count: f64) {
     if !is_enabled() {
         return;
     }
-    gauge!("active_workflows").set(count);
+    gauge!("orion_active_workflows").set(count);
 }
 
 // ---------------------------------------------------------------------------
@@ -134,14 +200,14 @@ pub fn record_http_request(method: String, path: String, status: u16, duration_s
     }
     let status = status.to_string();
     counter!(
-        "http_requests_total",
+        "orion_http_requests_total",
         "method" => method.clone(),
         "path" => path.clone(),
         "status" => status.clone()
     )
     .increment(1);
     histogram!(
-        "http_request_duration_seconds",
+        "orion_http_request_duration_seconds",
         "method" => method,
         "path" => path,
         "status" => status
@@ -154,7 +220,7 @@ fn record_db_query_duration(operation: &'static str, duration_secs: f64) {
     if !is_enabled() {
         return;
     }
-    histogram!("db_query_duration_seconds", "operation" => operation).record(duration_secs);
+    histogram!("orion_db_query_duration_seconds", "operation" => operation).record(duration_secs);
 }
 
 /// Wrap an async operation with DB query timing.
@@ -173,7 +239,7 @@ pub fn record_engine_lock_wait(mode: &'static str, duration_secs: f64) {
     if !is_enabled() {
         return;
     }
-    histogram!("engine_lock_wait_seconds", "mode" => mode).record(duration_secs);
+    histogram!("orion_engine_lock_wait_seconds", "mode" => mode).record(duration_secs);
 }
 
 /// Record engine reload duration.
@@ -181,7 +247,7 @@ pub fn record_engine_reload_duration(duration_secs: f64) {
     if !is_enabled() {
         return;
     }
-    histogram!("engine_reload_duration_seconds").record(duration_secs);
+    histogram!("orion_engine_reload_duration_seconds").record(duration_secs);
 }
 
 /// Record engine reload event.
@@ -189,7 +255,7 @@ pub fn record_engine_reload(status: &'static str) {
     if !is_enabled() {
         return;
     }
-    counter!("engine_reloads_total", "status" => status).increment(1);
+    counter!("orion_engine_reloads_total", "status" => status).increment(1);
 }
 
 /// Record a channel execution.
@@ -197,7 +263,7 @@ pub fn record_channel_execution(channel: &str) {
     if !is_enabled() {
         return;
     }
-    counter!("channel_executions_total", "channel" => channel.to_owned()).increment(1);
+    counter!("orion_channel_executions_total", "channel" => channel.to_owned()).increment(1);
 }
 
 /// Record a rate-limit rejection. `scope` must come from a bounded set — a
@@ -208,7 +274,7 @@ pub fn record_rate_limit_rejected(scope: &str) {
     if !is_enabled() {
         return;
     }
-    counter!("rate_limit_rejections_total", "scope" => scope.to_owned()).increment(1);
+    counter!("orion_rate_limit_rejections_total", "scope" => scope.to_owned()).increment(1);
 }
 
 /// Record a response cache hit.
@@ -216,7 +282,7 @@ pub fn record_cache_hit(channel: &str) {
     if !is_enabled() {
         return;
     }
-    counter!("response_cache_hits_total", "channel" => channel.to_owned()).increment(1);
+    counter!("orion_response_cache_hits_total", "channel" => channel.to_owned()).increment(1);
 }
 
 /// Record a response cache miss.
@@ -224,7 +290,7 @@ pub fn record_cache_miss(channel: &str) {
     if !is_enabled() {
         return;
     }
-    counter!("response_cache_misses_total", "channel" => channel.to_owned()).increment(1);
+    counter!("orion_response_cache_misses_total", "channel" => channel.to_owned()).increment(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -236,7 +302,7 @@ pub fn set_trace_queue_depth(depth: f64) {
     if !is_enabled() {
         return;
     }
-    gauge!("trace_queue_depth").set(depth);
+    gauge!("orion_trace_queue_depth").set(depth);
 }
 
 /// Set the number of active trace worker tasks.
@@ -244,7 +310,7 @@ pub fn set_trace_workers_active(count: f64) {
     if !is_enabled() {
         return;
     }
-    gauge!("trace_workers_active").set(count);
+    gauge!("orion_trace_workers_active").set(count);
 }
 
 /// Set the total (max) trace worker capacity.
@@ -252,7 +318,7 @@ pub fn set_trace_workers_total(count: f64) {
     if !is_enabled() {
         return;
     }
-    gauge!("trace_workers_total").set(count);
+    gauge!("orion_trace_workers_total").set(count);
 }
 
 /// Set the approximate memory usage of queued trace payloads.
@@ -260,7 +326,7 @@ pub fn set_trace_queue_memory_bytes(bytes: f64) {
     if !is_enabled() {
         return;
     }
-    gauge!("trace_queue_memory_bytes").set(bytes);
+    gauge!("orion_trace_queue_memory_bytes").set(bytes);
 }
 
 /// Count a submission the queue refused. `reason` is `"full"` (the bounded
@@ -271,7 +337,7 @@ pub fn record_trace_queue_rejected(reason: &'static str) {
     if !is_enabled() {
         return;
     }
-    counter!("trace_queue_rejected_total", "reason" => reason).increment(1);
+    counter!("orion_trace_queue_rejected_total", "reason" => reason).increment(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +351,7 @@ pub fn set_trace_dlq_depth(depth: f64) {
     if !is_enabled() {
         return;
     }
-    gauge!("trace_dlq_depth").set(depth);
+    gauge!("orion_trace_dlq_depth").set(depth);
 }
 
 /// Count a DLQ entry reaching a terminal state for this cycle. `outcome` is
@@ -295,7 +361,7 @@ pub fn record_trace_dlq_retry(outcome: &'static str) {
     if !is_enabled() {
         return;
     }
-    counter!("trace_dlq_retries_total", "outcome" => outcome).increment(1);
+    counter!("orion_trace_dlq_retries_total", "outcome" => outcome).increment(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +374,7 @@ pub fn record_trace_dropped(reason: &'static str) {
     if !is_enabled() {
         return;
     }
-    counter!("trace_dropped_total", "reason" => reason).increment(1);
+    counter!("orion_trace_dropped_total", "reason" => reason).increment(1);
 }
 
 /// Set the persistence queue depth.
@@ -316,7 +382,7 @@ pub fn set_trace_persistence_queue_depth(depth: f64) {
     if !is_enabled() {
         return;
     }
-    gauge!("trace_persistence_queue_depth").set(depth);
+    gauge!("orion_trace_persistence_queue_depth").set(depth);
 }
 
 /// Record a batch flush size (number of rows committed in one batch).
@@ -324,7 +390,7 @@ pub fn record_trace_persistence_batch_size(size: usize) {
     if !is_enabled() {
         return;
     }
-    histogram!("trace_persistence_batch_size").record(size as f64);
+    histogram!("orion_trace_persistence_batch_size").record(size as f64);
 }
 
 /// Count a trace-storage write the persistence workers could not complete.
@@ -334,7 +400,7 @@ pub fn record_trace_persistence_failure() {
     if !is_enabled() {
         return;
     }
-    counter!("trace_persistence_failures_total").increment(1);
+    counter!("orion_trace_persistence_failures_total").increment(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +413,7 @@ pub fn record_connector_request(connector: &str, channel: &str, status: &'static
         return;
     }
     counter!(
-        "connector_requests_total",
+        "orion_connector_requests_total",
         "connector" => connector.to_owned(),
         "channel" => channel.to_owned(),
         "status" => status
@@ -361,7 +427,7 @@ pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: 
         return;
     }
     histogram!(
-        "connector_request_duration_seconds",
+        "orion_connector_request_duration_seconds",
         "connector" => connector.to_owned(),
         "channel" => channel.to_owned()
     )
@@ -394,7 +460,7 @@ pub fn set_db_pool_size(size: f64) {
     if !is_enabled() {
         return;
     }
-    gauge!("db_pool_size").set(size);
+    gauge!("orion_db_pool_size").set(size);
 }
 
 /// Set the number of idle database connections.
@@ -402,7 +468,7 @@ pub fn set_db_pool_idle(idle: f64) {
     if !is_enabled() {
         return;
     }
-    gauge!("db_pool_idle").set(idle);
+    gauge!("orion_db_pool_idle").set(idle);
 }
 
 /// Record an admin audit event.
@@ -411,7 +477,7 @@ pub fn record_admin_audit(action: &str, resource_type: &str) {
         return;
     }
     counter!(
-        "admin_audit_events_total",
+        "orion_admin_audit_events_total",
         "action" => action.to_owned(),
         "resource_type" => resource_type.to_owned()
     )

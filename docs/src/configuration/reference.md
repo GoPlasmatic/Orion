@@ -214,7 +214,7 @@ The async trace pipeline: `POST /{channel}/async` enqueues, workers execute, and
 | `queue.processing_timeout_ms` | `60000` | `ORION_QUEUE__PROCESSING_TIMEOUT_MS` | Per-trace deadline on the async path. |
 | `queue.max_result_size_bytes` | `1048576` | `ORION_QUEUE__MAX_RESULT_SIZE_BYTES` | Raise for large results; oversized ones are rejected (sync) or failed (async). |
 | `queue.max_queue_memory_bytes` | `104857600` | `ORION_QUEUE__MAX_QUEUE_MEMORY_BYTES` | Total queued payload bytes before new submissions get `503`. |
-| `queue.dlq_retry_enabled` | `true` | `ORION_QUEUE__DLQ_RETRY_ENABLED` | Disable only to freeze the DLQ for inspection — note the `trace_dlq_depth` gauge stops updating with it. |
+| `queue.dlq_retry_enabled` | `true` | `ORION_QUEUE__DLQ_RETRY_ENABLED` | Disable only to freeze the DLQ for inspection — note the `orion_trace_dlq_depth` gauge stops updating with it. |
 | `queue.dlq_max_retries` | `5` | `ORION_QUEUE__DLQ_MAX_RETRIES` | Attempts before a row is marked exhausted. Must be 1–16 (backoff is 2^retries seconds); use `dlq_retry_enabled` to turn retries off. |
 | `queue.dlq_poll_interval_secs` | `30` | `ORION_QUEUE__DLQ_POLL_INTERVAL_SECS` | How often the retry worker polls. |
 | `queue.dlq_batch_size` | `20` | `ORION_QUEUE__DLQ_BATCH_SIZE` | Rows claimed per retry tick. Raise to drain a large backlog faster. |
