@@ -182,6 +182,16 @@ pub(crate) async fn dynamic_handler(
     // F35: a channel that failed to load is quarantined, not silently
     // config-less — serving it here would apply none of its guards.
     let channel_runtime = state.channel_registry.require_serviceable(&channel).await?;
+    // A name that is not in the registry is not an active channel. Without
+    // this check the single-segment fallback above accepted ANY name and ran
+    // the engine against an empty workflow set — a 200 "ok" for channels
+    // that never existed or were just archived (the ingress-side twin of the
+    // channel_call missing-target bug).
+    if channel_runtime.is_none() {
+        return Err(OrionError::NotFound(format!(
+            "Channel '{channel}' not found or not active"
+        )));
+    }
     guards::check_cors_origin(
         &channel,
         &channel_runtime,

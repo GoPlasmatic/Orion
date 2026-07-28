@@ -69,11 +69,13 @@ async fn test_async_trace_completes_successfully() {
     assert!(trace.get("message").is_some());
 }
 
+/// An async submission to a channel that does not exist is refused at
+/// ingress — it must not consume a queue slot or mint a trace. (It used to
+/// be accepted as a 202 no-op via the single-segment name fallback.)
 #[tokio::test]
 async fn test_async_trace_with_no_matching_channel() {
     let app = common::test_app().await;
 
-    // Submit to a channel with no channel/workflow configured
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -83,14 +85,9 @@ async fn test_async_trace_with_no_matching_channel() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let body = body_json(resp).await;
-    let trace_id = body["trace_id"].as_str().unwrap().to_string();
-    let token = body["trace_token"].as_str().unwrap().to_string();
-
-    // Trace should still complete (no-op)
-    let trace = poll_trace_until_done(&app, &trace_id, 30, Some(&token)).await;
-    assert_eq!(trace["status"], "completed");
+    assert_eq!(body["error"]["code"], "NOT_FOUND", "{body}");
 }
 
 #[tokio::test]

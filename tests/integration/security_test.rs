@@ -140,6 +140,12 @@ async fn test_xss_in_workflow_description() {
 #[tokio::test]
 async fn test_deeply_nested_json_payload() {
     let app = common::test_app().await;
+    common::create_and_activate_channel(
+        &app,
+        "deep-json-ch",
+        common::simple_log_workflow("Deep JSON WF"),
+    )
+    .await;
 
     // Build a 100-level deep nested JSON structure
     let mut nested = json!({"leaf": true});
@@ -150,7 +156,7 @@ async fn test_deeply_nested_json_payload() {
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/orders",
+            "/api/v1/data/deep-json-ch",
             Some(json!({"data": nested})),
         ))
         .await

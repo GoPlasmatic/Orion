@@ -44,12 +44,18 @@ async fn test_completely_invalid_json_body() {
 #[tokio::test]
 async fn test_empty_body_accepted() {
     let app = common::test_app().await;
+    common::create_and_activate_channel(
+        &app,
+        "empty-body-ch",
+        common::simple_log_workflow("Empty Body WF"),
+    )
+    .await;
 
     // Empty body is treated as {data: {}, metadata: {}} — valid for GET/DELETE
     // or any request without payload.
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/data/orders")
+        .uri("/api/v1/data/empty-body-ch")
         .header("content-type", "application/json")
         .body(Body::empty())
         .unwrap();

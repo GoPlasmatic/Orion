@@ -49,13 +49,13 @@ async fn test_rest_route_method_mismatch() {
         .unwrap();
 
     let resp = app.clone().oneshot(req).await.unwrap();
-    // Falls through to simple channel lookup — "orders" channel doesn't exist by name,
-    // but it does exist by route. Since GET doesn't match methods, route table won't match.
-    // The simple name lookup for "orders" will also fail (no channel named "orders").
-    // So this returns 200 with engine finding no matching workflows (empty result).
-    // This is acceptable — the request reaches the engine but no workflows match.
+    // GET doesn't match the POST-only route, and the fallback name lookup
+    // ("orders" is a route pattern, not a channel name) finds nothing — the
+    // request must be refused, not silently run against an empty workflow
+    // set as it once was.
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     let body = common::body_json(resp).await;
-    assert_eq!(body["status"], "ok");
+    assert_eq!(body["error"]["code"], "NOT_FOUND", "{body}");
 }
 
 #[tokio::test]
