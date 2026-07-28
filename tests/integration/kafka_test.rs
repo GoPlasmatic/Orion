@@ -1172,7 +1172,19 @@ async fn publish_kafka_rejects_a_non_kafka_connector() {
             .await;
     let app = orion::server::build_router(state);
 
-    crate::common::create_connector(&app, crate::common::db_connector("t3-not-kafka")).await;
+    // Activate against a genuine Kafka connector — F52 refuses a `publish_kafka`
+    // task pointing at anything else at activation time, so the runtime guard
+    // this test covers is now only reachable when the connector changes *type*
+    // under an already-active workflow.
+    let conn_id = crate::common::create_connector(
+        &app,
+        serde_json::json!({
+            "name": "t3-retyped",
+            "connector_type": "kafka",
+            "config": { "brokers": ["127.0.0.1:1"], "topic": "whatever" }
+        }),
+    )
+    .await;
     crate::common::create_and_activate_channel(
         &app,
         "t3-wrong-conn-ch",
@@ -1184,12 +1196,29 @@ async fn publish_kafka_rejects_a_non_kafka_connector() {
                 "continue_on_error": true,
                 "function": {
                     "name": "publish_kafka",
-                    "input": { "connector": "t3-not-kafka", "topic": "whatever" }
+                    "input": { "connector": "t3-retyped", "topic": "whatever" }
                 }
             }]),
         ),
     )
     .await;
+
+    // Retype it to `db`. The name is unchanged, so the F18 rename guard does
+    // not apply — this is precisely the case the handler's own
+    // `require_kafka_connector` check exists for.
+    let resp = app
+        .clone()
+        .oneshot(crate::common::json_request(
+            "PUT",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            Some(serde_json::json!({
+                "connector_type": "db",
+                "config": { "connection_string": "sqlite::memory:" }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::OK);
 
     let resp = app
         .clone()
@@ -1203,4 +1232,60 @@ async fn publish_kafka_rejects_a_non_kafka_connector() {
     let body = crate::common::body_json(resp).await;
     let errors = body["errors"].as_array().expect("task errors");
     assert!(!errors.is_empty(), "expected a task error, got {body}");
+}
+
+/// F52: the same mismatch is refused a layer earlier — a `publish_kafka` task
+/// pointing at a `db` connector cannot be activated at all, so it never reaches
+/// the runtime guard above.
+#[tokio::test]
+async fn publish_kafka_with_a_non_kafka_connector_cannot_activate() {
+    use tower::ServiceExt;
+
+    let app = crate::common::test_app().await;
+    crate::common::create_connector(&app, crate::common::db_connector("t3-not-kafka")).await;
+
+    let resp = app
+        .clone()
+        .oneshot(crate::common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(serde_json::json!({
+                "name": "kafka-wrong-type",
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Publish",
+                    "function": {
+                        "name": "publish_kafka",
+                        "input": { "connector": "t3-not-kafka", "topic": "whatever" }
+                    }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+    let wf_id = crate::common::body_json(resp).await["data"]["workflow_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(crate::common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    let msg = crate::common::body_json(resp).await.to_string();
+    assert!(
+        msg.contains("publish_kafka"),
+        "must name the function: {msg}"
+    );
+    assert!(
+        msg.contains("'kafka'"),
+        "must say what type was required: {msg}"
+    );
 }

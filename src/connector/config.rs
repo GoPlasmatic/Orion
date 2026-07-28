@@ -12,6 +12,27 @@ pub enum ConnectorConfig {
 }
 
 impl ConnectorConfig {
+    /// The wire `type` this config is. The stored `connectors.connector_type`
+    /// column says the same thing, but the registry holds parsed configs — this
+    /// is how a caller with only the parsed form (F52's activation-time type
+    /// check) asks what it got.
+    pub fn connector_type(&self) -> ConnectorType {
+        match self {
+            ConnectorConfig::Http(_) => ConnectorType::Http,
+            ConnectorConfig::Kafka(_) => ConnectorType::Kafka,
+            ConnectorConfig::Db(_) => ConnectorType::Db,
+            ConnectorConfig::Cache(_) => ConnectorType::Cache,
+            ConnectorConfig::Es(_) => ConnectorType::Es,
+        }
+    }
+
+    /// Whether this is a MongoDB connector, i.e. a `db` connector whose
+    /// connection string names the Mongo scheme. Both backends share the `Db`
+    /// variant, so the type alone does not tell them apart.
+    pub fn is_mongo(&self) -> bool {
+        matches!(self, ConnectorConfig::Db(c) if is_mongo_url(&c.connection_string))
+    }
+
     /// The operation gates for connectors that carry them (db, es).
     pub fn operation_gates(&self) -> Option<&OperationGates> {
         match self {
@@ -108,6 +129,8 @@ pub enum AuthConfig {
     ApiKey { header: String, key: String },
 }
 
+/// Retry policy for `http_call`. Lives on [`HttpConnectorConfig`] alone —
+/// F7 removed the copies on the db and es connectors, which nothing read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryConfig {
     #[serde(default = "default_max_retries")]
@@ -149,6 +172,14 @@ pub struct KafkaConnectorConfig {
 /// `postgres://` URL look meaningful when it silently connected to Postgres
 /// (proposal F22). Credentials belong in the connection string, which is why
 /// there is no `auth` either.
+///
+/// `retry` was accepted here until 1.0 and never read (proposal F7): the only
+/// reader of a [`RetryConfig`] is `http_call`. Re-driving a database call is
+/// not the same problem as re-driving an HTTP one — a statement that timed out
+/// may already have been applied, exactly the hazard F8 closed for POST — and
+/// the pool's own `connect_timeout_ms` already bounds connection setup, so
+/// there was nothing safe left for the field to mean. Timeouts and pool sizing
+/// are the knobs that exist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbConnectorConfig {
     pub connection_string: String,
@@ -158,8 +189,6 @@ pub struct DbConnectorConfig {
     pub connect_timeout_ms: Option<u64>,
     #[serde(default)]
     pub query_timeout_ms: Option<u64>,
-    #[serde(default)]
-    pub retry: RetryConfig,
     /// Which operations workflows may run through this connector.
     #[serde(default)]
     pub operations: OperationGates,
@@ -181,6 +210,11 @@ pub struct CacheConnectorConfig {
 
 /// Elasticsearch connector: a REST endpoint queried by the `data_query` handler
 /// (executed via the shared HTTP client — no dedicated ES driver).
+///
+/// `retry` was accepted here until 1.0 and never read (proposal F7). The
+/// dialect drives `_bulk` / `_update_by_query` / `_delete_by_query` through
+/// this connector as well as `_search`, and none of those are safe to re-send
+/// blind on a timeout — see the note on [`DbConnectorConfig`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EsConnectorConfig {
     /// Base URL, e.g. `http://localhost:9200`.
@@ -188,8 +222,6 @@ pub struct EsConnectorConfig {
     pub auth: Option<AuthConfig>,
     #[serde(default)]
     pub request_timeout_ms: Option<u64>,
-    #[serde(default)]
-    pub retry: RetryConfig,
     /// Allow requests to private/internal IP addresses. Default false (SSRF protection).
     #[serde(default)]
     pub allow_private_urls: bool,
@@ -201,6 +233,13 @@ pub struct EsConnectorConfig {
     /// Which operations workflows may run through this connector.
     #[serde(default)]
     pub operations: OperationGates,
+}
+
+/// A connection string targets MongoDB when it uses a `mongodb` scheme;
+/// otherwise it is a SQL connector (dialect from the URL scheme). The `db`
+/// connector type covers both, so this is the only thing that separates them.
+pub fn is_mongo_url(connection_string: &str) -> bool {
+    connection_string.starts_with("mongodb://") || connection_string.starts_with("mongodb+srv://")
 }
 
 /// Allowed connector type values.
@@ -348,15 +387,16 @@ mod tests {
     }
 
     /// F22 removed seven connector fields that were accepted, persisted, and
-    /// never read. Connector configs deliberately do **not** use
-    /// `deny_unknown_fields`, so a 0.3.x row carrying them still loads and the
-    /// keys are ignored — which is what they always effectively were. Without
-    /// this, every stored connector using one would fail to deserialize on
-    /// upgrade and drop out of the registry.
+    /// never read; F7 removed the last two (`retry` on db and es). Connector
+    /// configs deliberately do **not** use `deny_unknown_fields`, so a 0.3.x
+    /// row carrying them still loads and the keys are ignored — which is what
+    /// they always effectively were. Without this, every stored connector using
+    /// one would fail to deserialize on upgrade and drop out of the registry.
     #[test]
     fn legacy_configs_with_removed_fields_still_load() {
         let db = r#"{"type":"db","connection_string":"postgres://localhost/mydb",
-                     "driver":"mysql","auth":{"type":"basic","username":"u","password":"p"}}"#;
+                     "driver":"mysql","retry":{"max_retries":5,"retry_delay_ms":250},
+                     "auth":{"type":"basic","username":"u","password":"p"}}"#;
         match serde_json::from_str::<ConnectorConfig>(db).expect("0.3.x db config must still load")
         {
             ConnectorConfig::Db(db) => {
@@ -381,6 +421,47 @@ mod tests {
             ConnectorConfig::Kafka(k) => assert_eq!(k.topic, "t"),
             _ => unreachable!("Expected Kafka config"),
         }
+
+        let es = r#"{"type":"es","url":"http://localhost:9200",
+                     "retry":{"max_retries":9,"retry_delay_ms":100}}"#;
+        match serde_json::from_str::<ConnectorConfig>(es).expect("0.3.x es config must still load")
+        {
+            ConnectorConfig::Es(es) => assert_eq!(es.url, "http://localhost:9200"),
+            _ => unreachable!("Expected Es config"),
+        }
+    }
+
+    /// F7: `retry` on a db/es connector was declared, validated and documented
+    /// while the only reader of a `RetryConfig` is `http_call`. An operator who
+    /// set `max_retries: 5` on their Postgres connector got exactly nothing.
+    /// It now belongs to the HTTP connector alone, and the round-trip is where
+    /// that shows: `GET /admin/connectors` renders these structs, so a field
+    /// re-added without a consumer would start advertising itself again.
+    #[test]
+    fn only_the_http_connector_advertises_a_retry_policy() {
+        let rendered = |json: &str| {
+            let config: ConnectorConfig = serde_json::from_str(json).expect("config parses");
+            serde_json::to_value(&config).expect("config serializes")
+        };
+
+        assert!(
+            !rendered(r#"{"type":"db","connection_string":"sqlite::memory:"}"#)["retry"]
+                .is_object(),
+            "a db connector must not advertise a retry policy nothing applies"
+        );
+        assert!(
+            !rendered(r#"{"type":"es","url":"http://localhost:9200"}"#)["retry"].is_object(),
+            "an es connector must not advertise a retry policy nothing applies"
+        );
+        assert!(
+            !rendered(r#"{"type":"cache","backend":"memory"}"#)["retry"].is_object(),
+            "a cache connector must not advertise a retry policy nothing applies"
+        );
+        // http_call is the one reader, so this one stays.
+        assert_eq!(
+            rendered(r#"{"type":"http","url":"https://example.com"}"#)["retry"]["max_retries"],
+            3
+        );
     }
 
     #[test]

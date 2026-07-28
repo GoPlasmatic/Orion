@@ -110,17 +110,92 @@ pub fn es_write_error(status: reqwest::StatusCode, body: &Value) -> DataflowErro
     )
 }
 
-/// Wrap a handler body with profile recording, peeking the `connector`
-/// field from `input` to label the sample. Replaces the
-/// `let connector_peek = input.get("connector").and_then(...);
-///  crate::engine::profile::record(fn_name, connector_peek, async move {...})`
-/// preamble repeated by every `AsyncFunctionHandler::execute` in this module.
-pub async fn profile_handler<F, T>(fn_name: &'static str, input: &Value, fut: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    let connector_peek = input.get("connector").and_then(|v| v.as_str());
-    crate::engine::profile::record(fn_name, connector_peek, fut).await
+/// The prologue every connector handler runs before its own body.
+///
+/// F48: the same six steps — resolve-before-borrow, the `connector` field, the
+/// operation gate, the pool fetch, the output path, the observability shell —
+/// were written out in seven handlers, with the handler-name string literal
+/// repeated three to six times per file. A typo in one of those copies is
+/// invisible to the compiler and shows up as a metric label or an error message
+/// naming the wrong function. Now it is named once, in [`ConnectorCall::begin`],
+/// and read back off `self.name` everywhere else.
+///
+/// The split between `begin` and [`ConnectorCall::run`] is not cosmetic: `begin`
+/// reads only the handler's *own literal keys* and the message channel, both of
+/// which must happen before the body borrows `ctx` mutably.
+pub struct ConnectorCall<'a> {
+    /// The handler's name, as it appears in metrics, profiles and errors.
+    pub name: &'static str,
+    /// The connector this call targets, from the task's literal `connector` key.
+    pub connector: &'a str,
+    /// The channel the message arrived on — read before the body takes `ctx`
+    /// mutably, which is why it is owned.
+    pub channel: String,
+    /// Where the handler's result is written, defaulting to `data`.
+    pub output: &'a str,
+}
+
+impl<'a> ConnectorCall<'a> {
+    /// Read the literal prologue: the `connector` key, the `output` path, and
+    /// the message's channel.
+    ///
+    /// F58: call this **first**, ahead of any message-dependent resolution. The
+    /// handlers used to resolve `key` / `filter` / `params` against the message
+    /// before checking that a `connector` was even named, so a task missing both
+    /// reported the wrong one — the author fixed `key`, re-ran, and only then
+    /// learned about `connector`. Cheap literal checks are also the ones whose
+    /// failure is unambiguous: nothing about the message can change the answer.
+    pub fn begin(
+        name: &'static str,
+        input: &'a Value,
+        ctx: &TaskContext<'_>,
+    ) -> Result<Self, DataflowError> {
+        Ok(Self {
+            name,
+            connector: require_str_field(input, "connector", name)?,
+            channel: super::extract_channel(ctx.message()).to_string(),
+            output: extract_output_path(input),
+        })
+    }
+
+    /// [`require_str_field`] with the handler name already filled in.
+    pub fn require_str<'i>(&self, input: &'i Value, field: &str) -> Result<&'i str, DataflowError> {
+        require_str_field(input, field, self.name)
+    }
+
+    /// Resolve the target connector and apply its operation gate, if it has
+    /// one and the call names an operation.
+    ///
+    /// `op` is `None` for the handlers with nothing to gate (`http_call`,
+    /// `publish_kafka`, the cache pair) and `Some(_)` for the data handlers,
+    /// where `data_write` only knows its op after parsing the envelope and so
+    /// passes `None` here and gates separately.
+    pub async fn resolve(
+        &self,
+        registry: &ConnectorRegistry,
+        op: Option<&str>,
+    ) -> Result<Arc<ConnectorConfig>, DataflowError> {
+        let config = resolve_connector(registry, self.connector).await?;
+        if let Some(op) = op
+            && let Some(gates) = config.operation_gates()
+        {
+            require_op_allowed(gates, op, self.connector)?;
+        }
+        Ok(config)
+    }
+
+    /// Run the handler body inside the shared observability + circuit-breaker
+    /// shell ([`guarded_handler`]).
+    pub async fn run<F>(
+        &self,
+        registry: &ConnectorRegistry,
+        fut: F,
+    ) -> dataflow_rs::Result<TaskOutcome>
+    where
+        F: std::future::Future<Output = dataflow_rs::Result<TaskOutcome>>,
+    {
+        guarded_handler(self.name, registry, self.connector, &self.channel, fut).await
+    }
 }
 
 /// [`profile_handler`] plus the connector request/latency metrics (F40).
@@ -298,9 +373,7 @@ pub fn require_str_field<'a>(
 
 /// A connector targets MongoDB when its connection string uses a `mongodb`
 /// scheme; otherwise it is a SQL connector (dialect from the URL scheme).
-pub fn is_mongo(conn: &str) -> bool {
-    conn.starts_with("mongodb://") || conn.starts_with("mongodb+srv://")
-}
+pub use crate::connector::is_mongo_url as is_mongo;
 
 /// Refuse a MongoDB connector for a handler that speaks SQL.
 ///
@@ -592,7 +665,6 @@ mod tests {
             url: "http://127.0.0.1:9200".to_string(),
             auth: None,
             request_timeout_ms: None,
-            retry: crate::connector::RetryConfig::default(),
             allow_private_urls,
             operations: OperationGates::default(),
         }
@@ -630,9 +702,26 @@ mod tests {
 
 #[cfg(test)]
 mod observability_tests {
+    const HANDLERS: [&str; 9] = [
+        "cache_read",
+        "cache_write",
+        "db_read",
+        "db_write",
+        "data_query",
+        "data_write",
+        "mongo_read",
+        "http_call",
+        "publish_kafka",
+    ];
+
+    fn handler_source(handler: &str) -> String {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine/functions");
+        std::fs::read_to_string(format!("{dir}/{handler}.rs")).expect("handler source")
+    }
+
     /// F40/F6: every connector handler must run its body inside the shared
-    /// shell — [`guarded_handler`], or [`observed_handler`] for a handler with
-    /// no connector to guard. That shell is the only thing emitting
+    /// shell — [`guarded_handler`], reached directly or through
+    /// [`ConnectorCall::run`]. That shell is the only thing emitting
     /// `connector_requests_total` / `connector_request_duration_seconds`, and
     /// the only place the circuit breaker is applied.
     ///
@@ -641,41 +730,102 @@ mod observability_tests {
     /// binary installs a real one and a scrape-based test would pass or fail
     /// on test ordering. This checks the property that actually regresses —
     /// a handler added without the wrapper.
+    ///
+    /// [`ConnectorCall::run`]: super::ConnectorCall::run
+    /// [`guarded_handler`]: super::guarded_handler
     #[test]
     fn every_connector_handler_is_wrapped_in_the_observability_shell() {
-        const HANDLERS: [&str; 9] = [
-            "cache_read",
-            "cache_write",
-            "db_read",
-            "db_write",
-            "data_query",
-            "data_write",
-            "mongo_read",
-            "http_call",
-            "publish_kafka",
-        ];
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine/functions");
         let mut unwrapped = Vec::new();
         for handler in HANDLERS {
-            let path = format!("{dir}/{handler}.rs");
-            let src = std::fs::read_to_string(&path).expect("handler source");
-            // `guarded_handler` (F6) wraps `observed_handler_named`, so either
-            // name means the handler is inside the shell.
-            if !src.contains("observed_handler") && !src.contains("guarded_handler") {
+            let src = handler_source(handler);
+            // `guarded_handler` (F6) wraps `observed_handler_named`, and
+            // `ConnectorCall::run` (F48) wraps `guarded_handler`; any of the
+            // three means the handler is inside the shell.
+            if !["observed_handler", "guarded_handler", "call.run("]
+                .iter()
+                .any(|w| src.contains(w))
+            {
                 unwrapped.push(handler);
             }
-            // The wrapper is useless if the body still reaches for the raw
-            // profiler, which records no connector metrics.
+            // The wrapper is useless if the body reaches for the raw profiler,
+            // which records no connector metrics.
             assert!(
-                !src.contains("profile_handler("),
-                "{handler} still calls profile_handler; use observed_handler so \
-                 its connector metrics are not conditional on the circuit breaker"
+                !src.contains("profile::record("),
+                "{handler} calls the raw profiler; go through ConnectorCall::run \
+                 so its connector metrics are not conditional on the circuit breaker"
             );
         }
         assert!(
             unwrapped.is_empty(),
             "these connector handlers emit no connector metrics: {unwrapped:?}"
         );
+    }
+
+    /// F58: the literal prologue runs before any message-dependent resolution.
+    ///
+    /// The handlers used to fold `key` / `filter` / `params` against the message
+    /// first, so a task missing both `connector` and `key` reported the `key`
+    /// error — the author fixed that, re-ran, and only then learned about
+    /// `connector`. Literal checks are also the unambiguous ones: no property of
+    /// the message can change their answer.
+    ///
+    /// Source order is the property, because that *is* the defect — both checks
+    /// happen, and only their sequence decides which error the caller sees.
+    #[test]
+    fn the_literal_prologue_precedes_message_dependent_resolution() {
+        // The handlers whose input is a `Value` and so carry the prologue;
+        // `http_call` and `publish_kafka` take a typed struct that serde has
+        // already validated by the time `execute` runs.
+        const RESOLVERS: [&str; 4] = [
+            "resolve_required_str(",
+            "resolve_bind_params(",
+            "resolve_params(",
+            "resolve_value(",
+        ];
+        for handler in HANDLERS {
+            let src = handler_source(handler);
+            let Some(begin) = src.find("ConnectorCall::begin(") else {
+                assert!(
+                    ["http_call", "publish_kafka"].contains(&handler),
+                    "{handler} has no ConnectorCall prologue"
+                );
+                continue;
+            };
+            for resolver in RESOLVERS {
+                if let Some(at) = src.find(resolver) {
+                    assert!(
+                        begin < at,
+                        "{handler}.rs calls {resolver} before ConnectorCall::begin, so a task \
+                         missing 'connector' reports some other field first (proposal F58)"
+                    );
+                }
+            }
+        }
+    }
+
+    /// F48: each handler names itself exactly once, in its `NAME` const.
+    ///
+    /// The name reaches metric labels, profile samples and every error message,
+    /// and it used to be a bare string literal repeated three to six times per
+    /// file. A typo in one copy compiles cleanly and surfaces as a metric series
+    /// nobody is graphing, or an error naming a function the workflow never
+    /// called.
+    #[test]
+    fn a_handler_names_itself_exactly_once() {
+        for handler in HANDLERS {
+            let src = handler_source(handler);
+            let quoted = format!("\"{handler}\"");
+            let occurrences = src.matches(&quoted).count();
+            assert_eq!(
+                occurrences, 1,
+                "{handler}.rs writes \"{handler}\" {occurrences} times; it should \
+                 appear only in `const NAME` and be read back from there"
+            );
+            assert!(
+                src.contains(&format!("const NAME: &str = {quoted}")),
+                "{handler}.rs has no `const NAME` (proposal F48)"
+            );
+        }
     }
 }
 

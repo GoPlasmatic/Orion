@@ -187,10 +187,52 @@ pub(crate) async fn change_workflow_status(
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 
-/// R5: every connector a workflow's tasks reference must exist before the
-/// workflow may activate. Missing connectors were previously a warning at
-/// create and unchecked at activate, so the workflow failed at its first
-/// request instead.
+/// One task's connector reference, as authored.
+pub(crate) struct ConnectorRef<'a> {
+    /// The task's `function.name`, always one of `CONNECTOR_FUNCTIONS`.
+    pub function: &'a str,
+    pub connector: &'a str,
+    /// The task's whole `function.input` object, for the cross-field rules.
+    pub input: &'a Value,
+}
+
+/// Every connector a workflow's tasks reference, in task order.
+///
+/// Shared by the activation check below and the connector-rename guard in
+/// `admin/connectors.rs` (F18), which needs the same walk to answer "is any
+/// active workflow pointing at this name?".
+pub(crate) fn connector_refs(tasks: &Value) -> Vec<ConnectorRef<'_>> {
+    let Some(tasks) = tasks.as_array() else {
+        return Vec::new();
+    };
+    tasks
+        .iter()
+        .filter_map(|task| {
+            let function = task.get("function")?;
+            let name = function.get("name")?.as_str()?;
+            if !crate::engine::CONNECTOR_FUNCTIONS.contains(&name) {
+                return None;
+            }
+            let input = function.get("input")?;
+            Some(ConnectorRef {
+                function: name,
+                connector: input.get("connector")?.as_str()?,
+                input,
+            })
+        })
+        .collect()
+}
+
+/// R5 / F52: every connector a workflow's tasks reference must exist, be of a
+/// type the referencing function can actually use, and carry the extra keys
+/// that type needs — all before the workflow may activate.
+///
+/// Missing connectors were previously a warning at create and unchecked at
+/// activate, so the workflow failed at its first request instead (R5). The
+/// *type* stayed unchecked even then: pointing `cache_read` at a `db`
+/// connector activated cleanly and 500'd on first traffic, though
+/// `CONNECTOR_FUNCTIONS` already implied the required kind (F52). Both are
+/// fully determined at authoring time, so both are answered here.
 async fn ensure_workflow_connectors_exist(
     state: &AppState,
     workflow: &crate::storage::models::Workflow,
@@ -198,33 +240,62 @@ async fn ensure_workflow_connectors_exist(
     let Ok(tasks) = serde_json::from_str::<Value>(&workflow.tasks_json) else {
         return Ok(()); // unparseable tasks are caught elsewhere
     };
-    let Some(tasks) = tasks.as_array() else {
-        return Ok(());
-    };
-    let mut missing = Vec::new();
-    for task in tasks {
-        let function = task.get("function");
-        let fn_name = function
-            .and_then(|f| f.get("name"))
-            .and_then(|n| n.as_str())
-            .unwrap_or("");
-        if !crate::engine::CONNECTOR_FUNCTIONS.contains(&fn_name) {
+    let mut missing: Vec<String> = Vec::new();
+    let mut problems: Vec<String> = Vec::new();
+
+    for task in connector_refs(&tasks) {
+        let Some(config) = state.connector_registry.get(task.connector).await else {
+            if !missing.contains(&task.connector.to_string()) {
+                missing.push(task.connector.to_string());
+            }
+            continue;
+        };
+
+        // Type. The handler would refuse this at request time via
+        // `require_*_connector`; saying so now costs one registry read.
+        let actual = config.connector_type();
+        if let Some(wanted) = crate::engine::required_connector_types(task.function)
+            && !wanted.contains(&actual)
+        {
+            problems.push(format!(
+                "task calling '{}' points at connector '{}', which is a '{actual}' \
+                 connector — '{}' requires {}",
+                task.function,
+                task.connector,
+                task.function,
+                wanted
+                    .iter()
+                    .map(|t| format!("'{t}'"))
+                    .collect::<Vec<_>>()
+                    .join(" or ")
+            ));
             continue;
         }
-        if let Some(connector) = function
-            .and_then(|f| f.get("input"))
-            .and_then(|i| i.get("connector"))
-            .and_then(|c| c.as_str())
-            && state.connector_registry.get(connector).await.is_none()
-            && !missing.contains(&connector.to_string())
+
+        // Cross-field: MongoDB has no default database in its connection
+        // string, so the task must name one. `mongo_read` declares `database`
+        // required outright; `data_query`/`data_write` cannot, because the same
+        // shape is valid against SQL and Elasticsearch — which is why the
+        // schema marks it optional and the handler enforces it at request time.
+        // Whether it applies is knowable here: the connector is already
+        // resolved.
+        if config.is_mongo()
+            && crate::engine::requires_mongo_database(task.function)
+            && !task
+                .input
+                .get("database")
+                .is_some_and(|d| d.as_str().is_some_and(|s| !s.trim().is_empty()))
         {
-            missing.push(connector.to_string());
+            problems.push(format!(
+                "task calling '{}' points at MongoDB connector '{}' but sets no \
+                 'database' — MongoDB connection strings carry no default database",
+                task.function, task.connector
+            ));
         }
     }
-    if missing.is_empty() {
-        Ok(())
-    } else {
-        Err(OrionError::validation(format!(
+
+    if !missing.is_empty() {
+        return Err(OrionError::validation(format!(
             "Cannot activate workflow '{}': connector(s) {} not found — create \
              them first, or fix the reference",
             workflow.workflow_id,
@@ -233,8 +304,16 @@ async fn ensure_workflow_connectors_exist(
                 .map(|m| format!("'{m}'"))
                 .collect::<Vec<_>>()
                 .join(", ")
-        )))
+        )));
     }
+    if !problems.is_empty() {
+        return Err(OrionError::validation(format!(
+            "Cannot activate workflow '{}': {}",
+            workflow.workflow_id,
+            problems.join("; ")
+        )));
+    }
+    Ok(())
 }
 
 // ============================================================
@@ -363,18 +442,8 @@ pub(crate) async fn test_workflow(
 
     // Create an isolated engine with just this one workflow, reusing the shared HTTP client.
     // channel_call in dry-run still routes through the main engine for cross-channel calls.
-    let custom_fns = crate::engine::build_custom_functions(
-        state.connector_registry.clone(),
-        state.http_client.clone(),
-        state.engine.clone(),
-        state.channel_registry.clone(),
-        &state.config.engine,
-        &state.config.query,
-        &state.config.write,
-        state.cache_pool.clone(),
-        state.sql_pool_cache.clone(),
-        state.mongo_pool_cache.clone(),
-    );
+    let custom_fns =
+        crate::engine::build_custom_functions(crate::engine::HandlerDeps::from_state(&state));
     let test_engine =
         dataflow_rs::Engine::new(vec![df_workflow], custom_fns).map_err(OrionError::Engine)?;
 

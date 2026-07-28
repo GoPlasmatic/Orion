@@ -28,13 +28,38 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tokio::task_local;
 
+/// Lock a profile mutex, recovering rather than panicking if it is poisoned.
+///
+/// G9: these locks are taken **inside the request future**. `.expect()` here
+/// panicked the request on a poisoned mutex — and, because poisoning is sticky,
+/// every subsequent request for the collector's lifetime. `CatchPanicLayer`
+/// turned that into an opaque 500 with no request id and no security headers.
+/// A debug surface must never be able to do that: poisoning means some earlier
+/// panic left a sample list possibly short an entry, which is not a reason to
+/// fail the caller's request.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// One handler invocation sample.
 #[derive(Debug, Clone)]
 pub struct HandlerSample {
     pub function: &'static str,
     pub connector: Option<String>,
+    /// When the handler body started, so nesting can be resolved by interval
+    /// containment rather than guessed (F50).
+    pub started: Instant,
     pub duration: Duration,
     pub depth: u32,
+}
+
+impl HandlerSample {
+    /// Whether `self` ran entirely inside `outer`. Handler bodies are awaited
+    /// within one another, so a genuine parent/child pair nests exactly.
+    fn nested_in(&self, outer: &HandlerSample) -> bool {
+        self.started >= outer.started
+            && self.started + self.duration <= outer.started + outer.duration
+    }
 }
 
 /// Per-request profile state. Accessed via the [`ORION_PROFILE`] task-local.
@@ -67,24 +92,29 @@ impl ProfileCollector {
     }
 
     pub fn set_engine_lock_wait(&self, d: Duration) {
-        let mut g = self.engine_lock_wait.lock().expect("profile mutex");
+        let mut g = lock(&self.engine_lock_wait);
         *g = Some(g.map_or(d, |existing| existing + d));
     }
 
     pub fn set_workflow_total(&self, d: Duration) {
-        *self.workflow_total.lock().expect("profile mutex") = Some(d);
+        *lock(&self.workflow_total) = Some(d);
     }
 
     pub fn set_trace_store(&self, d: Duration) {
-        *self.trace_store.lock().expect("profile mutex") = Some(d);
+        *lock(&self.trace_store) = Some(d);
     }
 
     /// Stable shape version for the response/trace `profile` JSON object.
     ///
     /// Bump this when the rendered structure changes in a way that would
     /// break existing consumers. Clients should branch on `version` to
-    /// tolerate future shape changes. v0.2.0 ships with v1.
-    pub const PROFILE_VERSION: u32 = 1;
+    /// tolerate future shape changes.
+    ///
+    /// **v2** (1.0): `handlers[].nested` now lists only the samples that
+    /// actually ran inside that call. In v1 every depth>0 sample was attached
+    /// to every depth-0 `channel_call`, so a workflow with two fan-out calls
+    /// reported each one's children under both (F50).
+    pub const PROFILE_VERSION: u32 = 2;
 
     /// Render the collector as the response/trace `profile` JSON object.
     ///
@@ -108,10 +138,15 @@ impl ProfileCollector {
     /// }
     /// ```
     pub fn to_json(&self) -> Value {
-        let samples = self.samples.lock().expect("profile mutex").clone();
-        let engine_lock_wait = self.engine_lock_wait.lock().expect("profile mutex").take();
-        let workflow_total = self.workflow_total.lock().expect("profile mutex").take();
-        let trace_store = self.trace_store.lock().expect("profile mutex").take();
+        let samples = lock(&self.samples).clone();
+        // F51: reading must not drain. These used `.take()`, so a second
+        // `to_json` — the sync path renders one profile for the response and
+        // another for the persisted trace — silently returned a profile with
+        // the phase timings blanked and `workflow_overhead_ms` recomputed from
+        // a missing basis. Copy; `Option<Duration>` is `Copy`.
+        let engine_lock_wait = *lock(&self.engine_lock_wait);
+        let workflow_total = *lock(&self.workflow_total);
+        let trace_store = *lock(&self.trace_store);
 
         let request_total = self.start.elapsed();
 
@@ -135,6 +170,14 @@ impl ProfileCollector {
             _ => None,
         };
 
+        // F50: nesting is resolved by interval containment against the
+        // children collected once, rather than by attaching every depth>0
+        // sample to every depth-0 `channel_call`. The old approximation
+        // double-reported: two fan-out calls each listed the other's work, and
+        // the `samples.iter().any(...)` guard that gated it re-scanned the
+        // whole list per top-level sample for an answer that does not vary.
+        let children: Vec<&HandlerSample> = samples.iter().filter(|s| s.depth > 0).collect();
+
         // Per-sample JSON with pct of workflow_total.
         let workflow_basis = workflow_total_ms.unwrap_or(0.0);
         let handlers_json: Vec<Value> = samples
@@ -155,32 +198,24 @@ impl ProfileCollector {
                 if let Some(ref c) = s.connector {
                     obj["connector"] = Value::String(c.clone());
                 }
-                if samples.iter().any(|x| x.depth > s.depth) {
-                    // Attach nested samples that occurred during this top-level
-                    // call. We don't have explicit parent links — for now, we
-                    // attach all samples with depth > 0 as a flat list onto the
-                    // first depth-0 channel_call sample. This is a coarse but
-                    // useful approximation; precise grouping would require
-                    // recording start/end instants and matching by interval.
-                    if s.function == "channel_call" {
-                        let nested: Vec<Value> = samples
-                            .iter()
-                            .filter(|x| x.depth > 0)
-                            .map(|x| {
-                                let dms = x.duration.as_secs_f64() * 1000.0;
-                                let mut o = json!({
-                                    "function": x.function,
-                                    "duration_ms": round2(dms),
-                                    "depth": x.depth,
-                                });
-                                if let Some(ref c) = x.connector {
-                                    o["connector"] = Value::String(c.clone());
-                                }
-                                o
-                            })
-                            .collect();
-                        obj["nested"] = Value::Array(nested);
-                    }
+                let nested: Vec<Value> = children
+                    .iter()
+                    .filter(|x| x.nested_in(s))
+                    .map(|x| {
+                        let dms = x.duration.as_secs_f64() * 1000.0;
+                        let mut o = json!({
+                            "function": x.function,
+                            "duration_ms": round2(dms),
+                            "depth": x.depth,
+                        });
+                        if let Some(ref c) = x.connector {
+                            o["connector"] = Value::String(c.clone());
+                        }
+                        o
+                    })
+                    .collect();
+                if !nested.is_empty() {
+                    obj["nested"] = Value::Array(nested);
                 }
                 obj
             })
@@ -331,16 +366,13 @@ where
     collector.depth.fetch_sub(1, Ordering::Relaxed);
 
     let connector_owned = connector.map(str::to_owned);
-    collector
-        .samples
-        .lock()
-        .expect("profile mutex")
-        .push(HandlerSample {
-            function,
-            connector: connector_owned,
-            duration: elapsed,
-            depth,
-        });
+    lock(&collector.samples).push(HandlerSample {
+        function,
+        connector: connector_owned,
+        started: start,
+        duration: elapsed,
+        depth,
+    });
 
     result
 }
@@ -400,6 +432,137 @@ mod tests {
         assert_eq!(samples[1].depth, 0);
     }
 
+    /// F50: each top-level call must list only the work that ran inside it.
+    /// v1 attached every depth>0 sample to every depth-0 `channel_call`, so a
+    /// workflow fanning out to two channels reported each one's children under
+    /// both — reading as double the work actually done.
+    #[tokio::test]
+    async fn nested_samples_attach_only_to_the_call_they_ran_inside() {
+        let collector = ProfileCollector::new();
+        ORION_PROFILE
+            .scope(collector.clone(), async {
+                record("channel_call", Some("alpha"), async {
+                    record("db_read", Some("db_a"), async {
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    })
+                    .await;
+                })
+                .await;
+                record("channel_call", Some("beta"), async {
+                    record("cache_read", Some("cache_b"), async {
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    })
+                    .await;
+                })
+                .await;
+            })
+            .await;
+
+        let v = collector.to_json();
+        let handlers = v["handlers"].as_array().expect("handlers");
+        assert_eq!(handlers.len(), 2, "two top-level calls: {v}");
+
+        let nested_of = |connector: &str| -> Vec<String> {
+            handlers
+                .iter()
+                .find(|h| h["connector"] == connector)
+                .and_then(|h| h["nested"].as_array())
+                .map(|n| {
+                    n.iter()
+                        .filter_map(|x| x["function"].as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        assert_eq!(nested_of("alpha"), vec!["db_read".to_string()]);
+        assert_eq!(nested_of("beta"), vec!["cache_read".to_string()]);
+    }
+
+    /// F49: `channel_call` passed `None` as its connector label, so
+    /// `by_connector` was blank for the one handler whose fan-out most needs
+    /// attribution. The target channel is the right label — it is what the
+    /// call reached out to.
+    #[tokio::test]
+    async fn a_labelled_call_is_attributed_in_by_connector() {
+        let collector = ProfileCollector::new();
+        ORION_PROFILE
+            .scope(collector.clone(), async {
+                record("channel_call", Some("downstream-ch"), async {}).await;
+            })
+            .await;
+        let v = collector.to_json();
+        assert_eq!(v["by_connector"]["downstream-ch"]["count"], 1);
+    }
+
+    /// F51: `to_json` used `.take()` on the three phase timings, so the second
+    /// call returned a skewed profile — and the sync path renders one for the
+    /// response and another for the persisted trace, so the stored copy was
+    /// the blanked one.
+    #[tokio::test]
+    async fn to_json_is_repeatable() {
+        let collector = ProfileCollector::new();
+        ORION_PROFILE
+            .scope(collector.clone(), async {
+                record("db_read", Some("db1"), async {}).await;
+            })
+            .await;
+        collector.set_workflow_total(Duration::from_millis(10));
+        collector.set_engine_lock_wait(Duration::from_micros(50));
+        collector.set_trace_store(Duration::from_millis(1));
+
+        let first = collector.to_json();
+        let second = collector.to_json();
+        for key in [
+            "workflow_total_ms",
+            "engine_lock_wait_ms",
+            "trace_store_ms",
+            "workflow_overhead_ms",
+            "handlers_total_ms",
+        ] {
+            assert_eq!(
+                first[key], second[key],
+                "'{key}' changed between renders: {first} vs {second}"
+            );
+        }
+        assert_eq!(
+            first["phases"].as_array().map(Vec::len),
+            second["phases"].as_array().map(Vec::len),
+            "phases[] must not shrink on a second render"
+        );
+    }
+
+    /// G9: a poisoned profile mutex must not panic the request. Poisoning is
+    /// sticky, so `.expect()` here turned one panic anywhere into an opaque
+    /// 500 for every subsequent request the collector saw.
+    // The only way to poison a mutex is to panic while holding it, which is
+    // the exact state under test.
+    #[allow(clippy::panic)]
+    #[tokio::test]
+    async fn a_poisoned_mutex_does_not_panic_the_request() {
+        let collector = ProfileCollector::new();
+        let poison = collector.clone();
+        // Panic while holding the lock, in a thread of its own so the panic
+        // does not fail the test.
+        let _ = std::thread::spawn(move || {
+            let _guard = poison.samples.lock().expect("acquired");
+            panic!("poison the samples mutex");
+        })
+        .join();
+        assert!(
+            collector.samples.is_poisoned(),
+            "the mutex must actually be poisoned for this test to mean anything"
+        );
+
+        ORION_PROFILE
+            .scope(collector.clone(), async {
+                record("db_read", Some("db1"), async {}).await;
+            })
+            .await;
+        collector.set_workflow_total(Duration::from_millis(5));
+        let v = collector.to_json();
+        assert_eq!(v["version"], ProfileCollector::PROFILE_VERSION);
+    }
+
     #[tokio::test]
     async fn to_json_shape() {
         let collector = ProfileCollector::new();
@@ -415,7 +578,7 @@ mod tests {
 
         let v = collector.to_json();
         // B3 shape lock: top-level version + totals_ms + iterable phases[].
-        assert_eq!(v["version"], 1);
+        assert_eq!(v["version"], ProfileCollector::PROFILE_VERSION);
         // `totals_ms` is wall-clock since the collector was created, rounded to
         // 2dp — on a fast machine the whole test body fits inside 5us and it
         // rounds to exactly 0.00, so this locks the shape, not a lower bound.

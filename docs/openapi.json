@@ -1374,6 +1374,16 @@
               }
             }
           },
+          "400": {
+            "description": "Rename refused: an active workflow references the old name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
             "content": {

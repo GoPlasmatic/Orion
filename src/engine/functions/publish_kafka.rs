@@ -8,7 +8,11 @@ use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
+use super::schema::{FieldKind, FieldSchema};
 use crate::connector::ConnectorRegistry;
+
+/// This handler's name in metrics, profiles and error messages (F48).
+const NAME: &str = "publish_kafka";
 
 /// Kafka publish handler.
 pub struct PublishKafkaHandler {
@@ -31,7 +35,7 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
         let channel = super::extract_channel(ctx.message()).to_string();
 
         super::connector_helpers::guarded_handler(
-            "publish_kafka",
+            NAME,
             &self.registry,
             &input.connector,
             &channel,
@@ -137,3 +141,42 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
         .await
     }
 }
+
+// -- Input schema (F53) --
+//
+// The table describing this handler's `function.input` lives next to the
+// handler it describes. It used to sit in `schema.rs` with the other nine,
+// which is how every schema/handler divergence in the 1.0 audit happened:
+// a field was added, renamed or made conditional here and the table saying
+// so was in a different file.
+
+pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "connector",
+        description: "Name of the Kafka connector to publish through.",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "topic",
+        description: "Target topic name.",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "key_logic",
+        description: "JSONLogic expression to derive the message key.",
+        kind: FieldKind::Any,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "value_logic",
+        description: "JSONLogic expression to derive the message value.",
+        kind: FieldKind::Any,
+        required: false,
+        resolvable: false,
+    },
+];

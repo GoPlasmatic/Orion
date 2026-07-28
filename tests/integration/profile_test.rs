@@ -122,8 +122,8 @@ async fn profile_header_enabled() {
     let profile = orion.get("profile").unwrap_or_else(|| {
         panic!("expected `_orion.profile` field on response; got {body:?}");
     });
-    // Locked shape (v1): version + iterable phases.
-    assert_eq!(profile["version"], 1);
+    // Locked shape (v2): version + iterable phases.
+    assert_eq!(profile["version"], 2);
     assert!(profile["totals_ms"].as_f64().unwrap() > 0.0);
     assert!(profile["phases"].is_array());
     assert!(profile["handlers"].is_array());
@@ -288,7 +288,7 @@ async fn profile_async_embedded_in_trace() {
         profile.is_object(),
         "expected _orion.profile inside trace.message; got {final_trace}"
     );
-    assert_eq!(profile["version"], 1);
+    assert_eq!(profile["version"], 2);
     assert!(profile["handlers"].is_array());
 }
 

@@ -10,11 +10,11 @@ use serde_json::{Value, json};
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, es_request, es_write_error, extract_output_path, guarded_handler, is_mongo,
-    require_op_allowed, require_str_field, resolve_connector, resolve_params, send_es, timed_query,
-    to_connect_error, to_exec_error,
+    ConnectorCall, apply_output, es_request, es_write_error, is_mongo, require_op_allowed,
+    resolve_params, send_es, timed_query, to_connect_error, to_exec_error,
 };
 use super::db_read::rows_to_json;
+use super::schema::{FieldKind, FieldSchema};
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
@@ -23,6 +23,9 @@ use crate::query::backend::mongo::MongoWrite;
 use crate::query::write::{ResolvedWrite, WriteError, WriteOp};
 use crate::query::{self, SqlDialect};
 use crate::storage::detect_backend;
+
+/// This handler's name in metrics, profiles and error messages (F48).
+const NAME: &str = "data_write";
 
 /// Executes a portable `data_write` — one backend-neutral mutation envelope
 /// (`op`/`target`/`values`/`set`/`filter`/`on_conflict`/`returning`) that renders
@@ -49,95 +52,90 @@ impl AsyncFunctionHandler for DataWriteHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        // Resolve `params` against the message context first (the only point the
+        // F48/F58: the literal prologue first — a task naming no connector must
+        // say so before the message is consulted at all.
+        let call = ConnectorCall::begin(NAME, input, ctx)?;
+
+        // Resolve `params` against the message context (the only point the
         // message touches the mutation); it produces literals, not SQL.
         let params = resolve_params(input.get("params"), ctx);
 
-        // F40: read the channel before the body borrows `ctx` mutably.
-        let channel = super::extract_channel(ctx.message()).to_string();
+        call.run(&self.registry, async {
+            // The op is only known after the envelope is parsed, so the
+            // gate is applied below rather than here.
+            let connector_config = call.resolve(&self.registry, None).await?;
 
-        // F6: the breaker now wraps every egress path, not just http_call.
-        let connector_name = require_str_field(input, "connector", "data_write")?;
+            // Optional inline schema (privileged config): renames, allowlist, and
+            // the per-column `writable` flag.
+            let registry = match input.get("schema") {
+                Some(s) => query::EntityRegistry::from_json(s)?,
+                None => query::EntityRegistry::default(),
+            };
 
-        guarded_handler(
-            "data_write",
-            &self.registry,
-            connector_name,
-            &channel,
-            async move {
-                let connector_config = resolve_connector(&self.registry, connector_name).await?;
+            // W7: the mutation envelope is nested under `write`, mirroring
+            // `data_query`'s `query`. Before 1.0 it was flat, sharing a
+            // namespace with the handler keys (`connector`, `schema`,
+            // `params`, `database`, `output`) — so those five names could
+            // never be used by the dialect, and there was no single JSON
+            // value that *was* the envelope. The flat form is still accepted
+            // for one release.
+            let envelope = input.get("write").unwrap_or(input);
 
-                // Optional inline schema (privileged config): renames, allowlist, and
-                // the per-column `writable` flag.
-                let registry = match input.get("schema") {
-                    Some(s) => query::EntityRegistry::from_json(s)?,
-                    None => query::EntityRegistry::default(),
-                };
+            // One backend-neutral resolution: parse envelope, fold params into
+            // values/set, resolve physical names, coerce, and lower the filter.
+            let resolved = query::write::resolve_write(envelope, &params, &registry)?;
+            self.check_guards(&resolved)?;
 
-                // W7: the mutation envelope is nested under `write`, mirroring
-                // `data_query`'s `query`. Before 1.0 it was flat, sharing a
-                // namespace with the handler keys (`connector`, `schema`,
-                // `params`, `database`, `output`) — so those five names could
-                // never be used by the dialect, and there was no single JSON
-                // value that *was* the envelope. The flat form is still accepted
-                // for one release.
-                let envelope = input.get("write").unwrap_or(input);
+            // Per-connector operation gates: a connector config can disable
+            // individual ops (e.g. delete) regardless of what workflows ask for.
+            if let Some(gates) = connector_config.operation_gates() {
+                require_op_allowed(gates, resolved.op.as_str(), call.connector)?;
+            }
 
-                // One backend-neutral resolution: parse envelope, fold params into
-                // values/set, resolve physical names, coerce, and lower the filter.
-                let resolved = query::write::resolve_write(envelope, &params, &registry)?;
-                self.check_guards(&resolved)?;
-
-                // Per-connector operation gates: a connector config can disable
-                // individual ops (e.g. delete) regardless of what workflows ask for.
-                if let Some(gates) = connector_config.operation_gates() {
-                    require_op_allowed(gates, resolved.op.as_str(), connector_name)?;
+            let result = match connector_config.as_ref() {
+                ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
+                    let database = call.require_str(input, "database")?;
+                    let mw = query::backend::mongo::render_write(&resolved)?;
+                    let client = self
+                        .mongo_pool_cache
+                        .get_client(call.connector, db)
+                        .await
+                        .map_err(to_connect_error)?;
+                    // F11: bound the write like the SQL branches bound theirs.
+                    timed_query(db.query_timeout_ms, call.name, async {
+                        execute_mongo(&client, database, mw)
+                            .await
+                            .map_err(|e| e.to_string())
+                    })
+                    .await?
                 }
+                ConnectorConfig::Db(db) => {
+                    let dialect: SqlDialect = detect_backend(&db.connection_string)
+                        .map_err(to_exec_error)?
+                        .into();
+                    let (sql, values) = query::backend::sql::render_write(&resolved, dialect)?;
+                    let pool = self
+                        .pool_cache
+                        .get_pool(call.connector, db)
+                        .await
+                        .map_err(to_connect_error)?;
+                    execute_sql(&pool, &sql, values, &resolved, db.query_timeout_ms).await?
+                }
+                ConnectorConfig::Es(es) => {
+                    let ew = query::backend::es::render_write(&resolved)?;
+                    run_es_write(&self.http_client, es, ew).await?
+                }
+                _ => {
+                    return Err(DataflowError::Validation(format!(
+                        "Connector '{}' is not a db or es connector",
+                        call.connector
+                    )));
+                }
+            };
 
-                let result = match connector_config.as_ref() {
-                    ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
-                        let database = require_str_field(input, "database", "data_write")?;
-                        let mw = query::backend::mongo::render_write(&resolved)?;
-                        let client = self
-                            .mongo_pool_cache
-                            .get_client(connector_name, db)
-                            .await
-                            .map_err(to_connect_error)?;
-                        // F11: bound the write like the SQL branches bound theirs.
-                        timed_query(db.query_timeout_ms, "data_write", async {
-                            execute_mongo(&client, database, mw)
-                                .await
-                                .map_err(|e| e.to_string())
-                        })
-                        .await?
-                    }
-                    ConnectorConfig::Db(db) => {
-                        let dialect: SqlDialect = detect_backend(&db.connection_string)
-                            .map_err(to_exec_error)?
-                            .into();
-                        let (sql, values) = query::backend::sql::render_write(&resolved, dialect)?;
-                        let pool = self
-                            .pool_cache
-                            .get_pool(connector_name, db)
-                            .await
-                            .map_err(to_connect_error)?;
-                        execute_sql(&pool, &sql, values, &resolved, db.query_timeout_ms).await?
-                    }
-                    ConnectorConfig::Es(es) => {
-                        let ew = query::backend::es::render_write(&resolved)?;
-                        run_es_write(&self.http_client, es, ew).await?
-                    }
-                    _ => {
-                        return Err(DataflowError::Validation(format!(
-                            "Connector '{connector_name}' is not a db or es connector"
-                        )));
-                    }
-                };
-
-                apply_output(ctx, extract_output_path(input), result);
-                Ok(TaskOutcome::Success)
-            },
-        )
+            apply_output(ctx, call.output, result);
+            Ok(TaskOutcome::Success)
+        })
         .await
     }
 }
@@ -186,7 +184,7 @@ async fn execute_sql(
     if w.returning.is_empty() {
         let res = timed_query(
             timeout_ms,
-            "data_write",
+            NAME,
             sqlx::query_with(sql, values).execute(pool),
         )
         .await?;
@@ -200,7 +198,7 @@ async fn execute_sql(
     } else {
         let rows: Vec<AnyRow> = timed_query(
             timeout_ms,
-            "data_write",
+            NAME,
             sqlx::query_with(sql, values).fetch_all(pool),
         )
         .await?;
@@ -425,3 +423,123 @@ async fn run_by_query(
     }
     Ok(resp)
 }
+
+// -- Input schema (F53) --
+//
+// The table describing this handler's `function.input` lives next to the
+// handler it describes. It used to sit in `schema.rs` with the other nine,
+// which is how every schema/handler divergence in the 1.0 audit happened:
+// a field was added, renamed or made conditional here and the table saying
+// so was in a different file.
+
+pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "connector",
+        description: "Name of the db (SQL/MongoDB) or es (Elasticsearch) connector to write to.",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "write",
+        description: "Backend-neutral mutation envelope: op/target/values/set/filter/on_conflict/returning/all.",
+        kind: FieldKind::Object,
+        // Not `required` in the schema: the pre-1.0 flat form (envelope keys at
+        // the top level) is still accepted, and `validate_input`'s cross-field
+        // rule reports whichever of the two shapes is actually missing.
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "database",
+        description: "MongoDB database name. Optional here because the same task shape is \
+                      valid against SQL and Elasticsearch, which need no database key; \
+                      required — and checked at workflow activation — once the referenced \
+                      connector is a MongoDB one (F52).",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "schema",
+        description: "Optional inline entity schema (renames, allowlist, writable flag).",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "params",
+        description: "Object of named values folded into {\"param\": ..} nodes in values/set/filter. \
+                      A value of {\"var\": \"path\"} is read from the message context.",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: true,
+    },
+    FieldSchema {
+        name: "output",
+        description: "Dotted path in the message where the write result is written. Defaults to \"data\".",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+];
+
+pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "op",
+        description: "Mutation kind: \"insert\", \"update\", \"delete\", or \"upsert\".",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "target",
+        description: "Logical entity to write to (schema-resolved to a table/collection).",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "values",
+        description: "Row object, or array of row objects (bulk), for insert/upsert.",
+        kind: FieldKind::Any,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "set",
+        description: "Object of column → value assignments for update/upsert.",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "filter",
+        description: "Query-dialect filter selecting rows for update/delete. An \
+                      update/delete without it is rejected unless \"all\": true is set.",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "on_conflict",
+        description: "Upsert conflict clause: { \"target\": [cols], \"action\": \"update\"|\"nothing\" }.",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "returning",
+        description: "Column names to return from mutated rows (Postgres/SQLite only).",
+        kind: FieldKind::Array,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "all",
+        description: "Acknowledge an intentionally unfiltered update/delete (affects every row).",
+        kind: FieldKind::Bool,
+        required: false,
+        resolvable: false,
+    },
+];

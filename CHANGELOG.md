@@ -67,6 +67,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A poisoned profile mutex no longer fails the request.** The per-request
+  profiler took its locks inside the request future and `.expect()`ed them, so
+  one panic anywhere poisoned the mutex for the collector's lifetime and turned
+  every subsequent profiled request into an opaque 500 — with no request id and
+  no security headers, because it surfaced through the panic-catch layer. The
+  same layer sat behind `json_response`, which `.expect()`ed a
+  `Response::builder()` result on **every successful data request**; the
+  response is now assembled directly, with no `Result` to assert past.
+
+- **A second render of a profile is no longer blank.** `to_json` drained the
+  engine-lock, workflow-total and trace-store timings as it read them, and the
+  sync path renders one profile for the response and another for the persisted
+  trace — so the stored copy had its phase timings missing and
+  `workflow_overhead_ms` recomputed from nothing.
+
+- **`channel_call` is attributed in `by_connector`.** It passed no label, so the
+  one handler whose fan-out most needs attribution showed up as unattributed
+  entries with no way to tell which target was slow. Samples are now labelled
+  with the target channel, static or resolved from `channel_logic`.
+
+- **A connector task missing `connector` says so first.** The handlers resolved
+  `key` / `filter` / `params` against the message before checking that a
+  connector was even named, so a task missing both reported the other field —
+  the author fixed that, re-ran, and only then learned about `connector`.
+
 - **The circuit breaker now guards all nine egress paths, not just
   `http_call`.** `db_read`, `db_write`, `data_query`, `data_write`,
   `mongo_read`, `cache_read`, `cache_write` and `publish_kafka` reached their
@@ -190,6 +215,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the types.
 
 ### Breaking
+
+- **`retry` is gone from the `db` and `es` connector configs.** It was declared,
+  validated and documented on both, and the only reader of a retry policy is
+  `http_call` — so `{"type":"db", …, "retry":{"max_retries":5}}` did exactly
+  nothing while the field table promised "retry with exponential backoff".
+
+  It is not coming back as a working field: a database or `_bulk` call that
+  timed out may already have been applied, so a blind re-send duplicates it —
+  the same hazard that made `http_call` retry idempotent methods only. Bound
+  those calls with `connect_timeout_ms` / `query_timeout_ms` /
+  `request_timeout_ms`, and let the circuit breaker shed load from a dependency
+  in trouble. **Stored connectors carrying the key still load**; it is ignored,
+  as it always effectively was.
+
+- **A workflow cannot activate against a connector of the wrong type.**
+  Activation checked only that the referenced connector *existed*, so a task
+  pointing `cache_read` at a `db` connector — or `publish_kafka` at anything
+  that is not `kafka` — activated cleanly and then returned 500 on its first
+  request. Each function now declares the connector types it can run against,
+  and a mismatch is a 400 at `PATCH /admin/workflows/{id}/status` naming the
+  function, the connector and what was required.
+
+  The same check covers the one cross-field rule the static schema cannot
+  express: `data_query` / `data_write` against a **MongoDB** connector must set
+  `database`, because a Mongo connection string carries no default one. The
+  field stays optional in the schema — the identical task shape is valid against
+  SQL and Elasticsearch — and is required once the connector is known.
+
+- **Renaming a connector is refused while an active workflow references it.**
+  Workflows bind connectors by name, and nothing tied the two together: a rename
+  left every referencing workflow resolving to nothing, which is a 500 per
+  request with no error at rename time. Repoint or archive those workflows
+  first. Pool eviction now covers both the old and the new name, so the old
+  entry no longer holds TCP connections against the remote database's
+  `max_connections` until the LRU happens to reclaim it.
+
+- **`_orion.profile` is now `version: 2`.** `handlers[].nested` lists only the
+  calls that actually ran inside that `channel_call`; v1 attached every nested
+  sample to every top-level one, so a workflow fanning out to two channels
+  reported each one's children under both. A call with no children now omits the
+  key rather than emitting an empty array. Branch on `version`.
 
 - **`data_write`'s mutation envelope is nested under `write`,** mirroring
   `data_query`'s `query`. It used to be flat: `op`, `target`, `values`, `set`,

@@ -118,12 +118,12 @@ async fn test_state_inner(
     } else {
         ChannelRegistry::new()
     });
-    let mut components =
+    let components =
         orion::bootstrap::build_engine_components(&config, &repos, channel_registry.clone())
             .await
             .expect("engine components");
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (channels, active_workflow_count) = components
+    let (components, channels, active_workflow_count) = components
         .load_channels_and_build_engine(&config, &repos, &channel_registry)
         .await
         .expect("load channels");

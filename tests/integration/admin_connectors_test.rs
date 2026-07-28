@@ -349,6 +349,105 @@ async fn test_update_connector_name_only() {
     assert_eq!(body["data"]["name"], "renamed-connector");
 }
 
+/// F18: workflows bind connectors by *name*, and nothing tied the two
+/// together. Renaming a connector left every active workflow referencing the
+/// old name resolving to nothing — a 500 per request, with no error at rename
+/// time and no load issue (that list covers connectors that failed to load,
+/// not dangling references to them).
+#[tokio::test]
+async fn test_rename_is_refused_while_an_active_workflow_references_the_name() {
+    let app = common::test_app().await;
+    let conn_id = common::create_connector(&app, common::db_connector("orders-db")).await;
+
+    // A workflow referencing it, activated.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "reads-orders",
+                "tasks": [{
+                    "id": "t1",
+                    "name": "read",
+                    "function": { "name": "db_read", "input": {
+                        "connector": "orders-db",
+                        "query": "SELECT 1",
+                        "output": "data.r"
+                    }}
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let wf_id = body_json(resp).await["data"]["workflow_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The rename is refused, and says which workflow is in the way.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            Some(json!({"name": "orders-db-v2"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let msg = body_json(resp).await.to_string();
+    assert!(msg.contains("orders-db"), "must name the connector: {msg}");
+    assert!(msg.contains(&wf_id), "must name the workflow: {msg}");
+
+    // A non-rename update of the same connector is unaffected.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            Some(json!({"enabled": true})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Archive the workflow and the rename goes through.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            Some(json!({"status": "archived"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            Some(json!({"name": "orders-db-v2"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["data"]["name"], "orders-db-v2");
+}
+
 // ============================================================
 // Data sync processing with metadata
 // ============================================================

@@ -12,16 +12,19 @@ use serde_json::Value;
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, es_request, extract_output_path, guarded_handler, is_mongo, require_op_allowed,
-    require_str_field, resolve_connector, resolve_params, timed_query, to_connect_error,
-    to_exec_error,
+    ConnectorCall, apply_output, es_request, is_mongo, resolve_params, timed_query,
+    to_connect_error, to_exec_error,
 };
 use super::db_read::rows_to_json;
+use super::schema::{FieldKind, FieldSchema};
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
 use crate::query::{self, SqlDialect};
 use crate::storage::detect_backend;
+
+/// This handler's name in metrics, profiles and error messages (F48).
+const NAME: &str = "data_query";
 
 /// Executes a portable `data_query` — one backend-neutral filter + envelope that
 /// renders to native SQL, a MongoDB `find`, or an Elasticsearch search — against a
@@ -45,130 +48,118 @@ impl AsyncFunctionHandler for DataQueryHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        // Resolve `params` against the message context first — the only point at
+        // F48/F58: the literal prologue first — `connector` and `query` are
+        // both literal keys, so a task missing either must be told before the
+        // message is consulted at all.
+        let call = ConnectorCall::begin(NAME, input, ctx)?;
+        let query = input
+            .get("query")
+            .ok_or_else(|| DataflowError::Validation(format!("{NAME} requires 'query' field")))?;
+
+        // Resolve `params` against the message context — the only point at
         // which the message touches the query. It produces concrete literals, not
         // SQL, which the pure translation path then folds into the filter.
         let params = resolve_params(input.get("params"), ctx);
 
-        // F40: read the channel before the body borrows `ctx` mutably.
-        let channel = super::extract_channel(ctx.message()).to_string();
+        call.run(&self.registry, async {
+            // Per-connector operation gates: reads can be disabled too
+            // (e.g. a write-only audit sink).
+            let connector_config = call.resolve(&self.registry, Some("read")).await?;
 
-        // F6: the breaker now wraps every egress path, not just http_call.
-        let connector_name = require_str_field(input, "connector", "data_query")?;
+            // Optional inline schema (privileged config authored alongside the
+            // query): renames, type hints, allowlist, and relation declarations.
+            let registry = match input.get("schema") {
+                Some(s) => query::EntityRegistry::from_json(s)?,
+                None => query::EntityRegistry::default(),
+            };
 
-        guarded_handler(
-            "data_query",
-            &self.registry,
-            connector_name,
-            &channel,
-            async move {
-                let query = input.get("query").ok_or_else(|| {
-                    DataflowError::Validation("data_query requires 'query' field".to_string())
-                })?;
-
-                let connector_config = resolve_connector(&self.registry, connector_name).await?;
-
-                // Per-connector operation gates: reads can be disabled too
-                // (e.g. a write-only audit sink).
-                if let Some(gates) = connector_config.operation_gates() {
-                    require_op_allowed(gates, "read", connector_name)?;
+            let result = match connector_config.as_ref() {
+                ConnectorConfig::Es(es) => {
+                    // Elasticsearch: render a search body and POST it via HTTP.
+                    let eq = query::translate_es(
+                        query,
+                        &params,
+                        &registry,
+                        self.default_limit,
+                        self.max_limit,
+                    )?;
+                    run_es_search(&self.http_client, es, &eq).await?
                 }
+                ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
+                    // MongoDB: render a `find` and execute it via the Mongo pool.
+                    let database = call.require_str(input, "database")?;
+                    let mq = query::translate_mongo(
+                        query,
+                        &params,
+                        &registry,
+                        self.default_limit,
+                        self.max_limit,
+                    )?;
+                    let client = self
+                        .mongo_pool_cache
+                        .get_client(call.connector, db)
+                        .await
+                        .map_err(to_connect_error)?;
+                    let coll = client
+                        .database(database)
+                        .collection::<Document>(&mq.collection);
+                    // F11: DbConnectorConfig.query_timeout_ms never applied
+                    // to Mongo — an unresponsive server hung the request for
+                    // the channel timeout, which is itself optional.
+                    let docs: Vec<Document> = timed_query(db.query_timeout_ms, call.name, async {
+                        let mut find = coll.find(mq.filter);
+                        if let Some(p) = mq.projection {
+                            find = find.projection(p);
+                        }
+                        if let Some(s) = mq.sort {
+                            find = find.sort(s);
+                        }
+                        if let Some(sk) = mq.skip {
+                            find = find.skip(sk);
+                        }
+                        find = find.limit(mq.limit as i64);
+                        let cursor = find.await.map_err(|e| e.to_string())?;
+                        cursor.try_collect().await.map_err(|e| e.to_string())
+                    })
+                    .await?;
+                    Value::Array(
+                        docs.iter()
+                            .filter_map(|d| serde_json::to_value(d).ok())
+                            .collect(),
+                    )
+                }
+                ConnectorConfig::Db(db) => {
+                    // SQL: dialect from the connection-string scheme (the same
+                    // source `AnyPool` uses), so the rendered SQL matches the pool.
+                    let dialect: SqlDialect = detect_backend(&db.connection_string)
+                        .map_err(to_exec_error)?
+                        .into();
+                    let plan = query::plan_sql(
+                        query,
+                        &params,
+                        &registry,
+                        dialect,
+                        self.default_limit,
+                        self.max_limit,
+                    )?;
+                    let pool = self
+                        .pool_cache
+                        .get_pool(call.connector, db)
+                        .await
+                        .map_err(to_connect_error)?;
+                    run_sql_with_includes(&pool, &plan, dialect, db.query_timeout_ms).await?
+                }
+                _ => {
+                    return Err(DataflowError::Validation(format!(
+                        "Connector '{}' is not a db or es connector",
+                        call.connector
+                    )));
+                }
+            };
 
-                // Optional inline schema (privileged config authored alongside the
-                // query): renames, type hints, allowlist, and relation declarations.
-                let registry = match input.get("schema") {
-                    Some(s) => query::EntityRegistry::from_json(s)?,
-                    None => query::EntityRegistry::default(),
-                };
-
-                let result = match connector_config.as_ref() {
-                    ConnectorConfig::Es(es) => {
-                        // Elasticsearch: render a search body and POST it via HTTP.
-                        let eq = query::translate_es(
-                            query,
-                            &params,
-                            &registry,
-                            self.default_limit,
-                            self.max_limit,
-                        )?;
-                        run_es_search(&self.http_client, es, &eq).await?
-                    }
-                    ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
-                        // MongoDB: render a `find` and execute it via the Mongo pool.
-                        let database = require_str_field(input, "database", "data_query")?;
-                        let mq = query::translate_mongo(
-                            query,
-                            &params,
-                            &registry,
-                            self.default_limit,
-                            self.max_limit,
-                        )?;
-                        let client = self
-                            .mongo_pool_cache
-                            .get_client(connector_name, db)
-                            .await
-                            .map_err(to_connect_error)?;
-                        let coll = client
-                            .database(database)
-                            .collection::<Document>(&mq.collection);
-                        // F11: DbConnectorConfig.query_timeout_ms never applied
-                        // to Mongo — an unresponsive server hung the request for
-                        // the channel timeout, which is itself optional.
-                        let docs: Vec<Document> =
-                            timed_query(db.query_timeout_ms, "data_query", async {
-                                let mut find = coll.find(mq.filter);
-                                if let Some(p) = mq.projection {
-                                    find = find.projection(p);
-                                }
-                                if let Some(s) = mq.sort {
-                                    find = find.sort(s);
-                                }
-                                if let Some(sk) = mq.skip {
-                                    find = find.skip(sk);
-                                }
-                                find = find.limit(mq.limit as i64);
-                                let cursor = find.await.map_err(|e| e.to_string())?;
-                                cursor.try_collect().await.map_err(|e| e.to_string())
-                            })
-                            .await?;
-                        Value::Array(
-                            docs.iter()
-                                .filter_map(|d| serde_json::to_value(d).ok())
-                                .collect(),
-                        )
-                    }
-                    ConnectorConfig::Db(db) => {
-                        // SQL: dialect from the connection-string scheme (the same
-                        // source `AnyPool` uses), so the rendered SQL matches the pool.
-                        let dialect: SqlDialect = detect_backend(&db.connection_string)
-                            .map_err(to_exec_error)?
-                            .into();
-                        let plan = query::plan_sql(
-                            query,
-                            &params,
-                            &registry,
-                            dialect,
-                            self.default_limit,
-                            self.max_limit,
-                        )?;
-                        let pool = self
-                            .pool_cache
-                            .get_pool(connector_name, db)
-                            .await
-                            .map_err(to_connect_error)?;
-                        run_sql_with_includes(&pool, &plan, dialect, db.query_timeout_ms).await?
-                    }
-                    _ => {
-                        return Err(DataflowError::Validation(format!(
-                            "Connector '{connector_name}' is not a db or es connector"
-                        )));
-                    }
-                };
-
-                apply_output(ctx, extract_output_path(input), result);
-                Ok(TaskOutcome::Success)
-            },
-        )
+            apply_output(ctx, call.output, result);
+            Ok(TaskOutcome::Success)
+        })
         .await
     }
 }
@@ -219,7 +210,7 @@ async fn run_sql_with_includes(
     let (sql, values) = query::backend::sql::build_for(dialect, &plan.main);
     let rows: Vec<AnyRow> = timed_query(
         timeout_ms,
-        "data_query",
+        NAME,
         sqlx::query_with(&sql, values).fetch_all(pool),
     )
     .await?;
@@ -254,7 +245,7 @@ async fn run_sql_with_includes(
             );
             let crows: Vec<AnyRow> = timed_query(
                 timeout_ms,
-                "data_query",
+                NAME,
                 sqlx::query_with(&csql, cvalues).fetch_all(pool),
             )
             .await?;
@@ -299,3 +290,61 @@ async fn run_sql_with_includes(
 
     Ok(Value::Array(parents))
 }
+
+// -- Input schema (F53) --
+//
+// The table describing this handler's `function.input` lives next to the
+// handler it describes. It used to sit in `schema.rs` with the other nine,
+// which is how every schema/handler divergence in the 1.0 audit happened:
+// a field was added, renamed or made conditional here and the table saying
+// so was in a different file.
+
+pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "connector",
+        description: "Name of the db (SQL/MongoDB) or es (Elasticsearch) connector to query.",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "query",
+        description: "Backend-neutral query envelope: source/filter/fields/sort/limit/skip/include.",
+        kind: FieldKind::Object,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "database",
+        description: "MongoDB database name. Optional here because the same task shape is \
+                      valid against SQL and Elasticsearch, which need no database key; \
+                      required — and checked at workflow activation — once the referenced \
+                      connector is a MongoDB one (F52).",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "schema",
+        description: "Optional inline entity schema (renames, type hints, allowlist, relations) \
+                      enabling some/all/none and typed coercion.",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "params",
+        description: "Object of named values folded into the filter's {\"param\": ..} nodes. \
+                      A value of {\"var\": \"path\"} is read from the message context.",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: true,
+    },
+    FieldSchema {
+        name: "output",
+        description: "Dotted path in the message where rows are written. Defaults to \"data\".",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+];

@@ -78,12 +78,21 @@ async fn route_store_completed(
 
 /// Build an HTTP response from a pre-serialized JSON string, avoiding
 /// the double-serialization that `Json<Value>` would incur.
+///
+/// G9: assembled directly rather than through `Response::builder()`, whose
+/// `body()` returns a `Result` that had to be `.expect()`ed — on **every
+/// successful data request**, the hottest path in the product, inside a crate
+/// that sets `#![warn(clippy::panic)]`. The inputs are a status code and a
+/// static header, so there was never a real failure to handle; building the
+/// value directly removes the `Result` instead of asserting past it.
 fn json_response(status: StatusCode, body: String) -> Response {
-    axum::response::Response::builder()
-        .status(status)
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(axum::body::Body::from(body))
-        .expect("valid HTTP response builder with static header")
+    let mut response = Response::new(axum::body::Body::from(body));
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    response
 }
 
 /// Persist the completed trace through the configured storage mode and
@@ -336,7 +345,7 @@ pub(super) async fn process_sync_for_channel(
             // Profile mode: rebuild the response with `_orion.profile`
             // appended and re-serialize. Only paid when profiling is on.
             //
-            // B3 v0.2.0 shape lock: the debug surface lives under a single
+            // B3 shape lock: the debug surface lives under a single
             // top-level `_orion` namespace so future debug fields (e.g.
             // `_orion.task_trace`) can be added without colliding with
             // workflow-level output keys that callers control.

@@ -10,7 +10,11 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::http_common::{self, build_url};
+use super::schema::{FieldKind, FieldSchema};
 use crate::connector::ConnectorRegistry;
+
+/// This handler's name in metrics, profiles and error messages (F48).
+const NAME: &str = "http_call";
 
 /// Executes HTTP requests against named connectors with retry support.
 pub struct HttpCallHandler {
@@ -31,7 +35,7 @@ impl AsyncFunctionHandler for HttpCallHandler {
         let channel = super::extract_channel(ctx.message()).to_string();
 
         super::connector_helpers::guarded_handler(
-            "http_call",
+            NAME,
             &self.registry,
             &input.connector,
             &channel,
@@ -63,19 +67,29 @@ impl AsyncFunctionHandler for HttpCallHandler {
                 // idempotency key in headers).
                 let retryable_method = is_idempotent(&method) || http_config.retry_non_idempotent;
                 let retry_config = &http_config.retry;
+                let max_retries = if retryable_method {
+                    retry_config.max_retries
+                } else {
+                    0
+                };
                 let policy = super::RetryPolicy {
-                    max_retries: if retryable_method {
-                        retry_config.max_retries
-                    } else {
-                        0
-                    },
+                    max_retries,
                     retry_delay_ms: retry_config.retry_delay_ms,
-                    // Bound the whole loop by the task's own timeout budget, so
-                    // one http_call cannot outlive the channel deadline it sits
-                    // under (attempts + backoff were previously unbounded).
-                    deadline: Some(
-                        timeout.saturating_mul(retry_config.max_retries.saturating_add(1)),
-                    ),
+                    // F47: the ceiling is the sum of the attempts' own budgets —
+                    // `timeout_ms × (max_retries + 1)`, backoff included, since
+                    // the deadline is measured from the first attempt. On
+                    // shipped defaults (30 s × 4) that is 120 s, so the comment
+                    // that used to sit here — "cannot outlive the channel
+                    // deadline it sits under" — described something this does
+                    // not do. What it does do is make the loop *bounded*:
+                    // attempts plus backoff were previously unbounded, and a
+                    // 60 s channel timeout could sit under a ~127 s retry loop
+                    // still burning a connection after the caller gave up. The
+                    // channel deadline itself is enforced upstream, by the
+                    // timeout `run_for_channel` wraps the whole engine call in.
+                    // Non-retryable methods get `max_retries = 0`, so their
+                    // budget is exactly one `timeout_ms`.
+                    deadline: Some(timeout.saturating_mul(max_retries.saturating_add(1))),
                 };
                 // F6: the breaker is applied by `guarded_handler` above, the
                 // same shell every other egress path now uses. This branch used
@@ -134,3 +148,77 @@ fn resolve_body(
         Ok(static_body.clone())
     }
 }
+
+// -- Input schema (F53) --
+//
+// The table describing this handler's `function.input` lives next to the
+// handler it describes. It used to sit in `schema.rs` with the other nine,
+// which is how every schema/handler divergence in the 1.0 audit happened:
+// a field was added, renamed or made conditional here and the table saying
+// so was in a different file.
+
+pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "connector",
+        description: "Name of the HTTP connector to call.",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "method",
+        description: "HTTP method (GET, POST, PUT, DELETE, PATCH). Defaults to GET.",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "path",
+        description: "Static path appended to the connector's base URL.",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "path_logic",
+        description: "JSONLogic expression evaluated to derive the request path.",
+        kind: FieldKind::Any,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "headers",
+        description: "Additional request headers.",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "body",
+        description: "Static request body (any JSON value).",
+        kind: FieldKind::Any,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "body_logic",
+        description: "JSONLogic expression evaluated to derive the request body.",
+        kind: FieldKind::Any,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "output",
+        description: "Dotted path where the response body is written. Omit to discard it. (Was `response_path` before 1.0; still accepted.)",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "timeout_ms",
+        description: "Request timeout in milliseconds. Defaults to 30000.",
+        kind: FieldKind::Number,
+        required: false,
+        resolvable: false,
+    },
+];

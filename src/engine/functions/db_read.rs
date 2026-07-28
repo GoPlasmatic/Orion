@@ -10,12 +10,15 @@ use sqlx::any::{AnyRow, AnyTypeInfoKind};
 use sqlx::{Column, Row, ValueRef};
 
 use super::connector_helpers::{
-    apply_output, bind_json_params, extract_output_path, guarded_handler, reject_mongo_connector,
-    require_db_connector, require_op_allowed, require_str_field, resolve_bind_params,
-    resolve_connector, timed_query, to_connect_error,
+    ConnectorCall, apply_output, bind_json_params, reject_mongo_connector, require_db_connector,
+    resolve_bind_params, timed_query, to_connect_error,
 };
+use super::schema::{FieldKind, FieldSchema};
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
+
+/// This handler's name in metrics, profiles and error messages (F48).
+const NAME: &str = "db_read";
 
 /// Executes SQL SELECT queries against external databases configured via connectors.
 pub struct DbReadHandler {
@@ -36,67 +39,57 @@ impl AsyncFunctionHandler for DbReadHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        // Bind values are resolved against the message context first; the SQL
-        // text itself is never message-derived, so parameters stay the only
+        // F48/F58: the literal prologue first — `connector` and `query` are
+        // both literal keys, so a task missing either must be told before
+        // anything about the message is consulted.
+        let call = ConnectorCall::begin(NAME, input, ctx)?;
+        let query = call.require_str(input, "query")?;
+
+        // Bind values are resolved against the message context; the SQL text
+        // itself is never message-derived, so parameters stay the only
         // request-controlled part of the statement.
-        let params = resolve_bind_params(input, "db_read", ctx)?;
+        let params = resolve_bind_params(input, call.name, ctx)?;
 
-        // F40: read the channel before the body borrows `ctx` mutably.
-        let channel = super::extract_channel(ctx.message()).to_string();
+        call.run(&self.registry, async {
+            let connector_config = call.resolve(&self.registry, Some("read")).await?;
+            let db_config = require_db_connector(&connector_config, call.connector)?;
+            reject_mongo_connector(call.name, call.connector, db_config)?;
 
-        // F6: the breaker now wraps every egress path, not just http_call.
-        let connector_name = require_str_field(input, "connector", "db_read")?;
+            let pool = self
+                .pool_cache
+                .get_pool(call.connector, db_config)
+                .await
+                .map_err(to_connect_error)?;
 
-        guarded_handler(
-            "db_read",
-            &self.registry,
-            connector_name,
-            &channel,
-            async move {
-                let query = require_str_field(input, "query", "db_read")?;
+            let sqlx_query = bind_json_params(sqlx::query(query), &params);
 
-                let connector_config = resolve_connector(&self.registry, connector_name).await?;
-                let db_config = require_db_connector(&connector_config, connector_name)?;
-                reject_mongo_connector("db_read", connector_name, db_config)?;
-                require_op_allowed(&db_config.operations, "read", connector_name)?;
-
-                let pool = self
-                    .pool_cache
-                    .get_pool(connector_name, db_config)
-                    .await
-                    .map_err(to_connect_error)?;
-
-                let sqlx_query = bind_json_params(sqlx::query(query), &params);
-
-                let max_rows = self.max_rows;
-                let rows: Vec<AnyRow> = timed_query(db_config.query_timeout_ms, "db_read", async {
-                    use futures::TryStreamExt;
-                    let mut stream = sqlx_query.fetch(&pool);
-                    let mut rows: Vec<AnyRow> = Vec::new();
-                    while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
-                        if rows.len() >= max_rows {
-                            // F42: marked so `timed_query` reports it as a 400
-                            // with the text intact rather than a 500 with the
-                            // guidance sanitised away.
-                            return Err(format!(
-                                "{}db_read result exceeds query.max_limit ({max_rows} rows) — \
+            let max_rows = self.max_rows;
+            let rows: Vec<AnyRow> = timed_query(db_config.query_timeout_ms, call.name, async {
+                use futures::TryStreamExt;
+                let mut stream = sqlx_query.fetch(&pool);
+                let mut rows: Vec<AnyRow> = Vec::new();
+                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                    if rows.len() >= max_rows {
+                        // F42: marked so `timed_query` reports it as a 400
+                        // with the text intact rather than a 500 with the
+                        // guidance sanitised away.
+                        return Err(format!(
+                            "{}{NAME} result exceeds query.max_limit ({max_rows} rows) — \
                              add a LIMIT to the query or raise the cap",
-                                crate::engine::functions::connector_helpers::LIMIT_MARKER
-                            ));
-                        }
-                        rows.push(row);
+                            crate::engine::functions::connector_helpers::LIMIT_MARKER
+                        ));
                     }
-                    Ok(rows)
-                })
-                .await?;
+                    rows.push(row);
+                }
+                Ok(rows)
+            })
+            .await?;
 
-                let result = rows_to_json(&rows)?;
+            let result = rows_to_json(&rows)?;
 
-                let output_path = extract_output_path(input);
-                apply_output(ctx, output_path, result);
-                Ok(TaskOutcome::Success)
-            },
-        )
+            apply_output(ctx, call.output, result);
+            Ok(TaskOutcome::Success)
+        })
         .await
     }
 }
@@ -141,7 +134,7 @@ pub fn rows_to_json(rows: &[AnyRow]) -> Result<Value, DataflowError> {
 fn column_to_json(row: &AnyRow, index: usize, name: &str) -> Result<Value, DataflowError> {
     let raw = row.try_get_raw(index).map_err(|e| {
         DataflowError::function_execution(
-            format!("db_read: column '{name}' is unreadable: {e}"),
+            format!("{NAME}: column '{name}' is unreadable: {e}"),
             None,
         )
     })?;
@@ -152,7 +145,7 @@ fn column_to_json(row: &AnyRow, index: usize, name: &str) -> Result<Value, Dataf
 
     let decode_err = |e: sqlx::Error| {
         DataflowError::function_execution(
-            format!("db_read: column '{name}' ({kind:?}) failed to decode: {e}"),
+            format!("{NAME}: column '{name}' ({kind:?}) failed to decode: {e}"),
             None,
         )
     };
@@ -189,7 +182,7 @@ fn float_to_json(v: f64, name: &str) -> Result<Value, DataflowError> {
         .map(Value::Number)
         .ok_or_else(|| {
             DataflowError::function_execution(
-                format!("db_read: column '{name}' holds {v}, which JSON cannot represent"),
+                format!("{NAME}: column '{name}' holds {v}, which JSON cannot represent"),
                 None,
             )
         })
@@ -204,3 +197,42 @@ fn blob_to_json(bytes: Vec<u8>) -> Value {
         Err(e) => Value::String(hex::encode(e.into_bytes())),
     }
 }
+
+// -- Input schema (F53) --
+//
+// The table describing this handler's `function.input` lives next to the
+// handler it describes. It used to sit in `schema.rs` with the other nine,
+// which is how every schema/handler divergence in the 1.0 audit happened:
+// a field was added, renamed or made conditional here and the table saying
+// so was in a different file.
+
+pub(super) const DB_READ_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "connector",
+        description: "Name of the SQL connector to query.",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "query",
+        description: "SQL query. Use $1, $2, ... placeholders bound from `params`.",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "params",
+        description: "Array of values to bind to query placeholders, in order. Accepts {\"var\": \"path\"} to read the value from the message.",
+        kind: FieldKind::Array,
+        required: false,
+        resolvable: true,
+    },
+    FieldSchema {
+        name: "output",
+        description: "Dotted path in the message where rows are written. Defaults to \"data\".",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+];

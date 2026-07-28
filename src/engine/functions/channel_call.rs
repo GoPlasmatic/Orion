@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::RwLock;
 
+use super::schema::{FieldKind, FieldSchema};
+
 /// Metadata key for current call depth.
 const META_CALL_DEPTH: &str = "_orion_call_depth";
 /// Metadata key for the call chain (array of channel names).
@@ -63,31 +65,18 @@ impl AsyncFunctionHandler for ChannelCallHandler {
         ctx: &mut TaskContext<'_>,
         input: &ChannelCallInput,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        crate::engine::profile::record("channel_call", None, async move {
-            // Resolve target channel name (static or dynamic via JSONLogic).
-            let target_channel = if let Some(ref logic) = input.channel_logic {
-                let compiled = ctx
-                    .datalogic()
-                    .compile(logic)
-                    .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-                let result: Value = ctx
-                    .datalogic()
-                    .session()
-                    .eval_into(&compiled, &ctx.message().context)
-                    .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-                result.as_str().map(|s| s.to_string()).ok_or_else(|| {
-                    DataflowError::Validation("channel_logic must evaluate to a string".to_string())
-                })?
-            } else {
-                input.channel.clone()
-            };
+        // F49: resolve the target *before* opening the profile scope, so the
+        // sample can be labelled with it. `channel_call` used to pass `None`,
+        // leaving `by_connector` blank for the one handler whose fan-out most
+        // needs attribution — a workflow calling three channels showed three
+        // unattributed `channel_call` entries and no way to tell which one was
+        // slow. Resolution is pure (a JSONLogic eval over the message) and
+        // takes `ctx` immutably, so it sits outside the body that borrows it
+        // mutably anyway.
+        let target_channel = resolve_target(ctx, input)?;
+        let label = target_channel.clone();
 
-            if target_channel.is_empty() {
-                return Err(DataflowError::Validation(
-                    "channel_call: target channel name must not be empty".into(),
-                ));
-            }
-
+        crate::engine::profile::record("channel_call", Some(&label), async move {
             // --- Cycle detection and depth tracking ---
             let parent_depth = ctx
                 .message()
@@ -260,9 +249,89 @@ impl AsyncFunctionHandler for ChannelCallHandler {
     }
 }
 
+/// Resolve the target channel name, static or dynamic via JSONLogic.
+fn resolve_target(ctx: &TaskContext<'_>, input: &ChannelCallInput) -> dataflow_rs::Result<String> {
+    let target = if let Some(ref logic) = input.channel_logic {
+        let compiled = ctx
+            .datalogic()
+            .compile(logic)
+            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
+        let result: Value = ctx
+            .datalogic()
+            .session()
+            .eval_into(&compiled, &ctx.message().context)
+            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
+        result.as_str().map(|s| s.to_string()).ok_or_else(|| {
+            DataflowError::Validation("channel_logic must evaluate to a string".to_string())
+        })?
+    } else {
+        input.channel.clone()
+    };
+
+    if target.is_empty() {
+        return Err(DataflowError::Validation(
+            "channel_call: target channel name must not be empty".into(),
+        ));
+    }
+    Ok(target)
+}
+
 /// Format a call chain for error messages: "A -> B -> C"
 fn format_chain(chain: &[String], target: &str) -> String {
     let mut parts: Vec<&str> = chain.iter().map(|s| s.as_str()).collect();
     parts.push(target);
     parts.join(" -> ")
 }
+
+// -- Input schema (F53) --
+//
+// The table describing this handler's `function.input` lives next to the
+// handler it describes. It used to sit in `schema.rs` with the other nine,
+// which is how every schema/handler divergence in the 1.0 audit happened:
+// a field was added, renamed or made conditional here and the table saying
+// so was in a different file.
+
+pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "channel",
+        description: "Target channel name to invoke. Mutually exclusive with channel_logic.",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "channel_logic",
+        description: "JSONLogic expression evaluating to the target channel name.",
+        kind: FieldKind::Any,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "data",
+        description: "Static payload to pass to the target channel.",
+        kind: FieldKind::Any,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "data_logic",
+        description: "JSONLogic expression evaluating to the payload to pass.",
+        kind: FieldKind::Any,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "output",
+        description: "Dotted path where the called channel's response is stored. Defaults to \"data\". (Was `response_path` before 1.0; still accepted.)",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "timeout_ms",
+        description: "Per-call timeout in milliseconds.",
+        kind: FieldKind::Number,
+        required: false,
+        resolvable: false,
+    },
+];

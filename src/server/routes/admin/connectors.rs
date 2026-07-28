@@ -48,6 +48,34 @@ async fn evict_connector_pools(state: &AppState, connector_name: &str) {
     );
 }
 
+/// Names of active workflows whose tasks reference `connector_name`.
+///
+/// F18: workflows address connectors by *name*, and nothing tied the two
+/// together — renaming a connector left every referencing workflow pointing at
+/// a name that no longer resolves, which is a runtime 500 per request with no
+/// error at rename time and no load issue (that list covers connectors that
+/// failed to load, not dangling references to them).
+async fn active_workflows_using(
+    state: &AppState,
+    connector_name: &str,
+) -> Result<Vec<String>, OrionError> {
+    let mut users = Vec::new();
+    for workflow in state.workflow_repo.list_active().await? {
+        let Ok(tasks) = serde_json::from_str::<serde_json::Value>(&workflow.tasks_json) else {
+            continue;
+        };
+        if super::workflows::connector_refs(&tasks)
+            .iter()
+            .any(|t| t.connector == connector_name)
+        {
+            users.push(workflow.workflow_id);
+        }
+    }
+    users.sort();
+    users.dedup();
+    Ok(users)
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/admin/connectors",
@@ -160,6 +188,7 @@ pub(crate) async fn get_connector(
     responses(
         (status = 200, description = "Connector updated", body = DataEnvelope<Connector>),
         (status = 404, description = "Connector not found"),
+        (status = 400, description = "Rename refused: an active workflow references the old name"),
     )
 )]
 #[tracing::instrument(skip(state, req, principal))]
@@ -170,8 +199,38 @@ pub(crate) async fn update_connector(
     OrionJson(mut req): OrionJson<UpdateConnectorRequest>,
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_connector(&req)?;
+    // F18: read the stored row unconditionally. It used to be fetched only for
+    // a config-bearing update, which is why the pre-update *name* was not in
+    // hand when it mattered — see the rename guard and the eviction below.
+    let stored = state.connector_repo.get_by_id(&id).await?;
+    let renamed_from = req
+        .name
+        .as_deref()
+        .filter(|new| *new != stored.name)
+        .map(|_| stored.name.clone());
+
+    // F18: workflows bind connectors by name. A rename that leaves an active
+    // workflow pointing at the old name turns every one of its requests into a
+    // 500, discovered in production rather than here. Archive or repoint them
+    // first — the same shape as R5/F52 gating activation on the reference.
+    if renamed_from.is_some() {
+        let users = active_workflows_using(&state, &stored.name).await?;
+        if !users.is_empty() {
+            return Err(OrionError::validation(format!(
+                "Cannot rename connector '{}': active workflow(s) {} reference it by \
+                 name and would fail at their next request. Repoint or archive them \
+                 first.",
+                stored.name,
+                users
+                    .iter()
+                    .map(|w| format!("'{w}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+    }
+
     if let Some(ref mut config) = req.config {
-        let stored = state.connector_repo.get_by_id(&id).await?;
         // F34: `update` replaces config_json wholesale, so a GET → edit → PUT
         // round-trip would otherwise persist the "******" the reader was shown
         // as the real credential. Restore every field the caller sent back
@@ -199,7 +258,14 @@ pub(crate) async fn update_connector(
         crate::validation::validate_connector_config(effective_type, config)?;
     }
     let connector = state.connector_repo.update(&id, &req).await?;
+    // F18: evict under both names. The cache is keyed by connector name, so
+    // evicting only the post-update one left the old key holding live TCP
+    // connections against the remote database's `max_connections` until the LRU
+    // happened to reclaim it.
     evict_connector_pools(&state, &connector.name).await;
+    if let Some(old_name) = renamed_from {
+        evict_connector_pools(&state, &old_name).await;
+    }
     audit_log(
         &state.audit_log_repo,
         &principal,

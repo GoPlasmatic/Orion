@@ -992,6 +992,169 @@ async fn test_activate_rejects_missing_connector() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// Create a workflow with the given tasks and try to activate it, returning
+/// the activation response body and status.
+async fn create_then_activate(
+    app: &axum::Router,
+    name: &str,
+    tasks: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({ "name": name, "tasks": tasks })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED, "create must succeed");
+    let wf_id = body_json(resp).await["data"]["workflow_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{wf_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, body_json(resp).await)
+}
+
+/// F52: the connector must be of a type the referencing function can use.
+/// `ensure_workflow_connectors_exist` checked existence only, so pointing
+/// `cache_read` at a `db` connector activated cleanly and then 500'd on the
+/// first request — a runtime discovery for something fully determined at
+/// authoring time.
+#[tokio::test]
+async fn test_activate_rejects_a_connector_of_the_wrong_type() {
+    let app = common::test_app().await;
+    common::create_connector(&app, common::db_connector("a-sql-db")).await;
+
+    let (status, body) = create_then_activate(
+        &app,
+        "wrong-type-wf",
+        json!([{
+            "id": "t1",
+            "name": "lookup",
+            "function": { "name": "cache_read", "input": {
+                "connector": "a-sql-db",
+                "key": "k",
+                "output": "data.v"
+            }}
+        }]),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let msg = body.to_string();
+    assert!(msg.contains("a-sql-db"), "must name the connector: {msg}");
+    assert!(msg.contains("cache_read"), "must name the function: {msg}");
+    assert!(
+        msg.contains("'db'") && msg.contains("'cache'"),
+        "must say what it is and what was needed: {msg}"
+    );
+
+    // The same workflow against a cache connector activates.
+    common::create_connector(&app, common::cache_connector_memory("a-cache")).await;
+    let (status, body) = create_then_activate(
+        &app,
+        "right-type-wf",
+        json!([{
+            "id": "t1",
+            "name": "lookup",
+            "function": { "name": "cache_read", "input": {
+                "connector": "a-cache",
+                "key": "k",
+                "output": "data.v"
+            }}
+        }]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// F52: `data_query` against a MongoDB connector needs a `database` — Mongo
+/// connection strings carry no default one. The function schema cannot mark
+/// the field required (the same task shape is valid against SQL and
+/// Elasticsearch, which need no database), so the rule is conditional on the
+/// connector, and the connector is known at activation.
+#[tokio::test]
+async fn test_activate_requires_a_database_for_mongo_connectors() {
+    let app = common::test_app().await;
+    common::create_connector(
+        &app,
+        json!({
+            "name": "docs-mongo",
+            "connector_type": "db",
+            "config": { "connection_string": "mongodb://localhost:27017" }
+        }),
+    )
+    .await;
+
+    let query = json!({"source": "orders", "filter": {"eq": ["status", "new"]}});
+    let (status, body) = create_then_activate(
+        &app,
+        "mongo-no-db-wf",
+        json!([{
+            "id": "t1",
+            "name": "find",
+            "function": { "name": "data_query", "input": {
+                "connector": "docs-mongo",
+                "query": query,
+                "output": "data.rows"
+            }}
+        }]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let msg = body.to_string();
+    assert!(msg.contains("database"), "must name the missing key: {msg}");
+    assert!(msg.contains("docs-mongo"), "must name the connector: {msg}");
+
+    // With `database` set it activates …
+    let (status, body) = create_then_activate(
+        &app,
+        "mongo-with-db-wf",
+        json!([{
+            "id": "t1",
+            "name": "find",
+            "function": { "name": "data_query", "input": {
+                "connector": "docs-mongo",
+                "database": "shop",
+                "query": query,
+                "output": "data.rows"
+            }}
+        }]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // … and the same task against SQL needs no `database` at all.
+    common::create_connector(&app, common::db_connector("orders-sql")).await;
+    let (status, body) = create_then_activate(
+        &app,
+        "sql-no-db-wf",
+        json!([{
+            "id": "t1",
+            "name": "find",
+            "function": { "name": "data_query", "input": {
+                "connector": "orders-sql",
+                "query": query,
+                "output": "data.rows"
+            }}
+        }]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 // ============================================================
 // Single-draft invariant (proposal D9)
 // ============================================================

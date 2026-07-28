@@ -8,11 +8,15 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    guarded_handler, json_type_name, require_cache_connector, require_str_field, resolve_connector,
-    resolve_required_str, resolve_value, to_connect_error, to_exec_error,
+    ConnectorCall, json_type_name, require_cache_connector, resolve_required_str, resolve_value,
+    to_connect_error, to_exec_error,
 };
+use super::schema::{FieldKind, FieldSchema};
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
+
+/// This handler's name in metrics, profiles and error messages (F48).
+const NAME: &str = "cache_write";
 
 /// Workflow function handler for writing values to a cache backend.
 pub struct CacheWriteHandler {
@@ -29,68 +33,61 @@ impl AsyncFunctionHandler for CacheWriteHandler {
         ctx: &mut TaskContext<'_>,
         input: &Value,
     ) -> dataflow_rs::Result<TaskOutcome> {
+        // F48/F58: the literal prologue first — a task naming no connector
+        // must say so before anything about the message is consulted.
+        let call = ConnectorCall::begin(NAME, input, ctx)?;
+
         // Key, value, and TTL are all resolved against the message context up
         // front: the handler body below takes `ctx` mutably, and without this
         // the whole task could only ever write one constant.
-        let key = resolve_required_str(input, "key", "cache_write", ctx)?;
+        let key = resolve_required_str(input, "key", call.name, ctx)?;
         let value = match input.get("value") {
             Some(v) => resolve_value(v, ctx),
             None => {
-                return Err(DataflowError::Validation(
-                    "cache_write requires 'value'".into(),
-                ));
+                return Err(DataflowError::Validation(format!(
+                    "{} requires 'value'",
+                    call.name
+                )));
             }
         };
         let ttl = resolve_ttl_secs(input, ctx)?;
 
-        // F40: read the channel before the body borrows `ctx` mutably.
-        let channel = super::extract_channel(ctx.message()).to_string();
+        call.run(&self.registry, async {
+            let connector_config = call.resolve(&self.registry, None).await?;
+            let cache_config = require_cache_connector(&connector_config, call.connector)?;
 
-        // F6: the breaker now wraps every egress path, not just http_call.
-        let connector_name = require_str_field(input, "connector", "cache_write")?;
+            let backend = self
+                .cache_pool
+                .get_backend(call.connector, cache_config)
+                .await
+                .map_err(to_connect_error)?;
 
-        guarded_handler(
-            "cache_write",
-            &self.registry,
-            connector_name,
-            &channel,
-            async move {
-                let connector_config = resolve_connector(&self.registry, connector_name).await?;
-                let cache_config = require_cache_connector(&connector_config, connector_name)?;
+            // Always JSON-encode, including strings, so `cache_read` is the
+            // exact inverse. Storing strings raw made the round-trip lossy:
+            // writing "123" stored `123`, which read back as the *number* 123,
+            // and "true"/"null" likewise changed type — silently breaking any
+            // downstream JSONLogic comparison (proposal N13).
+            let value_str = serde_json::to_string(&value).map_err(|e| {
+                DataflowError::Validation(format!("Failed to serialize value for cache: {e}"))
+            })?;
 
-                let backend = self
-                    .cache_pool
-                    .get_backend(connector_name, cache_config)
+            if let Some(ttl) = ttl {
+                backend
+                    .set_ex(&key, &value_str, ttl)
                     .await
-                    .map_err(to_connect_error)?;
+                    .map_err(to_exec_error)?;
+            } else {
+                backend.set(&key, &value_str).await.map_err(to_exec_error)?;
+            }
 
-                // Always JSON-encode, including strings, so `cache_read` is the
-                // exact inverse. Storing strings raw made the round-trip lossy:
-                // writing "123" stored `123`, which read back as the *number* 123,
-                // and "true"/"null" likewise changed type — silently breaking any
-                // downstream JSONLogic comparison (proposal N13).
-                let value_str = serde_json::to_string(&value).map_err(|e| {
-                    DataflowError::Validation(format!("Failed to serialize value for cache: {e}"))
-                })?;
+            tracing::debug!(
+                key = %key,
+                ttl = ?ttl,
+                "Wrote value to cache"
+            );
 
-                if let Some(ttl) = ttl {
-                    backend
-                        .set_ex(&key, &value_str, ttl)
-                        .await
-                        .map_err(to_exec_error)?;
-                } else {
-                    backend.set(&key, &value_str).await.map_err(to_exec_error)?;
-                }
-
-                tracing::debug!(
-                    key = %key,
-                    ttl = ?ttl,
-                    "Wrote value to cache"
-                );
-
-                Ok(TaskOutcome::Success)
-            },
-        )
+            Ok(TaskOutcome::Success)
+        })
         .await
     }
 }
@@ -114,13 +111,52 @@ fn resolve_ttl_secs(input: &Value, ctx: &TaskContext<'_>) -> Result<Option<u64>,
                 Ok(Some(f as u64))
             } else {
                 Err(DataflowError::Validation(format!(
-                    "cache_write 'ttl_secs' must be a non-negative whole number of seconds, got {n}"
+                    "{NAME} 'ttl_secs' must be a non-negative whole number of seconds, got {n}"
                 )))
             }
         }
         other => Err(DataflowError::Validation(format!(
-            "cache_write 'ttl_secs' must resolve to a number, got {}",
+            "{NAME} 'ttl_secs' must resolve to a number, got {}",
             json_type_name(&other)
         ))),
     }
 }
+
+// -- Input schema (F53) --
+//
+// The table describing this handler's `function.input` lives next to the
+// handler it describes. It used to sit in `schema.rs` with the other nine,
+// which is how every schema/handler divergence in the 1.0 audit happened:
+// a field was added, renamed or made conditional here and the table saying
+// so was in a different file.
+
+pub(super) const CACHE_WRITE_FIELDS: &[FieldSchema] = &[
+    FieldSchema {
+        name: "connector",
+        description: "Name of the cache connector to write to.",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "key",
+        description: "Cache key to set. Accepts {\"var\": \"path\"} to read the value from the message.",
+        kind: FieldKind::String,
+        required: true,
+        resolvable: true,
+    },
+    FieldSchema {
+        name: "value",
+        description: "Value to store. May be any JSON value. Accepts {\"var\": \"path\"} to read the value from the message.",
+        kind: FieldKind::Any,
+        required: true,
+        resolvable: true,
+    },
+    FieldSchema {
+        name: "ttl_secs",
+        description: "Time-to-live in seconds. Omit for no expiry. Accepts {\"var\": \"path\"} to read the value from the message.",
+        kind: FieldKind::Number,
+        required: false,
+        resolvable: true,
+    },
+];

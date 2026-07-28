@@ -186,8 +186,13 @@ Parameterized SQL queries against PostgreSQL, MySQL, or SQLite:
 | `max_connections` | `null` | Connection pool max size |
 | `connect_timeout_ms` | `null` | Connection establishment timeout (also caps MongoDB server selection) |
 | `query_timeout_ms` | `null` | Individual query timeout |
-| `retry` | 3 retries, 1000ms | Retry with exponential backoff |
 | `operations` | all allowed | [Operation gates](#operation-gates) — en/disable read / insert / update / delete / upsert / raw_write |
+
+There is no `retry` here: database calls are not re-driven on failure. A
+statement that timed out may already have been applied, so a blind re-send
+duplicates the write — the same reason `http_call` retries idempotent methods
+only. Use `connect_timeout_ms` / `query_timeout_ms` to bound the call, and the
+[circuit breaker](resilience.md) to shed load from a backend in trouble.
 
 Two ways to talk to it:
 
@@ -337,10 +342,13 @@ shared HTTP client — no dedicated ES driver:
 | `url` | required | Base URL of the cluster, e.g. `http://localhost:9200` |
 | `auth` | `null` | Authentication config (bearer, basic, or apikey) |
 | `request_timeout_ms` | `null` | Per-request timeout |
-| `retry` | 3 retries, 1000ms | Retry with exponential backoff |
 | `max_response_size` | 10 MB | Maximum response body size to prevent OOM |
 | `allow_private_urls` | `false` | Allow private/internal IPs (SSRF protection) |
 | `operations` | all allowed | [Operation gates](#operation-gates) |
+
+As with the database connector there is no `retry`: the dialect drives `_bulk`,
+`_update_by_query` and `_delete_by_query` through this connector as well as
+`_search`, and none of those are safe to re-send blind on a timeout.
 
 ES-specific dialect semantics (the `_id` schema rename, forced refresh for
 read-your-writes, capability limits) are documented in the

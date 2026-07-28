@@ -152,12 +152,14 @@ fn setup_kafka_producer(
     Ok(Some(producer))
 }
 
-/// The engine's serving components, built in one pass by
-/// [`build_engine_components`]: connector registry (with the F16 fail-fast
-/// check), shared HTTP client, datalogic engine, the pre-created engine
-/// lock, cache + external connector pool caches, the custom function
-/// handlers, and the Kafka producer.
-pub struct EngineComponents {
+/// The long-lived half of [`EngineComponents`] — everything that outlives
+/// engine construction and goes on to back `AppState`.
+///
+/// F55: this exists so the startup ordering is a *type* error rather than a
+/// convention. Building the engine consumes the custom-function handlers
+/// (dataflow-rs takes the map by value), so the step is destructive; the only
+/// way to obtain a `ServingComponents` is to have run it.
+pub struct ServingComponents {
     pub connector_registry: Arc<ConnectorRegistry>,
     pub http_client: reqwest::Client,
     pub datalogic: Arc<datalogic_rs::Engine>,
@@ -165,8 +167,17 @@ pub struct EngineComponents {
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
-    pub custom_functions: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
     pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
+}
+
+/// The engine's serving components, built in one pass by
+/// [`build_engine_components`]: connector registry (with the F16 fail-fast
+/// check), shared HTTP client, datalogic engine, the pre-created engine
+/// lock, cache + external connector pool caches, the custom function
+/// handlers, and the Kafka producer.
+pub struct EngineComponents {
+    pub serving: ServingComponents,
+    pub custom_functions: std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
 }
 
 /// Build the [`EngineComponents`]: load the connector registry, create the
@@ -250,18 +261,18 @@ pub async fn build_engine_components(
     ));
 
     // Build custom function handlers (http_call, channel_call, cache_read, cache_write, etc.)
-    let mut custom_functions = crate::engine::build_custom_functions(
-        connector_registry.clone(),
-        http_client.clone(),
-        engine.clone(),
-        channel_registry.clone(),
-        &config.engine,
-        &config.query,
-        &config.write,
-        cache_pool.clone(),
-        sql_pool_cache.clone(),
-        mongo_pool_cache.clone(),
-    );
+    let mut custom_functions = crate::engine::build_custom_functions(crate::engine::HandlerDeps {
+        registry: connector_registry.clone(),
+        client: http_client.clone(),
+        engine: engine.clone(),
+        channel_registry: channel_registry.clone(),
+        engine_config: &config.engine,
+        query_config: &config.query,
+        write_config: &config.write,
+        cache_pool: cache_pool.clone(),
+        sql_pool_cache: sql_pool_cache.clone(),
+        mongo_pool_cache: mongo_pool_cache.clone(),
+    });
 
     let kafka_producer = setup_kafka_producer(
         &config.kafka,
@@ -270,30 +281,51 @@ pub async fn build_engine_components(
     )?;
 
     Ok(EngineComponents {
-        connector_registry,
-        http_client,
-        datalogic: datalogic_engine,
-        engine,
-        cache_pool,
-        sql_pool_cache,
-        mongo_pool_cache,
+        serving: ServingComponents {
+            connector_registry,
+            http_client,
+            datalogic: datalogic_engine,
+            engine,
+            cache_pool,
+            sql_pool_cache,
+            mongo_pool_cache,
+            kafka_producer,
+        },
         custom_functions,
-        kafka_producer,
     })
 }
 
 impl EngineComponents {
     /// Load active channels and workflows, build the engine's workflow set,
     /// reload the channel registry (quarantining channels that fail to
-    /// load), and populate the pre-created engine lock. Returns the loaded
-    /// channels (the Kafka topic merge needs them) and the active-workflow
-    /// count (for the gauge).
+    /// load), and populate the pre-created engine lock. Returns the
+    /// [`ServingComponents`] `AppState` is assembled from, the loaded channels
+    /// (the Kafka topic merge needs them) and the active-workflow count (for
+    /// the gauge).
+    ///
+    /// F55: takes `self` by value. This step *consumes* the custom-function
+    /// handlers, so when it took `&mut self` the map was left as an empty hole
+    /// that `build_app_state` had to know to ignore — and calling
+    /// `build_app_state` first compiled fine and silently produced an engine
+    /// with no Orion handlers registered at all. Consuming the value makes that
+    /// order a compile error instead.
     pub async fn load_channels_and_build_engine(
-        &mut self,
+        self,
         config: &config::AppConfig,
         repos: &Repositories,
         channel_registry: &crate::channel::ChannelRegistry,
-    ) -> Result<(Vec<crate::storage::models::Channel>, usize), Box<dyn std::error::Error>> {
+    ) -> Result<
+        (
+            ServingComponents,
+            Vec<crate::storage::models::Channel>,
+            usize,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let EngineComponents {
+            serving,
+            custom_functions,
+        } = self;
         // Load active channels and workflows, build engine
         let channels = repos.channels.list_active().await?;
         let total_active = channels.len();
@@ -313,9 +345,9 @@ impl EngineComponents {
         let load_issues = channel_registry
             .reload(
                 &channels,
-                &self.connector_registry,
-                &self.cache_pool,
-                &self.datalogic,
+                &serving.connector_registry,
+                &serving.cache_pool,
+                &serving.datalogic,
                 &config.trace_storage,
                 engine_issues,
             )
@@ -347,11 +379,10 @@ impl EngineComponents {
         );
 
         // Populate the pre-created engine lock with the real engine
-        let built_engine =
-            dataflow_rs::Engine::new(workflows, std::mem::take(&mut self.custom_functions))?;
-        *crate::engine::acquire_engine_write(&self.engine).await = Arc::new(built_engine);
+        let built_engine = dataflow_rs::Engine::new(workflows, custom_functions)?;
+        *crate::engine::acquire_engine_write(&serving.engine).await = Arc::new(built_engine);
 
-        Ok((channels, active_workflows.len()))
+        Ok((serving, channels, active_workflows.len()))
     }
 }
 
@@ -586,7 +617,7 @@ pub struct AppStateParams {
     pub config: Arc<config::AppConfig>,
     pub pool: crate::storage::DbPool,
     pub repos: Repositories,
-    pub components: EngineComponents,
+    pub components: ServingComponents,
     pub channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub trace_queue: crate::queue::TraceQueue,
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
@@ -598,7 +629,7 @@ pub struct AppStateParams {
 }
 
 /// Assemble `AppState` from the bootstrap products — the single place the
-/// [`Repositories`] / [`EngineComponents`] fields map onto `AppStateInner`,
+/// [`Repositories`] / [`ServingComponents`] fields map onto `AppStateInner`,
 /// shared by `main.rs` and the integration-test harness so the two can never
 /// drift apart.
 pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState {
@@ -616,7 +647,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         kafka_consumer_handle,
         cluster,
     } = params;
-    let EngineComponents {
+    let ServingComponents {
         connector_registry,
         http_client,
         datalogic,
@@ -624,8 +655,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         cache_pool,
         sql_pool_cache,
         mongo_pool_cache,
-        // Already consumed by `load_channels_and_build_engine`.
-        custom_functions: _,
         kafka_producer,
     } = components;
     crate::server::state::AppState::new(crate::server::state::AppStateInner {

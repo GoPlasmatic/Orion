@@ -193,7 +193,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Connector registry, shared HTTP client, engine lock, cache pools,
     // custom function handlers, and the Kafka producer (see
     // `bootstrap::build_engine_components`).
-    let mut components =
+    let components =
         bootstrap::build_engine_components(&config, &repos, channel_registry.clone()).await?;
 
     // Readiness flag — set after engine is fully initialized
@@ -201,8 +201,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load active channels and workflows, build the engine, and populate the
     // pre-created engine lock. Channels that fail to load are quarantined —
-    // refused at every ingress until fixed.
-    let (channels, active_workflow_count) = components
+    // refused at every ingress until fixed. Consumes `components`: the
+    // handler map goes into the engine, and what comes back is the half that
+    // backs `AppState` (F55).
+    let (components, channels, active_workflow_count) = components
         .load_channels_and_build_engine(&config, &repos, &channel_registry)
         .await?;
 

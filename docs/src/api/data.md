@@ -67,18 +67,32 @@ Add `X-Orion-Profile: 1` (or `?profile=1`) to the request and the response gains
   "errors": [],
   "_orion": {
     "profile": {
-      "version": 1,
-      "engine_lock_ms": 0.04,
-      "workflow_ms": 6.71,
-      "tasks": [
-        { "id": "parse",    "ms": 0.18 },
-        { "id": "validate", "ms": 0.42 },
-        { "id": "enrich",   "ms": 4.91 }
-      ]
+      "version": 2,
+      "totals_ms": 6.75,
+      "phases": [
+        { "name": "engine_lock_wait",  "ms": 0.04, "pct": 0.59 },
+        { "name": "handlers",          "ms": 5.33, "pct": 78.96 },
+        { "name": "workflow_overhead", "ms": 1.34, "pct": 19.85 }
+      ],
+      "handlers": [
+        { "function": "db_read",      "connector": "orders-db", "duration_ms": 4.91, "pct_of_workflow": 73.2 },
+        { "function": "channel_call", "connector": "enrich-ch", "duration_ms": 0.42, "pct_of_workflow": 6.3,
+          "nested": [ { "function": "cache_read", "connector": "hot", "duration_ms": 0.11, "depth": 1 } ] }
+      ],
+      "by_function":  { "db_read": { "count": 1, "total_ms": 4.91 } },
+      "by_connector": { "orders-db": { "count": 1, "total_ms": 4.91 } }
     }
   }
 }
 ```
+
+`phases[]` is the iterable view — same numbers as the `*_ms` detail fields, so a
+client that does not want to hard-code each key can just walk it. `nested[]`
+lists the handler calls that ran *inside* a `channel_call`, matched by when they
+ran; a call with no children omits the key.
+
+Branch on `version`: **v2** (1.0) corrected `nested[]`, which in v1 attached
+every nested sample to every top-level `channel_call`.
 
 ## Asynchronous Processing
 
