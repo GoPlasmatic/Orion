@@ -97,6 +97,14 @@ sample_rate = 1.0    # 0.0 (none) to 1.0 (all)
 - Configurable sampling rate for production use
 - Trace context injected into outbound `http_call` requests for full distributed traces
 
+> **Two sampling knobs.** `tracing.sample_rate` above governs OTLP span
+> export. Trace *persistence* sampling —
+> [`trace_storage.sample_rate`](../configuration/reference.md#trace-persistence)
+> — applies to **sync traces only**: an async submission's trace row is how
+> its result is delivered to the caller, so async traces always persist
+> regardless of the sample rate. Bound async trace storage with
+> `errors_only` or `trace_queue.retention_hours` instead.
+
 ## Health Monitoring
 
 Orion exposes three health endpoints for different operational needs.

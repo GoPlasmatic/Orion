@@ -435,7 +435,7 @@ Orion's own per-request trace records — rows in the `traces` table, read via `
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
 | `trace_storage.mode` | `"sync"` | `ORION_TRACE_STORAGE__MODE` | Move to `batch` when trace writes bound throughput. |
-| `trace_storage.sample_rate` | `1.0` | `ORION_TRACE_STORAGE__SAMPLE_RATE` | Fraction of traces persisted, `0.0` to `1.0`. |
+| `trace_storage.sample_rate` | `1.0` | `ORION_TRACE_STORAGE__SAMPLE_RATE` | Fraction of traces persisted, `0.0` to `1.0`. Applies to sync traces only — an async submission's trace row is how its result is delivered, so async traces always persist regardless of this rate; bound async storage with `errors_only` or `trace_queue.retention_hours` instead. |
 | `trace_storage.errors_only` | `false` | `ORION_TRACE_STORAGE__ERRORS_ONLY` | Persist only traces that ended with errors — a cheap way to keep the table small. |
 | `trace_storage.max_pending` | `10000` | `ORION_TRACE_STORAGE__MAX_PENDING` | Queue capacity in `async` and `batch` modes. |
 | `trace_storage.async_on_overflow` | `"drop"` | `ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW` | `drop` or `block`. `block` applies backpressure to the request path. |

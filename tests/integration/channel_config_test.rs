@@ -501,7 +501,10 @@ async fn test_channel_backpressure_rejects_when_at_capacity() {
         .await
         .unwrap();
 
-    // Create channel with max_concurrent = 0 (immediately at capacity)
+    // Create channel with max_concurrent_per_node = 0 (immediately at
+    // capacity). Deliberately spelled with the pre-1.0 alias
+    // `max_concurrent` — configs stored before the N9 rename must keep
+    // enforcing for one release.
     let resp = app
         .clone()
         .oneshot(json_request(

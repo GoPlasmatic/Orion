@@ -160,6 +160,18 @@ fn check_route_pattern(pattern: &str) -> Vec<crate::errors::FieldError> {
              everything after it is a query string or fragment and is never matched"
         ))];
     }
+    // N10 (symmetry): requests are matched by their percent-decoded value,
+    // but pattern segments are compared as written. An escape here (`%20`)
+    // could therefore only ever match a double-encoded request — write the
+    // character itself instead.
+    if pattern.contains('%') {
+        return vec![err(
+            "route_pattern must not contain '%' — patterns are written literally \
+             and requests match by their decoded value, so write the character \
+             itself instead of a percent-escape"
+                .to_string(),
+        )];
+    }
 
     let mut out = Vec::new();
     let mut params: Vec<&str> = Vec::new();
@@ -403,6 +415,9 @@ mod tests {
             ("/orders/", "empty path segment"),
             ("/orders/{id}/items/{id}", "appears more than once"),
             ("/orders?filter=x", "'?'"),
+            // N10 symmetry: requests match by decoded value, so a literal
+            // escape in the pattern is only reachable double-encoded.
+            ("/a%20b/{id}", "'%'"),
         ] {
             let errors = check_route_pattern(pattern);
             assert!(

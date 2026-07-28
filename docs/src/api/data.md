@@ -28,7 +28,7 @@ When a request arrives at `/api/v1/data/{path}`, Orion resolves the target chann
 2. **REST route table:** match HTTP method + path against channel `route_pattern` values (e.g., `GET /orders/{order_id}`)
 3. **Channel name fallback:** direct lookup by single path segment (e.g., `/api/v1/data/orders` → channel named `orders`)
 
-REST routes are matched by priority (descending) then specificity (segment count). Path parameters are extracted and injected into the message metadata.
+REST routes are matched by priority (descending) then specificity (segment count). Matching is byte-exact — the path is case-sensitive per RFC 3986, so `/ORDERS/1` does not match `/orders/{id}`. Path parameters are extracted, percent-decoded exactly once (`a%2Fb` arrives as `a/b`), and injected into the message metadata; a path carrying an invalid percent-sequence is answered with `400`.
 
 ## Synchronous Processing
 

@@ -258,6 +258,127 @@ async fn an_async_rest_channel_is_reachable_at_its_route_pattern() {
 }
 
 // ============================================================
+// N10: byte-exact matching + percent-decoded params
+// ============================================================
+
+/// N10: RFC 3986 makes the path component case-sensitive; the old
+/// `eq_ignore_ascii_case` match let `/ORDERS/1` resolve to `/orders/{id}`
+/// while everything keyed off the raw path (response-cache keys included)
+/// treated the two spellings as different requests.
+#[tokio::test]
+async fn route_matching_is_case_sensitive() {
+    let app = common::test_app().await;
+    let wf_id = create_echo_workflow(&app, "Orders Workflow").await;
+    create_rest_channel(&app, "orders.get", "/orders/{id}", vec!["GET"], &wf_id).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/data/ORDERS/1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "/ORDERS/1 must not match /orders/{{id}}"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/data/orders/1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// N10: captured params are percent-decoded exactly once at extraction, so
+/// `%2F` expresses a literal `/` inside a parameter — previously the
+/// workflow received the raw escape and no author decoded it.
+#[tokio::test]
+async fn route_params_arrive_percent_decoded() {
+    let app = common::test_app().await;
+    let wf_id = create_and_activate_workflow(
+        &app,
+        common::workflow_with_tasks(
+            "Param Echo",
+            json!([{
+                "id": "echo-param",
+                "name": "Echo param",
+                "function": {
+                    "name": "map",
+                    "input": {"mappings": [
+                        {"path": "data.param_id", "logic": {"var": "metadata.params.id"}}
+                    ]}
+                }
+            }]),
+        ),
+    )
+    .await;
+    create_rest_channel(&app, "orders.param", "/orders/{id}", vec!["GET"], &wf_id).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/data/orders/a%2Fb")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(
+        body["data"]["param_id"], "a/b",
+        "params must arrive decoded exactly once: {body}"
+    );
+}
+
+/// N10: an invalid percent-sequence is a malformed request path — 400, not
+/// a silent literal match, and not a fall-through to some other resolution.
+#[tokio::test]
+async fn invalid_percent_sequence_returns_400() {
+    let app = common::test_app().await;
+    let wf_id = create_echo_workflow(&app, "Orders Workflow").await;
+    create_rest_channel(&app, "orders.get", "/orders/{id}", vec!["GET"], &wf_id).await;
+
+    for uri in [
+        "/api/v1/data/orders/a%ZZ",
+        "/api/v1/data/orders/trailing%2",
+        "/api/v1/data/bad%GGname",
+    ] {
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "{uri} must be rejected as malformed"
+        );
+    }
+}
+
+// ============================================================
 // R6: route patterns and methods are structurally validated
 // ============================================================
 

@@ -148,6 +148,18 @@ Cache keys are computed from the specified fields. Cached responses are returned
 
 When a request with the same idempotency key arrives within the window, it returns `409 Conflict` instead of re-processing. Keys are scoped per channel. In cluster mode the dedup store is the shared cluster Redis by default, so the window holds across all replicas.
 
+**Backend outages** are resolved by the channel's `on_backend_error` policy. The default, `"allow"`, fails open: if the dedup store cannot answer (a Redis blip, say), the request proceeds without the idempotency check — availability wins. Payment-style workloads where a duplicate execution is worse than a refused request can set `"on_backend_error": "deny"` to fail closed: the request is refused with `503 Service Unavailable` (never `409` — the key is unverifiable, not a known duplicate) until the backend recovers:
+
+```json
+{
+  "deduplication": {
+    "header": "Idempotency-Key",
+    "window_secs": 300,
+    "on_backend_error": "deny"
+  }
+}
+```
+
 **Connection pool caching:** external database and MongoDB connector pools are cached and reused across requests, with configurable pool sizes and idle timeouts:
 
 ```toml

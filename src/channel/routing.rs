@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::errors::OrionError;
 use crate::storage::models::{Channel, ChannelProtocol};
 
 /// A single entry in the route table.
@@ -22,7 +23,10 @@ impl RouteEntry {
         for segment in &self.segments {
             out.push('/');
             match segment {
-                RouteSegment::Static(s) => out.push_str(&s.to_ascii_lowercase()),
+                // N10: case is kept — matching is byte-exact per RFC 3986,
+                // so `/Orders` and `/orders` are two different routes and
+                // must not be reported as one.
+                RouteSegment::Static(s) => out.push_str(s),
                 RouteSegment::Param(_) => out.push_str("{}"),
             }
         }
@@ -59,7 +63,10 @@ pub fn canonical_route(pattern: &str) -> String {
     for segment in parse_route_pattern(pattern) {
         out.push('/');
         match segment {
-            RouteSegment::Static(s) => out.push_str(&s.to_ascii_lowercase()),
+            // N10: case-preserving, mirroring the byte-exact match — two
+            // patterns differing only in case are distinct routes now, and
+            // canonicalising them together would refuse a legal activation.
+            RouteSegment::Static(s) => out.push_str(&s),
             RouteSegment::Param(_) => out.push_str("{}"),
         }
     }
@@ -96,11 +103,54 @@ fn parse_route_pattern(pattern: &str) -> Vec<RouteSegment> {
         .collect()
 }
 
+/// Percent-decode one path segment exactly once (RFC 3986 §2.1). Returns
+/// `None` when a `%` is not followed by two hex digits, or when the decoded
+/// bytes are not valid UTF-8 — both are malformed request paths, answered
+/// with 400 by [`RouteTable::match_route`]. Also used by the data plane's
+/// single-segment channel-name fallback so an encoded name spelling reaches
+/// the same channel as its decoded one (N10).
+pub(crate) fn percent_decode_segment(segment: &str) -> Option<String> {
+    if !segment.contains('%') {
+        return Some(segment.to_string());
+    }
+    let bytes = segment.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = bytes.get(i + 1).and_then(|b| (*b as char).to_digit(16))?;
+            let lo = bytes.get(i + 2).and_then(|b| (*b as char).to_digit(16))?;
+            out.push((hi * 16 + lo) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Split a request path on **raw** `/` separators, then percent-decode each
+/// segment once. Splitting before decoding is what lets `%2F` travel inside
+/// a parameter value without acting as a separator (N10).
+fn decode_path_parts(path: &str) -> Option<Vec<String>> {
+    path.split('/')
+        .filter(|s| !s.is_empty())
+        .map(percent_decode_segment)
+        .collect()
+}
+
 /// Try to match a request path against a route pattern's segments.
 /// Returns extracted params on success.
+///
+/// N10: static segments compare **byte-exact** against the decoded request
+/// segment — `/ORDERS/1` does not match `/orders/{id}` (RFC 3986 reserves
+/// case-insensitivity for the scheme and host, never the path), while
+/// `/%6Frders/1` does (percent-encoding an unreserved character is
+/// equivalence, not difference). Captured params arrive already decoded.
 fn match_segments(
     segments: &[RouteSegment],
-    path_parts: &[&str],
+    path_parts: &[String],
 ) -> Option<HashMap<String, String>> {
     if segments.len() != path_parts.len() {
         return None;
@@ -113,12 +163,12 @@ fn match_segments(
     for (seg, part) in segments.iter().zip(path_parts.iter()) {
         match seg {
             RouteSegment::Static(expected) => {
-                if !expected.eq_ignore_ascii_case(part) {
+                if expected != part {
                     return None;
                 }
             }
             RouteSegment::Param(name) => {
-                params.insert(name.clone(), (*part).to_string());
+                params.insert(name.clone(), part.clone());
             }
         }
     }
@@ -219,8 +269,16 @@ impl RouteTable {
 
     /// Match a request (method, path) against the route table.
     /// Path should NOT include the `/api/v1/data/` prefix.
-    pub fn match_route(&self, method: &str, path: &str) -> Option<RouteMatch> {
-        let path_parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    ///
+    /// `Ok(None)` = no route claims the path; `Err(BadRequest)` = the path
+    /// carries an invalid percent-sequence and the request must be answered
+    /// with 400 rather than matched or silently passed along (N10).
+    pub fn match_route(&self, method: &str, path: &str) -> Result<Option<RouteMatch>, OrionError> {
+        let Some(path_parts) = decode_path_parts(path) else {
+            return Err(OrionError::BadRequest(
+                "Invalid percent-encoding in request path".to_string(),
+            ));
+        };
 
         for entry in &self.entries {
             // Check method match (empty methods = accept any)
@@ -230,13 +288,13 @@ impl RouteTable {
                 continue;
             }
             if let Some(params) = match_segments(&entry.segments, &path_parts) {
-                return Some(RouteMatch {
+                return Ok(Some(RouteMatch {
                     channel_name: entry.channel_name.clone(),
                     params,
-                });
+                }));
             }
         }
-        None
+        Ok(None)
     }
 }
 
@@ -261,10 +319,14 @@ mod tests {
         assert!(matches!(&segments[3], RouteSegment::Param(s) if s == "item_id"));
     }
 
+    fn parts(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn test_match_segments_exact() {
         let segments = parse_route_pattern("/orders/{id}");
-        let params = match_segments(&segments, &["orders", "123"]);
+        let params = match_segments(&segments, &parts(&["orders", "123"]));
         assert!(params.is_some());
         assert_eq!(params.expect("test").get("id").expect("test"), "123");
     }
@@ -272,9 +334,21 @@ mod tests {
     #[test]
     fn test_match_segments_no_match() {
         let segments = parse_route_pattern("/orders/{id}");
-        assert!(match_segments(&segments, &["users", "123"]).is_none());
-        assert!(match_segments(&segments, &["orders"]).is_none());
-        assert!(match_segments(&segments, &["orders", "123", "items"]).is_none());
+        assert!(match_segments(&segments, &parts(&["users", "123"])).is_none());
+        assert!(match_segments(&segments, &parts(&["orders"])).is_none());
+        assert!(match_segments(&segments, &parts(&["orders", "123", "items"])).is_none());
+    }
+
+    /// N10: static-segment matching is byte-exact — RFC 3986 makes the path
+    /// component case-sensitive, and the old `eq_ignore_ascii_case` let
+    /// `/ORDERS/1` resolve to `/orders/{id}` while cache keys derived from
+    /// the raw path treated them as different requests.
+    #[test]
+    fn test_match_segments_is_case_sensitive() {
+        let segments = parse_route_pattern("/orders/{id}");
+        assert!(match_segments(&segments, &parts(&["ORDERS", "1"])).is_none());
+        assert!(match_segments(&segments, &parts(&["Orders", "1"])).is_none());
+        assert!(match_segments(&segments, &parts(&["orders", "1"])).is_some());
     }
 
     #[test]
@@ -287,7 +361,7 @@ mod tests {
                 priority: 0,
             }],
         };
-        let result = table.match_route("GET", "orders/42");
+        let result = table.match_route("GET", "orders/42").expect("valid path");
         assert!(result.is_some());
         let rm = result.expect("test");
         assert_eq!(rm.channel_name, "orders.get");
@@ -304,7 +378,73 @@ mod tests {
                 priority: 0,
             }],
         };
-        assert!(table.match_route("POST", "orders/42").is_none());
+        assert!(
+            table
+                .match_route("POST", "orders/42")
+                .expect("valid path")
+                .is_none()
+        );
+    }
+
+    fn orders_table() -> RouteTable {
+        RouteTable {
+            entries: vec![RouteEntry {
+                channel_name: "orders.get".to_string(),
+                methods: vec!["GET".to_string()],
+                segments: parse_route_pattern("/orders/{id}"),
+                priority: 0,
+            }],
+        }
+    }
+
+    /// N10: `%2F` reaches the workflow as a literal `/` inside the param —
+    /// decoded exactly once, after splitting, so it never acts as a
+    /// separator. Previously the workflow received the raw `a%2Fb` and a
+    /// literal slash was inexpressible in a parameter.
+    #[test]
+    fn test_params_are_percent_decoded_once() {
+        let m = orders_table()
+            .match_route("GET", "orders/a%2Fb")
+            .expect("valid path")
+            .expect("must match");
+        assert_eq!(m.params.get("id").expect("id"), "a/b");
+
+        // Double-encoding decodes one layer only.
+        let m = orders_table()
+            .match_route("GET", "orders/a%252Fb")
+            .expect("valid path")
+            .expect("must match");
+        assert_eq!(m.params.get("id").expect("id"), "a%2Fb");
+    }
+
+    /// N10: percent-encoding an unreserved character is RFC 3986
+    /// *equivalence* — `%6F` is `o` — so the encoded spelling of a static
+    /// segment still matches.
+    #[test]
+    fn test_encoded_static_segment_matches() {
+        let m = orders_table()
+            .match_route("GET", "%6Frders/1")
+            .expect("valid path");
+        assert!(m.is_some());
+        // But the encoded spelling of a *different* case does not.
+        let m = orders_table()
+            .match_route("GET", "%4Frders/1") // %4F = 'O'
+            .expect("valid path");
+        assert!(m.is_none());
+    }
+
+    /// N10: an invalid percent-sequence is a malformed path — 400, not a
+    /// silent literal match and not a fall-through.
+    #[test]
+    fn test_invalid_percent_sequence_is_rejected() {
+        for path in ["orders/a%ZZ", "orders/a%2", "orders/%", "orders/%G1"] {
+            assert!(
+                orders_table().match_route("GET", path).is_err(),
+                "{path} must be rejected"
+            );
+        }
+        // Invalid UTF-8 after decoding is equally malformed.
+        assert!(orders_table().match_route("GET", "orders/%FF").is_err());
     }
 
     #[test]
@@ -331,6 +471,7 @@ mod tests {
         assert_eq!(
             table
                 .match_route("GET", "items/1")
+                .expect("valid path")
                 .expect("test")
                 .channel_name,
             "low"
@@ -364,21 +505,43 @@ mod prop_tests {
 
     proptest! {
         /// Totality: any method/path bytes — unicode, `%`-escapes, `..`,
-        /// empty segments, control characters — must resolve to Some/None,
-        /// never panic. The data plane feeds this attacker-controlled input.
+        /// empty segments, control characters — must resolve to
+        /// Ok(Some)/Ok(None)/Err(400), never panic. The data plane feeds
+        /// this attacker-controlled input.
         #[test]
         fn match_route_is_total(method in ".*", path in ".*") {
             let _ = table().match_route(&method, &path);
         }
 
-        /// Extracted params round-trip verbatim: whatever slash-free segment
-        /// arrives in a param position comes back unchanged — no truncation
-        /// or decoding surprises at this layer.
+        /// Percent-free params round-trip verbatim: whatever slash-free,
+        /// percent-free segment arrives in a param position comes back
+        /// unchanged. (`%` segments are covered by the decode tests — N10
+        /// decodes exactly once at extraction, so they are *not* verbatim.)
         #[test]
-        fn extracted_params_round_trip(id in "[^/]+", oid in "[^/]+") {
+        fn extracted_params_round_trip(id in "[^/%]+", oid in "[^/%]+") {
             let path = format!("users/{id}/orders/{oid}");
-            let m = table().match_route("GET", &path).expect("must match");
+            let m = table()
+                .match_route("GET", &path)
+                .expect("percent-free paths are always valid")
+                .expect("must match");
             prop_assert_eq!(m.channel_name.as_str(), "users.get");
+            prop_assert_eq!(m.params.get("id").expect("id").as_str(), id.as_str());
+            prop_assert_eq!(m.params.get("oid").expect("oid").as_str(), oid.as_str());
+        }
+
+        /// N10: whatever a caller percent-encodes into a param position
+        /// arrives decoded — including `/` via `%2F`, which must never act
+        /// as a separator.
+        #[test]
+        fn encoded_params_decode_to_the_original(id in "[^/%]+", oid in "[^/%]+") {
+            fn encode(s: &str) -> String {
+                s.bytes().map(|b| format!("%{b:02X}")).collect()
+            }
+            let path = format!("users/{}/orders/{}", encode(&id), encode(&oid));
+            let m = table()
+                .match_route("GET", &path)
+                .expect("fully-encoded segments are valid")
+                .expect("must match");
             prop_assert_eq!(m.params.get("id").expect("id").as_str(), id.as_str());
             prop_assert_eq!(m.params.get("oid").expect("oid").as_str(), oid.as_str());
         }
@@ -386,11 +549,11 @@ mod prop_tests {
         /// A pattern never matches outside its shape: extra or missing
         /// segments must not resolve to the two-param route.
         #[test]
-        fn wrong_arity_never_matches(id in "[^/]+") {
+        fn wrong_arity_never_matches(id in "[^/%]+") {
             let short = format!("users/{id}");
             let long = format!("users/{id}/orders/{id}/extra");
-            prop_assert!(table().match_route("GET", &short).is_none());
-            prop_assert!(table().match_route("GET", &long).is_none());
+            prop_assert!(table().match_route("GET", &short).expect("valid").is_none());
+            prop_assert!(table().match_route("GET", &long).expect("valid").is_none());
         }
     }
 }

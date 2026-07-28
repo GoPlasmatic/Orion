@@ -232,6 +232,65 @@ async fn errors_only_filter_drops_successful_sync_traces() {
 }
 
 // -----------------------------------------------------------------------
+// N22: sampling is per-trace, decided once
+// -----------------------------------------------------------------------
+
+/// N22: a sampled-out sync trace produces no rows at all — the draw happens
+/// once, at the single point the trace's persistence is decided.
+#[tokio::test]
+async fn sampled_out_sync_trace_writes_no_rows() {
+    let c = AppConfig {
+        trace_storage: TraceStorageConfig {
+            mode: TraceStorageMode::Sync,
+            sample_rate: 0.0,
+            ..TraceStorageConfig::default()
+        },
+        ..AppConfig::default()
+    };
+    let app = common::test_app_with_config(c).await;
+    let (_, _) =
+        common::create_and_activate_channel(&app, "ch_sampled", common::simple_log_workflow("Log"))
+            .await;
+
+    let before = list_total(&app).await;
+    assert_eq!(submit_sync(&app, "ch_sampled").await, StatusCode::OK);
+    assert_eq!(
+        list_total(&app).await,
+        before,
+        "a sampled-out trace must leave no rows"
+    );
+}
+
+/// N22: async submissions are never sampled out. The 202's `trace_id` is a
+/// receipt for a fetchable result, so `for_async_submission` pins the sample
+/// rate to 1.0 — the old behaviour kept the status row but dropped the
+/// result, leaving the caller a `completed` trace with nothing in it.
+#[tokio::test]
+async fn async_submission_is_never_sampled_out() {
+    let app = common::test_app().await;
+    let (_, _) = common::create_and_activate_channel_with_config(
+        &app,
+        "ch_async_sampled",
+        common::simple_log_workflow("Log"),
+        json!({ "tracing": { "sample_rate": 0.0 } }),
+    )
+    .await;
+
+    let (trace_id, token) = common::submit_async(
+        &app,
+        "/api/v1/data/ch_async_sampled/async",
+        json!({"data": {"x": 1}}),
+    )
+    .await;
+    let body = common::poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
+    assert_eq!(body["status"], "completed", "{body}");
+    assert!(
+        body.get("message").is_some(),
+        "an async trace's result must never be sampled away: {body}"
+    );
+}
+
+// -----------------------------------------------------------------------
 // Per-channel override
 // -----------------------------------------------------------------------
 

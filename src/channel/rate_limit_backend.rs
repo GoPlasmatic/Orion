@@ -10,14 +10,17 @@
 use async_trait::async_trait;
 
 use super::{KeyedLimiter, build_keyed_limiter};
+use crate::errors::OrionError;
 
 #[async_trait]
 pub trait RateLimitBackend: Send + Sync {
-    /// `true` = allow, `false` = reject with 429. Implementations fail open
-    /// (allow + error metric) when their backing store is unreachable —
-    /// consistent with the dedup fail-open policy. Takes the key by value:
+    /// `Ok(true)` = allow, `Ok(false)` = reject with 429. `Err` = the backing
+    /// store could not answer; the **caller** resolves it through the
+    /// channel's `rate_limit.on_backend_error` policy (N7) — `allow` fails
+    /// open, `deny` refuses with 503. Fail-open is no longer a trait
+    /// contract, it is the per-channel default. Takes the key by value:
     /// callers already own one, and governor's keyed store wants `&String`.
-    async fn check(&self, key: String) -> bool;
+    async fn check(&self, key: String) -> Result<bool, OrionError>;
 }
 
 /// In-process governor limiter (today's behavior; N replicas = N× the limit).
@@ -35,8 +38,8 @@ impl LocalRateLimitBackend {
 
 #[async_trait]
 impl RateLimitBackend for LocalRateLimitBackend {
-    async fn check(&self, key: String) -> bool {
-        self.limiter.check_key(&key).is_ok()
+    async fn check(&self, key: String) -> Result<bool, OrionError> {
+        Ok(self.limiter.check_key(&key).is_ok())
     }
 }
 
@@ -64,7 +67,7 @@ impl RedisRateLimitBackend {
 
 #[async_trait]
 impl RateLimitBackend for RedisRateLimitBackend {
-    async fn check(&self, key: String) -> bool {
+    async fn check(&self, key: String) -> Result<bool, OrionError> {
         let window = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -78,16 +81,14 @@ impl RateLimitBackend for RedisRateLimitBackend {
             .query_async(&mut conn)
             .await;
         match result {
-            Ok((count, _)) => count <= i64::from(self.limit_per_window),
-            Err(e) => {
-                crate::metrics::record_error("rate_limit_backend");
-                tracing::warn!(
-                    scope = %self.scope,
-                    error = %e,
-                    "Rate-limit Redis error; failing open (request allowed)"
-                );
-                true
-            }
+            Ok((count, _)) => Ok(count <= i64::from(self.limit_per_window)),
+            // N7: not resolved here — the per-channel `on_backend_error`
+            // policy lives with the caller, which also logs and records the
+            // error metric with the channel in scope.
+            Err(e) => Err(OrionError::Internal(format!(
+                "rate-limit backend '{}': {e}",
+                self.scope
+            ))),
         }
     }
 }
@@ -100,10 +101,10 @@ mod tests {
     async fn test_local_backend_enforces_burst() {
         let backend = LocalRateLimitBackend::new(1, 2);
         // Burst capacity of 2 → first two pass, third rejected.
-        assert!(backend.check("ip-1".to_string()).await);
-        assert!(backend.check("ip-1".to_string()).await);
-        assert!(!backend.check("ip-1".to_string()).await);
+        assert!(backend.check("ip-1".to_string()).await.expect("test"));
+        assert!(backend.check("ip-1".to_string()).await.expect("test"));
+        assert!(!backend.check("ip-1".to_string()).await.expect("test"));
         // Independent key unaffected.
-        assert!(backend.check("ip-2".to_string()).await);
+        assert!(backend.check("ip-2".to_string()).await.expect("test"));
     }
 }

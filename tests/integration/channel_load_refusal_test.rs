@@ -321,6 +321,7 @@ async fn a_quarantined_channel_is_absent_from_the_route_table() {
             .channel_registry
             .match_route("GET", "quarantined/42")
             .await
+            .expect("valid path")
             .is_none(),
         "a quarantined channel must not own a route"
     );

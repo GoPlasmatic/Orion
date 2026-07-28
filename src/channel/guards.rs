@@ -110,18 +110,38 @@ where
         // key at `compute_cache_key`) — raw tokens would collide across
         // channels sharing a backend.
         let scoped_key = format!("dedup:{channel}:{key}");
-        // Fail open on backend errors: a dedup-store outage must not reject
-        // every request with 409 — availability wins over strict idempotency.
+        // N7: a backend error is resolved by the channel's `on_backend_error`
+        // policy. The default (`allow`) fails open — availability wins over
+        // strict idempotency. `deny` fails closed with 503, never 409: the
+        // request is not a known duplicate, it is *unverifiable*.
         let is_new = match store.check_and_insert(&scoped_key, window).await {
             Ok(is_new) => is_new,
             Err(e) => {
                 metrics::record_error("dedup_backend");
-                tracing::warn!(
-                    error = %e,
-                    header = %dedup.header,
-                    "Dedup backend error; failing open (request allowed without dedup check)"
-                );
-                true
+                match dedup.on_backend_error {
+                    crate::channel::BackendErrorPolicy::Allow => {
+                        tracing::warn!(
+                            channel = %channel,
+                            error = %e,
+                            header = %dedup.header,
+                            "Dedup backend error; failing open (request allowed without dedup check)"
+                        );
+                        true
+                    }
+                    crate::channel::BackendErrorPolicy::Deny => {
+                        tracing::warn!(
+                            channel = %channel,
+                            error = %e,
+                            header = %dedup.header,
+                            "Dedup backend error; failing closed (request refused)"
+                        );
+                        return Err(OrionError::ServiceUnavailable(format!(
+                            "Channel '{channel}' cannot verify the idempotency key: the \
+                             deduplication backend is unavailable and the channel is \
+                             configured to fail closed"
+                        )));
+                    }
+                }
             }
         };
         if !is_new {
@@ -340,10 +360,24 @@ mod tests {
     }
 
     fn dedup_runtime(outcome: StubOutcome) -> Option<Arc<ChannelRuntimeConfig>> {
-        dedup_runtime_with_store(Arc::new(StubDedupBackend { outcome }))
+        dedup_runtime_with_policy(outcome, crate::channel::BackendErrorPolicy::Allow)
+    }
+
+    fn dedup_runtime_with_policy(
+        outcome: StubOutcome,
+        policy: crate::channel::BackendErrorPolicy,
+    ) -> Option<Arc<ChannelRuntimeConfig>> {
+        dedup_runtime_full(Arc::new(StubDedupBackend { outcome }), policy)
     }
 
     fn dedup_runtime_with_store(store: Arc<dyn CacheBackend>) -> Option<Arc<ChannelRuntimeConfig>> {
+        dedup_runtime_full(store, crate::channel::BackendErrorPolicy::Allow)
+    }
+
+    fn dedup_runtime_full(
+        store: Arc<dyn CacheBackend>,
+        policy: crate::channel::BackendErrorPolicy,
+    ) -> Option<Arc<ChannelRuntimeConfig>> {
         let now = chrono::Utc::now().naive_utc();
         Some(Arc::new(ChannelRuntimeConfig {
             channel: Channel {
@@ -370,6 +404,7 @@ mod tests {
                     header: "idempotency-key".to_string(),
                     window_secs: Some(60),
                     connector: None,
+                    on_backend_error: policy,
                 }),
                 ..Default::default()
             },
@@ -404,10 +439,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dedup_fails_open_on_backend_error() {
+    async fn test_dedup_fails_open_on_backend_error_by_default() {
         let cfg = dedup_runtime(StubOutcome::BackendError);
         let result = super::check_deduplication("test-channel", &cfg, idempotency_lookup).await;
         assert!(result.is_ok(), "backend errors must fail open, not 409");
+    }
+
+    /// N7: `on_backend_error = "deny"` fails closed — a 503, never a 409,
+    /// because the request is unverifiable rather than a known duplicate.
+    #[tokio::test]
+    async fn test_dedup_fails_closed_when_policy_is_deny() {
+        let cfg = dedup_runtime_with_policy(
+            StubOutcome::BackendError,
+            crate::channel::BackendErrorPolicy::Deny,
+        );
+        let result = super::check_deduplication("test-channel", &cfg, idempotency_lookup).await;
+        assert!(
+            matches!(result, Err(OrionError::ServiceUnavailable(_))),
+            "deny must refuse with 503: {result:?}"
+        );
+    }
+
+    /// The deny policy only fires on backend errors — a healthy backend
+    /// answers normally under either policy.
+    #[tokio::test]
+    async fn test_deny_policy_does_not_affect_healthy_backend() {
+        let cfg =
+            dedup_runtime_with_policy(StubOutcome::New, crate::channel::BackendErrorPolicy::Deny);
+        let result = super::check_deduplication("test-channel", &cfg, idempotency_lookup).await;
+        assert!(result.is_ok());
+        let cfg = dedup_runtime_with_policy(
+            StubOutcome::Duplicate,
+            crate::channel::BackendErrorPolicy::Deny,
+        );
+        let result = super::check_deduplication("test-channel", &cfg, idempotency_lookup).await;
+        assert!(matches!(result, Err(OrionError::Conflict(_))));
     }
 
     #[tokio::test]

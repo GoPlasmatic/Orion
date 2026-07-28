@@ -500,14 +500,18 @@ async fn persist_success(
     }
 
     // Apply filters via the shared `EffectiveTraceConfig::should_drop`.
-    // This branch handles the success path → no errors.
-    let should_persist_result = match effective_trace.should_drop(false) {
-        Some(reason) => {
-            metrics::record_trace_dropped(reason);
-            false
-        }
-        None => true,
-    };
+    // This branch handles the success path → no errors. The sampling draw is
+    // deterministic here: `for_async_submission` pins `sample_rate` to 1.0
+    // (N22), so only `errors_only` can drop an async result — a sampled-out
+    // trace with a live status row cannot happen on this path.
+    let should_persist_result =
+        match effective_trace.should_drop(false, effective_trace.draw_sample()) {
+            Some(reason) => {
+                metrics::record_trace_dropped(reason);
+                false
+            }
+            None => true,
+        };
 
     let result_saved = if !should_persist_result {
         // Treat as saved for state-machine purposes — we won't write,

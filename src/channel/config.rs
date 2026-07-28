@@ -67,6 +67,23 @@ pub struct ChannelTracingConfig {
     pub task_details: Option<bool>,
 }
 
+/// What a guard does when its backing store cannot answer (N7).
+///
+/// Applies to the shared-Redis rate-limit window and to Redis-backed dedup
+/// stores: a backend outage forces a choice between availability and
+/// enforcement. `allow` (the default) keeps serving without the guard;
+/// `deny` refuses the request with `503` — the right trade for
+/// payment/idempotency workloads where a duplicate is worse than an error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendErrorPolicy {
+    /// Fail open: the request proceeds as if the guard had passed.
+    #[default]
+    Allow,
+    /// Fail closed: the request is refused with `503 Service Unavailable`.
+    Deny,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelRateLimitConfig {
     /// Maximum requests per second.
@@ -81,6 +98,10 @@ pub struct ChannelRateLimitConfig {
     /// Example: `{ "cat": [{ "var": "client_ip" }, ":", { "var": "headers.x-tenant-id" }] }`
     #[serde(default)]
     pub key_logic: Option<Value>,
+    /// Policy when the rate-limit backend (the shared cluster Redis) cannot
+    /// answer. Irrelevant to the in-process limiter, which cannot fail.
+    #[serde(default)]
+    pub on_backend_error: BackendErrorPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,9 +130,16 @@ pub struct ChannelCorsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackpressureConfig {
-    /// Maximum concurrent requests for this channel.
+    /// Maximum concurrent requests for this channel **on this node**.
     /// Excess requests are rejected immediately with 503 (no queueing).
-    pub max_concurrent: usize,
+    ///
+    /// N9: named for what it bounds — the semaphore is per process, so N
+    /// replicas admit up to N× this value in total. The old name
+    /// `max_concurrent` read as an absolute cluster-wide cap while sitting
+    /// next to dedup/rate-limit controls that *are* shared in cluster mode;
+    /// it is accepted as an alias for one release.
+    #[serde(alias = "max_concurrent")]
+    pub max_concurrent_per_node: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +154,10 @@ pub struct DeduplicationConfig {
     /// When absent, uses the built-in in-memory store.
     #[serde(default)]
     pub connector: Option<String>,
+    /// Policy when the dedup backend cannot answer: without it, an outage
+    /// silently disables idempotency (every request treated as new).
+    #[serde(default)]
+    pub on_backend_error: BackendErrorPolicy,
 }
 
 #[cfg(test)]
@@ -148,7 +180,7 @@ mod tests {
         let json = r#"{
             "rate_limit": { "requests_per_second": 100, "burst": 20, "key_logic": { "var": "client_ip" } },
             "timeout_ms": 5000,
-            "backpressure": { "max_concurrent": 200 },
+            "backpressure": { "max_concurrent_per_node": 200 },
             "deduplication": { "header": "Idempotency-Key", "window_secs": 300 }
         }"#;
         let config: ChannelConfig = serde_json::from_str(json).expect("test");
@@ -156,12 +188,50 @@ mod tests {
         assert_eq!(rl.requests_per_second, 100);
         assert_eq!(rl.burst, Some(20));
         assert!(rl.key_logic.is_some());
+        assert_eq!(rl.on_backend_error, BackendErrorPolicy::Allow);
         assert_eq!(config.timeout_ms, Some(5000));
         let bp = config.backpressure.expect("test");
-        assert_eq!(bp.max_concurrent, 200);
+        assert_eq!(bp.max_concurrent_per_node, 200);
         let dedup = config.deduplication.expect("test");
         assert_eq!(dedup.header, "Idempotency-Key");
         assert_eq!(dedup.window_secs, Some(300));
+        assert_eq!(dedup.on_backend_error, BackendErrorPolicy::Allow);
+    }
+
+    /// N9: configs stored before the rename keep working for one release.
+    #[test]
+    fn test_backpressure_old_name_is_an_alias() {
+        let config: ChannelConfig =
+            serde_json::from_str(r#"{"backpressure": {"max_concurrent": 7}}"#).expect("test");
+        assert_eq!(
+            config.backpressure.expect("test").max_concurrent_per_node,
+            7
+        );
+    }
+
+    /// N7: `on_backend_error` parses on both guard blocks; unknown values fail.
+    #[test]
+    fn test_on_backend_error_deserialization() {
+        let json = r#"{
+            "rate_limit": { "requests_per_second": 5, "on_backend_error": "deny" },
+            "deduplication": { "header": "idem", "on_backend_error": "deny" }
+        }"#;
+        let config: ChannelConfig = serde_json::from_str(json).expect("test");
+        assert_eq!(
+            config.rate_limit.expect("test").on_backend_error,
+            BackendErrorPolicy::Deny
+        );
+        assert_eq!(
+            config.deduplication.expect("test").on_backend_error,
+            BackendErrorPolicy::Deny
+        );
+        assert!(
+            serde_json::from_str::<ChannelConfig>(
+                r#"{"deduplication": {"header": "idem", "on_backend_error": "explode"}}"#
+            )
+            .is_err(),
+            "unknown policy values must be rejected, not defaulted"
+        );
     }
 
     #[test]

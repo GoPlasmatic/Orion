@@ -268,6 +268,124 @@ async fn test_rate_limit_channel_specific_from_db() {
     assert_eq!(resp2.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
+/// N6: an engine reload must not reset per-channel limiter state. Every
+/// admin mutation triggers a reload, so a fresh limiter per reload meant a
+/// caller could bypass a channel's limit by causing (or waiting for) one.
+#[tokio::test]
+async fn test_channel_rate_limit_survives_engine_reload() {
+    let app = common::test_app_with_config(AppConfig {
+        rate_limit: RateLimitConfig {
+            enabled: true,
+            default_rps: 1000,
+            default_burst: 500,
+            endpoints: EndpointRateLimits {
+                admin_rps: Some(1000),
+                data_rps: Some(1000),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(serde_json::json!({
+                "name": "reload-rl-wf",
+                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    let wf_id = common::body_json(resp).await["data"]["workflow_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(serde_json::json!({
+                "name": "reload-rl-ch",
+                "channel_type": "sync",
+                "protocol": "http",
+                "methods": ["POST"],
+                "route_pattern": "/reload-rl-ch",
+                "workflow_id": wf_id,
+                "config": {
+                    "rate_limit": { "requests_per_second": 1, "burst": 1 }
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    let ch_id = common::body_json(resp).await["data"]["channel_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let data_req = || {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/data/reload-rl-ch")
+            .header("x-forwarded-for", "10.0.0.60")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"data":{"test":true}}"#))
+            .unwrap()
+    };
+
+    // Consume the burst: first passes, second is limited.
+    let resp = app.clone().oneshot(data_req()).await.unwrap();
+    assert_ne!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    let resp = app.clone().oneshot(data_req()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+
+    // Trigger a reload with the channel unchanged.
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/engine/reload",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The consumed burst must still be consumed.
+    let resp = app.clone().oneshot(data_req()).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "an engine reload must not refill a channel's rate-limit burst"
+    );
+}
+
 #[tokio::test]
 async fn test_no_rate_limit_when_disabled() {
     // Use the standard test_app which has rate_limit_state: None

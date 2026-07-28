@@ -42,7 +42,11 @@ async fn route_store_completed(
     persistence_queue: &TracePersistenceQueue,
     trace: &CompletedTrace<'_>,
 ) {
-    if let Some(reason) = cfg.should_drop(trace.has_errors) {
+    // N22: the sampling coin is drawn exactly once per trace, here — the
+    // single point a sync trace's persistence is decided — so a sampled-out
+    // trace produces no rows at all (the sync path writes no separate
+    // status row; skipping this write skips the trace entirely).
+    if let Some(reason) = cfg.should_drop(trace.has_errors, cfg.draw_sample()) {
         metrics::record_trace_dropped(reason);
         return;
     }

@@ -51,9 +51,21 @@ compile refuses the channel at load (it is quarantined and reported on
 per-tenant limit into a per-IP one, sharing a bucket across every tenant
 behind one NAT.
 
-**Single instance:** rate limiter state is in-memory (token bucket via governor).
+**Single instance:** rate limiter state is in-memory (token bucket via governor). Limiter state survives engine reloads: an admin mutation rebuilds the channel registry, but a channel whose limits are unchanged keeps its limiter — consumed burst is not refilled by a reload.
 
 **Cluster mode:** per-channel limits enforce as a shared fixed window on the cluster Redis, so the configured rate holds across **all replicas combined** — 3 replicas at `requests_per_second = 100` is still ~100 RPS globally, and limiter state survives engine reloads. Platform-level limits (`[rate_limit]`, keyed by client IP) intentionally stay per-node: with N replicas the effective platform limit is N× the configured value.
+
+**Backend outages:** in cluster mode the shared limiter depends on Redis. The per-channel `on_backend_error` policy decides what a Redis failure means: `"allow"` (the default) fails open — requests proceed unthrottled until Redis recovers; `"deny"` fails closed — requests are refused with `503 Service Unavailable`. The same policy key exists on `deduplication` (see [Availability](availability.md)):
+
+```json
+{
+  "rate_limit": {
+    "requests_per_second": 100,
+    "burst": 50,
+    "on_backend_error": "deny"
+  }
+}
+```
 
 ## Backpressure
 
@@ -62,14 +74,14 @@ Semaphore-based concurrency limits prevent any single channel from overwhelming 
 ```json
 {
   "backpressure": {
-    "max_concurrent": 200
+    "max_concurrent_per_node": 200
   }
 }
 ```
 
 When all semaphore permits are taken, additional requests receive `503 Service Unavailable` immediately. This is load shedding. The system sheds excess load rather than queuing unboundedly, which protects latency for requests that are admitted.
 
-Each channel has its own independent backpressure semaphore, so a spike in one channel doesn't affect others.
+Each channel has its own independent backpressure semaphore, so a spike in one channel doesn't affect others. The semaphore is per process — the field is named for that: N replicas admit up to N× `max_concurrent_per_node` in-flight requests in total. (The pre-1.0 name `max_concurrent` is accepted as an alias for one release.)
 
 ## Async Processing
 
@@ -148,7 +160,7 @@ Cluster mode **requires** Postgres or MySQL storage plus a shared Redis — star
 | Component | Semantics |
 |-----------|-----------|
 | **Circuit breakers** | Trip independently per node; each node stops sending after its own `failure_threshold` failures. Resets fan out cluster-wide (above). |
-| **Backpressure** | `max_concurrent` is per node — N replicas admit up to N× `max_concurrent` in-flight requests total. |
+| **Backpressure** | `max_concurrent_per_node` is per node, as named — N replicas admit up to N× the configured value in-flight in total. |
 | **Platform rate limits** | `[rate_limit]` IP limits are per node (N× the configured value globally). |
 | `/metrics` | Per node — point Prometheus at every replica (or let it discover pods). |
 

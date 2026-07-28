@@ -112,12 +112,17 @@ fn data_route_path(uri_path: &str) -> Option<&str> {
 /// to the platform-wide limiter — the configured limit simply did not apply.
 async fn resolve_data_channel(state: &AppState, method: &str, uri_path: &str) -> Option<String> {
     let route_path = data_route_path(uri_path)?;
-    if let Some(matched) = state.channel_registry.match_route(method, route_path).await {
+    // N10: an invalid percent-sequence (`Err`) resolves to no channel here —
+    // the request falls to the platform limiter and `dynamic_handler`
+    // answers the 400.
+    if let Ok(Some(matched)) = state.channel_registry.match_route(method, route_path).await {
         return Some(matched.channel_name);
     }
-    // Backward-compatible single-segment channel name, as in `dynamic_handler`.
+    // Backward-compatible single-segment channel name, decoded once exactly
+    // as in `dynamic_handler` (None on an invalid sequence — the handler
+    // answers the 400; no channel limiter applies).
     if !route_path.contains('/') {
-        return Some(route_path.to_string());
+        return crate::channel::routing::percent_decode_segment(route_path);
     }
     None
 }
@@ -210,13 +215,25 @@ pub async fn rate_limit_middleware(
                 client_ip.clone()
             };
 
-            if !limiter.check(key).await {
-                // Registry-confirmed channel name — bounded cardinality (O1)
-                metrics::record_rate_limit_rejected(channel);
-                return rate_limited_response();
+            let policy = channel_config
+                .parsed_config
+                .rate_limit
+                .as_ref()
+                .map(|rl| rl.on_backend_error)
+                .unwrap_or_default();
+            match check_channel_rate_limit(limiter.as_ref(), policy, channel, key).await {
+                // Channel-specific limiter passed; skip the group/default limiter
+                Ok(true) => return next.run(req).await,
+                Ok(false) => {
+                    // Registry-confirmed channel name — bounded cardinality (O1)
+                    metrics::record_rate_limit_rejected(channel);
+                    return rate_limited_response();
+                }
+                Err(refusal) => {
+                    metrics::record_rate_limit_rejected(channel);
+                    return refusal.into_response();
+                }
             }
-            // Channel-specific limiter passed; skip the group/default limiter
-            return next.run(req).await;
         }
     }
 
@@ -239,6 +256,49 @@ pub async fn rate_limit_middleware(
     }
 
     next.run(req).await
+}
+
+/// Run a per-channel rate-limit check, resolving backend failures through
+/// the channel's `on_backend_error` policy (N7).
+///
+/// `Ok(true)` = allowed; `Ok(false)` = over limit (429); `Err` = the backend
+/// could not answer and the channel is configured to fail closed (503 —
+/// deliberately not 429: the caller is not over any limit, the control is
+/// unavailable). The default `allow` keeps the historical fail-open
+/// behaviour: availability wins unless the operator opts into enforcement.
+async fn check_channel_rate_limit(
+    limiter: &dyn crate::channel::RateLimitBackend,
+    policy: crate::channel::BackendErrorPolicy,
+    channel: &str,
+    key: String,
+) -> Result<bool, crate::errors::OrionError> {
+    match limiter.check(key).await {
+        Ok(allowed) => Ok(allowed),
+        Err(e) => {
+            metrics::record_error("rate_limit_backend");
+            match policy {
+                crate::channel::BackendErrorPolicy::Allow => {
+                    tracing::warn!(
+                        channel = %channel,
+                        error = %e,
+                        "Rate-limit backend error; failing open (request allowed)"
+                    );
+                    Ok(true)
+                }
+                crate::channel::BackendErrorPolicy::Deny => {
+                    tracing::warn!(
+                        channel = %channel,
+                        error = %e,
+                        "Rate-limit backend error; failing closed (request refused)"
+                    );
+                    Err(crate::errors::OrionError::ServiceUnavailable(format!(
+                        "Channel '{channel}' cannot check its rate limit: the backend is \
+                         unavailable and the channel is configured to fail closed"
+                    )))
+                }
+            }
+        }
+    }
 }
 
 /// Build the context object available to rate limit `key_logic` expressions.
@@ -576,6 +636,74 @@ mod tests {
         };
         let state = RateLimitState::from_config(&config);
         assert_eq!(state.trusted_proxies.len(), 2);
+    }
+
+    // -- N7: on_backend_error policy against a failing backend --
+
+    /// Trait-level stub whose backing store never answers — the failure mode
+    /// a Redis blip produces, minus the Redis.
+    struct FailingBackend;
+
+    #[async_trait::async_trait]
+    impl crate::channel::RateLimitBackend for FailingBackend {
+        async fn check(&self, _key: String) -> Result<bool, crate::errors::OrionError> {
+            Err(crate::errors::OrionError::Internal(
+                "backend down".to_string(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn test_backend_error_fails_open_under_allow() {
+        let allowed = check_channel_rate_limit(
+            &FailingBackend,
+            crate::channel::BackendErrorPolicy::Allow,
+            "orders",
+            "k".to_string(),
+        )
+        .await;
+        assert!(
+            matches!(allowed, Ok(true)),
+            "allow must fail open: {allowed:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_backend_error_fails_closed_under_deny() {
+        let refused = check_channel_rate_limit(
+            &FailingBackend,
+            crate::channel::BackendErrorPolicy::Deny,
+            "orders",
+            "k".to_string(),
+        )
+        .await;
+        assert!(
+            matches!(
+                refused,
+                Err(crate::errors::OrionError::ServiceUnavailable(_))
+            ),
+            "deny must refuse with 503, not 429: {refused:?}"
+        );
+    }
+
+    /// The policy only governs backend *errors* — a healthy backend's
+    /// verdicts pass through untouched under either policy.
+    #[tokio::test]
+    async fn test_policy_is_inert_for_healthy_backend() {
+        let limiter = crate::channel::LocalRateLimitBackend::new(1, 1);
+        for policy in [
+            crate::channel::BackendErrorPolicy::Allow,
+            crate::channel::BackendErrorPolicy::Deny,
+        ] {
+            let key = format!("k-{policy:?}");
+            let first = check_channel_rate_limit(&limiter, policy, "orders", key.clone()).await;
+            assert!(matches!(first, Ok(true)), "{first:?}");
+            let second = check_channel_rate_limit(&limiter, policy, "orders", key).await;
+            assert!(
+                matches!(second, Ok(false)),
+                "over-limit stays a plain 429 verdict: {second:?}"
+            );
+        }
     }
 
     #[test]

@@ -32,18 +32,34 @@ pub struct EffectiveTraceConfig {
 }
 
 impl EffectiveTraceConfig {
+    /// Draw this trace's sampling coin. **Call exactly once per trace**, at
+    /// the single point the trace's persistence is decided, and feed the
+    /// outcome to [`Self::should_drop`] — that is what makes sampling
+    /// per-*trace* rather than per-*write* (N22). Deterministic at the
+    /// extremes: `sample_rate >= 1.0` never draws, `0.0` never samples in.
+    pub fn draw_sample(&self) -> bool {
+        self.sample_rate >= 1.0 || rand::random::<f64>() < self.sample_rate
+    }
+
     /// Returns `Some(reason)` if a trace with the given error state should be
     /// dropped per this config (off / errors_only / sampled out), or `None`
     /// to persist. Used by both the sync request path and the async-queue
     /// post-processing path so filter semantics stay consistent.
-    pub fn should_drop(&self, has_errors: bool) -> Option<&'static str> {
+    ///
+    /// Pure and deterministic: `sampled_in` is the once-per-trace outcome of
+    /// [`Self::draw_sample`], injected so this method never rolls its own
+    /// dice — an `&self` method that read as pure used to call
+    /// `rand::random` internally, which made the filter untestable between
+    /// the extremes and let one trace get independently sampled per call
+    /// site (N22).
+    pub fn should_drop(&self, has_errors: bool, sampled_in: bool) -> Option<&'static str> {
         if matches!(self.mode, TraceStorageMode::Off) {
             return Some("off");
         }
         if self.errors_only && !has_errors {
             return Some("errors_only");
         }
-        if self.sample_rate < 1.0 && rand::random::<f64>() >= self.sample_rate {
+        if !sampled_in {
             return Some("sampled_out");
         }
         None
@@ -64,8 +80,17 @@ impl EffectiveTraceConfig {
     /// the sync path, where the caller already has the answer in hand, still
     /// honours `off` exactly.
     ///
-    /// `errors_only` and `sample_rate` are deliberately left alone — they drop
-    /// the *result*, but `create_pending` still writes the row, so the id the
+    /// N22: `sample_rate` is pinned to `1.0` for the same reason. It used to
+    /// be "deliberately left alone", which dropped the *result* while the
+    /// status rows still landed — the caller polled a `completed` trace with
+    /// nothing in it, the storage was spent anyway, and a sampled-out trace
+    /// was half-written instead of absent. A 202 is a receipt for a
+    /// fetchable result, so async traces are never sampled out; sampling
+    /// applies in full on the sync path, where a sampled-out trace produces
+    /// no rows at all.
+    ///
+    /// `errors_only` keeps its documented behaviour: it drops the result of
+    /// clean runs, but `create_pending` still writes the row, so the id the
     /// caller was handed continues to resolve.
     pub fn for_async_submission(self) -> Self {
         Self {
@@ -73,6 +98,7 @@ impl EffectiveTraceConfig {
                 TraceStorageMode::Off => TraceStorageMode::Sync,
                 other => other,
             },
+            sample_rate: 1.0,
             ..self
         }
     }
@@ -310,7 +336,14 @@ impl ChannelRegistry {
 
     /// Match a request (method, path) against REST channel route patterns.
     /// Path should NOT include the `/api/v1/data/` prefix.
-    pub async fn match_route(&self, method: &str, path: &str) -> Option<RouteMatch> {
+    ///
+    /// `Err(BadRequest)` when the path carries an invalid percent-sequence
+    /// (N10) — the request is malformed however it would have resolved.
+    pub async fn match_route(
+        &self,
+        method: &str,
+        path: &str,
+    ) -> Result<Option<RouteMatch>, crate::errors::OrionError> {
         self.route_table.read().await.match_route(method, path)
     }
 
@@ -353,6 +386,16 @@ impl ChannelRegistry {
         let engine_quarantined: std::collections::HashSet<String> =
             issues.iter().map(|i| i.channel.clone()).collect();
 
+        // N6: snapshot the outgoing generation so guard *state* survives a
+        // reload. Every admin mutation — and, in cluster mode, every epoch
+        // resync on every node — rebuilds this registry; constructing fresh
+        // limiters and semaphores each time silently refilled every
+        // channel's burst and released every in-flight concurrency count, so
+        // a caller could bypass a per-channel limit by causing (or just
+        // waiting for) a reload. The `Arc` is reused whenever the inputs
+        // that shaped it are unchanged.
+        let previous = self.by_name.read().await.clone();
+
         let mut new_map = HashMap::new();
         for channel in channels {
             // N3: `unwrap_or_default()` here used to turn one typo in the
@@ -374,8 +417,25 @@ impl ChannelRegistry {
                 }
             };
 
+            let prior = previous.get(&channel.name);
+
             let rate_limiter: Option<Arc<dyn RateLimitBackend>> =
                 parsed_config.rate_limit.as_ref().map(|rl| {
+                    // N6: reuse the previous limiter when its identity —
+                    // (rps, burst, key_logic) — is unchanged, so consumed
+                    // burst and per-key state carry across the reload.
+                    // `on_backend_error` is deliberately not part of the
+                    // identity: the policy is applied at the call site, not
+                    // baked into the limiter.
+                    if let Some(prev) = prior
+                        && let Some(prev_rl) = prev.parsed_config.rate_limit.as_ref()
+                        && let Some(prev_limiter) = prev.rate_limiter.as_ref()
+                        && prev_rl.requests_per_second == rl.requests_per_second
+                        && prev_rl.burst == rl.burst
+                        && prev_rl.key_logic == rl.key_logic
+                    {
+                        return prev_limiter.clone();
+                    }
                     let burst = rl.burst.unwrap_or(rl.requests_per_second / 2 + 1);
                     match cluster_redis.clone() {
                         // Cluster: shared fixed window — the configured limit
@@ -444,10 +504,19 @@ impl ChannelRegistry {
                 None => None,
             };
 
-            let backpressure_semaphore = parsed_config
-                .backpressure
-                .as_ref()
-                .map(|bp| Arc::new(Semaphore::new(bp.max_concurrent)));
+            // N6: reuse the semaphore while `max_concurrent_per_node` is
+            // unchanged — a fresh one would forget every in-flight permit,
+            // letting a reload admit up to 2× the configured concurrency.
+            let backpressure_semaphore = parsed_config.backpressure.as_ref().map(|bp| {
+                if let Some(prev) = prior
+                    && let Some(prev_bp) = prev.parsed_config.backpressure.as_ref()
+                    && let Some(prev_sem) = prev.backpressure_semaphore.as_ref()
+                    && prev_bp.max_concurrent_per_node == bp.max_concurrent_per_node
+                {
+                    return prev_sem.clone();
+                }
+                Arc::new(Semaphore::new(bp.max_concurrent_per_node))
+            });
 
             // Dedup / response-cache backends via the shared fallback matrix
             // (see resolve_backend). A strict-mode refusal skips the channel.
@@ -661,7 +730,14 @@ mod tests {
 
     async fn reload_single_node(channel: Channel) -> (ChannelRegistry, Vec<ChannelLoadIssue>) {
         let registry = ChannelRegistry::new();
-        let issues = registry
+        let issues = reload_into(&registry, channel).await;
+        (registry, issues)
+    }
+
+    /// Reload `channel` into an existing registry — for the N6 tests, which
+    /// exercise state carried *across* reloads of one registry.
+    async fn reload_into(registry: &ChannelRegistry, channel: Channel) -> Vec<ChannelLoadIssue> {
+        registry
             .reload(
                 &[channel],
                 &ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker),
@@ -670,8 +746,7 @@ mod tests {
                 &TraceStorageConfig::default(),
                 Vec::new(),
             )
-            .await;
-        (registry, issues)
+            .await
     }
 
     /// N3: a stored config that does not parse must not load as "no guards".
@@ -835,46 +910,244 @@ mod tests {
     }
 
     /// Drop-filter precedence: Off beats everything; errors_only spares
-    /// error traces; the sampling coin at the deterministic extremes
-    /// (0.0 always drops, 1.0 never enters the roll).
+    /// error traces; the injected sampling outcome decides last. Fully
+    /// deterministic now — N22 moved the coin into [`draw_sample`], so the
+    /// filter can be exercised at every combination, not just the extremes.
     #[test]
     fn should_drop_filters_in_precedence_order() {
         let off =
             EffectiveTraceConfig::resolve(&global_tracing(TraceStorageMode::Off, 1.0, false), None);
         assert_eq!(
-            off.should_drop(true),
+            off.should_drop(true, true),
             Some("off"),
             "Off wins even for errors"
+        );
+        assert_eq!(
+            off.should_drop(false, false),
+            Some("off"),
+            "Off outranks sampled_out"
         );
 
         let errors_only =
             EffectiveTraceConfig::resolve(&global_tracing(TraceStorageMode::Sync, 1.0, true), None);
-        assert_eq!(errors_only.should_drop(false), Some("errors_only"));
+        assert_eq!(errors_only.should_drop(false, true), Some("errors_only"));
         assert_eq!(
-            errors_only.should_drop(true),
+            errors_only.should_drop(true, true),
             None,
             "error traces are spared"
         );
 
-        let sampled_out = EffectiveTraceConfig::resolve(
+        let sync = EffectiveTraceConfig::resolve(
+            &global_tracing(TraceStorageMode::Sync, 0.5, false),
+            None,
+        );
+        assert_eq!(
+            sync.should_drop(false, false),
+            Some("sampled_out"),
+            "a sampled-out trace is dropped"
+        );
+        assert_eq!(sync.should_drop(false, true), None);
+        assert_eq!(sync.should_drop(true, true), None);
+    }
+
+    /// N22: the coin itself is deterministic at the extremes, and it is the
+    /// only non-deterministic input to the drop filter.
+    #[test]
+    fn draw_sample_is_deterministic_at_the_extremes() {
+        let never = EffectiveTraceConfig::resolve(
             &global_tracing(TraceStorageMode::Sync, 0.0, false),
             None,
         );
-        assert_eq!(
-            sampled_out.should_drop(false),
-            Some("sampled_out"),
-            "rate 0.0 must drop every trace"
-        );
-
-        let keep_all = EffectiveTraceConfig::resolve(
+        let always = EffectiveTraceConfig::resolve(
             &global_tracing(TraceStorageMode::Sync, 1.0, false),
             None,
         );
-        assert_eq!(
-            keep_all.should_drop(false),
-            None,
-            "rate 1.0 never samples out"
+        for _ in 0..64 {
+            assert!(!never.draw_sample(), "rate 0.0 must never sample in");
+            assert!(always.draw_sample(), "rate 1.0 must always sample in");
+        }
+    }
+
+    /// N22 + R11: an async submission's trace row is the result-delivery
+    /// mechanism, so `for_async_submission` pins the sample rate to 1.0
+    /// (async traces are never sampled out) exactly as it upgrades
+    /// `Off` → `Sync`. `errors_only` keeps its documented result-drop.
+    #[test]
+    fn for_async_submission_never_samples_out() {
+        let eff =
+            EffectiveTraceConfig::resolve(&global_tracing(TraceStorageMode::Off, 0.0, true), None)
+                .for_async_submission();
+        assert!(matches!(eff.mode, TraceStorageMode::Sync));
+        assert_eq!(eff.sample_rate, 1.0);
+        assert!(eff.draw_sample(), "pinned rate must never enter the roll");
+        assert!(eff.errors_only, "errors_only is deliberately left alone");
+    }
+
+    // ---- N6: guard state survives a reload -------------------------------
+
+    /// N6: consume a channel's burst, reload with the channel unchanged, and
+    /// the next request must still be limited — a fresh limiter per reload
+    /// silently refilled every bucket on every admin mutation.
+    #[tokio::test]
+    async fn test_reload_preserves_rate_limiter_state_when_unchanged() {
+        let registry = ChannelRegistry::new();
+        let config = r#"{"rate_limit": {"requests_per_second": 1, "burst": 2}}"#;
+        let issues = reload_into(&registry, test_channel("rl-ch", config)).await;
+        assert!(issues.is_empty(), "{issues:?}");
+
+        let limiter = registry
+            .get_by_name("rl-ch")
+            .await
+            .expect("loaded")
+            .rate_limiter
+            .clone()
+            .expect("limiter configured");
+        assert!(limiter.check("k".to_string()).await.expect("test"));
+        assert!(limiter.check("k".to_string()).await.expect("test"));
+        assert!(
+            !limiter.check("k".to_string()).await.expect("test"),
+            "burst of 2 must be consumed"
         );
-        assert_eq!(keep_all.should_drop(true), None);
+
+        // Reload with the identical channel — an admin mutation elsewhere.
+        let issues = reload_into(&registry, test_channel("rl-ch", config)).await;
+        assert!(issues.is_empty(), "{issues:?}");
+        let limiter = registry
+            .get_by_name("rl-ch")
+            .await
+            .expect("loaded")
+            .rate_limiter
+            .clone()
+            .expect("limiter configured");
+        assert!(
+            !limiter.check("k".to_string()).await.expect("test"),
+            "reload must not refill the consumed burst"
+        );
+    }
+
+    /// The counterpart: changed limits get a fresh limiter with the new
+    /// shape — reuse only applies while (rps, burst, key_logic) hold.
+    #[tokio::test]
+    async fn test_reload_rebuilds_limiter_when_limits_change() {
+        let registry = ChannelRegistry::new();
+        let _ = reload_into(
+            &registry,
+            test_channel(
+                "rl-ch",
+                r#"{"rate_limit": {"requests_per_second": 1, "burst": 2}}"#,
+            ),
+        )
+        .await;
+        let limiter = registry
+            .get_by_name("rl-ch")
+            .await
+            .expect("loaded")
+            .rate_limiter
+            .clone()
+            .expect("limiter");
+        while limiter.check("k".to_string()).await.expect("test") {}
+
+        // Raise the burst: the operator's new limit must apply immediately.
+        let _ = reload_into(
+            &registry,
+            test_channel(
+                "rl-ch",
+                r#"{"rate_limit": {"requests_per_second": 1, "burst": 10}}"#,
+            ),
+        )
+        .await;
+        let limiter = registry
+            .get_by_name("rl-ch")
+            .await
+            .expect("loaded")
+            .rate_limiter
+            .clone()
+            .expect("limiter");
+        assert!(
+            limiter.check("k".to_string()).await.expect("test"),
+            "a changed limit must take effect on reload"
+        );
+    }
+
+    /// N6: the backpressure semaphore is the same object across reloads while
+    /// `max_concurrent_per_node` is unchanged — otherwise every reload
+    /// forgot the in-flight permits — and a fresh one when it changes.
+    #[tokio::test]
+    async fn test_reload_reuses_backpressure_semaphore_when_unchanged() {
+        let registry = ChannelRegistry::new();
+        let config = r#"{"backpressure": {"max_concurrent_per_node": 3}}"#;
+        let _ = reload_into(&registry, test_channel("bp-ch", config)).await;
+        let sem = registry
+            .get_by_name("bp-ch")
+            .await
+            .expect("loaded")
+            .backpressure_semaphore
+            .clone()
+            .expect("semaphore");
+
+        let _ = reload_into(&registry, test_channel("bp-ch", config)).await;
+        let sem_after = registry
+            .get_by_name("bp-ch")
+            .await
+            .expect("loaded")
+            .backpressure_semaphore
+            .clone()
+            .expect("semaphore");
+        assert!(
+            Arc::ptr_eq(&sem, &sem_after),
+            "unchanged max_concurrent_per_node must keep the same semaphore"
+        );
+
+        let _ = reload_into(
+            &registry,
+            test_channel(
+                "bp-ch",
+                r#"{"backpressure": {"max_concurrent_per_node": 5}}"#,
+            ),
+        )
+        .await;
+        let sem_changed = registry
+            .get_by_name("bp-ch")
+            .await
+            .expect("loaded")
+            .backpressure_semaphore
+            .clone()
+            .expect("semaphore");
+        assert!(
+            !Arc::ptr_eq(&sem, &sem_changed),
+            "a changed limit needs a fresh semaphore"
+        );
+        assert_eq!(sem_changed.available_permits(), 5);
+    }
+
+    /// Reloading against a registry with in-flight permits keeps the count:
+    /// permits held on the old generation still bound the new one.
+    #[tokio::test]
+    async fn test_reload_keeps_in_flight_backpressure_permits() {
+        let registry = ChannelRegistry::new();
+        let config = r#"{"backpressure": {"max_concurrent_per_node": 2}}"#;
+        let _ = reload_into(&registry, test_channel("bp-ch", config)).await;
+        let sem = registry
+            .get_by_name("bp-ch")
+            .await
+            .expect("loaded")
+            .backpressure_semaphore
+            .clone()
+            .expect("semaphore");
+        let _held = sem.clone().try_acquire_owned().expect("permit");
+
+        let _ = reload_into(&registry, test_channel("bp-ch", config)).await;
+        let sem_after = registry
+            .get_by_name("bp-ch")
+            .await
+            .expect("loaded")
+            .backpressure_semaphore
+            .clone()
+            .expect("semaphore");
+        assert_eq!(
+            sem_after.available_permits(),
+            1,
+            "the in-flight permit must survive the reload"
+        );
     }
 }

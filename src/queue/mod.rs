@@ -91,8 +91,8 @@ pub struct QueueMessage {
     pub profile_requested: bool,
     /// Per-channel backpressure permit acquired at submission time (S1).
     /// The worker holds it for the duration of processing so a channel's
-    /// `max_concurrent` bounds sync and async work together. `None` when
-    /// the channel has no backpressure config, or for DLQ resubmissions.
+    /// `max_concurrent_per_node` bounds sync and async work together. `None`
+    /// when the channel has no backpressure config, or for DLQ resubmissions.
     pub backpressure_permit: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
@@ -194,7 +194,7 @@ impl TraceQueue {
             return Err(match err {
                 // The rejected message is dropped here, releasing the
                 // backpressure permit it carried — a shed submission must not
-                // hold a slice of the channel's `max_concurrent`.
+                // hold a slice of the channel's `max_concurrent_per_node`.
                 mpsc::error::TrySendError::Full(_) => {
                     metrics::record_trace_queue_rejected("full");
                     crate::errors::OrionError::ServiceUnavailable(format!(

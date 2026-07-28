@@ -191,6 +191,9 @@ impl ConnectorRegistry {
         // Build new map outside the lock to avoid holding it during deserialization
         let mut new_configs = HashMap::new();
         let mut issues: Vec<ConnectorLoadIssue> = Vec::new();
+        // N23: the resolver set is connector-independent — build it once per
+        // load, not once per connector inside the loop.
+        let resolvers = super::secrets::default_resolvers();
         for connector in &connectors {
             // Resolve ${VAR} / ${VAR:-default} placeholders against the process
             // environment so connector configs can reference secrets without
@@ -264,7 +267,6 @@ impl ConnectorRegistry {
                     continue;
                 }
             };
-            let resolvers = super::secrets::default_resolvers();
             if let Err(e) = super::secrets::resolve_in_place(&mut value, &resolvers, &source_label)
             {
                 // Logged at ERROR, not WARN: an unresolved secret means the

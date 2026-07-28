@@ -1,7 +1,7 @@
 mod sync;
 pub(crate) mod traces;
 
-use axum::extract::{Path, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
@@ -65,7 +65,9 @@ target channel at request time, so no per-channel path exists in this document:
 * **REST channels** — each active channel registers its own method and path \
   pattern (`config.rest.routes`) at engine-reload time; those patterns may span \
   several segments and declare their own path parameters, which arrive in the \
-  workflow as `metadata.params`. Any HTTP method is accepted — `GET`, `PUT`, \
+  workflow as `metadata.params`, percent-decoded exactly once (`a%2Fb` becomes \
+  `a/b`). Static segments match byte-exact — the path is case-sensitive per \
+  RFC 3986. Any HTTP method is accepted — `GET`, `PUT`, \
   `PATCH` and `DELETE` behave identically to the `POST` documented here, with \
   the verb exposed as `metadata.http_method`. Query the admin channel API for \
   the routes a given deployment actually serves.
@@ -91,26 +93,42 @@ the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`
     ),
     responses(
         (status = 200, description = "Workflow completed. `errors` is empty on success; when tasks failed it carries sanitized `{code, message, task_id}` entries and the envelope gains a `request_id` for correlation with the persisted trace.", body = ProcessResponse),
-        (status = 400, description = "Malformed JSON body, empty channel segment, or a channel `validation_logic` rejection (`VALIDATION_ERROR`, with per-field `details`)", body = ErrorResponse),
+        (status = 400, description = "Malformed JSON body, empty channel segment, an invalid percent-sequence in the request path, or a channel `validation_logic` rejection (`VALIDATION_ERROR`, with per-field `details`)", body = ErrorResponse),
         (status = 403, description = "Origin not allowed by the channel's CORS configuration", body = ErrorResponse),
         (status = 404, description = "No REST route matches the requested method and path. Note that a single-segment path is *not* checked against the channel registry: an unknown name is accepted and the engine returns a `200` envelope with the input echoed back and no errors.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),
         (status = 502, description = "Result exceeded `queue.max_result_size_bytes` (`RESPONSE_TOO_LARGE`)", body = ErrorResponse),
-        (status = 503, description = "Channel backpressure limit reached, or a connector circuit breaker is open (`CIRCUIT_OPEN`)", body = ErrorResponse),
+        (status = 503, description = "Channel backpressure limit reached, a connector circuit breaker is open (`CIRCUIT_OPEN`), or a rate-limit/dedup backend outage on a channel configured with `on_backend_error = \"deny\"`", body = ErrorResponse),
         (status = 504, description = "Workflow exceeded the channel's `timeout_ms`", body = ErrorResponse),
     )
 )]
-#[tracing::instrument(skip(state, headers, query_params, body), fields(path = %path))]
+#[tracing::instrument(
+    skip(state, uri, headers, query_params, body),
+    fields(path = %uri.path())
+)]
 pub(crate) async fn dynamic_handler(
     State(state): State<AppState>,
-    Path(path): Path<String>,
     method: axum::http::Method,
+    uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
     OrionQuery(query_params): OrionQuery<std::collections::HashMap<String, String>>,
     body: axum::body::Bytes,
 ) -> Result<impl IntoResponse, OrionError> {
+    // N10: the raw, still-encoded path (the nested router has stripped the
+    // `/api/v1/data` prefix). `Path<String>` would hand us the wildcard
+    // percent-decoded once by axum — leniently, with invalid sequences
+    // passed through — which made `%2F` act as a segment separator before
+    // matching and would double-decode anything the matcher then decoded.
+    // Splitting and decoding both belong to `RouteTable::match_route`:
+    // split first on raw `/`, then decode each segment exactly once.
+    //
+    // Leading slashes are trimmed before the `/async` check so a bare
+    // `/async` path stays a channel *named* `async`, exactly as the
+    // middleware's `data_route_path` treats it.
+    let path = uri.path().trim_start_matches('/').to_string();
+
     // Strip trailing /async suffix
     let (route_path, is_async) = if let Some(stripped) = path.strip_suffix("/async") {
         (stripped, true)
@@ -125,16 +143,31 @@ pub(crate) async fn dynamic_handler(
         ));
     }
 
-    // Resolve channel: try REST route table first, then direct name lookup
+    // Resolve channel: try REST route table first, then direct name lookup.
+    // N10: `?` answers 400 for invalid percent-sequences before any
+    // resolution; matched params arrive percent-decoded exactly once.
     let (channel, route_params) = if let Some(rm) = state
         .channel_registry
         .match_route(method.as_str(), route_path)
-        .await
+        .await?
     {
         (rm.channel_name, rm.params)
     } else if !route_path.contains('/') {
-        // Single segment — treat as simple channel name (backward compat)
-        (route_path.to_string(), std::collections::HashMap::new())
+        // Single segment — treat as simple channel name (backward compat),
+        // decoded once like a captured param so the encoded spelling of a
+        // name reaches the same channel. `match_route` above has already
+        // answered 400 for invalid sequences, so the decode fallback cannot
+        // fire. A name that decodes to whitespace (`%20`) is as empty as a
+        // literal blank — same 400 as the raw-path emptiness check above.
+        let name = crate::channel::routing::percent_decode_segment(route_path)
+            .unwrap_or_else(|| route_path.to_string());
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err(OrionError::BadRequest(
+                "Channel name must not be empty".into(),
+            ));
+        }
+        (name, std::collections::HashMap::new())
     } else {
         return Err(OrionError::NotFound(format!(
             "No channel matches {method} /{route_path}"
@@ -294,8 +327,8 @@ async fn submit_async(
 ) -> Result<Response, OrionError> {
     // Acquired before the pending trace is created so rejected requests
     // leave no trace row. The permit rides inside the queued message and
-    // is held by the worker for the duration of processing, so a
-    // channel's `max_concurrent` bounds sync and async work together.
+    // is held by the worker for the duration of processing, so a channel's
+    // `max_concurrent_per_node` bounds sync and async work together.
     let backpressure_permit = guards::acquire_backpressure(&channel, &channel_runtime)?;
 
     let trace_headers = {
@@ -399,13 +432,13 @@ synchronous endpoint, where the caller already has the answer.",
             description = "Accepted and queued. `trace_id` and `trace_token` are always present — the trace row is written before this response is sent, so the id can always be polled.",
             body = AsyncSubmitResponse,
         ),
-        (status = 400, description = "Malformed JSON body, empty channel segment, or a `validation_logic` rejection", body = ErrorResponse),
+        (status = 400, description = "Malformed JSON body, empty channel segment, an invalid percent-sequence in the request path, or a `validation_logic` rejection", body = ErrorResponse),
         (status = 403, description = "Origin not allowed by the channel's CORS configuration", body = ErrorResponse),
         (status = 404, description = "No REST route matches the requested method and path. Note that a single-segment path is *not* checked against the channel registry: an unknown name is accepted and the engine returns a `200` envelope with the input echoed back and no errors.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),
-        (status = 503, description = "Channel backpressure limit reached or the trace queue is full/closed", body = ErrorResponse),
+        (status = 503, description = "Channel backpressure limit reached, the trace queue is full/closed, or a rate-limit/dedup backend outage on a channel configured with `on_backend_error = \"deny\"`", body = ErrorResponse),
     )
 )]
 pub(crate) fn submit_channel_request_async_docs() {}
