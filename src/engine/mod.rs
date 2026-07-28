@@ -601,6 +601,96 @@ mod tests {
         assert!(issues.is_empty(), "{issues:?}");
     }
 
+    /// Extract the `[min, max)` rollout bucket range from a converted
+    /// workflow's wrapped condition (`and[1]` is `>= min`, `and[2]` is `< max`).
+    fn bucket_range(wf: &dataflow_rs::Workflow) -> (i64, i64) {
+        let and = wf.condition["and"].as_array().expect("wrapped condition");
+        (
+            and[1][">="][1].as_i64().expect("bucket_min"),
+            and[2]["<"][1].as_i64().expect("bucket_max"),
+        )
+    }
+
+    /// The bucket ranges must partition 0–99 contiguously, newest version
+    /// first: 20/50/30 across v3/v2/v1 → v3 [0,20), v2 [20,70), v1 [70,100).
+    /// A gap or overlap in the offsets silently misroutes traffic, which is
+    /// exactly what this accumulation arithmetic exists to prevent.
+    #[test]
+    fn test_rollout_bucket_offsets_partition_newest_first() {
+        let mut channel = make_channel("rollout-ch");
+        channel.workflow_id = Some("wf".to_string());
+        let wfs = vec![
+            make_workflow("wf", 1, 30),
+            make_workflow("wf", 2, 50),
+            make_workflow("wf", 3, 20),
+        ];
+        let (converted, issues) = build_engine_workflows(&[channel], &wfs);
+        assert!(issues.is_empty(), "{issues:?}");
+        assert_eq!(converted.len(), 3);
+
+        let by_id: std::collections::HashMap<String, (i64, i64)> = converted
+            .iter()
+            .map(|w| (w.id.clone(), bucket_range(w)))
+            .collect();
+        assert_eq!(
+            by_id["wf:v3"],
+            (0, 20),
+            "newest version gets the first bucket"
+        );
+        assert_eq!(by_id["wf:v2"], (20, 70));
+        assert_eq!(by_id["wf:v1"], (70, 100));
+    }
+
+    /// F33: a channel with no workflow_id, and one pointing at a workflow
+    /// that is not in the active set, must each surface a load issue naming
+    /// the problem rather than being silently skipped.
+    #[test]
+    fn test_missing_and_unknown_workflow_are_reported_as_issues() {
+        let no_wf = make_channel("no-wf");
+        let mut unknown = make_channel("unknown-wf");
+        unknown.workflow_id = Some("ghost".to_string());
+
+        let (converted, issues) = build_engine_workflows(&[no_wf, unknown], &[]);
+        assert!(converted.is_empty());
+        assert_eq!(issues.len(), 2);
+        assert!(
+            issues[0].reason.contains("no workflow_id"),
+            "{}",
+            issues[0].reason
+        );
+        assert!(
+            issues[1].reason.contains("'ghost' not found"),
+            "{}",
+            issues[1].reason
+        );
+    }
+
+    /// All-or-nothing per channel: when one version of a rollout fails to
+    /// convert, the versions that DID convert must not load — a partial
+    /// rollout would silently blackhole the failed version's bucket range.
+    #[test]
+    fn test_partial_rollout_conversion_failure_loads_nothing() {
+        let mut channel = make_channel("rollout-ch");
+        channel.workflow_id = Some("wf".to_string());
+
+        // v2 (processed first, newest) converts fine; v1 has broken tasks.
+        let mut bad_v1 = make_workflow("wf", 1, 50);
+        bad_v1.tasks_json = "not json".to_string();
+        let wfs = vec![bad_v1, make_workflow("wf", 2, 50)];
+
+        let (converted, issues) = build_engine_workflows(&[channel], &wfs);
+        assert!(
+            converted.is_empty(),
+            "the successfully-converted v2 must be discarded with v1"
+        );
+        assert_eq!(issues.len(), 1);
+        assert!(
+            issues[0].reason.contains("v1 failed to convert"),
+            "{}",
+            issues[0].reason
+        );
+    }
+
     #[test]
     fn test_filter_channels_no_config() {
         let channels = vec![make_channel("orders"), make_channel("events")];

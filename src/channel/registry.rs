@@ -747,4 +747,104 @@ mod tests {
         assert!(registry.get_by_name("keep-ch").await.is_some());
         assert!(registry.get_by_name("broken-ch").await.is_none());
     }
+
+    // ---- Trace policy: EffectiveTraceConfig::resolve + should_drop --------
+
+    fn global_tracing(
+        mode: TraceStorageMode,
+        sample_rate: f64,
+        errors_only: bool,
+    ) -> TracingStorageConfig {
+        TracingStorageConfig {
+            mode,
+            sample_rate,
+            errors_only,
+            ..Default::default()
+        }
+    }
+
+    /// Channel-over-global precedence, field by field: every Some on the
+    /// channel override wins; every None falls through to the global value;
+    /// task_details has no global and defaults to false.
+    #[test]
+    fn effective_trace_config_overlays_channel_fields_over_global() {
+        let global = global_tracing(TraceStorageMode::Sync, 0.5, false);
+
+        // No channel override at all → globals verbatim, task_details off.
+        let eff = EffectiveTraceConfig::resolve(&global, None);
+        assert!(matches!(eff.mode, TraceStorageMode::Sync));
+        assert_eq!(eff.sample_rate, 0.5);
+        assert!(!eff.errors_only);
+        assert!(!eff.task_details);
+
+        // Channel override with every field set → all channel values.
+        let channel = super::super::config::ChannelTracingConfig {
+            mode: Some(TraceStorageMode::Off),
+            sample_rate: Some(0.1),
+            errors_only: Some(true),
+            task_details: Some(true),
+        };
+        let eff = EffectiveTraceConfig::resolve(&global, Some(&channel));
+        assert!(matches!(eff.mode, TraceStorageMode::Off));
+        assert_eq!(eff.sample_rate, 0.1);
+        assert!(eff.errors_only);
+        assert!(eff.task_details);
+
+        // Channel override with every field None → globals fall through.
+        let channel = super::super::config::ChannelTracingConfig {
+            mode: None,
+            sample_rate: None,
+            errors_only: None,
+            task_details: None,
+        };
+        let eff = EffectiveTraceConfig::resolve(&global, Some(&channel));
+        assert!(matches!(eff.mode, TraceStorageMode::Sync));
+        assert_eq!(eff.sample_rate, 0.5);
+        assert!(!eff.errors_only);
+        assert!(!eff.task_details, "task_details has no global to inherit");
+    }
+
+    /// Drop-filter precedence: Off beats everything; errors_only spares
+    /// error traces; the sampling coin at the deterministic extremes
+    /// (0.0 always drops, 1.0 never enters the roll).
+    #[test]
+    fn should_drop_filters_in_precedence_order() {
+        let off =
+            EffectiveTraceConfig::resolve(&global_tracing(TraceStorageMode::Off, 1.0, false), None);
+        assert_eq!(
+            off.should_drop(true),
+            Some("off"),
+            "Off wins even for errors"
+        );
+
+        let errors_only =
+            EffectiveTraceConfig::resolve(&global_tracing(TraceStorageMode::Sync, 1.0, true), None);
+        assert_eq!(errors_only.should_drop(false), Some("errors_only"));
+        assert_eq!(
+            errors_only.should_drop(true),
+            None,
+            "error traces are spared"
+        );
+
+        let sampled_out = EffectiveTraceConfig::resolve(
+            &global_tracing(TraceStorageMode::Sync, 0.0, false),
+            None,
+        );
+        assert_eq!(
+            sampled_out.should_drop(false),
+            Some("sampled_out"),
+            "rate 0.0 must drop every trace"
+        );
+
+        let keep_all = EffectiveTraceConfig::resolve(
+            &global_tracing(TraceStorageMode::Sync, 1.0, false),
+            None,
+        );
+        assert_eq!(
+            keep_all.should_drop(false),
+            None,
+            "rate 1.0 never samples out"
+        );
+        assert_eq!(keep_all.should_drop(true), None);
+    }
 }

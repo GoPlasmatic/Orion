@@ -304,7 +304,13 @@ fn parse_rows(
         }
         let mut vals = Vec::with_capacity(logical.len());
         for c in &logical {
-            vals.push(resolve_value_node(&r[c], params, "values")?);
+            // Location includes row and column so a wide multi-row insert
+            // pinpoints the offending value, not just "values".
+            vals.push(resolve_value_node(
+                &r[c],
+                params,
+                &format!("values[{i}].{c}"),
+            )?);
         }
         rows.push(vals);
     }
@@ -330,7 +336,7 @@ fn parse_set(
     let mut out = Vec::with_capacity(map.len());
     for (col, v) in map {
         let phys = reg.resolve_write_column(entity, col, "set")?;
-        out.push((phys, resolve_value_node(v, params, "set")?));
+        out.push((phys, resolve_value_node(v, params, &format!("set.{col}"))?));
     }
     Ok(out)
 }
@@ -461,4 +467,149 @@ fn json_to_value(j: &Json, at: &str) -> Result<ir::Value, WriteError> {
             });
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn resolve(input: Json) -> Result<ResolvedWrite, WriteError> {
+        resolve_write(&input, &Params::new(), &EntityRegistry::default())
+    }
+
+    // -- envelope errors ---------------------------------------------------
+
+    #[test]
+    fn missing_op_is_invalid_envelope() {
+        let err = resolve(json!({ "target": "orders" })).expect_err("no op");
+        assert!(matches!(err, WriteError::InvalidEnvelope(_)));
+        assert!(err.to_string().contains("op"), "{err}");
+    }
+
+    #[test]
+    fn unknown_op_is_invalid_envelope_naming_the_op() {
+        let err = resolve(json!({ "op": "truncate", "target": "orders" })).expect_err("bad op");
+        let msg = err.to_string();
+        assert!(msg.contains("truncate"), "{msg}");
+        assert!(msg.contains("insert/update/delete/upsert"), "{msg}");
+    }
+
+    #[test]
+    fn missing_target_is_invalid_envelope() {
+        let err = resolve(json!({ "op": "insert", "values": {"a": 1} })).expect_err("no target");
+        assert!(err.to_string().contains("target"), "{err}");
+    }
+
+    #[test]
+    fn empty_target_is_invalid_envelope() {
+        let err = resolve(json!({ "op": "insert", "target": "", "values": {"a": 1} }))
+            .expect_err("empty target");
+        assert!(err.to_string().contains("target"), "{err}");
+    }
+
+    // -- per-op required fields --------------------------------------------
+
+    #[test]
+    fn insert_without_values_is_missing_field() {
+        let err = resolve(json!({ "op": "insert", "target": "orders" })).expect_err("no values");
+        assert!(
+            matches!(&err, WriteError::MissingField { field, op } if field == "values" && op == "insert"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn update_without_set_is_missing_field() {
+        let err = resolve(json!({ "op": "update", "target": "orders" })).expect_err("no set");
+        assert!(
+            matches!(&err, WriteError::MissingField { field, op } if field == "set" && op == "update"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn upsert_without_on_conflict_is_missing_field() {
+        let err = resolve(json!({ "op": "upsert", "target": "orders", "values": {"id": 1} }))
+            .expect_err("no on_conflict");
+        assert!(
+            matches!(&err, WriteError::MissingField { field, op } if field == "on_conflict" && op == "upsert"),
+            "{err}"
+        );
+    }
+
+    // -- value representability --------------------------------------------
+
+    #[test]
+    fn nested_object_column_value_is_not_representable() {
+        let err = resolve(json!({
+            "op": "insert",
+            "target": "orders",
+            "values": { "meta": { "nested": true } }
+        }))
+        .expect_err("object value");
+        assert!(matches!(err, WriteError::NotRepresentable { .. }), "{err}");
+        // The error must name where, so a multi-column insert is debuggable.
+        assert!(err.to_string().contains("meta"), "{err}");
+    }
+
+    #[test]
+    fn array_column_value_is_not_representable() {
+        let err = resolve(json!({
+            "op": "insert",
+            "target": "orders",
+            "values": { "tags": ["a", "b"] }
+        }))
+        .expect_err("array value");
+        assert!(matches!(err, WriteError::NotRepresentable { .. }), "{err}");
+    }
+
+    // -- params ------------------------------------------------------------
+
+    #[test]
+    fn unknown_param_reference_errors_with_the_name() {
+        let err = resolve(json!({
+            "op": "insert",
+            "target": "orders",
+            "values": { "total": { "param": "missing_param" } }
+        }))
+        .expect_err("unknown param");
+        assert!(err.to_string().contains("missing_param"), "{err}");
+    }
+
+    #[test]
+    fn param_reference_resolves_to_the_named_value() {
+        let mut params = Params::new();
+        params.insert("amount".to_string(), json!(42));
+        let resolved = resolve_write(
+            &json!({
+                "op": "insert",
+                "target": "orders",
+                "values": { "total": { "param": "amount" } }
+            }),
+            &params,
+            &EntityRegistry::default(),
+        )
+        .expect("resolves");
+        assert_eq!(resolved.rows.len(), 1);
+        assert!(matches!(resolved.rows[0][0], ir::Value::Int(42)));
+    }
+
+    // -- unfiltered mutation shape (guard data for the handler) ------------
+
+    #[test]
+    fn delete_without_filter_resolves_with_filter_absent() {
+        // The unfiltered guard itself lives in the handler; resolve_write
+        // must faithfully report filter_present/all so the guard can act.
+        let resolved = resolve(json!({ "op": "delete", "target": "orders" })).expect("resolves");
+        assert!(!resolved.filter_present);
+        assert!(!resolved.all);
+
+        let resolved =
+            resolve(json!({ "op": "delete", "target": "orders", "all": true })).expect("resolves");
+        assert!(
+            resolved.all,
+            "the 'all' acknowledgement must survive parsing"
+        );
+    }
 }
