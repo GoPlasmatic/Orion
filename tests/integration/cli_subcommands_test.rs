@@ -110,6 +110,84 @@ fn dry_run_executes_workflow_and_prints_trace() {
     let _ = std::fs::remove_file(&input);
 }
 
+fn write_temp_toml(content: &str, suffix: &str) -> String {
+    let mut path = std::env::temp_dir();
+    path.push(format!(
+        "orion-cli-test-{}-{}.toml",
+        suffix,
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::write(&path, content).unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+/// The config layering rule stated in the docs — env override beats config
+/// file beats built-in default — asserted end to end through the real
+/// binary. This is how every containerized deployment is configured, and
+/// until this test the rule had no behavioral coverage
+/// (`config_docs_drift_test` only proves the overrides are documented).
+#[test]
+fn validate_config_layering_env_beats_file_beats_default() {
+    let toml = write_temp_toml("[server]\nport = 6111\n", "layering");
+
+    // Built-in default: no file, no env → 8080.
+    let out = Command::new(orion_bin())
+        .args(["validate-config"])
+        .env_remove("ORION_SERVER__PORT")
+        .output()
+        .expect("invoke validate-config");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout={stdout}");
+    assert!(stdout.contains(":8080"), "default port expected: {stdout}");
+
+    // File beats default.
+    let out = Command::new(orion_bin())
+        .args(["validate-config", "-c", &toml])
+        .env_remove("ORION_SERVER__PORT")
+        .output()
+        .expect("invoke validate-config");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout={stdout}");
+    assert!(stdout.contains(":6111"), "file port expected: {stdout}");
+
+    // Env beats file.
+    let out = Command::new(orion_bin())
+        .args(["validate-config", "-c", &toml])
+        .env("ORION_SERVER__PORT", "6222")
+        .output()
+        .expect("invoke validate-config");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout={stdout}");
+    assert!(
+        stdout.contains(":6222"),
+        "env override must beat the file value: {stdout}"
+    );
+
+    let _ = std::fs::remove_file(&toml);
+}
+
+/// `validate-config` is the pre-boot check operators run in deploy scripts;
+/// an invalid config must exit non-zero, not print "valid" and succeed.
+#[test]
+fn validate_config_rejects_invalid_config_with_nonzero_exit() {
+    let toml = write_temp_toml("[server]\nport = 0\n", "invalid");
+    let out = Command::new(orion_bin())
+        .args(["validate-config", "-c", &toml])
+        .output()
+        .expect("invoke validate-config");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "port 0 must fail validation; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        stderr.to_lowercase().contains("port"),
+        "error should name the offending field, got: {stderr}"
+    );
+    let _ = std::fs::remove_file(&toml);
+}
+
 #[test]
 fn test_connectivity_reports_ok_for_in_memory_sqlite() {
     let out = Command::new(orion_bin())

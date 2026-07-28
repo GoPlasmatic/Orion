@@ -51,14 +51,18 @@ pub async fn post(app: &axum::Router, channel: &str, body: Value) -> (StatusCode
     (status, body_json(resp).await)
 }
 
-/// Whether a response body signals a task rejection.
-pub fn is_rejection(status: StatusCode, body: &Value) -> bool {
+/// Whether a response body signals a task rejection: a non-empty task
+/// `errors` array or the `error` envelope. Deliberately NOT any bare 5xx —
+/// an intended refusal always carries one of the explicit signals, and a
+/// server error without either is a crash that must fail the test, not
+/// satisfy it.
+pub fn is_rejection(_status: StatusCode, body: &Value) -> bool {
     let errors = body
         .get("errors")
         .and_then(|e| e.as_array())
         .is_some_and(|a| !a.is_empty());
     let error = body.get("error").is_some_and(|e| e.get("code").is_some());
-    errors || error || status.is_server_error()
+    errors || error
 }
 
 /// [`is_rejection`] plus the per-connector operation-gate message — the

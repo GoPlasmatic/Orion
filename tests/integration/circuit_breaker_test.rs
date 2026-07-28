@@ -174,11 +174,16 @@ async fn test_breaker_trips_after_threshold() {
         !breakers.is_empty(),
         "Expected at least one circuit breaker entry"
     );
-    let has_open = breakers.values().any(|v| v.as_str() == Some("open"));
-    assert!(
-        has_open,
-        "Expected at least one breaker in 'open' state, got: {:?}",
-        breakers
+    // Name the breaker under test — "any breaker open" would also pass on
+    // state leaked from an unrelated connector.
+    let (key, state) = breakers
+        .iter()
+        .find(|(k, _)| k.contains("failing-api"))
+        .unwrap_or_else(|| panic!("no breaker keyed by 'failing-api' in {breakers:?}"));
+    assert_eq!(
+        state.as_str(),
+        Some("open"),
+        "breaker '{key}' should be open, got {state:?}"
     );
 }
 
@@ -301,8 +306,15 @@ async fn test_breaker_half_open_recovery() {
         .unwrap();
     let body = body_json(resp).await;
     let breakers = body["breakers"].as_object().unwrap();
-    let has_open = breakers.values().any(|v| v.as_str() == Some("open"));
-    assert!(has_open, "Breaker should be open after threshold failures");
+    let (key, state) = breakers
+        .iter()
+        .find(|(k, _)| k.contains("halfopen-api"))
+        .unwrap_or_else(|| panic!("no breaker keyed by 'halfopen-api' in {breakers:?}"));
+    assert_eq!(
+        state.as_str(),
+        Some("open"),
+        "breaker '{key}' should be open after threshold failures, got {state:?}"
+    );
 
     // Wait for recovery timeout to elapse (1 second + margin)
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;

@@ -11,23 +11,34 @@ use crate::common::{body_json, json_request};
 use axum::http::StatusCode;
 use tower::ServiceExt;
 
-/// Create a unique temporary directory for both the backup dir and the SQLite DB.
-/// Returns (db_dir, backup_dir). The caller is responsible for cleanup.
-fn make_test_dirs(label: &str) -> (String, String) {
+/// Unique temporary directory for both the backup dir and the SQLite DB,
+/// removed on drop — so a failing assertion cannot leak the directory (the
+/// explicit-cleanup version did exactly that).
+struct TestDirs {
+    base: String,
+    backup_dir: String,
+}
+
+fn make_test_dirs(label: &str) -> TestDirs {
     let base = format!(
-        "{}/orion_backup_test_{}_{}",
+        "{}/orion_backup_test_{}_{}_{}",
         std::env::temp_dir().display(),
         label,
-        std::process::id()
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
     );
     let backup_dir = format!("{}/backups", base);
     std::fs::create_dir_all(&backup_dir).unwrap();
-    (base, backup_dir)
+    TestDirs { base, backup_dir }
 }
 
-/// Clean up all test directories.
-fn cleanup_dirs(base: &str) {
-    let _ = std::fs::remove_dir_all(base);
+impl Drop for TestDirs {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.base);
+    }
 }
 
 /// Build a test app that uses a file-based SQLite database.
@@ -79,7 +90,8 @@ async fn test_restore_endpoint_does_not_exist() {
 
 #[tokio::test]
 async fn test_create_backup() {
-    let (base_dir, backup_dir) = make_test_dirs("create");
+    let dirs = make_test_dirs("create");
+    let (base_dir, backup_dir) = (dirs.base.clone(), dirs.backup_dir.clone());
     let app = backup_test_app(&base_dir, &backup_dir).await;
 
     let resp = app
@@ -122,8 +134,6 @@ async fn test_create_backup() {
         data["created_at"].as_str().is_some(),
         "response should include 'created_at'"
     );
-
-    cleanup_dirs(&base_dir);
 }
 
 // ============================================================
@@ -132,7 +142,8 @@ async fn test_create_backup() {
 
 #[tokio::test]
 async fn test_list_backups() {
-    let (base_dir, backup_dir) = make_test_dirs("list");
+    let dirs = make_test_dirs("list");
+    let (base_dir, backup_dir) = (dirs.base.clone(), dirs.backup_dir.clone());
     let app = backup_test_app(&base_dir, &backup_dir).await;
 
     // Create first backup
@@ -182,8 +193,6 @@ async fn test_list_backups() {
         assert!(backup["size_bytes"].as_u64().is_some());
         assert!(backup["modified_at"].as_str().is_some());
     }
-
-    cleanup_dirs(&base_dir);
 }
 
 // ============================================================
@@ -192,7 +201,8 @@ async fn test_list_backups() {
 
 #[tokio::test]
 async fn test_backup_contains_data() {
-    let (base_dir, backup_dir) = make_test_dirs("data");
+    let dirs = make_test_dirs("data");
+    let (base_dir, backup_dir) = (dirs.base.clone(), dirs.backup_dir.clone());
     let app = backup_test_app(&base_dir, &backup_dir).await;
 
     // Insert some workflows
@@ -250,6 +260,4 @@ async fn test_backup_contains_data() {
         size,
         "reported size should match filesystem metadata"
     );
-
-    cleanup_dirs(&base_dir);
 }

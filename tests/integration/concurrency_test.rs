@@ -17,7 +17,7 @@ async fn join_all(tasks: Vec<tokio::task::JoinHandle<StatusCode>>) -> Vec<Status
 // Concurrent data requests to multiple channels
 // ============================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_concurrent_data_requests_multiple_channels() {
     let app = common::test_app().await;
 
@@ -69,7 +69,7 @@ async fn test_concurrent_data_requests_multiple_channels() {
 // Engine reload under concurrent data requests
 // ============================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_engine_reload_under_data_load() {
     let app = common::test_app().await;
 
@@ -128,13 +128,11 @@ async fn test_engine_reload_under_data_load() {
         );
     }
 
-    // Data requests should not return 500
+    // Data requests during a reload must succeed outright: readers hold the
+    // previous engine Arc while the swap happens, so there is no window in
+    // which the channel is unserved.
     for status in &results[5..] {
-        assert_ne!(
-            *status,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Data request returned 500 during engine reload",
-        );
+        assert_eq!(*status, StatusCode::OK, "data request failed during reload");
     }
 
     // After reloads, the channel should still work
@@ -154,7 +152,7 @@ async fn test_engine_reload_under_data_load() {
 // Channel status race: activate/deactivate while sending data
 // ============================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_channel_status_race_no_panics() {
     let app = common::test_app().await;
 
@@ -216,7 +214,7 @@ async fn test_channel_status_race_no_panics() {
     // Now rapidly toggle status while sending data
     let mut tasks = Vec::new();
 
-    // Status toggle tasks (sequential — SQLite can't handle concurrent writes well)
+    // Status toggle tasks, spawned concurrently with the data requests below.
     for i in 0..10 {
         let app = app.clone();
         let ch_id = ch_id.clone();
@@ -252,13 +250,21 @@ async fn test_channel_status_race_no_panics() {
 
     let results = join_all(tasks).await;
 
-    // Key assertion: no 500 Internal Server Errors (panics or unhandled errors)
+    // Toggles land as 200, or as a client-error refusal when the transition
+    // is invalid at that instant. Data requests see 200 (active, or the
+    // engine fallback while archived) or 404/503 around the flip. Anything
+    // else — above all any 5xx — is a race bug.
+    let allowed = [
+        StatusCode::OK,
+        StatusCode::BAD_REQUEST,
+        StatusCode::CONFLICT,
+        StatusCode::NOT_FOUND,
+        StatusCode::SERVICE_UNAVAILABLE,
+    ];
     for (i, status) in results.iter().enumerate() {
-        assert_ne!(
-            *status,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Task {} returned 500 — indicates a race condition bug",
-            i,
+        assert!(
+            allowed.contains(status),
+            "task {i} returned unexpected status {status} under the status race"
         );
     }
 }
@@ -267,7 +273,7 @@ async fn test_channel_status_race_no_panics() {
 // Concurrent workflow creation with same name
 // ============================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_concurrent_workflow_creation_same_name() {
     let app = common::test_app().await;
 
@@ -290,13 +296,13 @@ async fn test_concurrent_workflow_creation_same_name() {
 
     let results = join_all(tasks).await;
 
-    // All should succeed (workflows identified by generated UUIDs, not names)
-    // Importantly: no 500s
+    // Names are not unique keys — every creation gets its own workflow_id,
+    // so all five must succeed outright.
     for status in &results {
-        assert_ne!(
+        assert_eq!(
             *status,
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Concurrent workflow creation caused 500",
+            StatusCode::CREATED,
+            "concurrent same-name creation must succeed"
         );
     }
 }
