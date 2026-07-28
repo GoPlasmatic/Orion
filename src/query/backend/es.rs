@@ -14,6 +14,7 @@
 
 use serde_json::{Value as Json, json};
 
+use crate::config::QueryConfig;
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, EsStorage, FieldRef, Quant, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir};
@@ -31,16 +32,25 @@ pub struct EsQuery {
 }
 
 /// Build an `EsQuery` from the envelope and lowered condition, enforcing the
-/// page-size bounds and the deep-pagination cap.
+/// page bounds and the deep-pagination cap.
 pub fn render(
     spec: &QuerySpec,
     cond: &Cond,
     index: &str,
-    default_limit: u64,
-    max_limit: u64,
+    limits: &QueryConfig,
 ) -> Result<EsQuery, QueryError> {
-    let size = super::resolve_limit(spec.limit, default_limit, max_limit)?;
-    let from = spec.skip.unwrap_or(0);
+    // F26: `include` hydration exists only on SQL. It used to be silently
+    // dropped here — parents came back with no children and no error, in
+    // direct violation of the never-approximate rule.
+    if let Some(inc) = spec.include.first() {
+        return Err(QueryError::FeatureUnsupportedByTarget {
+            feature: format!("include '{}'", inc.relation),
+            target: "elasticsearch".to_string(),
+        });
+    }
+
+    let size = super::resolve_limit(spec.limit, limits)?;
+    let from = super::resolve_skip(spec.skip, limits)?.unwrap_or(0);
     if from.saturating_add(size) > MAX_RESULT_WINDOW {
         return Err(QueryError::FeatureUnsupportedByTarget {
             feature: format!(
@@ -171,7 +181,19 @@ fn query_json(cond: &Cond, prefix: &str) -> Result<Json, QueryError> {
                 TextOp::Contains => wildcard(&f, format!("*{}*", wildcard_escape(pattern)), *ci),
             }
         }
-        Cond::Rel { quant, rel, cond } => rel_json(*quant, &rel.name, rel.es, cond)?,
+        Cond::Rel { quant, rel, cond } => {
+            // W11: a many-to-many relation needs a junction join, which the
+            // ES query DSL cannot express. It used to render as a plain
+            // `nested`/`has_child` on the relation name — wrong results, no
+            // error — while include planning correctly gated m2m.
+            if rel.through.is_some() {
+                return Err(QueryError::FeatureUnsupportedByTarget {
+                    feature: format!("many-to-many relation '{}'", rel.name),
+                    target: "elasticsearch".to_string(),
+                });
+            }
+            rel_json(*quant, &rel.name, rel.es, cond)?
+        }
     })
 }
 
@@ -500,6 +522,10 @@ mod tests {
         translate(&query, &EntityRegistry::from_json(&schema).expect("schema"))
     }
 
+    fn limits() -> QueryConfig {
+        QueryConfig::default()
+    }
+
     /// Local translate helper (mirrors crate::query::translate_es).
     fn translate(query: &Json, reg: &EntityRegistry) -> EsQuery {
         let spec = crate::query::spec::parse(query).expect("spec");
@@ -511,7 +537,7 @@ mod tests {
             None => crate::query::ir::Cond::True,
         };
         let index = reg.physical_table(&spec.source).expect("validated");
-        render(&spec, &cond, &index, 100, 1000).expect("render")
+        render(&spec, &cond, &index, &limits()).expect("render")
     }
 
     #[test]
@@ -651,8 +677,57 @@ mod tests {
             "users",
         )
         .expect("lower");
-        let err = render(&spec, &cond, "users", 100, 1000).expect_err("all is gated on ES");
+        let err = render(&spec, &cond, "users", &limits()).expect_err("all is gated on ES");
         assert!(matches!(err, QueryError::FeatureUnsupportedByTarget { .. }));
+    }
+
+    /// W11: a `through` relation predicate used to render as a plain
+    /// `nested`/`has_child` on the relation name — wrong results, no error.
+    #[test]
+    fn test_many_to_many_relation_filter_is_capability_error() {
+        let reg = EntityRegistry::from_json(&json!({ "entities": { "users": { "relations": {
+            "tags": {
+                "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "id",
+                "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id" }
+            }
+        } } } }))
+        .expect("schema");
+        let spec = crate::query::spec::parse(&json!({
+            "source": "users",
+            "filter": { "some": [{"field": "tags"}, {"==": [{"field": "label"}, "vip"]}] }
+        }))
+        .expect("spec");
+        let cond = crate::query::lower::lower_with(
+            spec.filter.as_ref().expect("filter"),
+            &serde_json::Map::new(),
+            &reg,
+            "users",
+        )
+        .expect("lower");
+        let err = render(&spec, &cond, "users", &limits())
+            .expect_err("m2m filter must be gated, not approximated");
+        assert!(
+            matches!(err, QueryError::FeatureUnsupportedByTarget { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("tags"), "{err}");
+    }
+
+    /// F26: `include` used to be silently dropped — parents with no children
+    /// and no error.
+    #[test]
+    fn test_include_is_capability_error() {
+        let spec = crate::query::spec::parse(
+            &json!({ "source": "users", "include": { "orders": { "limit": 5 } } }),
+        )
+        .expect("spec");
+        let err = render(&spec, &crate::query::ir::Cond::True, "users", &limits())
+            .expect_err("include must be gated on ES");
+        assert!(
+            matches!(err, QueryError::FeatureUnsupportedByTarget { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("include 'orders'"), "{err}");
     }
 
     #[test]
@@ -660,8 +735,19 @@ mod tests {
         let spec = crate::query::spec::parse(&json!({ "source": "t", "skip": 9999, "limit": 100 }))
             .expect("spec");
         let err =
-            render(&spec, &crate::query::ir::Cond::True, "t", 100, 1000).expect_err("deep paging");
+            render(&spec, &crate::query::ir::Cond::True, "t", &limits()).expect_err("deep paging");
         assert!(matches!(err, QueryError::FeatureUnsupportedByTarget { .. }));
+    }
+
+    /// W12: the shared `max_skip` cap applies before the ES result-window
+    /// check, with the same error every backend raises.
+    #[test]
+    fn test_skip_exceeds_max_rejected() {
+        let spec =
+            crate::query::spec::parse(&json!({ "source": "t", "skip": 10_001 })).expect("spec");
+        let err = render(&spec, &crate::query::ir::Cond::True, "t", &limits())
+            .expect_err("over the skip cap");
+        assert!(matches!(err, QueryError::SkipExceeded { .. }), "{err}");
     }
 
     #[test]
@@ -682,11 +768,21 @@ mod tests {
 
     // ---- Write rendering ----
 
+    /// A config that lets every envelope shape through — the guards have
+    /// their own tests in `write.rs`.
+    fn permissive_writes() -> crate::config::WriteConfig {
+        crate::config::WriteConfig {
+            max_rows: 1000,
+            allow_unfiltered: true,
+        }
+    }
+
     fn resolve(input: Json) -> crate::query::write::ResolvedWrite {
         crate::query::write::resolve_write(
             &input,
             &serde_json::Map::new(),
             &EntityRegistry::default(),
+            &permissive_writes(),
         )
         .expect("resolve_write should succeed")
     }
@@ -696,6 +792,7 @@ mod tests {
             &input,
             &serde_json::Map::new(),
             &EntityRegistry::from_json(&schema).expect("schema"),
+            &permissive_writes(),
         )
         .expect("resolve_write should succeed")
     }

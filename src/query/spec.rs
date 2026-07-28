@@ -49,11 +49,26 @@ fn invalid(msg: impl Into<String>) -> QueryError {
     QueryError::InvalidEnvelope(msg.into())
 }
 
+/// The complete key set of the query envelope. Anything else is a typo, and a
+/// typo here is a filter/projection/limit silently not applying (W6).
+const ENVELOPE_KEYS: [&str; 7] = [
+    "source", "filter", "fields", "sort", "limit", "skip", "include",
+];
+
 /// Parse the `query` object into a [`QuerySpec`].
 pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
     let obj = query
         .as_object()
         .ok_or_else(|| invalid("query must be a JSON object"))?;
+
+    // W6: unknown keys were silently ignored — `"fileds"` selected every
+    // column, `"lmit"` fell back to the default. Reject, naming the key.
+    if let Some(unknown) = obj.keys().find(|k| !ENVELOPE_KEYS.contains(&k.as_str())) {
+        return Err(invalid(format!(
+            "unknown key '{unknown}' in query envelope (expected \
+             source/filter/fields/sort/limit/skip/include)"
+        )));
+    }
 
     let source = obj
         .get("source")
@@ -112,6 +127,14 @@ fn parse_include(v: Option<&Json>) -> Result<Vec<IncludeSpec>, QueryError> {
         let sel = sel
             .as_object()
             .ok_or_else(|| invalid(format!("include.{relation} must be an object")))?;
+        if let Some(unknown) = sel
+            .keys()
+            .find(|k| !matches!(k.as_str(), "fields" | "limit"))
+        {
+            return Err(invalid(format!(
+                "unknown key '{unknown}' in include.{relation} (expected fields/limit)"
+            )));
+        }
         let fields = match sel.get("fields") {
             None | Some(Json::Null) => Vec::new(),
             Some(Json::Array(arr)) => {
@@ -231,5 +254,57 @@ impl QuerySpec {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // -----------------------------------------------------------------
+    // W6: unknown envelope keys are typos that silently changed results
+    // -----------------------------------------------------------------
+
+    /// `"fileds"` used to select every column and `"lmit": 5000` fell back to
+    /// the default of 100 — the misspelled intent was silently discarded.
+    #[test]
+    fn unknown_envelope_keys_are_rejected_naming_the_key() {
+        for bad in ["fileds", "lmit", "orderby"] {
+            let mut query = json!({ "source": "users" });
+            query[bad] = json!(5000);
+            let err = parse(&query).expect_err("unknown key must be rejected");
+            assert!(err.to_string().contains(bad), "{err}");
+            assert!(matches!(err, QueryError::InvalidEnvelope(_)), "{err}");
+        }
+    }
+
+    #[test]
+    fn unknown_include_selection_keys_are_rejected() {
+        let err = parse(&json!({
+            "source": "users",
+            "include": { "orders": { "fields": ["id"], "limt": 5 } }
+        }))
+        .expect_err("unknown include key must be rejected");
+        assert!(err.to_string().contains("limt"), "{err}");
+        assert!(err.to_string().contains("include.orders"), "{err}");
+    }
+
+    #[test]
+    fn the_full_envelope_still_parses() {
+        let spec = parse(&json!({
+            "source": "users",
+            "filter": { "==": [{ "field": "id" }, 1] },
+            "fields": ["id", "name"],
+            "sort": [{ "name": "asc" }],
+            "limit": 10,
+            "skip": 20,
+            "include": { "orders": { "fields": ["total"], "limit": 5 } }
+        }))
+        .expect("every documented key must be known");
+        assert_eq!(spec.source, "users");
+        assert_eq!(spec.limit, Some(10));
+        assert_eq!(spec.skip, Some(20));
+        assert_eq!(spec.include.len(), 1);
     }
 }

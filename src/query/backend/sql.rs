@@ -13,6 +13,7 @@ use sea_query::{
 };
 use sea_query_binder::{SqlxBinder, SqlxValues};
 
+use crate::config::QueryConfig;
 use crate::query::backend::SqlDialect;
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, FieldRef, Quant, RelRef, TextOp, Value};
@@ -20,18 +21,18 @@ use crate::query::spec::{QuerySpec, SortDir, SortKey};
 use crate::query::write::{ConflictAction, ResolvedWrite, WriteError, WriteOp};
 
 /// Build a `SelectStatement` from the envelope and lowered condition, enforcing
-/// the page-size bounds (`LimitExceeded` when `limit` > `max_limit`). `root_table`
-/// is the physical table the query selects from (and the correlation base for any
-/// relation subqueries).
+/// the page bounds (`LimitExceeded` / `SkipExceeded` when over the configured
+/// caps). `root_table` is the physical table the query selects from (and the
+/// correlation base for any relation subqueries).
 pub fn render(
     spec: &QuerySpec,
     cond: &Cond,
     root_table: &str,
     dialect: SqlDialect,
-    default_limit: u64,
-    max_limit: u64,
+    limits: &QueryConfig,
 ) -> Result<SelectStatement, QueryError> {
-    let limit = resolve_limit(spec.limit, default_limit, max_limit)?;
+    let limit = resolve_limit(spec.limit, limits)?;
+    let skip = resolve_skip(spec.skip, limits)?;
 
     let mut stmt = Query::select();
     if spec.fields.is_empty() {
@@ -49,7 +50,7 @@ pub fn render(
     }
     apply_sort(&mut stmt, &spec.sort, dialect);
     stmt.limit(limit);
-    if let Some(skip) = spec.skip {
+    if let Some(skip) = skip {
         stmt.offset(skip);
     }
     Ok(stmt)
@@ -107,7 +108,7 @@ pub fn json_key_to_sea(v: &serde_json::Value) -> Option<SeaValue> {
     }
 }
 
-use super::resolve_limit;
+use super::{resolve_limit, resolve_skip};
 
 /// Render a `Cond` as a single boolean `SimpleExpr`. Composing on `SimpleExpr`
 /// (rather than `Condition`) keeps `and`/`or`/`not`, EXISTS subqueries, and the
@@ -520,9 +521,14 @@ mod tests {
     use crate::query::{EntityRegistry, translate_sql, translate_sql_with_schema};
     use serde_json::{Value as Json, json};
 
+    /// The default page bounds used by these goldens (limit 100/1000).
+    fn limits() -> QueryConfig {
+        QueryConfig::default()
+    }
+
     /// Render `query` for `dialect` with values inlined, for golden assertions.
     fn sql_for(query: Json, dialect: SqlDialect) -> String {
-        let stmt = translate_sql(&query, &serde_json::Map::new(), dialect, 100, 1000)
+        let stmt = translate_sql(&query, &serde_json::Map::new(), dialect, &limits())
             .expect("translation should succeed");
         match dialect {
             SqlDialect::Sqlite => stmt.to_string(SqliteQueryBuilder),
@@ -559,8 +565,7 @@ mod tests {
             &serde_json::Map::new(),
             &rel_schema(),
             SqlDialect::Sqlite,
-            100,
-            1000,
+            &limits(),
         )
         .expect("translation should succeed");
         stmt.to_string(SqliteQueryBuilder)
@@ -701,8 +706,7 @@ mod tests {
             &json!({ "source": "users", "filter": { "==": [{"field": "id"}, 7] } }),
             &serde_json::Map::new(),
             SqlDialect::Postgres,
-            100,
-            1000,
+            &limits(),
         )
         .expect("ok");
         let (sql, _values) = build_for(SqlDialect::Postgres, &stmt);
@@ -716,8 +720,7 @@ mod tests {
             &json!({ "source": "t", "sort": [ { "name": "asc" } ] }),
             &serde_json::Map::new(),
             SqlDialect::Mysql,
-            100,
-            1000,
+            &limits(),
         )
         .expect("ok");
         let sql = stmt.to_string(MysqlQueryBuilder);
@@ -734,8 +737,10 @@ mod tests {
             &json!({ "source": "t" }),
             &serde_json::Map::new(),
             SqlDialect::Sqlite,
-            50,
-            1000,
+            &QueryConfig {
+                default_limit: 50,
+                ..QueryConfig::default()
+            },
         )
         .expect("ok");
         assert_eq!(
@@ -750,8 +755,7 @@ mod tests {
             &json!({ "source": "t", "limit": 5000 }),
             &serde_json::Map::new(),
             SqlDialect::Sqlite,
-            100,
-            1000,
+            &limits(),
         )
         .expect_err("over the cap");
         assert!(matches!(
@@ -759,6 +763,29 @@ mod tests {
             QueryError::LimitExceeded {
                 requested: 5000,
                 max: 1000
+            }
+        ));
+    }
+
+    /// W12: `skip` is bounded like `limit` — rejected over the cap, never
+    /// clamped. The cap used to exist only on Elasticsearch.
+    #[test]
+    fn test_skip_exceeds_max_rejected() {
+        let err = translate_sql(
+            &json!({ "source": "t", "skip": 51 }),
+            &serde_json::Map::new(),
+            SqlDialect::Sqlite,
+            &QueryConfig {
+                max_skip: 50,
+                ..QueryConfig::default()
+            },
+        )
+        .expect_err("over the skip cap");
+        assert!(matches!(
+            err,
+            QueryError::SkipExceeded {
+                requested: 51,
+                max: 50
             }
         ));
     }
@@ -843,8 +870,7 @@ mod tests {
             &serde_json::Map::new(),
             &rel_schema(),
             SqlDialect::Sqlite,
-            100,
-            1000,
+            &limits(),
         )
         .expect("plan");
 
@@ -888,8 +914,7 @@ mod tests {
             &serde_json::Map::new(),
             &rel_schema(),
             SqlDialect::Sqlite,
-            100,
-            1000,
+            &limits(),
         )
         .expect_err("m2m include not supported");
         assert!(matches!(err, QueryError::FeatureUnsupportedByTarget { .. }));
@@ -897,12 +922,22 @@ mod tests {
 
     // ---- Write rendering (INSERT / UPDATE / DELETE / upsert) ----
 
+    /// A config that lets every envelope shape through — the guards have
+    /// their own tests in `write.rs`.
+    fn permissive_writes() -> crate::config::WriteConfig {
+        crate::config::WriteConfig {
+            max_rows: 1000,
+            allow_unfiltered: true,
+        }
+    }
+
     /// Resolve `input` (identity mode) and render the write SQL for `dialect`.
     fn write_sql(input: Json, dialect: SqlDialect) -> String {
         let resolved = crate::query::write::resolve_write(
             &input,
             &serde_json::Map::new(),
             &EntityRegistry::default(),
+            &permissive_writes(),
         )
         .expect("resolve_write should succeed");
         let (sql, _values) = render_write(&resolved, dialect).expect("render should succeed");
@@ -970,9 +1005,13 @@ mod tests {
             "set": { "flagged": true },
             "filter": { "some": [{ "field": "orders" }, { ">": [{ "field": "total" }, 100] }] }
         });
-        let resolved =
-            crate::query::write::resolve_write(&input, &serde_json::Map::new(), &rel_schema())
-                .expect("resolve");
+        let resolved = crate::query::write::resolve_write(
+            &input,
+            &serde_json::Map::new(),
+            &rel_schema(),
+            &permissive_writes(),
+        )
+        .expect("resolve");
         let (sql, _v) = render_write(&resolved, SqlDialect::Sqlite).expect("render");
         // In the bound-parameter path the constant `1` in `SELECT 1` binds as `?`.
         assert_eq!(
@@ -1031,6 +1070,7 @@ mod tests {
             &input,
             &serde_json::Map::new(),
             &EntityRegistry::default(),
+            &permissive_writes(),
         )
         .expect("resolve");
         let err = render_write(&resolved, SqlDialect::Mysql).expect_err("no RETURNING on MySQL");
@@ -1044,9 +1084,18 @@ mod tests {
 #[cfg(test)]
 mod prop_tests {
     use super::*;
+    use crate::config::WriteConfig;
     use crate::query::schema::EntityRegistry;
     use crate::query::write::resolve_write;
     use proptest::prelude::*;
+    use serde_json::json;
+
+    fn permissive_writes() -> WriteConfig {
+        WriteConfig {
+            max_rows: 1000,
+            allow_unfiltered: true,
+        }
+    }
 
     /// Render an update whose `set` values and `filter` comparison all carry
     /// `value`, plus an insert row carrying it — the three channels a user
@@ -1066,14 +1115,48 @@ mod prop_tests {
         let mut sqls = Vec::new();
         let mut binds = Vec::new();
         for input in [update, insert] {
-            let resolved =
-                resolve_write(&input, &serde_json::Map::new(), &EntityRegistry::default())
-                    .expect("resolve");
+            let resolved = resolve_write(
+                &input,
+                &serde_json::Map::new(),
+                &EntityRegistry::default(),
+                &permissive_writes(),
+            )
+            .expect("resolve");
             let (sql, values) = render_write(&resolved, dialect).expect("render");
             sqls.push(sql);
             binds.extend(values.0.0);
         }
         (sqls, binds)
+    }
+
+    /// Identifier candidates: arbitrary unicode, strings built around the
+    /// quoting/escaping metacharacters, and plain well-formed names so the
+    /// accept path stays exercised too.
+    fn arb_ident() -> impl Strategy<Value = String> {
+        prop_oneof![
+            ".{0,12}",
+            r#"[a-z]{0,3}["'`\\$.][a-z]{0,3}["'`\\$.]?"#,
+            "[A-Za-z_][A-Za-z0-9_]{0,8}",
+        ]
+    }
+
+    /// Whether `ident` could interfere with identifier quoting or change
+    /// meaning on any backend — exactly the set `validate_identifier` rejects.
+    fn is_hostile(ident: &str) -> bool {
+        ident.is_empty()
+            || ident.starts_with('$')
+            || ident.contains('.')
+            || ident
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '"' | '\'' | '`' | '\\'))
+    }
+
+    /// The dialect's quoted form of an accepted identifier.
+    fn quoted(ident: &str, dialect: SqlDialect) -> String {
+        match dialect {
+            SqlDialect::Mysql => format!("`{ident}`"),
+            _ => format!("\"{ident}\""),
+        }
     }
 
     proptest! {
@@ -1097,6 +1180,105 @@ mod prop_tests {
                     "value must appear among the binds for {:?}",
                     dialect
                 );
+            }
+        }
+
+        /// F25: identifiers cannot be bound parameters, so their safety must
+        /// live at the resolution boundary (`validate_identifier`), not in
+        /// sea-query's `Iden::quoted`. For an arbitrary identifier fed through
+        /// the WRITE path's channels — insert's `target` and an inserted
+        /// column, update's `set` column and a `returning` name — either
+        /// resolution rejects it, or it was benign and renders inside dialect
+        /// quotes it cannot close. (`on_conflict.target` is not fuzzed here;
+        /// it crosses the same `resolve_write_column` boundary as `set`.)
+        #[test]
+        fn write_identifiers_are_rejected_or_safely_quoted(ident in arb_ident()) {
+            let mut values = serde_json::Map::new();
+            values.insert(ident.clone(), json!(1));
+            // insert: the identifier as `target` and as an inserted column.
+            let insert = json!({
+                "op": "insert",
+                "target": ident.clone(),
+                "values": values.clone(),
+            });
+            // update: the identifier as a `set` column and a `returning` name
+            // (`all` acknowledges the deliberately unfiltered mutation).
+            let update = json!({
+                "op": "update",
+                "target": "users",
+                "set": values,
+                "returning": [ident.clone()],
+                "all": true,
+            });
+            for input in [insert, update] {
+                let resolved = resolve_write(
+                    &input,
+                    &serde_json::Map::new(),
+                    &EntityRegistry::default(),
+                    &permissive_writes(),
+                );
+                match resolved {
+                    Err(_) => {} // boundary rejection — the safe outcome
+                    Ok(w) => {
+                        prop_assert!(
+                            !is_hostile(&ident),
+                            "resolve_write accepted a hostile identifier {ident:?}"
+                        );
+                        for dialect in [SqlDialect::Postgres, SqlDialect::Sqlite, SqlDialect::Mysql] {
+                            // MySQL refuses RETURNING by feature, not by
+                            // identifier — drop it there so the SET-clause
+                            // channel still renders.
+                            let mut w = w.clone();
+                            if dialect == SqlDialect::Mysql {
+                                w.returning.clear();
+                            }
+                            let (sql, _) = render_write(&w, dialect).expect("render");
+                            prop_assert!(
+                                sql.contains(&quoted(&ident, dialect)),
+                                "identifier {ident:?} must render quoted in {sql:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        /// The same invariant for the READ path's identifier channels:
+        /// `source`, `fields`, `sort`, and a `filter` field reference.
+        #[test]
+        fn query_identifiers_are_rejected_or_safely_quoted(ident in arb_ident()) {
+            let mut sort_key = serde_json::Map::new();
+            sort_key.insert(ident.clone(), json!("asc"));
+            let query = json!({
+                "source": ident.clone(),
+                "fields": [ident.clone()],
+                "sort": [sort_key],
+                "filter": { "==": [{ "field": ident.clone() }, 1] },
+            });
+            for dialect in [SqlDialect::Postgres, SqlDialect::Sqlite, SqlDialect::Mysql] {
+                match crate::query::translate_sql(
+                    &query,
+                    &serde_json::Map::new(),
+                    dialect,
+                    &QueryConfig::default(),
+                ) {
+                    Err(_) => {} // boundary rejection — the safe outcome
+                    Ok(stmt) => {
+                        prop_assert!(
+                            !is_hostile(&ident),
+                            "translate_sql accepted a hostile identifier {ident:?}"
+                        );
+                        let sql = match dialect {
+                            SqlDialect::Sqlite => stmt.to_string(SqliteQueryBuilder),
+                            SqlDialect::Postgres => stmt.to_string(PostgresQueryBuilder),
+                            SqlDialect::Mysql => stmt.to_string(MysqlQueryBuilder),
+                        };
+                        prop_assert!(
+                            sql.contains(&quoted(&ident, dialect)),
+                            "identifier {ident:?} must render quoted in {sql:?}"
+                        );
+                    }
+                }
             }
         }
     }

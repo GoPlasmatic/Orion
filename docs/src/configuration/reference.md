@@ -239,6 +239,7 @@ Safety bounds for the portable `data_query` / `data_write` handlers. Requests ov
 |---|---|---|---|
 | `query.default_limit` | `100` | `ORION_QUERY__DEFAULT_LIMIT` | Page size applied when a query omits `limit`. |
 | `query.max_limit` | `1000` | `ORION_QUERY__MAX_LIMIT` | Hard cap on page size. Must be ≥ `default_limit`. |
+| `query.max_skip` | `10000` | `ORION_QUERY__MAX_SKIP` | Hard cap on the `skip` offset, enforced on every backend. A query skipping more is rejected, never clamped. |
 | `write.max_rows` | `1000` | `ORION_WRITE__MAX_ROWS` | Hard cap on rows per bulk insert or upsert. |
 | `write.allow_unfiltered` | `false` | `ORION_WRITE__ALLOW_UNFILTERED` | Leave `false` unless a workflow genuinely needs unfiltered `update`/`delete` — which still also requires `"all": true` on the call itself. |
 

@@ -7,7 +7,10 @@ use crate::errors::OrionError;
 ///
 /// A query that omits `limit` gets `default_limit`; a query asking for more than
 /// `max_limit` is rejected (never silently clamped), so no query is ever
-/// unbounded by accident. See `proposals/query-dialect.md` §5.12.
+/// unbounded by accident. `max_skip` bounds the pagination offset the same way,
+/// on every backend — Elasticsearch capped `skip` at its result window while
+/// SQL and MongoDB scanned arbitrarily deep (W12). See
+/// `proposals/query-dialect.md` §5.12.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct QueryConfig {
@@ -15,6 +18,8 @@ pub struct QueryConfig {
     pub default_limit: u64,
     /// Hard maximum page size. A query requesting more is rejected.
     pub max_limit: u64,
+    /// Hard maximum `skip` offset. A query skipping more is rejected.
+    pub max_skip: u64,
 }
 
 impl Default for QueryConfig {
@@ -22,6 +27,7 @@ impl Default for QueryConfig {
         Self {
             default_limit: 100,
             max_limit: 1000,
+            max_skip: 10_000,
         }
     }
 }

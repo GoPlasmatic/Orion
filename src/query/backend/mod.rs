@@ -5,6 +5,7 @@ pub mod es;
 pub mod mongo;
 pub mod sql;
 
+use crate::config::QueryConfig;
 use crate::query::error::QueryError;
 use crate::storage::DbBackend;
 
@@ -13,16 +14,32 @@ use crate::storage::DbBackend;
 /// renderers share this so page-size policy cannot differ per backend.
 pub(crate) fn resolve_limit(
     requested: Option<u64>,
-    default_limit: u64,
-    max_limit: u64,
+    limits: &QueryConfig,
 ) -> Result<u64, QueryError> {
     match requested {
-        Some(l) if l > max_limit => Err(QueryError::LimitExceeded {
+        Some(l) if l > limits.max_limit => Err(QueryError::LimitExceeded {
             requested: l,
-            max: max_limit,
+            max: limits.max_limit,
         }),
         Some(l) => Ok(l),
-        None => Ok(default_limit.min(max_limit)),
+        None => Ok(limits.default_limit.min(limits.max_limit)),
+    }
+}
+
+/// Resolve the effective `skip` offset: above `max_skip` is an error, mirroring
+/// [`resolve_limit`]'s reject-never-clamp rule. Shared by all three renderers —
+/// the cap used to exist only on Elasticsearch (via its result window), so the
+/// same envelope was bounded on one backend and unbounded on the others (W12).
+pub(crate) fn resolve_skip(
+    requested: Option<u64>,
+    limits: &QueryConfig,
+) -> Result<Option<u64>, QueryError> {
+    match requested {
+        Some(s) if s > limits.max_skip => Err(QueryError::SkipExceeded {
+            requested: s,
+            max: limits.max_skip,
+        }),
+        other => Ok(other),
     }
 }
 

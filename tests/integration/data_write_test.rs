@@ -411,8 +411,54 @@ async fn test_bulk_insert_over_max_rows_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// W7: the mutation envelope is nested under `write`
+// W6 + W7: the mutation envelope is strict, and nested under `write`
 // ---------------------------------------------------------------------------
+
+/// W6: a misspelled envelope key used to be silently ignored — `"retuning"`
+/// meant no returning, a misspelled `filter` meant an unfiltered mutation.
+/// It must be rejected naming the key; the legacy flat form (whose object
+/// legitimately carries the handler keys alongside the envelope) still is.
+#[tokio::test]
+async fn unknown_write_envelope_keys_are_rejected() {
+    let conn = "dw-w6";
+    let app = sqlite_app(conn, "dw_w6").await;
+
+    common::create_and_activate_channel(
+        &app,
+        "ch-dw-w6",
+        common::workflow_with_tasks(
+            "dw",
+            json!([
+                ddl(
+                    conn,
+                    "t_ddl",
+                    "CREATE TABLE IF NOT EXISTS w6_t (id INTEGER, name TEXT)"
+                ),
+                dw(
+                    conn,
+                    "t_w",
+                    json!({
+                        "op": "insert", "target": "w6_t",
+                        "values": { "id": 1, "name": "a" },
+                        "retuning": ["id"]
+                    })
+                ),
+            ]),
+        ),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dw-w6", json!({ "data": {} })).await;
+    assert!(
+        is_rejection(status, &body),
+        "an unknown envelope key must be rejected, got status={status} body={body}"
+    );
+    let text = serde_json::to_string(&body).unwrap();
+    assert!(
+        text.contains("retuning"),
+        "the rejection must name the offending key: {body}"
+    );
+}
 
 /// Every other test in this file goes through `dsl::dw`, which builds the
 /// nested 1.0 shape. This one writes both shapes out by hand and asserts they

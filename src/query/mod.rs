@@ -20,12 +20,13 @@ pub use error::QueryError;
 pub use lower::Params;
 pub use schema::EntityRegistry;
 
+use crate::config::QueryConfig;
 use ir::Cond;
 use sea_query::SelectStatement;
 use serde_json::Value as Json;
 
 /// Parse the envelope, lower the filter (identity mode), and render a SQL
-/// `SelectStatement` for `dialect`, enforcing the configured page-size bounds.
+/// `SelectStatement` for `dialect`, enforcing the configured page bounds.
 /// `params` are concrete (already message-resolved) values substituted for
 /// `{"param": ..}` nodes. Test convenience — production goes through
 /// [`plan_sql`], which additionally resolves `include`s.
@@ -34,17 +35,9 @@ pub fn translate_sql(
     query: &Json,
     params: &Params,
     dialect: SqlDialect,
-    default_limit: u64,
-    max_limit: u64,
+    limits: &QueryConfig,
 ) -> Result<SelectStatement, QueryError> {
-    translate_sql_with_schema(
-        query,
-        params,
-        &EntityRegistry::default(),
-        dialect,
-        default_limit,
-        max_limit,
-    )
+    translate_sql_with_schema(query, params, &EntityRegistry::default(), dialect, limits)
 }
 
 /// Schema-aware variant: resolves fields and relations through `reg` (renames,
@@ -55,8 +48,7 @@ pub fn translate_sql_with_schema(
     params: &Params,
     reg: &EntityRegistry,
     dialect: SqlDialect,
-    default_limit: u64,
-    max_limit: u64,
+    limits: &QueryConfig,
 ) -> Result<SelectStatement, QueryError> {
     let spec = spec::parse(query)?;
     let cond = match &spec.filter {
@@ -67,7 +59,7 @@ pub fn translate_sql_with_schema(
     // identifier gate as the filter, before any backend sees the spec.
     let spec = spec.resolve_names(reg)?;
     let root_table = reg.physical_table(&spec.source)?;
-    backend::sql::render(&spec, &cond, &root_table, dialect, default_limit, max_limit)
+    backend::sql::render(&spec, &cond, &root_table, dialect, limits)
 }
 
 /// A rendered SQL query plus its `include` plan (related collections to nest).
@@ -102,8 +94,7 @@ pub fn plan_sql(
     params: &Params,
     reg: &EntityRegistry,
     dialect: SqlDialect,
-    default_limit: u64,
-    max_limit: u64,
+    limits: &QueryConfig,
 ) -> Result<SqlPlan, QueryError> {
     let spec = spec::parse(query)?;
     let cond = match &spec.filter {
@@ -143,14 +134,7 @@ pub fn plan_sql(
     }
 
     let root_table = reg.physical_table(&spec.source)?;
-    let main = backend::sql::render(
-        &main_spec,
-        &cond,
-        &root_table,
-        dialect,
-        default_limit,
-        max_limit,
-    )?;
+    let main = backend::sql::render(&main_spec, &cond, &root_table, dialect, limits)?;
     Ok(SqlPlan {
         main,
         includes,
@@ -160,13 +144,12 @@ pub fn plan_sql(
 
 /// Parse the envelope, lower the filter, and render a MongoDB `find` query
 /// (collection + `$match` filter + projection/sort/skip/limit), enforcing the
-/// configured page-size bounds.
+/// configured page bounds.
 pub fn translate_mongo(
     query: &Json,
     params: &Params,
     reg: &EntityRegistry,
-    default_limit: u64,
-    max_limit: u64,
+    limits: &QueryConfig,
 ) -> Result<backend::mongo::MongoQuery, QueryError> {
     let spec = spec::parse(query)?;
     let cond = match &spec.filter {
@@ -177,18 +160,17 @@ pub fn translate_mongo(
     // identifier gate as the filter, before any backend sees the spec.
     let spec = spec.resolve_names(reg)?;
     let collection = reg.physical_table(&spec.source)?;
-    backend::mongo::render(&spec, &cond, &collection, default_limit, max_limit)
+    backend::mongo::render(&spec, &cond, &collection, limits)
 }
 
 /// Parse the envelope, lower the filter, and render an Elasticsearch search
-/// (index + query DSL body in filter context), enforcing the page-size bounds and
+/// (index + query DSL body in filter context), enforcing the page bounds and
 /// the deep-pagination cap.
 pub fn translate_es(
     query: &Json,
     params: &Params,
     reg: &EntityRegistry,
-    default_limit: u64,
-    max_limit: u64,
+    limits: &QueryConfig,
 ) -> Result<backend::es::EsQuery, QueryError> {
     let spec = spec::parse(query)?;
     let cond = match &spec.filter {
@@ -199,5 +181,5 @@ pub fn translate_es(
     // identifier gate as the filter, before any backend sees the spec.
     let spec = spec.resolve_names(reg)?;
     let index = reg.physical_table(&spec.source)?;
-    backend::es::render(&spec, &cond, &index, default_limit, max_limit)
+    backend::es::render(&spec, &cond, &index, limits)
 }

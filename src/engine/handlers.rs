@@ -222,8 +222,7 @@ pub fn build_custom_functions(
             mongo_pool_cache: mongo_pool_cache.clone(),
             http_client: client.clone(),
             registry: registry.clone(),
-            default_limit: query_config.default_limit,
-            max_limit: query_config.max_limit,
+            limits: query_config.clone(),
         }),
     );
 
@@ -237,8 +236,7 @@ pub fn build_custom_functions(
             mongo_pool_cache: mongo_pool_cache.clone(),
             http_client: client.clone(),
             registry: registry.clone(),
-            max_rows: write_config.max_rows,
-            allow_unfiltered: write_config.allow_unfiltered,
+            write_config: write_config.clone(),
         }),
     );
 

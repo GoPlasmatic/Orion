@@ -244,6 +244,7 @@ async fn test_data_query_limit_exceeds_max_rejected() {
         query: QueryConfig {
             default_limit: 1,
             max_limit: 1,
+            ..QueryConfig::default()
         },
         ..Default::default()
     };
@@ -272,6 +273,83 @@ async fn test_data_query_limit_exceeds_max_rejected() {
     assert!(
         is_rejection(status, &body),
         "expected a rejection for limit over the cap, got status={status} body={body}"
+    );
+}
+
+/// W12: `skip` is capped like `limit` — rejected over `query.max_skip`,
+/// never clamped. The cap used to exist only on Elasticsearch, so the same
+/// envelope scanned arbitrarily deep on SQL.
+#[tokio::test]
+async fn test_data_query_skip_exceeds_max_rejected() {
+    let config = AppConfig {
+        query: QueryConfig {
+            max_skip: 10,
+            ..QueryConfig::default()
+        },
+        ..Default::default()
+    };
+    let app = common::test_app_with_config(config).await;
+    let conn = "dq-skip";
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite(conn, "sqlite:file:dq_skip?mode=memory&cache=shared"),
+    )
+    .await;
+
+    let mut tasks = seed_tasks(conn);
+    tasks.push(dq(
+        conn,
+        "t_query",
+        json!({ "source": "users", "skip": 50 }),
+    ));
+    common::create_and_activate_channel(
+        &app,
+        "ch-dq-skip",
+        common::workflow_with_tasks("dq", json!(tasks)),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dq-skip", json!({ "data": {} })).await;
+    assert!(
+        is_rejection(status, &body),
+        "expected a rejection for skip over the cap, got status={status} body={body}"
+    );
+}
+
+/// W6: a misspelled envelope key used to be silently ignored — `"fileds"`
+/// selected every column. It must be rejected naming the key.
+#[tokio::test]
+async fn test_data_query_unknown_envelope_key_rejected() {
+    let app = common::test_app().await;
+    let conn = "dq-unk";
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite(conn, "sqlite:file:dq_unk?mode=memory&cache=shared"),
+    )
+    .await;
+
+    let mut tasks = seed_tasks(conn);
+    tasks.push(dq(
+        conn,
+        "t_query",
+        json!({ "source": "users", "fileds": ["id"] }),
+    ));
+    common::create_and_activate_channel(
+        &app,
+        "ch-dq-unk",
+        common::workflow_with_tasks("dq", json!(tasks)),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dq-unk", json!({ "data": {} })).await;
+    assert!(
+        is_rejection(status, &body),
+        "expected a rejection for the unknown key, got status={status} body={body}"
+    );
+    let text = serde_json::to_string(&body).unwrap();
+    assert!(
+        text.contains("fileds"),
+        "the rejection must name the offending key: {body}"
     );
 }
 

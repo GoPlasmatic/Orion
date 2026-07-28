@@ -20,7 +20,7 @@ use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
 use crate::query::backend::es::{EsWrite, bulk_ndjson};
 use crate::query::backend::mongo::MongoWrite;
-use crate::query::write::{ResolvedWrite, WriteError, WriteOp};
+use crate::query::write::{ResolvedWrite, WriteOp};
 use crate::query::{self, SqlDialect};
 use crate::storage::detect_backend;
 
@@ -31,16 +31,17 @@ const NAME: &str = "data_write";
 /// (`op`/`target`/`values`/`set`/`filter`/`on_conflict`/`returning`) that renders
 /// to a native SQL `INSERT`/`UPDATE`/`DELETE`/upsert, a MongoDB write, or an
 /// Elasticsearch write — against a SQL, Mongo, or ES connector. The translation
-/// lives in `src/query/write.rs` and the per-backend renderers; this handler wires
-/// it to the connector/pool machinery (ES runs over the HTTP client) and enforces
-/// the write-safety guards (bulk cap, unfiltered mutation).
+/// — including the write-safety guards (bulk cap, unfiltered mutation; W15) —
+/// lives in `src/query/write.rs` and the per-backend renderers; this handler
+/// wires it to the connector/pool machinery (ES runs over the HTTP client).
 pub struct DataWriteHandler {
     pub pool_cache: Arc<SqlPoolCache>,
     pub mongo_pool_cache: Arc<MongoPoolCache>,
     pub http_client: reqwest::Client,
     pub registry: Arc<ConnectorRegistry>,
-    pub max_rows: u64,
-    pub allow_unfiltered: bool,
+    /// Safety bounds (`max_rows` / `allow_unfiltered`) from `[write]`,
+    /// enforced inside `resolve_write`.
+    pub write_config: crate::config::WriteConfig,
 }
 
 #[async_trait]
@@ -78,13 +79,32 @@ impl AsyncFunctionHandler for DataWriteHandler {
             // `params`, `database`, `output`) — so those five names could
             // never be used by the dialect, and there was no single JSON
             // value that *was* the envelope. The flat form is still accepted
-            // for one release.
-            let envelope = input.get("write").unwrap_or(input);
+            // for one release; since `resolve_write` rejects unknown keys
+            // (W6), the handler keys are stripped from it first.
+            let legacy_flat: Value;
+            let envelope = match input.get("write") {
+                Some(w) => w,
+                None => {
+                    const HANDLER_KEYS: [&str; 5] =
+                        ["connector", "schema", "params", "database", "output"];
+                    legacy_flat = match input.as_object() {
+                        Some(o) => Value::Object(
+                            o.iter()
+                                .filter(|(k, _)| !HANDLER_KEYS.contains(&k.as_str()))
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect(),
+                        ),
+                        None => input.clone(),
+                    };
+                    &legacy_flat
+                }
+            };
 
             // One backend-neutral resolution: parse envelope, fold params into
-            // values/set, resolve physical names, coerce, and lower the filter.
-            let resolved = query::write::resolve_write(envelope, &params, &registry)?;
-            self.check_guards(&resolved)?;
+            // values/set, resolve physical names, coerce, lower the filter,
+            // and enforce the write-safety guards (W15).
+            let resolved =
+                query::write::resolve_write(envelope, &params, &registry, &self.write_config)?;
 
             // Per-connector operation gates: a connector config can disable
             // individual ops (e.g. delete) regardless of what workflows ask for.
@@ -137,37 +157,6 @@ impl AsyncFunctionHandler for DataWriteHandler {
             Ok(TaskOutcome::Success)
         })
         .await
-    }
-}
-
-impl DataWriteHandler {
-    /// Enforce the write-safety guards: the bulk-insert cap and the
-    /// unfiltered-mutation guard (an `update`/`delete` with no filter is rejected
-    /// unless both `"all": true` is set and `write.allow_unfiltered` is enabled).
-    fn check_guards(&self, w: &ResolvedWrite) -> Result<(), DataflowError> {
-        if matches!(w.op, WriteOp::Insert | WriteOp::Upsert) && w.rows.len() as u64 > self.max_rows
-        {
-            return Err(WriteError::TooManyRows {
-                requested: w.rows.len(),
-                max: self.max_rows,
-            }
-            .into());
-        }
-        if matches!(w.op, WriteOp::Update | WriteOp::Delete) && !w.effective_filter {
-            if !w.all {
-                return Err(WriteError::UnfilteredMutation {
-                    op: w.op.as_str().to_string(),
-                }
-                .into());
-            }
-            if !self.allow_unfiltered {
-                return Err(WriteError::UnfilteredNotAllowed {
-                    op: w.op.as_str().to_string(),
-                }
-                .into());
-            }
-        }
-        Ok(())
     }
 }
 

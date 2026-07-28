@@ -73,7 +73,7 @@ injection-safe by construction.
 | `filter` | JSONLogic | Condition from the operator vocabulary below; omit for "match all" |
 | `fields` | array | Projection; omit for all columns/fields |
 | `sort` | array | `[{ "age": "asc" }, { "name": "desc" }]` — deterministic null ordering across backends |
-| `limit` / `skip` | number | Pagination. Missing `limit` gets `query.default_limit`; above `query.max_limit` is **rejected, never clamped** |
+| `limit` / `skip` | number | Pagination. Missing `limit` gets `query.default_limit`; a `limit` above `query.max_limit` or a `skip` above `query.max_skip` is **rejected, never clamped** |
 | `include` | object | Relation name → `{ "fields": [..], "limit": n }`; nested related records, hydrated per relation (see [Relations](#relations-and-includes)) |
 
 ### Operator vocabulary
@@ -89,7 +89,10 @@ injection-safe by construction.
 | `some`, `all`, `none` | Quantifiers over a declared relation |
 
 Anything outside this vocabulary is rejected with a **located error** naming
-the operator and position — never silently ignored.
+the operator and position — never silently ignored. The same strictness
+applies to the envelopes themselves: an unknown key in the query or write
+envelope (a `"fileds"` typo, say) is rejected naming the key, because a
+silently dropped key is a filter or projection silently not applying.
 
 ## Write envelope (`data_write`)
 
@@ -173,6 +176,8 @@ approximate silently.** The notable divergences:
 | Feature | Behavior |
 |---------|----------|
 | `returning` | Native on PostgreSQL/SQLite. On MySQL it is rejected (`FeatureUnsupportedByTarget`); single-row inserts report `last_insert_id` instead. On MongoDB inserts report generated `ids`. On Elasticsearch it is rejected; inserts report `ids` |
+| `include` | SQL connectors only. On MongoDB and Elasticsearch it is rejected (`FeatureUnsupportedByTarget`) rather than returning parents with silently empty children — fetch related documents with a second query, or model them embedded/nested and filter with `some` |
+| `some`/`all`/`none` over a `many_to_many` relation | SQL only (junction join). Rejected on MongoDB and Elasticsearch, whose filter languages cannot express the junction |
 | `all` over an ES relation | Rejected (not set-equivalent on nested documents) |
 | Deep ES pagination | `skip + limit` beyond `max_result_window` (10k) is rejected, not truncated |
 | Bulk upsert on Mongo/ES | Rejected — single-row upserts only |
@@ -213,10 +218,10 @@ the dialect runs in *identity mode*: names pass through as-is.
 "schema": {
   "entities": {
     "users": {
-      "table": "app_users",
+      "physical": "app_users",
       "columns": {
         "id":     { "name": "user_id", "type": "int" },
-        "email":  { "type": "string" },
+        "email":  { "type": "text" },
         "secret": { "queryable": false, "writable": false }
       },
       "relations": {
@@ -295,6 +300,7 @@ gate — to make a connector fully delete-proof, disable both `delete` and
 [query]                    # Page-size bounds for data_query
 # default_limit = 100      # Page size when a query omits `limit`
 # max_limit = 1000         # Hard cap; a query asking for more is rejected
+# max_skip = 10000         # Hard cap on the `skip` offset (over → rejected)
 
 [write]                    # Safety bounds for data_write
 # max_rows = 1000          # Cap on rows per bulk insert/upsert (over → rejected)

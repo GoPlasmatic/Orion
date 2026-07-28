@@ -16,8 +16,13 @@ use crate::query::error::QueryError;
 use crate::query::ir::{EsStorage, FieldRef, FieldType, JunctionRef, MongoStorage, RelRef};
 
 /// The set of entities queryable through the dialect, plus the unmapped policy.
+///
+/// Every schema struct rejects unknown keys (W5): a misspelled key here is
+/// privileged security configuration silently not applying — the documented
+/// example itself used `"table"` where the field is `physical`, and the entity
+/// quietly fell back to identity mode.
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EntityRegistry {
     pub entities: HashMap<String, Entity>,
     pub unmapped: UnmappedPolicy,
@@ -35,7 +40,7 @@ pub enum UnmappedPolicy {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Entity {
     /// Physical table/collection/index; defaults to the entity's key.
     pub physical: Option<String>,
@@ -44,6 +49,7 @@ pub struct Entity {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Column {
     /// Physical column name; defaults to the logical key.
     #[serde(default)]
@@ -63,6 +69,7 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Relation {
     /// Target entity name.
     pub to: String,
@@ -95,6 +102,7 @@ pub enum Cardinality {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Junction {
     pub table: String,
     /// Junction column joining to the current entity's `local`.
@@ -245,11 +253,24 @@ impl EntityRegistry {
                 relation: name.to_string(),
                 at: at.to_string(),
             })?;
-        let through = rel.through.as_ref().map(|j| JunctionRef {
-            table: j.table.clone(),
-            local: j.local.clone(),
-            foreign: j.foreign.clone(),
-        });
+        // F25: junction names are operator-declared structure that reaches the
+        // SQL renderer as identifiers (`Alias::new`), exactly like the join
+        // keys below — they were the one identifier channel that skipped
+        // `validate_identifier`.
+        let through = rel
+            .through
+            .as_ref()
+            .map(|j| -> Result<JunctionRef, QueryError> {
+                validate_identifier(&j.table, at)?;
+                validate_identifier(&j.local, at)?;
+                validate_identifier(&j.foreign, at)?;
+                Ok(JunctionRef {
+                    table: j.table.clone(),
+                    local: j.local.clone(),
+                    foreign: j.foreign.clone(),
+                })
+            })
+            .transpose()?;
         Ok((
             RelRef {
                 name: name.to_string(),
@@ -417,6 +438,152 @@ mod tests {
         }}}))
         .expect("registry");
         assert!(reg.resolve_field("users", "key", "filter").is_err());
+    }
+
+    /// F25: the junction's table and columns render as SQL identifiers via the
+    /// M:M join, and used to be the one identifier channel that skipped
+    /// `validate_identifier`.
+    #[test]
+    fn junction_identifiers_are_validated() {
+        for (field, value) in [
+            ("table", "user\"tags"),
+            ("local", "$uid"),
+            ("foreign", "tag.id"),
+        ] {
+            let mut junction = json!({
+                "table": "user_tags", "local": "user_id", "foreign": "tag_id"
+            });
+            junction[field] = json!(value);
+            let reg = EntityRegistry::from_json(&schema_with_relation(json!({
+                "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "id",
+                "through": junction
+            })))
+            .expect("shape is valid; names are checked at resolution");
+            assert!(
+                reg.resolve_relation("users", "orders", "filter").is_err(),
+                "junction {field} {value:?} must be rejected"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // W5: the documented example must parse and mean what it says
+    // -----------------------------------------------------------------
+
+    /// The first fenced ```json block after "The schema registry" heading in
+    /// `docs/src/reference/data-dialect.md`, exactly as a reader would copy it.
+    fn documented_schema_example() -> serde_json::Value {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/src/reference/data-dialect.md"
+        );
+        let source = std::fs::read_to_string(path)
+            .expect("docs/src/reference/data-dialect.md must be readable");
+        let section = source
+            .split("## The schema registry")
+            .nth(1)
+            .expect("data-dialect.md must have a 'The schema registry' section");
+        let fence_start = section
+            .find("```json")
+            .expect("the schema registry section must carry a ```json example")
+            + "```json".len();
+        let body = &section[fence_start..];
+        let fence_end = body
+            .find("```")
+            .expect("the ```json example must be closed");
+        // The doc shows a `"schema": { … }` task fragment; wrap it in braces
+        // to make it a standalone document, changing nothing else.
+        let wrapped: serde_json::Value =
+            serde_json::from_str(&format!("{{{}}}", body[..fence_end].trim()))
+                .expect("the documented schema example must be valid JSON");
+        wrapped
+            .get("schema")
+            .expect("the example must be a 'schema' fragment")
+            .clone()
+    }
+
+    /// The single canonical example of the feature the dialect's security
+    /// model hangs off was copy-paste broken in two directions: `"table"`
+    /// where the field is `physical` (silently dropped, so the rename never
+    /// applied) and `"type": "string"`, which is not a `FieldType` variant
+    /// (hard parse error). Parse the doc's example verbatim and assert it
+    /// *means* what the surrounding prose says, so it cannot drift again.
+    #[test]
+    fn the_documented_schema_example_parses_and_means_what_it_says() {
+        let reg = EntityRegistry::from_json(&documented_schema_example())
+            .expect("the documented schema example must parse as an EntityRegistry");
+
+        // The prose promises a physical rename (users → app_users)…
+        assert_eq!(
+            reg.physical_table("users").expect("users is declared"),
+            "app_users",
+            "the entity rename in the example must actually apply"
+        );
+        // …a column rename with a type hint (id → user_id)…
+        assert_eq!(
+            reg.resolve_field("users", "id", "filter")
+                .expect("id is declared")
+                .physical,
+            "user_id",
+            "the column rename in the example must actually apply"
+        );
+        // …a column hidden from reads and writes…
+        assert!(
+            reg.resolve_field("users", "secret", "filter").is_err(),
+            "queryable: false must hide the column from reads"
+        );
+        assert!(
+            reg.resolve_write_column("users", "secret", "values")
+                .is_err(),
+            "writable: false must protect the column from writes"
+        );
+        // …allowlist mode, and a declared relation for some/all/none.
+        assert_eq!(reg.unmapped, UnmappedPolicy::Reject);
+        assert!(
+            reg.resolve_relation("users", "orders", "filter").is_ok(),
+            "the example's relation must resolve"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // W5: unknown schema keys are configuration that silently no-ops
+    // -----------------------------------------------------------------
+
+    /// The documented example used `"table"` where the field is `physical`;
+    /// with unknown keys ignored, the rename silently did not apply and the
+    /// entity fell back to identity mode. Every level must reject them.
+    #[test]
+    fn unknown_schema_keys_are_rejected_at_every_level() {
+        for (what, schema) in [
+            ("registry", json!({ "entitys": {} })),
+            (
+                "entity",
+                json!({ "entities": { "users": { "table": "app_users" } } }),
+            ),
+            (
+                "column",
+                json!({ "entities": { "users": {
+                    "columns": { "id": { "readable": false } }
+                } } }),
+            ),
+            (
+                "relation",
+                json!({ "entities": { "users": { "relations": { "orders": {
+                    "to": "orders", "local": "id", "foreign": "user_id", "cardinality": "has_many"
+                } } } } }),
+            ),
+            (
+                "junction",
+                json!({ "entities": { "users": { "relations": { "tags": {
+                    "to": "tags", "local": "id", "foreign": "id",
+                    "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id", "junction": true }
+                } } } } }),
+            ),
+        ] {
+            let err = EntityRegistry::from_json(&schema)
+                .expect_err(&format!("unknown key on {what} must be rejected"));
+            assert!(err.to_string().contains("invalid schema"), "{what}: {err}");
+        }
     }
 
     #[test]

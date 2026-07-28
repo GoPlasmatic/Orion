@@ -10,13 +10,17 @@
 //! [`resolve_write`] does the whole backend-neutral transformation once: parse the
 //! envelope, fold `{"param": ..}` value nodes into literals, resolve logical column
 //! names to physical (honouring the schema allowlist and `writable` flag), coerce
-//! values into the IR, and lower the filter. The per-backend renderers
-//! (`backend::sql`, `backend::mongo`) consume the [`ResolvedWrite`].
+//! values into the IR, lower the filter, and enforce the write-safety guards
+//! (the [`WriteConfig`] bulk-row cap and the unfiltered-mutation double opt-in) —
+//! so no caller can obtain a [`ResolvedWrite`] that violates them (W15). The
+//! per-backend renderers (`backend::sql`, `backend::mongo`) consume the
+//! [`ResolvedWrite`].
 //!
 //! See `proposals/data-write-dialect.md` for the full design.
 
 use serde_json::{Map, Value as Json};
 
+use crate::config::WriteConfig;
 use crate::query::error::QueryError;
 use crate::query::ir::{self, Cond};
 use crate::query::lower::{Params, lower_with};
@@ -157,7 +161,21 @@ impl From<WriteError> for dataflow_rs::engine::error::DataflowError {
     }
 }
 
-/// Parse and resolve the whole `data_write` input into a [`ResolvedWrite`].
+/// The complete key set of the write envelope. Anything else is a typo, and a
+/// typo here is a filter or `returning` silently not applying (W6).
+const ENVELOPE_KEYS: [&str; 8] = [
+    "op",
+    "target",
+    "values",
+    "set",
+    "filter",
+    "on_conflict",
+    "returning",
+    "all",
+];
+
+/// Parse and resolve the whole `data_write` input into a [`ResolvedWrite`],
+/// enforcing the write-safety guards from `cfg` (W15).
 ///
 /// `params` are the already-message-resolved named values (`{"param": name}` in
 /// `values`/`set`/`filter` fold to these); `reg` is the optional inline schema.
@@ -165,7 +183,20 @@ pub fn resolve_write(
     input: &Json,
     params: &Params,
     reg: &EntityRegistry,
+    cfg: &WriteConfig,
 ) -> Result<ResolvedWrite, WriteError> {
+    // W6: unknown keys were silently ignored — `"retuning"` meant no
+    // returning, a misspelled `filter` key meant an unfiltered mutation.
+    let obj = input.as_object().ok_or_else(|| {
+        WriteError::InvalidEnvelope("write envelope must be a JSON object".to_string())
+    })?;
+    if let Some(unknown) = obj.keys().find(|k| !ENVELOPE_KEYS.contains(&k.as_str())) {
+        return Err(WriteError::InvalidEnvelope(format!(
+            "unknown key '{unknown}' in write envelope (expected \
+             op/target/values/set/filter/on_conflict/returning/all)"
+        )));
+    }
+
     let op = match input.get("op").and_then(|v| v.as_str()) {
         Some("insert") => WriteOp::Insert,
         Some("update") => WriteOp::Update,
@@ -213,8 +244,7 @@ pub fn resolve_write(
     let returning = parse_returning(input.get("returning"), reg, &target)?;
     let all = input.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    // Per-op required-field checks (the unfiltered guard is enforced by the
-    // handler, which also holds the `allow_unfiltered` config).
+    // Per-op required-field checks.
     match op {
         WriteOp::Insert => {
             if rows.is_empty() {
@@ -246,6 +276,30 @@ pub fn resolve_write(
                     op: "upsert".to_string(),
                 });
             }
+        }
+    }
+
+    // W15: the write-safety guards live in the resolution itself, so no caller
+    // can obtain a `ResolvedWrite` that violates them. They used to be
+    // enforced only by the `data_write` handler, making this function —
+    // documented as the whole backend-neutral transformation — unsafe to call
+    // alone.
+    if matches!(op, WriteOp::Insert | WriteOp::Upsert) && rows.len() as u64 > cfg.max_rows {
+        return Err(WriteError::TooManyRows {
+            requested: rows.len(),
+            max: cfg.max_rows,
+        });
+    }
+    if matches!(op, WriteOp::Update | WriteOp::Delete) && !effective_filter {
+        if !all {
+            return Err(WriteError::UnfilteredMutation {
+                op: op.as_str().to_string(),
+            });
+        }
+        if !cfg.allow_unfiltered {
+            return Err(WriteError::UnfilteredNotAllowed {
+                op: op.as_str().to_string(),
+            });
         }
     }
 
@@ -365,6 +419,14 @@ fn parse_conflict(
             ));
         }
     };
+    if let Some(unknown) = map
+        .keys()
+        .find(|k| !matches!(k.as_str(), "target" | "action"))
+    {
+        return Err(WriteError::InvalidEnvelope(format!(
+            "unknown key '{unknown}' in on_conflict (expected target/action)"
+        )));
+    }
     let targets_raw = map
         .get("target")
         .and_then(|v| v.as_array())
@@ -482,8 +544,22 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A config that lets every envelope shape through, so envelope tests are
+    /// not entangled with the guards (which have their own tests below).
+    fn permissive() -> WriteConfig {
+        WriteConfig {
+            max_rows: 1000,
+            allow_unfiltered: true,
+        }
+    }
+
     fn resolve(input: Json) -> Result<ResolvedWrite, WriteError> {
-        resolve_write(&input, &Params::new(), &EntityRegistry::default())
+        resolve_write(
+            &input,
+            &Params::new(),
+            &EntityRegistry::default(),
+            &permissive(),
+        )
     }
 
     // -- envelope errors ---------------------------------------------------
@@ -514,6 +590,33 @@ mod tests {
         let err = resolve(json!({ "op": "insert", "target": "", "values": {"a": 1} }))
             .expect_err("empty target");
         assert!(err.to_string().contains("target"), "{err}");
+    }
+
+    // -- unknown keys (W6) -------------------------------------------------
+
+    /// `"retuning"` used to mean no returning and a misspelled `filter` key
+    /// meant an unfiltered mutation — the intent was silently discarded.
+    #[test]
+    fn unknown_envelope_keys_are_rejected_naming_the_key() {
+        for bad in ["retuning", "vaules", "flter"] {
+            let mut input = json!({ "op": "insert", "target": "orders", "values": {"a": 1} });
+            input[bad] = json!(["id"]);
+            let err = resolve(input).expect_err("unknown key must be rejected");
+            assert!(matches!(err, WriteError::InvalidEnvelope(_)), "{err}");
+            assert!(err.to_string().contains(bad), "{err}");
+        }
+    }
+
+    #[test]
+    fn unknown_on_conflict_keys_are_rejected() {
+        let err = resolve(json!({
+            "op": "upsert", "target": "users",
+            "values": { "email": "a@x.io" },
+            "on_conflict": { "target": ["email"], "action": "update", "do": "nothing" }
+        }))
+        .expect_err("unknown on_conflict key must be rejected");
+        assert!(err.to_string().contains("'do'"), "{err}");
+        assert!(err.to_string().contains("on_conflict"), "{err}");
     }
 
     // -- per-op required fields --------------------------------------------
@@ -597,27 +700,78 @@ mod tests {
             }),
             &params,
             &EntityRegistry::default(),
+            &permissive(),
         )
         .expect("resolves");
         assert_eq!(resolved.rows.len(), 1);
         assert!(matches!(resolved.rows[0][0], ir::Value::Int(42)));
     }
 
-    // -- unfiltered mutation shape (guard data for the handler) ------------
+    // -- write-safety guards (W15: enforced by resolve_write itself) -------
+
+    /// The guards used to live only in the `data_write` handler, so
+    /// `resolve_write` alone produced an unguarded unfiltered DELETE.
+    #[test]
+    fn unfiltered_delete_without_all_is_rejected_by_resolve_write() {
+        let err = resolve(json!({ "op": "delete", "target": "orders" }))
+            .expect_err("no filter, no acknowledgement");
+        assert!(
+            matches!(&err, WriteError::UnfilteredMutation { op } if op == "delete"),
+            "{err}"
+        );
+    }
 
     #[test]
-    fn delete_without_filter_resolves_with_filter_absent() {
-        // The unfiltered guard itself lives in the handler; resolve_write
-        // must faithfully report effective_filter/all so the guard can act.
-        let resolved = resolve(json!({ "op": "delete", "target": "orders" })).expect("resolves");
-        assert!(!resolved.effective_filter);
-        assert!(!resolved.all);
+    fn unfiltered_delete_with_all_still_needs_the_config_opt_in() {
+        let err = resolve_write(
+            &json!({ "op": "delete", "target": "orders", "all": true }),
+            &Params::new(),
+            &EntityRegistry::default(),
+            &WriteConfig {
+                max_rows: 1000,
+                allow_unfiltered: false,
+            },
+        )
+        .expect_err("config forbids unfiltered mutations");
+        assert!(
+            matches!(&err, WriteError::UnfilteredNotAllowed { op } if op == "delete"),
+            "{err}"
+        );
+    }
 
+    #[test]
+    fn unfiltered_delete_with_both_opt_ins_resolves() {
         let resolved =
             resolve(json!({ "op": "delete", "target": "orders", "all": true })).expect("resolves");
+        assert!(resolved.all, "the 'all' acknowledgement must survive");
+        assert!(!resolved.effective_filter);
+    }
+
+    #[test]
+    fn a_bulk_insert_over_max_rows_is_rejected_by_resolve_write() {
+        let err = resolve_write(
+            &json!({
+                "op": "insert",
+                "target": "orders",
+                "values": [ {"a": 1}, {"a": 2}, {"a": 3} ]
+            }),
+            &Params::new(),
+            &EntityRegistry::default(),
+            &WriteConfig {
+                max_rows: 2,
+                allow_unfiltered: false,
+            },
+        )
+        .expect_err("3 rows over a cap of 2");
         assert!(
-            resolved.all,
-            "the 'all' acknowledgement must survive parsing"
+            matches!(
+                err,
+                WriteError::TooManyRows {
+                    requested: 3,
+                    max: 2
+                }
+            ),
+            "{err}"
         );
     }
 
@@ -632,15 +786,15 @@ mod tests {
             json!({ "!": { "or": [] } }),
             json!({ "and": [{ "and": [] }] }),
         ] {
-            let resolved = resolve(json!({
+            let err = resolve(json!({
                 "op": "delete",
                 "target": "orders",
                 "filter": vacuous.clone(),
             }))
-            .expect("resolves");
+            .expect_err("a vacuous filter restricts nothing");
             assert!(
-                !resolved.effective_filter,
-                "filter {vacuous} restricts nothing and must not satisfy the guard"
+                matches!(err, WriteError::UnfilteredMutation { .. }),
+                "filter {vacuous} must not satisfy the guard"
             );
         }
     }

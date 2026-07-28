@@ -35,8 +35,8 @@ pub struct DataQueryHandler {
     pub mongo_pool_cache: Arc<MongoPoolCache>,
     pub http_client: reqwest::Client,
     pub registry: Arc<ConnectorRegistry>,
-    pub default_limit: u64,
-    pub max_limit: u64,
+    /// Page bounds (`default_limit` / `max_limit` / `max_skip`) from `[query]`.
+    pub limits: crate::config::QueryConfig,
 }
 
 #[async_trait]
@@ -76,25 +76,13 @@ impl AsyncFunctionHandler for DataQueryHandler {
             let result = match connector_config.as_ref() {
                 ConnectorConfig::Es(es) => {
                     // Elasticsearch: render a search body and POST it via HTTP.
-                    let eq = query::translate_es(
-                        query,
-                        &params,
-                        &registry,
-                        self.default_limit,
-                        self.max_limit,
-                    )?;
+                    let eq = query::translate_es(query, &params, &registry, &self.limits)?;
                     run_es_search(&self.http_client, es, &eq).await?
                 }
                 ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
                     // MongoDB: render a `find` and execute it via the Mongo pool.
                     let database = call.require_str(input, "database")?;
-                    let mq = query::translate_mongo(
-                        query,
-                        &params,
-                        &registry,
-                        self.default_limit,
-                        self.max_limit,
-                    )?;
+                    let mq = query::translate_mongo(query, &params, &registry, &self.limits)?;
                     let client = self
                         .mongo_pool_cache
                         .get_client(call.connector, db)
@@ -134,14 +122,7 @@ impl AsyncFunctionHandler for DataQueryHandler {
                     let dialect: SqlDialect = detect_backend(&db.connection_string)
                         .map_err(to_exec_error)?
                         .into();
-                    let plan = query::plan_sql(
-                        query,
-                        &params,
-                        &registry,
-                        dialect,
-                        self.default_limit,
-                        self.max_limit,
-                    )?;
+                    let plan = query::plan_sql(query, &params, &registry, dialect, &self.limits)?;
                     let pool = self
                         .pool_cache
                         .get_pool(call.connector, db)

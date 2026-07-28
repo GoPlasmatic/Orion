@@ -174,6 +174,7 @@ where
     // Query dialect
     ov!(query.default_limit: u64);
     ov!(query.max_limit: u64);
+    ov!(query.max_skip: u64);
 
     // Write dialect
     ov!(write.max_rows: u64);

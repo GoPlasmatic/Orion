@@ -25,6 +25,8 @@ pub enum QueryError {
     UnknownRelation { relation: String, at: String },
     /// The requested page size exceeds the configured hard maximum.
     LimitExceeded { requested: u64, max: u64 },
+    /// The requested `skip` offset exceeds the configured hard maximum.
+    SkipExceeded { requested: u64, max: u64 },
     /// The query uses a feature the chosen backend cannot express.
     FeatureUnsupportedByTarget { feature: String, target: String },
 }
@@ -55,6 +57,12 @@ impl std::fmt::Display for QueryError {
                 write!(
                     f,
                     "requested limit {requested} exceeds the configured maximum {max}"
+                )
+            }
+            QueryError::SkipExceeded { requested, max } => {
+                write!(
+                    f,
+                    "requested skip {requested} exceeds the configured maximum {max}"
                 )
             }
         }

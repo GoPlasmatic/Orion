@@ -11,6 +11,7 @@
 
 use mongodb::bson::{Bson, Document};
 
+use crate::config::QueryConfig;
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, FieldRef, MongoStorage, Quant, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir};
@@ -28,15 +29,25 @@ pub struct MongoQuery {
 }
 
 /// Build a `MongoQuery` from the envelope and lowered condition, enforcing the
-/// page-size bounds.
+/// page bounds.
 pub fn render(
     spec: &QuerySpec,
     cond: &Cond,
     collection: &str,
-    default_limit: u64,
-    max_limit: u64,
+    limits: &QueryConfig,
 ) -> Result<MongoQuery, QueryError> {
-    let limit = super::resolve_limit(spec.limit, default_limit, max_limit)?;
+    // F26: `include` hydration exists only on SQL. It used to be silently
+    // dropped here — parents came back with no children and no error, in
+    // direct violation of the never-approximate rule.
+    if let Some(inc) = spec.include.first() {
+        return Err(QueryError::FeatureUnsupportedByTarget {
+            feature: format!("include '{}'", inc.relation),
+            target: "mongodb".to_string(),
+        });
+    }
+
+    let limit = super::resolve_limit(spec.limit, limits)?;
+    let skip = super::resolve_skip(spec.skip, limits)?;
 
     let filter = match cond {
         Cond::True => Document::new(),
@@ -49,6 +60,12 @@ pub fn render(
         let mut p = Document::new();
         for f in &spec.fields {
             p.insert(mongo_name(f.as_str()), 1_i32);
+        }
+        // W9: Mongo returns `_id` by default even when not projected, while
+        // SQL/ES return exactly the requested fields. Suppress it unless it
+        // was explicitly asked for.
+        if !p.contains_key("_id") {
+            p.insert("_id", 0_i32);
         }
         Some(p)
     };
@@ -72,7 +89,7 @@ pub fn render(
         filter,
         projection,
         sort,
-        skip: spec.skip,
+        skip,
         limit,
     })
 }
@@ -139,7 +156,19 @@ fn match_doc(cond: &Cond) -> Result<Document, QueryError> {
             }
             doc_kv(mongo_name(field), Bson::Document(inner))
         }
-        Cond::Rel { quant, rel, cond } => rel_doc(*quant, &rel.name, rel.mongo, cond)?,
+        Cond::Rel { quant, rel, cond } => {
+            // W11: a many-to-many relation needs a junction join, which a
+            // `find` filter cannot express. It used to render as a plain
+            // `$elemMatch` on the relation name — wrong results, no error —
+            // while include planning correctly gated m2m.
+            if rel.through.is_some() {
+                return Err(QueryError::FeatureUnsupportedByTarget {
+                    feature: format!("many-to-many relation '{}'", rel.name),
+                    target: "mongodb".to_string(),
+                });
+            }
+            rel_doc(*quant, &rel.name, rel.mongo, cond)?
+        }
     })
 }
 
@@ -450,20 +479,23 @@ mod tests {
     use mongodb::bson::doc;
     use serde_json::json;
 
+    fn limits() -> QueryConfig {
+        QueryConfig::default()
+    }
+
     fn mongo(query: serde_json::Value) -> MongoQuery {
         translate_mongo(
             &query,
             &serde_json::Map::new(),
             &EntityRegistry::default(),
-            100,
-            1000,
+            &limits(),
         )
         .expect("translation should succeed")
     }
 
     fn mongo_schema(query: serde_json::Value, schema: serde_json::Value) -> MongoQuery {
         let reg = EntityRegistry::from_json(&schema).expect("schema");
-        translate_mongo(&query, &serde_json::Map::new(), &reg, 100, 1000).expect("ok")
+        translate_mongo(&query, &serde_json::Map::new(), &reg, &limits()).expect("ok")
     }
 
     #[test]
@@ -526,8 +558,21 @@ mod tests {
             "fields": ["id", "name"],
             "sort": [{ "name": "asc" }, { "age": "desc" }]
         }));
+        // `id` maps to `_id`, which is explicitly projected — no suppression.
         assert_eq!(q.projection, Some(doc! { "_id": 1_i32, "name": 1_i32 }));
         assert_eq!(q.sort, Some(doc! { "name": 1_i32, "age": -1_i32 }));
+    }
+
+    /// W9: without `_id: 0`, Mongo returned `{_id, name}` where SQL/ES
+    /// returned `{name}` for the same envelope.
+    #[test]
+    fn test_projection_suppresses_id_unless_requested() {
+        let q = mongo(json!({ "source": "users", "fields": ["name"] }));
+        assert_eq!(
+            q.projection,
+            Some(doc! { "name": 1_i32, "_id": 0_i32 }),
+            "an unrequested _id must be suppressed"
+        );
     }
 
     #[test]
@@ -559,11 +604,58 @@ mod tests {
                 "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id", "mongo": "referenced" }
             } } } }))
             .expect("schema"),
-            100,
-            1000,
+            &limits(),
         )
         .expect_err("referenced not supported yet");
         assert!(matches!(err, QueryError::FeatureUnsupportedByTarget { .. }));
+    }
+
+    /// W11: a `through` relation predicate used to render as a plain
+    /// `$elemMatch` on the relation name — wrong results, no error.
+    #[test]
+    fn test_many_to_many_relation_filter_is_capability_error() {
+        let err = translate_mongo(
+            &json!({
+                "source": "users",
+                "filter": { "some": [{"field": "tags"}, {"==": [{"field": "label"}, "vip"]}] }
+            }),
+            &serde_json::Map::new(),
+            &EntityRegistry::from_json(&json!({ "entities": { "users": { "relations": {
+                "tags": {
+                    "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "id",
+                    "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id" }
+                }
+            } } } }))
+            .expect("schema"),
+            &limits(),
+        )
+        .expect_err("m2m filter must be gated, not approximated");
+        assert!(
+            matches!(err, QueryError::FeatureUnsupportedByTarget { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("tags"), "{err}");
+    }
+
+    /// F26: `include` used to be silently dropped — parents with no children
+    /// and no error.
+    #[test]
+    fn test_include_is_capability_error() {
+        let err = translate_mongo(
+            &json!({ "source": "users", "include": { "orders": { "limit": 5 } } }),
+            &serde_json::Map::new(),
+            &EntityRegistry::from_json(&json!({ "entities": { "users": { "relations": {
+                "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
+            } } } }))
+            .expect("schema"),
+            &limits(),
+        )
+        .expect_err("include must be gated on mongo");
+        assert!(
+            matches!(err, QueryError::FeatureUnsupportedByTarget { .. }),
+            "{err}"
+        );
+        assert!(err.to_string().contains("include 'orders'"), "{err}");
     }
 
     #[test]
@@ -572,11 +664,23 @@ mod tests {
             &json!({ "source": "t", "limit": 9999 }),
             &serde_json::Map::new(),
             &EntityRegistry::default(),
-            100,
-            1000,
+            &limits(),
         )
         .expect_err("over cap");
         assert!(matches!(err, QueryError::LimitExceeded { .. }));
+    }
+
+    /// W12: `skip` is bounded on Mongo too — it used to pass through unbounded.
+    #[test]
+    fn test_skip_exceeds_max_rejected() {
+        let err = translate_mongo(
+            &json!({ "source": "t", "skip": 10_001 }),
+            &serde_json::Map::new(),
+            &EntityRegistry::default(),
+            &limits(),
+        )
+        .expect_err("over the skip cap");
+        assert!(matches!(err, QueryError::SkipExceeded { .. }), "{err}");
     }
 
     // ---- Write rendering ----
@@ -586,6 +690,10 @@ mod tests {
             &input,
             &serde_json::Map::new(),
             &EntityRegistry::default(),
+            &crate::config::WriteConfig {
+                max_rows: 1000,
+                allow_unfiltered: true,
+            },
         )
         .expect("resolve_write should succeed")
     }
