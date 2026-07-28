@@ -1,3 +1,30 @@
+//! Database abstraction: pool construction, backend detection, migrations,
+//! row models and repositories.
+//!
+//! ## Why there are no foreign keys (D26)
+//!
+//! `grep REFERENCES migrations/` returns nothing, on any backend, and that is
+//! deliberate rather than an oversight:
+//!
+//! - **`workflows` and `channels` are version-keyed.** Both have a composite
+//!   primary key `(id, version)`, and `channels.workflow_id` references a
+//!   workflow *id*, never a specific version. There is no key to point an FK
+//!   at, and adding one to `(workflow_id, version)` would freeze a channel to
+//!   the workflow version current when it was authored — the opposite of the
+//!   rollout model.
+//! - **`traces` outlive what they reference.** A trace records what ran, so it
+//!   must survive the deletion of its channel or workflow. An FK would either
+//!   block that delete or cascade away the audit record.
+//! - **`audit_logs.resource_id` is polymorphic** — it holds a workflow,
+//!   channel, connector or breaker id depending on `resource_type`, which no
+//!   single FK can express.
+//! - **`trace_dlq.trace_id`** is the one plausible FK. It is omitted so DLQ
+//!   rows survive trace retention cleanup, which is exactly when they matter.
+//!
+//! Referential integrity is enforced in the repositories instead. SQLite is
+//! still opened with `PRAGMA foreign_keys = ON` so a future FK takes effect
+//! immediately; see `init_sqlite_pool`.
+
 // Scaffold for bootstrapping a new backend's migration set (see
 // CONTRIBUTING.md). Test-only: the shipped migrations have deliberately
 // diverged from what it generates, so it must never ship in the binary.
@@ -392,6 +419,10 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
         })?
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        // D26: currently a no-op — the schema declares no foreign keys at all
+        // (`grep REFERENCES migrations/` is empty), by design. See the module
+        // doc comment. Kept on so that any FK added later is enforced from the
+        // first connection rather than depending on someone remembering this.
         .pragma("foreign_keys", "ON")
         .pragma("busy_timeout", busy_timeout)
         .pragma("synchronous", "NORMAL")

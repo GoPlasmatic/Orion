@@ -3585,13 +3585,15 @@
         ],
         "properties": {
           "channel": {
-            "type": "string"
+            "type": "string",
+            "description": "The channel **name** as it was at execution time — an immutable\nsnapshot, not a lookup key (D26). It is deliberately kept alongside\n`channel_id` and deliberately not refreshed: renaming a channel must\nnot rewrite the history of what already ran, and a trace has to stay\nreadable after its channel is deleted. Filter and group by\n`channel_id` when you mean \"this channel\"; read `channel` when you\nmean \"what it was called then\"."
           },
           "channel_id": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Stable identity of the channel that ran, when one was resolved. `None`\nfor rows written before the column existed."
           },
           "completed_at": {
             "type": [

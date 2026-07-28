@@ -162,7 +162,7 @@ pub const TRACE_MODE_ASYNC: &str = "async";
 // Workflow (replaces Rule)
 // ============================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Workflow {
     pub workflow_id: String,
     pub version: i64,
@@ -229,7 +229,7 @@ impl TryFrom<&Workflow> for WorkflowResponse {
 // Channel
 // ============================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Channel {
     pub channel_id: String,
     pub version: i64,
@@ -314,7 +314,7 @@ impl TryFrom<&Channel> for ChannelResponse {
 // Connector (unchanged)
 // ============================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Connector {
     pub id: String,
     pub name: String,
@@ -329,10 +329,19 @@ pub struct Connector {
 // Trace
 // ============================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, utoipa::ToSchema)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct Trace {
     pub id: String,
+    /// The channel **name** as it was at execution time — an immutable
+    /// snapshot, not a lookup key (D26). It is deliberately kept alongside
+    /// `channel_id` and deliberately not refreshed: renaming a channel must
+    /// not rewrite the history of what already ran, and a trace has to stay
+    /// readable after its channel is deleted. Filter and group by
+    /// `channel_id` when you mean "this channel"; read `channel` when you
+    /// mean "what it was called then".
     pub channel: String,
+    /// Stable identity of the channel that ran, when one was resolved. `None`
+    /// for rows written before the column existed.
     pub channel_id: Option<String>,
     pub mode: String,
     pub status: String,
@@ -359,7 +368,7 @@ pub struct Trace {
 
 // -- Trace DLQ model --
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct TraceDlqEntry {
     pub id: String,
     pub trace_id: String,
@@ -374,7 +383,7 @@ pub struct TraceDlqEntry {
     pub updated_at: NaiveDateTime,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct AuditLogEntry {
     pub id: String,
     pub principal: String,
