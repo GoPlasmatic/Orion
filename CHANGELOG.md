@@ -65,7 +65,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `write.allow_unfiltered`, deleting every row. The guard now derives from the
   lowered condition rather than the presence of a `filter` key.
 
+### Added
+
+- **`server.max_admin_body_size`** (default 8 MB) bounds admin request bodies
+  independently of the data plane. The limit was a single global layer set
+  from `ingest.max_payload_size` — a name that says *data plane* — so raising
+  it for a bulk import also raised it for anonymous channel traffic.
+
 ### Fixed
+
+- **`?dry_run=true` on an import now reads the database.** It performed no DB
+  reads at all, as its own doc comment said. The stated use case is CI
+  pre-flight and the most common real failure is a name conflict, which is
+  exactly what a no-DB dry-run cannot see — so a green dry-run said nothing
+  about whether the real import would work. It now reports conflicts against
+  stored rows *and* duplicates within the batch; the second was free and
+  previously missed entirely.
+
+- **`POST /admin/workflows/validate` no longer green-lights payloads
+  `POST /admin/workflows` rejects.** `validate_workflow_tasks_schema` carried
+  the doc comment *"Public so the `/validate` endpoint can reuse it"* and had
+  **zero external callers**; the endpoint re-implemented the same walk and the
+  two disagreed by design — an unknown `function.name` was a hard error at
+  create and a *warning* here. A linter that green-lights a rejected payload
+  is worse than no linter. The create-path validator now runs first and
+  verbatim; the endpoint's remaining checks are only ever additional.
 
 - **A poisoned profile mutex no longer fails the request.** The per-request
   profiler took its locks inside the request future and `.expect()`ed them, so
@@ -215,6 +239,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the types.
 
 ### Breaking
+
+- **A REST channel's `route_pattern` and `methods` must now be well-formed.**
+  They were checked for non-emptiness and nothing else, so
+  `methods: ["POTS"]` and `route_pattern: "orders/{id"` were created,
+  activated and reloaded — and then never matched a request, with nothing
+  reporting it. The channel was simply dead.
+
+  A pattern must start with `/`, have no empty segments, and write each
+  parameter as a whole `{name}` segment with a valid identifier and no
+  duplicates; a method must be one Orion can route (`GET`, `POST`, `PUT`,
+  `PATCH`, `DELETE`, `HEAD`, `OPTIONS`). Checked on **update** as well as
+  create, and every problem comes back in one response. Existing active
+  channels are not re-validated; you meet this when you next edit one.
+
+- **A channel cannot be activated onto a route another active channel already
+  claims.** Two channels declaring `GET /orders/{id}` resolved by database row
+  order: which one served could differ between nodes and change on any reload,
+  and the loser's declared path silently ran the winner's workflow. The
+  incumbent wins, so activating a channel can never take a running one down.
+  Parameter names are not part of the match — `/orders/{id}` and
+  `/orders/{order_id}` collide. Rows stored before this resolve
+  deterministically now and log a warning naming both sides.
+
+- **`POST /api/v1/data/{channel}/async` always returns a usable `trace_id`.**
+  With `trace_storage.mode = "off"` it used to mint a throwaway UUID, answer
+  202 with `{"trace_id": null, "trace_token": null}` plus a `Warning: 299`
+  header, and enqueue the work anyway — a receipt whose documented follow-up
+  (`GET /admin/traces/{id}`) was structurally impossible. Appending `/async`
+  *is* the request for a result to be fetched later, so the trace row is
+  written before the 202 and the worker persists the outcome. `off` still
+  applies in full to the synchronous endpoint, where the caller already has
+  the answer. `trace_id` and `trace_token` are now required in the schema and
+  the `Warning` header is gone.
+
+- **`_orion.profile` is now `version: 2`.** See below.
+
+- **`POST /admin/workflows/import` reports per-item failures instead of
+  aborting.** One malformed item used to abort the whole batch with a 400,
+  while the identical mistake against `/channels/import` or
+  `/connectors/import` produced one failed entry and imported the rest —
+  three endpoints, one documented request shape, two behaviours. All three now
+  share one driver.
+
+- **`POST /admin/workflows/validate` field paths are the create-path ones.**
+  `name` is now `workflow.name`, and so on: the endpoint runs
+  `validate_create_workflow` itself rather than a parallel re-implementation,
+  which is what makes `valid: true` mean "create would accept this". See
+  Fixed.
+
+- **Entity ids that collide with a static admin sub-resource are refused.**
+  `import`, `export`, `validate`, `versions`, `status`, `rollout`, `test`,
+  `circuit-breakers`, `purge`, `requeue` and `reload` cannot be used as a
+  workflow, channel or connector id: those paths sit alongside `/{id}`, so an
+  entity named `import` was unaddressable and `DELETE /admin/workflows/import`
+  audit-logged a delete of nothing.
+
+- **A bare JSON object is now accepted as the data-plane payload.** The
+  endpoint had three behaviours for three body shapes and documented one:
+  `{"data": …}` was the envelope, an empty body became `{"data":{}}`, and
+  `{"amount": 5}` — the obvious thing to send — failed with *missing field
+  `data`*. One rule now: an object carrying `data` or `metadata` is the
+  envelope, anything else is the payload. Strictly widening; previously-400
+  requests now succeed.
 
 - **`retry` is gone from the `db` and `es` connector configs.** It was declared,
   validated and documented on both, and the only reader of a retry policy is

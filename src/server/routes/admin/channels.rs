@@ -276,8 +276,7 @@ pub(crate) async fn list_channel_versions(
     // Verify channel exists
     let _ = state.channel_repo.get_by_id(&id).await?;
 
-    let limit = filter.limit.unwrap_or(50);
-    let offset = filter.offset.unwrap_or(0);
+    let (limit, offset) = filter.limit_offset();
     let result = state.channel_repo.list_versions(&id, limit, offset).await?;
     paginated_into(result, |c| ChannelResponse::try_from(c))
 }

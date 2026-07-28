@@ -371,8 +371,7 @@ pub(crate) async fn list_workflow_versions(
     // Verify workflow exists
     let _ = state.workflow_repo.get_by_id(&id).await?;
 
-    let limit = filter.limit.unwrap_or(50);
-    let offset = filter.offset.unwrap_or(0);
+    let (limit, offset) = filter.limit_offset();
     let result = state
         .workflow_repo
         .list_versions(&id, limit, offset)

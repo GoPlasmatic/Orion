@@ -1357,3 +1357,77 @@ async fn validate_accepts_what_create_accepts() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 }
+
+/// R24: the version endpoints' page defaults were written out twice in the
+/// route layer (`unwrap_or(50)` / `unwrap_or(0)`) and a third time in the
+/// repository's `clamp_pagination`. They now come from one place, and both
+/// entities behave identically — including for the out-of-range values the
+/// route layer previously passed through untouched.
+#[tokio::test]
+async fn version_pagination_bounds_are_shared_by_both_entities() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "workflow_id": "page-bounds",
+                "name": "Page Bounds",
+                "tasks": [{"id":"t1","name":"Log",
+                           "function":{"name":"log","input":{"message":"v1"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "channel_id": "page-bounds-ch",
+                "name": "page-bounds-ch",
+                "channel_type": "sync",
+                "protocol": "http",
+                "methods": ["POST"],
+                "route_pattern": "/page-bounds"
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    for (entity, id) in [("workflows", "page-bounds"), ("channels", "page-bounds-ch")] {
+        // Default page size.
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v1/admin/{entity}/{id}/versions"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{entity}");
+        assert_eq!(body_json(resp).await["limit"], 50, "{entity} default limit");
+
+        // Over the cap and below the floor: clamped identically for both.
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v1/admin/{entity}/{id}/versions?limit=999999&offset=-5"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{entity}");
+        let body = body_json(resp).await;
+        assert_eq!(body["limit"], 1000, "{entity} limit must be capped");
+        assert_eq!(body["offset"], 0, "{entity} offset must not go negative");
+    }
+}
