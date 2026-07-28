@@ -98,7 +98,6 @@ async fn plain_url_passes_through_unchanged() {
                 "connector_type": "db",
                 "config": {
                     "connection_string": "postgres://localhost/example",
-                    "driver": "postgres"
                 }
             })),
         ))

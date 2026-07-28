@@ -70,7 +70,7 @@ fn names(v: &Value) -> Vec<String> {
 /// Drive the full CRUD round-trip against one backend and assert every step.
 async fn assert_crud_roundtrip(backend: Backend) {
     let app = common::test_app().await;
-    let name = format!("rt_{}", backend.driver());
+    let name = format!("rt_{}", backend.label());
     let h = common::backends::start(backend, &name).await;
     h.prepare().await;
     common::create_connector(&app, h.connector_json()).await;
@@ -176,7 +176,7 @@ async fn assert_crud_roundtrip(backend: Backend) {
     tasks.push(dw(&h, "item", item_env, "data.w_item"));
 
     // Run the pipeline in a single sync request.
-    let channel = format!("ch-rt-{}", backend.driver());
+    let channel = format!("ch-rt-{}", backend.label());
     common::create_and_activate_channel(
         &app,
         &channel,

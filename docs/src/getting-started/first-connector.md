@@ -44,7 +44,6 @@ curl -s -X POST http://localhost:8080/api/v1/admin/connectors \
     "config": {
       "type": "db",
       "connection_string": "${ORDERS_DB_URL:-postgres://orion:orion@postgres:5432/orion_orders}",
-      "driver": "postgres",
       "max_connections": 5,
       "operations": { "delete": false }
     }

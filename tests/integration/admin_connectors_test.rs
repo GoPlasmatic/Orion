@@ -514,7 +514,7 @@ async fn test_update_connector_config_only_invalid_rejected() {
                 "id": "r4-db-conn",
                 "name": "r4-db",
                 "connector_type": "db",
-                "config": {"connection_string": "sqlite::memory:", "driver": "sqlite"}
+                "config": {"connection_string": "sqlite::memory:"}
             })),
         ))
         .await
@@ -555,8 +555,11 @@ async fn test_update_connector_config_only_invalid_rejected() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     let config_json = body["data"]["config_json"].as_str().unwrap();
+    // `connection_string` is masked on read, so assert the key survived rather
+    // than its value: the rejected `{}` must not have replaced the stored row.
+    let stored: serde_json::Value = serde_json::from_str(config_json).unwrap();
     assert!(
-        config_json.contains("\"driver\":\"sqlite\""),
+        stored.get("connection_string").is_some(),
         "stored config should be unchanged, got {config_json}"
     );
 }
@@ -574,7 +577,7 @@ async fn test_update_connector_config_only_valid_accepted() {
                 "id": "r4-db-conn-ok",
                 "name": "r4-db-ok",
                 "connector_type": "db",
-                "config": {"connection_string": "sqlite::memory:", "driver": "sqlite"}
+                "config": {"connection_string": "sqlite::memory:"}
             })),
         ))
         .await
@@ -587,7 +590,7 @@ async fn test_update_connector_config_only_valid_accepted() {
         .oneshot(json_request(
             "PUT",
             "/api/v1/admin/connectors/r4-db-conn-ok",
-            Some(json!({"config": {"connection_string": "sqlite:file.db", "driver": "sqlite"}})),
+            Some(json!({"config": {"connection_string": "sqlite:file.db"}})),
         ))
         .await
         .unwrap();

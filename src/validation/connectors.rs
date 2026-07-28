@@ -52,7 +52,6 @@ pub fn validate_connector_config(
     if let Some(retry) = match &parsed {
         ConnectorConfig::Http(c) => Some(&c.retry),
         ConnectorConfig::Db(c) => Some(&c.retry),
-        ConnectorConfig::Cache(c) => Some(&c.retry),
         ConnectorConfig::Es(c) => Some(&c.retry),
         _ => None,
     } && retry.max_retries > 16
@@ -297,7 +296,7 @@ mod tests {
 
     #[test]
     fn test_connector_config_db_valid() {
-        let config = json!({"connection_string": "sqlite::memory:", "driver": "sqlite"});
+        let config = json!({"connection_string": "sqlite::memory:"});
         assert!(validate_connector_config(ConnectorType::Db, &config).is_ok());
     }
 

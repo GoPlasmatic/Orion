@@ -45,9 +45,11 @@ pub enum Backend {
 }
 
 impl Backend {
-    /// The `driver` field written into the connector config (label only for ES,
-    /// whose connector carries a URL instead).
-    pub fn driver(&self) -> &'static str {
+    /// Short stable name for this backend, used to build unique per-backend
+    /// connector and channel names. (It used to be written into the connector
+    /// config as `driver`, a field removed in 1.0 — the backend comes from the
+    /// connection-string scheme.)
+    pub fn label(&self) -> &'static str {
         match self {
             Backend::Sqlite => "sqlite",
             Backend::Postgres => "postgres",
@@ -124,7 +126,6 @@ impl BackendHarness {
             "config": {
                 "type": "db",
                 "connection_string": self.connection_string,
-                "driver": self.backend.driver(),
                 "max_connections": 2,
                 "query_timeout_ms": 10000
             }

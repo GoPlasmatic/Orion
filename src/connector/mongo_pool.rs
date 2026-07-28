@@ -19,21 +19,49 @@ impl MongoPoolCache {
         }
     }
 
+    /// Resolve (and cache) the client for `connector_name`.
+    ///
+    /// `max_connections` and `connect_timeout_ms` are honoured here for the
+    /// same reason the SQL pool honours them (`pool_cache.rs`): without the
+    /// timeout, an unreachable Mongo host waits on the driver's 30 s
+    /// server-selection default while the caller's own deadline is typically
+    /// far shorter, so the request stalls instead of failing. Both were
+    /// accepted and ignored until 1.0 (proposal F22) — the same two fields the
+    /// SQL path applied, on the same struct.
     pub async fn get_client(
         &self,
         connector_name: &str,
         config: &DbConnectorConfig,
     ) -> Result<Client, OrionError> {
         let conn_str = config.connection_string.clone();
+        let max_conns = config.max_connections;
+        let connect_timeout = config.connect_timeout_ms;
 
         self.cache
             .get_or_create(connector_name, || async move {
-                Client::with_uri_str(&conn_str)
+                let mut opts = mongodb::options::ClientOptions::parse(&conn_str)
                     .await
                     .map_err(|e| OrionError::InternalSource {
-                        context: format!("Failed to connect to MongoDB '{connector_name}'"),
+                        context: format!(
+                            "Invalid MongoDB connection string for '{connector_name}'"
+                        ),
                         source: Box::new(e),
-                    })
+                    })?;
+                if let Some(max) = max_conns {
+                    opts.max_pool_size = Some(max);
+                }
+                if let Some(ms) = connect_timeout {
+                    let d = std::time::Duration::from_millis(ms);
+                    opts.connect_timeout = Some(d);
+                    // Connecting is only half of it: with a reachable host but
+                    // no usable primary the driver blocks in server selection,
+                    // which has its own (30 s) default.
+                    opts.server_selection_timeout = Some(d);
+                }
+                Client::with_options(opts).map_err(|e| OrionError::InternalSource {
+                    context: format!("Failed to connect to MongoDB '{connector_name}'"),
+                    source: Box::new(e),
+                })
             })
             .await
     }

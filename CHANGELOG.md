@@ -25,6 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **Seven connector config fields that were never read are removed:**
+  `db.driver`, `db.auth`, `cache.default_ttl_secs`, `cache.max_connections`,
+  `cache.auth`, `cache.retry`, and `kafka.group_id` (the connector one — the
+  `[kafka] group_id` server setting is unaffected). Each was accepted,
+  validated, persisted, returned by `GET /connectors`, and documented with a
+  default. `db.driver` was the worst: it looked like the thing that selects the
+  backend and is not, so `driver: "mysql"` with a `postgres://` URL connected
+  to Postgres.
+
+  **Stored connector configs keep loading** — connector configs do not use
+  `deny_unknown_fields`, so a 0.3.x row carrying these keys deserializes fine
+  and they are ignored, exactly as they always effectively were. Nothing to do
+  on upgrade; delete them from your configs at leisure. Credentials go in
+  `connection_string` / `url`; cache TTL is per-`cache_write` via `ttl_secs`.
 - **The `storage` connector type is removed.** It was accepted, validated,
   persisted and listed by `GET /connectors` for the whole 0.x line with no
   handler behind it — `POST /connectors` returned 201 and every workflow
@@ -96,6 +110,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **MongoDB connectors now honour `max_connections` and `connect_timeout_ms`.**
+  Both live on the same `db` connector struct the SQL path reads, and the SQL
+  pool applied both while the Mongo client applied neither — so an unreachable
+  Mongo host waited on the driver's 30 s server-selection default instead of
+  the configured timeout, stalling the request rather than failing it. The
+  timeout now caps server selection as well as connection.
 - **The shipped `config.toml.example` now loads on a clean machine.**
   Placeholder substitution runs over the raw file text before TOML parsing, so
   the `${VAR}` in the header comment that *documents* the placeholder syntax —

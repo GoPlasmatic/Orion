@@ -281,7 +281,6 @@ pub fn db_connector(name: &str) -> serde_json::Value {
         "connector_type": "db",
         "config": {
             "connection_string": "sqlite::memory:",
-            "driver": "sqlite"
         }
     })
 }
@@ -296,7 +295,6 @@ pub fn db_connector_sqlite(name: &str, db_path: &str) -> serde_json::Value {
         "config": {
             "type": "db",
             "connection_string": db_path,
-            "driver": "sqlite",
             "max_connections": 1,
             "query_timeout_ms": 5000
         }

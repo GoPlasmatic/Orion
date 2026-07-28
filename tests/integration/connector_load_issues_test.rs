@@ -288,7 +288,7 @@ async fn a_config_without_a_redundant_inner_type_loads() {
         (
             "f16-db-plain",
             "db",
-            json!({"connection_string": "sqlite::memory:", "driver": "sqlite"}),
+            json!({"connection_string": "sqlite::memory:"}),
         ),
     ] {
         let resp = app

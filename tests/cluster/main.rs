@@ -719,7 +719,6 @@ async fn connector_update_propagates_to_other_node() {
                 "config": {
                     "type": "db",
                     "connection_string": new_url,
-                    "driver": "sqlite",
                     "max_connections": 1,
                     "query_timeout_ms": 5000
                 }

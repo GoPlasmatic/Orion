@@ -93,8 +93,7 @@ Produce to Kafka topics:
   "config": {
     "type": "kafka",
     "brokers": ["kafka1:9092", "kafka2:9092"],
-    "topic": "events",
-    "group_id": "orion-producer"
+    "topic": "events"
   }
 }
 ```
@@ -174,7 +173,6 @@ Parameterized SQL queries against PostgreSQL, MySQL, or SQLite:
   "config": {
     "type": "db",
     "connection_string": "postgres://user:pass@db-host:5432/orders",
-    "driver": "postgres",
     "max_connections": 10,
     "connect_timeout_ms": 5000,
     "query_timeout_ms": 30000
@@ -184,10 +182,9 @@ Parameterized SQL queries against PostgreSQL, MySQL, or SQLite:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `connection_string` | required | Database URL (auto-masked in API responses) |
-| `driver` | `"postgres"` | Driver type: `postgres`, `mysql`, or `sqlite` |
+| `connection_string` | required | Database URL — the scheme (`postgres://`, `mysql://`, `sqlite:`, `mongodb://`) selects the backend. Carries credentials; auto-masked in API responses |
 | `max_connections` | `null` | Connection pool max size |
-| `connect_timeout_ms` | `null` | Connection establishment timeout |
+| `connect_timeout_ms` | `null` | Connection establishment timeout (also caps MongoDB server selection) |
 | `query_timeout_ms` | `null` | Individual query timeout |
 | `retry` | 3 retries, 1000ms | Retry with exponential backoff |
 | `operations` | all allowed | [Operation gates](#operation-gates) — en/disable read / insert / update / delete / upsert / raw_write |
@@ -252,9 +249,7 @@ In-memory or Redis cache for lookups, session state, and temporary storage:
   "config": {
     "type": "cache",
     "backend": "redis",
-    "url": "redis://localhost:6379",
-    "default_ttl_secs": 300,
-    "max_connections": 10
+    "url": "redis://localhost:6379"
   }
 }
 ```
@@ -262,10 +257,10 @@ In-memory or Redis cache for lookups, session state, and temporary storage:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `backend` | required | `"redis"` or `"memory"` |
-| `url` | required (redis) | Redis connection URL |
-| `default_ttl_secs` | `null` | Default TTL for cache entries |
-| `max_connections` | `null` | Connection pool max size |
-| `retry` | 3 retries, 1000ms | Retry with exponential backoff |
+| `url` | required (redis) | Redis connection URL, including credentials when needed: `redis://user:pass@host:6379` |
+
+TTL is set per write, via `cache_write`'s `ttl_secs` — there is no
+connector-level default.
 
 Use `cache_read` and `cache_write` in workflows:
 
@@ -293,8 +288,7 @@ MongoDB uses a `db` connector with a `mongodb://` connection string:
   "connector_type": "db",
   "config": {
     "type": "db",
-    "connection_string": "mongodb://localhost:27017",
-    "driver": "mongodb"
+    "connection_string": "mongodb://localhost:27017"
   }
 }
 ```

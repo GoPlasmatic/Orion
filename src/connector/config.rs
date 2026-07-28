@@ -133,25 +133,31 @@ impl Default for RetryConfig {
     }
 }
 
+/// Kafka connector. Producer-only: `publish_kafka` writes to `topic`.
+/// Ingest consumers are configured under `[kafka]` in the server config, not
+/// here — which is why there is no `group_id` (proposal F22).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KafkaConnectorConfig {
     pub brokers: Vec<String>,
     pub topic: String,
-    pub group_id: Option<String>,
 }
 
+/// SQL or MongoDB connector. The backend is selected by the
+/// `connection_string` scheme (`postgres://`, `mysql://`, `sqlite:`,
+/// `mongodb://`) — there is deliberately no `driver` field, because one
+/// existed until 1.0, was never read, and made `driver: "mysql"` with a
+/// `postgres://` URL look meaningful when it silently connected to Postgres
+/// (proposal F22). Credentials belong in the connection string, which is why
+/// there is no `auth` either.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DbConnectorConfig {
     pub connection_string: String,
-    #[serde(default = "default_db_driver")]
-    pub driver: String,
     #[serde(default)]
     pub max_connections: Option<u32>,
     #[serde(default)]
     pub connect_timeout_ms: Option<u64>,
     #[serde(default)]
     pub query_timeout_ms: Option<u64>,
-    pub auth: Option<AuthConfig>,
     #[serde(default)]
     pub retry: RetryConfig,
     /// Which operations workflows may run through this connector.
@@ -159,24 +165,18 @@ pub struct DbConnectorConfig {
     pub operations: OperationGates,
 }
 
-fn default_db_driver() -> String {
-    "postgres".to_string()
-}
-
+/// Cache connector. `default_ttl_secs`, `max_connections`, `auth` and `retry`
+/// were accepted here until 1.0 and never read (proposal F22): TTL comes from
+/// each `cache_write` task, Redis credentials go in the `url`, and the
+/// connection manager has neither a pool size nor a retry policy to configure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheConnectorConfig {
     /// Cache backend: `"redis"` or `"memory"`. Required — no default.
     pub backend: String,
     /// Connection URL. Required when `backend = "redis"`, ignored for `"memory"`.
+    /// Carries credentials when Redis needs them: `redis://user:pass@host:6379`.
     #[serde(default)]
     pub url: Option<String>,
-    #[serde(default)]
-    pub default_ttl_secs: Option<u64>,
-    #[serde(default)]
-    pub max_connections: Option<u32>,
-    pub auth: Option<AuthConfig>,
-    #[serde(default)]
-    pub retry: RetryConfig,
 }
 
 /// Elasticsearch connector: a REST endpoint queried by the `data_query` handler
@@ -302,7 +302,6 @@ mod tests {
             ConnectorConfig::Kafka(kafka) => {
                 assert_eq!(kafka.brokers, vec!["localhost:9092"]);
                 assert_eq!(kafka.topic, "test-topic");
-                assert_eq!(kafka.group_id, Some("test-group".to_string()));
             }
             _ => unreachable!("Expected Kafka config"),
         }
@@ -310,12 +309,12 @@ mod tests {
 
     #[test]
     fn test_connector_config_deserialization_db() {
-        let json = r#"{"type":"db","connection_string":"postgres://localhost/mydb","driver":"postgres","max_connections":5}"#;
+        let json =
+            r#"{"type":"db","connection_string":"postgres://localhost/mydb","max_connections":5}"#;
         let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
             ConnectorConfig::Db(db) => {
                 assert_eq!(db.connection_string, "postgres://localhost/mydb");
-                assert_eq!(db.driver, "postgres");
                 assert_eq!(db.max_connections, Some(5));
             }
             _ => unreachable!("Expected Db config"),
@@ -330,7 +329,6 @@ mod tests {
             ConnectorConfig::Cache(cache) => {
                 assert_eq!(cache.backend, "redis");
                 assert_eq!(cache.url, Some("redis://localhost:6379".to_string()));
-                assert_eq!(cache.default_ttl_secs, Some(300));
             }
             _ => unreachable!("Expected Cache config"),
         }
@@ -344,9 +342,44 @@ mod tests {
             ConnectorConfig::Cache(cache) => {
                 assert_eq!(cache.backend, "memory");
                 assert!(cache.url.is_none());
-                assert_eq!(cache.default_ttl_secs, Some(60));
             }
             _ => unreachable!("Expected Cache config"),
+        }
+    }
+
+    /// F22 removed seven connector fields that were accepted, persisted, and
+    /// never read. Connector configs deliberately do **not** use
+    /// `deny_unknown_fields`, so a 0.3.x row carrying them still loads and the
+    /// keys are ignored — which is what they always effectively were. Without
+    /// this, every stored connector using one would fail to deserialize on
+    /// upgrade and drop out of the registry.
+    #[test]
+    fn legacy_configs_with_removed_fields_still_load() {
+        let db = r#"{"type":"db","connection_string":"postgres://localhost/mydb",
+                     "driver":"mysql","auth":{"type":"basic","username":"u","password":"p"}}"#;
+        match serde_json::from_str::<ConnectorConfig>(db).expect("0.3.x db config must still load")
+        {
+            ConnectorConfig::Db(db) => {
+                assert_eq!(db.connection_string, "postgres://localhost/mydb");
+            }
+            _ => unreachable!("Expected Db config"),
+        }
+
+        let cache = r#"{"type":"cache","backend":"redis","url":"redis://localhost:6379",
+                        "default_ttl_secs":300,"max_connections":10,"retry":{"max_retries":3}}"#;
+        match serde_json::from_str::<ConnectorConfig>(cache)
+            .expect("0.3.x cache config must still load")
+        {
+            ConnectorConfig::Cache(c) => assert_eq!(c.backend, "redis"),
+            _ => unreachable!("Expected Cache config"),
+        }
+
+        let kafka = r#"{"type":"kafka","brokers":["b:9092"],"topic":"t","group_id":"g"}"#;
+        match serde_json::from_str::<ConnectorConfig>(kafka)
+            .expect("0.3.x kafka config must still load")
+        {
+            ConnectorConfig::Kafka(k) => assert_eq!(k.topic, "t"),
+            _ => unreachable!("Expected Kafka config"),
         }
     }
 

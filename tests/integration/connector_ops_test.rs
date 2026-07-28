@@ -21,7 +21,6 @@ fn gated_connector(name: &str, mem: &str, ops: Value) -> Value {
         "config": {
             "type": "db",
             "connection_string": format!("sqlite:file:{mem}?mode=memory&cache=shared"),
-            "driver": "sqlite",
             "operations": ops
         }
     })
