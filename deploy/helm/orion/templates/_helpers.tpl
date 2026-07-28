@@ -77,6 +77,18 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
+{{/* Name of the Secret the migrate Job reads the storage URL from: the
+     operator-provided Secret when set (it exists independently of Helm),
+     otherwise the hook-scoped copy rendered next to the Job — the regular
+     chart-managed Secret is applied only AFTER pre-install hooks run. */}}
+{{- define "orion.migrateStorageSecretName" -}}
+{{- if .Values.storage.existingSecret }}
+{{- .Values.storage.existingSecret }}
+{{- else }}
+{{- printf "%s-storage-migrate" (include "orion.fullname" .) }}
+{{- end }}
+{{- end }}
+
 {{/* Effective runtime environment: devStack always runs as development. */}}
 {{- define "orion.environment" -}}
 {{- if .Values.devStack.enabled }}development{{- else }}{{ .Values.env }}{{- end }}
@@ -102,6 +114,13 @@ app.kubernetes.io/instance: {{ .Release.Name }}
        replicas migrate at boot; production replicas never do. */}}
 - name: ORION_STORAGE__AUTO_MIGRATE
   value: {{ ternary "true" (.Values.storage.autoMigrate | toString) .Values.devStack.enabled | quote }}
+{{- /* The root filesystem is read-only, so the default ./backups
+       (= /app/backups) is unwritable; keep SQLite backups on the data
+       volume, which is the persistent one when persistence is enabled. */}}
+{{- if .Values.persistence.enabled }}
+- name: ORION_STORAGE__BACKUP_DIR
+  value: {{ printf "%s/backups" .Values.persistence.mountPath | quote }}
+{{- end }}
 {{- if .Values.cluster.enabled }}
 - name: ORION_CLUSTER__ENABLED
   value: "true"

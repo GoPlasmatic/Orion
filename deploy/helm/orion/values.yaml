@@ -109,6 +109,68 @@ resources:
   limits:
     memory: 512Mi
 
+# Rolling deploys never remove a replica before its replacement is Ready,
+# preserving the graceful-drain guarantee the probes and
+# terminationGracePeriodSeconds are built around. With type=Recreate the
+# rollingUpdate block is omitted from the rendered Deployment.
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+
+# Pod-level security context. The image's `orion` user is pinned to
+# UID/GID 10001 in the Dockerfile; the numeric runAsUser/runAsGroup are
+# what let the kubelet's runAsNonRoot verification pass (it cannot verify
+# a named image USER), and fsGroup makes freshly provisioned PVCs
+# (persistence.enabled) writable by the orion user on mount.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context. The root filesystem is read-only; the
+# chart mounts an emptyDir at /tmp and a data volume at
+# persistence.mountPath (see below) as the only writable paths.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+# Boot can be slow (pending-migration check, cluster Redis connect,
+# connector loading, engine build over a large channel set). The startup
+# probe holds liveness off for up to periodSeconds * failureThreshold
+# (default 5 minutes) so a slow boot does not CrashLoop.
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 5
+  failureThreshold: 60
+
+# Writable data volume mounted at mountPath — where a sqlite: storage.url
+# and the backup_dir output live. Postgres/MySQL installs do not need it
+# and get a plain emptyDir at the same path. For a single-node SQLite
+# install set persistence.enabled=true with cluster.enabled=false,
+# replicaCount=1 and strategy.type=Recreate (a ReadWriteOnce claim cannot
+# serve a surge replica), plus migrateJob.enabled=false with
+# storage.autoMigrate=true — a hook Job cannot share the replica's volume.
+persistence:
+  enabled: false
+  # Reuse a pre-existing PVC instead of creating one.
+  existingClaim: ""
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+  annotations: {}
+  mountPath: /app/data
+
 autoscaling:
   enabled: false
   minReplicas: 2
@@ -124,7 +186,18 @@ podAnnotations: {}
 podLabels: {}
 nodeSelector: {}
 tolerations: []
+# When empty, the chart defaults to a soft podAntiAffinity that spreads
+# server replicas across nodes (an HA install where both replicas share a
+# node does not survive that node). Set explicitly to override.
 affinity: {}
+# Rendered verbatim when set, e.g. to spread across zones:
+# - maxSkew: 1
+#   topologyKey: topology.kubernetes.io/zone
+#   whenUnsatisfiable: ScheduleAnyway
+#   labelSelector:
+#     matchLabels:
+#       app.kubernetes.io/name: orion
+topologySpreadConstraints: []
 
 # Throwaway in-namespace Postgres + Redis for dev/demo installs ONLY.
 # No persistence tuning, no HA, no backups — never use in production.

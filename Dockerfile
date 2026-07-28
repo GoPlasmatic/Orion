@@ -25,6 +25,12 @@ COPY src/ src/
 COPY migrations/ migrations/
 COPY build.rs ./
 
+# .dockerignore excludes .git/, so build.rs cannot ask git for the commit;
+# CI passes it as a build-arg (--build-arg GIT_HASH=<sha>) and build.rs
+# prefers the env var. Left unset, /health reports git_hash=unknown.
+ARG GIT_HASH
+ENV GIT_HASH=${GIT_HASH}
+
 RUN cargo build --release --locked
 
 # Runtime stage
@@ -32,7 +38,11 @@ FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --system orion && useradd --system --gid orion --no-create-home orion
+# Pinned numeric UID/GID: Kubernetes' runAsNonRoot check cannot verify a
+# named image USER, so the Helm chart (and any PodSecurity `restricted`
+# namespace) needs a numeric identity. Keep 10001 in sync with the chart's
+# default podSecurityContext (runAsUser/runAsGroup/fsGroup).
+RUN groupadd --system --gid 10001 orion && useradd --system --uid 10001 --gid orion --no-create-home orion
 
 WORKDIR /app
 RUN mkdir -p /app/data && chown -R orion:orion /app
@@ -40,7 +50,8 @@ RUN mkdir -p /app/data && chown -R orion:orion /app
 COPY --from=builder --chown=orion:orion /app/target/release/orion-server /usr/local/bin/orion-server
 COPY --chown=orion:orion config.toml.example /app/config.toml.example
 
-USER orion
+# Numeric form so orchestrators can verify non-root without /etc/passwd.
+USER 10001:10001
 
 # Default data directory for SQLite database.
 # Mount a persistent volume here to preserve data across container restarts.

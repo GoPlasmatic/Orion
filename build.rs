@@ -2,17 +2,27 @@ use std::process::Command;
 use std::time::SystemTime;
 
 fn main() {
-    // Capture git commit hash at build time
-    let git_hash = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
+    // Capture git commit hash at build time. An already-set GIT_HASH env
+    // var wins: Docker builds have no .git directory (.dockerignore), so
+    // CI threads the SHA through as a build-arg instead.
+    let git_hash = std::env::var("GIT_HASH")
         .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or_else(|| "unknown".to_string());
 
     println!("cargo:rustc-env=GIT_HASH={git_hash}");
+    println!("cargo:rerun-if-env-changed=GIT_HASH");
 
     // Capture build timestamp as Unix seconds (no external crate needed)
     let build_timestamp = SystemTime::now()

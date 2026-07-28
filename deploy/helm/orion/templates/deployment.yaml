@@ -8,6 +8,17 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
   {{- end }}
+  # maxUnavailable: 0 by default: never remove a replica before its
+  # replacement is Ready, so the /readyz drain sequence always has a
+  # healthy peer taking traffic.
+  strategy:
+    type: {{ .Values.strategy.type }}
+    {{- if eq .Values.strategy.type "RollingUpdate" }}
+    {{- with .Values.strategy.rollingUpdate }}
+    rollingUpdate:
+      {{- toYaml . | nindent 6 }}
+    {{- end }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "orion.selectorLabels" . | nindent 6 }}
@@ -30,6 +41,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "orion.serviceAccountName" . }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # Must exceed drain + force timeout so SIGTERM runs the full graceful
       # sequence (readyz -> 503, keep serving, bounded in-flight drain)
       # instead of being cut short by SIGKILL.
@@ -38,6 +53,10 @@ spec:
         - name: orion
           image: {{ include "orion.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.server.port }}
@@ -46,6 +65,12 @@ spec:
             {{- include "orion.env" . | nindent 12 }}
           {{- with .Values.extraEnvFrom }}
           envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # Holds liveness off while boot does its migration check, cluster
+          # Redis connect and engine build — a slow boot must not CrashLoop.
+          {{- with .Values.startupProbe }}
+          startupProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           # readyz withdraws on SIGTERM (and on lost DB/engine health), so
@@ -64,12 +89,46 @@ spec:
             failureThreshold: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          # The root filesystem is read-only; these are the only writable
+          # paths (SQLite temp files spill to /tmp).
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "orion.fullname" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      # Default: soft anti-affinity spreading server replicas across nodes,
+      # so an "HA" install does not ride a single node. Overridden verbatim
+      # by .Values.affinity.
       affinity:
+        {{- if .Values.affinity }}
+        {{- toYaml .Values.affinity | nindent 8 }}
+        {{- else }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "orion.selectorLabels" . | nindent 20 }}
+                    app.kubernetes.io/component: server
+        {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.tolerations }}

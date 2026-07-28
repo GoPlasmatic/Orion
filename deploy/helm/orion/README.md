@@ -65,7 +65,21 @@ open http://localhost:8080/docs
 | `server.shutdownForceTimeoutSecs` | `20` | Bound on the post-drain in-flight wait |
 | `autoscaling.enabled` | `false` | CPU-based HPA |
 | `podDisruptionBudget.enabled` | `true` | `maxUnavailable: 1` |
+| `strategy` | `maxUnavailable: 0, maxSurge: 1` | Rolling deploys never drop below `replicaCount` Ready replicas |
+| `podSecurityContext` / `securityContext` | restricted | Non-root, read-only rootfs, no capabilities, RuntimeDefault seccomp |
+| `startupProbe` | 5 min budget | Holds liveness off while boot migrates/connects/builds the engine |
+| `affinity` | soft anti-affinity | Spreads server replicas across nodes; set to override |
+| `topologySpreadConstraints` | `[]` | Rendered verbatim when set |
+| `persistence.enabled` | `false` | PVC at `/app/data` for single-node SQLite installs |
 | `extraEnv` | `[]` | Additional `ORION_*` overrides |
 
 `terminationGracePeriodSeconds` is derived as drain + force timeout + 10 so
 SIGTERM always completes the graceful sequence.
+
+The root filesystem is read-only: `/tmp` is an emptyDir and
+`persistence.mountPath` (default `/app/data`) is the only durable writable
+path. A single-node SQLite install
+(`storage.url=sqlite:/app/data/orion.db`) wants `persistence.enabled=true`
+with `cluster.enabled=false`, `replicaCount=1`, `strategy.type=Recreate`,
+and `migrateJob.enabled=false` + `storage.autoMigrate=true`; backups then
+land under `/app/data/backups`.

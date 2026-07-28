@@ -1,0 +1,21 @@
+# Local-build override for docker-compose.ha.yml: builds the Orion image
+# from this checkout and retags it as orion:local (override with
+# ORION_IMAGE=…), so `docker compose build` never overwrites the pinned
+# ghcr.io tag with a dev build that a later `up` would silently run.
+#
+#   docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml up -d --wait
+services:
+  migrate:
+    image: ${ORION_IMAGE:-orion:local}
+    build: .
+    pull_policy: build
+
+  orion-a:
+    image: ${ORION_IMAGE:-orion:local}
+    build: .
+    pull_policy: build
+
+  orion-b:
+    image: ${ORION_IMAGE:-orion:local}
+    build: .
+    pull_policy: build

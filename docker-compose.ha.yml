@@ -23,12 +23,13 @@
 # Rolling-deploy drill: deploy/ha/rolling-drill.sh (zero non-2xx at the LB
 # while one node is SIGTERM'd under load).
 #
-# Build the image locally with:  ORION_IMAGE=orion:local docker compose -f docker-compose.ha.yml build
-# (or rely on the published ghcr.io image, the default)
+# The image is pinned for reproducibility (override with ORION_VERSION=…).
+# To run a locally built image instead, use the build override file — it
+# retags the local build so it never clobbers the pinned GHCR tag:
+#   docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml up -d --wait
 
 x-orion-common: &orion-common
-  image: ${ORION_IMAGE:-ghcr.io/goplasmatic/orion:latest}
-  build: .
+  image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.0.0}
   restart: unless-stopped
   stop_grace_period: 45s
   depends_on:
@@ -82,8 +83,7 @@ services:
   # One-shot migration job (the compose equivalent of the Helm pre-upgrade
   # hook): replicas never race migrations at boot.
   migrate:
-    image: ${ORION_IMAGE:-ghcr.io/goplasmatic/orion:latest}
-    build: .
+    image: ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.0.0}
     command: ["migrate"]
     environment:
       ORION_STORAGE__URL: "postgres://orion:orion@postgres:5432/orion"

@@ -105,6 +105,10 @@ jobs:
           context: .
           platforms: ${{ matrix.platform }}
           push: ${{ !inputs.dry_run }}
+          # .dockerignore excludes .git/, so the SHA must ride in as a
+          # build-arg or every published image reports git_hash=unknown.
+          build-args: |
+            GIT_HASH=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=${{ matrix.platform }}
           cache-to: type=gha,scope=${{ matrix.platform }},mode=max

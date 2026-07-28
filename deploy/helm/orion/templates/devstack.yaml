@@ -23,9 +23,26 @@ spec:
         {{- include "orion.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: dev-postgres
     spec:
+      # Restricted-profile contexts so a devStack install passes PodSecurity
+      # `restricted` namespaces. UID/GID 70 is the `postgres` user pinned in
+      # the postgres alpine images (the default devStack.postgres.image);
+      # started non-root, the image entrypoint skips its root step-down.
+      # Adjust when overriding the image (Debian postgres uses 999).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        runAsGroup: 70
+        fsGroup: 70
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: postgres
           image: {{ .Values.devStack.postgres.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           env:
             - name: POSTGRES_USER
               value: {{ .Values.devStack.postgres.user | quote }}
@@ -73,9 +90,26 @@ spec:
         {{- include "orion.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: dev-redis
     spec:
+      # UID 999 / GID 1000 is the `redis` user pinned in the redis alpine
+      # images (the default devStack.redis.image; alpine reserves GID 999,
+      # so upstream allocates the group at 1000). Started non-root, the
+      # image entrypoint skips its root step-down. Adjust when overriding
+      # the image (Debian redis uses 999:999).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: redis
           image: {{ .Values.devStack.redis.image }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - containerPort: 6379
           readinessProbe:

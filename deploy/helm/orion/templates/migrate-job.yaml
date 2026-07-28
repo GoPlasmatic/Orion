@@ -1,11 +1,33 @@
 {{- if and .Values.migrateJob.enabled (not .Values.devStack.enabled) }}
+{{- if not .Values.storage.existingSecret }}
+# Hook-scoped copy of the storage Secret for the migrate Job below. The
+# chart-managed Secret the server replicas read is a regular release
+# resource, applied only AFTER pre-install/pre-upgrade hooks run — so the
+# Job cannot reference it on a first install. This copy renders at hook
+# weight -5 (before the Job's 0), keeping credentials out of the pod spec
+# (secretKeyRef, never inline) without turning the main Secret into a
+# hook — which Helm would prune from existing releases on their first
+# upgrade. before-hook-creation replaces it on every install/upgrade;
+# hooks are unmanaged, so `helm uninstall` leaves it behind.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "orion.fullname" . }}-storage-migrate
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+type: Opaque
+stringData:
+  storage-url: {{ include "orion.storageUrl" . | quote }}
+{{- end }}
+---
 # Runs `orion-server migrate` before installs and upgrades, so replicas
 # (which boot with storage.autoMigrate=false) never race migrations.
 # Migrations must follow the expand/contract convention — see CONTRIBUTING.md.
-#
-# As a pre-install hook this runs BEFORE release resources exist, so it
-# cannot reference the chart-managed storage Secret: the URL is inlined
-# unless you provide storage.existingSecret (which pre-exists the release).
 # With devStack.enabled the Job is skipped entirely — the dev database is
 # itself a release resource — and replicas migrate at boot instead.
 apiVersion: batch/v1
@@ -27,6 +49,10 @@ spec:
         app.kubernetes.io/component: migrate
     spec:
       restartPolicy: Never
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -35,15 +61,21 @@ spec:
         - name: migrate
           image: {{ include "orion.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           args: ["migrate"]
           env:
             - name: ORION_STORAGE__URL
-              {{- if .Values.storage.existingSecret }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.storage.existingSecret }}
+                  name: {{ include "orion.migrateStorageSecretName" . }}
                   key: storage-url
-              {{- else }}
-              value: {{ include "orion.storageUrl" . | quote }}
-              {{- end }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
 {{- end }}
