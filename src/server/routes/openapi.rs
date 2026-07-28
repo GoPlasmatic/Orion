@@ -635,6 +635,10 @@ pub(crate) struct CircuitBreakerStates {
     /// Whether `engine.circuit_breaker.enabled` is set. When false, `breakers`
     /// is empty because nothing is tracked.
     enabled: bool,
+    /// Always `"node"` — breaker state is per-replica, never cluster-wide (F21).
+    scope: String,
+    /// Which node's map this is.
+    instance_id: String,
     /// `channel:connector` → `closed` | `open` | `half_open`. Node-local.
     breakers: std::collections::HashMap<String, String>,
 }
@@ -645,6 +649,10 @@ pub(crate) struct CircuitBreakerStates {
 pub(crate) struct CircuitBreakerReset {
     reset: bool,
     key: String,
+    /// Whether the breaker existed on the node that served the request.
+    /// Breakers are node-local; in cluster mode the reset is broadcast over
+    /// the epoch bus regardless, so `false` here is not a failure (F21).
+    found_on_this_node: bool,
 }
 
 /// `POST /api/v1/admin/trace-dlq/purge`.

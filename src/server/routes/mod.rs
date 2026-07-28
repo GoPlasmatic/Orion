@@ -141,6 +141,8 @@ pub(crate) async fn health_check(
         body["build_timestamp"] = json!(env!("BUILD_TIMESTAMP"));
         body["workflows_loaded"] = json!(workflows_loaded);
         body["connectors"] = json!({
+            // F21: node-local, like the admin endpoint's copy.
+            "circuit_breaker_scope": "node",
             "circuit_breakers": cb_states,
             "failed_to_load": connector_issues,
         });

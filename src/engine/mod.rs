@@ -106,9 +106,23 @@ pub async fn acquire_engine_write(
     guard
 }
 
-/// Known function names supported by the engine.
+/// Every function name a workflow may reference: dataflow-rs built-ins plus
+/// Orion's own handlers.
+///
+/// This gates workflow **creation** (`validation/workflows.rs`), so a name
+/// missing here is not a warning — the workflow is rejected with
+/// `unknown_function` even though the engine would run it fine. `enrich` was
+/// missing for exactly that reason (F54).
+///
+/// dataflow-rs keeps its own list `pub(crate)`, so this cannot be derived at
+/// compile time. `known_functions_covers_every_dataflow_builtin` derives it at
+/// *test* time out of the engine's own `FunctionNotFound` message, which
+/// enumerates the built-ins — so a dependency bump that adds or renames one
+/// fails the test instead of silently rejecting valid workflows.
 pub const KNOWN_FUNCTIONS: &[&str] = &[
     "map",
+    // Upstream accepts both spellings, so Orion must too — dropping either
+    // would reject a workflow the engine runs.
     "validation",
     "validate",
     "parse_json",
@@ -118,6 +132,7 @@ pub const KNOWN_FUNCTIONS: &[&str] = &[
     "filter",
     "log",
     "http_call",
+    "enrich",
     "publish_kafka",
     "db_read",
     "db_write",
@@ -909,6 +924,56 @@ mod tests {
         );
         // A `Value`-input handler accepts anything.
         assert!(custom_input_parse_check("db_read", &serde_json::json!({ "x": 1 })).is_ok());
+    }
+
+    /// F54: `KNOWN_FUNCTIONS` gates workflow *creation*, so a dataflow-rs
+    /// built-in missing from it is rejected with `unknown_function` even
+    /// though the engine runs it. `enrich` was missing exactly that way.
+    ///
+    /// dataflow-rs keeps `BUILTIN_FUNCTION_NAMES` `pub(crate)`, so the list
+    /// cannot be imported — but `Engine::new` enumerates it in the
+    /// `FunctionNotFound` message raised for an unregistered name. Deriving it
+    /// from there means a dependency bump that adds or renames a built-in
+    /// fails here instead of silently rejecting valid workflows.
+    #[test]
+    fn known_functions_covers_every_dataflow_builtin() {
+        let workflow = dataflow_rs::Workflow::from_json(
+            r#"{"id":"probe","name":"probe","priority":0,"condition":true,
+                "tasks":[{"id":"t","name":"t",
+                          "function":{"name":"__orion_probe__","input":{}}}]}"#,
+        )
+        .expect("probe workflow parses");
+        let built = dataflow_rs::Engine::new(vec![workflow], std::collections::HashMap::new());
+        assert!(
+            built.is_err(),
+            "an unregistered function must fail the engine build"
+        );
+        let err = built
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| unreachable!("asserted is_err above"));
+
+        let builtins = err
+            .split_once("built-ins: ")
+            .map(|(_, rest)| rest.trim_end_matches([')', '.', ' ']))
+            .unwrap_or_else(|| {
+                unreachable!("dataflow-rs no longer lists its built-ins in FunctionNotFound: {err}")
+            });
+        let builtins: Vec<&str> = builtins.split(", ").map(str::trim).collect();
+        assert!(
+            builtins.len() >= 10,
+            "parsed an implausible built-in list from {err}: {builtins:?}"
+        );
+
+        let missing: Vec<&&str> = builtins
+            .iter()
+            .filter(|b| !KNOWN_FUNCTIONS.contains(b))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "dataflow-rs built-ins absent from KNOWN_FUNCTIONS: {missing:?} — \
+             workflows using them are rejected at create with `unknown_function`"
+        );
     }
 
     #[test]

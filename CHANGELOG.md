@@ -67,6 +67,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Workflows using the `enrich` built-in were rejected at create.**
+  `KNOWN_FUNCTIONS` — the list that gates workflow creation — omitted
+  dataflow-rs's `enrich`, so `POST /admin/workflows` refused any task using it
+  with `unknown_function`, even though the engine runs it fine. The list is now
+  pinned by a test that derives the authoritative set from the engine's own
+  `FunctionNotFound` message, so a dependency bump that adds or renames a
+  built-in fails CI instead of silently rejecting valid workflows.
+
+- **Circuit-breaker reads no longer present node-local state as cluster-wide.**
+  `GET /admin/connectors/circuit-breakers` and `/health` returned one replica's
+  breaker map unqualified. That read as cluster state precisely because its
+  sibling — the *reset* — **is** cluster-aware and fans out over the epoch bus.
+  Both payloads now carry `scope: "node"` and the `instance_id` whose map it is.
+
+  Relatedly, `POST /admin/connectors/circuit-breakers/{key}` no longer returns
+  **404 in cluster mode** when the key is not open on the receiving node. Breakers
+  are per-replica, so the key an operator wants to clear is usually open on a
+  different node than the one the load balancer picked — and the fan-out is what
+  actually clears it. The response gained `found_on_this_node` to distinguish the
+  two cases. Single-node deployments still 404.
+
 - **Connector metrics are now emitted by default.** `connector_requests_total`
   and `connector_request_duration_seconds` were emitted from exactly one place
   — inside the circuit-breaker wrapper — which only `http_call` reached, and

@@ -3767,9 +3767,14 @@
         "description": "`POST /api/v1/admin/connectors/circuit-breakers/{key}`.",
         "required": [
           "reset",
-          "key"
+          "key",
+          "found_on_this_node"
         ],
         "properties": {
+          "found_on_this_node": {
+            "type": "boolean",
+            "description": "Whether the breaker existed on the node that served the request.\nBreakers are node-local; in cluster mode the reset is broadcast over\nthe epoch bus regardless, so `false` here is not a failure (F21)."
+          },
           "key": {
             "type": "string"
           },
@@ -3783,6 +3788,8 @@
         "description": "`GET /api/v1/admin/connectors/circuit-breakers`.",
         "required": [
           "enabled",
+          "scope",
+          "instance_id",
           "breakers"
         ],
         "properties": {
@@ -3799,6 +3806,14 @@
           "enabled": {
             "type": "boolean",
             "description": "Whether `engine.circuit_breaker.enabled` is set. When false, `breakers`\nis empty because nothing is tracked."
+          },
+          "instance_id": {
+            "type": "string",
+            "description": "Which node's map this is."
+          },
+          "scope": {
+            "type": "string",
+            "description": "Always `\"node\"` — breaker state is per-replica, never cluster-wide (F21)."
           }
         }
       },
@@ -4178,9 +4193,14 @@
             "description": "`POST /api/v1/admin/connectors/circuit-breakers/{key}`.",
             "required": [
               "reset",
-              "key"
+              "key",
+              "found_on_this_node"
             ],
             "properties": {
+              "found_on_this_node": {
+                "type": "boolean",
+                "description": "Whether the breaker existed on the node that served the request.\nBreakers are node-local; in cluster mode the reset is broadcast over\nthe epoch bus regardless, so `false` here is not a failure (F21)."
+              },
               "key": {
                 "type": "string"
               },
@@ -4203,6 +4223,8 @@
             "description": "`GET /api/v1/admin/connectors/circuit-breakers`.",
             "required": [
               "enabled",
+              "scope",
+              "instance_id",
               "breakers"
             ],
             "properties": {
@@ -4219,6 +4241,14 @@
               "enabled": {
                 "type": "boolean",
                 "description": "Whether `engine.circuit_breaker.enabled` is set. When false, `breakers`\nis empty because nothing is tracked."
+              },
+              "instance_id": {
+                "type": "string",
+                "description": "Which node's map this is."
+              },
+              "scope": {
+                "type": "string",
+                "description": "Always `\"node\"` — breaker state is per-replica, never cluster-wide (F21)."
               }
             }
           }

@@ -315,6 +315,12 @@ pub(crate) async fn list_circuit_breakers(
     let states = state.connector_registry.circuit_breaker_states().await;
     Ok(data_response(json!({
         "enabled": state.connector_registry.circuit_breaker_enabled(),
+        // F21: breakers are node-local state. The *reset* path fans out over
+        // the epoch bus, which made an unqualified read actively misleading —
+        // it reads like cluster state because its sibling mutation is. Say
+        // whose map this is.
+        "scope": "node",
+        "instance_id": state.cluster.instance_id,
         "breakers": states,
     })))
 }
@@ -336,27 +342,39 @@ pub(crate) async fn reset_circuit_breaker(
     Path(key): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
     let found = state.connector_registry.reset_circuit_breaker(&key).await;
-    if found {
-        audit_log(
-            &state.audit_log_repo,
-            &principal,
-            "reset",
-            "circuit_breaker",
-            &key,
-        );
-        // Breakers are node-local (D3); fan the reset out over the epoch bus
-        // so one API call resets the same key on every node.
-        if state.cluster.enabled {
-            let breaker_epoch = state.cluster.repo.request_breaker_reset(&key).await?;
-            state
-                .cluster
-                .last_seen_breaker_epoch
-                .fetch_max(breaker_epoch, std::sync::atomic::Ordering::AcqRel);
-        }
-        Ok(data_response(json!({ "reset": true, "key": key })))
-    } else {
-        Err(OrionError::NotFound(format!(
+
+    // F21: in cluster mode a 404 for "not on this node" is wrong. Breakers are
+    // node-local, so the key an operator wants to clear is very often open on a
+    // *different* replica than the one the load balancer routed the reset to —
+    // and the fan-out below is what actually clears it. 404 only when there is
+    // no other node it could be on.
+    if !found && !state.cluster.enabled {
+        return Err(OrionError::NotFound(format!(
             "Circuit breaker '{key}' not found"
-        )))
+        )));
     }
+
+    audit_log(
+        &state.audit_log_repo,
+        &principal,
+        "reset",
+        "circuit_breaker",
+        &key,
+    );
+    // Breakers are node-local (D3); fan the reset out over the epoch bus
+    // so one API call resets the same key on every node.
+    if state.cluster.enabled {
+        let breaker_epoch = state.cluster.repo.request_breaker_reset(&key).await?;
+        state
+            .cluster
+            .last_seen_breaker_epoch
+            .fetch_max(breaker_epoch, std::sync::atomic::Ordering::AcqRel);
+    }
+    Ok(data_response(json!({
+        "reset": true,
+        "key": key,
+        // Whether *this* node held the key. The fan-out clears it everywhere
+        // regardless; `false` in cluster mode means "not here, broadcast anyway".
+        "found_on_this_node": found,
+    })))
 }

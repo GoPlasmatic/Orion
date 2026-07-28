@@ -1043,3 +1043,35 @@ async fn a_second_draft_cannot_be_created_for_one_workflow() {
         resp.status()
     );
 }
+
+/// F54: `KNOWN_FUNCTIONS` gates workflow creation, so a dataflow-rs built-in
+/// missing from it is rejected with `unknown_function` — not merely warned
+/// about. `enrich` was missing, so every workflow using it was refused at
+/// create even though the engine runs it.
+#[tokio::test]
+async fn a_workflow_using_the_enrich_builtin_is_accepted() {
+    let app = common::test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "enrich-wf",
+                "channel": "enrich-ch",
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Enrich",
+                    "function": { "name": "enrich", "input": {} }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "body = {}",
+        common::body_json(resp).await
+    );
+}
