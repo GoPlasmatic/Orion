@@ -134,12 +134,14 @@ async fn test_consumer_starts_and_stops() {
     )
     .unwrap();
 
-    // Consumer should be running — give it a moment
+    // Let the consumer reach its subscribe/poll loop before stopping it, so
+    // shutdown is exercised against a running consumer rather than a task
+    // that never started.
     tokio::time::sleep(Duration::from_secs(1)).await;
 
-    // Graceful shutdown
-    handle.shutdown().await;
-    // If we get here without panic, shutdown was clean
+    // The lifecycle contract: shutdown of a running consumer completes
+    // promptly instead of wedging on the poll loop.
+    shutdown_within(handle, 10).await;
 }
 
 #[tokio::test]
@@ -180,11 +182,11 @@ async fn test_consumer_processes_valid_message() {
         .await
         .expect("Failed to produce test message");
 
-    // Give consumer time to process
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // The offset is committed only after successful processing, so this
+    // proves the message was consumed and processed — not just produced.
+    wait_for_committed(&brokers, &config.group_id, topic, 1, 1, 30).await;
 
-    // Shutdown cleanly
-    handle.shutdown().await;
+    shutdown_within(handle, 10).await;
 }
 
 #[tokio::test]
@@ -284,6 +286,81 @@ async fn wait_for_dlq_message(
         }
     }
     None
+}
+
+/// Sum of the committed offsets for `group_id` across the first `partitions`
+/// partitions of `topic`; a partition with no commit counts as 0, and -1 is
+/// returned while the broker is unreachable so callers can retry.
+///
+/// This is the consumer's public side effect: `enable.auto.commit` is off and
+/// an offset is committed only after `process_until_committed` succeeds, so
+/// "committed total == messages produced" proves consume + process + commit —
+/// the thing a fixed sleep never established.
+async fn committed_total(brokers: &str, group_id: &str, topic: &str, partitions: i32) -> i64 {
+    let brokers = brokers.to_string();
+    let group_id = group_id.to_string();
+    let topic = topic.to_string();
+    // committed_offsets() blocks; keep it off the runtime that is driving
+    // the consumer under test.
+    tokio::task::spawn_blocking(move || {
+        use rdkafka::TopicPartitionList;
+        use rdkafka::consumer::BaseConsumer;
+        let probe: BaseConsumer = ClientConfig::new()
+            .set("bootstrap.servers", &brokers)
+            .set("group.id", &group_id)
+            .create()
+            .unwrap();
+        let mut tpl = TopicPartitionList::new();
+        for p in 0..partitions {
+            tpl.add_partition(&topic, p);
+        }
+        match probe.committed_offsets(tpl, Duration::from_secs(5)) {
+            Ok(committed) => committed
+                .elements()
+                .iter()
+                .map(|e| match e.offset() {
+                    rdkafka::Offset::Offset(n) => n,
+                    _ => 0,
+                })
+                .sum(),
+            Err(_) => -1,
+        }
+    })
+    .await
+    .unwrap()
+}
+
+/// Poll until `group_id` has committed `expected` offsets in total across
+/// `topic`, or panic at the deadline with the last observed count.
+async fn wait_for_committed(
+    brokers: &str,
+    group_id: &str,
+    topic: &str,
+    partitions: i32,
+    expected: i64,
+    deadline_secs: u64,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(deadline_secs);
+    let mut last = -1;
+    while tokio::time::Instant::now() < deadline {
+        last = committed_total(brokers, group_id, topic, partitions).await;
+        if last == expected {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    panic!(
+        "group '{group_id}' committed {last}/{expected} offsets on '{topic}' within \
+         {deadline_secs}s — messages were produced but not processed to commit"
+    );
+}
+
+/// Shutdown must complete promptly: a wedged worker would otherwise burn the
+/// whole test timeout and read as a slow test instead of a bug.
+async fn shutdown_within(handle: consumer::ConsumerHandle, secs: u64) {
+    tokio::time::timeout(Duration::from_secs(secs), handle.shutdown())
+        .await
+        .expect("consumer shutdown did not complete in time");
 }
 
 #[tokio::test]
@@ -439,28 +516,47 @@ async fn test_failed_message_redelivered_after_restart() {
 #[tokio::test]
 #[ignore]
 async fn test_consumer_metadata_injection() {
-    // This test verifies that Kafka metadata fields are injected into the message.
-    // Since we can't easily inspect message.metadata() from outside the consumer loop,
-    // we verify the consumer doesn't error when processing a keyed message.
+    // Proves the consumer injects Kafka metadata (kafka_key, kafka_topic)
+    // into the dispatched message: the target channel's validation_logic
+    // passes ONLY when those metadata fields carry the produced values, and
+    // the offset is committed only after validation + processing succeed.
+    // If injection regressed, validation rejects every delivery and the
+    // commit never happens.
     let (_container, brokers) = start_kafka().await;
 
     let topic = "test-metadata";
-    let channel = "test-channel";
-    let config = test_kafka_config(&brokers, topic, channel);
-    let engine = empty_engine();
+    let channel = "kafka-meta-ch";
 
-    let handle = consumer::start_consumer(
-        &config,
-        engine,
-        test_registry(),
-        test_datalogic(),
-        None,
-        None,
-        None,
+    // Full AppState so the channel registry (which the consumer's guards
+    // consult) is populated through the real admin API. The global Kafka
+    // producer points at a dead address — only the consumer talks to the
+    // container.
+    let state =
+        crate::common::test_state_with_kafka(orion::config::AppConfig::default(), "127.0.0.1:1")
+            .await;
+    let engine = state.engine.clone();
+    let registry = state.channel_registry.clone();
+    let datalogic = state.datalogic.clone();
+    let app = orion::server::build_router(state);
+
+    crate::common::create_and_activate_channel_with_config(
+        &app,
+        channel,
+        crate::common::simple_log_workflow("Kafka Metadata"),
+        serde_json::json!({
+            "validation_logic": { "and": [
+                { "==": [ { "var": "metadata.kafka_key" }, "order-123" ] },
+                { "==": [ { "var": "metadata.kafka_topic" }, topic ] }
+            ]}
+        }),
     )
-    .unwrap();
+    .await;
 
-    // Produce a message with a key
+    let config = test_kafka_config(&brokers, topic, channel);
+    let handle =
+        consumer::start_consumer(&config, engine, registry, datalogic, None, None, None).unwrap();
+
+    // Produce a message with the key the validation logic demands.
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &brokers)
         .set("message.timeout.ms", "5000")
@@ -477,8 +573,8 @@ async fn test_consumer_metadata_injection() {
         .await
         .expect("Failed to produce keyed message");
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
-    handle.shutdown().await;
+    wait_for_committed(&brokers, &config.group_id, topic, 1, 1, 30).await;
+    shutdown_within(handle, 10).await;
 }
 
 // ============================================================
@@ -500,9 +596,6 @@ async fn test_concurrent_message_processing() {
         ..test_kafka_config(&brokers, topic, channel)
     };
     let engine = empty_engine();
-
-    // Initialize metrics so we can verify counts
-    let _ = orion::metrics::init_metrics();
 
     let handle = consumer::start_consumer(
         &config,
@@ -545,13 +638,12 @@ async fn test_concurrent_message_processing() {
         task.await.unwrap();
     }
 
-    // Give consumer time to process all messages
-    // With max_inflight=10, 50 messages should be processed fairly quickly
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    // All 50 must be processed to commit with max_inflight=10 < msg_count:
+    // the in-flight permit cycle has to keep releasing (no deadlock) and no
+    // message may be skipped for the committed total to reach 50.
+    wait_for_committed(&brokers, &config.group_id, topic, 1, msg_count, 60).await;
 
-    handle.shutdown().await;
-    // If we get here, the consumer processed messages without panic or deadlock
-    // under concurrent load with backpressure active (max_inflight=10 < msg_count=50)
+    shutdown_within(handle, 10).await;
 }
 
 /// Produce a rapid burst of messages and verify the consumer keeps up.
@@ -599,12 +691,12 @@ async fn test_consumer_backpressure_under_load() {
             .expect("Failed to produce message");
     }
 
-    // With max_inflight=2, the consumer processes at most 2 at a time.
-    // 20 messages should still complete within a reasonable time.
-    tokio::time::sleep(Duration::from_secs(15)).await;
+    // With max_inflight=2 the consumer takes at most 2 messages at a time;
+    // all 20 reaching the committed offset proves the backpressure permits
+    // keep cycling under a rapid burst instead of deadlocking or dropping.
+    wait_for_committed(&brokers, &config.group_id, topic, 1, 20, 60).await;
 
-    handle.shutdown().await;
-    // Success = no deadlocks or panics under constrained backpressure
+    shutdown_within(handle, 10).await;
 }
 
 /// Test consumer with multiple topic-to-channel mappings.
@@ -641,6 +733,36 @@ async fn test_consumer_multiple_topics() {
     };
     let engine = empty_engine();
 
+    // Produce to both topics BEFORE starting the consumer. Subscribing to
+    // topics that do not exist yet hits librdkafka's metadata-refresh
+    // behaviour: unknown subscribed topics get a short burst of fast
+    // refreshes, after which discovery falls back to
+    // `topic.metadata.refresh.interval.ms` (5 minutes) — a topic created
+    // after that burst is not consumed from for minutes. (The pre-rewrite
+    // version of this test slept 5s and asserted nothing, which hid exactly
+    // that.) Producing first creates both topics; `auto.offset.reset =
+    // earliest` then delivers both messages to the late-starting group.
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .set("message.timeout.ms", "5000")
+        .create()
+        .unwrap();
+
+    producer
+        .send(
+            FutureRecord::<str, str>::to(topic_a).payload(r#"{"data": {"from": "a"}}"#),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("Failed to produce to topic A");
+    producer
+        .send(
+            FutureRecord::<str, str>::to(topic_b).payload(r#"{"data": {"from": "b"}}"#),
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("Failed to produce to topic B");
+
     let handle = consumer::start_consumer(
         &config,
         engine,
@@ -652,35 +774,12 @@ async fn test_consumer_multiple_topics() {
     )
     .unwrap();
 
-    let producer: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", &brokers)
-        .set("message.timeout.ms", "5000")
-        .create()
-        .unwrap();
+    // One consumer, two topic mappings: the message on each topic must be
+    // processed to commit under the same group.
+    wait_for_committed(&brokers, &config.group_id, topic_a, 1, 1, 60).await;
+    wait_for_committed(&brokers, &config.group_id, topic_b, 1, 1, 60).await;
 
-    // Send to topic A
-    producer
-        .send(
-            FutureRecord::<str, str>::to(topic_a).payload(r#"{"data": {"from": "a"}}"#),
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("Failed to produce to topic A");
-
-    // Send to topic B
-    producer
-        .send(
-            FutureRecord::<str, str>::to(topic_b).payload(r#"{"data": {"from": "b"}}"#),
-            Duration::from_secs(5),
-        )
-        .await
-        .expect("Failed to produce to topic B");
-
-    // Give consumer time to process both
-    tokio::time::sleep(Duration::from_secs(5)).await;
-
-    handle.shutdown().await;
-    // Success = consumer handles messages from multiple topics without confusion
+    shutdown_within(handle, 10).await;
 }
 
 // ============================================================
@@ -769,8 +868,8 @@ async fn test_consumer_partition_rebalance() {
             .expect("Failed to produce message");
     }
 
-    // Give consumer A time to process
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // All of batch 1 must be processed to commit before the rebalance.
+    wait_for_committed(&brokers, &group_id, &topic, 3, 9, 60).await;
 
     // Start consumer B in the same group — triggers rebalance
     let config_b = KafkaIngestConfig {
@@ -805,14 +904,14 @@ async fn test_consumer_partition_rebalance() {
             .expect("Failed to produce message");
     }
 
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // Batch 2 must be fully processed across the rebalanced group — 18
+    // committed in total proves no message was lost while partitions moved.
+    wait_for_committed(&brokers, &group_id, &topic, 3, 18, 60).await;
 
     // Shutdown consumer B — triggers another rebalance, A picks up all partitions
-    handle_b.shutdown().await;
+    shutdown_within(handle_b, 10).await;
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // Produce final batch — only A should process
+    // Produce final batch — only A remains to process it
     for i in 0..3 {
         let payload = format!(r#"{{"data": {{"batch": 3, "index": {}}}}}"#, i);
         producer
@@ -826,18 +925,27 @@ async fn test_consumer_partition_rebalance() {
             .expect("Failed to produce message");
     }
 
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // 21 committed = every message across all three batches processed
+    // through two rebalances with none lost.
+    wait_for_committed(&brokers, &group_id, &topic, 3, 21, 60).await;
 
-    handle_a.shutdown().await;
-    // Success = no panics, deadlocks, or message loss through rebalance cycles
+    shutdown_within(handle_a, 10).await;
 }
 
 // ============================================================
 // Broker failure / recovery tests
 // ============================================================
 
-/// Stop and restart the Kafka broker. Verify the consumer recovers
-/// and continues processing messages after the broker comes back.
+/// Freeze and thaw the Kafka broker. Verify the consumer survives the outage
+/// and resumes processing — proven by the committed offset advancing past
+/// messages produced after recovery.
+///
+/// `pause()`/`unpause()` rather than `stop()`/`start()`: a container restart
+/// remaps the host port, so the original broker address goes stale and the
+/// "reconnect" would target a dead port (the cluster tests avoid restarts
+/// for the same reason). Pausing freezes the broker process while keeping
+/// the port mapping, which is what a real broker outage looks like to a
+/// connected client.
 #[tokio::test]
 #[ignore]
 async fn test_consumer_broker_disconnect_recovery() {
@@ -867,7 +975,7 @@ async fn test_consumer_broker_disconnect_recovery() {
         .unwrap();
 
     for i in 0..5 {
-        let payload = format!(r#"{{"data": {{"pre_stop": {}}}}}"#, i);
+        let payload = format!(r#"{{"data": {{"pre_outage": {}}}}}"#, i);
         producer
             .send(
                 FutureRecord::<str, str>::to(topic).payload(&payload),
@@ -877,53 +985,47 @@ async fn test_consumer_broker_disconnect_recovery() {
             .expect("Failed to produce message");
     }
 
-    // Give consumer time to process
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    // All pre-outage messages processed and committed before the freeze.
+    wait_for_committed(&brokers, &config.group_id, topic, 1, 5, 30).await;
 
-    // Stop the Kafka broker
-    container.stop().await.unwrap();
-    tracing::info!("Kafka broker stopped");
+    container.pause().await.unwrap();
 
-    // Consumer should not panic during broker outage
-    tokio::time::sleep(Duration::from_secs(3)).await;
-
-    // Restart the broker
-    container.start().await.unwrap();
-    tracing::info!("Kafka broker restarted");
-
-    // Wait for broker to stabilize and consumer to reconnect
+    // Broker frozen: the consumer sees transport failures. Nothing to
+    // assert mid-outage — the recovery assertions below fail if the
+    // consumer wedged or died here.
     tokio::time::sleep(Duration::from_secs(5)).await;
 
-    // Create a new producer (old one may have stale connections)
-    let producer2: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", &brokers)
-        .set("message.timeout.ms", "15000")
-        .create()
-        .unwrap();
+    container.unpause().await.unwrap();
 
-    // Produce messages after recovery
-    for i in 0..5 {
-        let payload = format!(r#"{{"data": {{"post_restart": {}}}}}"#, i);
-        match producer2
+    // Produce after recovery with a retry loop: the broker may take a few
+    // seconds to serve requests again after unpause.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut delivered = 0;
+    while delivered < 5 {
+        let payload = format!(r#"{{"data": {{"post_recovery": {}}}}}"#, delivered);
+        match producer
             .send(
                 FutureRecord::<str, str>::to(topic).payload(&payload),
                 Duration::from_secs(10),
             )
             .await
         {
-            Ok(_) => {}
+            Ok(_) => delivered += 1,
             Err((e, _)) => {
-                tracing::warn!(error = %e, "Failed to produce after restart, retrying...");
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "producer could not reach the broker after unpause: {e}"
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }
     }
 
-    // Give consumer time to process recovered messages
-    tokio::time::sleep(Duration::from_secs(5)).await;
+    // The recovery contract: the same consumer instance processes the
+    // post-outage messages to commit (5 pre + 5 post).
+    wait_for_committed(&brokers, &config.group_id, topic, 1, 10, 60).await;
 
-    handle.shutdown().await;
-    // Success = consumer survived broker outage and resumed processing
+    shutdown_within(handle, 10).await;
 }
 
 // ============================================================
@@ -1063,8 +1165,10 @@ async fn publish_kafka_publishes_to_the_connectors_brokers() {
 async fn publish_kafka_rejects_a_non_kafka_connector() {
     use tower::ServiceExt;
 
+    // Deliberately dead address (never :9092 — a dev box running a real
+    // broker would let rdkafka's background thread actually connect).
     let state =
-        crate::common::test_state_with_kafka(orion::config::AppConfig::default(), "127.0.0.1:9092")
+        crate::common::test_state_with_kafka(orion::config::AppConfig::default(), "127.0.0.1:1")
             .await;
     let app = orion::server::build_router(state);
 
