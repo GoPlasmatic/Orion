@@ -48,6 +48,7 @@ pub(crate) async fn list_channels(
     responses(
         (status = 201, description = "Channel created as draft", body = DataEnvelope<ChannelResponse>),
         (status = 400, description = "Invalid input"),
+        (status = 409, description = "Channel id already exists"),
     )
 )]
 #[tracing::instrument(skip(state, req, principal))]

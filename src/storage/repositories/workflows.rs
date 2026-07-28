@@ -12,8 +12,8 @@ use crate::storage::{
 };
 
 use super::helpers::{
-    clamp_pagination, ensure_absent, fetch_required, fetch_required_tx, optional_string_value,
-    parse_sort_order,
+    clamp_pagination, ensure_absent, fetch_required, fetch_required_tx, map_duplicate,
+    optional_string_value, parse_sort_order,
 };
 
 pub use super::helpers::PaginatedResult;
@@ -104,7 +104,10 @@ pub trait WorkflowRepository: Send + Sync {
     async fn create(&self, req: &CreateWorkflowRequest) -> Result<Workflow, OrionError>;
     /// Get the latest version of a workflow.
     async fn get_by_id(&self, workflow_id: &str) -> Result<Workflow, OrionError>;
-    /// List workflows using the current_workflows view (latest version per workflow_id).
+    /// List workflows using the current_workflows view (latest version per
+    /// workflow_id). Honours the filter's `limit`/`offset`, clamped like every
+    /// other list (default 50, max 1000) — callers wanting everything must
+    /// page (see the export path).
     async fn list(&self, filter: &WorkflowFilter) -> Result<Vec<Workflow>, OrionError>;
     /// List workflows with pagination using the current_workflows view.
     async fn list_paginated(
@@ -341,7 +344,12 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 continue_on_error: req.continue_on_error,
             });
 
-            self.pool.execute_query(&sql, values).await?;
+            // D16: a duplicate id is the client's mistake, not ours — 409.
+            self.pool.execute_query(&sql, values).await.map_err(|e| {
+                map_duplicate(e, || {
+                    format!("Workflow with id '{workflow_id}' already exists")
+                })
+            })?;
 
             self.get_version(&workflow_id, 1).await
         })
@@ -356,17 +364,28 @@ impl WorkflowRepository for SqlWorkflowRepository {
     }
 
     async fn list(&self, filter: &WorkflowFilter) -> Result<Vec<Workflow>, OrionError> {
-        let cond = build_condition(filter);
-        let (sql, values) = build_sqlx(
-            Query::select()
-                .column(Asterisk)
-                .from(CurrentWorkflows::Table)
-                .cond_where(cond)
-                .order_by(Workflows::Priority, Order::Desc)
-                .order_by(Workflows::Name, Order::Asc),
-        );
+        crate::metrics::timed_db_op("workflows.list", async {
+            let cond = build_condition(filter);
+            // D7: honour the limit/offset the filter carries — this used to
+            // ignore them and return every current workflow in one query.
+            let (limit, offset) = clamp_pagination(filter.limit, filter.offset);
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(CurrentWorkflows::Table)
+                    .cond_where(cond)
+                    .order_by(Workflows::Priority, Order::Desc)
+                    .order_by(Workflows::Name, Order::Asc)
+                    // Unique tiebreaker so OFFSET paging cannot skip or repeat
+                    // rows when priorities and names collide.
+                    .order_by(Workflows::WorkflowId, Order::Asc)
+                    .limit(limit as u64)
+                    .offset(offset as u64),
+            );
 
-        Ok(self.pool.fetch_all_as::<Workflow>(&sql, values).await?)
+            Ok(self.pool.fetch_all_as::<Workflow>(&sql, values).await?)
+        })
+        .await
     }
 
     async fn list_paginated(
@@ -1003,6 +1022,42 @@ mod tests {
         assert!(filter.tag.is_none());
         assert!(filter.limit.is_none());
         assert!(filter.offset.is_none());
+    }
+
+    /// D7 regression: `list` must honour the filter's `limit`/`offset` —
+    /// it used to ignore both and return every current workflow.
+    #[tokio::test]
+    async fn test_list_honours_limit_and_offset() {
+        let repo = SqlWorkflowRepository::new(crate::storage::test_sqlite_pool().await);
+        for i in 0..3 {
+            let req: CreateWorkflowRequest = serde_json::from_value(serde_json::json!({
+                "workflow_id": format!("wf-page-{i}"),
+                "name": format!("Paged {i}"),
+                "tasks": [{"id": "t1", "name": "Log",
+                           "function": {"name": "log", "input": {"message": "x"}}}],
+            }))
+            .expect("request");
+            repo.create(&req).await.expect("create");
+        }
+
+        let page = |limit, offset| WorkflowFilter {
+            limit: Some(limit),
+            offset: Some(offset),
+            ..Default::default()
+        };
+        let first = repo.list(&page(2, 0)).await.expect("page 1");
+        assert_eq!(first.len(), 2, "limit must bound the page");
+        let second = repo.list(&page(2, 2)).await.expect("page 2");
+        assert_eq!(second.len(), 1, "offset must advance past page 1");
+
+        let mut ids: Vec<&str> = first
+            .iter()
+            .chain(second.iter())
+            .map(|w| w.workflow_id.as_str())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "pages must neither overlap nor skip rows");
     }
 
     #[test]

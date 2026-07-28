@@ -390,6 +390,71 @@ async fn dry_run_does_not_invent_conflicts_for_unnamed_items() {
 // R19: one import driver, one failure semantic
 // ============================================================
 
+/// D24: partial success must be *real*. The old `bulk_create` collected
+/// per-row results inside one shared transaction and unconditionally
+/// committed — on SQLite/Postgres a failed row aborts the transaction, so the
+/// `imported`/`failed` counts described writes that never happened. The
+/// per-item driver (R19) commits each row independently; this pins that a
+/// `[valid, invalid, valid]` batch really persists exactly the two rows it
+/// reports as imported.
+#[tokio::test]
+async fn workflows_import_partial_success_actually_persists_the_valid_rows() {
+    let app = test_app().await;
+    let task = json!([{"id": "t1", "name": "Log",
+                       "function": {"name": "log", "input": {"message": "x"}}}]);
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/import",
+            Some(json!([
+                {"workflow_id": "imp-valid-1", "name": "Valid One", "tasks": task.clone()},
+                // Unknown function name — rejected by create-path validation.
+                {"workflow_id": "imp-invalid", "name": "Broken",
+                 "tasks": [{"id": "t1", "name": "Nope",
+                            "function": {"name": "no_such_function", "input": {}}}]},
+                {"workflow_id": "imp-valid-2", "name": "Valid Two", "tasks": task},
+            ])),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["imported"], 2, "{body}");
+    assert_eq!(body["data"]["failed"], 1, "{body}");
+    let errors = body["data"]["errors"].as_array().expect("errors");
+    assert_eq!(errors[0]["index"], 1, "{body}");
+
+    // The counts must not be fiction: both valid rows are queryable…
+    for id in ["imp-valid-1", "imp-valid-2"] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "GET",
+                &format!("/api/v1/admin/workflows/{id}"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "'{id}' was reported imported but is not stored"
+        );
+    }
+    // …and the invalid one is not.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/workflows/imp-invalid",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
 /// R19: workflows drove `bulk_create` over a typed `Vec<CreateWorkflowRequest>`,
 /// so **one malformed item aborted the whole batch with a 400** — while the
 /// identical mistake against channels or connectors produced one failed entry

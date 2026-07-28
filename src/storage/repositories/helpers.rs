@@ -22,6 +22,28 @@ pub fn optional_string_value(opt: Option<&str>) -> sea_query::Value {
         .unwrap_or(sea_query::Value::String(None))
 }
 
+/// Map a driver-level "this row already exists" error from a `create` to
+/// `OrionError::Conflict` (409), leaving everything else a `Storage` error
+/// (500). Two shapes count as a duplicate (D16):
+///
+/// - the structured `UniqueViolation` kind — Postgres always (its single-draft
+///   rule is a partial unique index), and SQLite/MySQL primary-key collisions;
+/// - the *generic* error the single-draft triggers raise — SQLite
+///   `RAISE(ABORT, …)` and MySQL `SIGNAL SQLSTATE '45000'` carry no
+///   constraint kind sqlx can classify, so those are matched on the trigger's
+///   message text (`migrations/{sqlite,mysql}/…single_draft…`).
+pub fn map_duplicate(e: sqlx::Error, conflict_msg: impl FnOnce() -> String) -> OrionError {
+    match &e {
+        sqlx::Error::Database(db_err)
+            if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation
+                || db_err.message().contains("Only one draft version allowed") =>
+        {
+            OrionError::Conflict(conflict_msg())
+        }
+        _ => OrionError::Storage(e),
+    }
+}
+
 /// The database's own current time, per backend. Lease and claim comparisons
 /// use this (never node clocks) so every replica agrees with the DB.
 /// SQLite `datetime('now')` and MySQL `UTC_TIMESTAMP()` are UTC; Postgres

@@ -99,20 +99,11 @@ impl ConnectorRepository for SqlConnectorRepository {
                     ]),
             );
 
-            self.pool
-                .execute_query(&sql, values)
-                .await
-                .map_err(|e| match e {
-                    sqlx::Error::Database(ref db_err)
-                        if db_err.kind() == sqlx::error::ErrorKind::UniqueViolation =>
-                    {
-                        OrionError::Conflict(format!(
-                            "Connector with name '{}' already exists",
-                            req.name
-                        ))
-                    }
-                    _ => OrionError::Storage(e),
-                })?;
+            self.pool.execute_query(&sql, values).await.map_err(|e| {
+                super::helpers::map_duplicate(e, || {
+                    format!("Connector with name '{}' already exists", req.name)
+                })
+            })?;
 
             self.get_by_id(&id).await
         })

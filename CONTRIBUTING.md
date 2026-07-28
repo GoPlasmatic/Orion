@@ -79,8 +79,10 @@ docs/                  # mdBook documentation (published to GitHub Pages)
 The shipped migration files are **checksum-frozen** once released (sqlx records
 a checksum per applied migration), so never edit an existing `NNN_*.sql` — add
 a new numbered file to **each** of `migrations/{sqlite,postgres,mysql}/`.
-`src/storage/migration_gen.rs` is a scaffold for bootstrapping a new backend,
-not the source of truth for the shipped files.
+To bootstrap the migration set for a new backend, copy the newest existing
+backend's `001_initial.sql` and adapt the dialect by hand (types, triggers,
+view syntax) — that is how the shipped sets were produced; there is no
+generator.
 
 Write migrations **expand/contract** style: during a rolling deploy, old and
 new binaries briefly share one database, so a release may only *add* schema

@@ -412,6 +412,16 @@
               }
             }
           },
+          "409": {
+            "description": "Channel id already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
             "content": {
@@ -2248,6 +2258,16 @@
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workflow id already exists",
             "content": {
               "application/json": {
                 "schema": {

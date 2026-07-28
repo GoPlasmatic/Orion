@@ -13,7 +13,8 @@ use crate::storage::{
 
 use super::helpers::PaginatedResult;
 use super::helpers::{
-    clamp_pagination, fetch_required, fetch_required_tx, optional_string_value, parse_sort_order,
+    clamp_pagination, fetch_required, fetch_required_tx, map_duplicate, optional_string_value,
+    parse_sort_order,
 };
 use super::versioned::{self, VersionedSpec};
 
@@ -269,7 +270,12 @@ impl ChannelRepository for SqlChannelRepository {
                 priority: req.priority,
             });
 
-            self.pool.execute_query(&sql, values).await?;
+            // D16: a duplicate id is the client's mistake, not ours — 409.
+            self.pool.execute_query(&sql, values).await.map_err(|e| {
+                map_duplicate(e, || {
+                    format!("Channel with id '{channel_id}' already exists")
+                })
+            })?;
 
             self.get_version(&channel_id, 1).await
         })

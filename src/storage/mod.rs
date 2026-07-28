@@ -25,11 +25,6 @@
 //! still opened with `PRAGMA foreign_keys = ON` so a future FK takes effect
 //! immediately; see `init_sqlite_pool`.
 
-// Scaffold for bootstrapping a new backend's migration set (see
-// CONTRIBUTING.md). Test-only: the shipped migrations have deliberately
-// diverged from what it generates, so it must never ship in the binary.
-#[cfg(test)]
-pub mod migration_gen;
 pub mod models;
 pub mod repositories;
 pub mod schema;

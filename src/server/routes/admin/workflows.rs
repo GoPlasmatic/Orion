@@ -53,6 +53,7 @@ pub(crate) async fn list_workflows(
     responses(
         (status = 201, description = "Workflow created as draft", body = DataEnvelope<WorkflowResponse>),
         (status = 400, description = "Invalid input"),
+        (status = 409, description = "Workflow id already exists"),
     )
 )]
 #[tracing::instrument(skip(state, req, principal))]
@@ -557,6 +558,61 @@ pub(crate) fn exists_or_err<T>(result: Result<T, OrionError>) -> Result<bool, Or
     }
 }
 
+/// Rows per repository call on the export path (D7). Export still returns
+/// everything that matches, but never asks the database for more than this
+/// in one query.
+const EXPORT_PAGE_SIZE: i64 = 500;
+
+/// Fetch every workflow matching `filter`, `page_size` rows per repository
+/// call, looping until a short page says the table is exhausted (D7).
+///
+/// The filter's own `limit`/`offset` are ignored, as export always has:
+/// its contract is "everything that matches", and the paging here is an
+/// implementation bound, not a client window.
+///
+/// Invariant: `page_size` must lie in `1..=1000` — the repository clamps the
+/// limit it is handed (`clamp_pagination`), so a larger request comes back
+/// as at most 1000 rows, the short-page check misreads that as "exhausted",
+/// and the export silently truncates. Enforced by a `debug_assert!` below.
+///
+/// Not a snapshot: each page is an independent query with no transaction
+/// spanning them, so workflows mutated concurrently between pages can be
+/// skipped or duplicated within a single export response. (The previous
+/// one-query export was per-statement consistent; bounded paging trades
+/// that away.) The `workflow_id` tiebreaker only fixes ordering
+/// nondeterminism, not cross-page mutation.
+pub(crate) async fn collect_export_pages(
+    repo: &dyn crate::storage::repositories::workflows::WorkflowRepository,
+    filter: &WorkflowFilter,
+    page_size: i64,
+) -> Result<Vec<WorkflowResponse>, OrionError> {
+    debug_assert!(
+        (1..=1000).contains(&page_size),
+        "page_size {page_size} is outside the repository clamp (1..=1000); \
+         a clamped page would silently truncate the export"
+    );
+    let mut data = Vec::new();
+    let mut offset = 0i64;
+    loop {
+        let page_filter = WorkflowFilter {
+            status: filter.status.clone(),
+            tag: filter.tag.clone(),
+            limit: Some(page_size),
+            offset: Some(offset),
+            ..Default::default()
+        };
+        let page = repo.list(&page_filter).await?;
+        let page_len = page.len() as i64;
+        for workflow in &page {
+            data.push(WorkflowResponse::try_from(workflow)?);
+        }
+        if page_len < page_size {
+            return Ok(data);
+        }
+        offset += page_size;
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/admin/workflows/export",
@@ -571,11 +627,8 @@ pub(crate) async fn export_workflows(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<WorkflowFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let workflows = state.workflow_repo.list(&filter).await?;
-    let data: Vec<WorkflowResponse> = workflows
-        .iter()
-        .map(WorkflowResponse::try_from)
-        .collect::<Result<Vec<_>, _>>()?;
+    let data =
+        collect_export_pages(state.workflow_repo.as_ref(), &filter, EXPORT_PAGE_SIZE).await?;
     Ok(data_response(data))
 }
 
@@ -831,5 +884,53 @@ fn validate_dataflow_conversion(req: &CreateWorkflowRequest, errors: &mut Vec<Va
             field: "(root)".to_string(),
             message: format!("Failed to serialize workflow fields: {e}"),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::repositories::workflows::{SqlWorkflowRepository, WorkflowRepository};
+
+    /// D7 regression: export must page through the repository in bounded
+    /// pages and still return every matching workflow exactly once. With a
+    /// page size of 2 and 5 rows this loops three times; if the loop stops
+    /// after the first page, or `list` reverts to ignoring its filter, an
+    /// assertion fails. The `timeout` matters: with `list` ignoring its
+    /// limit, every page returns all 5 rows (never a short page), so an
+    /// unbounded call would spin forever — the revert must show up as a red
+    /// test, not a hang. The pre-dedup length check catches overlapping
+    /// pages exporting a row twice, which dedup would otherwise mask.
+    #[tokio::test]
+    async fn export_pages_until_exhausted() {
+        let repo = SqlWorkflowRepository::new(crate::storage::test_sqlite_pool().await);
+        for i in 0..5 {
+            let req = serde_json::from_value(serde_json::json!({
+                "workflow_id": format!("wf-exp-{i}"),
+                "name": format!("Export {i}"),
+                "tasks": [{"id": "t1", "name": "Log",
+                           "function": {"name": "log", "input": {"message": "x"}}}],
+            }))
+            .expect("request");
+            repo.create(&req).await.expect("create");
+        }
+
+        let exported = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            collect_export_pages(&repo, &WorkflowFilter::default(), 2),
+        )
+        .await
+        .expect("export must terminate: an endless loop means paging is broken")
+        .expect("export");
+
+        assert_eq!(
+            exported.len(),
+            5,
+            "export must return exactly one row per workflow (no overlap, no gaps)"
+        );
+        let mut ids: Vec<&str> = exported.iter().map(|w| w.workflow_id.as_str()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 5, "every workflow must be exported exactly once");
     }
 }

@@ -1,10 +1,10 @@
 use async_trait::async_trait;
-use sea_query::{Asterisk, Condition, Expr, Query};
+use sea_query::{Asterisk, Condition, Expr, Query, SimpleExpr};
 
 use crate::errors::OrionError;
 use crate::storage::models::TraceDlqEntry;
 use crate::storage::schema::TraceDlq;
-use crate::storage::{DbPool, build_sqlx};
+use crate::storage::{DbBackend, DbPool, build_sqlx};
 
 use super::helpers::PaginatedResult;
 
@@ -37,10 +37,15 @@ pub struct TraceDlqFilter {
     pub offset: Option<i64>,
 }
 
-/// Exhaustion is a column-to-column comparison, expressed the same way
-/// `claim_pending` expresses it so the two can never drift apart.
-const EXHAUSTED: &str = "retry_count >= max_retries";
-const NOT_EXHAUSTED: &str = "retry_count < max_retries";
+/// Exhaustion is a column-to-column comparison, built from the Iden enum in
+/// one place so the filter, `claim_pending` and `purge_exhausted` can never
+/// drift apart (and a rename in `schema.rs` cannot fail only at runtime, D25).
+fn exhausted() -> SimpleExpr {
+    Expr::col(TraceDlq::RetryCount).gte(Expr::col(TraceDlq::MaxRetries))
+}
+fn not_exhausted() -> SimpleExpr {
+    Expr::col(TraceDlq::RetryCount).lt(Expr::col(TraceDlq::MaxRetries))
+}
 
 impl TraceDlqFilter {
     fn condition(&self) -> Condition {
@@ -49,8 +54,8 @@ impl TraceDlqFilter {
             cond = cond.add(Expr::col(TraceDlq::Channel).eq(channel.as_str()));
         }
         match self.exhausted {
-            Some(true) => cond = cond.add(Expr::cust(EXHAUSTED)),
-            Some(false) => cond = cond.add(Expr::cust(NOT_EXHAUSTED)),
+            Some(true) => cond = cond.add(exhausted()),
+            Some(false) => cond = cond.add(not_exhausted()),
             None => {}
         }
         cond
@@ -131,6 +136,95 @@ pub trait TraceDlqRepository: Send + Sync {
     /// exhausted entry). Nothing else removes them, so without this they
     /// accumulate forever with full payloads.
     async fn purge_exhausted(&self, older_than_hours: u64) -> Result<u64, OrionError>;
+}
+
+// -- claim_pending query builders (D25) --
+//
+// Free functions so the per-backend SQL shapes can be pinned by a unit test
+// (see `per_backend_sql_shapes` below, after cluster.rs). Column identifiers
+// come from the Iden enum and `limit` is a bound parameter; the only raw SQL
+// is the backend clock expressions (`sql_now` / `sql_now_plus_secs`), per the
+// cluster.rs convention.
+
+/// Due = past `next_retry_at`, retries left, and no live lease
+/// (`claimed_until` NULL or expired). All time comparisons use the DB clock.
+fn due_condition(now: &str) -> Condition {
+    Condition::all()
+        .add(Expr::col(TraceDlq::NextRetryAt).lte(Expr::cust(now)))
+        .add(not_exhausted())
+        .add(
+            Condition::any()
+                .add(Expr::col(TraceDlq::ClaimedUntil).is_null())
+                .add(Expr::col(TraceDlq::ClaimedUntil).lt(Expr::cust(now))),
+        )
+}
+
+/// Single-statement claim for the backends with `UPDATE … RETURNING`
+/// (Postgres, SQLite): lease the `limit` oldest due rows and return them.
+/// `skip_locked` adds `FOR UPDATE SKIP LOCKED` to the inner select — required
+/// on Postgres so two nodes cannot claim the same rows even mid-transaction;
+/// SQLite is single-host by construction (D2) and serializes writes itself.
+fn claim_update_query(
+    claimant: &str,
+    limit: i64,
+    now: &str,
+    lease_until: &str,
+    skip_locked: bool,
+) -> sea_query::UpdateStatement {
+    let mut due_ids = Query::select()
+        .column(TraceDlq::Id)
+        .from(TraceDlq::Table)
+        .cond_where(due_condition(now))
+        .order_by(TraceDlq::NextRetryAt, sea_query::Order::Asc)
+        .limit(limit.max(0) as u64)
+        .to_owned();
+    if skip_locked {
+        due_ids.lock_with_behavior(
+            sea_query::LockType::Update,
+            sea_query::LockBehavior::SkipLocked,
+        );
+    }
+    let mut update = Query::update()
+        .table(TraceDlq::Table)
+        .value(TraceDlq::ClaimedBy, claimant)
+        .value(TraceDlq::ClaimedUntil, Expr::cust(lease_until))
+        .and_where(Expr::col(TraceDlq::Id).in_subquery(due_ids))
+        .to_owned();
+    update.returning_all();
+    update
+}
+
+/// MySQL claim, step 1: select the full due rows `FOR UPDATE SKIP LOCKED`.
+/// MySQL 8 has SKIP LOCKED but no `UPDATE … RETURNING`, and the model carries
+/// no lease columns, so the pre-UPDATE rows are already what the caller
+/// needs — no read-back.
+fn claim_select_query(limit: i64, now: &str) -> sea_query::SelectStatement {
+    let mut select = Query::select()
+        .column(Asterisk)
+        .from(TraceDlq::Table)
+        .cond_where(due_condition(now))
+        .order_by(TraceDlq::NextRetryAt, sea_query::Order::Asc)
+        .limit(limit.max(0) as u64)
+        .to_owned();
+    select.lock_with_behavior(
+        sea_query::LockType::Update,
+        sea_query::LockBehavior::SkipLocked,
+    );
+    select
+}
+
+/// MySQL claim, step 2: lease the selected rows by id.
+fn lease_claimed_query<'a>(
+    claimant: &str,
+    lease_until: &str,
+    ids: impl IntoIterator<Item = &'a str>,
+) -> sea_query::UpdateStatement {
+    Query::update()
+        .table(TraceDlq::Table)
+        .value(TraceDlq::ClaimedBy, claimant)
+        .value(TraceDlq::ClaimedUntil, Expr::cust(lease_until))
+        .and_where(Expr::col(TraceDlq::Id).is_in(ids))
+        .to_owned()
 }
 
 // -- SQL implementation --
@@ -221,89 +315,40 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         limit: i64,
         lease_secs: u64,
     ) -> Result<Vec<TraceDlqEntry>, OrionError> {
-        use sea_query::{Value, Values};
-        use sea_query_binder::SqlxValues;
-
         crate::metrics::timed_db_op("trace_dlq.claim_pending", async {
             let backend = crate::storage::get_backend();
             let now = super::helpers::sql_now(backend);
             let lease_until = super::helpers::sql_now_plus_secs(backend, lease_secs);
-            // Due = past next_retry_at, retries left, and no live lease.
-            let due = format!(
-                "next_retry_at <= {now} AND retry_count < max_retries \
-                 AND (claimed_until IS NULL OR claimed_until < {now})"
-            );
             match backend {
-                crate::storage::DbBackend::Postgres => {
-                    // Single statement: SKIP LOCKED prevents two nodes from
-                    // claiming the same rows even mid-transaction.
-                    let sql = format!(
-                        "UPDATE trace_dlq SET claimed_by = $1, claimed_until = {lease_until} \
-                         WHERE id IN ( \
-                             SELECT id FROM trace_dlq WHERE {due} \
-                             ORDER BY next_retry_at ASC LIMIT {limit} \
-                             FOR UPDATE SKIP LOCKED) \
-                         RETURNING *"
-                    );
+                DbBackend::Postgres | DbBackend::Sqlite => {
+                    let (sql, values) = build_sqlx(&mut claim_update_query(
+                        claimant,
+                        limit,
+                        now,
+                        &lease_until,
+                        backend == DbBackend::Postgres,
+                    ));
                     Ok(self
                         .pool
-                        .fetch_all_as::<TraceDlqEntry>(
-                            &sql,
-                            SqlxValues(Values(vec![Value::from(claimant)])),
-                        )
+                        .fetch_all_as::<TraceDlqEntry>(&sql, values)
                         .await?)
                 }
-                crate::storage::DbBackend::Mysql => {
-                    // MySQL 8 has SKIP LOCKED but no UPDATE ... RETURNING:
-                    // select-for-update the full rows, then lease them. The
-                    // model carries no lease columns, so the pre-UPDATE rows
-                    // are already what the caller needs — no read-back.
+                DbBackend::Mysql => {
                     let mut tx = self.pool.begin_tx().await.map_err(OrionError::Storage)?;
-                    let rows: Vec<TraceDlqEntry> = tx
-                        .fetch_all_as(
-                            &format!(
-                                "SELECT * FROM trace_dlq WHERE {due} \
-                                 ORDER BY next_retry_at ASC LIMIT {limit} \
-                                 FOR UPDATE SKIP LOCKED"
-                            ),
-                            SqlxValues(Values(Vec::new())),
-                        )
-                        .await?;
+                    let (sql, values) = build_sqlx(&mut claim_select_query(limit, now));
+                    let rows: Vec<TraceDlqEntry> = tx.fetch_all_as(&sql, values).await?;
                     if rows.is_empty() {
                         tx.commit().await.map_err(OrionError::Storage)?;
                         return Ok(rows);
                     }
-                    let placeholders = vec!["?"; rows.len()].join(", ");
-                    let mut update_values: Vec<Value> = vec![Value::from(claimant)];
-                    update_values.extend(rows.iter().map(|r| Value::from(r.id.as_str())));
-                    tx.execute_query(
-                        &format!(
-                            "UPDATE trace_dlq SET claimed_by = ?, claimed_until = {lease_until} \
-                             WHERE id IN ({placeholders})"
-                        ),
-                        SqlxValues(Values(update_values)),
-                    )
-                    .await?;
+                    let (sql, values) = build_sqlx(&mut lease_claimed_query(
+                        claimant,
+                        &lease_until,
+                        rows.iter().map(|r| r.id.as_str()),
+                    ));
+                    tx.execute_query(&sql, values).await?;
                     tx.commit().await.map_err(OrionError::Storage)?;
                     Ok(rows)
-                }
-                crate::storage::DbBackend::Sqlite => {
-                    // Single-host by construction (D2): no locking clause
-                    // needed, writes are serialized by SQLite itself.
-                    let sql = format!(
-                        "UPDATE trace_dlq SET claimed_by = ?, claimed_until = {lease_until} \
-                         WHERE id IN ( \
-                             SELECT id FROM trace_dlq WHERE {due} \
-                             ORDER BY next_retry_at ASC LIMIT {limit}) \
-                         RETURNING *"
-                    );
-                    Ok(self
-                        .pool
-                        .fetch_all_as::<TraceDlqEntry>(
-                            &sql,
-                            SqlxValues(Values(vec![Value::from(claimant)])),
-                        )
-                        .await?)
                 }
             }
         })
@@ -488,7 +533,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 TraceDlq::Table,
                 TraceDlq::Id,
                 Condition::all()
-                    .add(Expr::cust(EXHAUSTED))
+                    .add(exhausted())
                     .add(Expr::col(TraceDlq::CreatedAt).lt(cutoff)),
             )
             .await
@@ -646,6 +691,73 @@ mod tests {
             cycles, max_retries,
             "a poison message must be retried exactly max_retries times"
         );
+    }
+
+    /// The Postgres/MySQL arms cannot execute without containers (CI covers
+    /// that); pin the rendered SQL shapes so a sea-query upgrade, a schema
+    /// rename, or a regression to formatting `limit` into the statement text
+    /// fails here first (D25).
+    #[test]
+    fn per_backend_sql_shapes() {
+        use sea_query::{MysqlQueryBuilder, PostgresQueryBuilder, SqliteQueryBuilder};
+
+        // Postgres: one UPDATE … RETURNING over a SKIP LOCKED subselect, with
+        // identifiers from the Iden enum and the limit bound, never inlined.
+        let (sql, values) = claim_update_query(
+            "node-a",
+            25,
+            "LOCALTIMESTAMP",
+            "LOCALTIMESTAMP + interval '60 seconds'",
+            true,
+        )
+        .build(PostgresQueryBuilder);
+        assert!(sql.contains("RETURNING"), "{sql}");
+        assert!(sql.contains("FOR UPDATE SKIP LOCKED"), "{sql}");
+        assert!(sql.contains("\"next_retry_at\""), "{sql}");
+        assert!(sql.contains("\"claimed_until\""), "{sql}");
+        assert!(
+            sql.contains("LIMIT $"),
+            "limit must be a placeholder: {sql}"
+        );
+        assert!(!sql.contains("25"), "limit must not be inlined: {sql}");
+        assert!(
+            values.iter().any(|v| *v == sea_query::Value::from(25u64)),
+            "limit must travel as a bound value: {values:?}"
+        );
+
+        // SQLite: same statement without the locking clause.
+        let (sql, _) = claim_update_query(
+            "node-a",
+            25,
+            "datetime('now')",
+            "datetime('now', '+60 seconds')",
+            false,
+        )
+        .build(SqliteQueryBuilder);
+        assert!(sql.contains("RETURNING"), "{sql}");
+        assert!(!sql.contains("FOR UPDATE"), "{sql}");
+        assert!(
+            sql.contains("LIMIT ?"),
+            "limit must be a placeholder: {sql}"
+        );
+
+        // MySQL: SELECT … FOR UPDATE SKIP LOCKED, then the lease UPDATE.
+        let (sql, _) = claim_select_query(25, "UTC_TIMESTAMP()").build(MysqlQueryBuilder);
+        assert!(sql.contains("FOR UPDATE SKIP LOCKED"), "{sql}");
+        assert!(sql.contains("`next_retry_at`"), "{sql}");
+        assert!(
+            sql.contains("LIMIT ?"),
+            "limit must be a placeholder: {sql}"
+        );
+
+        let (sql, _) = lease_claimed_query(
+            "node-a",
+            "DATE_ADD(UTC_TIMESTAMP(), INTERVAL 60 SECOND)",
+            ["id-1", "id-2"],
+        )
+        .build(MysqlQueryBuilder);
+        assert!(sql.contains("`claimed_by`"), "{sql}");
+        assert!(sql.contains("IN (?, ?)"), "{sql}");
     }
 
     #[tokio::test]

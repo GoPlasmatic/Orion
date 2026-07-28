@@ -278,7 +278,9 @@ async fn test_duplicate_workflow_id_rejected() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 
-    // Second creation with same ID must fail
+    // D16: a duplicate id is a client error, not a 500. On SQLite the
+    // single-draft trigger raises a generic error (no UniqueViolation kind),
+    // which must still map to 409 with the error envelope.
     let resp = app
         .oneshot(json_request(
             "POST",
@@ -287,7 +289,108 @@ async fn test_duplicate_workflow_id_rejected() {
         ))
         .await
         .unwrap();
-    assert!(!resp.status().is_success());
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "CONFLICT", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("duplicate-workflow"),
+        "{body}"
+    );
+}
+
+/// D16, the other duplicate shape: once the draft is activated there is no
+/// draft left for the trigger to reject, so the second create hits the
+/// `(workflow_id, version)` primary key instead — a structured
+/// `UniqueViolation` — and must map to the same 409.
+#[tokio::test]
+async fn test_duplicate_of_activated_workflow_returns_conflict() {
+    let app = common::test_app().await;
+
+    let workflow = json!({
+        "workflow_id": "duplicate-active-workflow",
+        "name": "First Workflow",
+        "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "test"}}}]
+    });
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(workflow.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            "/api/v1/admin/workflows/duplicate-active-workflow/status",
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(workflow),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "CONFLICT", "{body}");
+}
+
+#[tokio::test]
+async fn test_duplicate_channel_id_returns_conflict() {
+    let app = common::test_app().await;
+
+    let channel = json!({
+        "channel_id": "duplicate-channel",
+        "name": "first-channel",
+        "channel_type": "sync",
+        "protocol": "rest",
+        "methods": ["POST"],
+        "route_pattern": "/dup-ch"
+    });
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(channel.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // D16: same contract as workflows — 409 with the envelope, not a 500.
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(channel),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "CONFLICT", "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("duplicate-channel"),
+        "{body}"
+    );
 }
 
 #[tokio::test]
