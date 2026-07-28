@@ -7,6 +7,7 @@
 //!   - ?dry_run=true on workflows/channels/connectors imports validates
 //!     without writing and reports would_create / would_fail
 
+use crate::common;
 use crate::common::{body_json, json_request, test_app};
 use axum::http::StatusCode;
 use serde_json::json;
@@ -269,4 +270,168 @@ async fn workflows_import_dry_run_does_not_persist() {
             .iter()
             .all(|w| w["name"] != "wf-dry")
     );
+}
+
+// ============================================================
+// R15: dry-run reads, so it can see the failure that actually happens
+// ============================================================
+
+/// R15: dry-run performed **no DB reads**, as its own doc comment said. The
+/// stated use case is CI pre-flight, and the most common real failure is a name
+/// conflict — precisely what a no-DB dry-run cannot see. So a green dry-run
+/// said nothing about whether the real import would work.
+#[tokio::test]
+async fn dry_run_reports_a_conflict_with_an_already_stored_connector() {
+    let app = test_app().await;
+    common::create_connector(&app, common::db_connector("taken")).await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors/import?dry_run=true",
+            Some(json!([
+                {"name": "taken", "connector_type": "db",
+                 "config": {"connection_string": "sqlite::memory:"}},
+                {"name": "free", "connector_type": "db",
+                 "config": {"connection_string": "sqlite::memory:"}}
+            ])),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["dry_run"], true);
+    assert_eq!(body["data"]["imported"], 1, "{body}");
+    assert_eq!(body["data"]["failed"], 1, "{body}");
+    let errors = body["data"]["errors"].as_array().expect("errors");
+    assert_eq!(errors[0]["index"], 0);
+    assert!(
+        errors[0]["error"].as_str().unwrap_or("").contains("taken"),
+        "{body}"
+    );
+
+    // And the real import agrees — which is the whole point of a pre-flight.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors/import",
+            Some(json!([
+                {"name": "taken", "connector_type": "db",
+                 "config": {"connection_string": "sqlite::memory:"}},
+                {"name": "free", "connector_type": "db",
+                 "config": {"connection_string": "sqlite::memory:"}}
+            ])),
+        ))
+        .await
+        .unwrap();
+    let real = body_json(resp).await;
+    assert_eq!(real["data"]["imported"], 1, "{real}");
+    assert_eq!(real["data"]["failed"], 1, "{real}");
+}
+
+/// Duplicates *within* one batch were missed entirely, and cost nothing to
+/// find: the second item conflicts with the first.
+#[tokio::test]
+async fn dry_run_reports_a_duplicate_inside_the_batch() {
+    let app = test_app().await;
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/import?dry_run=true",
+            Some(json!([
+                {"workflow_id": "same", "name": "First",
+                 "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"a"}}}]},
+                {"workflow_id": "same", "name": "Second",
+                 "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"b"}}}]}
+            ])),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["imported"], 1, "{body}");
+    assert_eq!(body["data"]["failed"], 1, "{body}");
+    let errors = body["data"]["errors"].as_array().expect("errors");
+    assert_eq!(errors[0]["index"], 1, "the *second* item is the problem");
+    assert!(
+        errors[0]["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("more than once"),
+        "{body}"
+    );
+}
+
+/// An item that names no id can never conflict — the store generates one.
+#[tokio::test]
+async fn dry_run_does_not_invent_conflicts_for_unnamed_items() {
+    let app = test_app().await;
+    let item = json!({
+        "name": "No Id",
+        "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"x"}}}]
+    });
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/import?dry_run=true",
+            Some(json!([item.clone(), item])),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["imported"], 2, "{body}");
+    assert_eq!(body["data"]["failed"], 0, "{body}");
+}
+
+// ============================================================
+// R19: one import driver, one failure semantic
+// ============================================================
+
+/// R19: workflows drove `bulk_create` over a typed `Vec<CreateWorkflowRequest>`,
+/// so **one malformed item aborted the whole batch with a 400** — while the
+/// identical mistake against channels or connectors produced one failed entry
+/// and imported the rest. Three endpoints, one documented shape, two behaviours.
+#[tokio::test]
+async fn a_malformed_item_fails_alone_on_every_import_endpoint() {
+    let good_workflow = json!({
+        "name": "Good",
+        "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"x"}}}]
+    });
+    let good_channel = json!({
+        "name": "good-ch", "channel_type": "sync", "protocol": "http",
+        "methods": ["POST"], "route_pattern": "/good-ch"
+    });
+    let good_connector = json!({
+        "name": "good-conn", "connector_type": "db",
+        "config": {"connection_string": "sqlite::memory:"}
+    });
+    // Missing `name` in each case — a shape error, not a validation one.
+    let malformed = json!({"nope": true});
+
+    for (path, good) in [
+        ("/api/v1/admin/workflows/import", good_workflow),
+        ("/api/v1/admin/channels/import", good_channel),
+        ("/api/v1/admin/connectors/import", good_connector),
+    ] {
+        let app = test_app().await;
+        let resp = app
+            .oneshot(json_request(
+                "POST",
+                path,
+                Some(json!([malformed.clone(), good])),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "{path} must not 400");
+        let body = body_json(resp).await;
+        assert_eq!(body["data"]["imported"], 1, "{path}: {body}");
+        assert_eq!(body["data"]["failed"], 1, "{path}: {body}");
+        assert_eq!(
+            body["data"]["errors"][0]["index"], 0,
+            "{path}: the failure must be attributed to the item that caused it"
+        );
+    }
 }

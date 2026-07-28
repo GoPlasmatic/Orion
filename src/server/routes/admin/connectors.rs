@@ -321,9 +321,9 @@ pub(crate) async fn delete_connector(
     params(super::workflows::ImportQuery),
     responses(
         (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
-            Dry-run validates each item's shape and values only — it does NOT read the database, so it \
-            cannot detect name conflicts. Connectors whose names already exist are counted in `imported` \
-            and will surface as Conflict on the real (non-dry-run) import.", body = DataEnvelope<ImportResult>),
+            Each item is handled independently: a malformed or conflicting item becomes one entry in \
+            `errors` and the rest of the batch still applies. Dry-run additionally probes for name \
+            conflicts against stored rows and duplicates within the batch, without writing.", body = DataEnvelope<ImportResult>),
     )
 )]
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
@@ -335,16 +335,26 @@ pub(crate) async fn import_connectors(
 ) -> Result<Json<Value>, OrionError> {
     super::check_import_batch_size(items.len())?;
     let repo = state.connector_repo.clone();
-    let (imported, failed, errors) = super::import_items::<CreateConnectorRequest, _, _, _>(
-        items,
-        query.dry_run,
-        crate::validation::validate_create_connector,
-        |c| {
-            let repo = repo.clone();
-            async move { repo.create(&c).await.map(|_| ()) }
-        },
-    )
-    .await;
+    let probe = state.connector_repo.clone();
+    let (imported, failed, errors) =
+        super::import_items::<CreateConnectorRequest, _, _, _, _, _, _>(
+            items,
+            query.dry_run,
+            super::ImportOps {
+                validate: crate::validation::validate_create_connector,
+                // `name` carries the unique constraint here, not `id`.
+                conflict_key: |c: &CreateConnectorRequest| Some(c.name.clone()),
+                exists: |name: String| {
+                    let repo = probe.clone();
+                    async move { repo.exists_by_name(&name).await }
+                },
+                create: |c: CreateConnectorRequest| {
+                    let repo = repo.clone();
+                    async move { repo.create(&c).await.map(|_| ()) }
+                },
+            },
+        )
+        .await;
     if query.dry_run {
         return Ok(super::dry_run_response(imported, failed, errors));
     }

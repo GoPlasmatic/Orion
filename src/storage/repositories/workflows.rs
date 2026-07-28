@@ -129,11 +129,6 @@ pub trait WorkflowRepository: Send + Sync {
     async fn update_rollout(&self, workflow_id: &str, pct: i64) -> Result<Workflow, OrionError>;
     /// Create a new draft version by copying the latest active version.
     async fn create_new_version(&self, workflow_id: &str) -> Result<Workflow, OrionError>;
-    /// Bulk create workflows as draft v1.
-    async fn bulk_create(
-        &self,
-        workflows: &[CreateWorkflowRequest],
-    ) -> Result<Vec<Result<Workflow, OrionError>>, OrionError>;
     /// List all versions of a workflow.
     async fn list_versions(
         &self,
@@ -638,67 +633,6 @@ impl WorkflowRepository for SqlWorkflowRepository {
             self.pool.execute_query(&sql, values).await?;
 
             self.get_version(workflow_id, new_version).await
-        })
-        .await
-    }
-
-    async fn bulk_create(
-        &self,
-        workflows: &[CreateWorkflowRequest],
-    ) -> Result<Vec<Result<Workflow, OrionError>>, OrionError> {
-        crate::metrics::timed_db_op("workflows.bulk_create", async {
-            let mut tx = self.pool.begin_tx().await?;
-            let mut results = Vec::with_capacity(workflows.len());
-
-            for req in workflows {
-                let result: Result<Workflow, OrionError> = async {
-                    let workflow_id = req
-                        .workflow_id
-                        .clone()
-                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                    let condition_json = serde_json::to_string(&req.condition)?;
-                    let tasks_json = serde_json::to_string(&req.tasks)?;
-                    let tags_json = serde_json::to_string(&req.tags)?;
-                    let description_val = optional_string_value(req.description.as_deref());
-
-                    let (sql, values) = build_workflow_insert(WorkflowInsertRow {
-                        workflow_id: workflow_id.as_str(),
-                        version: 1,
-                        name: req.name.as_str(),
-                        description: description_val,
-                        priority: req.priority,
-                        status: EntityStatus::Draft.as_str(),
-                        rollout_pct: 100,
-                        condition_json: condition_json.as_str(),
-                        tasks_json: tasks_json.as_str(),
-                        tags_json: tags_json.as_str(),
-                        continue_on_error: req.continue_on_error,
-                    });
-
-                    tx.execute_query(&sql, values).await?;
-
-                    let (sql, values) = build_sqlx(
-                        Query::select()
-                            .column(Asterisk)
-                            .from(Workflows::Table)
-                            .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id.as_str()))
-                            .and_where(Expr::col(Workflows::Version).eq(1i64)),
-                    );
-
-                    tx.fetch_optional_as::<Workflow>(&sql, values)
-                        .await?
-                        .ok_or_else(|| {
-                            OrionError::NotFound(format!(
-                                "Workflow '{workflow_id}' version 1 not found after insert"
-                            ))
-                        })
-                }
-                .await;
-                results.push(result);
-            }
-
-            tx.commit().await?;
-            Ok(results)
         })
         .await
     }

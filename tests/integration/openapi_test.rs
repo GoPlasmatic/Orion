@@ -177,16 +177,25 @@ async fn openapi_documents_the_data_plane() {
         accepted["content"]["application/json"]["schema"]["$ref"],
         "#/components/schemas/AsyncSubmitResponse"
     );
+    // R11: the 202 has one shape. It used to answer `{"trace_id": null}` plus a
+    // `Warning: 299` header when `trace.mode = off` — a receipt for a result
+    // that could never be fetched, with the nullability baked into the spec.
     assert!(
-        accepted["headers"]["warning"].is_object(),
-        "the 202 must document the `Warning: 299` header emitted when tracing is off"
+        accepted["headers"]["warning"].is_null(),
+        "the 202 must not document a Warning header — trace_id is unconditional"
     );
-
-    // `trace_id` is nullable: `off` mode returns 202 with no id to poll.
-    let ack = &body["components"]["schemas"]["AsyncSubmitResponse"]["properties"]["trace_id"];
+    let ack = &body["components"]["schemas"]["AsyncSubmitResponse"];
     assert!(
-        !ack.is_null(),
+        !ack["properties"]["trace_id"].is_null(),
         "AsyncSubmitResponse must describe its trace_id field"
+    );
+    let required: Vec<&str> = ack["required"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        required.contains(&"trace_id") && required.contains(&"trace_token"),
+        "both must be required, got {required:?}"
     );
 }
 

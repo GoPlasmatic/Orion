@@ -213,15 +213,23 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     let _backpressure_permit = msg.backpressure_permit.take();
 
     // Resolve effective trace-storage config for this channel (channel
-    // override > global default). In `Off` mode skip all trace writes; the
-    // workflow still runs but no DB rows are touched.
+    // override > global default).
+    //
+    // R11: everything reaching this worker came in through `/async`, which
+    // hands the caller a `trace_id` to poll — so `for_async_submission`
+    // upgrades `Off` to `Sync` here, matching the pending row the submission
+    // path already wrote. Dropping the result while the row exists would leave
+    // the trace stuck at `pending` forever.
     let channel_runtime = ctx.channel_registry.get_by_name(&msg.channel).await;
     // O1: unregistered channel names (arbitrary path segments on the async
     // route) must not become Prometheus label values.
     let channel_registered = channel_runtime.is_some();
-    let effective_trace = channel_runtime.map(|c| c.trace_storage).unwrap_or_else(|| {
-        crate::channel::registry::EffectiveTraceConfig::resolve(&ctx.global_trace_storage, None)
-    });
+    let effective_trace = channel_runtime
+        .map(|c| c.trace_storage)
+        .unwrap_or_else(|| {
+            crate::channel::registry::EffectiveTraceConfig::resolve(&ctx.global_trace_storage, None)
+        })
+        .for_async_submission();
     let trace_mode = effective_trace.mode;
     // Restore W3C trace context from the originating request so this span
     // appears as a child in the caller's distributed trace.

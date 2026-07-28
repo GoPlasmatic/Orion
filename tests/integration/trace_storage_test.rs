@@ -134,8 +134,17 @@ async fn batch_mode_persists_eventually() {
 // POST /{channel}/async behaviour under `off` mode
 // -----------------------------------------------------------------------
 
+/// R11: `mode = off` on the async path used to mint a throwaway UUID, answer
+/// 202 with `{"trace_id": null, "trace_token": null}` and a `Warning: 299`
+/// header, and enqueue the work anyway — a receipt whose documented follow-up
+/// was structurally impossible.
+///
+/// Appending `/async` *is* the request for a result to be fetched later, so
+/// the row is written regardless of `mode`. The result must actually arrive:
+/// dropping it while the row exists would leave the trace at `pending` forever,
+/// which is the same dead end wearing a different hat.
 #[tokio::test]
-async fn async_endpoint_off_mode_returns_null_trace_id_with_warning() {
+async fn an_async_submission_is_pollable_even_when_trace_storage_is_off() {
     let app = common::test_app_with_config(cfg_with_storage(TraceStorageMode::Off)).await;
     let (_, _) = common::create_and_activate_channel(
         &app,
@@ -155,18 +164,42 @@ async fn async_endpoint_off_mode_returns_null_trace_id_with_warning() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
-    let warning = resp
-        .headers()
-        .get("warning")
-        .map(|v| v.to_str().unwrap_or("").to_string())
-        .unwrap_or_default();
     assert!(
-        warning.contains("Trace persistence disabled"),
-        "expected Warning header, got '{}'",
-        warning
+        resp.headers().get("warning").is_none(),
+        "there is nothing conditional left to warn about"
     );
     let body = body_json(resp).await;
-    assert!(body["trace_id"].is_null(), "body was {:?}", body);
+    let trace_id = body["trace_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("trace_id must be present, got {body}"))
+        .to_string();
+    let token = body["trace_token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("trace_token must be present, got {body}"))
+        .to_string();
+
+    let final_trace = common::poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
+    assert_eq!(final_trace["status"], "completed", "{final_trace}");
+}
+
+/// The sync path is untouched: `off` still means no row at all, because the
+/// caller already has the answer in the response.
+#[tokio::test]
+async fn off_mode_still_persists_nothing_on_the_sync_path() {
+    let app = common::test_app_with_config(cfg_with_storage(TraceStorageMode::Off)).await;
+    let (_, _) = common::create_and_activate_channel(
+        &app,
+        "ch_sync_off",
+        common::simple_log_workflow("Log"),
+    )
+    .await;
+    let before = list_total(&app).await;
+    assert_eq!(submit_sync(&app, "ch_sync_off").await, StatusCode::OK);
+    assert_eq!(
+        list_total(&app).await,
+        before,
+        "off mode must write no rows"
+    );
 }
 
 // -----------------------------------------------------------------------

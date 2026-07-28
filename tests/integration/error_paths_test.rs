@@ -64,21 +64,81 @@ async fn test_empty_body_accepted() {
     assert!(resp.status().is_success());
 }
 
+/// R13: this endpoint had three behaviours for three body shapes, and only
+/// one was documented. `{"data": …}` was the envelope, an empty body became
+/// `{"data":{}}`, and a **bare object** — the obvious thing to send, and what
+/// every other JSON API accepts — failed with *missing field `data`*. On the
+/// most-hit endpoint in the product.
+///
+/// One rule now: an object carrying `data` or `metadata` is the envelope;
+/// anything else is the payload.
 #[tokio::test]
-async fn test_missing_data_field_in_process_request() {
+async fn a_bare_object_body_is_the_payload() {
     let app = common::test_app().await;
+    let wf_id = common::create_and_activate_workflow(&app, common::echo_workflow("Echo")).await;
+    common::create_rest_channel(&app, "bare", "/bare", vec!["POST"], &wf_id).await;
+
+    // Bare object: previously a 400.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/bare",
+            Some(json!({"amount": 5})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bare = common::body_json(resp).await;
+
+    // …and it means exactly what the explicit envelope means.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/bare",
+            Some(json!({"data": {"amount": 5}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let enveloped = common::body_json(resp).await;
+    assert_eq!(bare["data"], enveloped["data"], "{bare} vs {enveloped}");
+
+    // A non-object body is a payload too.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/bare",
+            Some(json!([1, 2, 3])),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// An envelope naming only `metadata` carries no payload — which is `{}`, the
+/// same thing an empty body means.
+#[tokio::test]
+async fn an_envelope_with_only_metadata_is_accepted() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel(
+        &app,
+        "meta-only",
+        common::simple_log_workflow("Meta Only"),
+    )
+    .await;
 
     let resp = app
         .oneshot(json_request(
             "POST",
-            "/api/v1/data/orders",
+            "/api/v1/data/meta-only",
             Some(json!({"metadata": {"source": "test"}})),
         ))
         .await
         .unwrap();
-
-    // `data` is required in ProcessRequest
-    assert!(resp.status().is_client_error());
+    assert_eq!(resp.status(), StatusCode::OK);
 }
 
 // ============================================================

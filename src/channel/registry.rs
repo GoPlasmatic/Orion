@@ -49,6 +49,34 @@ impl EffectiveTraceConfig {
         None
     }
 
+    /// The same config as seen by an **async submission**, where trace
+    /// persistence is not optional.
+    ///
+    /// R11: `mode = "off"` on the async path used to mint a throwaway UUID,
+    /// answer 202 with `{"trace_id": null, "trace_token": null}` plus a
+    /// `Warning: 299` header, and enqueue the work anyway — a 202 whose
+    /// documented follow-up (`GET /admin/traces/{id}`) was structurally
+    /// impossible, and a nullable `trace_id` baked into the schema forever.
+    ///
+    /// Appending `/async` *is* the request for a result to be fetched later,
+    /// and the trace row is the mechanism that makes that possible, not an
+    /// optional extra. So `Off` is upgraded to `Sync` here and nowhere else:
+    /// the sync path, where the caller already has the answer in hand, still
+    /// honours `off` exactly.
+    ///
+    /// `errors_only` and `sample_rate` are deliberately left alone — they drop
+    /// the *result*, but `create_pending` still writes the row, so the id the
+    /// caller was handed continues to resolve.
+    pub fn for_async_submission(self) -> Self {
+        Self {
+            mode: match self.mode {
+                TraceStorageMode::Off => TraceStorageMode::Sync,
+                other => other,
+            },
+            ..self
+        }
+    }
+
     /// Compute the effective config by overlaying a channel-level
     /// override on top of the global storage config.
     pub fn resolve(

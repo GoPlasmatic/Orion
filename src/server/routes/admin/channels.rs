@@ -163,7 +163,16 @@ pub(crate) async fn change_channel_status(
 ) -> Result<Json<Value>, OrionError> {
     let action = StatusAction::parse(req.status)?;
     let channel = match action {
-        StatusAction::Activate => state.channel_repo.activate(&id).await?,
+        StatusAction::Activate => {
+            // R7: refuse a channel whose route another active channel already
+            // claims. Same shape as R5/F52 gating workflow activation — the
+            // question is fully answerable here, and answering it later means
+            // answering it wrong: the loser's declared path resolves to the
+            // winner's workflow, which is a wrong answer rather than an error.
+            let draft = state.channel_repo.get_by_id(&id).await?;
+            ensure_route_is_unclaimed(&state, &draft).await?;
+            state.channel_repo.activate(&id).await?
+        }
         StatusAction::Archive => state.channel_repo.archive(&id).await?,
     };
     audit_and_reload(
@@ -175,6 +184,71 @@ pub(crate) async fn change_channel_status(
     )
     .await?;
     Ok(data_response(ChannelResponse::try_from(&channel)?))
+}
+
+/// A channel's declared route, as the route table would see it.
+/// `None` for channels that register no route (Kafka, or no `route_pattern`).
+fn declared_route(channel: &crate::storage::models::Channel) -> Option<(String, Vec<String>)> {
+    use crate::storage::models::ChannelProtocol;
+    if channel.protocol != ChannelProtocol::Rest.as_str()
+        && channel.protocol != ChannelProtocol::Http.as_str()
+    {
+        return None;
+    }
+    let pattern = channel.route_pattern.as_deref()?;
+    let methods: Vec<String> = channel
+        .methods
+        .as_deref()
+        .and_then(|m| serde_json::from_str::<Vec<String>>(m).ok())
+        .unwrap_or_default();
+    Some((crate::channel::routing::canonical_route(pattern), methods))
+}
+
+/// R7: refuse to activate a channel whose (method × path) another **active**
+/// channel already claims.
+///
+/// `RouteTable::match_route` returns the first hit, so a second claimant is
+/// simply dead: requests to its declared path run the incumbent's workflow.
+/// Before this the tie broke on DB row order, so which one served the route
+/// could differ per node and change on any reload. The incumbent wins by
+/// construction here, which is why this is an activation gate rather than a
+/// reload-time quarantine — adding a channel must never take a running one down.
+async fn ensure_route_is_unclaimed(
+    state: &AppState,
+    draft: &crate::storage::models::Channel,
+) -> Result<(), OrionError> {
+    let Some((route, methods)) = declared_route(draft) else {
+        return Ok(());
+    };
+    for other in state.channel_repo.list_active().await? {
+        if other.channel_id == draft.channel_id {
+            continue; // a new version of this same channel replaces itself
+        }
+        let Some((other_route, other_methods)) = declared_route(&other) else {
+            continue;
+        };
+        if other_route == route
+            && other.priority == draft.priority
+            && crate::channel::routing::methods_overlap(&methods, &other_methods)
+        {
+            return Err(OrionError::validation(format!(
+                "Cannot activate channel '{}': active channel '{}' (id {}) already \
+                 claims {} {route} at priority {}. Requests to that path would run one \
+                 of the two arbitrarily. Change the route_pattern, narrow the methods, \
+                 or give one a higher priority.",
+                draft.name,
+                other.name,
+                other.channel_id,
+                if methods.is_empty() {
+                    "every method on".to_string()
+                } else {
+                    methods.join("/")
+                },
+                draft.priority,
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ============================================================
@@ -247,9 +321,9 @@ pub(crate) async fn create_new_channel_version(
     params(super::workflows::ImportQuery),
     responses(
         (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
-            Dry-run validates each item's shape and values only — it does NOT read the database, so it \
-            cannot detect name conflicts. Channels whose names already exist are counted in `imported` \
-            and will surface as Conflict on the real (non-dry-run) import.", body = DataEnvelope<ImportResult>),
+            Each item is handled independently: a malformed or conflicting item becomes one entry in \
+            `errors` and the rest of the batch still applies. Dry-run additionally probes for id \
+            conflicts against stored rows and duplicates within the batch, without writing.", body = DataEnvelope<ImportResult>),
     )
 )]
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
@@ -263,13 +337,21 @@ pub(crate) async fn import_channels(
     // singular POST endpoint, so behavior matches.
     super::check_import_batch_size(items.len())?;
     let repo = state.channel_repo.clone();
-    let (imported, failed, errors) = super::import_items::<CreateChannelRequest, _, _, _>(
+    let probe = state.channel_repo.clone();
+    let (imported, failed, errors) = super::import_items::<CreateChannelRequest, _, _, _, _, _, _>(
         items,
         query.dry_run,
-        crate::validation::validate_create_channel,
-        |ch| {
-            let repo = repo.clone();
-            async move { repo.create(&ch).await.map(|_| ()) }
+        super::ImportOps {
+            validate: crate::validation::validate_create_channel,
+            conflict_key: |c: &CreateChannelRequest| c.channel_id.clone(),
+            exists: |id: String| {
+                let repo = probe.clone();
+                async move { super::workflows::exists_or_err(repo.get_by_id(&id).await) }
+            },
+            create: |ch: CreateChannelRequest| {
+                let repo = repo.clone();
+                async move { repo.create(&ch).await.map(|_| ()) }
+            },
         },
     )
     .await;

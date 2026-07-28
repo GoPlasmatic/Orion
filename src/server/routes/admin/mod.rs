@@ -63,56 +63,67 @@ pub(crate) fn check_import_batch_size(len: usize) -> Result<(), crate::errors::O
     Ok(())
 }
 
-/// Fold per-item outcomes into the shared bulk-import counters:
-/// `(succeeded, failed, [{index, error}])`.
+/// The four per-entity operations [`import_items`] drives.
 ///
-/// Per-item errors go through `OrionError::client_message`, not `to_string`:
-/// these strings are embedded in a **200** body, so they bypass the redaction
-/// `IntoResponse` would otherwise apply and would leak raw sqlx driver text
-/// (proposal G5).
-pub(crate) fn fold_import_results(
-    results: impl IntoIterator<Item = Result<(), crate::errors::OrionError>>,
-) -> (u64, u64, Vec<serde_json::Value>) {
-    let mut ok = 0u64;
-    let mut failed = 0u64;
-    let mut errors = Vec::new();
-    for (i, r) in results.into_iter().enumerate() {
-        match r {
-            Ok(()) => ok += 1,
-            Err(e) => {
-                failed += 1;
-                errors.push(json!({"index": i, "error": e.client_message()}));
-            }
-        }
-    }
-    (ok, failed, errors)
+/// A struct rather than four positional parameters: they are all closures with
+/// interchangeable-looking types, so a transposition at a call site would
+/// compile (the F44 hazard, one layer up).
+pub(crate) struct ImportOps<V, K, E, C> {
+    /// The same validation the singular `POST` endpoint runs.
+    pub validate: V,
+    /// The stored key a duplicate would collide on — `workflow_id`,
+    /// `channel_id`, connector `name`. `None` when the item names none, in
+    /// which case the store generates one and nothing can conflict.
+    pub conflict_key: K,
+    /// Whether that key is already taken.
+    pub exists: E,
+    /// Persist the item.
+    pub create: C,
 }
 
-/// Per-item driver for the `Vec<Value>` import endpoints: deserialize each
-/// item (so a single shape/enum typo becomes one failed entry instead of
-/// aborting the whole batch), validate it, and — unless `dry_run` — create it.
-/// Dry-run is pure validation: no DB reads, so name conflicts are not
-/// detected there (they surface as Conflict on the real import).
-pub(crate) async fn import_items<T, V, C, Fut>(
+/// The one per-item driver behind all three `/import` endpoints.
+///
+/// R19: there used to be two. Workflows took `OrionJson<Vec<CreateWorkflowRequest>>`
+/// and drove via `bulk_create`, so **one malformed item aborted the whole batch
+/// with a 400**; channels and connectors took `OrionJson<Vec<Value>>` and
+/// produced **one failed entry**. All three declared
+/// `request_body = Vec<CreateXRequest>` in their `#[utoipa::path]`, so the spec
+/// described neither behaviour correctly. Per-item is the right semantic for a
+/// bulk endpoint that already reports `{imported, failed, errors[]}` — a batch
+/// that reports counts should produce them.
+///
+/// R15: `?dry_run=true` now reads. It used to skip the database entirely, as
+/// its own doc comment said — but the stated use case is CI pre-flight, and the
+/// most common real failure is a **name conflict**, which is exactly what a
+/// no-DB dry-run cannot see. A green dry-run therefore said nothing. Conflicts
+/// against stored rows and duplicates *within the batch* are both reported now;
+/// the second was free and previously missed entirely.
+pub(crate) async fn import_items<T, V, K, E, EFut, C, CFut>(
     items: Vec<serde_json::Value>,
     dry_run: bool,
-    validate: V,
-    create: C,
+    ops: ImportOps<V, K, E, C>,
 ) -> (u64, u64, Vec<serde_json::Value>)
 where
     T: serde::de::DeserializeOwned,
     V: Fn(&T) -> Result<(), crate::errors::OrionError>,
-    C: Fn(T) -> Fut,
-    Fut: std::future::Future<Output = Result<(), crate::errors::OrionError>>,
+    K: Fn(&T) -> Option<String>,
+    E: Fn(String) -> EFut,
+    EFut: std::future::Future<Output = Result<bool, crate::errors::OrionError>>,
+    C: Fn(T) -> CFut,
+    CFut: std::future::Future<Output = Result<(), crate::errors::OrionError>>,
 {
     let mut ok = 0u64;
     let mut failed = 0u64;
     let mut errors = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+
     for (i, item) in items.into_iter().enumerate() {
         let mut fail = |e: String| {
             failed += 1;
             errors.push(json!({"index": i, "error": e}));
         };
+        // Deserialize per item, so a single shape or enum typo is one failed
+        // entry rather than a 400 for the whole batch.
         let parsed: T = match serde_json::from_value(item) {
             Ok(v) => v,
             Err(e) => {
@@ -120,13 +131,44 @@ where
                 continue;
             }
         };
-        if let Err(e) = validate(&parsed) {
+        if let Err(e) = (ops.validate)(&parsed) {
             fail(e.client_message());
             continue;
         }
+
+        // Conflict detection. On a real import the store enforces this anyway,
+        // so it runs on dry-run only — where it is the whole point.
         if dry_run {
+            if let Some(key) = (ops.conflict_key)(&parsed) {
+                if seen.contains(&key) {
+                    fail(format!(
+                        "'{key}' appears more than once in this batch — the second \
+                         item would conflict with the first"
+                    ));
+                    continue;
+                }
+                match (ops.exists)(key.clone()).await {
+                    Ok(true) => {
+                        fail(format!("'{key}' already exists"));
+                        continue;
+                    }
+                    Ok(false) => seen.push(key),
+                    // A probe that could not run must not be reported as a
+                    // clean item: say so and let the operator retry.
+                    Err(e) => {
+                        fail(format!(
+                            "could not check for a conflict: {}",
+                            e.client_message()
+                        ));
+                        continue;
+                    }
+                }
+            }
             ok += 1;
-        } else if let Err(e) = create(parsed).await {
+            continue;
+        }
+
+        if let Err(e) = (ops.create)(parsed).await {
             fail(e.client_message());
         } else {
             ok += 1;

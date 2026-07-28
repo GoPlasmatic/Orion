@@ -11,7 +11,6 @@ use serde_json::{Value, json};
 
 use crate::channel::guards;
 use crate::errors::OrionError;
-use crate::metrics;
 use crate::server::extract::OrionQuery;
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::server::routes::openapi::ErrorResponse;
@@ -83,7 +82,11 @@ configuration.",
     ),
     request_body(
         content = ProcessRequest,
-        description = "Workflow input. `data` is the payload; `metadata` is merged into the message metadata alongside the server-supplied `channel`, `http_method`, `params`, `query`, and `headers` keys. An empty body is accepted (typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`.",
+        description = "Workflow input, in either of two shapes. An object carrying `data` or `metadata` is the \
+**envelope**: `data` is the payload, and `metadata` is merged into the message metadata alongside the \
+server-supplied `channel`, `http_method`, `params`, `query` and `headers` keys. Any other JSON body **is** \
+the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`. An empty body is accepted \
+(typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`.",
         content_type = "application/json",
     ),
     responses(
@@ -153,16 +156,8 @@ pub(crate) async fn dynamic_handler(
         }
     }
 
-    // Parse body: empty body is valid (GET/DELETE), otherwise must be JSON
-    let req: ProcessRequest = if body.is_empty() {
-        ProcessRequest {
-            data: json!({}),
-            metadata: json!({}),
-        }
-    } else {
-        serde_json::from_slice(&body)
-            .map_err(|e| OrionError::BadRequest(format!("Invalid JSON body: {e}")))?
-    };
+    // R13: envelope, bare payload, or empty — one rule, see `from_body`.
+    let req = ProcessRequest::from_body(&body)?;
 
     // Profile mode: opt-in via header OR ?profile=1 query, gated by global config flag.
     let profile_requested = state.config.tracing.debug_profile_enabled
@@ -303,71 +298,44 @@ async fn submit_async(
     // channel's `max_concurrent` bounds sync and async work together.
     let backpressure_permit = guards::acquire_backpressure(&channel, &channel_runtime)?;
 
-    // Resolve the effective trace config (channel override > global default).
-    let effective_trace = channel_runtime
-        .as_ref()
-        .map(|c| c.trace_storage)
-        .unwrap_or_else(|| {
-            crate::channel::registry::EffectiveTraceConfig::resolve(
-                &state.config.trace_storage,
-                None,
-            )
-        });
-
     let trace_headers = {
         let mut h = std::collections::HashMap::new();
         crate::server::trace_context::inject_trace_context(&mut h);
         h
     };
 
-    // In `off` mode skip the `create_pending` INSERT — emit a synthetic
-    // trace_id so the worker can still process, but return null to the
-    // caller along with a Warning header so polling clients know there's
-    // nothing to fetch.
-    let (trace_id, response): (String, Response) =
-        if matches!(effective_trace.mode, crate::config::TraceStorageMode::Off) {
-            metrics::record_trace_dropped("off");
-            let id = uuid::Uuid::new_v4().to_string();
-            let mut resp = (
-                StatusCode::ACCEPTED,
-                Json(json!({ "trace_id": null, "trace_token": null })),
-            )
-                .into_response();
-            if let Ok(value) = axum::http::HeaderValue::from_str(&format!(
-                "299 - \"Trace persistence disabled for channel '{channel}'\""
-            )) {
-                resp.headers_mut().insert("warning", value);
-            }
-            (id, resp)
-        } else {
-            let input_json = serde_json::to_string(&data).ok();
-            let channel_id = channel_runtime
-                .as_ref()
-                .map(|c| c.channel.channel_id.as_str());
-            // R12: mint an opaque capability token for this submission.
-            // Only its hash is stored; the plaintext exists once, in this
-            // 202. Polling requires it (or an admin credential), so a
-            // caller can read its own async result but nobody else's.
-            let token = uuid::Uuid::new_v4().simple().to_string();
-            let token_hash = crate::server::admin_auth::hash_trace_token(&token);
-            let trace = state
-                .trace_repo
-                .create_pending(
-                    &channel,
-                    channel_id,
-                    "async",
-                    input_json.as_deref(),
-                    Some(&token_hash),
-                )
-                .await?;
-            let id = trace.id.clone();
-            let resp = (
-                StatusCode::ACCEPTED,
-                Json(json!({ "trace_id": trace.id, "trace_token": token })),
-            )
-                .into_response();
-            (id, resp)
-        };
+    // R11: the pending row is written unconditionally. `trace.mode = "off"`
+    // used to skip it and answer 202 with a null `trace_id` and a `Warning`
+    // header — a receipt for work whose result could never be fetched, and a
+    // nullable id in the schema forever. Async submission *is* the request for
+    // a later result, so persistence is not optional on this path; the sync
+    // path still honours `off` exactly (see `for_async_submission`).
+    let input_json = serde_json::to_string(&data).ok();
+    let channel_id = channel_runtime
+        .as_ref()
+        .map(|c| c.channel.channel_id.as_str());
+    // R12: mint an opaque capability token for this submission. Only its hash
+    // is stored; the plaintext exists once, in this 202. Polling requires it
+    // (or an admin credential), so a caller can read its own async result but
+    // nobody else's.
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let token_hash = crate::server::admin_auth::hash_trace_token(&token);
+    let trace = state
+        .trace_repo
+        .create_pending(
+            &channel,
+            channel_id,
+            "async",
+            input_json.as_deref(),
+            Some(&token_hash),
+        )
+        .await?;
+    let trace_id = trace.id.clone();
+    let response: Response = (
+        StatusCode::ACCEPTED,
+        Json(json!({ "trace_id": trace.id, "trace_token": token })),
+    )
+        .into_response();
 
     state
         .trace_queue
@@ -411,7 +379,12 @@ is sync-only, so an async submission never returns a cached body.
 Poll `GET /api/v1/admin/traces/{id}` with the returned `trace_id` for the \
 result, presenting the returned `trace_token` via the `x-trace-token` header \
 or `?token=` query parameter. The token scopes the poll to this submission \
-(R12); an admin credential also works.",
+(R12); an admin credential also works.
+
+`trace_id` is always present. Async submission is a request for a result to be \
+fetched later, so the trace row is written before the 202 is sent even when \
+`trace_storage.mode` is `off` — that setting still applies in full to the \
+synchronous endpoint, where the caller already has the answer.",
     params(
         ("channel" = String, Path, description = "Channel name, or the first segment of a REST channel's registered route pattern."),
     ),
@@ -423,11 +396,8 @@ or `?token=` query parameter. The token scopes the poll to this submission \
     responses(
         (
             status = 202,
-            description = "Accepted and queued. `trace_id` is `null` when trace persistence is off for this channel, in which case there is nothing to poll and a `Warning: 299` header explains why.",
+            description = "Accepted and queued. `trace_id` and `trace_token` are always present — the trace row is written before this response is sent, so the id can always be polled.",
             body = AsyncSubmitResponse,
-            headers(
-                ("warning" = String, description = "Present only when trace persistence is disabled for the channel: `299 - \"Trace persistence disabled for channel '<name>'\"`. `trace_id` is `null` in that case."),
-            ),
         ),
         (status = 400, description = "Malformed JSON body, empty channel segment, or a `validation_logic` rejection", body = ErrorResponse),
         (status = 403, description = "Origin not allowed by the channel's CORS configuration", body = ErrorResponse),
@@ -473,11 +443,59 @@ fn header_or_query_truthy(
 // Request Types
 // ============================================================
 
+/// An envelope that names `metadata` but not `data` carries no payload — which
+/// is `{}`, the same thing an empty body means, not `null`.
+fn empty_object() -> Value {
+    Value::Object(serde_json::Map::new())
+}
+
 #[derive(Deserialize, utoipa::ToSchema)]
 pub(crate) struct ProcessRequest {
+    /// The workflow payload.
+    #[serde(default = "empty_object")]
     data: Value,
-    #[serde(default)]
+    /// Merged into the message metadata alongside the server-supplied keys.
+    #[serde(default = "empty_object")]
     metadata: Value,
+}
+
+impl ProcessRequest {
+    /// Read the request body, which may be the envelope or the payload itself.
+    ///
+    /// R13: this endpoint had three behaviours for three body shapes, and only
+    /// one was documented. `{"data": …}` was the envelope; an **empty** body
+    /// became `{"data":{},"metadata":{}}`; and a **bare object** — `{"amount":
+    /// 5}`, the obvious thing to send, and what every other JSON API accepts —
+    /// failed with `missing field 'data'`. On the most-hit endpoint in the
+    /// product.
+    ///
+    /// The rule is now one sentence: **an object carrying `data` or `metadata`
+    /// is the envelope; anything else is the payload.** That keeps every
+    /// existing envelope working (they all carry `data`), keeps the empty body
+    /// meaning `{}`, and turns the previously-400 bare object into the payload
+    /// the caller plainly meant — a strictly widening change.
+    fn from_body(body: &[u8]) -> Result<Self, OrionError> {
+        if body.is_empty() {
+            return Ok(Self {
+                data: json!({}),
+                metadata: json!({}),
+            });
+        }
+        let parsed: Value = serde_json::from_slice(body)
+            .map_err(|e| OrionError::BadRequest(format!("Invalid JSON body: {e}")))?;
+
+        let is_envelope = parsed
+            .as_object()
+            .is_some_and(|o| o.contains_key("data") || o.contains_key("metadata"));
+        if !is_envelope {
+            return Ok(Self {
+                data: parsed,
+                metadata: json!({}),
+            });
+        }
+        serde_json::from_value(parsed)
+            .map_err(|e| OrionError::BadRequest(format!("Invalid request body: {e}")))
+    }
 }
 
 // ============================================================
@@ -526,12 +544,12 @@ pub(crate) struct ProcessTaskError {
 /// Acknowledgement returned by `POST /api/v1/data/{channel}/async`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct AsyncSubmitResponse {
-    /// Id to poll via `GET /api/v1/admin/traces/{id}`, or `null` when trace
-    /// persistence is disabled for the channel (see the `Warning` header).
-    trace_id: Option<String>,
+    /// Id to poll via `GET /api/v1/admin/traces/{id}`. Always present: a 202
+    /// is a receipt for a result, so the row it names is written before this
+    /// response is sent (R11).
+    trace_id: String,
     /// Capability token scoping the poll to this submission (R12): present
     /// it via the `x-trace-token` header or `?token=` query parameter.
-    /// Shown once, here — only its hash is stored. `null` whenever
-    /// `trace_id` is.
-    trace_token: Option<String>,
+    /// Shown once, here — only its hash is stored.
+    trace_token: String,
 }

@@ -465,7 +465,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Dry-run validates each item's shape and values only — it does NOT read the database, so it cannot detect name conflicts. Channels whose names already exist are counted in `imported` and will surface as Conflict on the real (non-dry-run) import.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for id conflicts against stored rows and duplicates within the batch, without writing.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1229,7 +1229,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Dry-run validates each item's shape and values only — it does NOT read the database, so it cannot detect name conflicts. Connectors whose names already exist are counted in `imported` and will surface as Conflict on the real (non-dry-run) import.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for name conflicts against stored rows and duplicates within the batch, without writing.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2411,7 +2411,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true)",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for name conflicts against stored rows and duplicates within the batch, without writing.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3137,7 +3137,7 @@
           }
         ],
         "requestBody": {
-          "description": "Workflow input. `data` is the payload; `metadata` is merged into the message metadata alongside the server-supplied `channel`, `http_method`, `params`, `query`, and `headers` keys. An empty body is accepted (typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`.",
+          "description": "Workflow input, in either of two shapes. An object carrying `data` or `metadata` is the **envelope**: `data` is the payload, and `metadata` is merged into the message metadata alongside the server-supplied `channel`, `http_method`, `params`, `query` and `headers` keys. Any other JSON body **is** the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`. An empty body is accepted (typical for `GET`/`DELETE` REST channels) and treated as `{\"data\": {}}`.",
           "content": {
             "application/json": {
               "schema": {
@@ -3267,7 +3267,7 @@
           "Data"
         ],
         "summary": "Submit to a channel asynchronously",
-        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v1/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: CORS, `validation_logic`, deduplication, and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v1/admin/traces/{id}` with the returned `trace_id` for the result, presenting the returned `trace_token` via the `x-trace-token` header or `?token=` query parameter. The token scopes the poll to this submission (R12); an admin credential also works.",
+        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v1/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: CORS, `validation_logic`, deduplication, and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v1/admin/traces/{id}` with the returned `trace_id` for the result, presenting the returned `trace_token` via the `x-trace-token` header or `?token=` query parameter. The token scopes the poll to this submission (R12); an admin credential also works.\n\n`trace_id` is always present. Async submission is a request for a result to be fetched later, so the trace row is written before the 202 is sent even when `trace_storage.mode` is `off` — that setting still applies in full to the synchronous endpoint, where the caller already has the answer.",
         "operationId": "submit_channel_request_async",
         "parameters": [
           {
@@ -3293,15 +3293,7 @@
         },
         "responses": {
           "202": {
-            "description": "Accepted and queued. `trace_id` is `null` when trace persistence is off for this channel, in which case there is nothing to poll and a `Warning: 299` header explains why.",
-            "headers": {
-              "warning": {
-                "schema": {
-                  "type": "string"
-                },
-                "description": "Present only when trace persistence is disabled for the channel: `299 - \"Trace persistence disabled for channel '<name>'\"`. `trace_id` is `null` in that case."
-              }
-            },
+            "description": "Accepted and queued. `trace_id` and `trace_token` are always present — the trace row is written before this response is sent, so the id can always be polled.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3559,20 +3551,18 @@
       "AsyncSubmitResponse": {
         "type": "object",
         "description": "Acknowledgement returned by `POST /api/v1/data/{channel}/async`.",
+        "required": [
+          "trace_id",
+          "trace_token"
+        ],
         "properties": {
           "trace_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Id to poll via `GET /api/v1/admin/traces/{id}`, or `null` when trace\npersistence is disabled for the channel (see the `Warning` header)."
+            "type": "string",
+            "description": "Id to poll via `GET /api/v1/admin/traces/{id}`. Always present: a 202\nis a receipt for a result, so the row it names is written before this\nresponse is sent (R11)."
           },
           "trace_token": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Capability token scoping the poll to this submission (R12): present\nit via the `x-trace-token` header or `?token=` query parameter.\nShown once, here — only its hash is stored. `null` whenever\n`trace_id` is."
+            "type": "string",
+            "description": "Capability token scoping the poll to this submission (R12): present\nit via the `x-trace-token` header or `?token=` query parameter.\nShown once, here — only its hash is stored."
           }
         }
       },
@@ -5623,12 +5613,13 @@
       },
       "ProcessRequest": {
         "type": "object",
-        "required": [
-          "data"
-        ],
         "properties": {
-          "data": {},
-          "metadata": {}
+          "data": {
+            "description": "The workflow payload."
+          },
+          "metadata": {
+            "description": "Merged into the message metadata alongside the server-supplied keys."
+          }
         }
       },
       "ProcessResponse": {

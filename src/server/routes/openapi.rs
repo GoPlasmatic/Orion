@@ -514,13 +514,38 @@ mod tests {
             .responses
             .get("202")
             .expect("202 accepted");
-        let warning_documented = match accepted {
-            RefOr::T(response) => response.headers.contains_key("warning"),
+        // R11: the 202 no longer has a conditional shape to document. It used
+        // to answer `{"trace_id": null}` plus a `Warning: 299` header when
+        // `trace.mode = off` — a receipt for a result that could never be
+        // fetched. The row is now written before the 202 is sent, so the id is
+        // always pollable and the header is gone.
+        let no_warning_header = match accepted {
+            RefOr::T(response) => !response.headers.contains_key("warning"),
             RefOr::Ref(_) => false,
         };
         assert!(
-            warning_documented,
-            "202 must document the `Warning: 299` header emitted when tracing is off"
+            no_warning_header,
+            "the 202 must not document a `Warning` header — `trace_id` is unconditional"
+        );
+        let schemas = spec
+            .components
+            .as_ref()
+            .map(|c| &c.schemas)
+            .expect("components.schemas");
+        let async_response = serde_json::to_value(
+            schemas
+                .get("AsyncSubmitResponse")
+                .expect("AsyncSubmitResponse is registered"),
+        )
+        .expect("schema serializes");
+        let required = async_response["required"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        assert!(
+            required.contains(&"trace_id") && required.contains(&"trace_token"),
+            "both must be required — a nullable trace_id was R11's permanent half: \
+             {async_response}"
         );
     }
 }

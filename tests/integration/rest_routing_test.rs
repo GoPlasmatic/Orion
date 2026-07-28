@@ -256,3 +256,209 @@ async fn an_async_rest_channel_is_reachable_at_its_route_pattern() {
         common::body_json(resp).await
     );
 }
+
+// ============================================================
+// R6: route patterns and methods are structurally validated
+// ============================================================
+
+/// Create a REST channel without activating it, returning the status and body.
+async fn try_create_rest_channel(
+    app: &axum::Router,
+    name: &str,
+    route_pattern: &str,
+    methods: Vec<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": name,
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": methods,
+                "route_pattern": route_pattern,
+            })),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, common::body_json(resp).await)
+}
+
+/// R6: `methods: ["POTS"]` and `route_pattern: "orders/{id"` were created,
+/// activated and reloaded — and then never matched a request, with nothing
+/// reporting it. The channel was simply dead.
+#[tokio::test]
+async fn a_channel_that_could_never_match_is_rejected_at_create() {
+    let app = common::test_app().await;
+
+    let (status, body) = try_create_rest_channel(&app, "typo-verb", "/orders", vec!["POTS"]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.to_string().contains("POTS"), "{body}");
+
+    let (status, body) =
+        try_create_rest_channel(&app, "unbalanced", "/orders/{id", vec!["GET"]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.to_string().contains("brace"), "{body}");
+
+    let (status, body) = try_create_rest_channel(&app, "no-slash", "orders", vec!["GET"]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.to_string().contains("must start with"), "{body}");
+
+    let (status, body) =
+        try_create_rest_channel(&app, "dup-param", "/o/{id}/i/{id}", vec!["GET"]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body.to_string().contains("more than once"), "{body}");
+
+    // The well-formed equivalent still creates.
+    let (status, body) =
+        try_create_rest_channel(&app, "fine", "/orders/{id}", vec!["GET", "post"]).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// Both problems are reported in one response, not one round-trip each — the
+/// B1 shape the protocol-required checks already used.
+#[tokio::test]
+async fn every_route_problem_is_reported_at_once() {
+    let app = common::test_app().await;
+    let (status, body) =
+        try_create_rest_channel(&app, "two-problems", "/orders/{2id}", vec!["POTS"]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let details = body["error"]["details"].as_array().expect("details");
+    assert_eq!(details.len(), 2, "{body}");
+    let paths: Vec<&str> = details.iter().filter_map(|d| d["path"].as_str()).collect();
+    assert!(paths.contains(&"channel.methods"), "{body}");
+    assert!(paths.contains(&"channel.route_pattern"), "{body}");
+}
+
+// ============================================================
+// R7: two active channels cannot claim one route
+// ============================================================
+
+/// R7: `RouteTable::match_route` returns the first hit, so a second claimant
+/// is dead — requests to its declared path run the incumbent's workflow. The
+/// tie used to break on DB row order, so which one served could differ per node
+/// and change on any reload.
+#[tokio::test]
+async fn a_second_channel_cannot_claim_a_route_another_already_serves() {
+    let app = common::test_app().await;
+    let wf_id = create_echo_workflow(&app, "Orders Workflow").await;
+    create_rest_channel(&app, "orders.first", "/orders/{id}", vec!["GET"], &wf_id).await;
+
+    // Same shape, different parameter name — the name is a workflow-facing
+    // label, not part of the match, so these collide.
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": "orders.second",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": ["GET"],
+                "route_pattern": "/orders/{order_id}",
+                "workflow_id": wf_id,
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "create stays permissive"
+    );
+    let ch_id = common::body_json(resp).await["data"]["channel_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{ch_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let msg = common::body_json(resp).await.to_string();
+    assert!(
+        msg.contains("orders.first"),
+        "must name the incumbent: {msg}"
+    );
+    assert!(msg.contains("/orders/{}"), "must name the route: {msg}");
+
+    // The incumbent keeps serving — activating a second channel must never
+    // take a running one down.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/data/orders/123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// A collision needs the method sets to actually overlap: `GET /orders/{id}`
+/// and `DELETE /orders/{id}` are two different routes.
+#[tokio::test]
+async fn disjoint_methods_on_one_path_are_not_a_conflict() {
+    let app = common::test_app().await;
+    let wf_id = create_echo_workflow(&app, "Orders Workflow").await;
+    create_rest_channel(&app, "orders.get", "/orders/{id}", vec!["GET"], &wf_id).await;
+    // Activates cleanly: no request can match both.
+    create_rest_channel(&app, "orders.del", "/orders/{id}", vec!["DELETE"], &wf_id).await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/data/orders/9")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+/// A new *version* of the same channel replaces itself rather than colliding
+/// with itself — otherwise no REST channel could ever be edited.
+#[tokio::test]
+async fn a_new_version_of_the_same_channel_does_not_collide() {
+    let app = common::test_app().await;
+    let wf_id = create_echo_workflow(&app, "Orders Workflow").await;
+    let ch_id = create_rest_channel(&app, "orders.v", "/orders/{id}", vec!["GET"], &wf_id).await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            &format!("/api/v1/admin/channels/{ch_id}/versions"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{ch_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "{:?}", resp.status());
+}

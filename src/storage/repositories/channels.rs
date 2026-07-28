@@ -63,7 +63,7 @@ fn default_empty_object() -> Value {
     Value::Object(serde_json::Map::new())
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Default, Deserialize, utoipa::ToSchema)]
 pub struct UpdateChannelRequest {
     pub name: Option<String>,
     pub description: Option<String>,

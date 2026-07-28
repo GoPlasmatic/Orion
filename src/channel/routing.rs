@@ -15,6 +15,24 @@ struct RouteEntry {
     priority: i64,
 }
 
+impl RouteEntry {
+    /// This entry's match shape, parameter names erased (R7).
+    fn canonical(&self) -> String {
+        let mut out = String::new();
+        for segment in &self.segments {
+            out.push('/');
+            match segment {
+                RouteSegment::Static(s) => out.push_str(&s.to_ascii_lowercase()),
+                RouteSegment::Param(_) => out.push_str("{}"),
+            }
+        }
+        if out.is_empty() {
+            out.push('/');
+        }
+        out
+    }
+}
+
 #[derive(Debug, Clone)]
 enum RouteSegment {
     Static(String),
@@ -28,6 +46,39 @@ pub struct RouteMatch {
     pub channel_name: String,
     /// Extracted path parameters (e.g. {"id": "123"}).
     pub params: HashMap<String, String>,
+}
+
+/// The shape a route pattern matches, with parameter *names* erased.
+///
+/// R7: two channels claiming `GET /orders/{id}` and `GET /orders/{order_id}`
+/// match exactly the same requests — the names are workflow-facing labels, not
+/// part of the match. Comparing raw patterns would miss that. Canonicalising to
+/// `/orders/{}` is what makes "these two collide" decidable.
+pub fn canonical_route(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    for segment in parse_route_pattern(pattern) {
+        out.push('/');
+        match segment {
+            RouteSegment::Static(s) => out.push_str(&s.to_ascii_lowercase()),
+            RouteSegment::Param(_) => out.push_str("{}"),
+        }
+    }
+    if out.is_empty() {
+        out.push('/');
+    }
+    out
+}
+
+/// Whether two declared method sets can be matched by one request.
+///
+/// An empty set means "any method" (`RouteTable::match_route` skips the check),
+/// so it overlaps with everything — including another empty set.
+pub fn methods_overlap(a: &[String], b: &[String]) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return true;
+    }
+    a.iter()
+        .any(|x| b.iter().any(|y| x.eq_ignore_ascii_case(y)))
 }
 
 /// Parse a route pattern like "/orders/{id}/items/{item_id}" into segments.
@@ -118,14 +169,52 @@ impl RouteTable {
             .collect();
 
         // Sort by priority descending, then by segment count descending
-        // (more specific routes first)
+        // (more specific routes first).
+        //
+        // R7: the channel name is the final tie-break, and it is load-bearing.
+        // Two active channels claiming `GET /orders/{id}` at equal priority used
+        // to resolve by **DB row order** — so which one served the route could
+        // differ between nodes, and could change on any reload that happened to
+        // return the rows differently. `activation_route_conflict` refuses new
+        // collisions at the door; this makes the ones already stored resolve the
+        // same way everywhere, which is the difference between a misconfiguration
+        // an operator can see and one that moves around.
         entries.sort_by(|a, b| {
             b.priority
                 .cmp(&a.priority)
                 .then_with(|| b.segments.len().cmp(&a.segments.len()))
+                .then_with(|| a.channel_name.cmp(&b.channel_name))
         });
 
-        Self { entries }
+        let table = Self { entries };
+        table.warn_on_conflicts();
+        table
+    }
+
+    /// Log every (method × path) collision in the built table.
+    ///
+    /// Channels stored before R7's activation check can still collide, and the
+    /// loser is simply dead — its declared route resolves to the winner's
+    /// workflow, which is a *wrong answer*, not an error. Nothing said so.
+    fn warn_on_conflicts(&self) {
+        for (i, entry) in self.entries.iter().enumerate() {
+            let canonical: String = entry.canonical();
+            for winner in &self.entries[..i] {
+                if winner.canonical() == canonical
+                    && methods_overlap(&winner.methods, &entry.methods)
+                {
+                    tracing::warn!(
+                        route = %canonical,
+                        shadowed_channel = %entry.channel_name,
+                        serving_channel = %winner.channel_name,
+                        "Two active channels claim the same route; the shadowed one is \
+                         unreachable by path (it is still reachable by name). Change its \
+                         route_pattern, methods or priority."
+                    );
+                    break;
+                }
+            }
+        }
     }
 
     /// Match a request (method, path) against the route table.

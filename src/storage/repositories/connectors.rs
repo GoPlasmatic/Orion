@@ -52,6 +52,12 @@ pub trait ConnectorRepository: Send + Sync {
     -> Result<Connector, OrionError>;
     async fn delete(&self, id: &str) -> Result<(), OrionError>;
     async fn list_enabled(&self) -> Result<Vec<Connector>, OrionError>;
+    /// Whether a connector with this name is already stored.
+    ///
+    /// R15: `name` carries the unique constraint, so it is what a bulk import
+    /// collides on. Dry-run used to skip the database entirely and therefore
+    /// could not see the single most common real failure.
+    async fn exists_by_name(&self, name: &str) -> Result<bool, OrionError>;
 }
 
 // -- SQL implementation --
@@ -232,6 +238,24 @@ impl ConnectorRepository for SqlConnectorRepository {
             );
 
             Ok(self.pool.fetch_all_as::<Connector>(&sql, values).await?)
+        })
+        .await
+    }
+
+    async fn exists_by_name(&self, name: &str) -> Result<bool, OrionError> {
+        crate::metrics::timed_db_op("connectors.exists_by_name", async {
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Connectors::Table)
+                    .and_where(Expr::col(Connectors::Name).eq(name))
+                    .limit(1),
+            );
+            Ok(self
+                .pool
+                .fetch_optional_as::<Connector>(&sql, values)
+                .await?
+                .is_some())
         })
         .await
     }

@@ -504,32 +504,47 @@ pub(crate) struct ImportQuery {
     request_body = Vec<CreateWorkflowRequest>,
     params(ImportQuery),
     responses(
-        (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true)", body = DataEnvelope<ImportResult>),
+        (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
+            Each item is handled independently: a malformed or conflicting item becomes one entry in \
+            `errors` and the rest of the batch still applies. Dry-run additionally probes for name \
+            conflicts against stored rows and duplicates within the batch, without writing.", body = DataEnvelope<ImportResult>),
     )
 )]
-#[tracing::instrument(skip(state, workflows, principal), fields(count = workflows.len()))]
+#[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
 pub(crate) async fn import_workflows(
     State(state): State<AppState>,
     OrionQuery(query): OrionQuery<ImportQuery>,
     principal: Option<Extension<AdminPrincipal>>,
-    OrionJson(workflows): OrionJson<Vec<CreateWorkflowRequest>>,
+    OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {
-    super::check_import_batch_size(workflows.len())?;
-    if query.dry_run {
-        // Validate each item against the same checks the create endpoint
-        // would run; never touch the DB. Useful for CI: check that a
-        // bulk export still loads cleanly without mutating state.
-        let (would_create, would_fail, errors) = super::fold_import_results(
-            workflows
-                .iter()
-                .map(crate::validation::validate_create_workflow),
-        );
-        return Ok(super::dry_run_response(would_create, would_fail, errors));
-    }
-
-    let results = state.workflow_repo.bulk_create(&workflows).await?;
+    // R19: the same per-item driver as channels and connectors. This endpoint
+    // used to drive `bulk_create` over a typed `Vec<CreateWorkflowRequest>`, so
+    // one malformed item aborted the whole batch with a 400 while its two
+    // siblings reported it as a single failed entry.
+    super::check_import_batch_size(items.len())?;
+    let repo = state.workflow_repo.clone();
+    let probe = state.workflow_repo.clone();
     let (imported, failed, errors) =
-        super::fold_import_results(results.into_iter().map(|r| r.map(|_| ())));
+        super::import_items::<CreateWorkflowRequest, _, _, _, _, _, _>(
+            items,
+            query.dry_run,
+            super::ImportOps {
+                validate: crate::validation::validate_create_workflow,
+                conflict_key: |w: &CreateWorkflowRequest| w.workflow_id.clone(),
+                exists: |id: String| {
+                    let repo = probe.clone();
+                    async move { exists_or_err(repo.get_by_id(&id).await) }
+                },
+                create: |w: CreateWorkflowRequest| {
+                    let repo = repo.clone();
+                    async move { repo.create(&w).await.map(|_| ()) }
+                },
+            },
+        )
+        .await;
+    if query.dry_run {
+        return Ok(super::dry_run_response(imported, failed, errors));
+    }
 
     audit_log_draft_only(
         &state.audit_log_repo,
@@ -540,6 +555,18 @@ pub(crate) async fn import_workflows(
     );
 
     Ok(super::import_response(imported, failed, errors))
+}
+
+/// Turn a `get_by_id` result into an existence answer.
+///
+/// `NotFound` is the "no conflict" answer, not a failure; anything else is a
+/// probe that could not run, which must not be reported as a clean item (R15).
+pub(crate) fn exists_or_err<T>(result: Result<T, OrionError>) -> Result<bool, OrionError> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(OrionError::NotFound(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 #[utoipa::path(
