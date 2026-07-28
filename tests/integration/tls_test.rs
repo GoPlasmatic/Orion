@@ -183,37 +183,47 @@ async fn test_load_rustls_config_rejects_non_pem_content() {
 // 3. HTTPS round-trip
 // ============================================================
 
-/// Bind the real router over TLS on an ephemeral port. Returns the address,
-/// the axum-server handle, and the serve task.
-async fn serve_tls(
+/// Serve the real router through the REAL `orion::server::serve::serve_tls`
+/// (the exact code `main.rs` dispatches to) on an ephemeral port — port 0 in
+/// the config, actual address read back via `handle.listening()`. Returns
+/// the bound address, the axum-server handle, the shutdown trigger for the
+/// drain sequence, the serve task, and the readiness flag.
+async fn spawn_real_serve_tls(
     cert: &str,
     key: &str,
-    state: orion::server::state::AppState,
 ) -> (
     SocketAddr,
     axum_server::Handle<SocketAddr>,
-    tokio::task::JoinHandle<std::io::Result<()>>,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<Result<(), orion::errors::OrionError>>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
-    let rustls_config = orion::server::tls::load_rustls_config(cert, key)
-        .await
-        .expect("load rustls config");
-    let router = orion::server::build_router(state);
+    let mut config = orion::config::AppConfig::default();
+    config.server.host = "127.0.0.1".to_string();
+    config.server.port = 0;
+    config.server.tls.enabled = true;
+    config.server.tls.cert_path = cert.to_string();
+    config.server.tls.key_path = key.to_string();
+    config.server.shutdown_drain_secs = 2;
+    config.server.shutdown_force_timeout_secs = 5;
 
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    // tokio refuses to register a blocking fd; `bind_rustls` does this itself,
-    // but an ephemeral port has to come from a listener we bound ourselves.
-    listener.set_nonblocking(true).expect("set_nonblocking");
-    let addr = listener.local_addr().expect("addr");
+    let state = common::test_state_with_config(config).await;
+    let ready = state.ready.clone();
+    let cfg = state.config.clone();
+    let router = orion::server::build_router(state);
     let handle = axum_server::Handle::new();
-    let server_handle = handle.clone();
-    let task = tokio::spawn(async move {
-        axum_server::from_tcp_rustls(listener, rustls_config)
-            .expect("from_tcp_rustls")
-            .handle(server_handle)
-            .serve(router.into_make_service_with_connect_info::<SocketAddr>())
-            .await
-    });
-    (addr, handle, task)
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(orion::server::serve::serve_tls(
+        cfg,
+        ready.clone(),
+        router,
+        handle.clone(),
+        async move {
+            let _ = shutdown_rx.await;
+        },
+    ));
+    let addr = handle.listening().await.expect("TLS server must bind");
+    (addr, handle, shutdown_tx, task, ready)
 }
 
 /// A client that validates the chain against our own self-signed CA — a
@@ -234,8 +244,7 @@ async fn test_https_round_trip() {
     let dir = ScratchDir::new("roundtrip");
     let (cert, key) = self_signed_pair(dir.path());
 
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let (addr, handle, task) = serve_tls(&cert, &key, state).await;
+    let (addr, handle, _shutdown_tx, task, _ready) = spawn_real_serve_tls(&cert, &key).await;
 
     let client = https_client(&cert);
     let resp = client
@@ -255,6 +264,7 @@ async fn test_https_round_trip() {
         .await;
     assert!(plain.is_err(), "a TLS listener must not answer plain HTTP");
 
+    // Immediate stop — skips the drain sequence, which section 4 covers.
     handle.shutdown();
     let _ = tokio::time::timeout(Duration::from_secs(5), task).await;
 }
@@ -272,11 +282,8 @@ async fn test_tls_drain_withdraws_readiness_before_stopping_accept() {
     let dir = ScratchDir::new("drain");
     let (cert, key) = self_signed_pair(dir.path());
 
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let ready = state.ready.clone();
+    let (addr, _handle, shutdown_tx, task, ready) = spawn_real_serve_tls(&cert, &key).await;
     assert!(ready.load(Ordering::Acquire));
-
-    let (addr, handle, task) = serve_tls(&cert, &key, state).await;
     let base = format!("https://localhost:{}", addr.port());
     let client = https_client(&cert);
 
@@ -288,21 +295,9 @@ async fn test_tls_drain_withdraws_readiness_before_stopping_accept() {
         .expect("readyz before signal");
     assert_eq!(resp.status(), 200);
 
-    // 2. Signal: the same drain_gate main.rs uses on the TLS path.
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let gate = orion::server::drain::drain_gate(
-        async move {
-            let _ = shutdown_rx.await;
-        },
-        ready.clone(),
-        Duration::from_secs(2),
-    );
-    let shutdown_handle = handle.clone();
-    tokio::spawn(async move {
-        gate.await;
-        shutdown_handle.graceful_shutdown(Some(Duration::from_secs(5)));
-    });
-
+    // 2. Signal. The drain sequence (withdraw readiness, keep accepting
+    // through the grace window, then graceful_shutdown) runs INSIDE the real
+    // serve_tls — nothing is re-implemented here.
     shutdown_tx.send(()).expect("send shutdown");
     tokio::time::sleep(Duration::from_millis(200)).await;
 

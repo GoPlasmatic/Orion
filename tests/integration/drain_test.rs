@@ -1,8 +1,9 @@
 //! Rolling-deploy drain drill (multi-instance-ha A9).
 //!
-//! Boots the real router on a real TCP socket with `drain_gate` as the
-//! graceful-shutdown future (driven by a channel instead of SIGTERM) and
-//! asserts the sequence a load balancer depends on:
+//! Boots the real router through the REAL `serve_plain_http` (the exact code
+//! `main.rs` dispatches to — including `create_tcp_listener`'s socket2 setup
+//! and the force-timeout arm) with the shutdown future driven by a channel
+//! instead of SIGTERM, and asserts the sequence a load balancer depends on:
 //!   1. before signal: /readyz is 200
 //!   2. on signal: /readyz flips to 503 immediately, but NEW connections are
 //!      still accepted and served during the grace window
@@ -16,30 +17,29 @@ use crate::common;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drain_withdraws_readiness_before_stopping_accept() {
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let mut config = orion::config::AppConfig::default();
+    config.server.shutdown_drain_secs = 2;
+    config.server.shutdown_force_timeout_secs = 5;
+    let state = common::test_state_with_config(config).await;
     let ready = state.ready.clone();
     assert!(ready.load(Ordering::Acquire));
+    let cfg = state.config.clone();
     let router = orion::server::build_router(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
+    let listener = orion::server::serve::create_tcp_listener("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let base = format!("http://{addr}");
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let gate = orion::server::drain::drain_gate(
+    let server = tokio::spawn(orion::server::serve::serve_plain_http(
+        listener,
+        cfg,
+        ready.clone(),
+        router,
         async move {
             let _ = shutdown_rx.await;
         },
-        ready.clone(),
-        Duration::from_secs(2),
-    );
-    let server = tokio::spawn(async move {
-        axum::serve(listener, router)
-            .with_graceful_shutdown(gate)
-            .await
-    });
+    ));
 
     let client = reqwest::Client::builder()
         // Fresh TCP connection per request — connection reuse would mask
