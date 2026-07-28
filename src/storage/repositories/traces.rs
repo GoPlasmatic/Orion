@@ -482,21 +482,21 @@ impl TraceRepository for SqlTraceRepository {
                 .checked_sub_signed(chrono::Duration::hours((hours as i64).saturating_mul(2)))
                 .unwrap_or(chrono::NaiveDateTime::MIN);
 
-            let (sql, values) = build_sqlx(
-                Query::delete().from_table(Traces::Table).cond_where(
-                    Condition::any()
-                        .add(
-                            Expr::col(Traces::CreatedAt)
-                                .lt(cutoff)
-                                .and(Expr::col(Traces::Status).is_in(["completed", "failed"])),
-                        )
-                        .add(Expr::col(Traces::CreatedAt).lt(stuck_cutoff)),
-                ),
-            );
-
-            let rows_affected = self.pool.execute_query(&sql, values).await?;
-
-            Ok(rows_affected)
+            // D6: chunked, not one unbounded statement — the first tick after
+            // retention is enabled can span millions of rows.
+            super::helpers::delete_chunked(
+                &self.pool,
+                Traces::Table,
+                Traces::Id,
+                Condition::any()
+                    .add(
+                        Expr::col(Traces::CreatedAt)
+                            .lt(cutoff)
+                            .and(Expr::col(Traces::Status).is_in(["completed", "failed"])),
+                    )
+                    .add(Expr::col(Traces::CreatedAt).lt(stuck_cutoff)),
+            )
+            .await
         })
         .await
     }

@@ -25,6 +25,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Retention cleanup no longer runs as one unbounded `DELETE`.** All three
+  retention jobs — traces, audit logs and DLQ purge — issued a single
+  `DELETE … WHERE created_at < cutoff` per tick. The first tick after enabling
+  retention is then one transaction over potentially millions of rows: SQLite
+  holds the write lock for its whole duration, so **every other writer hits the
+  5 s `busy_timeout` and fails**; PostgreSQL bloats WAL and blocks autovacuum;
+  MySQL can exceed `innodb_lock_wait_timeout`. In cluster mode the job lease
+  (`interval_secs + 60`) could expire mid-delete, letting a second node start a
+  duplicate.
+
+  Deletes now run in 1 000-row chunks, yielding between them, capped at 5 000
+  chunks per tick with the remainder left for the next one. The statement is
+  identical on all three backends — the nested derived table is what makes
+  MySQL accept a subquery over the table being deleted (error 1093).
+
+  No configuration change and no behaviour change beyond the locking profile:
+  the same rows are removed.
+
 - **The OpenAPI document now describes every response it serves.** Measured
   against the committed `docs/openapi.json`: **44 of the 48** 2xx responses had
   no `content` block, as did **30** declared 4xx/5xx — the spec named a status

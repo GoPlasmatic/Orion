@@ -69,7 +69,7 @@ where
 }
 
 /// Count rows in `table` matching `cond`. Replaces the `Query::select() ...
-/// .expr(Func::count(...)).from(table).cond_where(cond)` boilerplate used by
+/// .expr(Func::count(...)).from(table.clone()).cond_where(cond)` boilerplate used by
 /// every paginated list path.
 pub async fn count_where<I>(
     pool: &DbPool,
@@ -218,6 +218,88 @@ where
                 .map_err(OrionError::Storage)
         }
     }
+}
+
+/// Rows deleted per statement by [`delete_chunked`].
+///
+/// Small enough that one statement is short on any backend, large enough that
+/// a big backlog drains in a sane number of round trips.
+const DELETE_CHUNK_ROWS: u64 = 1_000;
+
+/// Hard stop on chunks per call, so one tick cannot run unboundedly (D6).
+///
+/// At the default chunk size this is 5M rows per tick. Anything past it is
+/// left for the next tick rather than held open — in cluster mode the job
+/// lease expires `interval_secs + 60` after the tick starts, and a delete
+/// still running past that lets a second node begin a duplicate.
+const DELETE_MAX_CHUNKS: usize = 5_000;
+
+/// Delete matching rows in bounded chunks rather than one unbounded statement.
+///
+/// Retention deletes used to be a single `DELETE … WHERE created_at < cutoff`
+/// per tick. The first run after enabling retention is then one transaction
+/// over potentially millions of rows: SQLite holds the write lock for its
+/// whole duration, so every other writer hits the 5 s `busy_timeout` and
+/// fails; Postgres bloats WAL and blocks autovacuum; MySQL can exceed
+/// `innodb_lock_wait_timeout`.
+///
+/// The statement is
+/// `DELETE FROM t WHERE id IN (SELECT id FROM (SELECT id FROM t WHERE … LIMIT n) AS d6_chunk)`.
+/// The nested derived table looks redundant and is not: MySQL rejects a
+/// subquery that selects from the table being deleted (error 1093) unless it
+/// is materialised through one. SQLite and Postgres accept the same form, so
+/// all three backends run identical SQL.
+///
+/// Yields to the runtime between chunks so a long drain cannot starve request
+/// handling. Returns the total rows deleted.
+pub async fn delete_chunked(
+    pool: &DbPool,
+    table: impl sea_query::IntoIden,
+    id_column: impl sea_query::IntoIden,
+    condition: sea_query::Condition,
+) -> Result<u64, OrionError> {
+    use sea_query::{Alias, Expr, Query};
+
+    // `DynIden` so the statement can be rebuilt per chunk — the `Iden` derive
+    // gives neither `Clone` nor `Copy`.
+    let table = table.into_iden();
+    let id_column = id_column.into_iden();
+
+    let mut total = 0u64;
+    for chunk in 0..DELETE_MAX_CHUNKS {
+        let inner = Query::select()
+            .column(id_column.clone())
+            .from(table.clone())
+            .cond_where(condition.clone())
+            .limit(DELETE_CHUNK_ROWS)
+            .to_owned();
+        let materialised = Query::select()
+            .column(id_column.clone())
+            .from_subquery(inner, Alias::new("d6_chunk"))
+            .to_owned();
+        let (sql, values) = crate::storage::build_sqlx(
+            Query::delete()
+                .from_table(table.clone())
+                .and_where(Expr::col(id_column.clone()).in_subquery(materialised)),
+        );
+
+        let deleted = pool.execute_query(&sql, values).await?;
+        total += deleted;
+
+        // A short chunk means the tail is gone; nothing left to loop for.
+        if deleted < DELETE_CHUNK_ROWS {
+            return Ok(total);
+        }
+        if chunk + 1 == DELETE_MAX_CHUNKS {
+            tracing::warn!(
+                deleted = total,
+                "Retention delete hit its per-tick chunk cap; the remainder \
+                 is left for the next tick"
+            );
+        }
+        tokio::task::yield_now().await;
+    }
+    Ok(total)
 }
 
 #[cfg(test)]

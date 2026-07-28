@@ -171,14 +171,14 @@ impl AuditLogRepository for SqlAuditLogRepository {
                 .and_then(|d| chrono::Utc::now().naive_utc().checked_sub_signed(d))
                 .unwrap_or(chrono::NaiveDateTime::MIN);
 
-            let (sql, values) = build_sqlx(
-                Query::delete()
-                    .from_table(AuditLogs::Table)
-                    .and_where(Expr::col(AuditLogs::CreatedAt).lt(cutoff)),
-            );
-
-            let rows_affected = self.pool.execute_query(&sql, values).await?;
-            Ok(rows_affected)
+            // D6: chunked — see `delete_chunked`.
+            super::helpers::delete_chunked(
+                &self.pool,
+                AuditLogs::Table,
+                AuditLogs::Id,
+                sea_query::Condition::all().add(Expr::col(AuditLogs::CreatedAt).lt(cutoff)),
+            )
+            .await
         })
         .await
     }

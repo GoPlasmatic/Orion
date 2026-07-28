@@ -336,3 +336,73 @@ async fn async_trace_records_channel_id() {
     let body = body_json(resp).await;
     assert_eq!(body["data"]["channel_id"].as_str(), Some(expected.as_str()));
 }
+
+// ---------------------------------------------------------------------------
+// D6: retention deletes are chunked
+// ---------------------------------------------------------------------------
+
+/// The retention DELETE used to be one unbounded statement per tick. It is
+/// now issued in bounded chunks, which only matters if the loop still drains
+/// everything — a chunked delete that stops after the first chunk would
+/// silently leave the table growing.
+///
+/// 2 500 rows against a 1 000-row chunk forces three statements plus the
+/// short final one, so this exercises the loop rather than the single-chunk
+/// fast path.
+#[tokio::test]
+async fn retention_delete_drains_more_rows_than_one_chunk() {
+    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    let repo = state.trace_repo.clone();
+
+    // Rows older than the retention window, plus a few inside it.
+    let old = chrono::Utc::now().naive_utc() - chrono::Duration::hours(200);
+    let recent = chrono::Utc::now().naive_utc();
+    for (n, created) in [(2_500, old), (7, recent)] {
+        for i in 0..n {
+            insert_trace(&state.db_pool, &format!("{created}-{i}"), created).await;
+        }
+    }
+
+    let before = count_traces(&state.db_pool).await;
+    assert_eq!(before, 2_507, "fixture did not land");
+
+    let deleted = repo.delete_older_than(72).await.expect("cleanup");
+    assert_eq!(
+        deleted, 2_500,
+        "every expired row must go, not just one chunk"
+    );
+    assert_eq!(
+        count_traces(&state.db_pool).await,
+        7,
+        "rows inside the retention window must survive"
+    );
+
+    // A second pass has nothing to do and must not error or loop.
+    assert_eq!(repo.delete_older_than(72).await.expect("cleanup"), 0);
+}
+
+async fn insert_trace(pool: &orion::storage::DbPool, id: &str, created: chrono::NaiveDateTime) {
+    let sql = "INSERT INTO traces (id, channel, mode, status, created_at, updated_at) \
+               VALUES (?, 'ch', 'sync', 'completed', ?, ?)";
+    pool.execute_query(
+        sql,
+        sea_query_binder::SqlxValues(sea_query::Values(vec![
+            id.into(),
+            created.into(),
+            created.into(),
+        ])),
+    )
+    .await
+    .expect("insert trace");
+}
+
+async fn count_traces(pool: &orion::storage::DbPool) -> i64 {
+    let (n,): (i64,) = pool
+        .fetch_one_as::<(i64,)>(
+            "SELECT COUNT(*) FROM traces",
+            sea_query_binder::SqlxValues(sea_query::Values(vec![])),
+        )
+        .await
+        .expect("count");
+    n
+}

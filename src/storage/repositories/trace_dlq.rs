@@ -482,14 +482,16 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 .checked_sub_signed(chrono::Duration::hours(older_than_hours as i64))
                 .unwrap_or(chrono::NaiveDateTime::MIN);
 
-            let (sql, values) = build_sqlx(
-                Query::delete()
-                    .from_table(TraceDlq::Table)
-                    .and_where(Expr::cust(EXHAUSTED))
-                    .and_where(Expr::col(TraceDlq::CreatedAt).lt(cutoff)),
-            );
-
-            Ok(self.pool.execute_query(&sql, values).await?)
+            // D6: chunked — see `delete_chunked`.
+            super::helpers::delete_chunked(
+                &self.pool,
+                TraceDlq::Table,
+                TraceDlq::Id,
+                Condition::all()
+                    .add(Expr::cust(EXHAUSTED))
+                    .add(Expr::col(TraceDlq::CreatedAt).lt(cutoff)),
+            )
+            .await
         })
         .await
     }
