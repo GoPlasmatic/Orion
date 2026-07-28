@@ -3,7 +3,7 @@
 //! Every admin mutation writes an audit row and nothing ever removed one, so
 //! the table grew for the lifetime of the deployment. This mirrors the trace
 //! cleanup job: a periodic lease-gated DELETE of rows past
-//! `queue.audit_retention_days`.
+//! `audit.retention_days`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +24,7 @@ pub fn start_audit_cleanup(
     lease_gate: Option<Arc<crate::cluster::JobLeaseGate>>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if retention_days == 0 {
-        tracing::info!("Audit log retention disabled (queue.audit_retention_days = 0)");
+        tracing::info!("Audit log retention disabled (audit.retention_days = 0)");
         return None;
     }
 

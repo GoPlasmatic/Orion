@@ -30,7 +30,7 @@
 # Deployment environment. Any value starting with "prod" (case-insensitive)
 # is a production environment, which makes two checks fatal instead of a
 # warning: admin auth must be enabled, and CORS may not be the "*" wildcard.
-# Overridden by ORION_ENV (note: not ORION_ENVIRONMENT).
+# Overridden by ORION_ENVIRONMENT.
 # environment = "development"
 
 [server]
@@ -122,15 +122,12 @@
 # recovery_timeout_secs = 30    # Cooldown before a half-open probe is admitted
 # max_breakers = 10000          # Tracked breakers before LRU eviction
 
-[queue]
+[trace_queue]                        # Async trace processing, retention and DLQ
 # workers = 4                        # Concurrent async trace workers
 # buffer_size = 1000                 # Channel buffer for pending async traces
 # shutdown_timeout_secs = 30         # Wait for in-flight traces during shutdown
-# trace_retention_hours = 72         # Delete completed traces older than this (0 = keep forever)
-# audit_retention_days = 90          # Delete admin audit-log rows older than this (0 = keep
-                                     # forever). Every admin mutation writes one and nothing
-                                     # else removes them, so 0 grows `audit_logs` without bound.
-# trace_cleanup_interval_secs = 3600 # Cadence shared by the trace and audit cleanup jobs
+# retention_hours = 72               # Delete completed traces older than this (0 = keep forever)
+# cleanup_interval_secs = 3600       # How often the trace cleanup job runs
 # processing_timeout_ms = 60000      # Per-trace processing timeout on the async path
 # max_result_size_bytes = 1048576    # Reject (sync) or fail (async) results larger than this
 # max_queue_memory_bytes = 104857600 # Total queued payload bytes before new submissions get 503
@@ -141,6 +138,12 @@
 # dlq_lease_secs = 60                # How long a claimed row stays leased to one node; expired
                                      # leases are re-claimable, which is how a crashed node's
                                      # work is recovered in cluster mode
+
+[audit]                              # Admin audit-log retention
+# retention_days = 90                # Delete admin audit-log rows older than this (0 = keep
+                                     # forever). Every admin mutation writes one and nothing
+                                     # else removes them, so 0 grows `audit_logs` without bound.
+# cleanup_interval_secs = 3600       # How often the audit cleanup job runs
 
 [query]                              # Page-size bounds for the portable `data_query` handler
 # default_limit = 100                # Page size when a query omits `limit`
@@ -234,7 +237,7 @@
 # admin_rps = 20                # Admin API
 # data_rps = 200                # Data plane (unset -> default_rps)
 
-[channels]
+[channel_filter]
 # Which channels this instance loads from the database. Glob patterns matched
 # against the channel name; exclude is applied after include. Use it to run
 # separate fleets off one database — e.g. a public instance serving orders-*
@@ -279,9 +282,11 @@
                                 # object breaking the request down by phase. Leave off in
                                 # production so callers cannot probe internal timing.
 
-[tracing.storage]
+[trace_storage]
 # Persistence policy for Orion's own per-request traces (rows in the `traces`
-# table, read via /api/v1/data/traces). Unrelated to the OTLP export above.
+# table, read via /api/v1/admin/traces). Unrelated to the OTLP export in
+# [tracing] above — the two were one section before 1.0, which is exactly the
+# confusion this split removes.
 # A channel can override this with its `config.tracing` field; unset per-channel
 # fields fall back to what is set here.
 #

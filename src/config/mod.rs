@@ -7,10 +7,11 @@ mod kafka;
 mod logging;
 mod observability;
 mod query;
-mod queue;
 mod rate_limit;
+mod retired_env;
 mod server;
 mod storage;
+mod trace_queue;
 pub(super) mod validation;
 mod write;
 
@@ -21,14 +22,13 @@ pub use engine::EngineConfig;
 pub use kafka::{DlqConfig, KafkaAuthConfig, KafkaIngestConfig, TopicMapping};
 pub use logging::{LogFormat, LoggingConfig};
 pub use observability::{
-    AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageMode, TracingConfig,
-    TracingStorageConfig,
+    AsyncOnOverflow, CorsConfig, MetricsConfig, TraceStorageConfig, TraceStorageMode, TracingConfig,
 };
 pub use query::QueryConfig;
-pub use queue::QueueConfig;
 pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
 pub use server::{CompressionConfig, IngestConfig, ServerConfig, TlsConfig};
 pub use storage::StorageConfig;
+pub use trace_queue::TraceQueueConfig;
 pub use write::WriteConfig;
 
 use serde::{Deserialize, Serialize};
@@ -49,14 +49,14 @@ use crate::errors::OrionError;
 pub struct AppConfig {
     /// Deployment environment (e.g. "development", "production").
     /// Controls safety checks like CORS wildcard rejection.
-    /// Override via `ORION_ENV`.
+    /// Override via `ORION_ENVIRONMENT`.
     #[serde(default = "default_environment")]
     pub environment: String,
     pub server: ServerConfig,
     pub storage: StorageConfig,
     pub ingest: IngestConfig,
     pub engine: EngineConfig,
-    pub queue: QueueConfig,
+    pub trace_queue: TraceQueueConfig,
     pub query: QueryConfig,
     pub write: WriteConfig,
     pub kafka: KafkaIngestConfig,
@@ -64,8 +64,10 @@ pub struct AppConfig {
     pub metrics: MetricsConfig,
     pub cors: CorsConfig,
     pub tracing: TracingConfig,
+    pub trace_storage: TraceStorageConfig,
     pub rate_limit: RateLimitConfig,
-    pub channels: ChannelLoadingConfig,
+    pub channel_filter: ChannelFilterConfig,
+    pub audit: AuditConfig,
     pub admin_auth: AdminAuthConfig,
     pub cluster: ClusterConfig,
 }
@@ -82,7 +84,7 @@ impl Default for AppConfig {
             storage: StorageConfig::default(),
             ingest: IngestConfig::default(),
             engine: EngineConfig::default(),
-            queue: QueueConfig::default(),
+            trace_queue: TraceQueueConfig::default(),
             query: QueryConfig::default(),
             write: WriteConfig::default(),
             kafka: KafkaIngestConfig::default(),
@@ -90,8 +92,10 @@ impl Default for AppConfig {
             metrics: MetricsConfig::default(),
             cors: CorsConfig::default(),
             tracing: TracingConfig::default(),
+            trace_storage: TraceStorageConfig::default(),
             rate_limit: RateLimitConfig::default(),
-            channels: ChannelLoadingConfig::default(),
+            channel_filter: ChannelFilterConfig::default(),
+            audit: AuditConfig::default(),
             admin_auth: AdminAuthConfig::default(),
             cluster: ClusterConfig::default(),
         }
@@ -105,14 +109,39 @@ impl AppConfig {
     }
 }
 
-/// Controls which channels an Orion instance loads from the database.
+/// Selects which channels an Orion instance loads from the database. Named
+/// `[channel_filter]` rather than `[channels]` (C22) because it configures the
+/// *selection*, not the channels themselves — those live in the database.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct ChannelLoadingConfig {
+pub struct ChannelFilterConfig {
     /// Glob patterns for channels to include. Empty means include all.
     pub include: Vec<String>,
     /// Glob patterns for channels to exclude. Applied after include.
     pub exclude: Vec<String>,
+}
+
+/// Admin audit-log retention. Split out of `[queue]` (C22): audit rows have
+/// nothing to do with the async trace queue, and their cleanup job used to
+/// borrow the trace job's cadence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuditConfig {
+    /// How long to retain admin audit-log entries in days (0 = forever).
+    /// Audit rows are written by every admin mutation and are never otherwise
+    /// removed, so leaving this at 0 makes `audit_logs` grow without bound.
+    pub retention_days: u64,
+    /// How often the audit-log cleanup task runs, in seconds.
+    pub cleanup_interval_secs: u64,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: 90,
+            cleanup_interval_secs: 3600,
+        }
+    }
 }
 
 /// Load configuration from an optional TOML file path, then apply env overrides.
@@ -159,7 +188,7 @@ mod tests {
         assert_eq!(config.storage.acquire_timeout_secs, 3);
         assert_eq!(config.engine.health_check_timeout_secs, 2);
         assert_eq!(config.engine.reload_timeout_secs, 10);
-        assert_eq!(config.queue.shutdown_timeout_secs, 30);
+        assert_eq!(config.trace_queue.shutdown_timeout_secs, 30);
     }
 
     #[test]

@@ -7,7 +7,7 @@ rolling deploys (`/readyz` drain), an optional HPA, and a PDB.
 ## Production install
 
 Point the chart at your managed database and Redis, and provide at least
-one admin API key — the chart installs with `ORION_ENV=production`, which
+one admin API key — the chart installs with `ORION_ENVIRONMENT=production`, which
 enforces admin auth and refuses permissive CORS at boot:
 
 ```bash

@@ -105,7 +105,7 @@ reload_timeout_secs = 10
 **Dead letter queue:** failed async traces are stored in the `trace_dlq` database table with automatic retry:
 
 ```toml
-[queue]
+[trace_queue]
 dlq_retry_enabled = true
 dlq_max_retries = 5
 dlq_poll_interval_secs = 30

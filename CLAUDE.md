@@ -36,7 +36,7 @@ All capabilities are compiled into a single binary — no feature flags. Behavio
 | Database backend | `storage.url` scheme (`sqlite:`, `postgres://`, `mysql://`) | SQLite |
 | Kafka | `kafka.enabled` | Disabled |
 | OpenTelemetry | `tracing.enabled` | Disabled |
-| Trace persistence mode | `tracing.storage.mode` (`sync` / `async` / `batch` / `off`) — global default with per-channel override via `config.tracing` | Sync |
+| Trace persistence mode | `trace_storage.mode` (`sync` / `async` / `batch` / `off`) — global default with per-channel override via `config.tracing` | Sync |
 | TLS/HTTPS | `server.tls.enabled` | Disabled |
 | Swagger UI | Always at `/docs` | Enabled |
 | SQL connectors | `db_read`/`db_write` functions | Always available |

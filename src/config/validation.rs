@@ -31,10 +31,11 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     config.storage.validate()?;
     config.logging.validate()?;
     config.tracing.validate()?;
+    config.trace_storage.validate()?;
     config.admin_auth.validate(is_prod)?;
     config.cors.validate(is_prod)?;
     config.engine.validate()?;
-    config.queue.validate()?;
+    config.trace_queue.validate()?;
     config.query.validate()?;
     config.write.validate()?;
     config.rate_limit.validate()?;
@@ -69,14 +70,14 @@ mod tests {
     #[test]
     fn test_validate_config_invalid_queue_workers() {
         let mut config = AppConfig::default();
-        config.queue.workers = 0;
+        config.trace_queue.workers = 0;
         assert!(validate_config(&config).is_err());
     }
 
     #[test]
     fn test_validate_config_invalid_queue_buffer() {
         let mut config = AppConfig::default();
-        config.queue.buffer_size = 0;
+        config.trace_queue.buffer_size = 0;
         assert!(validate_config(&config).is_err());
     }
 
@@ -183,7 +184,7 @@ mod tests {
     #[test]
     fn test_validate_config_zero_shutdown_timeout() {
         let mut config = AppConfig::default();
-        config.queue.shutdown_timeout_secs = 0;
+        config.trace_queue.shutdown_timeout_secs = 0;
         assert!(validate_config(&config).is_err());
     }
 
@@ -246,7 +247,7 @@ mod tests {
     #[test]
     fn test_validate_config_kafka_processing_timeout_zero() {
         let mut config = AppConfig::default();
-        config.queue.processing_timeout_ms = 0;
+        config.trace_queue.processing_timeout_ms = 0;
         assert!(validate_config(&config).is_err());
     }
 

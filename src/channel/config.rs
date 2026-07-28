@@ -40,7 +40,7 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub validation_logic: Option<Value>,
 
-    /// Per-channel override of `[tracing.storage]`. Each field is independently
+    /// Per-channel override of `[trace_storage]`. Each field is independently
     /// optional; unset fields fall back to the global setting.
     #[serde(default)]
     pub tracing: Option<ChannelTracingConfig>,

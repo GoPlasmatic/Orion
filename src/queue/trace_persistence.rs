@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 // `tokio::time::timeout` it feeds share one (pausable) clock.
 use tokio::time::Instant;
 
-use crate::config::{AsyncOnOverflow, TraceStorageMode, TracingStorageConfig};
+use crate::config::{AsyncOnOverflow, TraceStorageConfig, TraceStorageMode};
 use crate::metrics;
 use crate::storage::repositories::traces::{TraceCompletedRow, TraceRepository, TraceResultRow};
 
@@ -168,7 +168,7 @@ impl PersistenceWorkerHandle {
 /// `mode = Sync` or `mode = Off` (callers don't dispatch through the queue
 /// in those modes).
 pub fn start(
-    config: &TracingStorageConfig,
+    config: &TraceStorageConfig,
     trace_repo: Arc<dyn TraceRepository>,
 ) -> (TracePersistenceQueue, PersistenceWorkerHandle) {
     let (worker_count, is_batch) = match config.mode {

@@ -38,7 +38,7 @@ ENVIRONMENT VARIABLES:\n    \
     ORION_SERVER__PORT=9090            Override server port\n    \
     ORION_STORAGE__URL=sqlite:app.db   Override database URL\n    \
     ORION_LOGGING__LEVEL=debug         Override log level\n    \
-    ORION_ENV=production               Set deployment environment\n\n    \
+    ORION_ENVIRONMENT=production       Set deployment environment\n\n    \
     See config.toml.example for all available settings."
 )]
 struct Cli {

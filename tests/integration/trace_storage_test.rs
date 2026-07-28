@@ -9,20 +9,21 @@ use crate::common;
 
 use crate::common::{body_json, json_request};
 use axum::http::StatusCode;
-use orion::config::{AppConfig, TraceStorageMode, TracingStorageConfig};
+use orion::config::{AppConfig, TraceStorageConfig, TraceStorageMode};
 use serde_json::json;
 use tower::ServiceExt;
 
 fn cfg_with_storage(mode: TraceStorageMode) -> AppConfig {
-    let mut c = AppConfig::default();
-    c.tracing.storage = TracingStorageConfig {
-        mode,
-        // tiny batch interval keeps tests fast
-        batch_flush_interval_ms: 20,
-        batch_size: 16,
-        ..TracingStorageConfig::default()
-    };
-    c
+    AppConfig {
+        trace_storage: TraceStorageConfig {
+            mode,
+            // tiny batch interval keeps tests fast
+            batch_flush_interval_ms: 20,
+            batch_size: 16,
+            ..TraceStorageConfig::default()
+        },
+        ..AppConfig::default()
+    }
 }
 
 async fn list_total(app: &axum::Router) -> u64 {
@@ -174,11 +175,13 @@ async fn async_endpoint_off_mode_returns_null_trace_id_with_warning() {
 
 #[tokio::test]
 async fn errors_only_filter_drops_successful_sync_traces() {
-    let mut c = AppConfig::default();
-    c.tracing.storage = TracingStorageConfig {
-        mode: TraceStorageMode::Sync,
-        errors_only: true,
-        ..TracingStorageConfig::default()
+    let c = AppConfig {
+        trace_storage: TraceStorageConfig {
+            mode: TraceStorageMode::Sync,
+            errors_only: true,
+            ..TraceStorageConfig::default()
+        },
+        ..AppConfig::default()
     };
     let app = common::test_app_with_config(c).await;
     let (_, _) =

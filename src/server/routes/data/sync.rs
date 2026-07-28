@@ -107,7 +107,7 @@ async fn persist_trace_and_cache(
         .map(|c| c.trace_storage)
         .unwrap_or_else(|| {
             crate::channel::registry::EffectiveTraceConfig::resolve(
-                &state.config.tracing.storage,
+                &state.config.trace_storage,
                 None,
             )
         });
@@ -297,7 +297,7 @@ pub(super) async fn process_sync_for_channel(
                 None => None,
             };
 
-            let max_result_size = state.config.queue.max_result_size_bytes;
+            let max_result_size = state.config.trace_queue.max_result_size_bytes;
             if max_result_size > 0 && response_json.len() > max_result_size {
                 metrics::record_error("result_size_exceeded");
                 return Err(OrionError::ResponseTooLarge(format!(

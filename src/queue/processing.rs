@@ -72,7 +72,7 @@ pub(super) struct ProcessingContext {
     pub(super) rollout_sticky_header: std::sync::Arc<str>,
     pub(super) channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub(super) persistence_queue: crate::queue::TracePersistenceQueue,
-    pub(super) global_trace_storage: crate::config::TracingStorageConfig,
+    pub(super) global_trace_storage: crate::config::TraceStorageConfig,
 }
 
 /// Main dispatcher loop: receives traces from the channel and spawns processing

@@ -205,12 +205,10 @@ fn env_override_names() -> BTreeSet<String> {
 }
 
 /// The env var that overrides a setting: `ORION_SECTION__KEY`, uppercased with
-/// `__` between levels. `environment` is the one documented deviation — it is
-/// `ORION_ENV`, not `ORION_ENVIRONMENT`.
+/// `__` between levels. No exceptions since C22 retired the `ORION_ENV` alias
+/// — retired names live in `src/config/retired_env.rs`, out of the scraper's
+/// reach, and are refused at startup rather than ignored.
 fn expected_env_name(path: &str) -> String {
-    if path == "environment" {
-        return "ORION_ENV".to_string();
-    }
     format!("ORION_{}", path.to_uppercase().replace('.', "__"))
 }
 

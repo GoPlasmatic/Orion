@@ -167,8 +167,8 @@ Recorded actions are `create`, `update`, `delete`, `import`, `update_rollout`,
 `status_active` / `status_archived` / `status_draft`, `reload`, and `backup`.
 
 **Audit retention:** audit rows are only removed by the retention job. It runs
-on the `queue.trace_cleanup_interval_secs` cadence and deletes entries older
-than `queue.audit_retention_days` (default `90`; set `0` to keep forever). In
+on the `audit.cleanup_interval_secs` cadence and deletes entries older
+than `audit.retention_days` (default `90`; set `0` to keep forever). In
 cluster mode the job is lease-gated so only one replica performs the delete.
 
 **Database backup:** in-product backup covers **SQLite only**. It is a

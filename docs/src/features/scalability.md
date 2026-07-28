@@ -88,7 +88,7 @@ curl -s http://localhost:8080/api/v1/admin/traces/{trace-id}
 The queue is backed by `tokio::sync::mpsc` channels with configurable concurrency:
 
 ```toml
-[queue]
+[trace_queue]
 workers = 4                       # Concurrent trace workers
 buffer_size = 1000                # Channel buffer for pending traces
 processing_timeout_ms = 60000     # Per-trace processing timeout
@@ -99,7 +99,7 @@ max_queue_memory_bytes = 104857600  # Max memory for queued traces (100 MB)
 Failed traces go to the **dead letter queue** with automatic retry:
 
 ```toml
-[queue]
+[trace_queue]
 dlq_retry_enabled = true
 dlq_max_retries = 5
 dlq_poll_interval_secs = 30
@@ -108,9 +108,9 @@ dlq_poll_interval_secs = 30
 Completed traces are cleaned up automatically based on retention policy:
 
 ```toml
-[queue]
-trace_retention_hours = 72
-trace_cleanup_interval_secs = 3600
+[trace_queue]
+retention_hours = 72
+cleanup_interval_secs = 3600
 ```
 
 ## Horizontal Scaling — Cluster Mode
@@ -162,11 +162,11 @@ Use channel include/exclude filters to run different Orion instances for differe
 
 ```toml
 # Instance A: order processing
-[channels]
+[channel_filter]
 include = ["orders.*", "payments.*"]
 
 # Instance B: analytics and reporting
-[channels]
+[channel_filter]
 include = ["analytics.*", "reports.*"]
 ```
 

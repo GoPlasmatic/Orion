@@ -25,7 +25,8 @@ Work through this list. Each row links to the section with the detail.
 | 5 | [Supply admin API keys](#5-deployment-defaults-helm-and-ha-compose-now-require-admin-keys) | You deploy via the Helm chart or `docker-compose.ha.yml` |
 | 6 | [Back up before migrating](#6-database-migrations) | You are on PostgreSQL |
 | 7 | [Pass `trace_token` when polling async traces](#polling-an-async-trace-now-requires-the-token-returned-with-the-202) | You submit to `/async` and poll `GET /traces/{id}` without an admin key |
-| 8 | [Review the smaller changes](#7-smaller-behaviour-changes) | Always |
+| 8 | [Rename the renamed config keys](#7-config-keys-four-sections-renamed) | You set `[queue]`, `[channels]`, `[tracing.storage]`, or `ORION_ENV` |
+| 9 | [Review the smaller changes](#8-smaller-behaviour-changes) | Always |
 
 **Take a database backup before upgrading.** Migrations run automatically at
 boot unless you set `storage.auto_migrate = false`.
@@ -331,7 +332,7 @@ does **not** help; unmapped topics take the same failure path.
 ## 5. Deployment defaults: Helm and HA compose now require admin keys
 
 **What changed.** Both shipped deployment paths used to bring up an
-**unauthenticated admin API**. They now default to `ORION_ENV=production` and
+**unauthenticated admin API**. They now default to `ORION_ENVIRONMENT=production` and
 require admin API keys.
 
 **How you'll notice.**
@@ -363,7 +364,7 @@ adminAuth:
 ```
 
 Escape hatch: `devStack.enabled=true` skips the check and forces
-`ORION_ENV=development`. A keyless non-dev install needs **both**
+`ORION_ENVIRONMENT=development`. A keyless non-dev install needs **both**
 `adminAuth.enabled=false` **and** `env=development` — with `env: production`
 and no keys the pod passes templating and then CrashLoops at config validation.
 
@@ -375,7 +376,7 @@ export ORION_ADMIN_API_KEYS="key-one,key-two"
 docker compose -f docker-compose.ha.yml up -d
 ```
 
-**`ORION_ENV=production` forces exactly two things**, and the second one
+**`ORION_ENVIRONMENT=production` forces exactly two things**, and the second one
 surprises people:
 
 1. **Admin auth must be enabled and have at least one key**, or the server
@@ -431,7 +432,77 @@ orion-server migrate --dry-run
 
 ---
 
-## 7. Smaller behaviour changes
+## 7. Config keys: four sections renamed
+
+**What changed.** Four sections and one environment variable were renamed, and
+audit-log retention moved out of `[queue]` into its own section with its own
+cleanup cadence.
+
+| Pre-1.0 | 1.0 |
+|---|---|
+| `[queue]` | `[trace_queue]` |
+| `queue.trace_retention_hours` | `trace_queue.retention_hours` |
+| `queue.trace_cleanup_interval_secs` | `trace_queue.cleanup_interval_secs` |
+| `queue.audit_retention_days` | `audit.retention_days` |
+| *(none)* | `audit.cleanup_interval_secs` — new, default `3600` |
+| `[channels]` | `[channel_filter]` |
+| `[tracing.storage]` | `[trace_storage]` |
+| `ORION_ENV` | `ORION_ENVIRONMENT` |
+
+Every other `[queue]` key keeps its name under `[trace_queue]`, and every
+`[tracing.storage]` key keeps its name under `[trace_storage]`. Environment
+variables follow: `ORION_QUEUE__*` → `ORION_TRACE_QUEUE__*`,
+`ORION_CHANNELS__*` → `ORION_CHANNEL_FILTER__*`, `ORION_TRACING__STORAGE__*` →
+`ORION_TRACE_STORAGE__*`.
+
+**Why.** Each name was wrong in a way that cost a paragraph to explain.
+`[queue]` only ever configured the async trace queue. `[channels]` selects
+*which* channels an instance loads and configures none of them.
+`queue.trace_cleanup_interval_secs` drove the audit cleanup job too, so the
+docs had to say so in three places. `[tracing]` is OpenTelemetry export while
+`[tracing.storage]` is Orion's own `traces` rows — unrelated concerns nested
+under one name. `ORION_ENV` was the only variable not derived from its field
+path.
+
+**How you'll notice.** Both halves fail loudly:
+
+- **Config file** — a retired key is rejected by `deny_unknown_fields`
+  (see the next section) and the error names it.
+- **Environment** — a retired `ORION_*` name is a startup error listing every
+  offender and its replacement:
+
+  ```
+  Error: Configuration error: these environment variables were renamed in 1.0
+  and are no longer read (see docs/src/getting-started/upgrading.md):
+    ORION_ENV -> ORION_ENVIRONMENT
+    ORION_QUEUE__WORKERS -> ORION_TRACE_QUEUE__WORKERS
+  ```
+
+  This is deliberate rather than convenient. Overrides are matched by name, not
+  deserialized, so nothing would otherwise notice that `ORION_QUEUE__WORKERS`
+  had stopped applying. For `ORION_ENV` specifically, silence would be a
+  security regression: falling back to `development` turns the production
+  admin-auth and wildcard-CORS checks from startup errors back into warnings.
+
+**What to do.** Rename the keys in your config file and your deployment
+manifests, then confirm with:
+
+```bash
+orion-server validate-config -c config.toml
+```
+
+The Helm chart and `docker-compose.ha.yml` were updated in this release; if you
+templated your own manifests from them, `ORION_ENV` is the one to grep for
+first.
+
+**One behaviour change beyond the renames:** audit cleanup now runs on
+`audit.cleanup_interval_secs` instead of borrowing the trace job's interval. If
+you had tuned `queue.trace_cleanup_interval_secs` to control *both* jobs, set
+both new keys to that value to preserve the old behaviour.
+
+---
+
+## 8. Smaller behaviour changes
 
 ### Every admin response is now wrapped in `data`
 
@@ -606,7 +677,7 @@ plaintext values previously reached `traces.result_json` and
 credential header, switch it to a non-credential header — otherwise every
 caller now hashes into the same rollout bucket. Rows written before the
 upgrade still contain plaintext headers at rest; the trace-read projection
-hides them from HTTP responses, and `queue.trace_retention_hours` ages them
+hides them from HTTP responses, and `trace_queue.retention_hours` ages them
 out.
 
 ### Response cache keys changed format

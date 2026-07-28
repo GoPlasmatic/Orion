@@ -276,7 +276,7 @@ mod tests {
 
     use crate::channel::registry::EffectiveTraceConfig;
     use crate::channel::{ChannelConfig, ChannelRuntimeConfig, DeduplicationConfig};
-    use crate::config::TracingStorageConfig;
+    use crate::config::TraceStorageConfig;
     use crate::connector::cache_backend::CacheBackend;
     use crate::errors::OrionError;
     use crate::storage::models::Channel;
@@ -379,7 +379,7 @@ mod tests {
             backpressure_semaphore: None,
             dedup_store: Some(store),
             response_cache: None,
-            trace_storage: EffectiveTraceConfig::resolve(&TracingStorageConfig::default(), None),
+            trace_storage: EffectiveTraceConfig::resolve(&TraceStorageConfig::default(), None),
         }))
     }
 

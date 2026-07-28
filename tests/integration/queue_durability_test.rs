@@ -126,10 +126,10 @@ async fn failed_running_write_routes_message_to_dlq() {
         dataflow_rs::Engine::builder().build().unwrap(),
     )));
     let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
-    let tracing_storage = orion::config::TracingStorageConfig::default(); // sync mode
+    let tracing_storage = orion::config::TraceStorageConfig::default(); // sync mode
     let (persistence_queue, _persistence_handle) =
         orion::queue::trace_persistence::start(&tracing_storage, trace_repo.clone());
-    let queue_config = orion::config::QueueConfig {
+    let queue_config = orion::config::TraceQueueConfig {
         workers: 1,
         buffer_size: 10,
         ..Default::default()
@@ -283,13 +283,13 @@ impl TraceRepository for FailAllResultWrites {
 /// message, and poll the trace row until it leaves pending/running.
 async fn run_one_message_to_terminal_status(
     trace_repo: Arc<dyn TraceRepository>,
-    queue_config: orion::config::QueueConfig,
+    queue_config: orion::config::TraceQueueConfig,
 ) -> Trace {
     let engine = Arc::new(RwLock::new(Arc::new(
         dataflow_rs::Engine::builder().build().unwrap(),
     )));
     let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
-    let tracing_storage = orion::config::TracingStorageConfig::default(); // sync mode
+    let tracing_storage = orion::config::TraceStorageConfig::default(); // sync mode
     let (persistence_queue, _persistence_handle) =
         orion::queue::trace_persistence::start(&tracing_storage, trace_repo.clone());
     let (trace_queue, _worker_handle) = orion::queue::start_workers(
@@ -348,7 +348,7 @@ async fn persistent_set_result_failure_marks_trace_failed_after_retries() {
 
     let stored = run_one_message_to_terminal_status(
         trace_repo,
-        orion::config::QueueConfig {
+        orion::config::TraceQueueConfig {
             workers: 1,
             buffer_size: 10,
             ..Default::default()
@@ -384,7 +384,7 @@ async fn oversized_result_marks_trace_failed_with_size_message() {
 
     let stored = run_one_message_to_terminal_status(
         trace_repo,
-        orion::config::QueueConfig {
+        orion::config::TraceQueueConfig {
             workers: 1,
             buffer_size: 10,
             // Any serialized result envelope exceeds 8 bytes.
@@ -511,7 +511,7 @@ async fn persistence_workers_run_in_parallel() {
         max_seen: max_seen.clone(),
     });
 
-    let config = orion::config::TracingStorageConfig {
+    let config = orion::config::TraceStorageConfig {
         mode: orion::config::TraceStorageMode::Async,
         async_workers: 2,
         ..Default::default()
@@ -623,7 +623,7 @@ async fn transient_persistence_failure_is_retried_not_dropped() {
         calls: calls.clone(),
     });
 
-    let config = orion::config::TracingStorageConfig {
+    let config = orion::config::TraceStorageConfig {
         mode: orion::config::TraceStorageMode::Async,
         async_workers: 1,
         ..Default::default()

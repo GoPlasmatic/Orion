@@ -32,7 +32,7 @@ pub fn start_trace_cleanup(
     lease_gate: Option<Arc<crate::cluster::JobLeaseGate>>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if retention_hours == 0 {
-        tracing::info!("Trace retention disabled (trace_retention_hours = 0)");
+        tracing::info!("Trace retention disabled (retention_hours = 0)");
         return None;
     }
 
@@ -258,13 +258,13 @@ impl WorkerHandle {
 /// because they have independent lifetimes.
 #[allow(clippy::too_many_arguments)]
 pub fn start_workers(
-    config: &crate::config::QueueConfig,
+    config: &crate::config::TraceQueueConfig,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     trace_repo: Arc<dyn TraceRepository>,
     dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     persistence_queue: TracePersistenceQueue,
-    global_trace_storage: crate::config::TracingStorageConfig,
+    global_trace_storage: crate::config::TraceStorageConfig,
     rollout_sticky_header: String,
 ) -> (TraceQueue, WorkerHandle) {
     let max_workers = config.workers;

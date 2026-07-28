@@ -56,7 +56,7 @@ pub(crate) fn handle_validate_config(
     );
     println!(
         "  queue:           workers={}, buffer={}",
-        config.queue.workers, config.queue.buffer_size
+        config.trace_queue.workers, config.trace_queue.buffer_size
     );
     println!(
         "  metrics:         {}",

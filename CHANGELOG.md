@@ -25,6 +25,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **Four config sections renamed, and audit-log retention split out of
+  `[queue]`.** Each of these cost a paragraph of documentation to explain what
+  the key actually did:
+
+  | Pre-1.0 | 1.0 | Why |
+  |---|---|---|
+  | `[queue]` | `[trace_queue]` | It only ever configured the async *trace* queue |
+  | `queue.trace_retention_hours` | `trace_queue.retention_hours` | Prefix redundant inside the renamed section |
+  | `queue.trace_cleanup_interval_secs` | `trace_queue.cleanup_interval_secs` | Drove both cleanup jobs, named for one |
+  | `queue.audit_retention_days` | `audit.retention_days` | Audit rows have nothing to do with the trace queue |
+  | — | `audit.cleanup_interval_secs` (new, default `3600`) | Audit cleanup no longer borrows the trace job's cadence |
+  | `[channels]` | `[channel_filter]` | It selects which channels to load; it does not configure channels |
+  | `[tracing.storage]` | `[trace_storage]` | `[tracing]` is OTLP export; this is Orion's own trace rows — two unrelated concerns under one section |
+  | `ORION_ENV` | `ORION_ENVIRONMENT` | The last name breaking the `ORION_` + field-path rule |
+
+  Environment variables follow their keys: `ORION_QUEUE__*` → `ORION_TRACE_QUEUE__*`,
+  `ORION_CHANNELS__*` → `ORION_CHANNEL_FILTER__*`, `ORION_TRACING__STORAGE__*` →
+  `ORION_TRACE_STORAGE__*`.
+
+  **A retired variable is a startup error, not a silent no-op.** Overrides are
+  matched by name rather than deserialized, so `deny_unknown_fields` cannot see
+  them — a renamed section would otherwise leave `ORION_QUEUE__WORKERS` set and
+  quietly ignored. For `ORION_ENV` that would have been a security regression:
+  falling back to `development` turns the production admin-auth and wildcard-CORS
+  checks from startup errors back into warnings. Orion now refuses to boot and
+  names every offender at once. Retired *file* keys are caught by
+  `deny_unknown_fields`.
+
 - **One response envelope across the admin plane.** Every admin 2xx body now
   carries its payload under a top-level `data` key; list endpoints add `total`,
   `limit` and `offset` alongside it and nothing else. Three envelopes used to
@@ -315,7 +343,7 @@ for the cluster architecture.
 - **Rollout bucketing is caller-stable, not random per request** — see Added.
   A canary now exposes a stable subset of callers rather than re-drawing on
   every call; aggregate percentages are unchanged.
-- **The Helm chart and HA compose default to `ORION_ENV=production` and require
+- **The Helm chart and HA compose default to `ORION_ENVIRONMENT=production` and require
   admin API keys.** `helm install` without `adminAuth.apiKeys` or
   `adminAuth.existingSecret` fails at template time by design
   (`devStack.enabled=true` is the dev escape hatch); `docker compose -f
@@ -389,7 +417,7 @@ for the cluster architecture.
   query parameters are now rejected with 400 rather than silently ignored. The
   `details` column is populated (starting with `request_id`) — it was dead
   before, and writing to it produced malformed SQL.
-- **Audit-log retention** — `queue.audit_retention_days` (default 90, `0` keeps
+- **Audit-log retention** — `audit.retention_days` (default 90, `0` keeps
   forever) with a lease-gated cleanup job. The table previously grew forever
   with no supported way to prune it.
 - **Operational metrics** — `trace_dlq_depth`, `trace_dlq_retries_total`,
@@ -446,10 +474,10 @@ for the cluster architecture.
   attribute and `instance_id` on request spans in cluster mode.
 - Env overrides: `ORION_CLUSTER__*`, `ORION_STORAGE__AUTO_MIGRATE`,
   `ORION_STORAGE__{MAX,MIN}_CONNECTIONS`, `ORION_STORAGE__IDLE_TIMEOUT_SECS`,
-  `ORION_QUEUE__DLQ_{RETRY_ENABLED,MAX_RETRIES,POLL_INTERVAL_SECS,BATCH_SIZE,LEASE_SECS}`,
+  `ORION_TRACE_QUEUE__DLQ_{RETRY_ENABLED,MAX_RETRIES,POLL_INTERVAL_SECS,BATCH_SIZE,LEASE_SECS}`,
   `ORION_KAFKA__SESSION_TIMEOUT_MS`, `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS`,
   `ORION_KAFKA__TOPICS`, `ORION_KAFKA__DLQ__{ENABLED,TOPIC}`,
-  `ORION_CORS__ALLOWED_ORIGINS`, `ORION_CHANNELS__{INCLUDE,EXCLUDE}`,
+  `ORION_CORS__ALLOWED_ORIGINS`, `ORION_CHANNEL_FILTER__{INCLUDE,EXCLUDE}`,
   `ORION_ENGINE__ROLLOUT_STICKY_HEADER`.
 
 ### Fixed
@@ -487,7 +515,7 @@ for the cluster architecture.
   writes retry (50ms/250ms) before being counted and dropped, and batch
   buffers are no longer cleared on error before that retry;
   `async_workers`/`batch_workers` > 1 now actually run in parallel (per-worker
-  receivers, round-robin fan-out); `tracing.storage.batch_size` is bounded at
+  receivers, round-robin fan-out); `trace_storage.batch_size` is bounded at
   1000 so batch flushes cannot exceed SQLite's bind limit; `task_trace_json`
   is capped by `queue.max_result_size_bytes` on both paths; and trace
   retention reclaims pending/running rows older than twice the retention
@@ -636,14 +664,14 @@ for the cluster architecture.
 
 - `queue.dlq_max_retries` is now validated as 1–16 and connector
   `retry.max_retries` as ≤ 16 (both are exponents in a doubling backoff);
-  `tracing.storage.batch_size` is capped at 1000 (the batch INSERT binds ~11
+  `trace_storage.batch_size` is capped at 1000 (the batch INSERT binds ~11
   parameters per row against SQLite's 32 766-bind statement limit). Configs
   outside these ranges are rejected at startup instead of failing at runtime.
 - Workflow create/update rejects unknown `function.name` values, and workflow
   activation requires every referenced connector to exist. Both were lint
   warnings; the workflow failed at its first request instead.
 - Trace retention now also deletes `pending`/`running` rows older than twice
-  `queue.trace_retention_hours` — previously they were never reclaimed.
+  `trace_queue.retention_hours` — previously they were never reclaimed.
 - Filesystem backups (`/api/v1/admin/backups`) return `400` in cluster mode —
   the file would land on one arbitrary node; use managed-DB snapshots/PITR.
 - `docs/src/features/scalability.md` and `availability.md` rewritten around

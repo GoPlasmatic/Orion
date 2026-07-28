@@ -18,7 +18,7 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use tokio::sync::RwLock;
 
 use orion::channel::ChannelRegistry;
-use orion::config::{QueueConfig, StorageConfig, TracingStorageConfig};
+use orion::config::{StorageConfig, TraceQueueConfig, TraceStorageConfig};
 use orion::queue::{DlqRetryOptions, QueueMessage};
 use orion::storage::DbPool;
 use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqRepository};
@@ -106,13 +106,13 @@ async fn poison_message_converges_on_dlq_max_retries() {
     let trace_repo: Arc<dyn TraceRepository> = Arc::new(SqlTraceRepository::new(pool.clone()));
     let dlq_repo: Arc<dyn TraceDlqRepository> = Arc::new(SqlTraceDlqRepository::new(pool.clone()));
     let channel_registry = Arc::new(ChannelRegistry::new());
-    let trace_storage = TracingStorageConfig::default();
+    let trace_storage = TraceStorageConfig::default();
 
     let (persistence_queue, _persistence_handle) =
         orion::queue::trace_persistence::start(&trace_storage, trace_repo.clone());
 
     let (trace_queue, _worker_handle) = orion::queue::start_workers(
-        &QueueConfig {
+        &TraceQueueConfig {
             workers: 1,
             buffer_size: 16,
             dlq_max_retries: MAX_RETRIES,

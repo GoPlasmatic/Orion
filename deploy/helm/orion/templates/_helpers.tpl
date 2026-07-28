@@ -124,7 +124,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.logging.format | quote }}
 - name: ORION_LOGGING__LEVEL
   value: {{ .Values.logging.level | quote }}
-- name: ORION_ENV
+- name: ORION_ENVIRONMENT
   value: {{ include "orion.environment" . | quote }}
 {{- if or .Values.adminAuth.existingSecret .Values.adminAuth.apiKeys }}
 - name: ORION_ADMIN_AUTH__ENABLED

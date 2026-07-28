@@ -135,7 +135,7 @@ workers = 4
 url = "sqlite:$BENCH_DB_PATH"
 max_connections = 10
 
-[queue]
+[trace_queue]
 workers = 4
 buffer_size = 200
 

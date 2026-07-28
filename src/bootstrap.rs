@@ -297,10 +297,10 @@ impl EngineComponents {
         // Load active channels and workflows, build engine
         let channels = repos.channels.list_active().await?;
         let total_active = channels.len();
-        let channels = crate::engine::filter_channels(channels, &config.channels);
+        let channels = crate::engine::filter_channels(channels, &config.channel_filter);
         // F32: a wrong include/exclude pattern silently drops a channel; the
         // resolved list makes the filter's effect visible at boot.
-        if !config.channels.include.is_empty() || !config.channels.exclude.is_empty() {
+        if !config.channel_filter.include.is_empty() || !config.channel_filter.exclude.is_empty() {
             tracing::info!(
                 resolved = ?channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
                 filtered_out = total_active - channels.len(),
@@ -316,7 +316,7 @@ impl EngineComponents {
                 &self.connector_registry,
                 &self.cache_pool,
                 &self.datalogic,
-                &config.tracing.storage,
+                &config.trace_storage,
                 engine_issues,
             )
             .await;
@@ -490,10 +490,10 @@ pub fn start_background_tasks(
     // Start trace persistence queue (async/batch modes). A no-op queue is
     // returned for `sync` / `off`, so callers can submit unconditionally.
     let (trace_persistence_queue, trace_persistence_handle) =
-        crate::queue::trace_persistence::start(&config.tracing.storage, repos.traces.clone());
+        crate::queue::trace_persistence::start(&config.trace_storage, repos.traces.clone());
     tracing::info!(
-        mode = ?config.tracing.storage.mode,
-        max_pending = config.tracing.storage.max_pending,
+        mode = ?config.trace_storage.mode,
+        max_pending = config.trace_storage.max_pending,
         "Trace persistence queue started"
     );
 
@@ -501,19 +501,19 @@ pub fn start_background_tasks(
     // The pool needs the persistence queue + channel registry so it can route
     // status / result writes through the configured mode.
     let (trace_queue, worker_handle) = crate::queue::start_workers(
-        &config.queue,
+        &config.trace_queue,
         engine,
         repos.traces.clone(),
         Some(repos.trace_dlq.clone()),
         channel_registry.clone(),
         trace_persistence_queue.clone(),
-        config.tracing.storage.clone(),
+        config.trace_storage.clone(),
         config.engine.rollout_sticky_header.clone(),
     );
 
     tracing::info!(
-        workers = config.queue.workers,
-        buffer = config.queue.buffer_size,
+        workers = config.trace_queue.workers,
+        buffer = config.trace_queue.buffer_size,
         "Trace queue started"
     );
 
@@ -527,27 +527,27 @@ pub fn start_background_tasks(
 
     // Start trace cleanup task
     let trace_cleanup_handle = crate::queue::start_trace_cleanup(
-        config.queue.trace_retention_hours,
-        config.queue.trace_cleanup_interval_secs,
+        config.trace_queue.retention_hours,
+        config.trace_queue.cleanup_interval_secs,
         repos.traces.clone(),
         job_lease_gate.clone(),
     );
 
     // Start audit-log cleanup task
     let audit_cleanup_handle = crate::queue::audit_cleanup::start_audit_cleanup(
-        config.queue.audit_retention_days,
-        config.queue.trace_cleanup_interval_secs,
+        config.audit.retention_days,
+        config.audit.cleanup_interval_secs,
         repos.audit_logs.clone(),
         job_lease_gate.clone(),
     );
 
     // Start DLQ retry consumer
-    let dlq_retry_handle = if config.queue.dlq_retry_enabled {
+    let dlq_retry_handle = if config.trace_queue.dlq_retry_enabled {
         let handle = crate::queue::start_dlq_retry(
             crate::queue::DlqRetryOptions {
-                poll_interval_secs: config.queue.dlq_poll_interval_secs,
-                batch_size: config.queue.dlq_batch_size,
-                lease_secs: config.queue.dlq_lease_secs,
+                poll_interval_secs: config.trace_queue.dlq_poll_interval_secs,
+                batch_size: config.trace_queue.dlq_batch_size,
+                lease_secs: config.trace_queue.dlq_lease_secs,
                 claimant: cluster.instance_id.clone(),
                 lease_gate: job_lease_gate.clone(),
             },
@@ -557,8 +557,8 @@ pub fn start_background_tasks(
             channel_registry,
         );
         tracing::info!(
-            poll_interval_secs = config.queue.dlq_poll_interval_secs,
-            max_retries = config.queue.dlq_max_retries,
+            poll_interval_secs = config.trace_queue.dlq_poll_interval_secs,
+            max_retries = config.trace_queue.dlq_max_retries,
             "DLQ retry consumer started"
         );
         Some(handle)

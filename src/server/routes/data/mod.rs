@@ -309,7 +309,7 @@ async fn submit_async(
         .map(|c| c.trace_storage)
         .unwrap_or_else(|| {
             crate::channel::registry::EffectiveTraceConfig::resolve(
-                &state.config.tracing.storage,
+                &state.config.trace_storage,
                 None,
             )
         });

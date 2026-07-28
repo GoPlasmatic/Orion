@@ -14,8 +14,8 @@ fn parse_env<T: std::str::FromStr>(key: &str, value: &str) -> Result<T, OrionErr
 }
 
 /// `ORION_` + the field path uppercased and joined with `__` — the single
-/// naming rule every override follows. (`ORION_ENV` for `environment` is the
-/// one alias, handled explicitly below.)
+/// naming rule every override follows, with no exceptions since C22 retired
+/// the `ORION_ENV` alias in favour of the derived `ORION_ENVIRONMENT`.
 fn env_key(path: &[&str]) -> String {
     let mut key = String::from("ORION_");
     for (i, segment) in path.iter().enumerate() {
@@ -29,6 +29,7 @@ fn env_key(path: &[&str]) -> String {
 
 /// Apply ORION_* environment variable overrides.
 pub(super) fn apply_env_overrides(config: &mut AppConfig) -> Result<(), OrionError> {
+    crate::config::retired_env::reject_retired_env_vars(|key| std::env::var(key))?;
     apply_env_overrides_with(config, |key| std::env::var(key))
 }
 
@@ -37,9 +38,9 @@ pub(super) fn apply_env_overrides(config: &mut AppConfig) -> Result<(), OrionErr
 /// Every mapping below derives its variable name from the field path via
 /// [`env_key`], so an override cannot silently read the wrong variable and
 /// the docs drift test can predict the full set from the config structs.
-/// Only shapes the naming rule cannot express are written out by hand: the
-/// `ORION_ENV` alias, enum fields with their own error wording, list fields,
-/// and the `topic:channel` pair grammar of `ORION_KAFKA__TOPICS`.
+/// Only shapes the naming rule cannot express are written out by hand: enum
+/// fields with their own error wording, list fields, and the `topic:channel`
+/// pair grammar of `ORION_KAFKA__TOPICS`.
 pub(super) fn apply_env_overrides_with<F>(
     config: &mut AppConfig,
     env_var: F,
@@ -100,10 +101,10 @@ where
         }};
     }
 
-    // The one alias: ORION_ENV predates the naming scheme.
-    if let Ok(v) = env_var("ORION_ENV") {
-        config.environment = v;
-    }
+    // Deployment environment. `ORION_ENVIRONMENT`, derived by the rule above
+    // — `ORION_ENV` was retired in 1.0 and is refused by
+    // `reject_retired_env_vars` rather than silently ignored.
+    ov!(environment: String);
 
     // Server
     ov!(server.host: String);
@@ -150,21 +151,24 @@ where
     // Ingest
     ov!(ingest.max_payload_size: usize);
 
-    // Queue
-    ov!(queue.workers: usize);
-    ov!(queue.buffer_size: usize);
-    ov!(queue.shutdown_timeout_secs: u64);
-    ov!(queue.trace_retention_hours: u64);
-    ov!(queue.audit_retention_days: u64);
-    ov!(queue.trace_cleanup_interval_secs: u64);
-    ov!(queue.processing_timeout_ms: u64);
-    ov!(queue.max_result_size_bytes: usize);
-    ov!(queue.max_queue_memory_bytes: usize);
-    ov!(queue.dlq_retry_enabled: bool);
-    ov!(queue.dlq_max_retries: i64);
-    ov!(queue.dlq_poll_interval_secs: u64);
-    ov!(queue.dlq_batch_size: i64);
-    ov!(queue.dlq_lease_secs: u64);
+    // Trace queue
+    ov!(trace_queue.workers: usize);
+    ov!(trace_queue.buffer_size: usize);
+    ov!(trace_queue.shutdown_timeout_secs: u64);
+    ov!(trace_queue.retention_hours: u64);
+    ov!(trace_queue.cleanup_interval_secs: u64);
+    ov!(trace_queue.processing_timeout_ms: u64);
+    ov!(trace_queue.max_result_size_bytes: usize);
+    ov!(trace_queue.max_queue_memory_bytes: usize);
+    ov!(trace_queue.dlq_retry_enabled: bool);
+    ov!(trace_queue.dlq_max_retries: i64);
+    ov!(trace_queue.dlq_poll_interval_secs: u64);
+    ov!(trace_queue.dlq_batch_size: i64);
+    ov!(trace_queue.dlq_lease_secs: u64);
+
+    // Audit-log retention
+    ov!(audit.retention_days: u64);
+    ov!(audit.cleanup_interval_secs: u64);
 
     // Query dialect
     ov!(query.default_limit: u64);
@@ -183,42 +187,40 @@ where
     ov!(tracing.service_name: String);
     ov!(tracing.sample_rate: f64);
     ov!(tracing.debug_profile_enabled: bool);
-    ov!(tracing.storage.sample_rate: f64);
-    ov!(tracing.storage.errors_only: bool);
-    ov!(tracing.storage.max_pending: usize);
-    ov!(tracing.storage.overflow_block_timeout_ms: u64);
-    ov!(tracing.storage.async_workers: usize);
-    ov!(tracing.storage.batch_size: usize);
-    ov!(tracing.storage.batch_flush_interval_ms: u64);
-    ov!(tracing.storage.batch_workers: usize);
-    if let Ok(v) = env_var("ORION_TRACING__STORAGE__MODE") {
+    ov!(trace_storage.sample_rate: f64);
+    ov!(trace_storage.errors_only: bool);
+    ov!(trace_storage.max_pending: usize);
+    ov!(trace_storage.overflow_block_timeout_ms: u64);
+    ov!(trace_storage.async_workers: usize);
+    ov!(trace_storage.batch_size: usize);
+    ov!(trace_storage.batch_flush_interval_ms: u64);
+    ov!(trace_storage.batch_workers: usize);
+    if let Ok(v) = env_var("ORION_TRACE_STORAGE__MODE") {
         match v.to_lowercase().as_str() {
-            "sync" => config.tracing.storage.mode = crate::config::TraceStorageMode::Sync,
-            "async" => config.tracing.storage.mode = crate::config::TraceStorageMode::Async,
-            "batch" => config.tracing.storage.mode = crate::config::TraceStorageMode::Batch,
-            "off" => config.tracing.storage.mode = crate::config::TraceStorageMode::Off,
+            "sync" => config.trace_storage.mode = crate::config::TraceStorageMode::Sync,
+            "async" => config.trace_storage.mode = crate::config::TraceStorageMode::Async,
+            "batch" => config.trace_storage.mode = crate::config::TraceStorageMode::Batch,
+            "off" => config.trace_storage.mode = crate::config::TraceStorageMode::Off,
             _ => {
                 return Err(OrionError::Config {
                     message: format!(
-                        "ORION_TRACING__STORAGE__MODE: invalid value '{v}', \
+                        "ORION_TRACE_STORAGE__MODE: invalid value '{v}', \
                          expected 'sync', 'async', 'batch', or 'off'"
                     ),
                 });
             }
         }
     }
-    if let Ok(v) = env_var("ORION_TRACING__STORAGE__ASYNC_ON_OVERFLOW") {
+    if let Ok(v) = env_var("ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW") {
         match v.to_lowercase().as_str() {
-            "drop" => {
-                config.tracing.storage.async_on_overflow = crate::config::AsyncOnOverflow::Drop
-            }
+            "drop" => config.trace_storage.async_on_overflow = crate::config::AsyncOnOverflow::Drop,
             "block" => {
-                config.tracing.storage.async_on_overflow = crate::config::AsyncOnOverflow::Block
+                config.trace_storage.async_on_overflow = crate::config::AsyncOnOverflow::Block
             }
             _ => {
                 return Err(OrionError::Config {
                     message: format!(
-                        "ORION_TRACING__STORAGE__ASYNC_ON_OVERFLOW: invalid value '{v}', \
+                        "ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW: invalid value '{v}', \
                          expected 'drop' or 'block'"
                     ),
                 });
@@ -296,8 +298,8 @@ where
     ov_list!(cors.allowed_origins);
 
     // Channel loading filters
-    ov_list!(channels.include);
-    ov_list!(channels.exclude);
+    ov_list!(channel_filter.include);
+    ov_list!(channel_filter.exclude);
 
     // Admin auth
     ov!(admin_auth.enabled: bool);
@@ -356,15 +358,15 @@ mod tests {
         env.insert("ORION_LOGGING__LEVEL", "warn");
         env.insert("ORION_LOGGING__FORMAT", "json");
         env.insert("ORION_INGEST__MAX_PAYLOAD_SIZE", "2000000");
-        env.insert("ORION_QUEUE__WORKERS", "8");
-        env.insert("ORION_QUEUE__BUFFER_SIZE", "2000");
-        env.insert("ORION_QUEUE__SHUTDOWN_TIMEOUT_SECS", "60");
-        env.insert("ORION_QUEUE__AUDIT_RETENTION_DAYS", "30");
-        env.insert("ORION_QUEUE__DLQ_RETRY_ENABLED", "false");
-        env.insert("ORION_QUEUE__DLQ_MAX_RETRIES", "9");
-        env.insert("ORION_QUEUE__DLQ_POLL_INTERVAL_SECS", "45");
-        env.insert("ORION_QUEUE__DLQ_BATCH_SIZE", "40");
-        env.insert("ORION_QUEUE__DLQ_LEASE_SECS", "90");
+        env.insert("ORION_TRACE_QUEUE__WORKERS", "8");
+        env.insert("ORION_TRACE_QUEUE__BUFFER_SIZE", "2000");
+        env.insert("ORION_TRACE_QUEUE__SHUTDOWN_TIMEOUT_SECS", "60");
+        env.insert("ORION_AUDIT__RETENTION_DAYS", "30");
+        env.insert("ORION_TRACE_QUEUE__DLQ_RETRY_ENABLED", "false");
+        env.insert("ORION_TRACE_QUEUE__DLQ_MAX_RETRIES", "9");
+        env.insert("ORION_TRACE_QUEUE__DLQ_POLL_INTERVAL_SECS", "45");
+        env.insert("ORION_TRACE_QUEUE__DLQ_BATCH_SIZE", "40");
+        env.insert("ORION_TRACE_QUEUE__DLQ_LEASE_SECS", "90");
         env.insert("ORION_STORAGE__MAX_CONNECTIONS", "77");
         env.insert("ORION_STORAGE__MIN_CONNECTIONS", "7");
         env.insert("ORION_STORAGE__IDLE_TIMEOUT_SECS", "600");
@@ -402,8 +404,8 @@ mod tests {
             "ORION_CORS__ALLOWED_ORIGINS",
             "https://a.example, https://b.example",
         );
-        env.insert("ORION_CHANNELS__INCLUDE", "orders-*, payments-*");
-        env.insert("ORION_CHANNELS__EXCLUDE", "internal-*");
+        env.insert("ORION_CHANNEL_FILTER__INCLUDE", "orders-*, payments-*");
+        env.insert("ORION_CHANNEL_FILTER__EXCLUDE", "internal-*");
 
         let mut config = AppConfig::default();
         apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
@@ -416,15 +418,15 @@ mod tests {
         assert_eq!(config.logging.level, "warn");
         assert!(matches!(config.logging.format, LogFormat::Json));
         assert_eq!(config.ingest.max_payload_size, 2000000);
-        assert_eq!(config.queue.workers, 8);
-        assert_eq!(config.queue.buffer_size, 2000);
-        assert_eq!(config.queue.shutdown_timeout_secs, 60);
-        assert_eq!(config.queue.audit_retention_days, 30);
-        assert!(!config.queue.dlq_retry_enabled);
-        assert_eq!(config.queue.dlq_max_retries, 9);
-        assert_eq!(config.queue.dlq_poll_interval_secs, 45);
-        assert_eq!(config.queue.dlq_batch_size, 40);
-        assert_eq!(config.queue.dlq_lease_secs, 90);
+        assert_eq!(config.trace_queue.workers, 8);
+        assert_eq!(config.trace_queue.buffer_size, 2000);
+        assert_eq!(config.trace_queue.shutdown_timeout_secs, 60);
+        assert_eq!(config.audit.retention_days, 30);
+        assert!(!config.trace_queue.dlq_retry_enabled);
+        assert_eq!(config.trace_queue.dlq_max_retries, 9);
+        assert_eq!(config.trace_queue.dlq_poll_interval_secs, 45);
+        assert_eq!(config.trace_queue.dlq_batch_size, 40);
+        assert_eq!(config.trace_queue.dlq_lease_secs, 90);
         assert_eq!(config.storage.max_connections, 77);
         assert_eq!(config.storage.min_connections, 7);
         assert_eq!(config.storage.idle_timeout_secs, 600);
@@ -470,10 +472,13 @@ mod tests {
             ]
         );
         assert_eq!(
-            config.channels.include,
+            config.channel_filter.include,
             vec!["orders-*".to_string(), "payments-*".to_string()]
         );
-        assert_eq!(config.channels.exclude, vec!["internal-*".to_string()]);
+        assert_eq!(
+            config.channel_filter.exclude,
+            vec!["internal-*".to_string()]
+        );
     }
 
     /// F37: an `Option<u32>` endpoint limit is cleared, not left at its

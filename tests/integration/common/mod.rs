@@ -98,7 +98,7 @@ async fn test_state_inner(
     let pool = orion::storage::init_pool(&storage_config).await.unwrap();
 
     // Divergence 3: no harness-owned DLQ retry loop.
-    config.queue.dlq_retry_enabled = false;
+    config.trace_queue.dlq_retry_enabled = false;
 
     // Kafka: map the harness broker override onto the config so
     // bootstrap::setup_kafka_producer registers the publisher through the

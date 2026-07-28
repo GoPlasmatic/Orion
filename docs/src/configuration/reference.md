@@ -36,7 +36,7 @@ One setting changes how strictly everything else is validated.
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `environment` | `"development"` | `ORION_ENV` | Set to `"production"` before exposing an instance to anything you care about. |
+| `environment` | `"development"` | `ORION_ENVIRONMENT` | Set to `"production"` before exposing an instance to anything you care about. |
 
 Any value starting with `prod` (case-insensitive) is a production environment, which turns two warnings into startup errors:
 
@@ -45,7 +45,7 @@ Any value starting with `prod` (case-insensitive) is a production environment, w
 
 That is the whole mechanism — it does not change any other default. Everything else on this page is still yours to set, and the [Production Checklist](#production-checklist) is the list worth walking.
 
-Note the variable is `ORION_ENV`, not `ORION_ENVIRONMENT`.
+The variable is `ORION_ENVIRONMENT`, derived from the field name like every other override. `ORION_ENV` was the pre-1.0 alias and is now refused at startup rather than silently ignored.
 
 ## Database Backend
 
@@ -199,28 +199,34 @@ Sheds load to a failing dependency: after `failure_threshold` consecutive failur
 
 Breakers are keyed per channel and connector, so one noisy channel does not trip a shared connector for everyone else, and the state is per node. Currently applied to `http_call`.
 
-## Queue
+## Trace Queue
 
 The async trace pipeline: `POST /{channel}/async` enqueues, workers execute, and failures land in a database dead-letter queue with automatic retry.
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `queue.workers` | `4` | `ORION_QUEUE__WORKERS` | Raise for more concurrent async processing. This is the real worker knob. |
-| `queue.buffer_size` | `1000` | `ORION_QUEUE__BUFFER_SIZE` | Raise to absorb bigger bursts before submissions are rejected. |
-| `queue.shutdown_timeout_secs` | `30` | `ORION_QUEUE__SHUTDOWN_TIMEOUT_SECS` | How long shutdown waits for in-flight traces. |
-| `queue.trace_retention_hours` | `72` | `ORION_QUEUE__TRACE_RETENTION_HOURS` | Lower to shrink the `traces` table; `0` keeps traces forever. |
-| `queue.audit_retention_days` | `90` | `ORION_QUEUE__AUDIT_RETENTION_DAYS` | Raise to satisfy a retention policy; `0` keeps rows forever. |
-| `queue.trace_cleanup_interval_secs` | `3600` | `ORION_QUEUE__TRACE_CLEANUP_INTERVAL_SECS` | Cadence shared by both cleanup jobs. |
-| `queue.processing_timeout_ms` | `60000` | `ORION_QUEUE__PROCESSING_TIMEOUT_MS` | Per-trace deadline on the async path. |
-| `queue.max_result_size_bytes` | `1048576` | `ORION_QUEUE__MAX_RESULT_SIZE_BYTES` | Raise for large results; oversized ones are rejected (sync) or failed (async). |
-| `queue.max_queue_memory_bytes` | `104857600` | `ORION_QUEUE__MAX_QUEUE_MEMORY_BYTES` | Total queued payload bytes before new submissions get `503`. |
-| `queue.dlq_retry_enabled` | `true` | `ORION_QUEUE__DLQ_RETRY_ENABLED` | Disable only to freeze the DLQ for inspection — note the `orion_trace_dlq_depth` gauge stops updating with it. |
-| `queue.dlq_max_retries` | `5` | `ORION_QUEUE__DLQ_MAX_RETRIES` | Attempts before a row is marked exhausted. Must be 1–16 (backoff is 2^retries seconds); use `dlq_retry_enabled` to turn retries off. |
-| `queue.dlq_poll_interval_secs` | `30` | `ORION_QUEUE__DLQ_POLL_INTERVAL_SECS` | How often the retry worker polls. |
-| `queue.dlq_batch_size` | `20` | `ORION_QUEUE__DLQ_BATCH_SIZE` | Rows claimed per retry tick. Raise to drain a large backlog faster. |
-| `queue.dlq_lease_secs` | `60` | `ORION_QUEUE__DLQ_LEASE_SECS` | How long a claimed row stays leased to one node. |
+| `trace_queue.workers` | `4` | `ORION_TRACE_QUEUE__WORKERS` | Raise for more concurrent async processing. This is the real worker knob. |
+| `trace_queue.buffer_size` | `1000` | `ORION_TRACE_QUEUE__BUFFER_SIZE` | Raise to absorb bigger bursts before submissions are rejected. |
+| `trace_queue.shutdown_timeout_secs` | `30` | `ORION_TRACE_QUEUE__SHUTDOWN_TIMEOUT_SECS` | How long shutdown waits for in-flight traces. |
+| `trace_queue.retention_hours` | `72` | `ORION_TRACE_QUEUE__RETENTION_HOURS` | Lower to shrink the `traces` table; `0` keeps traces forever. |
+| `trace_queue.cleanup_interval_secs` | `3600` | `ORION_TRACE_QUEUE__CLEANUP_INTERVAL_SECS` | How often the trace cleanup job runs. |
+| `trace_queue.processing_timeout_ms` | `60000` | `ORION_TRACE_QUEUE__PROCESSING_TIMEOUT_MS` | Per-trace deadline on the async path. |
+| `trace_queue.max_result_size_bytes` | `1048576` | `ORION_TRACE_QUEUE__MAX_RESULT_SIZE_BYTES` | Raise for large results; oversized ones are rejected (sync) or failed (async). |
+| `trace_queue.max_queue_memory_bytes` | `104857600` | `ORION_TRACE_QUEUE__MAX_QUEUE_MEMORY_BYTES` | Total queued payload bytes before new submissions get `503`. |
+| `trace_queue.dlq_retry_enabled` | `true` | `ORION_TRACE_QUEUE__DLQ_RETRY_ENABLED` | Disable only to freeze the DLQ for inspection — note the `orion_trace_dlq_depth` gauge stops updating with it. |
+| `trace_queue.dlq_max_retries` | `5` | `ORION_TRACE_QUEUE__DLQ_MAX_RETRIES` | Attempts before a row is marked exhausted. Must be 1–16 (backoff is 2^retries seconds); use `dlq_retry_enabled` to turn retries off. |
+| `trace_queue.dlq_poll_interval_secs` | `30` | `ORION_TRACE_QUEUE__DLQ_POLL_INTERVAL_SECS` | How often the retry worker polls. |
+| `trace_queue.dlq_batch_size` | `20` | `ORION_TRACE_QUEUE__DLQ_BATCH_SIZE` | Rows claimed per retry tick. Raise to drain a large backlog faster. |
+| `trace_queue.dlq_lease_secs` | `60` | `ORION_TRACE_QUEUE__DLQ_LEASE_SECS` | How long a claimed row stays leased to one node. |
 
-**Audit retention.** Every admin mutation writes an `audit_logs` row and nothing else removes them, so `audit_retention_days = 0` grows that table without bound. The cleanup job shares `trace_cleanup_interval_secs` rather than having a cadence of its own.
+## Audit Log Retention
+
+| Setting | Default | Env var | When to change |
+|---|---|---|---|
+| `audit.retention_days` | `90` | `ORION_AUDIT__RETENTION_DAYS` | Raise to satisfy a retention policy; `0` keeps rows forever. |
+| `audit.cleanup_interval_secs` | `3600` | `ORION_AUDIT__CLEANUP_INTERVAL_SECS` | How often the audit cleanup job runs. |
+
+**Audit retention.** Every admin mutation writes an `audit_logs` row and nothing else removes them, so `audit.retention_days = 0` grows that table without bound. Before 1.0 these two settings lived in `[queue]` and the cleanup job borrowed the trace job's cadence; they now have their own section and their own interval.
 
 **DLQ leases.** A claimed row is leased for `dlq_lease_secs`; when the lease expires another node may re-claim it. That is how work from a crashed node is recovered in cluster mode, so the value should comfortably exceed how long one retry takes.
 
@@ -340,12 +346,12 @@ The consequence in both directions:
 
 Both endpoint limits are optional, so their environment variables are three-state: unset leaves the config-file value alone, a number sets the limit, and an empty string clears it back to "use `default_rps`".
 
-## Channel Loading
+## Channel Filter
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `channels.include` | `[]` | `ORION_CHANNELS__INCLUDE` | Glob patterns; empty loads every active channel. |
-| `channels.exclude` | `[]` | `ORION_CHANNELS__EXCLUDE` | Applied after `include`. |
+| `channel_filter.include` | `[]` | `ORION_CHANNEL_FILTER__INCLUDE` | Glob patterns; empty loads every active channel. |
+| `channel_filter.exclude` | `[]` | `ORION_CHANNEL_FILTER__EXCLUDE` | Applied after `include`. |
 
 Both are matched against the channel name and are comma-separated in the env var. Use them to run separate fleets off one database — a public instance serving `orders-*` and an internal one serving the rest — without splitting the control plane.
 
@@ -405,9 +411,9 @@ OpenTelemetry export, compiled into every binary and gated at runtime.
 
 With `debug_profile_enabled = true`, a request carrying `X-Orion-Profile: 1` (or `?profile=1`) gets an `_orion.profile` object breaking the request down by phase — engine lock wait, per-handler durations, trace store, residual workflow logic. It is off by default so callers cannot probe internal timing.
 
-### Trace Persistence
+## Trace Persistence
 
-Orion's own per-request trace records — rows in the `traces` table, read via `/api/v1/admin/traces`. Unrelated to the OTLP export above. A channel can override the mode with its `config.tracing` field; unset per-channel fields fall back to what is set here.
+Orion's own per-request trace records — rows in the `traces` table, read via `/api/v1/admin/traces`. Unrelated to the OTLP export in `[tracing]` above; before 1.0 these keys lived under `[tracing.storage]`, which is exactly the confusion the split removes. A channel can override the mode with its `config.tracing` field; unset per-channel fields fall back to what is set here.
 
 | Mode | Behaviour |
 |---|---|
@@ -418,16 +424,16 @@ Orion's own per-request trace records — rows in the `traces` table, read via `
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `tracing.storage.mode` | `"sync"` | `ORION_TRACING__STORAGE__MODE` | Move to `batch` when trace writes bound throughput. |
-| `tracing.storage.sample_rate` | `1.0` | `ORION_TRACING__STORAGE__SAMPLE_RATE` | Fraction of traces persisted, `0.0` to `1.0`. |
-| `tracing.storage.errors_only` | `false` | `ORION_TRACING__STORAGE__ERRORS_ONLY` | Persist only traces that ended with errors — a cheap way to keep the table small. |
-| `tracing.storage.max_pending` | `10000` | `ORION_TRACING__STORAGE__MAX_PENDING` | Queue capacity in `async` and `batch` modes. |
-| `tracing.storage.async_on_overflow` | `"drop"` | `ORION_TRACING__STORAGE__ASYNC_ON_OVERFLOW` | `drop` or `block`. `block` applies backpressure to the request path. |
-| `tracing.storage.overflow_block_timeout_ms` | `100` | `ORION_TRACING__STORAGE__OVERFLOW_BLOCK_TIMEOUT_MS` | How long `block` waits for capacity before dropping anyway. |
-| `tracing.storage.async_workers` | `4` | `ORION_TRACING__STORAGE__ASYNC_WORKERS` | Worker count in `async` mode. |
-| `tracing.storage.batch_size` | `100` | `ORION_TRACING__STORAGE__BATCH_SIZE` | Rows per transaction in `batch` mode. Max 1000 — the batch INSERT binds ~11 parameters per row against SQLite's 32 766-bind statement cap. |
-| `tracing.storage.batch_flush_interval_ms` | `100` | `ORION_TRACING__STORAGE__BATCH_FLUSH_INTERVAL_MS` | How long a partial batch waits before flushing. |
-| `tracing.storage.batch_workers` | `4` | `ORION_TRACING__STORAGE__BATCH_WORKERS` | Worker count in `batch` mode; each owns an independent batch. |
+| `trace_storage.mode` | `"sync"` | `ORION_TRACE_STORAGE__MODE` | Move to `batch` when trace writes bound throughput. |
+| `trace_storage.sample_rate` | `1.0` | `ORION_TRACE_STORAGE__SAMPLE_RATE` | Fraction of traces persisted, `0.0` to `1.0`. |
+| `trace_storage.errors_only` | `false` | `ORION_TRACE_STORAGE__ERRORS_ONLY` | Persist only traces that ended with errors — a cheap way to keep the table small. |
+| `trace_storage.max_pending` | `10000` | `ORION_TRACE_STORAGE__MAX_PENDING` | Queue capacity in `async` and `batch` modes. |
+| `trace_storage.async_on_overflow` | `"drop"` | `ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW` | `drop` or `block`. `block` applies backpressure to the request path. |
+| `trace_storage.overflow_block_timeout_ms` | `100` | `ORION_TRACE_STORAGE__OVERFLOW_BLOCK_TIMEOUT_MS` | How long `block` waits for capacity before dropping anyway. |
+| `trace_storage.async_workers` | `4` | `ORION_TRACE_STORAGE__ASYNC_WORKERS` | Worker count in `async` mode. |
+| `trace_storage.batch_size` | `100` | `ORION_TRACE_STORAGE__BATCH_SIZE` | Rows per transaction in `batch` mode. Max 1000 — the batch INSERT binds ~11 parameters per row against SQLite's 32 766-bind statement cap. |
+| `trace_storage.batch_flush_interval_ms` | `100` | `ORION_TRACE_STORAGE__BATCH_FLUSH_INTERVAL_MS` | How long a partial batch waits before flushing. |
+| `trace_storage.batch_workers` | `4` | `ORION_TRACE_STORAGE__BATCH_WORKERS` | Worker count in `batch` mode; each owns an independent batch. |
 
 With `mode = "off"`, `POST /{channel}/async` returns `trace_id: null` and a `Warning: 299` header — the caller has no way to learn the outcome. Do not combine `off` with async channels whose results matter.
 
@@ -442,7 +448,7 @@ All capabilities are compiled into a single binary and controlled at runtime:
 | Kafka | `kafka.enabled` | Disabled |
 | Kafka SASL/TLS | `kafka.auth.security_protocol` | Plaintext |
 | OpenTelemetry | `tracing.enabled` | Disabled |
-| Trace persistence | `tracing.storage.mode` | `sync` |
+| Trace persistence | `trace_storage.mode` | `sync` |
 | TLS/HTTPS | `server.tls.enabled` | Disabled |
 | Response compression | `server.compression.enabled` | Disabled |
 | Swagger UI | Always at `/docs` | Enabled |
@@ -461,7 +467,7 @@ Everything here is off or permissive by default, because defaults serve a laptop
 
 | Area | Do this |
 |---|---|
-| **Environment** | `ORION_ENV=production` — makes missing admin auth and wildcard CORS startup errors. |
+| **Environment** | `ORION_ENVIRONMENT=production` — makes missing admin auth and wildcard CORS startup errors. |
 | **Admin auth** | `admin_auth.enabled = true` with at least one strong key, ideally as `sha256:<digest>`. Plan rotation with a second key. |
 | **CORS** | Replace `["*"]` with explicit origins. |
 | **TLS** | Terminate TLS — `server.tls` here, or at a load balancer in front. |
@@ -469,7 +475,7 @@ Everything here is off or permissive by default, because defaults serve a laptop
 | **Cluster** | Running more than one replica? `cluster.enabled = true` with a shared `redis_url`, `auto_migrate = false`, `orion-server migrate` as a deploy step, and a stable `instance_id` per replica. Without it, config changes reach only the node that received them. |
 | **Rate limiting** | `rate_limit.enabled = true`, and set `trusted_proxies` if anything proxies traffic to Orion — otherwise every client shares one bucket. |
 | **Circuit breakers** | `engine.circuit_breaker.enabled = true` when workflows call external services. |
-| **Retention** | `queue.trace_retention_hours` and `queue.audit_retention_days` both bounded — neither table is trimmed by anything else. |
+| **Retention** | `trace_queue.retention_hours` and `audit.retention_days` both bounded — neither table is trimmed by anything else. |
 | **Observability** | `metrics.enabled = true`, `logging.format = "json"`, and `tracing.enabled = true` pointed at a collector. |
 | **Kafka** | Managed broker? `[kafka.auth]` with `sasl_ssl`, and `kafka.dlq.enabled = true` so a poison message cannot stall a partition. |
 | **Shutdown** | Keep `shutdown_drain_secs` + `shutdown_force_timeout_secs` under your orchestrator's termination grace period. |

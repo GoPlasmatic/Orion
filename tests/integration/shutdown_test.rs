@@ -30,7 +30,7 @@ async fn test_worker_shutdown_empty_queue() {
         dataflow_rs::Engine::builder().build().unwrap(),
     )));
 
-    let test_queue_config = orion::config::QueueConfig {
+    let test_queue_config = orion::config::TraceQueueConfig {
         workers: 2,
         buffer_size: 10,
         shutdown_timeout_secs: 2, // short for tests
@@ -40,7 +40,7 @@ async fn test_worker_shutdown_empty_queue() {
         ..Default::default()
     };
     let channel_registry = std::sync::Arc::new(orion::channel::ChannelRegistry::new());
-    let global_trace_storage = orion::config::TracingStorageConfig::default();
+    let global_trace_storage = orion::config::TraceStorageConfig::default();
     let (persistence_queue, _persistence_handle) =
         orion::queue::trace_persistence::start(&global_trace_storage, trace_repo.clone());
     let (queue, worker_handle) = orion::queue::start_workers(

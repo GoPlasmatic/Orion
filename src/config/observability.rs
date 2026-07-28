@@ -20,10 +20,6 @@ pub struct TracingConfig {
     pub service_name: String,
     /// Sampling rate from 0.0 (none) to 1.0 (all).
     pub sample_rate: f64,
-    /// Persistence policy for engine traces (rows written to the `traces` table).
-    /// Unrelated to OpenTelemetry export above — this controls Orion's own
-    /// per-request trace records that admins inspect via `/api/v1/admin/traces`.
-    pub storage: TracingStorageConfig,
     /// Allow per-request workflow profiling. When `true`, requests carrying
     /// `X-Orion-Profile: 1` (or `?profile=1`) receive a `profile` object in
     /// the response that breaks the request down by phase (engine lock,
@@ -41,7 +37,6 @@ impl Default for TracingConfig {
             otlp_endpoint: "http://localhost:4317".to_string(),
             service_name: "orion".to_string(),
             sample_rate: 1.0,
-            storage: TracingStorageConfig::default(),
             debug_profile_enabled: false,
         }
     }
@@ -60,25 +55,25 @@ impl TracingConfig {
                 });
             }
         }
-        self.storage.validate()
+        Ok(())
     }
 }
 
-impl TracingStorageConfig {
+impl TraceStorageConfig {
     pub(crate) fn validate(&self) -> Result<(), OrionError> {
         if !(0.0..=1.0).contains(&self.sample_rate) {
             return Err(OrionError::Config {
-                message: "tracing.storage.sample_rate must be between 0.0 and 1.0".to_string(),
+                message: "trace_storage.sample_rate must be between 0.0 and 1.0".to_string(),
             });
         }
         match self.mode {
             TraceStorageMode::Async => {
-                require_nonzero(self.max_pending as u64, "tracing.storage.max_pending")?;
-                require_nonzero(self.async_workers as u64, "tracing.storage.async_workers")?;
+                require_nonzero(self.max_pending as u64, "trace_storage.max_pending")?;
+                require_nonzero(self.async_workers as u64, "trace_storage.async_workers")?;
             }
             TraceStorageMode::Batch => {
-                require_nonzero(self.max_pending as u64, "tracing.storage.max_pending")?;
-                require_nonzero(self.batch_size as u64, "tracing.storage.batch_size")?;
+                require_nonzero(self.max_pending as u64, "trace_storage.max_pending")?;
+                require_nonzero(self.batch_size as u64, "trace_storage.batch_size")?;
                 // Q8: the batch INSERT binds ~11 parameters per row and
                 // SQLite caps a statement at 32 766 binds — batch_size 3000
                 // made every flush fail, and the whole batch was discarded.
@@ -86,7 +81,7 @@ impl TracingStorageConfig {
                 // every backend.
                 if self.batch_size > 1000 {
                     return Err(OrionError::Config {
-                        message: "tracing.storage.batch_size must be <= 1000 (the batch \
+                        message: "trace_storage.batch_size must be <= 1000 (the batch \
                                   INSERT binds ~11 parameters per row and SQLite caps a \
                                   statement at 32 766 binds)"
                             .to_string(),
@@ -94,9 +89,9 @@ impl TracingStorageConfig {
                 }
                 require_nonzero(
                     self.batch_flush_interval_ms,
-                    "tracing.storage.batch_flush_interval_ms",
+                    "trace_storage.batch_flush_interval_ms",
                 )?;
-                require_nonzero(self.batch_workers as u64, "tracing.storage.batch_workers")?;
+                require_nonzero(self.batch_workers as u64, "trace_storage.batch_workers")?;
             }
             TraceStorageMode::Sync | TraceStorageMode::Off => {}
         }
@@ -135,7 +130,7 @@ pub enum AsyncOnOverflow {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct TracingStorageConfig {
+pub struct TraceStorageConfig {
     /// Persistence policy. Applies to `store_completed` (sync result write)
     /// and `set_result` / `update_status` (async result writes). The async
     /// endpoint's `create_pending` step is always synchronous so the
@@ -179,7 +174,7 @@ pub struct TracingStorageConfig {
     pub batch_workers: usize,
 }
 
-impl Default for TracingStorageConfig {
+impl Default for TraceStorageConfig {
     fn default() -> Self {
         Self {
             mode: TraceStorageMode::Sync,
@@ -249,13 +244,13 @@ mod tests {
         // Q8: >1000 rows would exceed SQLITE_MAX_VARIABLE_NUMBER at ~11
         // binds per row, making every flush fail (and, before Q6, silently
         // discard the batch).
-        let config = TracingStorageConfig {
+        let config = TraceStorageConfig {
             mode: TraceStorageMode::Batch,
             batch_size: 1001,
             ..Default::default()
         };
         assert!(config.validate().is_err());
-        let config = TracingStorageConfig {
+        let config = TraceStorageConfig {
             mode: TraceStorageMode::Batch,
             batch_size: 1000,
             ..Default::default()

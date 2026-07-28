@@ -285,14 +285,14 @@ pub fn register_kafka_publisher(
     );
 }
 
-/// Filter channels based on include/exclude glob patterns from [`ChannelLoadingConfig`].
+/// Filter channels based on include/exclude glob patterns from [`ChannelFilterConfig`].
 ///
 /// - If `include` is non-empty, only channels matching at least one include pattern are kept.
 /// - Channels matching any `exclude` pattern are removed (applied after include).
 /// - Supports simple `*` wildcards (e.g., `internal-*`, `*-debug`).
 pub fn filter_channels(
     channels: Vec<Channel>,
-    config: &crate::config::ChannelLoadingConfig,
+    config: &crate::config::ChannelFilterConfig,
 ) -> Vec<Channel> {
     if config.include.is_empty() && config.exclude.is_empty() {
         return channels;
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn test_filter_channels_no_config() {
         let channels = vec![make_channel("orders"), make_channel("events")];
-        let config = crate::config::ChannelLoadingConfig::default();
+        let config = crate::config::ChannelFilterConfig::default();
         let filtered = filter_channels(channels, &config);
         assert_eq!(filtered.len(), 2);
     }
@@ -789,7 +789,7 @@ mod tests {
             make_channel("events"),
             make_channel("internal-debug"),
         ];
-        let config = crate::config::ChannelLoadingConfig {
+        let config = crate::config::ChannelFilterConfig {
             include: vec!["orders".to_string(), "events".to_string()],
             exclude: vec![],
         };
@@ -805,7 +805,7 @@ mod tests {
             make_channel("events"),
             make_channel("internal-debug"),
         ];
-        let config = crate::config::ChannelLoadingConfig {
+        let config = crate::config::ChannelFilterConfig {
             include: vec![],
             exclude: vec!["internal-*".to_string()],
         };
@@ -821,7 +821,7 @@ mod tests {
             make_channel("orders-debug"),
             make_channel("events"),
         ];
-        let config = crate::config::ChannelLoadingConfig {
+        let config = crate::config::ChannelFilterConfig {
             include: vec!["orders*".to_string()],
             exclude: vec!["*-debug".to_string()],
         };

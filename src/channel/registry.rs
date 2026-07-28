@@ -8,7 +8,7 @@ use super::config::ChannelConfig;
 use super::rate_limit_backend::{LocalRateLimitBackend, RateLimitBackend, RedisRateLimitBackend};
 use super::routing::{RouteMatch, RouteTable};
 
-use crate::config::{TraceStorageMode, TracingStorageConfig};
+use crate::config::{TraceStorageConfig, TraceStorageMode};
 use crate::connector::ConnectorConfig;
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::{CacheBackend, CachePool};
@@ -16,7 +16,7 @@ use crate::storage::models::Channel;
 
 /// Trace-storage policy resolved for a single channel.
 ///
-/// Produced by merging the global `[tracing.storage]` config with the
+/// Produced by merging the global `[trace_storage]` config with the
 /// channel-level `tracing` override (`ChannelTracingConfig`). Lives on
 /// `ChannelRuntimeConfig` so the request hot path looks up exactly one
 /// `Arc<ChannelRuntimeConfig>` and reads pre-resolved values.
@@ -52,7 +52,7 @@ impl EffectiveTraceConfig {
     /// Compute the effective config by overlaying a channel-level
     /// override on top of the global storage config.
     pub fn resolve(
-        global: &TracingStorageConfig,
+        global: &TraceStorageConfig,
         channel: Option<&super::config::ChannelTracingConfig>,
     ) -> Self {
         let (mode, sample_rate, errors_only, task_details) = match channel {
@@ -308,7 +308,7 @@ impl ChannelRegistry {
         connector_registry: &ConnectorRegistry,
         cache_pool: &CachePool,
         datalogic: &DatalogicEngine,
-        global_trace_storage: &TracingStorageConfig,
+        global_trace_storage: &TraceStorageConfig,
         engine_issues: Vec<ChannelLoadIssue>,
     ) -> Vec<ChannelLoadIssue> {
         let cluster_redis = self.cluster.as_ref().and_then(|c| c.redis.clone());
@@ -577,7 +577,7 @@ mod tests {
                 &ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker),
                 &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
-                &TracingStorageConfig::default(),
+                &TraceStorageConfig::default(),
                 Vec::new(),
             )
             .await;
@@ -597,7 +597,7 @@ mod tests {
                 &ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker),
                 &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
-                &TracingStorageConfig::default(),
+                &TraceStorageConfig::default(),
                 Vec::new(),
             )
             .await;
@@ -619,7 +619,7 @@ mod tests {
                 &ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker),
                 &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
-                &TracingStorageConfig::default(),
+                &TraceStorageConfig::default(),
                 Vec::new(),
             )
             .await;
@@ -637,7 +637,7 @@ mod tests {
                 &ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker),
                 &CachePool::new(4, 60, 1000),
                 &DatalogicEngine::new(),
-                &TracingStorageConfig::default(),
+                &TraceStorageConfig::default(),
                 Vec::new(),
             )
             .await;
@@ -716,7 +716,7 @@ mod tests {
             ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker);
         let cache_pool = CachePool::new(4, 60, 1000);
         let datalogic = DatalogicEngine::new();
-        let tracing_cfg = TracingStorageConfig::default();
+        let tracing_cfg = TraceStorageConfig::default();
 
         let issues = registry
             .reload(
@@ -754,8 +754,8 @@ mod tests {
         mode: TraceStorageMode,
         sample_rate: f64,
         errors_only: bool,
-    ) -> TracingStorageConfig {
-        TracingStorageConfig {
+    ) -> TraceStorageConfig {
+        TraceStorageConfig {
             mode,
             sample_rate,
             errors_only,

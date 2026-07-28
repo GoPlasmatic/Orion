@@ -333,7 +333,7 @@ pub async fn reload_engine_with_opts(
 
     let result = async {
         let channels = state.channel_repo.list_active().await?;
-        let channels = crate::engine::filter_channels(channels, &state.config.channels);
+        let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
         let active_workflows = state.workflow_repo.list_active().await?;
         let (workflows, engine_issues) =
             crate::engine::build_engine_workflows(&channels, &active_workflows);
@@ -363,7 +363,7 @@ pub async fn reload_engine_with_opts(
                 &state.connector_registry,
                 &state.cache_pool,
                 &state.datalogic,
-                &state.config.tracing.storage,
+                &state.config.trace_storage,
                 engine_issues,
             )
             .await;
