@@ -301,6 +301,13 @@ for the full envelope, backend mapping, and safety rules.
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of a `db` or `es` connector |
+| `write` | object | yes | — | The mutation envelope — fields below |
+| `params` / `schema` / `database` / `output` | | | | As in `data_query` |
+
+Inside `write`:
+
+| Field | Type | Required | Default | Description |
+|-------|------|:--------:|---------|-------------|
 | `op` | string | yes | — | `insert` \| `update` \| `delete` \| `upsert` |
 | `target` | string | yes | — | Logical entity → table / collection / index |
 | `values` | object \| array | insert, upsert | — | Row object(s) to insert |
@@ -309,19 +316,20 @@ for the full envelope, backend mapping, and safety rules.
 | `on_conflict` | object | upsert | — | `{ "target": [cols], "action": "update" \| "nothing" }` |
 | `returning` | array | no | — | Columns returned from mutated rows (PostgreSQL/SQLite only) |
 | `all` | bool | no | `false` | Acknowledge an intentionally unfiltered update/delete |
-| `params` / `schema` / `database` / `output` | | | | As in `data_query` |
 
 ```json
 {
   "name": "data_write",
   "input": {
     "connector": "orders-db",
-    "op": "update",
-    "target": "orders",
-    "set": { "status": "shipped" },
-    "filter": { "==": [{ "field": "id" }, { "param": "id" }] },
     "params": { "id": { "var": "data.order_id" } },
-    "output": "data.write_result"
+    "output": "data.write_result",
+    "write": {
+      "op": "update",
+      "target": "orders",
+      "set": { "status": "shipped" },
+      "filter": { "==": [{ "field": "id" }, { "param": "id" }] }
+    }
   }
 }
 ```

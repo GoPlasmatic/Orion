@@ -572,6 +572,47 @@ a proxy for "this was a dry run" will now be wrong — test `dry_run` instead.
 **Not changed:** all three imports still return **200** even when every item
 failed, so check `failed` rather than the status code.
 
+### `data_write` takes its envelope under `write`
+
+**What changed.** The mutation envelope is now nested, mirroring
+`data_query`'s `query`:
+
+```jsonc
+// before — envelope flat, sharing a namespace with the handler keys
+{ "name": "data_write", "input": {
+    "connector": "orders_db", "op": "update", "target": "users",
+    "set": { "status": "inactive" },
+    "filter": { "==": [{ "field": "id" }, { "param": "id" }] },
+    "params": { "id": { "var": "data.req.id" } },
+    "output": "data.updated" } }
+
+// after — `connector`/`schema`/`params`/`database`/`output` stay at the top
+{ "name": "data_write", "input": {
+    "connector": "orders_db",
+    "params": { "id": { "var": "data.req.id" } },
+    "output": "data.updated",
+    "write": {
+      "op": "update", "target": "users",
+      "set": { "status": "inactive" },
+      "filter": { "==": [{ "field": "id" }, { "param": "id" }] } } } }
+```
+
+**How you'll notice.** You won't — the flat form is still honoured, so existing
+workflows keep running. It is documented as deprecated and will be removed in a
+later major.
+
+**What to do.** Move the eight envelope keys — `op`, `target`, `values`, `set`,
+`filter`, `on_conflict`, `returning`, `all` — into a `write` object, leaving
+`connector`, `schema`, `params`, `database` and `output` where they are. If a
+task carries both shapes, `write` wins, so a half-finished migration cannot
+silently run the stale envelope.
+
+**Why.** The two halves of one dialect read differently, and because the
+envelope shared a namespace with the handler it could never grow a field named
+`connector`, `schema`, `params`, `database` or `output`. Nesting also means
+there is one JSON value that *is* the envelope — validation errors now point at
+`…function.input.write.target` instead of a path that could mean either half.
+
 ### `response_path` is now called `output`
 
 **What changed.** Eight of the ten connector functions named their destination

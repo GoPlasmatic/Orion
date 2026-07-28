@@ -64,9 +64,18 @@ impl AsyncFunctionHandler for DataWriteHandler {
                 None => query::EntityRegistry::default(),
             };
 
+            // W7: the mutation envelope is nested under `write`, mirroring
+            // `data_query`'s `query`. Before 1.0 it was flat, sharing a
+            // namespace with the handler keys (`connector`, `schema`,
+            // `params`, `database`, `output`) — so those five names could
+            // never be used by the dialect, and there was no single JSON
+            // value that *was* the envelope. The flat form is still accepted
+            // for one release.
+            let envelope = input.get("write").unwrap_or(input);
+
             // One backend-neutral resolution: parse envelope, fold params into
             // values/set, resolve physical names, coerce, and lower the filter.
-            let resolved = query::write::resolve_write(input, &params, &registry)?;
+            let resolved = query::write::resolve_write(envelope, &params, &registry)?;
             self.check_guards(&resolved)?;
 
             // Per-connector operation gates: a connector config can disable

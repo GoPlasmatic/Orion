@@ -25,6 +25,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **`data_write`'s mutation envelope is nested under `write`,** mirroring
+  `data_query`'s `query`. It used to be flat: `op`, `target`, `values`, `set`,
+  `filter`, `on_conflict`, `returning` and `all` sat alongside the handler's own
+  `connector`, `schema`, `params`, `database` and `output`. So the two halves of
+  one dialect read differently, the envelope could never grow a field named like
+  any of those five, and there was no single JSON value that *was* the envelope
+  for validation, logging or a builder UI.
+
+  ```jsonc
+  // before                                  // after
+  { "connector": "db",                       { "connector": "db",
+    "op": "update", "target": "users",         "params": { "id": {"var": "data.id"} },
+    "set": { "status": "off" },                "output": "data.w",
+    "params": { "id": {"var": "data.id"} },    "write": {
+    "output": "data.w" }                         "op": "update", "target": "users",
+                                                 "set": { "status": "off" } } }
+  ```
+
+  **The flat form is still accepted for one release**, so existing workflows
+  keep running; `write` wins if a task carries both. Validation errors are now
+  reported under `…function.input.write.<field>`, and a `data_write` with
+  neither shape is rejected at create naming `write`.
+
 - **Four config sections renamed, and audit-log retention split out of
   `[queue]`.** Each of these cost a paragraph of documentation to explain what
   the key actually did:

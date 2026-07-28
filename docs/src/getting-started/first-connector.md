@@ -82,20 +82,22 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
       { "id": "record", "name": "Insert the order",
         "function": { "name": "data_write", "input": {
           "connector": "orders-db",
-          "op": "insert",
-          "target": "orders",
-          "values": {
-            "customer_id": { "param": "customer_id" },
-            "item":        { "param": "item" },
-            "total":       { "param": "total" }
-          },
           "params": {
             "customer_id": { "var": "data.req.customer_id" },
             "item":        { "var": "data.req.item" },
             "total":       { "var": "data.req.total" }
           },
-          "returning": ["id"],
-          "output": "data.created"
+          "output": "data.created",
+          "write": {
+            "op": "insert",
+            "target": "orders",
+            "values": {
+              "customer_id": { "param": "customer_id" },
+              "item":        { "param": "item" },
+              "total":       { "param": "total" }
+            },
+            "returning": ["id"]
+          }
         } } },
       { "id": "history", "name": "Fetch customer with order history",
         "function": { "name": "data_query", "input": {

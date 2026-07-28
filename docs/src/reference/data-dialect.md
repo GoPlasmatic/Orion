@@ -93,6 +93,11 @@ the operator and position — never silently ignored.
 
 ## Write envelope (`data_write`)
 
+The envelope is nested under `write`, mirroring `data_query`'s `query`. The
+handler's own keys — `connector`, `schema`, `params`, `database`, `output` —
+stay at the top level, so the dialect and the handler never share a namespace
+and there is a single JSON value that *is* the envelope.
+
 | Field | Used by | Description |
 |-------|---------|-------------|
 | `op` | all | `insert` \| `update` \| `delete` \| `upsert` |
@@ -108,23 +113,31 @@ One task per operation:
 
 ```json
 { "name": "data_write", "input": {
-    "connector": "orders_db", "op": "insert", "target": "users",
-    "values": [ { "name": "Ada", "status": "active" }, { "name": "Grace", "status": "active" } ],
-    "returning": ["id"], "output": "data.created" } }
+    "connector": "orders_db", "output": "data.created",
+    "write": {
+      "op": "insert", "target": "users",
+      "values": [ { "name": "Ada", "status": "active" }, { "name": "Grace", "status": "active" } ],
+      "returning": ["id"] } } }
 
 { "name": "data_write", "input": {
-    "connector": "orders_db", "op": "update", "target": "users",
-    "set": { "status": "inactive" },
-    "filter": { "==": [{ "field": "id" }, { "param": "id" }] },
+    "connector": "orders_db", "output": "data.updated",
     "params": { "id": { "var": "data.req.id" } },
-    "output": "data.updated" } }
+    "write": {
+      "op": "update", "target": "users",
+      "set": { "status": "inactive" },
+      "filter": { "==": [{ "field": "id" }, { "param": "id" }] } } } }
 
 { "name": "data_write", "input": {
-    "connector": "orders_db", "op": "upsert", "target": "users",
-    "values": { "email": "ada@x.io", "name": "Ada" },
-    "on_conflict": { "target": ["email"], "action": "update" },
-    "output": "data.upserted" } }
+    "connector": "orders_db", "output": "data.upserted",
+    "write": {
+      "op": "upsert", "target": "users",
+      "values": { "email": "ada@x.io", "name": "Ada" },
+      "on_conflict": { "target": ["email"], "action": "update" } } } }
 ```
+
+> **Upgrading from 0.3.x.** The pre-1.0 flat form — `op`/`target`/`values`/…
+> alongside `connector` and `output` — is still accepted for one release, so
+> existing workflows keep running. When a task carries both, `write` wins.
 
 ### Safety guards
 

@@ -10,6 +10,7 @@ use crate::common::dsl::{ddl, dq, dw, is_rejection, post};
 use axum::http::StatusCode;
 use orion::config::{AppConfig, WriteConfig};
 use serde_json::{Value, json};
+use tower::ServiceExt;
 
 async fn sqlite_app(conn: &str, mem: &str) -> axum::Router {
     let app = common::test_app().await;
@@ -406,5 +407,186 @@ async fn test_bulk_insert_over_max_rows_rejected() {
     assert!(
         is_rejection(status, &body),
         "bulk insert over max_rows must be rejected, got status={status} body={body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// W7: the mutation envelope is nested under `write`
+// ---------------------------------------------------------------------------
+
+/// Every other test in this file goes through `dsl::dw`, which builds the
+/// nested 1.0 shape. This one writes both shapes out by hand and asserts they
+/// produce the same rows, so the compatibility path cannot rot unnoticed.
+#[tokio::test]
+async fn flat_and_nested_envelopes_write_the_same_rows() {
+    async fn insert_via(app: &axum::Router, channel: &str, table: &str, input: Value) -> Value {
+        common::create_and_activate_channel(
+            app,
+            channel,
+            common::workflow_with_tasks(
+                "dw",
+                json!([
+                    ddl(
+                        "dw-shapes",
+                        "ddl",
+                        &format!("CREATE TABLE IF NOT EXISTS {table} (id INTEGER, name TEXT)")
+                    ),
+                    json!({
+                        "id": "w", "name": "w",
+                        "function": { "name": "data_write", "input": input }
+                    }),
+                    dq("dw-shapes", "read", json!({ "source": table })),
+                ]),
+            ),
+        )
+        .await;
+        let (status, body) = post(app, channel, json!({ "data": {} })).await;
+        assert_eq!(status, StatusCode::OK, "body = {body}");
+        body["data"]["result"].clone()
+    }
+
+    let app = sqlite_app("dw-shapes", "dw_shapes").await;
+
+    // 1.0: envelope under `write`, handler keys alongside it.
+    let nested = insert_via(
+        &app,
+        "ch-dw-nested",
+        "shapes_nested",
+        json!({
+            "connector": "dw-shapes",
+            "output": "data.w",
+            "write": { "op": "insert", "target": "shapes_nested", "values": { "id": 1, "name": "a" } }
+        }),
+    )
+    .await;
+
+    // Pre-1.0: envelope flat, sharing the namespace with the handler keys.
+    let flat = insert_via(
+        &app,
+        "ch-dw-flat",
+        "shapes_flat",
+        json!({
+            "connector": "dw-shapes",
+            "output": "data.w",
+            "op": "insert",
+            "target": "shapes_flat",
+            "values": { "id": 1, "name": "a" }
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        nested,
+        json!([{ "id": 1, "name": "a" }]),
+        "nested = {nested}"
+    );
+    assert_eq!(flat, nested, "the deprecated flat form must agree: {flat}");
+}
+
+/// `write` wins when a task carries both, so a half-migrated task cannot
+/// silently execute the stale envelope.
+#[tokio::test]
+async fn nested_envelope_wins_when_both_shapes_are_present() {
+    let app = sqlite_app("dw-both", "dw_both").await;
+    common::create_and_activate_channel(
+        &app,
+        "ch-dw-both",
+        common::workflow_with_tasks(
+            "dw",
+            json!([
+                ddl(
+                    "dw-both",
+                    "ddl",
+                    "CREATE TABLE IF NOT EXISTS both_t (id INTEGER, name TEXT)"
+                ),
+                json!({
+                    "id": "w", "name": "w",
+                    "function": { "name": "data_write", "input": {
+                        "connector": "dw-both",
+                        "output": "data.w",
+                        // Stale flat keys left behind by a partial migration.
+                        "op": "insert",
+                        "target": "both_t",
+                        "values": { "id": 99, "name": "stale" },
+                        // The authoritative envelope.
+                        "write": { "op": "insert", "target": "both_t", "values": { "id": 1, "name": "fresh" } }
+                    }}
+                }),
+                dq("dw-both", "read", json!({ "source": "both_t" })),
+            ]),
+        ),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dw-both", json!({ "data": {} })).await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    assert_eq!(
+        body["data"]["result"],
+        json!([{ "id": 1, "name": "fresh" }]),
+        "body = {body}"
+    );
+}
+
+/// A task with neither shape is rejected at create time, naming `write`.
+#[tokio::test]
+async fn a_data_write_without_an_envelope_is_rejected_at_create() {
+    let app = common::test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(common::workflow_with_tasks(
+                "dw",
+                json!([{
+                    "id": "w", "name": "w",
+                    "function": { "name": "data_write", "input": { "connector": "c" } }
+                }]),
+            )),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = common::body_json(resp).await;
+    let details = body["error"]["details"].as_array().expect("field details");
+    assert!(
+        details.iter().any(|d| d["path"]
+            .as_str()
+            .is_some_and(|f| f.ends_with("function.input.write"))),
+        "expected a field error on `write`, got {details:?}"
+    );
+}
+
+/// A malformed nested envelope reports paths *inside* `write`, which is the
+/// point of having one JSON value that is the envelope.
+#[tokio::test]
+async fn envelope_errors_are_reported_under_the_write_path() {
+    let app = common::test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(common::workflow_with_tasks(
+                "dw",
+                json!([{
+                    "id": "w", "name": "w",
+                    "function": { "name": "data_write", "input": {
+                        "connector": "c",
+                        "write": { "op": "insert" }   // `target` missing
+                    }}
+                }]),
+            )),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = common::body_json(resp).await;
+    let details = body["error"]["details"].as_array().expect("field details");
+    assert!(
+        details.iter().any(|d| d["path"]
+            .as_str()
+            .is_some_and(|f| f.ends_with("function.input.write.target"))),
+        "expected a field error on `write.target`, got {details:?}"
     );
 }

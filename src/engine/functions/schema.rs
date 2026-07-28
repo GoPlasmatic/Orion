@@ -246,6 +246,8 @@ const DATA_QUERY_FIELDS: &[FieldSchema] = &[
     },
 ];
 
+/// The handler's own keys. The mutation envelope is nested under `write`
+/// (W7) so it cannot collide with any of these.
 const DATA_WRITE_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "connector",
@@ -254,6 +256,50 @@ const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         required: true,
         resolvable: false,
     },
+    FieldSchema {
+        name: "write",
+        description: "Backend-neutral mutation envelope: op/target/values/set/filter/on_conflict/returning/all.",
+        kind: FieldKind::Object,
+        // Not `required` in the schema: the pre-1.0 flat form (envelope keys at
+        // the top level) is still accepted, and `validate_input`'s cross-field
+        // rule reports whichever of the two shapes is actually missing.
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "database",
+        description: "MongoDB database name (required for MongoDB connectors).",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "schema",
+        description: "Optional inline entity schema (renames, allowlist, writable flag).",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: false,
+    },
+    FieldSchema {
+        name: "params",
+        description: "Object of named values folded into {\"param\": ..} nodes in values/set/filter. \
+                      A value of {\"var\": \"path\"} is read from the message context.",
+        kind: FieldKind::Object,
+        required: false,
+        resolvable: true,
+    },
+    FieldSchema {
+        name: "output",
+        description: "Dotted path in the message where the write result is written. Defaults to \"data\".",
+        kind: FieldKind::String,
+        required: false,
+        resolvable: false,
+    },
+];
+
+/// The mutation envelope itself — checked inside `input.write`, or at the top
+/// level when a workflow still uses the pre-1.0 flat form.
+const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
     FieldSchema {
         name: "op",
         description: "Mutation kind: \"insert\", \"update\", \"delete\", or \"upsert\".",
@@ -308,35 +354,6 @@ const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         name: "all",
         description: "Acknowledge an intentionally unfiltered update/delete (affects every row).",
         kind: FieldKind::Bool,
-        required: false,
-        resolvable: false,
-    },
-    FieldSchema {
-        name: "database",
-        description: "MongoDB database name (required for MongoDB connectors).",
-        kind: FieldKind::String,
-        required: false,
-        resolvable: false,
-    },
-    FieldSchema {
-        name: "schema",
-        description: "Optional inline entity schema (renames, allowlist, writable flag).",
-        kind: FieldKind::Object,
-        required: false,
-        resolvable: false,
-    },
-    FieldSchema {
-        name: "params",
-        description: "Object of named values folded into {\"param\": ..} nodes in values/set/filter. \
-                      A value of {\"var\": \"path\"} is read from the message context.",
-        kind: FieldKind::Object,
-        required: false,
-        resolvable: true,
-    },
-    FieldSchema {
-        name: "output",
-        description: "Dotted path in the message where the write result is written. Defaults to \"data\".",
-        kind: FieldKind::String,
         required: false,
         resolvable: false,
     },
@@ -605,6 +622,47 @@ fn is_var_node(v: &Value) -> bool {
         .is_some_and(|o| o.len() == 1 && o.contains_key("var"))
 }
 
+/// Check one field list against one JSON object, reporting paths under
+/// `path_prefix`. Shared by the top-level input check and `data_write`'s
+/// nested `write` envelope.
+fn check_fields(
+    fields: &[FieldSchema],
+    input: &Value,
+    path_prefix: &str,
+    function_name: &str,
+) -> Vec<FieldError> {
+    let mut errors = Vec::new();
+    let Some(obj) = input.as_object() else {
+        return errors;
+    };
+    for field in fields {
+        match (obj.get(field.name), field.required) {
+            (None, true) => errors.push(FieldError::new(
+                format!("{path_prefix}.{}", field.name),
+                "REQUIRED",
+                format!(
+                    "function '{function_name}' requires '{}' ({})",
+                    field.name,
+                    field.kind.as_str()
+                ),
+            )),
+            (Some(v), _) if !field.kind.matches(v) && !(field.resolvable && is_var_node(v)) => {
+                errors.push(
+                    FieldError::new(
+                        format!("{path_prefix}.{}", field.name),
+                        "TYPE_MISMATCH",
+                        format!("expected {} for '{}'", field.kind.as_str(), field.name),
+                    )
+                    .with_expected(Value::String(field.kind.as_str().to_string()))
+                    .with_got(v.clone()),
+                );
+            }
+            _ => {}
+        }
+    }
+    errors
+}
+
 /// Validate a function's `input` JSON against the registered schema for
 /// `function_name`. `task_path` is the dotted prefix used to build field
 /// paths (e.g. `"tasks[2]"`). Returns an empty `Vec` when the function
@@ -631,30 +689,40 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
         }
     };
 
-    for field in schema.input_fields {
-        let value = obj.get(field.name);
-        match (value, field.required) {
-            (None, true) => errors.push(FieldError::new(
-                format!("{task_path}.function.input.{}", field.name),
-                "REQUIRED",
-                format!(
-                    "function '{function_name}' requires '{}' ({})",
-                    field.name,
-                    field.kind.as_str()
-                ),
+    let input_path = format!("{task_path}.function.input");
+    errors.extend(check_fields(
+        schema.input_fields,
+        input,
+        &input_path,
+        function_name,
+    ));
+
+    // Cross-field: data_write's mutation envelope. Nested under `write` since
+    // W7; the pre-1.0 flat form is still accepted, and whichever shape the
+    // task uses is checked against the same field list.
+    if function_name == "data_write" {
+        match obj.get("write") {
+            // A non-object `write` is already reported by the field loop above.
+            Some(w) if w.is_object() => errors.extend(check_fields(
+                DATA_WRITE_ENVELOPE_FIELDS,
+                w,
+                &format!("{input_path}.write"),
+                function_name,
             )),
-            (Some(v), _) if !field.kind.matches(v) && !(field.resolvable && is_var_node(v)) => {
-                errors.push(
-                    FieldError::new(
-                        format!("{task_path}.function.input.{}", field.name),
-                        "TYPE_MISMATCH",
-                        format!("expected {} for '{}'", field.kind.as_str(), field.name),
-                    )
-                    .with_expected(Value::String(field.kind.as_str().to_string()))
-                    .with_got(v.clone()),
-                );
-            }
-            _ => {}
+            Some(_) => {}
+            // Legacy flat form: envelope keys sit alongside the handler keys.
+            None if obj.contains_key("op") => errors.extend(check_fields(
+                DATA_WRITE_ENVELOPE_FIELDS,
+                input,
+                &input_path,
+                function_name,
+            )),
+            None => errors.push(FieldError::new(
+                format!("{input_path}.write"),
+                "REQUIRED",
+                "function 'data_write' requires 'write' (object): the mutation \
+                 envelope { op, target, … }",
+            )),
         }
     }
 

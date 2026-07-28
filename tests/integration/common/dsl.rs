@@ -17,15 +17,32 @@ pub fn ddl(conn: &str, id: &str, sql: &str) -> Value {
     })
 }
 
-/// A `data_write` task; `input` carries the envelope (op/target/values/…). The
-/// connector is filled in, and the result path defaults to `data.w` when the
-/// envelope names none.
-pub fn dw(conn: &str, id: &str, mut input: Value) -> Value {
-    input["connector"] = json!(conn);
-    if input.get("output").is_none() {
-        input["output"] = json!("data.w");
+/// Handler-level `data_write` keys — everything that is *not* part of the
+/// mutation envelope. `connector` is supplied by [`dw`] itself.
+const DW_HANDLER_KEYS: [&str; 4] = ["schema", "params", "database", "output"];
+
+/// A `data_write` task; `input` carries the envelope (op/target/values/…)
+/// plus any handler keys. The builder splits the two so tasks use 1.0's
+/// nested `write` shape (W7), fills in the connector, and defaults the result
+/// path to `data.w`. The deprecated flat form is exercised deliberately by
+/// `data_write_test::flat_envelope_is_still_accepted`.
+pub fn dw(conn: &str, id: &str, input: Value) -> Value {
+    let obj = input.as_object().expect("dw input must be a JSON object");
+    let mut handler = serde_json::Map::new();
+    let mut envelope = serde_json::Map::new();
+    for (key, value) in obj {
+        if DW_HANDLER_KEYS.contains(&key.as_str()) {
+            handler.insert(key.clone(), value.clone());
+        } else {
+            envelope.insert(key.clone(), value.clone());
+        }
     }
-    json!({ "id": id, "name": id, "function": { "name": "data_write", "input": input } })
+    handler.insert("connector".to_string(), json!(conn));
+    handler
+        .entry("output".to_string())
+        .or_insert_with(|| json!("data.w"));
+    handler.insert("write".to_string(), Value::Object(envelope));
+    json!({ "id": id, "name": id, "function": { "name": "data_write", "input": handler } })
 }
 
 /// A `data_query` read-back task writing rows to `data.result`.
