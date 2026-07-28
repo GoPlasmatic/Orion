@@ -318,7 +318,7 @@ pub(crate) async fn delete_connector(
     path = "/api/v1/admin/connectors/import",
     tag = "Connectors",
     request_body = Vec<CreateConnectorRequest>,
-    params(super::workflows::ImportQuery),
+    params(super::ImportQuery),
     responses(
         (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
             Each item is handled independently: a malformed or conflicting item becomes one entry in \
@@ -329,7 +329,7 @@ pub(crate) async fn delete_connector(
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
 pub(crate) async fn import_connectors(
     State(state): State<AppState>,
-    OrionQuery(query): OrionQuery<super::workflows::ImportQuery>,
+    OrionQuery(query): OrionQuery<super::ImportQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {

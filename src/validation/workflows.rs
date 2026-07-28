@@ -43,12 +43,14 @@ pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), Orion
 /// Walk the `tasks` array and collect schema-validation errors for each task's
 /// `function.input` against the schema registered for `function.name`.
 ///
-/// R5: an unknown `function.name` is a hard error here (create/update) — the
-/// function set is closed, so such a workflow can only fail at its first
-/// request. The advisory `/validate` endpoint keeps reporting it as a
-/// warning for pre-flight linting of drafts written against newer versions.
+/// R5: an unknown `function.name` is a hard error — the function set is closed,
+/// so such a workflow can only fail at its first request.
 ///
-/// Public so the `/api/v1/admin/workflows/validate` endpoint can reuse it.
+/// R20: `POST /admin/workflows/validate` reaches this through
+/// `validate_create_workflow`, which is the point. This function was already
+/// documented as *"public so the `/validate` endpoint can reuse it"* and had
+/// zero external callers; the endpoint re-implemented the walk and reported an
+/// unknown function as a **warning**, so it green-lit payloads create rejects.
 pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldError> {
     let Some(arr) = tasks.as_array() else {
         return Vec::new();

@@ -38,6 +38,10 @@
 # port = 8080
 # shutdown_drain_secs = 30           # Grace period for in-flight requests on SIGTERM/SIGINT
 # shutdown_force_timeout_secs = 30   # Hard cap on waiting after the drain window; 0 = wait forever
+# max_admin_body_size = 8388608      # Max request body for /api/v1/admin/* in bytes (8 MB).
+                                     # Separate from ingest.max_payload_size, so raising the
+                                     # limit for a bulk import does not also raise it for the
+                                     # unauthenticated data plane.
 
 # [server.tls]
 # Terminate HTTPS in Orion itself. Leave disabled when a load balancer or
@@ -84,7 +88,8 @@
                                   # doubles as the Kafka group.instance.id
 
 [ingest]
-# max_payload_size = 1048576   # Max request body in bytes (1 MB), applied to admin and data routes
+# max_payload_size = 1048576   # Max request body in bytes (1 MB) for the data plane.
+                               # The admin API has its own: server.max_admin_body_size
 
 [engine]
 # health_check_timeout_secs = 2            # Engine read-lock timeout in health checks

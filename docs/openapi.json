@@ -443,7 +443,7 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validates each item and reports what would happen\nwithout writing to the database. The response shape mirrors\na real import but `imported` is always 0.",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15).",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -1207,7 +1207,7 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validates each item and reports what would happen\nwithout writing to the database. The response shape mirrors\na real import but `imported` is always 0.",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15).",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -2389,7 +2389,7 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validates each item and reports what would happen\nwithout writing to the database. The response shape mirrors\na real import but `imported` is always 0.",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15).",
             "required": false,
             "schema": {
               "type": "boolean"
@@ -5624,7 +5624,7 @@
       },
       "ProcessResponse": {
         "type": "object",
-        "description": "Synchronous data-plane response envelope.",
+        "description": "Synchronous data-plane response envelope.\n\nR23: deserializable under `cfg(test)` with `deny_unknown_fields`, so\n`sync::tests` can round-trip what `response_envelope` actually emits back\nthrough this struct. A field added to the envelope and not to the mirror —\nor vice versa — fails the test instead of shipping a spec that describes a\nshape nothing sends.",
         "required": [
           "id",
           "status",

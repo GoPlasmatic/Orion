@@ -18,6 +18,7 @@ pub mod functions;
 pub mod handlers;
 pub mod loader;
 pub mod profile;
+pub mod reload;
 pub mod runner;
 pub mod utils;
 
@@ -26,4 +27,5 @@ pub use handlers::{
     register_kafka_publisher, required_connector_types, requires_mongo_database,
 };
 pub use loader::{CUSTOM_HANDLER_FUNCTIONS, build_engine_workflows, filter_channels};
+pub use reload::{ReloadOpts, reload_engine, reload_engine_with_opts, resync_from_db};
 pub use runner::{EngineCallResult, acquire_engine_read, acquire_engine_write, run_for_channel};

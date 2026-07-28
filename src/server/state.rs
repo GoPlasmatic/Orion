@@ -38,6 +38,13 @@ pub struct AppStateInner {
     pub cache_pool: Arc<CachePool>,
     pub channel_registry: Arc<ChannelRegistry>,
     pub trace_queue: TraceQueue,
+    /// The startup pool. **Route handlers should not reach for this** — go
+    /// through [`AppStateInner::pool_stats`] or
+    /// [`AppStateInner::backup_sqlite_into`] (R26). It stays public because
+    /// bootstrap assembles it and the integration harness seeds rows through
+    /// it; the two route-layer call sites that used to unwrap a concrete
+    /// `sqlx` pool here now go through those methods instead.
+    #[doc(hidden)]
     pub db_pool: DbPool,
     pub config: Arc<AppConfig>,
     pub start_time: chrono::DateTime<chrono::Utc>,
@@ -73,6 +80,31 @@ impl AppStateInner {
             .as_ref()
             .map(|s| s.trusted_proxies.as_slice())
             .unwrap_or(&[])
+    }
+
+    /// `(size, idle)` connection counts for the `/health` gauges (R26).
+    pub fn pool_stats(&self) -> (u32, usize) {
+        (self.db_pool.size(), self.db_pool.num_idle())
+    }
+
+    /// Copy the database to `path` via SQLite's `VACUUM INTO` (R26).
+    ///
+    /// `Ok(false)` when the backend is not SQLite — the operation has no
+    /// equivalent on PostgreSQL or MySQL, which rely on operator snapshot and
+    /// PITR tooling. The backup route used to `match` on the pool variant
+    /// itself, which is the only reason a concrete `sqlx` pool was reachable
+    /// from a handler.
+    pub async fn backup_sqlite_into(&self, path: &str) -> Result<bool, sqlx::Error> {
+        let DbPool::Sqlite(pool) = &self.db_pool else {
+            return Ok(false);
+        };
+        // `VACUUM INTO` takes a literal, not a bind parameter. The path is
+        // operator-configured (`backup.directory`) plus a generated timestamp,
+        // never caller-supplied; the escape is belt-and-braces.
+        sqlx::query(&format!("VACUUM INTO '{}'", path.replace('\'', "''")))
+            .execute(pool)
+            .await?;
+        Ok(true)
     }
 }
 

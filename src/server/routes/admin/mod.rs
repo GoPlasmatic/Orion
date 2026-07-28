@@ -15,33 +15,10 @@ use std::sync::Arc;
 
 use axum::Extension;
 
+use crate::engine::reload_engine;
 use crate::server::admin_auth::AdminPrincipal;
-use crate::server::routes::reload_engine;
 use crate::server::state::AppState;
 use crate::storage::repositories::audit_logs::AuditLogRepository;
-
-// Re-export all handler functions so that `super::admin::list_channels` etc. still works
-// (needed by openapi.rs and integration tests).
-pub(crate) use audit::list_audit_logs;
-pub(crate) use backups::{create_backup, list_backups};
-pub(crate) use channels::{
-    change_channel_status, create_channel, create_new_channel_version, delete_channel, get_channel,
-    import_channels, list_channel_versions, list_channels, update_channel,
-};
-pub(crate) use connectors::{
-    create_connector, delete_connector, get_connector, import_connectors, list_circuit_breakers,
-    list_connectors, reset_circuit_breaker, update_connector,
-};
-pub(crate) use engine::{engine_reload, engine_status};
-pub(crate) use functions::list_functions;
-pub(crate) use trace_dlq::{
-    get_trace_dlq_entry, list_trace_dlq, purge_trace_dlq, requeue_trace_dlq_entry,
-};
-pub(crate) use workflows::{
-    change_workflow_status, create_new_workflow_version, create_workflow, delete_workflow,
-    export_workflows, get_workflow, import_workflows, list_workflow_versions, list_workflows,
-    test_workflow, update_rollout, update_workflow, validate_workflow,
-};
 
 /// Largest batch any `/import` endpoint accepts.
 ///
@@ -216,6 +193,22 @@ fn import_envelope(
     }))
 }
 
+/// Query parameters accepted by all three `/import` endpoints (B6).
+///
+/// R27: lived in `workflows.rs` while its four sibling helpers
+/// (`check_import_batch_size`, `import_items`, `dry_run_response`,
+/// `import_response`) lived here, so channels and connectors imported it from a
+/// module they otherwise have nothing to do with.
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct ImportQuery {
+    /// When true, validate each item and report what would happen without
+    /// writing. Probes for conflicts against stored rows and for duplicates
+    /// within the batch (R15).
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
 /// Shared version filter used by both channel and workflow version endpoints.
 #[derive(Debug, Deserialize)]
 pub(crate) struct VersionFilter {
@@ -313,58 +306,80 @@ async fn audit_and_reload(
     state.cluster.bump_config_epoch().await
 }
 
-pub fn admin_routes() -> Router<AppState> {
+/// The admin API, with its own body limit.
+///
+/// R16: `DefaultBodyLimit::max(ingest.max_payload_size)` — a name that says
+/// *data plane* — was a single global layer, so bulk import, connector config
+/// PUTs and `POST /workflows/{id}/test` shared a ceiling with anonymous channel
+/// traffic. Raising it for a big import raised it for the unauthenticated plane
+/// too. Applied here it sits closer to the handler than the global one, so it
+/// wins for these routes and nowhere else.
+pub fn admin_routes(max_body_size: usize) -> Router<AppState> {
     let channel_routes = Router::new()
-        .route("/", get(list_channels).post(create_channel))
-        .route("/import", post(import_channels))
+        .route(
+            "/",
+            get(channels::list_channels).post(channels::create_channel),
+        )
+        .route("/import", post(channels::import_channels))
         .route(
             "/{id}",
-            get(get_channel).put(update_channel).delete(delete_channel),
+            get(channels::get_channel)
+                .put(channels::update_channel)
+                .delete(channels::delete_channel),
         )
-        .route("/{id}/status", patch(change_channel_status))
+        .route("/{id}/status", patch(channels::change_channel_status))
         .route(
             "/{id}/versions",
-            get(list_channel_versions).post(create_new_channel_version),
+            get(channels::list_channel_versions).post(channels::create_new_channel_version),
         );
 
     let workflow_routes = Router::new()
-        .route("/", get(list_workflows).post(create_workflow))
-        .route("/import", post(import_workflows))
-        .route("/export", get(export_workflows))
-        .route("/validate", post(validate_workflow))
+        .route(
+            "/",
+            get(workflows::list_workflows).post(workflows::create_workflow),
+        )
+        .route("/import", post(workflows::import_workflows))
+        .route("/export", get(workflows::export_workflows))
+        .route("/validate", post(workflows::validate_workflow))
         .route(
             "/{id}",
-            get(get_workflow)
-                .put(update_workflow)
-                .delete(delete_workflow),
+            get(workflows::get_workflow)
+                .put(workflows::update_workflow)
+                .delete(workflows::delete_workflow),
         )
-        .route("/{id}/status", patch(change_workflow_status))
+        .route("/{id}/status", patch(workflows::change_workflow_status))
         .route(
             "/{id}/versions",
-            get(list_workflow_versions).post(create_new_workflow_version),
+            get(workflows::list_workflow_versions).post(workflows::create_new_workflow_version),
         )
-        .route("/{id}/rollout", patch(update_rollout))
-        .route("/{id}/test", post(test_workflow));
+        .route("/{id}/rollout", patch(workflows::update_rollout))
+        .route("/{id}/test", post(workflows::test_workflow));
 
     let connector_routes = Router::new()
-        .route("/", get(list_connectors).post(create_connector))
-        .route("/import", post(import_connectors))
+        .route(
+            "/",
+            get(connectors::list_connectors).post(connectors::create_connector),
+        )
+        .route("/import", post(connectors::import_connectors))
         .route(
             "/{id}",
-            get(get_connector)
-                .put(update_connector)
-                .delete(delete_connector),
+            get(connectors::get_connector)
+                .put(connectors::update_connector)
+                .delete(connectors::delete_connector),
         )
-        .route("/circuit-breakers", get(list_circuit_breakers))
-        .route("/circuit-breakers/{key}", post(reset_circuit_breaker));
+        .route("/circuit-breakers", get(connectors::list_circuit_breakers))
+        .route(
+            "/circuit-breakers/{key}",
+            post(connectors::reset_circuit_breaker),
+        );
 
     let engine_routes = Router::new()
-        .route("/status", get(engine_status))
-        .route("/reload", post(engine_reload));
+        .route("/status", get(engine::engine_status))
+        .route("/reload", post(engine::engine_reload));
 
-    let audit_routes = Router::new().route("/", get(list_audit_logs));
+    let audit_routes = Router::new().route("/", get(audit::list_audit_logs));
 
-    let function_routes = Router::new().route("/", get(list_functions));
+    let function_routes = Router::new().route("/", get(functions::list_functions));
 
     // R8: the trace reads live on the admin plane because that is what they
     // are. `GET /traces` is admin-only, and `GET /traces/{id}` authenticates
@@ -376,12 +391,17 @@ pub fn admin_routes() -> Router<AppState> {
         .route("/{id}", get(crate::server::routes::data::traces::get_trace));
 
     let trace_dlq_routes = Router::new()
-        .route("/", get(list_trace_dlq))
-        .route("/purge", post(purge_trace_dlq))
-        .route("/{id}", get(get_trace_dlq_entry))
-        .route("/{id}/requeue", post(requeue_trace_dlq_entry));
+        .route("/", get(trace_dlq::list_trace_dlq))
+        .route("/purge", post(trace_dlq::purge_trace_dlq))
+        .route("/{id}", get(trace_dlq::get_trace_dlq_entry))
+        .route("/{id}/requeue", post(trace_dlq::requeue_trace_dlq_entry));
 
-    let mut router = Router::new()
+    // R27: `/backups` used to be appended after the chain, forcing a `mut`
+    // binding for no reason. One chain, one binding.
+    let backup_routes =
+        Router::new().route("/", post(backups::create_backup).get(backups::list_backups));
+
+    Router::new()
         .nest("/channels", channel_routes)
         .nest("/workflows", workflow_routes)
         .nest("/connectors", connector_routes)
@@ -389,10 +409,7 @@ pub fn admin_routes() -> Router<AppState> {
         .nest("/functions", function_routes)
         .nest("/audit-logs", audit_routes)
         .nest("/traces", trace_routes)
-        .nest("/trace-dlq", trace_dlq_routes);
-
-    let backup_routes = Router::new().route("/", post(create_backup).get(list_backups));
-    router = router.nest("/backups", backup_routes);
-
-    router
+        .nest("/trace-dlq", trace_dlq_routes)
+        .nest("/backups", backup_routes)
+        .layer(axum::extract::DefaultBodyLimit::max(max_body_size))
 }

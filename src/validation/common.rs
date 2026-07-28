@@ -15,6 +15,32 @@ pub(crate) fn is_valid_identifier(s: &str) -> bool {
     chars.all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
 }
 
+/// Entity ids that would collide with a static admin sub-resource.
+///
+/// R21: `/import`, `/export`, `/validate` and `/circuit-breakers` sit alongside
+/// `/{id}` under the same prefixes, and axum prefers the static route only for
+/// the verbs it declares. `DELETE /admin/workflows/import` therefore routed to
+/// `delete_workflow` with `id = "import"` — benign today (the repo 404s), but an
+/// entity actually *named* `import` would be unaddressable through `/{id}`, and
+/// the audit log recorded `resource_id = "import"` for a delete that was never a
+/// delete of anything.
+///
+/// 1.0 freezes these paths, so the cheap half of the fix is to make the ids
+/// unreachable rather than move the endpoints.
+pub(crate) const RESERVED_IDS: &[&str] = &[
+    "import",
+    "export",
+    "validate",
+    "versions",
+    "status",
+    "rollout",
+    "test",
+    "circuit-breakers",
+    "purge",
+    "requeue",
+    "reload",
+];
+
 pub(crate) fn validate_id(id: &str) -> Result<(), OrionError> {
     if id.len() > MAX_ID_LEN {
         return Err(OrionError::BadRequest(format!(
@@ -25,6 +51,12 @@ pub(crate) fn validate_id(id: &str) -> Result<(), OrionError> {
         return Err(OrionError::BadRequest(
             "ID must start with an alphanumeric character and contain only alphanumeric characters, dots, hyphens, or underscores".to_string(),
         ));
+    }
+    if RESERVED_IDS.contains(&id.to_ascii_lowercase().as_str()) {
+        return Err(OrionError::BadRequest(format!(
+            "'{id}' is reserved: the admin API serves a static sub-resource at that \
+             path, so an entity with this id could not be addressed through /{{id}}"
+        )));
     }
     Ok(())
 }

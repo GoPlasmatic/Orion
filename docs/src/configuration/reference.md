@@ -75,6 +75,7 @@ Migrations for all backends are embedded in the binary and the correct set is se
 | `server.port` | `8080` | `ORION_SERVER__PORT` | To fit an existing port convention. |
 | `server.shutdown_drain_secs` | `30` | `ORION_SERVER__SHUTDOWN_DRAIN_SECS` | Raise it if your slowest request legitimately outlives 30 s, so rolling deploys stop cutting them off. |
 | `server.shutdown_force_timeout_secs` | `30` | `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS` | Hard cap on waiting after the drain window. `0` waits forever — only with an orchestrator that will eventually SIGKILL. |
+| `server.max_admin_body_size` | `8388608` | `ORION_SERVER__MAX_ADMIN_BODY_SIZE` | Raise for very large bulk imports or workflow exports. Applies to `/api/v1/admin/*` only; the data plane keeps `ingest.max_payload_size`. |
 
 On SIGTERM or SIGINT Orion withdraws readiness first, then stops accepting, then drains. Set both timeouts below your orchestrator's termination grace period, or it kills the process mid-drain.
 
@@ -155,7 +156,7 @@ instance_id = "${HOSTNAME}"
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `ingest.max_payload_size` | `1048576` | `ORION_INGEST__MAX_PAYLOAD_SIZE` | Raise for large request bodies. The limit is global — it applies to bulk admin imports as well as data requests. |
+| `ingest.max_payload_size` | `1048576` | `ORION_INGEST__MAX_PAYLOAD_SIZE` | Raise for large request bodies on the **data plane**. The admin API has its own bound (`server.max_admin_body_size`), so raising this one does not widen the unauthenticated surface. |
 
 ## Engine
 

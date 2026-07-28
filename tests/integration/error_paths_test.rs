@@ -419,3 +419,65 @@ async fn oversized_import_batch_is_refused_before_any_write() {
         "an over-cap batch must not partially apply"
     );
 }
+
+// ============================================================
+// R16: the admin body limit is separate from the data-plane one
+// ============================================================
+
+/// R16: the body limit was one global layer set from `ingest.max_payload_size`
+/// — a name that says *data plane* — so admin bulk import, connector config
+/// PUTs and `POST /workflows/{id}/test` shared a ceiling with anonymous channel
+/// traffic. Raising it for a big import raised it for the unauthenticated plane
+/// too, which is the opposite of what an operator wants.
+#[tokio::test]
+async fn the_admin_body_limit_is_independent_of_the_data_plane_one() {
+    use orion::config::AppConfig;
+
+    let mut config = AppConfig::default();
+    // A data plane locked down tight, and an admin API that can still take an
+    // import. Under one shared limit this pair is unexpressible.
+    config.ingest.max_payload_size = 512;
+    config.server.max_admin_body_size = 256 * 1024;
+
+    let app = common::test_app_with_config(config).await;
+    common::create_and_activate_channel(&app, "tiny", common::simple_log_workflow("Tiny")).await;
+
+    let big_payload = json!({ "data": { "blob": "x".repeat(4096) } });
+
+    // Data plane: over its 512-byte bound.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/tiny",
+            Some(big_payload.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "the data plane must still honour ingest.max_payload_size"
+    );
+
+    // Admin: the same bytes, well under its own bound.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "Big Description",
+                "description": "y".repeat(2000),
+                "tasks": [{"id":"t1","name":"Log",
+                           "function":{"name":"log","input":{"message":"x"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CREATED,
+        "an admin body over the data-plane limit must still be accepted"
+    );
+}

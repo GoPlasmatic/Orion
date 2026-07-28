@@ -737,10 +737,12 @@ async fn test_validate_workflow_with_empty_name() {
     let body = body_json(resp).await;
     assert_eq!(body["data"]["valid"], false);
     let errors = body["data"]["errors"].as_array().unwrap();
+    // R20: field paths come from the create-path validator now, so they read
+    // the same in both places.
     let has_name_error = errors
         .iter()
-        .any(|e| e["field"].as_str().unwrap_or("") == "name");
-    assert!(has_name_error);
+        .any(|e| e["field"].as_str().unwrap_or("") == "workflow.name");
+    assert!(has_name_error, "{errors:?}");
 }
 
 // ============================================================
@@ -1237,4 +1239,121 @@ async fn a_workflow_using_the_enrich_builtin_is_accepted() {
         "body = {}",
         common::body_json(resp).await
     );
+}
+
+// ============================================================
+// R20: /validate must agree with POST /workflows
+// ============================================================
+
+/// R20: `validate_workflow_tasks_schema` carried the doc comment *"Public so
+/// the `/validate` endpoint can reuse it"* and had **zero external callers**;
+/// the endpoint re-implemented the same walk and the two disagreed by design —
+/// an unknown `function.name` was a hard error at create and a *warning* here.
+/// So `/validate` reported `valid: true` for a workflow create rejects, which is
+/// worse than no linter: it lies in the one direction that matters.
+#[tokio::test]
+async fn validate_never_green_lights_what_create_rejects() {
+    let app = common::test_app().await;
+
+    // Every payload here is one `POST /workflows` refuses.
+    let rejected = [
+        // Unknown function — the exact case that used to be a warning.
+        json!({
+            "name": "Unknown Function",
+            "tasks": [{"id": "t1", "name": "T",
+                       "function": {"name": "not_a_function", "input": {}}}]
+        }),
+        // Missing a required input field for a known function.
+        json!({
+            "name": "Missing Input",
+            "tasks": [{"id": "t1", "name": "T",
+                       "function": {"name": "cache_read", "input": {"connector": "c"}}}]
+        }),
+        // Wrongly-typed input field.
+        json!({
+            "name": "Wrong Type",
+            "tasks": [{"id": "t1", "name": "T",
+                       "function": {"name": "db_read",
+                                    "input": {"connector": "c", "query": 42}}}]
+        }),
+        // Empty name.
+        json!({
+            "name": "",
+            "tasks": [{"id": "t1", "name": "T",
+                       "function": {"name": "log", "input": {"message": "x"}}}]
+        }),
+    ];
+
+    for payload in rejected {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/workflows/validate",
+                Some(payload.clone()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "/validate always answers 200"
+        );
+        let validated = body_json(resp).await;
+
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/workflows",
+                Some(payload.clone()),
+            ))
+            .await
+            .unwrap();
+        let created = resp.status();
+
+        assert!(
+            created.is_client_error(),
+            "fixture must be one create rejects: {payload}"
+        );
+        assert_eq!(
+            validated["data"]["valid"], false,
+            "/validate said valid for a payload create rejected with {created}: \
+             {payload} -> {validated}"
+        );
+    }
+}
+
+/// The other direction still holds: a payload create accepts validates clean.
+#[tokio::test]
+async fn validate_accepts_what_create_accepts() {
+    let app = common::test_app().await;
+    let payload = json!({
+        "name": "Perfectly Fine",
+        "condition": true,
+        "tasks": [{"id": "t1", "name": "Log",
+                   "function": {"name": "log", "input": {"message": "x"}}}]
+    });
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/validate",
+            Some(payload.clone()),
+        ))
+        .await
+        .unwrap();
+    let validated = body_json(resp).await;
+    assert_eq!(validated["data"]["valid"], true, "{validated}");
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(payload),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
 }

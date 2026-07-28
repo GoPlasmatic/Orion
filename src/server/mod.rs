@@ -79,8 +79,10 @@ pub fn build_router(state: AppState) -> Router {
     // Request order is: set/propagate request id -> request-id scope ->
     // security headers -> catch panic -> CORS -> HSTS -> OTel -> trace ->
     // metrics -> rate limit -> admin auth -> compression -> body limit -> route.
-    let router = routes::api_routes()
-        // Innermost: bound the body before a handler ever reads it.
+    let router = routes::api_routes(state.config.server.max_admin_body_size)
+        // Innermost: bound the body before a handler ever reads it. This is the
+        // data-plane bound; `admin_routes` re-applies its own, closer to the
+        // handler, so raising one does not raise the other (R16).
         .layer(DefaultBodyLimit::max(max_body_size));
 
     // Response compression (gzip/br/zstd via tower-http). Disabled by default —

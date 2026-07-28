@@ -3,8 +3,6 @@ pub mod data;
 pub mod openapi;
 pub mod response_helpers;
 
-use std::sync::Arc;
-
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
@@ -15,13 +13,15 @@ use utoipa::OpenApi;
 
 use crate::server::state::AppState;
 
-pub fn api_routes() -> Router<AppState> {
+/// `max_admin_body_size` bounds admin request bodies independently of the
+/// data plane (R16) — see [`admin::admin_routes`].
+pub fn api_routes(max_admin_body_size: usize) -> Router<AppState> {
     let router = Router::new()
         .route("/health", get(health_check))
         .route("/healthz", get(liveness_check))
         .route("/readyz", get(readiness_check))
         .route("/metrics", get(metrics_endpoint))
-        .nest("/api/v1/admin", admin::admin_routes())
+        .nest("/api/v1/admin", admin::admin_routes(max_admin_body_size))
         .nest("/api/v1/data", data::data_routes());
 
     router
@@ -168,8 +168,9 @@ configured with the key.",
 )]
 pub(crate) async fn metrics_endpoint(State(state): State<AppState>) -> impl IntoResponse {
     // Sample DB pool stats on each scrape
-    crate::metrics::set_db_pool_size(state.db_pool.size() as f64);
-    crate::metrics::set_db_pool_idle(state.db_pool.num_idle() as f64);
+    let (pool_size, pool_idle) = state.pool_stats();
+    crate::metrics::set_db_pool_size(pool_size as f64);
+    crate::metrics::set_db_pool_idle(pool_idle as f64);
 
     let metrics = state.metrics_handle.render();
     (
@@ -288,231 +289,4 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     });
 
     (http_status, Json(body))
-}
-
-/// Options for [`reload_engine_with_opts`].
-#[derive(Clone, Copy, Default)]
-pub struct ReloadOpts {
-    /// Add 0–5 s of per-node jitter before a full Kafka consumer restart.
-    /// Epoch-driven reloads fire on every node near-simultaneously; without
-    /// jitter they would all leave and rejoin the consumer group at once.
-    pub kafka_restart_jitter: bool,
-}
-
-/// Reload the engine with all active channels and workflows from the database.
-pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionError> {
-    reload_engine_with_opts(state, ReloadOpts::default()).await
-}
-
-/// Epoch-driven full resync from the database, run by the watcher when
-/// another node's mutation advanced the config epoch. Beyond a plain engine
-/// reload it also refreshes the connector registry and evicts all cached
-/// connector pools — a remote node cannot know *which* connector changed,
-/// and pools rebuild lazily on next use.
-pub async fn resync_from_db(state: &AppState) -> Result<(), crate::errors::OrionError> {
-    state
-        .connector_registry
-        .reload(state.connector_repo.as_ref())
-        .await?;
-    state.sql_pool_cache.evict_all().await;
-    state.mongo_pool_cache.evict_all().await;
-    state.cache_pool.evict_all_pools().await;
-    reload_engine_with_opts(
-        state,
-        ReloadOpts {
-            kafka_restart_jitter: true,
-        },
-    )
-    .await
-}
-
-#[tracing::instrument(skip(state, opts))]
-pub async fn reload_engine_with_opts(
-    state: &AppState,
-    opts: ReloadOpts,
-) -> Result<(), crate::errors::OrionError> {
-    let start = std::time::Instant::now();
-
-    let result = async {
-        let channels = state.channel_repo.list_active().await?;
-        let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
-        let active_workflows = state.workflow_repo.list_active().await?;
-        let (workflows, engine_issues) =
-            crate::engine::build_engine_workflows(&channels, &active_workflows);
-
-        // Build the new engine outside the write lock to minimize lock hold time.
-        // Clone the current engine Arc, build new workflows, then swap atomically.
-        let current_engine = crate::engine::acquire_engine_read(&state.engine).await;
-        let new_engine = Arc::new(
-            current_engine
-                .with_new_workflows(workflows)
-                .map_err(crate::errors::OrionError::Engine)?,
-        );
-
-        // Rebuild the channel registry BEFORE swapping the engine, so a
-        // channel is never reachable through the new engine before its guards
-        // exist. Channels that fail to load are quarantined — refused at every
-        // ingress — and the reload proceeds (F35). It used to abort here,
-        // which meant one unparseable `config_json` failed every activate,
-        // archive, delete and rollout with a 500, and stopped the cluster
-        // epoch watcher resyncing all nodes.
-        // The issue list is recorded on the registry itself (and reported via
-        // `/health`), so it is deliberately not propagated as an error here.
-        let _quarantined = state
-            .channel_registry
-            .reload(
-                &channels,
-                &state.connector_registry,
-                &state.cache_pool,
-                &state.datalogic,
-                &state.config.trace_storage,
-                engine_issues,
-            )
-            .await;
-
-        let mut engine_write = tokio::time::timeout(
-            std::time::Duration::from_secs(state.config.engine.reload_timeout_secs),
-            crate::engine::acquire_engine_write(&state.engine),
-        )
-        .await
-        .map_err(|_| {
-            crate::errors::OrionError::Internal(
-                "Engine reload timed out waiting for write lock".into(),
-            )
-        })?;
-        *engine_write = new_engine;
-        // Release the write lock before the Kafka restart: request handlers
-        // block on engine reads while it is held, and the epoch-driven
-        // restart path below sleeps a 0–5 s jitter.
-        drop(engine_write);
-
-        // Update active workflows gauge
-        crate::metrics::set_active_workflows(active_workflows.len() as f64);
-
-        // Restart Kafka consumer if async channel topics changed
-        if state.config.kafka.enabled {
-            restart_kafka_consumer_if_needed(state, &channels, opts).await;
-        }
-
-        tracing::info!(
-            workflow_count = active_workflows.len(),
-            channel_count = channels.len(),
-            "Engine reloaded"
-        );
-        Ok(())
-    }
-    .await;
-
-    let duration = start.elapsed().as_secs_f64();
-    crate::metrics::record_engine_reload_duration(duration);
-
-    match &result {
-        Ok(()) => crate::metrics::record_engine_reload("success"),
-        Err(_) => crate::metrics::record_engine_reload("failure"),
-    }
-
-    result
-}
-
-/// Restart the Kafka consumer when async channel topic mappings have changed.
-///
-/// Merges config-file topics with DB-driven async channel topics. If the set
-/// of topics differs from what the current consumer is subscribed to, the old
-/// consumer is shut down and a new one is started.
-async fn restart_kafka_consumer_if_needed(
-    state: &AppState,
-    channels: &[crate::storage::models::Channel],
-    opts: ReloadOpts,
-) {
-    use std::collections::HashSet;
-
-    let all_topics = crate::kafka::merge_kafka_topics(&state.config.kafka, channels);
-
-    let new_topic_set: HashSet<String> = all_topics.iter().map(|t| t.topic.clone()).collect();
-
-    let mut handle_guard = state.kafka_consumer_handle.lock().await;
-
-    // Optimisation: if topics haven't changed, pause/resume instead of full restart
-    if let Some(ref existing_handle) = *handle_guard
-        && *existing_handle.topics() == new_topic_set
-    {
-        tracing::info!("Kafka topics unchanged, pausing consumer during engine swap");
-        if let Err(e) = existing_handle.pause() {
-            tracing::warn!(error = %e, "Failed to pause Kafka consumer, falling back to full restart");
-        } else {
-            // Brief sleep to allow in-flight messages to finish processing
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            if let Err(e) = existing_handle.resume() {
-                tracing::error!(error = %e, "Failed to resume Kafka consumer after engine reload");
-                // Fall through to full restart below
-            } else {
-                tracing::info!("Kafka consumer resumed after engine reload");
-                return;
-            }
-        }
-    }
-
-    // Full restart path: pause first to minimize gap, then shutdown and restart
-    if opts.kafka_restart_jitter {
-        let jitter_ms = rand::random_range(0..=5000u64);
-        tracing::info!(
-            jitter_ms,
-            "Jittering Kafka consumer restart (epoch-driven reload)"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(jitter_ms)).await;
-    }
-    if let Some(ref existing_handle) = *handle_guard {
-        let _ = existing_handle.pause(); // Best-effort pause before shutdown
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    if let Some(old_handle) = handle_guard.take() {
-        tracing::info!("Shutting down Kafka consumer for topic refresh...");
-        old_handle.shutdown().await;
-    }
-
-    if all_topics.is_empty() {
-        tracing::info!("No Kafka topics configured or from DB, consumer not started");
-        return;
-    }
-
-    let merged_config = crate::config::KafkaIngestConfig {
-        topics: all_topics,
-        ..state.config.kafka.clone()
-    };
-
-    let dlq_producer = if state.config.kafka.dlq.enabled {
-        state.kafka_producer.clone()
-    } else {
-        None
-    };
-    let dlq_topic = if state.config.kafka.dlq.enabled {
-        Some(state.config.kafka.dlq.topic.clone())
-    } else {
-        None
-    };
-
-    let static_member = state
-        .cluster
-        .enabled
-        .then(|| state.cluster.instance_id.as_str());
-    match crate::kafka::consumer::start_consumer(
-        &merged_config,
-        state.engine.clone(),
-        state.channel_registry.clone(),
-        state.datalogic.clone(),
-        dlq_producer,
-        dlq_topic,
-        static_member,
-    ) {
-        Ok(new_handle) => {
-            tracing::info!(
-                topics = ?new_topic_set,
-                "Kafka consumer restarted with updated topics"
-            );
-            *handle_guard = Some(new_handle);
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "Failed to restart Kafka consumer");
-        }
-    }
 }

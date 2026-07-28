@@ -486,23 +486,12 @@ pub(crate) async fn test_workflow(
 // Workflow Import / Export
 // ============================================================
 
-/// Query parameters accepted by all three /import endpoints (B6).
-#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
-#[into_params(parameter_in = Query)]
-pub(crate) struct ImportQuery {
-    /// When true, validates each item and reports what would happen
-    /// without writing to the database. The response shape mirrors
-    /// a real import but `imported` is always 0.
-    #[serde(default)]
-    pub dry_run: bool,
-}
-
 #[utoipa::path(
     post,
     path = "/api/v1/admin/workflows/import",
     tag = "Workflows",
     request_body = Vec<CreateWorkflowRequest>,
-    params(ImportQuery),
+    params(super::ImportQuery),
     responses(
         (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
             Each item is handled independently: a malformed or conflicting item becomes one entry in \
@@ -513,7 +502,7 @@ pub(crate) struct ImportQuery {
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
 pub(crate) async fn import_workflows(
     State(state): State<AppState>,
-    OrionQuery(query): OrionQuery<ImportQuery>,
+    OrionQuery(query): OrionQuery<super::ImportQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {
@@ -634,11 +623,32 @@ pub(crate) async fn validate_workflow(
     Ok(Json(ValidationEnvelope { data }))
 }
 
+/// R20: `valid: true` must mean `POST /api/v1/admin/workflows` would accept
+/// this payload.
+///
+/// It did not. `validate_workflow_tasks_schema` carried the doc comment *"Public
+/// so the `/validate` endpoint can reuse it"* and had **zero external callers**;
+/// this function re-implemented the same walk, and the two disagreed by design —
+/// an unknown `function.name` was a hard error on the create path and a
+/// *warning* here. So `/validate` reported `valid: true` for a workflow create
+/// would reject, which is worse than having no linter: it is a linter that lies
+/// in the one direction that matters.
+///
+/// The create-path validator now runs first and verbatim, so agreement is
+/// structural rather than maintained by hand. What follows it is only ever
+/// *additional*: checks create does not make but activation does (a task with no
+/// `id`, a condition that will not compile, a workflow that cannot be converted),
+/// plus genuinely advisory warnings. Stricter is the safe direction for a
+/// pre-flight tool; laxer is the bug.
 async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> ValidationResponse {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    validate_basic_fields(req, &mut errors);
+    if let Err(e) = crate::validation::validate_create_workflow(req) {
+        errors.extend(issues_from_error(e));
+    }
+
+    validate_task_array_shape(req, &mut errors);
 
     let dl = datalogic_rs::Engine::new();
 
@@ -656,14 +666,27 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     }
 }
 
-/// Validate name and tasks are non-empty.
-fn validate_basic_fields(req: &CreateWorkflowRequest, errors: &mut Vec<ValidationIssue>) {
-    if req.name.trim().is_empty() {
-        errors.push(ValidationIssue {
-            field: "name".to_string(),
-            message: "Name cannot be empty".to_string(),
-        });
+/// Render an `OrionError` from the create path as `/validate` issues, keeping
+/// the per-field detail where there is any.
+fn issues_from_error(err: OrionError) -> Vec<ValidationIssue> {
+    match err {
+        OrionError::Validation { details, .. } if !details.is_empty() => details
+            .into_iter()
+            .map(|d| ValidationIssue {
+                field: d.path,
+                message: d.message,
+            })
+            .collect(),
+        other => vec![ValidationIssue {
+            field: "(root)".to_string(),
+            message: other.client_message(),
+        }],
     }
+}
+
+/// `tasks` must be a non-empty array. Create does not check this — a workflow
+/// with no tasks stores fine and matches nothing — but a linter should say so.
+fn validate_task_array_shape(req: &CreateWorkflowRequest, errors: &mut Vec<ValidationIssue>) {
     let tasks = req.tasks.as_array();
     if tasks.is_none() || tasks.is_some_and(|t| t.is_empty()) {
         errors.push(ValidationIssue {
@@ -753,29 +776,11 @@ async fn errors_for_task(
         });
     }
 
-    if !fn_name.is_empty() && !crate::engine::KNOWN_FUNCTIONS.contains(&fn_name) {
-        warnings.push(ValidationIssue {
-            field: format!("tasks[{i}].function.name"),
-            message: format!("Unknown function '{fn_name}'"),
-        });
-    }
-
-    // Schema check the function input (A1). Same registry is used by
-    // workflow create — surfacing it here so the /validate endpoint
-    // gives the same answer offline.
-    if !fn_name.is_empty() {
-        let input = function
-            .and_then(|f| f.get("input"))
-            .cloned()
-            .unwrap_or(Value::Object(Default::default()));
-        let task_path = format!("tasks[{i}]");
-        for fe in crate::engine::functions::schema::validate_input(fn_name, &input, &task_path) {
-            errors.push(ValidationIssue {
-                field: fe.path,
-                message: fe.message,
-            });
-        }
-    }
+    // R20: the unknown-function check and the input-schema walk used to be
+    // re-implemented here, and the unknown-function copy reported a *warning*
+    // where create reports an error. Both now come from
+    // `validate_create_workflow`, run once in `run_validation` — so this
+    // function is left with only the checks create does not make.
 
     if !fn_name.is_empty()
         && crate::engine::CONNECTOR_FUNCTIONS.contains(&fn_name)

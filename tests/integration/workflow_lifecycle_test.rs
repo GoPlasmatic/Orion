@@ -559,8 +559,8 @@ async fn test_validate_endpoint() {
     assert_eq!(body["data"]["valid"], false);
     let errors = body["data"]["errors"].as_array().unwrap();
     assert!(
-        errors.iter().any(|e| e["field"] == "name"),
-        "should have error on 'name' field: {errors:?}"
+        errors.iter().any(|e| e["field"] == "workflow.name"),
+        "should have error on the name field: {errors:?}"
     );
 
     // --- Empty tasks ---

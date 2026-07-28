@@ -115,6 +115,7 @@ where
     ov!(server.tls.cert_path: String);
     ov!(server.tls.key_path: String);
     ov!(server.compression.enabled: bool);
+    ov!(server.max_admin_body_size: usize);
 
     // Storage
     ov!(storage.url: String);

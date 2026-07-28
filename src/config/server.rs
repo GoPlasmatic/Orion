@@ -20,6 +20,16 @@ pub struct ServerConfig {
     pub tls: TlsConfig,
     /// Response compression configuration.
     pub compression: CompressionConfig,
+    /// Maximum request body size for the admin API, in bytes.
+    ///
+    /// R16: the body limit used to be one global layer set from
+    /// `ingest.max_payload_size` — a name that says *data plane* — so bulk
+    /// import, connector config PUTs and `POST /workflows/{id}/test` shared a
+    /// ceiling with anonymous channel traffic. Raising it for a big import
+    /// raised it for the unauthenticated plane too, which is the opposite of
+    /// what an operator wants. The admin API is authenticated and its payloads
+    /// are legitimately larger, so it gets its own bound.
+    pub max_admin_body_size: usize,
 }
 
 impl Default for ServerConfig {
@@ -31,6 +41,9 @@ impl Default for ServerConfig {
             shutdown_force_timeout_secs: 30,
             tls: TlsConfig::default(),
             compression: CompressionConfig::default(),
+            // 8 MB: room for a full workflow export round-trip (the largest
+            // legitimate admin body) without inviting one.
+            max_admin_body_size: 8 * 1_048_576,
         }
     }
 }
@@ -38,6 +51,10 @@ impl Default for ServerConfig {
 impl ServerConfig {
     pub(crate) fn validate(&self) -> Result<(), OrionError> {
         require_nonzero(u64::from(self.port), "server.port")?;
+        require_nonzero(
+            self.max_admin_body_size as u64,
+            "server.max_admin_body_size",
+        )?;
         if self.tls.enabled {
             require_nonempty(
                 &self.tls.cert_path,

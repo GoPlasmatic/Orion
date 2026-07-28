@@ -51,7 +51,7 @@ fn start_epoch_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
                     to = row.epoch,
                     "Config epoch advanced on another node; resyncing from DB"
                 );
-                match crate::server::routes::resync_from_db(&state).await {
+                match crate::engine::resync_from_db(&state).await {
                     Ok(()) => {
                         state
                             .cluster

@@ -150,6 +150,37 @@ async fn persist_trace_and_cache(
     }
 }
 
+/// Build the synchronous response envelope.
+///
+/// R23: there were four `json!` literals producing one documented shape — the
+/// full-detail body, the sanitized public body, the profile variant, and the
+/// cached copy — against a `ProcessResponse` mirror whose own doc comment said
+/// it is *"never constructed at runtime"*. Four writers and no reader is how a
+/// schema drifts from the thing it describes. One writer now, and
+/// `the_response_envelope_matches_its_documented_schema` deserializes what it
+/// produces back into `ProcessResponse` with `deny_unknown_fields`, so the
+/// mirror is pinned to reality rather than to good intentions.
+///
+/// `request_id` is present only on the sanitized body: the full messages live
+/// in the trace, and the id is how a caller correlates the two.
+pub(super) fn response_envelope(
+    id: &str,
+    data: Value,
+    errors: Vec<Value>,
+    request_id: Option<String>,
+) -> Value {
+    let mut envelope = json!({
+        "id": id,
+        "status": "ok",
+        "data": data,
+        "errors": errors,
+    });
+    if let Some(request_id) = request_id {
+        envelope["request_id"] = json!(request_id);
+    }
+    envelope
+}
+
 /// Generic replacement for engine error messages on the data plane (G1).
 const SANITIZED_ERROR_MESSAGE: &str =
     "Task processing failed; full detail is available in the trace";
@@ -268,12 +299,16 @@ pub(super) async fn process_sync_for_channel(
             metrics::record_message_duration(metrics_channel, duration_secs);
             metrics::record_channel_execution(metrics_channel);
 
-            let response = json!({
-                "id": message.id(),
-                "status": "ok",
-                "data": crate::engine::utils::data_without_rollout_bucket(&message),
-                "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
-            });
+            let response = response_envelope(
+                message.id(),
+                crate::engine::utils::data_without_rollout_bucket(&message),
+                message
+                    .errors()
+                    .iter()
+                    .filter_map(|e| serde_json::to_value(e).ok())
+                    .collect(),
+                None,
+            );
 
             // Serialize the full-detail envelope exactly once — reused for the
             // size check, trace storage, and (on the error-free hot path) the
@@ -289,13 +324,12 @@ pub(super) async fn process_sync_for_channel(
                 let request_id = crate::server::request_context::REQUEST_ID
                     .try_with(|id| id.clone())
                     .unwrap_or_default();
-                Some(json!({
-                    "id": message.id(),
-                    "status": "ok",
-                    "data": crate::engine::utils::data_without_rollout_bucket(&message),
-                    "errors": sanitize_errors(message.errors()),
-                    "request_id": request_id,
-                }))
+                Some(response_envelope(
+                    message.id(),
+                    crate::engine::utils::data_without_rollout_bucket(&message),
+                    sanitize_errors(message.errors()),
+                    Some(request_id),
+                ))
             } else {
                 None
             };
@@ -369,5 +403,109 @@ pub(super) async fn process_sync_for_channel(
             metrics::record_error("engine");
             Err(OrionError::Engine(e))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::server::routes::data::ProcessResponse;
+
+    /// R23: `ProcessResponse` is a never-constructed mirror that exists only so
+    /// the OpenAPI document describes the real shape — and the real shape was
+    /// built by four separate `json!` literals, one of which (the plain success
+    /// body) omits `request_id` while another adds it. Nothing checked the two
+    /// against each other, and they had already drifted.
+    ///
+    /// Deserializing with `deny_unknown_fields` catches drift in both
+    /// directions: a key the envelope emits and the schema lacks fails here,
+    /// and a required schema field the envelope omits fails here too.
+    #[test]
+    fn the_response_envelope_matches_its_documented_schema() {
+        let shapes = [
+            // Clean run: no request_id.
+            response_envelope("msg-1", json!({"ok": true}), vec![], None),
+            // Sanitized run: request_id present, errors non-empty.
+            response_envelope(
+                "msg-2",
+                json!({"partial": 1}),
+                vec![json!({"code": "TASK_FAILED", "message": SANITIZED_ERROR_MESSAGE})],
+                Some("req-abc".to_string()),
+            ),
+            // Sanitized run carrying a task_id.
+            response_envelope(
+                "msg-3",
+                Value::Null,
+                vec![json!({
+                    "code": "TASK_FAILED",
+                    "message": SANITIZED_ERROR_MESSAGE,
+                    "task_id": "t1",
+                })],
+                Some("req-def".to_string()),
+            ),
+        ];
+
+        for shape in shapes {
+            let parsed = serde_json::from_value::<ProcessResponse>(shape.clone());
+            assert!(
+                parsed.is_ok(),
+                "the documented schema does not describe what we send: {shape} — {:?}",
+                parsed.err()
+            );
+        }
+    }
+
+    /// The profile variant is the same envelope plus the `_orion` namespace
+    /// (B3), built by the one site that appends it.
+    #[test]
+    fn the_profile_variant_also_matches_the_schema() {
+        let mut shape = response_envelope("msg-4", json!({}), vec![], None);
+        shape["_orion"] = json!({ "profile": {"version": 2} });
+        let parsed = serde_json::from_value::<ProcessResponse>(shape.clone());
+        assert!(
+            parsed.is_ok(),
+            "profile variant does not match the schema: {shape} — {:?}",
+            parsed.err()
+        );
+    }
+
+    /// `sanitize_errors` output is what the envelope carries, so it must satisfy
+    /// the `ProcessTaskError` half of the schema too.
+    #[test]
+    fn sanitized_errors_match_their_documented_schema() {
+        use crate::server::routes::data::ProcessTaskError;
+        let info = |code: &str, message: &str, task_id: Option<&str>| dataflow_rs::ErrorInfo {
+            code: code.to_string(),
+            message: message.to_string(),
+            path: None,
+            workflow_id: None,
+            task_id: task_id.map(str::to_string),
+            timestamp: None,
+            retry_attempted: None,
+            retry_count: None,
+        };
+        let errors = sanitize_errors(&[
+            info(
+                "TASK_FAILED",
+                "raw upstream detail that must not leak",
+                Some("t1"),
+            ),
+            info("OTHER", "another", None),
+        ]);
+        for e in &errors {
+            let parsed = serde_json::from_value::<ProcessTaskError>(e.clone());
+            assert!(
+                parsed.is_ok(),
+                "sanitized error does not match the schema: {e} — {:?}",
+                parsed.err()
+            );
+        }
+        // And the sanitisation itself still holds.
+        assert!(
+            errors
+                .iter()
+                .all(|e| e["message"] == SANITIZED_ERROR_MESSAGE),
+            "{errors:?}"
+        );
     }
 }

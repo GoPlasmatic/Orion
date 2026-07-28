@@ -508,7 +508,15 @@ impl ProcessRequest {
 // in `openapi::ApiDoc` and never constructed at runtime.
 
 /// Synchronous data-plane response envelope.
+///
+/// R23: deserializable under `cfg(test)` with `deny_unknown_fields`, so
+/// `sync::tests` can round-trip what `response_envelope` actually emits back
+/// through this struct. A field added to the envelope and not to the mirror —
+/// or vice versa — fails the test instead of shipping a spec that describes a
+/// shape nothing sends.
 #[derive(serde::Serialize, utoipa::ToSchema)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+#[cfg_attr(test, serde(deny_unknown_fields))]
 pub(crate) struct ProcessResponse {
     /// Engine message id, also the correlation key inside the persisted trace.
     id: String,
@@ -522,22 +530,24 @@ pub(crate) struct ProcessResponse {
     errors: Vec<ProcessTaskError>,
     /// Correlation id, present only when `errors` is non-empty: the full
     /// messages are kept in the trace, not returned to the caller.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
     /// Debug namespace, present only when profiling was requested and
     /// `tracing.debug_profile_enabled` is on. Currently carries `profile`.
-    #[serde(rename = "_orion", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "_orion", default, skip_serializing_if = "Option::is_none")]
     orion: Option<Value>,
 }
 
 /// One task failure, with the message replaced by a generic string — upstream
 /// URLs, connector names, and driver errors stay in the trace.
 #[derive(serde::Serialize, utoipa::ToSchema)]
+#[cfg_attr(test, derive(serde::Deserialize))]
+#[cfg_attr(test, serde(deny_unknown_fields))]
 pub(crate) struct ProcessTaskError {
     code: String,
     #[schema(example = "Task processing failed; full detail is available in the trace")]
     message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     task_id: Option<String>,
 }
 
