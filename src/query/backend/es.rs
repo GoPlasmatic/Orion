@@ -510,7 +510,7 @@ mod tests {
             }
             None => crate::query::ir::Cond::True,
         };
-        let index = reg.physical_table(&spec.source);
+        let index = reg.physical_table(&spec.source).expect("validated");
         render(&spec, &cond, &index, 100, 1000).expect("render")
     }
 

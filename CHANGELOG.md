@@ -17,6 +17,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doubling to a 30 s cap, cleared on success). Failures are counted by the new
   `admin_auth_failures_total{reason}` metric instead of the shared
   `errors_total{type="auth_failure"}`.
+- **`returning` no longer bypasses the read allowlist.** `data_write`'s
+  `returning` resolved through a helper that fell through to the raw column
+  name regardless of policy, so `{"op": "insert", …, "returning": ["secret"]}`
+  read back **any column the database user could see** — including one the
+  schema declared `queryable: false`, and any column at all under
+  `unmapped: "reject"`. The helper's doc comment justified skipping the
+  *`writable`* check and silently skipped the allowlist with it. It now
+  resolves through the same path as `filter`, gated on `queryable` (reading
+  back a non-writable column stays legitimate). **A schema that relied on
+  `queryable: false` to hide a column was not hiding it.**
+
+- **Identifier validation is now one rule across the read and write paths.**
+  The read path rejected empty and dotted names; the write path checked
+  nothing; **neither rejected a leading `$`**. Three silent consequences:
+  `{"field": "$where"}` in identity mode reached MongoDB as a raw document key
+  (where `$`-prefixed keys are operators); `values: {"a.b": 1}` wrote a nested
+  path on MongoDB but a literal column named `a.b` on SQL — one envelope, two
+  meanings; and `values: {"": 1}` emitted `INSERT INTO "users" ("")`. A shared
+  `validate_identifier` now runs wherever a logical name becomes a physical
+  one, including rename targets and `physical` table names, and also rejects
+  quote, escape and control characters as defence in depth around F25.
+
 - **A filter matching every row no longer bypasses the `data_write` safety
   guard.** `{"op":"delete","target":"t","filter":{"and":[]}}` and other
   tautological filters skipped both the `"all": true` acknowledgement and

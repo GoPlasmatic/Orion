@@ -130,11 +130,14 @@ impl EntityRegistry {
     }
 
     /// Physical table/collection/index for an entity (declared, else the name).
-    pub fn physical_table(&self, entity: &str) -> String {
-        self.entities
+    pub fn physical_table(&self, entity: &str) -> Result<String, QueryError> {
+        let table = self
+            .entities
             .get(entity)
             .and_then(|e| e.physical.clone())
-            .unwrap_or_else(|| entity.to_string())
+            .unwrap_or_else(|| entity.to_string());
+        validate_identifier(&table, "source")?;
+        Ok(table)
     }
 
     /// Resolve a single-segment field on `entity` to a physical [`FieldRef`],
@@ -152,14 +155,20 @@ impl EntityRegistry {
                     at: at.to_string(),
                 });
             }
+            let physical = col.name.clone().unwrap_or_else(|| name.to_string());
+            // W4: a rename target is operator-supplied too.
+            validate_identifier(&physical, at)?;
             return Ok(FieldRef {
                 path: vec![name.to_string()],
-                physical: col.name.clone().unwrap_or_else(|| name.to_string()),
+                physical,
                 ty: col.ty,
             });
         }
         match self.unmapped {
-            UnmappedPolicy::Identity => Ok(FieldRef::identity(name)),
+            UnmappedPolicy::Identity => {
+                validate_identifier(name, at)?;
+                Ok(FieldRef::identity(name))
+            }
             UnmappedPolicy::Reject => Err(QueryError::InvalidField {
                 field: name.to_string(),
                 at: at.to_string(),
@@ -184,10 +193,15 @@ impl EntityRegistry {
                     at: at.to_string(),
                 });
             }
-            return Ok(col.name.clone().unwrap_or_else(|| name.to_string()));
+            let physical = col.name.clone().unwrap_or_else(|| name.to_string());
+            validate_identifier(&physical, at)?;
+            return Ok(physical);
         }
         match self.unmapped {
-            UnmappedPolicy::Identity => Ok(name.to_string()),
+            UnmappedPolicy::Identity => {
+                validate_identifier(name, at)?;
+                Ok(name.to_string())
+            }
             UnmappedPolicy::Reject => Err(QueryError::InvalidField {
                 field: name.to_string(),
                 at: at.to_string(),
@@ -220,7 +234,7 @@ impl EntityRegistry {
         Ok((
             RelRef {
                 name: name.to_string(),
-                target_table: self.physical_table(&rel.to),
+                target_table: self.physical_table(&rel.to)?,
                 local: rel.local.clone(),
                 foreign: rel.foreign.clone(),
                 through,
@@ -230,6 +244,50 @@ impl EntityRegistry {
             rel.to.clone(),
         ))
     }
+}
+
+/// One rule for every logical name that becomes a physical one (W4).
+///
+/// The read and write paths validated differently — `lower.rs` rejected empty
+/// and dotted names, `resolve_write_column` checked nothing — and **neither
+/// rejected a leading `$`**. Three concrete consequences, all silent:
+///
+/// - `{"field": "$where"}` in identity mode reached MongoDB as a raw document
+///   key, where `$`-prefixed keys are operators, not field names.
+/// - `values: {"a.b": 1}` wrote a *nested path* on MongoDB and a *literal
+///   column named `a.b`* on SQL — the same envelope, two different meanings.
+/// - `values: {"": 1}` emitted `INSERT INTO "users" ("")`.
+///
+/// Applied in `resolve_field`, `resolve_write_column` and `physical_table`, so
+/// no backend receives a name that has not been through it. This also closes
+/// the residual half of F25: quoting still happens in sea-query's
+/// `Iden::quoted`, but a name carrying a quote character no longer reaches it.
+pub(crate) fn validate_identifier(name: &str, at: &str) -> Result<(), QueryError> {
+    let reject = || QueryError::InvalidField {
+        field: name.to_string(),
+        at: at.to_string(),
+    };
+    if name.is_empty() {
+        return Err(reject());
+    }
+    // MongoDB reads a leading `$` as an operator sigil.
+    if name.starts_with('$') {
+        return Err(reject());
+    }
+    // A dot is a nested path to MongoDB and a literal character to SQL.
+    if name.contains('.') {
+        return Err(reject());
+    }
+    // Quote and escape characters, NUL, and control characters. Defence in
+    // depth: escaping lives in a transitive dependency (F25), so nothing that
+    // would need escaping gets that far.
+    if name
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '"' | '\'' | '`' | '\\' | '\0'))
+    {
+        return Err(reject());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -279,6 +337,76 @@ mod tests {
         assert!(
             err.to_string().contains("requires kind 'many_to_many'"),
             "{err}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // W4: one identifier rule across the read and write paths
+    // -----------------------------------------------------------------
+
+    /// Identity mode is the permissive setting — it still must not hand a
+    /// backend a name that means something other than "a column".
+    #[test]
+    fn identity_mode_rejects_names_that_are_not_plain_identifiers() {
+        let reg = EntityRegistry::default();
+        for bad in [
+            // MongoDB reads a leading `$` as an operator sigil, so this
+            // reached `mongo.rs` as a raw document key.
+            "$where", "$ne",
+            // Nested path on Mongo, literal column on SQL — one envelope,
+            // two meanings.
+            "a.b", // `INSERT INTO "users" ("")`.
+            "",
+            // Quoting lives in a transitive dependency (F25); nothing that
+            // would need escaping should reach it.
+            "a\"b", "a`b", "a'b", "a\\b", "a\nb",
+        ] {
+            assert!(
+                reg.resolve_field("users", bad, "filter").is_err(),
+                "read path accepted {bad:?}"
+            );
+            assert!(
+                reg.resolve_write_column("users", bad, "values").is_err(),
+                "write path accepted {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_identifiers_still_resolve_on_both_paths() {
+        let reg = EntityRegistry::default();
+        for good in ["id", "user_id", "createdAt", "col2", "_private"] {
+            assert!(reg.resolve_field("users", good, "filter").is_ok(), "{good}");
+            assert!(
+                reg.resolve_write_column("users", good, "values").is_ok(),
+                "{good}"
+            );
+        }
+    }
+
+    /// A rename target is operator-supplied config, so it goes through the
+    /// same rule as a caller-supplied name.
+    #[test]
+    fn a_rename_target_is_validated_too() {
+        let reg = EntityRegistry::from_json(&json!({ "entities": { "users": {
+            "columns": { "key": { "name": "$id" } }
+        }}}))
+        .expect("registry");
+        assert!(reg.resolve_field("users", "key", "filter").is_err());
+    }
+
+    #[test]
+    fn a_physical_table_name_is_validated_too() {
+        let reg = EntityRegistry::from_json(&json!({ "entities": { "users": {
+            "physical": "bad.table", "columns": {}
+        }}}))
+        .expect("registry");
+        assert!(reg.physical_table("users").is_err());
+        assert_eq!(
+            EntityRegistry::default()
+                .physical_table("users")
+                .expect("plain name"),
+            "users"
         );
     }
 }

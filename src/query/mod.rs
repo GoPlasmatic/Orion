@@ -63,7 +63,7 @@ pub fn translate_sql_with_schema(
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
     };
-    let root_table = reg.physical_table(&spec.source);
+    let root_table = reg.physical_table(&spec.source)?;
     backend::sql::render(&spec, &cond, &root_table, dialect, default_limit, max_limit)
 }
 
@@ -136,7 +136,7 @@ pub fn plan_sql(
         });
     }
 
-    let root_table = reg.physical_table(&spec.source);
+    let root_table = reg.physical_table(&spec.source)?;
     let main = backend::sql::render(
         &main_spec,
         &cond,
@@ -167,7 +167,7 @@ pub fn translate_mongo(
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
     };
-    let collection = reg.physical_table(&spec.source);
+    let collection = reg.physical_table(&spec.source)?;
     backend::mongo::render(&spec, &cond, &collection, default_limit, max_limit)
 }
 
@@ -186,6 +186,6 @@ pub fn translate_es(
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
     };
-    let index = reg.physical_table(&spec.source);
+    let index = reg.physical_table(&spec.source)?;
     backend::es::render(&spec, &cond, &index, default_limit, max_limit)
 }

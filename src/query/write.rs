@@ -191,7 +191,7 @@ pub fn resolve_write(
             WriteError::InvalidEnvelope("missing required string field 'target'".to_string())
         })?
         .to_string();
-    let table = reg.physical_table(&target);
+    let table = reg.physical_table(&target)?;
 
     // Rows (insert / upsert).
     let (columns, rows) = parse_rows(input.get("values"), params, reg, &target)?;
@@ -418,19 +418,17 @@ fn parse_returning(
         let name = c.as_str().ok_or_else(|| {
             WriteError::InvalidEnvelope(format!("returning[{i}] must be a string"))
         })?;
-        out.push(physical_column(reg, entity, name));
+        // W3: `returning` reads columns back, so it is subject to the read
+        // allowlist and to `unmapped: "reject"` exactly like `fields` is.
+        // It previously fell through to the raw name regardless of policy, so
+        // `"returning": ["secret"]` read any column the DB user could see —
+        // the doc comment justified skipping the *writable* check and silently
+        // skipped the allowlist too. `queryable` is the right gate here:
+        // reading back a non-writable column is legitimate.
+        let field = reg.resolve_field(entity, name, &format!("returning[{i}]"))?;
+        out.push(field.physical);
     }
     Ok(out)
-}
-
-/// Physical name for a declared column, ignoring the read/write allowlist flags
-/// (used for `returning`, which reads back possibly non-writable columns).
-fn physical_column(reg: &EntityRegistry, entity: &str, name: &str) -> String {
-    reg.entities
-        .get(entity)
-        .and_then(|e| e.columns.get(name))
-        .and_then(|c| c.name.clone())
-        .unwrap_or_else(|| name.to_string())
 }
 
 /// Resolve one `values`/`set` value node: a `{"param": name}` folds to the named

@@ -590,3 +590,102 @@ async fn envelope_errors_are_reported_under_the_write_path() {
         "expected a field error on `write.target`, got {details:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// W3: `returning` is subject to the read allowlist
+// ---------------------------------------------------------------------------
+
+/// `returning` used to resolve through a helper that fell through to the raw
+/// column name regardless of policy, so `"returning": ["secret"]` read back
+/// any column the database user could see — including one the schema declared
+/// `queryable: false`, and any column at all under `unmapped: "reject"`. The
+/// doc comment justified skipping the `writable` check and silently skipped
+/// the allowlist with it.
+#[tokio::test]
+async fn returning_cannot_read_a_non_queryable_column() {
+    let conn = "dw-w3";
+    let app = sqlite_app(conn, "dw_w3").await;
+
+    let schema = json!({ "entities": { "items": {
+        "physical": "w3_items",
+        "columns": {
+            "id":     { "queryable": true,  "writable": true },
+            "name":   { "queryable": true,  "writable": true },
+            // Writable but deliberately not readable back.
+            "secret": { "queryable": false, "writable": true }
+        }
+    }}});
+
+    common::create_and_activate_channel(
+        &app,
+        "ch-dw-w3",
+        common::workflow_with_tasks(
+            "dw",
+            json!([
+                ddl(
+                    conn,
+                    "t_ddl",
+                    "CREATE TABLE IF NOT EXISTS w3_items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, secret TEXT)"
+                ),
+                dw(conn, "t_w", json!({
+                    "op": "insert", "target": "items",
+                    "values": { "name": "Widget", "secret": "s3cr3t" },
+                    "returning": ["id", "secret"],
+                    "schema": schema
+                })),
+            ]),
+        ),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dw-w3", json!({ "data": {} })).await;
+    let text = serde_json::to_string(&body).unwrap();
+    assert!(
+        is_rejection(status, &body) || !text.contains("s3cr3t"),
+        "`returning` leaked a non-queryable column: {body}"
+    );
+}
+
+/// The same gate under `unmapped: "reject"`: an undeclared column must not be
+/// readable via `returning` when it would be rejected in `filter`.
+#[tokio::test]
+async fn returning_respects_unmapped_reject() {
+    let conn = "dw-w3u";
+    let app = sqlite_app(conn, "dw_w3u").await;
+
+    let schema = json!({
+        "unmapped": "reject",
+        "entities": { "items": {
+            "physical": "w3u_items",
+            "columns": { "id": {}, "name": {} }
+        }}
+    });
+
+    common::create_and_activate_channel(
+        &app,
+        "ch-dw-w3u",
+        common::workflow_with_tasks(
+            "dw",
+            json!([
+                ddl(
+                    conn,
+                    "t_ddl",
+                    "CREATE TABLE IF NOT EXISTS w3u_items (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, secret TEXT)"
+                ),
+                dw(conn, "t_w", json!({
+                    "op": "insert", "target": "items",
+                    "values": { "name": "Widget" },
+                    "returning": ["secret"],
+                    "schema": schema
+                })),
+            ]),
+        ),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dw-w3u", json!({ "data": {} })).await;
+    assert!(
+        is_rejection(status, &body),
+        "an undeclared column must be rejected under unmapped=reject: {body}"
+    );
+}
