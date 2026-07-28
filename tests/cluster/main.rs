@@ -205,7 +205,7 @@ async fn dlq_row_claimed_by_exactly_one_node() {
     let repo_a = SqlTraceDlqRepository::new(h.state_a.db_pool.clone());
     let repo_b = SqlTraceDlqRepository::new(h.state_b.db_pool.clone());
 
-    repo_a
+    let entry = repo_a
         .enqueue("trace-x", "orders", "{}", "{}", "boom", 0, 5)
         .await
         .expect("enqueue");
@@ -221,11 +221,36 @@ async fn dlq_row_claimed_by_exactly_one_node() {
         repo_a.claim_pending("node-a", 10, 60),
         repo_b.claim_pending("node-b", 10, 60),
     );
-    assert_eq!(
-        a.expect("claim a").len() + b.expect("claim b").len(),
-        1,
-        "exactly one node must claim the row"
+    let (a, b) = (a.expect("claim a"), b.expect("claim b"));
+    assert_eq!(a.len() + b.len(), 1, "exactly one node must claim the row");
+    let loser = if a.is_empty() { "node-a" } else { "node-b" };
+
+    // While the winner's lease is live, the loser must stay locked out.
+    let blocked = if a.is_empty() { &repo_a } else { &repo_b };
+    assert!(
+        blocked
+            .claim_pending(loser, 10, 60)
+            .await
+            .expect("claim under live lease")
+            .is_empty(),
+        "a live lease must block re-claims"
     );
+
+    // Once the lease expires (a crashed winner), the other node re-claims.
+    sqlx::query("UPDATE trace_dlq SET claimed_until = LOCALTIMESTAMP - interval '1 seconds'")
+        .execute(pg)
+        .await
+        .expect("expire lease");
+    let reclaimed = blocked
+        .claim_pending(loser, 10, 60)
+        .await
+        .expect("re-claim expired lease");
+    assert_eq!(
+        reclaimed.len(),
+        1,
+        "an expired lease must be re-claimable by the other node"
+    );
+    assert_eq!(reclaimed[0].id, entry.id);
 }
 
 /// A4: a per-channel limit of 10 rps holds at ~10 rps across BOTH nodes
