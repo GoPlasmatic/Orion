@@ -221,3 +221,160 @@ async fn postgres_dlq_record_retry_and_mark_exhausted_persist() {
         "an exhausted entry must never be claimed again"
     );
 }
+
+/// The 0.3.0 → 1.0.0 upgrade with data in place.
+///
+/// Migrations 001–003 are exactly the schema 0.3.0 shipped (they are
+/// checksum-frozen), so applying only those and seeding rows reproduces a
+/// real 0.3.0 Postgres database. 1.0 startup must then apply the remaining
+/// migrations — including `004_bigint_columns`, the INT4→BIGINT widening
+/// with its non-idempotent view drop/recreate that the upgrade guide singles
+/// out — over the existing rows, and the repositories must decode them
+/// afterwards. That read is precisely what 0.3.0 could not do (sqlx-postgres
+/// refuses INT4 → i64), and until this test the migration had only ever run
+/// against empty tables.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_postgres -- --ignored"]
+async fn upgrade_from_0_3_0_schema_with_data_preserves_rows() {
+    use orion::storage::repositories::channels::{ChannelRepository, SqlChannelRepository};
+    use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqRepository};
+
+    let container = Postgres::default().start().await.expect("start postgres");
+    let port = container.get_host_port_ipv4(5432).await.expect("pg port");
+    let url = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
+
+    // Apply only 001–003: the 0.3.0 schema, with the real checksums in the
+    // `_sqlx_migrations` ledger so the later full run continues cleanly.
+    let raw = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&url)
+        .await
+        .expect("connect");
+    let mut pre_1_0 = sqlx::migrate!("./migrations/postgres");
+    let first_three: Vec<_> = pre_1_0.iter().filter(|m| m.version <= 3).cloned().collect();
+    assert_eq!(
+        first_three.len(),
+        3,
+        "the 0.3.0 schema is migrations 001–003"
+    );
+    pre_1_0.migrations = first_three.into();
+    pre_1_0.run(&raw).await.expect("apply the 0.3.0 schema");
+
+    // Seed representative rows with plain SQL — a versioned workflow pair,
+    // an active channel referencing it, and a partially retried DLQ entry.
+    // (INT4 columns cannot hold anything a 0.3.0 deployment couldn't; the
+    // 0.3.0 failure was in decoding, which the repository reads below hit.)
+    sqlx::query(
+        "INSERT INTO workflows \
+           (workflow_id, version, name, priority, status, rollout_percentage, condition_json, tasks_json) \
+         VALUES \
+           ('wf-legacy', 1, 'Legacy workflow', 5, 'archived', 100, 'true', '[]'), \
+           ('wf-legacy', 2, 'Legacy workflow', 5, 'active', 100, 'true', '[{\"id\":\"t1\"}]')",
+    )
+    .execute(&raw)
+    .await
+    .expect("seed workflows");
+    sqlx::query(
+        "INSERT INTO channels \
+           (channel_id, version, name, channel_type, protocol, methods, route_pattern, workflow_id, status) \
+         VALUES \
+           ('ch-legacy', 1, 'legacy-ch', 'sync', 'http', '[\"POST\"]', '/legacy', 'wf-legacy', 'active')",
+    )
+    .execute(&raw)
+    .await
+    .expect("seed channels");
+    sqlx::query(
+        "INSERT INTO trace_dlq \
+           (id, trace_id, channel, payload_json, error_message, retry_count, max_retries) \
+         VALUES ('dlq-legacy', 'trace-legacy', 'legacy-ch', '{}', 'boom', 3, 5)",
+    )
+    .execute(&raw)
+    .await
+    .expect("seed trace_dlq");
+    raw.close().await;
+
+    // 1.0 startup over the data-bearing 0.3.0 database: applies 004+.
+    let pool = orion::storage::init_pool(&StorageConfig {
+        url,
+        max_connections: 5,
+        ..Default::default()
+    })
+    .await
+    .expect("1.0 startup must migrate a data-bearing 0.3.0 database");
+    assert!(
+        orion::storage::pending_migrations(&pool)
+            .await
+            .expect("pending")
+            .is_empty(),
+        "everything after 003 must have been applied"
+    );
+
+    // The widening actually happened (004 rewrites these under an
+    // ACCESS EXCLUSIVE lock — with rows present, not a no-op).
+    let DbPool::Postgres(pg) = &pool else {
+        panic!("postgres expected");
+    };
+    let column_types: Vec<(String, String)> = sqlx::query_as(
+        "SELECT column_name::text, data_type::text FROM information_schema.columns \
+         WHERE table_name = 'workflows' \
+           AND column_name IN ('version', 'priority', 'rollout_percentage')",
+    )
+    .fetch_all(pg)
+    .await
+    .expect("introspect workflows");
+    assert_eq!(column_types.len(), 3);
+    for (column, data_type) in &column_types {
+        assert_eq!(
+            data_type, "bigint",
+            "workflows.{column} must be widened to bigint, got {data_type}"
+        );
+    }
+
+    // 004 drops and recreates the current_* views around the ALTERs; over
+    // seeded data the recreated view must still resolve latest-version rows.
+    let (view_version,): (i64,) =
+        sqlx::query_as("SELECT version FROM current_workflows WHERE workflow_id = 'wf-legacy'")
+            .fetch_one(pg)
+            .await
+            .expect("current_workflows must exist and serve the seeded rows");
+    assert_eq!(view_version, 2, "view must resolve the latest version");
+
+    // The repository reads 0.3.0 could not perform: every one of these
+    // decodes the formerly-INT4 columns as i64.
+    let wf_repo = SqlWorkflowRepository::new(pool.clone());
+    let wf = wf_repo.get_by_id("wf-legacy").await.expect("read workflow");
+    assert_eq!(wf.version, 2);
+    assert_eq!(wf.priority, 5);
+    assert_eq!(wf.status, "active");
+    assert_eq!(
+        wf_repo
+            .list_versions("wf-legacy", 10, 0)
+            .await
+            .expect("versions")
+            .total,
+        2,
+        "both seeded versions must survive"
+    );
+
+    let ch_repo = SqlChannelRepository::new(pool.clone());
+    let ch = ch_repo.get_by_id("ch-legacy").await.expect("read channel");
+    assert_eq!(ch.name, "legacy-ch");
+    assert_eq!(ch.workflow_id.as_deref(), Some("wf-legacy"));
+    assert_eq!(ch.status, "active");
+
+    // DLQ counters survive with their values, and the row is still live
+    // (3 of 5 retries used, so the retry machinery may claim it again).
+    let dlq_repo = SqlTraceDlqRepository::new(pool.clone());
+    sqlx::query("UPDATE trace_dlq SET next_retry_at = LOCALTIMESTAMP - interval '2 seconds'")
+        .execute(pg)
+        .await
+        .expect("backdate");
+    let claimed = dlq_repo
+        .claim_pending("upgrade-node", 10, 60)
+        .await
+        .expect("claim");
+    assert_eq!(claimed.len(), 1, "seeded DLQ entry must still be claimable");
+    assert_eq!(claimed[0].id, "dlq-legacy");
+    assert_eq!(claimed[0].retry_count, 3);
+    assert_eq!(claimed[0].max_retries, 5);
+}
