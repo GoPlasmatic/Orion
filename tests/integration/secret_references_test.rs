@@ -11,13 +11,22 @@ use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
+/// Set before `main()`, while the process is still single-threaded — the only
+/// context where `set_var` cannot race a concurrent `getenv` from another test's
+/// runtime threads (which is why `std::env::set_var` is `unsafe` in Rust 2024).
+/// The var is uniquely named, read-only thereafter, and lives for the process
+/// lifetime; no cleanup is needed or attempted.
+#[ctor::ctor]
+fn install_b5_env_fixture() {
+    // SAFETY: runs pre-main on the sole thread of the process; no concurrent
+    // reader of the environment can exist yet.
+    unsafe {
+        std::env::set_var("ORION_B5_TEST_TOKEN", "resolved-secret-value");
+    }
+}
+
 #[tokio::test]
 async fn connector_with_env_reference_resolves_at_engine_load() {
-    // SAFETY: unique env var per test, only read by this test process.
-    let var = "ORION_B5_TEST_TOKEN";
-    unsafe {
-        std::env::set_var(var, "resolved-secret-value");
-    }
     let app = test_app().await;
 
     // Create an http connector whose Bearer token is an env:// reference.
@@ -72,10 +81,6 @@ async fn connector_with_env_reference_resolves_at_engine_load() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-
-    unsafe {
-        std::env::remove_var(var);
-    }
 }
 
 #[tokio::test]
