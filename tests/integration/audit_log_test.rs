@@ -5,9 +5,64 @@ use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
-/// Helper: sleep briefly to let fire-and-forget audit log spawned tasks complete.
-async fn wait_for_audit() {
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+/// Audit writes are fire-and-forget spawned tasks, so their completion is a
+/// condition to poll for, not a duration to guess. Polls the admin list
+/// until every `(resource_type, action)` pair is present (5s deadline).
+async fn wait_for_audit_entries(app: &axum::Router, expected: &[(&str, &str)]) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "GET",
+                "/api/v1/admin/audit-logs?limit=100",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let empty = Vec::new();
+        let entries = body["data"].as_array().unwrap_or(&empty);
+        if expected.iter().all(|(rt, action)| {
+            entries
+                .iter()
+                .any(|e| e["resource_type"] == *rt && e["action"] == *action)
+        }) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "audit entries {expected:?} not all present within 5s; last body: {body}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+/// Poll until the audit log holds at least `min_total` entries (5s deadline).
+async fn wait_for_audit_total(app: &axum::Router, min_total: i64) {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "GET",
+                "/api/v1/admin/audit-logs?limit=1",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        if body["total"].as_i64().unwrap_or(0) >= min_total {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "audit total did not reach {min_total} within 5s; last body: {body}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
 }
 
 // ============================================================
@@ -68,7 +123,16 @@ async fn test_audit_workflow_crud() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-    wait_for_audit().await;
+    wait_for_audit_entries(
+        &app,
+        &[
+            ("workflow", "create"),
+            ("workflow", "status_active"),
+            ("workflow", "status_archived"),
+            ("workflow", "delete"),
+        ],
+    )
+    .await;
 
     // Fetch audit logs
     let resp = app
@@ -174,7 +238,15 @@ async fn test_audit_channel_crud() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    wait_for_audit().await;
+    wait_for_audit_entries(
+        &app,
+        &[
+            ("channel", "create"),
+            ("channel", "status_active"),
+            ("channel", "status_archived"),
+        ],
+    )
+    .await;
 
     // Fetch audit logs
     let resp = app
@@ -246,7 +318,15 @@ async fn test_audit_connector_crud() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 
-    wait_for_audit().await;
+    wait_for_audit_entries(
+        &app,
+        &[
+            ("connector", "create"),
+            ("connector", "update"),
+            ("connector", "delete"),
+        ],
+    )
+    .await;
 
     // Fetch audit logs
     let resp = app
@@ -298,7 +378,7 @@ async fn test_audit_engine_reload() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    wait_for_audit().await;
+    wait_for_audit_entries(&app, &[("engine", "reload")]).await;
 
     // Fetch audit logs
     let resp = app
@@ -348,7 +428,7 @@ async fn test_audit_pagination() {
         assert_eq!(resp.status(), StatusCode::CREATED);
     }
 
-    wait_for_audit().await;
+    wait_for_audit_total(&app, 5).await;
 
     // Page 1: limit=2, offset=0
     let resp = app
@@ -405,7 +485,7 @@ async fn test_audit_details_carries_request_id() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    wait_for_audit().await;
+    wait_for_audit_entries(&app, &[("engine", "reload")]).await;
 
     let resp = app
         .clone()
@@ -467,7 +547,7 @@ async fn test_audit_import() {
     let body = body_json(resp).await;
     assert_eq!(body["imported"], 2);
 
-    wait_for_audit().await;
+    wait_for_audit_entries(&app, &[("workflow", "import")]).await;
 
     // Fetch audit logs
     let resp = app
@@ -553,7 +633,17 @@ async fn app_with_mixed_audit_entries() -> (axum::Router, String) {
 
     common::create_connector(&app, common::db_connector("filter-conn")).await;
 
-    wait_for_audit().await;
+    wait_for_audit_entries(
+        &app,
+        &[
+            ("workflow", "create"),
+            ("workflow", "status_active"),
+            ("channel", "create"),
+            ("channel", "status_active"),
+            ("connector", "create"),
+        ],
+    )
+    .await;
     (app, wf_id)
 }
 

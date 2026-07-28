@@ -3,7 +3,6 @@ use crate::common;
 use crate::common::{body_json, json_request, poll_trace_until_done};
 use axum::http::StatusCode;
 use serde_json::json;
-use std::time::Duration;
 use tower::ServiceExt;
 
 // ============================================================
@@ -193,8 +192,11 @@ async fn test_trace_list_pagination() {
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
     }
 
-    // Brief pause so traces are visible
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Wait until all five submissions are persisted, then page.
+    common::wait_for_body(&app, "/api/v1/data/traces?limit=1", |b| {
+        b["total"].as_i64().unwrap_or(0) >= 5
+    })
+    .await;
 
     // Page 1: limit=2, offset=0
     let resp = app
@@ -320,21 +322,11 @@ async fn test_trace_list_filter_by_channel() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
-    // Brief pause
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Filter by channel-a
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            "/api/v1/data/traces?channel=channel-a",
-            None,
-        ))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
+    // Filter by channel-a: exactly the one submission, once persisted.
+    let body = common::wait_for_body(&app, "/api/v1/data/traces?channel=channel-a", |b| {
+        b["data"].as_array().is_some_and(|a| a.len() == 1)
+    })
+    .await;
     let traces = body["data"].as_array().unwrap();
     assert_eq!(traces.len(), 1);
     assert_eq!(traces[0]["channel"], "channel-a");

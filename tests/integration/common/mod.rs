@@ -241,6 +241,32 @@ pub async fn body_json(response: axum::http::Response<Body>) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
+/// Poll a GET endpoint until `pred` holds on the parsed body (5s deadline,
+/// 25ms interval). For eventually-persisted state (traces, audit rows) —
+/// a condition to poll for, never a duration to guess with a sleep.
+pub async fn wait_for_body<F>(app: &axum::Router, uri: &str, pred: F) -> serde_json::Value
+where
+    F: Fn(&serde_json::Value) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let resp = app
+            .clone()
+            .oneshot(json_request("GET", uri, None))
+            .await
+            .unwrap();
+        let body = body_json(resp).await;
+        if pred(&body) {
+            return body;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "condition on {uri} not met within 5s; last body: {body}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
 /// Create a workflow and a channel, activate both, and return (channel_name, workflow_id).
 /// Use this helper in tests that need an active channel for data processing.
 pub async fn create_and_activate_channel(

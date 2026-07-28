@@ -58,15 +58,12 @@ async fn test_worker_shutdown_empty_queue() {
     // drops its internal sender — otherwise the channel stays open.
     drop(queue);
 
-    // Shutdown should complete almost immediately with an empty queue
-    let start = std::time::Instant::now();
-    worker_handle.shutdown().await;
-    let elapsed = start.elapsed();
-
-    assert!(
-        elapsed.as_secs() < 2,
-        "Empty queue shutdown took {elapsed:?}, expected near-instant"
-    );
+    // Shutdown of an empty queue must complete promptly. A generous timeout
+    // (not a wall-clock measurement) so a stalled CI runner cannot fail a
+    // healthy shutdown, while a wedged one still gets caught.
+    tokio::time::timeout(std::time::Duration::from_secs(10), worker_handle.shutdown())
+        .await
+        .expect("empty-queue shutdown did not complete within 10s");
 }
 
 /// Verify that in-flight async traces reach a terminal state when

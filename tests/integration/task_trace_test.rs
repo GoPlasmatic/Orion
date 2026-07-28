@@ -123,19 +123,15 @@ async fn sync_request_with_task_details_persists_task_trace_json() {
     let body = body_json(resp).await;
     assert_eq!(status, StatusCode::OK, "POST failed: {body:?}");
 
-    // Allow the trace persistence (sync mode) to settle.
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-    // List traces to find this request's row, then fetch the detail — the
+    // Wait for the sync-mode trace persistence, then fetch the detail — the
     // list is a payload-free projection (S14), so task_trace_json is served
     // only by the single-trace GET.
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v1/data/traces", None))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
+    let body = crate::common::wait_for_body(&app, "/api/v1/data/traces", |b| {
+        b["data"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|r| r["channel"] == channel_name))
+    })
+    .await;
     let row = body["data"]
         .as_array()
         .and_then(|a| a.iter().find(|r| r["channel"] == channel_name))
@@ -195,14 +191,13 @@ async fn sync_request_without_task_details_omits_task_trace_json() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-    let resp = app
-        .clone()
-        .oneshot(json_request("GET", "/api/v1/data/traces", None))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
+    let body = crate::common::wait_for_body(&app, "/api/v1/data/traces", |b| {
+        b["data"]
+            .as_array()
+            .is_some_and(|a| a.iter().any(|r| r["channel"] == channel_name))
+    })
+    .await;
     let row = body["data"]
         .as_array()
         .and_then(|a| a.iter().find(|r| r["channel"] == channel_name))
@@ -256,19 +251,14 @@ async fn sync_get_trace_endpoint_returns_task_trace_json() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Find the trace row id, then fetch it via the single-trace GET endpoint.
-    let resp = app
-        .clone()
-        .oneshot(json_request(
-            "GET",
-            &format!("/api/v1/data/traces?channel={}", channel_name),
-            None,
-        ))
-        .await
-        .unwrap();
-    let body = body_json(resp).await;
+    let body = crate::common::wait_for_body(
+        &app,
+        &format!("/api/v1/data/traces?channel={}", channel_name),
+        |b| b["data"].as_array().is_some_and(|a| !a.is_empty()),
+    )
+    .await;
     let trace_id = body["data"][0]["id"]
         .as_str()
         .expect("expected a trace row")
