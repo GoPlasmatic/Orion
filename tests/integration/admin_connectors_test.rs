@@ -950,6 +950,153 @@ async fn test_connector_url_password_round_trip() {
     );
 }
 
+/// S18 gave one URL two maskable positions (userinfo password + secret-named
+/// query parameter). Rotating one while round-tripping the other still
+/// masked must restore the masked one positionally — the pre-fix behavior
+/// persisted the literal `"******"` as the live credential, because neither
+/// the whole-string restore nor the identity-based detection matched a
+/// partially-edited multi-secret URL.
+#[tokio::test]
+async fn test_connector_multi_secret_url_partial_round_trip() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "s18-multi",
+                "name": "s18-multi",
+                "connector_type": "http",
+                "config": {
+                    "url": "https://svc:oldpass@api.example.com/v1?api_key=real-key&page=2",
+                    "method": "GET"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // GET shows both positions masked.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/connectors/s18-multi",
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let config: serde_json::Value =
+        serde_json::from_str(body["data"]["config_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        config["url"],
+        "https://svc:******@api.example.com/v1?api_key=******&page=2"
+    );
+
+    // Rotate the password, round-trip the query secret still masked.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/s18-multi",
+            Some(json!({"config": {
+                "url": "https://svc:newpass@api.example.com/v1?api_key=******&page=2",
+                "method": "GET"
+            }})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "the still-masked query secret must be restored, not rejected or persisted"
+    );
+
+    // Round-trip once more with everything masked. Restoring requires the
+    // stored values to differ from the mask, so a 200 here proves the first
+    // PUT persisted the real api_key rather than the sentinel — the same
+    // trick as the F34 double round-trip above.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/connectors/s18-multi",
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    let config: serde_json::Value =
+        serde_json::from_str(body["data"]["config_json"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        config["url"],
+        "https://svc:******@api.example.com/v1?api_key=******&page=2"
+    );
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/s18-multi",
+            Some(json!({"config": config})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "second round-trip failed, which means the first PUT persisted the sentinel"
+    );
+}
+
+/// A masked query parameter the stored URL never carried cannot be restored
+/// and must be refused — the sentinel never persists.
+#[tokio::test]
+async fn test_connector_update_rejects_unmatched_url_query_mask() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": "s18-reject",
+                "name": "s18-reject",
+                "connector_type": "http",
+                "config": {"url": "https://api.example.com/v1?page=2", "method": "GET"}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // The stored URL has no api_key parameter, so this mask is not a
+    // round-trip of anything.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/connectors/s18-reject",
+            Some(json!({"config": {
+                "url": "https://api.example.com/v1?page=2&api_key=******",
+                "method": "GET"
+            }})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("url"),
+        "the error must name the offending field, got: {message}"
+    );
+}
+
 /// Config validation moved out of `validate_update_connector` and into the
 /// handler (it has to run *after* masked fields are restored, F34). This is
 /// the end-to-end proof that an explicit type plus a bad config is still

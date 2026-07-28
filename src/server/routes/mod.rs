@@ -15,7 +15,14 @@ use crate::server::state::AppState;
 
 /// `max_admin_body_size` bounds admin request bodies independently of the
 /// data plane (R16) — see [`admin::admin_routes`].
-pub fn api_routes(max_admin_body_size: usize) -> Router<AppState> {
+///
+/// `docs_enabled` gates `/docs` and `/api/v1/openapi.json` (S17, resolved by
+/// [`crate::config::AppConfig::docs_enabled`]): the spec publishes the whole
+/// admin API surface anonymously, so production deployments keep it off by
+/// default. When disabled the routes are simply not registered — both paths
+/// fall through to the 404 fallback rather than answering 401, so their very
+/// existence is not advertised.
+pub fn api_routes(max_admin_body_size: usize, docs_enabled: bool) -> Router<AppState> {
     let router = Router::new()
         .route("/health", get(health_check))
         .route("/healthz", get(liveness_check))
@@ -24,11 +31,16 @@ pub fn api_routes(max_admin_body_size: usize) -> Router<AppState> {
         .nest("/api/v1/admin", admin::admin_routes(max_admin_body_size))
         .nest("/api/v1/data", data::data_routes());
 
-    router
-        .merge(
+    let router = if docs_enabled {
+        router.merge(
             utoipa_swagger_ui::SwaggerUi::new("/docs")
                 .url("/api/v1/openapi.json", openapi::ApiDoc::openapi()),
         )
+    } else {
+        router
+    };
+
+    router
         // R9: without these, an unmatched path and every method mismatch
         // returned a zero-length body, violating the documented contract that
         // "every non-2xx response uses the ErrorResponse envelope". Clients

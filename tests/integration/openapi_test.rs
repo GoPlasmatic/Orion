@@ -268,3 +268,91 @@ async fn test_swagger_ui_accessible() {
         html.chars().take(200).collect::<String>()
     );
 }
+
+// ============================================================
+// S17: the docs surface is gated by server.docs.enabled
+// ============================================================
+
+use orion::config::AppConfig;
+
+fn production_config() -> AppConfig {
+    AppConfig {
+        environment: "production".to_string(),
+        ..AppConfig::default()
+    }
+}
+
+/// In production the spec and Swagger UI are not served by default — the
+/// routes are not registered at all, so both paths 404 (not 401): their
+/// existence is not advertised to anonymous callers.
+#[tokio::test]
+async fn docs_are_404_in_production_by_default() {
+    let app = common::test_app_with_config(production_config()).await;
+
+    for path in ["/docs", "/docs/", "/api/v1/openapi.json"] {
+        let resp = app
+            .clone()
+            .oneshot(common::json_request("GET", path, None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404, "{path} must 404 when docs are disabled");
+        // The 404 goes through the normal fallback, error envelope included.
+        let body = common::body_json(resp).await;
+        assert_eq!(body["error"]["code"], "NOT_FOUND", "{path}");
+    }
+}
+
+/// An explicit `true` wins over the environment: production deployments can
+/// opt back in.
+#[tokio::test]
+async fn explicit_docs_enabled_wins_in_production() {
+    let mut config = production_config();
+    config.server.docs.enabled = Some(true);
+    let app = common::test_app_with_config(config).await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request("GET", "/api/v1/openapi.json", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = common::body_json(resp).await;
+    assert_eq!(body["openapi"], "3.1.0");
+}
+
+/// …and an explicit `false` wins in development.
+#[tokio::test]
+async fn explicit_docs_disabled_wins_in_development() {
+    let mut config = AppConfig::default();
+    config.server.docs.enabled = Some(false);
+    let app = common::test_app_with_config(config).await;
+
+    for path in ["/docs/", "/api/v1/openapi.json"] {
+        let resp = app
+            .clone()
+            .oneshot(common::json_request("GET", path, None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404, "{path} must 404 when docs are disabled");
+    }
+}
+
+/// Disabling the docs must not take the admin or data planes with it.
+#[tokio::test]
+async fn disabling_docs_leaves_the_rest_of_the_api_served() {
+    let app = common::test_app_with_config(production_config()).await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request("GET", "/health", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request("GET", "/api/v1/admin/workflows", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}

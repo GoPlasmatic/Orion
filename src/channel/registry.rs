@@ -11,7 +11,7 @@ use super::routing::{RouteMatch, RouteTable};
 use crate::config::{TraceStorageConfig, TraceStorageMode};
 use crate::connector::ConnectorConfig;
 use crate::connector::ConnectorRegistry;
-use crate::connector::cache_backend::{CacheBackend, CachePool};
+use crate::connector::cache_backend::{CacheBackend, CachePool, CachePurpose};
 use crate::storage::models::Channel;
 
 /// Trace-storage policy resolved for a single channel.
@@ -247,7 +247,7 @@ impl ChannelRegistry {
         connector_registry: &ConnectorRegistry,
         cache_pool: &CachePool,
         connector: Option<&str>,
-        purpose: &str,
+        purpose: CachePurpose,
         channel_name: &str,
     ) -> Result<Arc<dyn CacheBackend>, ChannelLoadIssue> {
         let Some(connector_name) = connector else {
@@ -255,7 +255,7 @@ impl ChannelRegistry {
                 .cluster
                 .as_ref()
                 .and_then(|c| c.default_cache.clone())
-                .unwrap_or_else(|| cache_pool.memory()));
+                .unwrap_or_else(|| cache_pool.default_memory(purpose)));
         };
 
         let strict = self.cluster.is_some();
@@ -269,7 +269,7 @@ impl ChannelRegistry {
                         ))
                     } else {
                         cache_pool
-                            .get_backend(connector_name, cache_cfg)
+                            .get_backend(purpose, connector_name, cache_cfg)
                             .await
                             .map_err(|e| {
                                 format!(
@@ -298,7 +298,7 @@ impl ChannelRegistry {
                     reason = %reason,
                     "{purpose} connector unavailable, falling back to in-memory"
                 );
-                Ok(cache_pool.memory())
+                Ok(cache_pool.default_memory(purpose))
             }
         }
     }
@@ -458,7 +458,7 @@ impl ChannelRegistry {
                             connector_registry,
                             cache_pool,
                             dedup.connector.as_deref(),
-                            "deduplication",
+                            CachePurpose::Dedup,
                             &channel.name,
                         )
                         .await
@@ -482,7 +482,7 @@ impl ChannelRegistry {
                         connector_registry,
                         cache_pool,
                         cache_cfg.connector.as_deref(),
-                        "cache",
+                        CachePurpose::ResponseCache,
                         &channel.name,
                     )
                     .await
@@ -587,7 +587,9 @@ mod tests {
 
     fn cluster_backends() -> ClusterBackends {
         ClusterBackends {
-            default_cache: Some(CachePool::new(4, 60, 1000).memory()),
+            // Stands in for the shared cluster Redis, which serves both
+            // internal purposes (their keys are structurally prefixed).
+            default_cache: Some(CachePool::new(4, 60, 1000).default_memory(CachePurpose::Dedup)),
             redis: None,
         }
     }

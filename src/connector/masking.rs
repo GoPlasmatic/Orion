@@ -8,12 +8,22 @@
 //!      (`credentials`, `auth_token`, …) everything beneath it is masked too,
 //!      whatever the child keys are called.
 //!   2. **By value shape** — any string carrying URL userinfo has its password
-//!      component replaced, at any depth. This is what keeps
-//!      `redis://:PASSWORD@host` and `https://user:pass@es:9200` out of
+//!      component replaced, and any query parameter whose *name* looks secret
+//!      under rule 1 has its value replaced, at any depth. This is what keeps
+//!      `redis://:PASSWORD@host`, `https://user:pass@es:9200` and
+//!      `https://api.example.com/v1?api_key=SECRET` out of
 //!      `GET /api/v1/admin/connectors` while leaving the endpoint itself
 //!      readable, which the admin UI needs.
+//!
+//! Known limitation (S18): a credential embedded in a URL *path* under a
+//! non-secret key — `{"url": "https://hooks.slack.com/services/T00/B00/XX"}`
+//! — is not redacted. A path segment carries no name to judge, and masking
+//! every path would blank the endpoint identity the admin UI exists to show.
+//! Store such URLs under a secret-looking key (`webhook`, `webhook_url`, …);
+//! rule 1 then masks the whole value.
 
 use serde_json::Value;
+use std::collections::HashMap;
 
 pub(crate) const MASK: &str = "******";
 
@@ -34,6 +44,12 @@ const SECRET_KEY_SUBSTRINGS: &[&str] = &[
     "access_key",
     "accesskey",
     "signature",
+    "bearer",
+    // A DSN carries credentials by definition (`dsn`, `sentry_dsn`, …).
+    "dsn",
+    // Webhook URLs are capability tokens in the common idiom (Slack, Teams,
+    // Discord embed the credential in the path), so the whole value is secret.
+    "webhook",
 ];
 
 /// Keys that are secrets only as an exact match.
@@ -48,6 +64,11 @@ const SECRET_KEY_EXACT: &[&str] = &[
     "keytab",
     "authorization",
     "connection_string",
+    // Exact rather than substring: "pat" appears in `path`/`pattern`, and
+    // "sig" in `design`/`signal`. `sig` is the Azure SAS query parameter;
+    // longer forms are caught by the `signature` substring.
+    "pat",
+    "sig",
 ];
 
 /// Whether a scalar stored under `key` should be replaced with [`MASK`].
@@ -57,15 +78,42 @@ fn is_secret_key(key: &str) -> bool {
         || SECRET_KEY_SUBSTRINGS.iter().any(|p| lower.contains(p))
 }
 
-/// Replace the password in a `scheme://user:password@host…` string, preserving
-/// everything else byte-for-byte. Returns `None` when the string carries no
-/// userinfo password, so credential-free URLs are left exactly as authored.
+/// A URL-shaped string split into the segments masking cares about. One
+/// parse shared by redaction ([`redact_url_secrets`]), positional
+/// restoration ([`restore_url_secrets`]) and detection
+/// ([`url_carries_mask`]), so the three can never disagree about what a
+/// maskable position is. `None` from [`split_url`] means the string is not
+/// URL-shaped and none of them apply.
 ///
 /// Hand-rolled rather than parsed with the `url` crate: schemes such as
 /// `SASL_SSL://` are not valid URL schemes but do appear in Kafka broker
-/// lists, and re-serialising a parsed URL rewrites strings that had nothing to
-/// hide (`https://h` → `https://h/`).
-fn redact_url_password(s: &str) -> Option<String> {
+/// lists, and re-serialising a parsed URL rewrites strings that had nothing
+/// to hide (`https://h` → `https://h/`).
+struct SplitUrl<'a> {
+    scheme: &'a str,
+    /// Userinfo username — present exactly when the authority carries a
+    /// `…@`. A username alone is an identity, not a secret, and stays
+    /// readable.
+    user: Option<&'a str>,
+    /// Userinfo password: what follows the first ':' of the userinfo. The
+    /// first maskable position.
+    password: Option<&'a str>,
+    /// Host, port and path — everything between the userinfo (or scheme)
+    /// and the query or fragment. Never masked.
+    host_path: &'a str,
+    /// Query pairs, split on '&'. The value of every secret-named pair is
+    /// the second maskable position. `None` when the URL carries no '?'.
+    query: Option<Vec<QueryPair<'a>>>,
+    fragment: Option<&'a str>,
+}
+
+struct QueryPair<'a> {
+    name: &'a str,
+    /// `None` for a bare token with no '=' — never masked.
+    value: Option<&'a str>,
+}
+
+fn split_url(s: &str) -> Option<SplitUrl<'_>> {
     let (scheme, rest) = s.split_once("://")?;
     if scheme.is_empty()
         || !scheme
@@ -74,11 +122,195 @@ fn redact_url_password(s: &str) -> Option<String> {
     {
         return None;
     }
-    // Userinfo lives before the first '/', '?' or '#' that ends the authority.
+
+    // The userinfo section lives before the first '/', '?' or '#' that ends
+    // the authority; an '@' anywhere later is path, query or fragment data.
     let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let at = rest[..authority_end].rfind('@')?;
-    let (user, _password) = rest[..at].split_once(':')?;
-    Some(format!("{scheme}://{user}:{MASK}@{}", &rest[at + 1..]))
+    let (user, password, after_userinfo) = match rest[..authority_end].rfind('@') {
+        Some(at) => {
+            let (user, password) = match rest[..at].split_once(':') {
+                Some((user, password)) => (user, Some(password)),
+                None => (&rest[..at], None),
+            };
+            (Some(user), password, &rest[at + 1..])
+        }
+        None => (None, None, rest),
+    };
+
+    // The query lives between the first '?' and the fragment, which starts
+    // at the first '#'.
+    let (main, fragment) = match after_userinfo.split_once('#') {
+        Some((main, fragment)) => (main, Some(fragment)),
+        None => (after_userinfo, None),
+    };
+    let (host_path, query) = match main.split_once('?') {
+        Some((host_path, query)) => {
+            let pairs = query
+                .split('&')
+                .map(|pair| match pair.split_once('=') {
+                    Some((name, value)) => QueryPair {
+                        name,
+                        value: Some(value),
+                    },
+                    None => QueryPair {
+                        name: pair,
+                        value: None,
+                    },
+                })
+                .collect();
+            (host_path, Some(pairs))
+        }
+        None => (main, None),
+    };
+
+    Some(SplitUrl {
+        scheme,
+        user,
+        password,
+        host_path,
+        query,
+        fragment,
+    })
+}
+
+/// Reassemble a [`SplitUrl`], byte-for-byte for every segment the caller did
+/// not replace. `password` is the (possibly replaced) userinfo password and
+/// `query` the (possibly replaced) rendered pair list.
+fn assemble_url(url: &SplitUrl<'_>, password: Option<&str>, query: Option<&[String]>) -> String {
+    let mut out = format!("{}://", url.scheme);
+    if let Some(user) = url.user {
+        out.push_str(user);
+        if let Some(password) = password {
+            out.push(':');
+            out.push_str(password);
+        }
+        out.push('@');
+    }
+    out.push_str(url.host_path);
+    if let Some(pairs) = query {
+        out.push('?');
+        out.push_str(&pairs.join("&"));
+    }
+    if let Some(fragment) = url.fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
+}
+
+/// Render a query pair back to its wire form.
+fn render_pair(name: &str, value: Option<&str>) -> String {
+    match value {
+        Some(value) => format!("{name}={value}"),
+        None => name.to_string(),
+    }
+}
+
+/// Replace the secrets a URL-shaped string carries in-band, preserving
+/// everything else byte-for-byte: the userinfo password
+/// (`scheme://user:password@host…`) and the value of every query parameter
+/// whose name satisfies [`is_secret_key`] (`?api_key=…`, `?sig=…`) — one
+/// predicate, two positions (S18). Returns `None` when the string carries
+/// neither, so credential-free URLs are left exactly as authored.
+fn redact_url_secrets(s: &str) -> Option<String> {
+    let url = split_url(s)?;
+    let mut changed = false;
+
+    let password = url.password.map(|_| {
+        changed = true;
+        MASK
+    });
+
+    let query: Option<Vec<String>> = url.query.as_ref().map(|pairs| {
+        pairs
+            .iter()
+            .map(|pair| match pair.value {
+                Some(_) if is_secret_key(pair.name) => {
+                    changed = true;
+                    render_pair(pair.name, Some(MASK))
+                }
+                value => render_pair(pair.name, value),
+            })
+            .collect()
+    });
+
+    changed.then(|| assemble_url(&url, password, query.as_deref()))
+}
+
+/// Positional inverse of [`redact_url_secrets`] for the F34 round-trip: each
+/// position of `incoming` that still reads as the mask sentinel gets its
+/// value back from the *same position* of `stored`, independently. S18 gave
+/// one string up to two kinds of maskable position (userinfo password +
+/// secret-named query values), so a client can rotate one secret while
+/// round-tripping the others still masked — whole-string comparison alone
+/// cannot match such a URL and would leave the sentinel in place.
+///
+/// Returns `Some` when at least one position was restored. A masked position
+/// with no stored counterpart — no stored password, no stored query pair of
+/// that name, or a non-secret parameter name masking could never have
+/// produced — is left carrying the sentinel, exactly like an unmatched
+/// whole-value mask, for [`find_masked_value`] to reject.
+fn restore_url_secrets(incoming: &str, stored: &str) -> Option<String> {
+    let inc = split_url(incoming)?;
+    let st = split_url(stored)?;
+    let mut restored = false;
+
+    let password = match inc.password {
+        Some(p) if p == MASK => match st.password {
+            Some(stored_password) => {
+                restored = true;
+                Some(stored_password)
+            }
+            None => Some(p),
+        },
+        other => other,
+    };
+
+    // Pairs match by name and occurrence, so duplicate-named parameters
+    // restore in order and an edit elsewhere in the query cannot shift a
+    // secret onto the wrong counterpart.
+    let stored_pairs = st.query.unwrap_or_default();
+    let mut occurrences: HashMap<&str, usize> = HashMap::new();
+    let query: Option<Vec<String>> = inc.query.as_ref().map(|pairs| {
+        pairs
+            .iter()
+            .map(|pair| {
+                let occurrence = occurrences.entry(pair.name).or_insert(0);
+                let counterpart = stored_pairs
+                    .iter()
+                    .filter(|sp| sp.name == pair.name)
+                    .nth(*occurrence)
+                    .and_then(|sp| sp.value);
+                *occurrence += 1;
+                match pair.value {
+                    Some(v) if v == MASK && is_secret_key(pair.name) && counterpart.is_some() => {
+                        restored = true;
+                        render_pair(pair.name, counterpart)
+                    }
+                    value => render_pair(pair.name, value),
+                }
+            })
+            .collect()
+    });
+
+    restored.then(|| assemble_url(&inc, password, query.as_deref()))
+}
+
+/// Whether a URL-shaped string still carries the mask sentinel in a maskable
+/// position: the userinfo password, or *any* query value — even under a
+/// non-secret name, because a sentinel there has no stored counterpart by
+/// construction and must be rejected, never persisted. Positional on purpose
+/// (S18): one freshly rotated secret must not launder the other position's
+/// sentinel past the guard, which is exactly what a whole-string identity
+/// check allowed.
+fn url_carries_mask(s: &str) -> bool {
+    let Some(url) = split_url(s) else {
+        return false;
+    };
+    url.password == Some(MASK)
+        || url
+            .query
+            .is_some_and(|pairs| pairs.iter().any(|pair| pair.value == Some(MASK)))
 }
 
 /// Walk the config tree masking secrets. `force` propagates down from a key
@@ -103,7 +335,7 @@ fn mask_in_place(value: &mut Value, key: Option<&str>, force: bool) {
         Value::String(s) => {
             if secret {
                 *s = MASK.to_string();
-            } else if let Some(redacted) = redact_url_password(s) {
+            } else if let Some(redacted) = redact_url_secrets(s) {
                 *s = redacted;
             }
         }
@@ -149,7 +381,10 @@ pub fn mask_connector(
 /// re-testing key names: that covers whole-value masks
 /// (`"password": "******"`), the URL form (`"url": "redis://u:******@host"`),
 /// and any masking rule added later, with no second copy of the logic to keep
-/// in sync.
+/// in sync. A URL that matches neither the stored value nor its masked form
+/// is restored *per position* instead ([`restore_url_secrets`]) — S18 gave
+/// one string several maskable positions, and a client may rotate one secret
+/// while round-tripping the others still masked.
 ///
 /// Anything still carrying a mask afterwards had no stored counterpart to
 /// restore from — a genuinely new field, or a config whose shape changed — and
@@ -182,6 +417,14 @@ fn restore_in_place(incoming: &mut Value, stored: &Value, masked: &Value) {
             // the mask string.
             if inc == masked_value && inc != stored_value {
                 *inc = stored_value.clone();
+            } else if let (Value::String(inc_s), Value::String(stored_s)) = (inc, stored_value)
+                && let Some(restored) = restore_url_secrets(inc_s, stored_s)
+            {
+                // A URL equal to neither the stored value nor its fully
+                // masked form was partially edited — restore each position
+                // still carrying the mask independently, keeping the
+                // caller's edits.
+                *inc_s = restored;
             }
         }
     }
@@ -214,12 +457,11 @@ pub fn find_masked_value(value: &Value) -> Option<String> {
                     walk(item, &format!("{path}[{i}]"), out);
                 }
             }
-            // Either the whole value is the mask, or it is a URL whose
-            // password component already reads as the mask — re-masking it
-            // would be a no-op.
-            Value::String(s)
-                if s == MASK || redact_url_password(s).as_deref() == Some(s.as_str()) =>
-            {
+            // Either the whole value is the mask, or a maskable URL
+            // position still reads as the mask after restoration — checked
+            // per position, so one rotated secret cannot smuggle a second,
+            // unrestorable sentinel through alongside it.
+            Value::String(s) if s == MASK || url_carries_mask(s) => {
                 *out = Some(path.to_string());
             }
             _ => {}
@@ -359,14 +601,150 @@ mod tests {
         assert_eq!(val["token"], "******");
     }
 
+    /// Rewritten for S18: the original pinned "only userinfo is redacted",
+    /// which is exactly the gap — query-string secrets round-tripped in the
+    /// clear. What must still be left alone: non-URLs, and URLs whose
+    /// userinfo and query carry nothing secret-looking.
     #[test]
-    fn redact_url_password_ignores_non_urls_and_credential_free_urls() {
-        assert_eq!(redact_url_password("plain text"), None);
-        assert_eq!(redact_url_password("https://example.com/a?b=c"), None);
+    fn redact_url_secrets_ignores_non_urls_and_credential_free_urls() {
+        assert_eq!(redact_url_secrets("plain text"), None);
+        // An innocuously-named query parameter is not a credential.
+        assert_eq!(redact_url_secrets("https://example.com/a?b=c"), None);
+        assert_eq!(
+            redact_url_secrets("https://example.com/search?q=orion&page=2"),
+            None
+        );
         // A username with no password is an identity, not a secret.
-        assert_eq!(redact_url_password("postgres://user@host/db"), None);
+        assert_eq!(redact_url_secrets("postgres://user@host/db"), None);
         // A '@' in the path must not be mistaken for userinfo.
-        assert_eq!(redact_url_password("https://host/path@here"), None);
+        assert_eq!(redact_url_secrets("https://host/path@here"), None);
+    }
+
+    // ---------------------------------------------------------------
+    // S18: query-string and path-embedded secrets
+    // ---------------------------------------------------------------
+
+    /// The motivating case: `?api_key=SECRET` used to round-trip through
+    /// `GET /admin/connectors` in the clear.
+    #[test]
+    fn query_string_secret_is_redacted() {
+        let config = r#"{"type":"http","url":"https://api.example.com/v1?api_key=SECRET&page=2"}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
+        assert_eq!(
+            val["url"],
+            "https://api.example.com/v1?api_key=******&page=2"
+        );
+    }
+
+    /// Same predicate, second position: every name `is_secret_key` catches
+    /// for object keys is caught as a query-parameter name too.
+    #[test]
+    fn query_parameter_names_use_the_same_predicate_as_keys() {
+        for (url, expected) in [
+            // Azure SAS-style `sig` (exact match).
+            (
+                "https://acct.blob.example.com/c/b?se=2026-01-01&sig=fzo7Ax8u",
+                "https://acct.blob.example.com/c/b?se=2026-01-01&sig=******",
+            ),
+            // AWS presigned-style `X-Amz-Signature` (substring, case-insensitive).
+            (
+                "https://s3.example.com/k?X-Amz-Signature=abc123",
+                "https://s3.example.com/k?X-Amz-Signature=******",
+            ),
+            (
+                "https://api.example.com/cb?access_token=tok&state=xyz",
+                "https://api.example.com/cb?access_token=******&state=xyz",
+            ),
+        ] {
+            assert_eq!(redact_url_secrets(url).as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn userinfo_and_query_secrets_are_both_redacted_in_one_url() {
+        assert_eq!(
+            redact_url_secrets("https://svc:hunter2@api.example.com/v1?token=t0k3n#frag")
+                .as_deref(),
+            Some("https://svc:******@api.example.com/v1?token=******#frag")
+        );
+    }
+
+    /// A secret-looking name inside the *fragment* must not be redacted as a
+    /// query parameter — the query ends at the first '#'.
+    #[test]
+    fn fragment_is_not_treated_as_query() {
+        assert_eq!(
+            redact_url_secrets("https://example.com/docs?page=2#api_key=example"),
+            None
+        );
+    }
+
+    /// The documented S18 limitation, pinned so a change here is a conscious
+    /// one: a path-embedded capability token under a non-secret key is NOT
+    /// redacted (a path segment carries no name to judge). The mitigation is
+    /// the key-name rule: the `webhook` denylist term masks the whole value.
+    #[test]
+    fn path_embedded_tokens_rely_on_the_key_name_rule() {
+        // Under a generic key the path token stays readable — the limitation.
+        assert_eq!(
+            redact_url_secrets("https://hooks.slack.com/services/T00/B00/XXXX"),
+            None
+        );
+        // Under a webhook-named key the whole URL is masked — the mitigation.
+        let config = r#"{"type":"http","webhook_url":"https://hooks.slack.com/services/T00/B00/XXXX","url":"https://api.example.com"}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
+        assert_eq!(val["webhook_url"], "******");
+        assert_eq!(val["url"], "https://api.example.com");
+    }
+
+    /// S18 widened the key denylist; each addition in its intended shape.
+    #[test]
+    fn extended_denylist_terms_are_masked() {
+        let config = r#"{"type":"http","bearer":"b","sentry_dsn":"https://k@sentry.example/1","webhook":"https://hooks.example/T/B/X","pat":"ghp_abc","sig":"xyz","pattern":"/orders/{id}","path":"/v1"}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
+        assert_eq!(val["bearer"], "******");
+        assert_eq!(val["sentry_dsn"], "******");
+        assert_eq!(val["webhook"], "******");
+        assert_eq!(val["pat"], "******");
+        assert_eq!(val["sig"], "******");
+        // "pat"/"sig" are exact matches precisely so these stay readable.
+        assert_eq!(val["pattern"], "/orders/{id}");
+        assert_eq!(val["path"], "/v1");
+    }
+
+    /// F34 round-trip for the query form: a GET → edit → PUT cycle must
+    /// restore the real query secret, not persist the mask.
+    #[test]
+    fn test_unmask_restores_query_secret() {
+        let stored: Value = serde_json::from_str(
+            r#"{"type":"http","url":"https://api.example.com/v1?api_key=real-key&page=2"}"#,
+        )
+        .expect("test");
+        let mut incoming: Value =
+            serde_json::from_str(&mask_connector_secrets(&stored.to_string())).expect("test");
+        assert_eq!(
+            incoming["url"],
+            "https://api.example.com/v1?api_key=******&page=2"
+        );
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(
+            incoming["url"],
+            "https://api.example.com/v1?api_key=real-key&page=2"
+        );
+        assert_eq!(find_masked_value(&incoming), None);
+    }
+
+    #[test]
+    fn test_find_masked_value_detects_the_query_form() {
+        let config: Value =
+            serde_json::from_str(r#"{"url":"https://api.example.com/v1?api_key=******"}"#)
+                .expect("test");
+        assert_eq!(find_masked_value(&config).as_deref(), Some("url"));
     }
 
     #[test]
@@ -499,6 +877,164 @@ mod tests {
         unmask_config(&mut incoming, &stored);
 
         assert_eq!(find_masked_value(&incoming).as_deref(), Some("password"));
+    }
+
+    // ---------------------------------------------------------------
+    // S18 follow-up: positional restore for multi-secret URLs
+    // ---------------------------------------------------------------
+
+    /// (a) Both positions still masked: the untouched round-trip restores
+    /// both real secrets.
+    #[test]
+    fn test_unmask_restores_both_url_positions() {
+        let stored: Value = serde_json::from_str(
+            r#"{"type":"http","url":"https://svc:hunter2@api.example.com/v1?api_key=real-key&page=2"}"#,
+        )
+        .expect("test");
+        let mut incoming: Value =
+            serde_json::from_str(&mask_connector_secrets(&stored.to_string())).expect("test");
+        assert_eq!(
+            incoming["url"],
+            "https://svc:******@api.example.com/v1?api_key=******&page=2"
+        );
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(
+            incoming["url"],
+            "https://svc:hunter2@api.example.com/v1?api_key=real-key&page=2"
+        );
+        assert_eq!(find_masked_value(&incoming), None);
+    }
+
+    /// (b) The password rotates while the query secret rides along masked:
+    /// the masked position restores from the stored original and the
+    /// rotation survives. This exact shape used to persist the literal
+    /// sentinel as the live credential — the whole-string restore could not
+    /// match a partially-edited URL, and the identity-based detection did
+    /// not fire because the fresh password re-masked to something else.
+    #[test]
+    fn test_unmask_restores_query_secret_while_password_rotates() {
+        let stored: Value = serde_json::from_str(
+            r#"{"url":"https://svc:oldpass@api.example.com/v1?api_key=real-key&page=2"}"#,
+        )
+        .expect("test");
+        let mut incoming: Value = serde_json::from_str(
+            r#"{"url":"https://svc:newpass@api.example.com/v1?api_key=******&page=2"}"#,
+        )
+        .expect("test");
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(
+            incoming["url"],
+            "https://svc:newpass@api.example.com/v1?api_key=real-key&page=2"
+        );
+        assert_eq!(find_masked_value(&incoming), None);
+    }
+
+    /// (b, mirrored) The query secret rotates while the password rides
+    /// along masked.
+    #[test]
+    fn test_unmask_restores_password_while_query_secret_rotates() {
+        let stored: Value = serde_json::from_str(
+            r#"{"url":"https://svc:oldpass@api.example.com/v1?api_key=old-key"}"#,
+        )
+        .expect("test");
+        let mut incoming: Value = serde_json::from_str(
+            r#"{"url":"https://svc:******@api.example.com/v1?api_key=new-key"}"#,
+        )
+        .expect("test");
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(
+            incoming["url"],
+            "https://svc:oldpass@api.example.com/v1?api_key=new-key"
+        );
+        assert_eq!(find_masked_value(&incoming), None);
+    }
+
+    /// (c) Two masked query secrets restore independently — an unrelated
+    /// query edit in between proves the whole-string path is not doing the
+    /// work.
+    #[test]
+    fn test_unmask_restores_two_query_secrets_independently() {
+        let stored: Value = serde_json::from_str(
+            r#"{"url":"https://api.example.com/v1?api_key=k1&page=2&access_token=k2"}"#,
+        )
+        .expect("test");
+        let mut incoming: Value = serde_json::from_str(
+            r#"{"url":"https://api.example.com/v1?api_key=******&page=3&access_token=******"}"#,
+        )
+        .expect("test");
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(
+            incoming["url"],
+            "https://api.example.com/v1?api_key=k1&page=3&access_token=k2"
+        );
+        assert_eq!(find_masked_value(&incoming), None);
+    }
+
+    /// A masked query parameter the stored URL never carried has no
+    /// counterpart: left for rejection, the same contract as a whole-value
+    /// mask with no stored field.
+    #[test]
+    fn test_unmask_leaves_unmatched_query_mask_for_rejection() {
+        let stored: Value =
+            serde_json::from_str(r#"{"url":"https://api.example.com/v1?page=2"}"#).expect("test");
+        let mut incoming: Value =
+            serde_json::from_str(r#"{"url":"https://api.example.com/v1?page=2&api_key=******"}"#)
+                .expect("test");
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(find_masked_value(&incoming).as_deref(), Some("url"));
+    }
+
+    /// A masked password over a stored URL that has none: same rejection.
+    #[test]
+    fn test_unmask_leaves_unmatched_url_password_for_rejection() {
+        let stored: Value =
+            serde_json::from_str(r#"{"url":"https://api.example.com/v1"}"#).expect("test");
+        let mut incoming: Value =
+            serde_json::from_str(r#"{"url":"https://svc:******@api.example.com/v1"}"#)
+                .expect("test");
+
+        unmask_config(&mut incoming, &stored);
+
+        assert_eq!(find_masked_value(&incoming).as_deref(), Some("url"));
+    }
+
+    /// Detection is positional too: a fresh secret in one position must not
+    /// launder the sentinel in the other past the write guard. Under the
+    /// old whole-string identity check both of these passed undetected.
+    #[test]
+    fn test_find_masked_value_detects_partially_masked_urls() {
+        let config: Value = serde_json::from_str(
+            r#"{"url":"https://svc:newpass@api.example.com/v1?api_key=******"}"#,
+        )
+        .expect("test");
+        assert_eq!(find_masked_value(&config).as_deref(), Some("url"));
+
+        let config: Value = serde_json::from_str(
+            r#"{"url":"https://svc:******@api.example.com/v1?api_key=fresh"}"#,
+        )
+        .expect("test");
+        assert_eq!(find_masked_value(&config).as_deref(), Some("url"));
+    }
+
+    /// The sentinel is rejected under a non-secret parameter name too:
+    /// masking never produces it there, so it can never be restored, and it
+    /// must never persist as data either.
+    #[test]
+    fn test_find_masked_value_detects_the_sentinel_under_any_query_name() {
+        let config: Value =
+            serde_json::from_str(r#"{"url":"https://api.example.com/v1?page=******"}"#)
+                .expect("test");
+        assert_eq!(find_masked_value(&config).as_deref(), Some("url"));
     }
 
     #[test]

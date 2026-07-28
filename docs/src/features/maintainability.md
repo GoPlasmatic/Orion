@@ -32,7 +32,7 @@ curl -s http://localhost:8080/api/v1/admin/engine/status
 curl -s -X POST http://localhost:8080/api/v1/admin/engine/reload
 ```
 
-**OpenAPI / Swagger UI:** interactive API documentation is always available at `/docs`, and the OpenAPI 3.0 spec at `/api/v1/openapi.json`.
+**OpenAPI / Swagger UI:** interactive API documentation at `/docs`, and the OpenAPI 3.1 spec at `/api/v1/openapi.json`. Both are gated by `server.docs.enabled` — unset serves them only outside production, because the spec publishes the complete admin API surface to anonymous callers. `orion-server dump-openapi` writes the spec offline regardless.
 
 ## CI/CD Integration
 

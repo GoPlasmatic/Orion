@@ -26,7 +26,7 @@ pub use observability::{
 };
 pub use query::QueryConfig;
 pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
-pub use server::{CompressionConfig, IngestConfig, ServerConfig, TlsConfig};
+pub use server::{CompressionConfig, DocsConfig, IngestConfig, ServerConfig, TlsConfig};
 pub use storage::StorageConfig;
 pub use trace_queue::TraceQueueConfig;
 pub use write::WriteConfig;
@@ -106,6 +106,18 @@ impl AppConfig {
     /// Returns true when the environment is a production variant.
     pub fn is_production(&self) -> bool {
         self.environment.to_lowercase().starts_with("prod")
+    }
+
+    /// Whether `/docs` and `/api/v1/openapi.json` are served (S17).
+    ///
+    /// `server.docs.enabled` when set; otherwise enabled exactly when the
+    /// environment is not a production variant — the same prefix rule that
+    /// turns the admin-auth and CORS-wildcard checks fatal.
+    pub fn docs_enabled(&self) -> bool {
+        self.server
+            .docs
+            .enabled
+            .unwrap_or_else(|| !self.is_production())
     }
 }
 

@@ -20,6 +20,8 @@ pub struct ServerConfig {
     pub tls: TlsConfig,
     /// Response compression configuration.
     pub compression: CompressionConfig,
+    /// Interactive API documentation (`/docs`, `/api/v1/openapi.json`).
+    pub docs: DocsConfig,
     /// Maximum request body size for the admin API, in bytes.
     ///
     /// R16: the body limit used to be one global layer set from
@@ -41,6 +43,7 @@ impl Default for ServerConfig {
             shutdown_force_timeout_secs: 30,
             tls: TlsConfig::default(),
             compression: CompressionConfig::default(),
+            docs: DocsConfig::default(),
             // 8 MB: room for a full workflow export round-trip (the largest
             // legitimate admin body) without inviting one.
             max_admin_body_size: 8 * 1_048_576,
@@ -96,6 +99,25 @@ impl IngestConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct CompressionConfig {
     pub enabled: bool,
+}
+
+/// Gate for the interactive API documentation surface: Swagger UI at `/docs`
+/// and the spec at `/api/v1/openapi.json` (S17).
+///
+/// The spec publishes the complete admin API surface — route shapes, request
+/// schemas, the `admin_auth.header` semantics — and both endpoints are
+/// unauthenticated, so production deployments should not serve them to
+/// anonymous callers. The `dump-openapi` subcommand covers offline spec
+/// generation regardless of this setting.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DocsConfig {
+    /// Serve `/docs` and `/api/v1/openapi.json`. Unset (the default) means
+    /// "enabled outside production": the same `environment` prefix rule that
+    /// gates the admin-auth and CORS production checks decides. An explicit
+    /// `true`/`false` always wins. When disabled the routes are not
+    /// registered at all, so both paths 404.
+    pub enabled: Option<bool>,
 }
 
 /// TLS configuration for HTTPS support.

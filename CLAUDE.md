@@ -38,7 +38,7 @@ All capabilities are compiled into a single binary — no feature flags. Behavio
 | OpenTelemetry | `tracing.enabled` | Disabled |
 | Trace persistence mode | `trace_storage.mode` (`sync` / `async` / `batch` / `off`) — global default with per-channel override via `config.tracing` | Sync |
 | TLS/HTTPS | `server.tls.enabled` | Disabled |
-| Swagger UI | Always at `/docs` | Enabled |
+| Swagger UI / OpenAPI spec | `server.docs.enabled` (unset = enabled outside production) | Enabled outside production |
 | SQL connectors | `db_read`/`db_write` functions | Always available |
 | Redis cache | `cache_read`/`cache_write` with Redis backend | Always available |
 | MongoDB connector | `mongo_read` function | Always available |
@@ -121,7 +121,7 @@ HTTP Request → Axum Router → Data Route Handler
   - **Backups:** create and list SQLite backups (`VACUUM INTO`, refused in cluster mode). There is **no restore endpoint** — restore is an offline stop/replace-file/start procedure; PostgreSQL and MySQL have no in-product backup and rely on operator snapshot/PITR tooling. See `docs/src/features/maintainability.md`.
 - **Data** (`/api/v1/data/`): Dynamic handler `/{*path}` — resolves to channel via REST route match or name lookup. Supports sync and async (trailing `/async`). Trace list/get endpoints.
 - **Operational:** `GET /health`, `GET /healthz` (liveness), `GET /readyz` (readiness), `GET /metrics`
-- **API docs:** `GET /docs` (Swagger UI), `GET /api/v1/openapi.json`
+- **API docs:** `GET /docs` (Swagger UI), `GET /api/v1/openapi.json` — gated by `server.docs.enabled` (unset = served only outside production; 404 when disabled)
 
 ### Database
 

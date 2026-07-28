@@ -115,6 +115,9 @@ where
     ov!(server.tls.cert_path: String);
     ov!(server.tls.key_path: String);
     ov!(server.compression.enabled: bool);
+    // Option<bool>: an empty value restores the unset default ("enabled
+    // outside production").
+    ov_opt!(server.docs.enabled: bool);
     ov!(server.max_admin_body_size: usize);
 
     // Storage
@@ -496,6 +499,24 @@ mod tests {
         apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
 
         assert_eq!(config.rate_limit.endpoints.admin_rps, None);
+    }
+
+    /// S17: the docs gate is an `Option<bool>` — settable both ways, and an
+    /// empty value restores "unset" (enabled outside production).
+    #[test]
+    fn test_env_override_docs_enabled() {
+        let mut env = HashMap::new();
+        env.insert("ORION_SERVER__DOCS__ENABLED", "true");
+        let mut config = AppConfig::default();
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
+        assert_eq!(config.server.docs.enabled, Some(true));
+
+        let mut env = HashMap::new();
+        env.insert("ORION_SERVER__DOCS__ENABLED", "");
+        let mut config = AppConfig::default();
+        config.server.docs.enabled = Some(false);
+        apply_env_overrides_with(&mut config, make_env_reader(&env)).expect("test");
+        assert_eq!(config.server.docs.enabled, None);
     }
 
     #[test]

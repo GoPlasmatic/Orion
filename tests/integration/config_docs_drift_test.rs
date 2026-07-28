@@ -51,6 +51,8 @@ const ENV_OVERRIDES_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/
 /// so their value is not compared — but the path still has to be real, and
 /// everything *not* listed here is compared against the struct default.
 const NO_DEFAULT: &[&str] = &[
+    // Option<bool>: unset means "enabled outside production" (S17).
+    "server.docs.enabled",
     // Option<String>: unset leaves the librdkafka default untouched.
     "kafka.auth.security_protocol",
     "kafka.auth.sasl_mechanism",

@@ -58,6 +58,15 @@
 # responses are typically large.
 # enabled = false
 
+# [server.docs]
+# Swagger UI (/docs) and the OpenAPI spec (/api/v1/openapi.json). Both are
+# unauthenticated and the spec publishes the complete admin API surface, so
+# when `enabled` is unset (the default) they are served only when
+# `environment` is NOT a production variant. An explicit true/false always
+# wins. Disabled means the routes are not registered at all (404, not 401).
+# `orion-server dump-openapi` writes the spec offline regardless.
+# enabled = true
+
 [storage]
 # url = "sqlite:orion.db"      # sqlite: / postgres:// / mysql:// — picks the backend at runtime
 # max_connections = 50         # Pool ceiling. Size against the server's own limit:
@@ -100,11 +109,16 @@
                                            # shorter connector/task timeouts still win
 # max_pool_cache_entries = 100             # Cached connection pools per external backend (LRU)
 # cache_cleanup_interval_secs = 60         # Sweep interval for expired cache entries
-# max_memory_cache_entries = 100000        # Bound on the shared in-memory cache (default dedup
-                                           # store, default response cache, and every
-                                           # `backend = "memory"` cache connector). LRU-evicted
-                                           # on insert. 0 disables the bound — entries written
-                                           # without a TTL are then never reclaimed.
+# max_memory_cache_entries = 100000        # Per-namespace bound on the in-memory caches: the
+                                           # default dedup store, the default response cache, and
+                                           # every (purpose, connector) use of a
+                                           # `backend = "memory"` connector each get their own
+                                           # store with this bound, so worst-case resident
+                                           # entries are this value times the namespace count
+                                           # (2 built-in stores + up to 3 per memory connector).
+                                           # LRU-evicted on insert. 0 disables the bound —
+                                           # entries written without a TTL are then never
+                                           # reclaimed.
 # rollout_sticky_header = ""               # Header identifying the caller for sticky canary
                                            # bucketing, e.g. "x-user-id". Empty falls back to the
                                            # forwarded client IP; with neither, each request is

@@ -55,11 +55,15 @@ const EVICTION_BATCH_DIVISOR: usize = 10;
 /// In-process cache backed by [`DashMap`], bounded by `max_entries` with
 /// approximate-LRU eviction.
 ///
-/// The bound is not decorative: this instance backs the default dedup store,
-/// the default response cache, and every `cache_write` to a `backend:
-/// "memory"` connector, and `set()` (no TTL) stores entries the expiry sweep
-/// can never reclaim — so without it, workflow config alone can OOM the
-/// process.
+/// One instance exists **per namespace** (S19): the built-in dedup store,
+/// the built-in response cache, and every `(purpose, connector)` use of a
+/// `backend: "memory"` connector each get their own, so `max_entries`
+/// (`engine.max_memory_cache_entries`) is a per-namespace budget — each
+/// instance carries its own bound and cleanup task, and the process-wide
+/// worst case is `max_entries × number of namespaces`, not one shared
+/// budget. The bound is not decorative: `set()` (no TTL) stores entries the
+/// expiry sweep can never reclaim, so without it workflow config alone can
+/// OOM the process.
 pub struct MemoryCacheBackend {
     entries: DashMap<String, MemoryEntry>,
     /// `0` = unbounded (opt-out).
@@ -298,9 +302,58 @@ impl CacheBackend for RedisCacheBackend {
 // CachePool — dispatches to the correct backend
 // ============================================================
 
+/// What a cache backend is being used *for*. In-memory backends are
+/// namespaced by purpose and connector name (S19): before this, every
+/// `backend: "memory"` connector AND both internal stores shared one
+/// instance, so a workflow `cache_write` with a crafted `dedup:{channel}:…`
+/// key could manufacture a 409 for a real request or forge a cached
+/// response, two memory connectors silently shared one keyspace, and the
+/// LRU bound was one shared budget.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CachePurpose {
+    /// Workflow-facing `cache_read` / `cache_write`.
+    Workflow,
+    /// The channel deduplication (idempotency) store.
+    Dedup,
+    /// The channel response cache.
+    ResponseCache,
+}
+
+impl CachePurpose {
+    /// Stable namespace segment. Purpose-only for the built-in default
+    /// store, `purpose:connector` for a named connector — the two can never
+    /// collide because connector names are non-empty.
+    fn as_str(self) -> &'static str {
+        match self {
+            CachePurpose::Workflow => "workflow",
+            CachePurpose::Dedup => "dedup",
+            CachePurpose::ResponseCache => "response_cache",
+        }
+    }
+}
+
+/// Human label for log lines and quarantine reasons.
+impl std::fmt::Display for CachePurpose {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CachePurpose::Workflow => "workflow cache",
+            CachePurpose::Dedup => "deduplication",
+            CachePurpose::ResponseCache => "response cache",
+        })
+    }
+}
+
 /// Holds both backend implementations and dispatches based on connector config.
 pub struct CachePool {
-    memory: Arc<MemoryCacheBackend>,
+    /// One in-memory instance per namespace (see [`CachePurpose`]), created
+    /// lazily and kept for the life of the process — like the single shared
+    /// instance before it, entries survive connector reloads and engine
+    /// reloads, and only a restart clears them. Distinct instances rather
+    /// than key prefixes so each namespace also gets its own LRU budget: a
+    /// hot workflow cache can no longer evict dedup entries.
+    memory: DashMap<String, Arc<MemoryCacheBackend>>,
+    cleanup_interval_secs: u64,
+    max_memory_cache_entries: usize,
     redis: Arc<super::redis_pool::RedisPoolCache>,
 }
 
@@ -311,21 +364,42 @@ impl CachePool {
         max_memory_cache_entries: usize,
     ) -> Self {
         Self {
-            memory: MemoryCacheBackend::new(cleanup_interval_secs, max_memory_cache_entries),
+            memory: DashMap::new(),
+            cleanup_interval_secs,
+            max_memory_cache_entries,
             redis: Arc::new(super::redis_pool::RedisPoolCache::new(
                 max_redis_pool_entries,
             )),
         }
     }
 
-    /// Get a cache backend for the given connector.
+    /// The in-memory instance for `namespace`, created on first use.
+    fn memory_namespace(&self, namespace: String) -> Arc<dyn CacheBackend> {
+        self.memory
+            .entry(namespace)
+            .or_insert_with(|| {
+                MemoryCacheBackend::new(self.cleanup_interval_secs, self.max_memory_cache_entries)
+            })
+            .clone() as Arc<dyn CacheBackend>
+    }
+
+    /// Get a cache backend for the given connector, scoped to `purpose`.
+    ///
+    /// Memory backends are isolated per `(purpose, connector)`. Redis
+    /// backends are not: Redis is an external store the operator points
+    /// connectors at, its data must survive restarts and be shared across
+    /// nodes, and workflows legitimately read keys written by other systems
+    /// through it. Pointing a workflow cache connector at the same Redis
+    /// database as a channel's dedup store therefore shares a keyspace —
+    /// use separate databases (`redis://host/0`, `/1`, …) to isolate them.
     pub async fn get_backend(
         &self,
+        purpose: CachePurpose,
         connector_name: &str,
         config: &CacheConnectorConfig,
     ) -> Result<Arc<dyn CacheBackend>, OrionError> {
         match config.backend.as_str() {
-            "memory" => Ok(self.memory.clone() as Arc<dyn CacheBackend>),
+            "memory" => Ok(self.memory_namespace(format!("{}:{connector_name}", purpose.as_str()))),
             "redis" => {
                 let conn = self.redis.get_conn(connector_name, config).await?;
                 Ok(Arc::new(RedisCacheBackend::new(conn)))
@@ -336,12 +410,16 @@ impl CachePool {
         }
     }
 
-    /// Get the shared in-memory backend (used as default for dedup when no connector specified).
-    pub fn memory(&self) -> Arc<dyn CacheBackend> {
-        self.memory.clone() as Arc<dyn CacheBackend>
+    /// The built-in in-memory backend for `purpose` — the default when a
+    /// channel's dedup or response-cache config names no connector.
+    pub fn default_memory(&self, purpose: CachePurpose) -> Arc<dyn CacheBackend> {
+        self.memory_namespace(purpose.as_str().to_string())
     }
 
     /// Evict a cached Redis connection pool for the named connector.
+    /// In-memory namespaces are deliberately left alone: the namespace key
+    /// is stable, so a reloaded connector reattaches to its existing
+    /// entries, exactly as the pre-S19 shared instance did.
     pub async fn evict_pool(&self, connector_name: &str) {
         self.redis.evict(connector_name).await;
     }
@@ -529,6 +607,124 @@ mod tests {
             backend.set(&format!("k{i}"), "v").await.expect("test");
         }
         assert_eq!(backend.entries.len(), 500);
+    }
+
+    // ---- S19: purpose/connector namespacing ----
+
+    fn memory_connector() -> CacheConnectorConfig {
+        CacheConnectorConfig {
+            backend: "memory".to_string(),
+            url: None,
+        }
+    }
+
+    /// The attack S19 closes: a workflow `cache_write` of a crafted
+    /// `dedup:{channel}:{key}` key must not register as a seen idempotency
+    /// key in the dedup store.
+    #[tokio::test]
+    async fn workflow_writes_cannot_poison_the_dedup_store() {
+        let pool = CachePool::new(4, 60, 1000);
+        let workflow = pool
+            .get_backend(CachePurpose::Workflow, "wf-cache", &memory_connector())
+            .await
+            .expect("test");
+        workflow
+            .set("dedup:orders:token-1", "\"1\"")
+            .await
+            .expect("test");
+
+        let dedup = pool.default_memory(CachePurpose::Dedup);
+        assert!(
+            dedup
+                .check_and_insert("dedup:orders:token-1", 300)
+                .await
+                .expect("test"),
+            "a workflow-written key must not read as a duplicate in the dedup store"
+        );
+    }
+
+    /// …and the same for the response cache: a forged `cache:{channel}:{hash}`
+    /// entry must not be served to a real request.
+    #[tokio::test]
+    async fn workflow_writes_cannot_forge_a_cached_response() {
+        let pool = CachePool::new(4, 60, 1000);
+        let workflow = pool
+            .get_backend(CachePurpose::Workflow, "wf-cache", &memory_connector())
+            .await
+            .expect("test");
+        workflow
+            .set("cache:orders:00000000deadbeef", r#"{"forged":true}"#)
+            .await
+            .expect("test");
+
+        let response_cache = pool.default_memory(CachePurpose::ResponseCache);
+        assert!(
+            response_cache
+                .get("cache:orders:00000000deadbeef")
+                .await
+                .expect("test")
+                .is_none(),
+            "a workflow-written key must not surface as a cached response"
+        );
+    }
+
+    #[tokio::test]
+    async fn two_memory_connectors_have_distinct_keyspaces() {
+        let pool = CachePool::new(4, 60, 1000);
+        let a = pool
+            .get_backend(CachePurpose::Workflow, "conn-a", &memory_connector())
+            .await
+            .expect("test");
+        let b = pool
+            .get_backend(CachePurpose::Workflow, "conn-b", &memory_connector())
+            .await
+            .expect("test");
+
+        a.set("shared-key", "\"from-a\"").await.expect("test");
+        assert!(
+            b.get("shared-key").await.expect("test").is_none(),
+            "connector 'conn-b' must not see keys written through 'conn-a'"
+        );
+        // Same connector, same purpose: the namespace is stable, so a second
+        // resolution reattaches to the same entries.
+        let a2 = pool
+            .get_backend(CachePurpose::Workflow, "conn-a", &memory_connector())
+            .await
+            .expect("test");
+        assert_eq!(
+            a2.get("shared-key").await.expect("test"),
+            Some("\"from-a\"".to_string())
+        );
+    }
+
+    /// Distinct instances mean distinct LRU budgets: flooding one namespace
+    /// must not evict another namespace's entries.
+    #[tokio::test]
+    async fn lru_budgets_are_per_namespace() {
+        let pool = CachePool::new(4, 60, 10);
+        let dedup = pool.default_memory(CachePurpose::Dedup);
+        assert!(
+            dedup
+                .check_and_insert("dedup:ch:tok", 300)
+                .await
+                .expect("test")
+        );
+
+        let workflow = pool
+            .get_backend(CachePurpose::Workflow, "hot", &memory_connector())
+            .await
+            .expect("test");
+        for i in 0..1_000 {
+            workflow.set(&format!("k{i}"), "v").await.expect("test");
+        }
+
+        assert!(
+            !dedup
+                .check_and_insert("dedup:ch:tok", 300)
+                .await
+                .expect("test"),
+            "a hot workflow cache must not evict dedup entries"
+        );
     }
 
     #[tokio::test]

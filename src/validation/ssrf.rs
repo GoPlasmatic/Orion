@@ -130,6 +130,13 @@ impl reqwest::dns::Resolve for PinnedDnsResolver {
 /// Validate that a URL does not target private/internal IP addresses (SSRF
 /// protection), returning the addresses that were vetted.
 ///
+/// The scheme is checked first (S7): every caller is an HTTP egress path, so
+/// anything outside `http`/`https` — `gopher://`, `file://`, `ftp://` — is
+/// rejected outright rather than address-checked and waved through. This also
+/// keeps `port_or_known_default` honest: for http/https it always knows the
+/// port, so the pinned `SocketAddr` set can never be built against a bogus
+/// default for some other scheme.
+///
 /// Resolves the hostname and checks all resolved addresses; a host that fails
 /// to resolve is an error (never silently allowed through). Validated lookups
 /// are pinned so that a client built with [`PinnedDnsResolver`] connects to
@@ -137,10 +144,18 @@ impl reqwest::dns::Resolve for PinnedDnsResolver {
 pub async fn validate_url_not_private(url: &str) -> Result<Vec<SocketAddr>, String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL '{url}': {e}"))?;
 
+    let scheme = parsed.scheme();
+    if !matches!(scheme, "http" | "https") {
+        return Err(format!(
+            "URL '{url}' uses scheme '{scheme}' — only http and https are allowed"
+        ));
+    }
+
     let host = match parsed.host() {
         Some(h) => h,
         None => return Err(format!("URL '{url}' has no host")),
     };
+    // Always `Some` for http/https (checked above); 80 is unreachable.
     let port = parsed.port_or_known_default().unwrap_or(80);
 
     // IP-literal URLs involve no DNS at connect time, so no pinning is needed.
@@ -423,6 +438,37 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// S7: schemes outside http/https are rejected before any host or DNS
+    /// check — a public host must not rescue a gopher/ftp/file URL.
+    #[tokio::test]
+    async fn test_validate_url_rejects_non_http_schemes() {
+        for url in [
+            "gopher://public.example:70/",
+            "ftp://8.8.8.8/pub",
+            "file:///etc/passwd",
+            "redis://8.8.8.8:6379",
+            "ws://8.8.8.8/socket",
+        ] {
+            let err = validate_url_not_private(url)
+                .await
+                .expect_err("non-http scheme must be rejected");
+            assert!(
+                err.contains("only http and https are allowed"),
+                "unexpected error for {url}: {err}"
+            );
+        }
+    }
+
+    /// The scheme check must not touch DNS: an unresolvable host behind a
+    /// forbidden scheme still fails on the scheme, not on resolution.
+    #[tokio::test]
+    async fn test_scheme_rejection_precedes_dns() {
+        let err = validate_url_not_private("gopher://orion-ssrf-test.invalid:70/")
+            .await
+            .expect_err("test");
+        assert!(err.contains("only http and https are allowed"), "{err}");
     }
 
     #[tokio::test]

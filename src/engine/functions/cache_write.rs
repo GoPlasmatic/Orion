@@ -13,7 +13,7 @@ use super::connector_helpers::{
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::ConnectorRegistry;
-use crate::connector::cache_backend::CachePool;
+use crate::connector::cache_backend::{CachePool, CachePurpose};
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "cache_write";
@@ -56,9 +56,12 @@ impl AsyncFunctionHandler for CacheWriteHandler {
             let connector_config = call.resolve(&self.registry, None).await?;
             let cache_config = require_cache_connector(&connector_config, call.connector)?;
 
+            // Workflow-purpose namespace (S19): a memory backend here can
+            // never alias the dedup store or response cache, so a crafted
+            // `dedup:{channel}:…` key is just an ordinary workflow key.
             let backend = self
                 .cache_pool
-                .get_backend(call.connector, cache_config)
+                .get_backend(CachePurpose::Workflow, call.connector, cache_config)
                 .await
                 .map_err(to_connect_error)?;
 

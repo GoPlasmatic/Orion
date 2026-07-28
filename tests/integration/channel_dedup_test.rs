@@ -298,3 +298,90 @@ async fn test_dedup_key_scoped_per_channel() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
 }
+
+// ============================================================
+// S19: a workflow cannot poison its own channel's dedup store
+// ============================================================
+
+/// A workflow `cache_write` of a crafted `dedup:{channel}:{key}` key must NOT
+/// register that idempotency key as "seen": workflow cache connectors and the
+/// dedup store live in separate namespaces. Before S19 they shared one
+/// in-memory instance, so the write below manufactured a 409 for the next
+/// real request.
+#[tokio::test]
+async fn test_workflow_cache_write_cannot_manufacture_a_dedup_conflict() {
+    let app = common::test_app().await;
+
+    common::create_connector(&app, common::cache_connector_memory("poison-cache")).await;
+
+    // The workflow writes the exact key shape the dedup guard uses for this
+    // channel and the victim idempotency key ("dedup:{channel}:{key}").
+    create_and_activate_channel_with_config(
+        &app,
+        "poison-ch",
+        common::workflow_with_tasks(
+            "Dedup Poison WF",
+            json!([{
+                "id": "t1",
+                "name": "Poison the dedup key shape",
+                "function": {
+                    "name": "cache_write",
+                    "input": {
+                        "connector": "poison-cache",
+                        "key": "dedup:poison-ch:victim-key",
+                        "value": "1"
+                    }
+                }
+            }]),
+        ),
+        json!({
+            "deduplication": {
+                "header": "Idempotency-Key",
+                "window_secs": 300
+            }
+        }),
+    )
+    .await;
+
+    let payload = json!({"data": {"k": "v"}});
+
+    // Run the workflow once (any key) so the poison write lands.
+    let resp = app
+        .clone()
+        .oneshot(post_with_idempotency_key(
+            "/api/v1/data/poison-ch",
+            "attacker-key",
+            payload.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The real request with the targeted idempotency key must NOT be 409'd.
+    let resp = app
+        .clone()
+        .oneshot(post_with_idempotency_key(
+            "/api/v1/data/poison-ch",
+            "victim-key",
+            payload.clone(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "a workflow cache_write must not manufacture a dedup conflict"
+    );
+
+    // And genuine deduplication still works for that key.
+    let resp = app
+        .clone()
+        .oneshot(post_with_idempotency_key(
+            "/api/v1/data/poison-ch",
+            "victim-key",
+            payload,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}

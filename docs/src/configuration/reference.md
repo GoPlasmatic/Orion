@@ -106,6 +106,14 @@ Both files must exist and be readable at startup; Orion refuses to boot otherwis
 
 Off by default because the layer is unconditional once inserted: it runs DEFLATE on every response regardless of size, which costs CPU without saving bytes on small JSON bodies (a ~100 B response can grow slightly after gzip overhead).
 
+### API docs
+
+| Setting | Default | Env var | When to change |
+|---|---|---|---|
+| `server.docs.enabled` | — | `ORION_SERVER__DOCS__ENABLED` | Unset serves Swagger UI (`/docs`) and the spec (`/api/v1/openapi.json`) only when `environment` is not a production variant. Set `true` to serve them in production anyway, `false` to switch them off everywhere. |
+
+Both endpoints are unauthenticated and the spec publishes the complete admin API surface — route shapes, request schemas, the `admin_auth.header` semantics — so production deployments do not serve them by default. When disabled the routes are not registered at all: both paths return 404, not 401, so their existence is not advertised. `orion-server dump-openapi` writes the spec to a file offline regardless of this setting.
+
 ## Storage
 
 | Setting | Default | Env var | When to change |
@@ -169,7 +177,7 @@ instance_id = "${HOSTNAME}"
 | `engine.global_http_timeout_secs` | `30` | `ORION_ENGINE__GLOBAL_HTTP_TIMEOUT_SECS` | Safety net for every outbound HTTP request; shorter connector or task timeouts still win. |
 | `engine.max_pool_cache_entries` | `100` | `ORION_ENGINE__MAX_POOL_CACHE_ENTRIES` | Raise only with more than ~100 distinct external connectors. LRU-evicted. |
 | `engine.cache_cleanup_interval_secs` | `60` | `ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS` | Sweep interval for expired in-memory cache entries. |
-| `engine.max_memory_cache_entries` | `100000` | `ORION_ENGINE__MAX_MEMORY_CACHE_ENTRIES` | Lower it on a memory-constrained host. `0` removes the bound. |
+| `engine.max_memory_cache_entries` | `100000` | `ORION_ENGINE__MAX_MEMORY_CACHE_ENTRIES` | Per-namespace bound — see below. Lower it on a memory-constrained host. `0` removes the bound. |
 | `engine.rollout_sticky_header` | `""` | `ORION_ENGINE__ROLLOUT_STICKY_HEADER` | Set to the header that identifies a caller (e.g. `"x-user-id"`) so canary rollouts are stable per caller. |
 | `engine.fail_on_connector_load_error` | `false` | `ORION_ENGINE__FAIL_ON_CONNECTOR_LOAD_ERROR` | **Set to `true` in production.** Refuse to start when an enabled connector cannot be loaded — see below. |
 
@@ -183,7 +191,7 @@ Three surfaces report this:
 - `GET /api/v1/admin/connectors` gives every row a `load_status` of `loaded`, `failed`, or `disabled`, with `load_error` and `load_error_stage` on the failures.
 - `engine.fail_on_connector_load_error = true` refuses to start at all, so a bad rollout fails where the orchestrator will catch it. This is startup only — a hot reload never takes a running process down.
 
-**`max_memory_cache_entries`** bounds the shared in-memory cache — the default dedup store, the default response cache, and every `backend = "memory"` cache connector — with LRU eviction on insert. Setting `0` disables the bound, at which point entries written without a TTL are never reclaimed; only do that when the key set is known to be finite.
+**`max_memory_cache_entries`** bounds each in-memory cache **namespace**, with LRU eviction on insert. There is no single shared store: the built-in dedup store, the built-in response cache, and every `(purpose, connector)` use of a `backend = "memory"` cache connector each get their own instance with their own bound, so a hot workflow cache cannot evict dedup entries — but the budgets add up. Worst-case resident entries are `max_memory_cache_entries × number of namespaces`: the two built-in stores plus up to three (workflow cache, dedup, response cache) for every memory connector. Size a memory-constrained host from that product, not from the single value. Setting `0` disables the bound, at which point entries written without a TTL are never reclaimed; only do that when the key set is known to be finite.
 
 **`rollout_sticky_header`** decides how a request is bucketed for canary rollouts. With a header configured, the same caller always lands in the same bucket and therefore on the same workflow version. Empty (the default) falls back to the forwarded client IP, and with neither available the bucket is random per request — so a caller can flip between versions mid-session.
 
@@ -453,7 +461,7 @@ All capabilities are compiled into a single binary and controlled at runtime:
 | Trace persistence | `trace_storage.mode` | `sync` |
 | TLS/HTTPS | `server.tls.enabled` | Disabled |
 | Response compression | `server.compression.enabled` | Disabled |
-| Swagger UI | Always at `/docs` | Enabled |
+| Swagger UI / OpenAPI spec | `server.docs.enabled` | Enabled outside production |
 | SQL connectors | `db_read`/`db_write` functions | Always available |
 | Redis cache | `cache_read`/`cache_write` with Redis backend | Always available |
 | MongoDB connector | `mongo_read` function | Always available |

@@ -20,7 +20,7 @@ No feature flags, no plugins, no shared libraries to manage. The binary auto-det
 | Kafka | `kafka.enabled` | Disabled |
 | OpenTelemetry | `tracing.enabled` | Disabled |
 | TLS/HTTPS | `server.tls.enabled` | Disabled |
-| Swagger UI | Always at `/docs` | Enabled |
+| Swagger UI | `server.docs.enabled` | Enabled outside production |
 | Metrics | `metrics.enabled` | Disabled |
 
 With the default SQLite backend, there are zero external dependencies.
