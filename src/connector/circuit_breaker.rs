@@ -6,6 +6,9 @@ const STATE_CLOSED: u8 = 0;
 const STATE_OPEN: u8 = 1;
 const STATE_HALF_OPEN: u8 = 2;
 
+/// Concurrent probes admitted per half-open window.
+const PROBE_PERMITS: u32 = 1;
+
 /// Configuration for circuit breakers. Disabled by default.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -38,6 +41,14 @@ impl Default for CircuitBreakerConfig {
 pub struct CircuitBreaker {
     state: AtomicU8,
     failure_count: AtomicU32,
+    /// Probe permits available in the half-open state.
+    ///
+    /// Without this the breaker admitted *every* in-flight request the moment
+    /// the cooldown elapsed, so the whole backlog stampeded a dependency that
+    /// was still broken — one cycle of protection, then effectively closed
+    /// until the first failure re-opened it (proposal F19). One permit is
+    /// issued per half-open window; the probe's outcome decides the next state.
+    probe_permits: AtomicU32,
     /// Milliseconds since `base` at which the breaker last opened.
     opened_at: AtomicI64,
     /// Monotonic reference captured at construction. Cooldowns are measured
@@ -54,6 +65,7 @@ impl CircuitBreaker {
         Self {
             state: AtomicU8::new(STATE_CLOSED),
             failure_count: AtomicU32::new(0),
+            probe_permits: AtomicU32::new(0),
             opened_at: AtomicI64::new(0),
             base: tokio::time::Instant::now(),
             config,
@@ -75,26 +87,55 @@ impl CircuitBreaker {
                 let now = self.now_ms();
                 let cooldown_ms = (self.config.recovery_timeout_secs * 1000) as i64;
                 if now - opened >= cooldown_ms {
-                    // Try to transition to HalfOpen — only one thread wins the CAS
-                    let _ = self.state.compare_exchange(
-                        STATE_OPEN,
-                        STATE_HALF_OPEN,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    );
-                    true
+                    // Only one thread wins the CAS; it also mints the single
+                    // probe permit for this half-open window, so the losers
+                    // fall through to the permit check below and are refused.
+                    if self
+                        .state
+                        .compare_exchange(
+                            STATE_OPEN,
+                            STATE_HALF_OPEN,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        self.probe_permits.store(PROBE_PERMITS, Ordering::Release);
+                    }
+                    self.take_probe_permit()
                 } else {
                     false
                 }
             }
-            STATE_HALF_OPEN => true,
+            STATE_HALF_OPEN => self.take_probe_permit(),
             _ => true,
+        }
+    }
+
+    /// Claim one half-open probe permit, or refuse. Compare-and-swap rather
+    /// than `fetch_sub` so the counter cannot wrap below zero under load.
+    fn take_probe_permit(&self) -> bool {
+        let mut available = self.probe_permits.load(Ordering::Acquire);
+        loop {
+            if available == 0 {
+                return false;
+            }
+            match self.probe_permits.compare_exchange_weak(
+                available,
+                available - 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => available = actual,
+            }
         }
     }
 
     /// Record a successful request.
     pub fn record_success(&self) {
         self.failure_count.store(0, Ordering::Release);
+        self.probe_permits.store(0, Ordering::Release);
         // HalfOpen -> Closed
         let _ = self.state.compare_exchange(
             STATE_HALF_OPEN,
@@ -109,7 +150,10 @@ impl CircuitBreaker {
         let state = self.state.load(Ordering::Acquire);
         match state {
             STATE_HALF_OPEN => {
-                // Probe failed — back to Open
+                // Probe failed — back to Open. Drop any unused permit so the
+                // next cooldown expiry mints a fresh one rather than letting a
+                // second request slip through this window.
+                self.probe_permits.store(0, Ordering::Release);
                 self.opened_at.store(self.now_ms(), Ordering::Release);
                 let _ = self.state.compare_exchange(
                     STATE_HALF_OPEN,
@@ -155,6 +199,11 @@ impl CircuitBreaker {
     /// Force-reset to Closed state.
     pub fn reset(&self) {
         self.failure_count.store(0, Ordering::Release);
+        self.probe_permits.store(0, Ordering::Release);
+        // Clear the open timestamp too: leaving it stale was harmless while
+        // nothing read it after a reset, but it is dead state that any future
+        // "time in open" metric would report wrong.
+        self.opened_at.store(0, Ordering::Release);
         self.state.store(STATE_CLOSED, Ordering::Release);
     }
 }
@@ -249,5 +298,59 @@ mod tests {
         cb.record_failure();
         assert!(!cb.check()); // still in cooldown
         assert_eq!(cb.state_name(), "open");
+    }
+
+    // -- half-open probe gating (proposal F19) --------------------------
+
+    #[tokio::test(start_paused = true)]
+    async fn half_open_admits_exactly_one_probe() {
+        // Before F19 the cooldown expiry admitted every in-flight request, so
+        // the whole backlog stampeded a dependency that was still broken.
+        let cb = CircuitBreaker::new(test_config(2, 30));
+        cb.record_failure();
+        assert!(cb.record_failure(), "breaker should trip");
+        assert!(!cb.check(), "open breaker rejects during cooldown");
+
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+
+        assert!(cb.check(), "the first caller after cooldown probes");
+        assert_eq!(cb.state_name(), "half_open");
+        for _ in 0..50 {
+            assert!(
+                !cb.check(),
+                "only one probe may be in flight while half-open"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_probe_reopens_and_withholds_further_probes() {
+        let cb = CircuitBreaker::new(test_config(1, 30));
+        assert!(cb.record_failure());
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+
+        assert!(cb.check(), "probe admitted");
+        cb.record_failure();
+        assert_eq!(cb.state_name(), "open");
+        assert!(!cb.check(), "a failed probe restarts the cooldown");
+
+        // The next window mints a fresh permit.
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+        assert!(cb.check(), "a new window admits one probe again");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_successful_probe_closes_the_breaker_for_everyone() {
+        let cb = CircuitBreaker::new(test_config(1, 30));
+        assert!(cb.record_failure());
+        tokio::time::advance(std::time::Duration::from_secs(31)).await;
+
+        assert!(cb.check());
+        cb.record_success();
+        assert_eq!(cb.state_name(), "closed");
+        // Closed means unrestricted again — the permit must not leak into it.
+        for _ in 0..10 {
+            assert!(cb.check(), "a closed breaker admits everything");
+        }
     }
 }

@@ -100,23 +100,49 @@ impl ConnectorRegistry {
             return entry.breaker.clone();
         }
 
-        // Evict LRU entry if at capacity
         let max = self.cb_config.max_breakers;
+
+        // N18: this warning used to be nested inside `len() >= max`, which
+        // implies it, so it fired on every eviction and never in advance —
+        // noise at exactly the moment signal was wanted.
+        if breakers.len() >= max.saturating_mul(9) / 10 && breakers.len() < max {
+            tracing::warn!(
+                count = breakers.len(),
+                max = max,
+                "Circuit breaker map approaching capacity limit"
+            );
+        }
+
         if breakers.len() >= max {
-            if breakers.len() >= max * 9 / 10 {
-                tracing::warn!(
-                    count = breakers.len(),
-                    max = max,
-                    "Circuit breaker map approaching capacity limit"
-                );
-            }
-            // Find the least-recently-used entry
-            if let Some(lru_key) = breakers
+            // N19: prefer a CLOSED victim. An OPEN breaker is by definition one
+            // that is *not* receiving traffic — `check()` rejects its requests —
+            // which makes it the natural LRU victim, and evicting it recreates a
+            // CLOSED breaker that re-admits the full load to a dependency still
+            // known to be broken. Fall back to plain LRU only when every entry
+            // is tripped, which is itself worth a log line.
+            let victim = breakers
                 .iter()
+                .filter(|(_, e)| e.breaker.state_name() == "closed")
                 .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
-                .map(|(k, _)| k.clone())
-            {
-                breakers.remove(&lru_key);
+                .map(|(k, _)| k.clone());
+
+            let victim = match victim {
+                Some(k) => Some(k),
+                None => {
+                    tracing::warn!(
+                        max = max,
+                        "Circuit breaker map is full and every breaker is tripped; \
+                         evicting an open one, which will re-admit load to a broken dependency"
+                    );
+                    breakers
+                        .iter()
+                        .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
+                        .map(|(k, _)| k.clone())
+                }
+            };
+
+            if let Some(key) = victim {
+                breakers.remove(&key);
             }
         }
 

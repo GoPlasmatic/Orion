@@ -162,22 +162,35 @@ impl TraceQueue {
     /// as long as the workers stay behind, turning saturation into unbounded
     /// request latency instead of the documented 503 (Q1).
     async fn enqueue(&self, item: QueuedItem) -> Result<(), crate::errors::OrionError> {
-        // Estimate payload memory (approximate — excludes struct overhead)
+        // Estimate payload memory (approximate — excludes struct overhead).
         let payload_size = item.msg.payload.to_string().len() + item.msg.metadata.to_string().len();
 
-        // Check memory limit before enqueueing
+        // Q2: reserve first, then validate. The previous shape was
+        // load -> compare -> send -> fetch_add, so N concurrent submitters all
+        // read the same pre-add value, all passed the check, and the accounted
+        // total overshot the configured ceiling by up to N x payload_size.
+        // Reserving up front makes the check authoritative; the reservation is
+        // released again on rejection.
         if self.max_memory_bytes > 0 {
-            let current = self.memory_bytes.load(Ordering::Relaxed);
-            if current + payload_size > self.max_memory_bytes {
+            let prev = self.memory_bytes.fetch_add(payload_size, Ordering::AcqRel);
+            let total = prev + payload_size;
+            if total > self.max_memory_bytes {
+                self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
                 metrics::record_trace_queue_rejected("memory");
                 return Err(crate::errors::OrionError::ServiceUnavailable(format!(
                     "Trace queue memory limit exceeded ({} + {} > {} bytes)",
-                    current, payload_size, self.max_memory_bytes
+                    prev, payload_size, self.max_memory_bytes
                 )));
             }
+            metrics::set_trace_queue_memory_bytes(total as f64);
         }
 
         if let Err(err) = self.sender.try_send(item) {
+            // Release the reservation taken above — the item never entered the
+            // queue, so nothing downstream will subtract it.
+            if self.max_memory_bytes > 0 {
+                self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
+            }
             return Err(match err {
                 // The rejected message is dropped here, releasing the
                 // backpressure permit it carried — a shed submission must not
@@ -198,8 +211,12 @@ impl TraceQueue {
         let pending = self.pending_count.fetch_add(1, Ordering::Relaxed) + 1;
         metrics::set_trace_queue_depth(pending as f64);
 
-        let mem = self.memory_bytes.fetch_add(payload_size, Ordering::Relaxed) + payload_size;
-        metrics::set_trace_queue_memory_bytes(mem as f64);
+        // When the limit is disabled the counter is still maintained for the
+        // gauge, but no reservation was taken above.
+        if self.max_memory_bytes == 0 {
+            let mem = self.memory_bytes.fetch_add(payload_size, Ordering::AcqRel) + payload_size;
+            metrics::set_trace_queue_memory_bytes(mem as f64);
+        }
 
         Ok(())
     }
