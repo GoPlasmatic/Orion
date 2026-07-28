@@ -224,9 +224,12 @@
                                 # and mint a fresh bucket per request.
 
 # [rate_limit.endpoints]
-# Optional per-route-group limits. Unset means the group uses default_rps.
-# admin_rps = 50                # Admin API
-# data_rps = 200                # Data plane
+# Per-route-group limits. Setting a group to null makes it fall back to default_rps.
+# admin_rps defaults to 20: admin traffic is interactive and low-volume, and the
+# admin plane holds every mutating operation, so it should not share the
+# anonymous data plane's budget.
+# admin_rps = 20                # Admin API
+# data_rps = 200                # Data plane (unset -> default_rps)
 
 [channels]
 # Which channels this instance loads from the database. Glob patterns matched

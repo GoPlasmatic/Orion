@@ -298,7 +298,8 @@ mod tests {
             environment: "production".to_string(),
             admin_auth: AdminAuthConfig {
                 enabled: true,
-                api_keys: vec!["secret-key-12345".to_string()],
+                // >= 32 chars: production rejects weaker plaintext keys (S12).
+                api_keys: vec!["secret-key-12345-secret-key-12345".to_string()],
                 ..AppConfig::default().admin_auth
             },
             // Must also fix CORS for production

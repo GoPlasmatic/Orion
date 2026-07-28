@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Admin credential guessing is now metered and throttled.** The middleware
+  stack was registered so that admin auth ran *outside* rate limiting; since it
+  returns 401 without invoking the inner service, a wrong key never reached the
+  limiter. The layer order is corrected, and failed admin authentication now
+  applies a per-client exponential backoff (5 free attempts, then 500 ms
+  doubling to a 30 s cap, cleared on success). Failures are counted by the new
+  `admin_auth_failures_total{reason}` metric instead of the shared
+  `errors_total{type="auth_failure"}`.
+- **A filter matching every row no longer bypasses the `data_write` safety
+  guard.** `{"op":"delete","target":"t","filter":{"and":[]}}` and other
+  tautological filters skipped both the `"all": true` acknowledgement and
+  `write.allow_unfiltered`, deleting every row. The guard now derives from the
+  lowered condition rather than the presence of a `filter` key.
+
+### Breaking
+
+- **Plaintext `admin_auth.api_keys` entries must be at least 32 characters.**
+  Previously `api_keys = ["a"]` was a valid production credential. Shorter keys
+  are a hard config error when `environment` starts with `prod`, and a warning
+  otherwise. `sha256:` entries are exempt. Generate keys with
+  `openssl rand -hex 32`.
+- **`rate_limit.endpoints.admin_rps` now defaults to `20`** instead of being
+  unset. Previously the admin plane fell back to `default_rps` (100) — the same
+  budget as the anonymous data plane. Set it to `null` (or an empty string via
+  the environment variable) to restore the fall-back.
+- **401, 429 and recovered-panic 500 responses now carry security headers and
+  `x-request-id`,** and the error envelope for them includes `request_id`.
+  Clients asserting on the absence of these will see new headers and one new
+  body field.
+- **Browser preflight (`OPTIONS`) to `/api/v1/admin/*` is now answered by the
+  CORS layer** rather than rejected with 401. Any client relying on preflight
+  failing closed should note the admin API was previously unusable from a
+  browser whenever `admin_auth.enabled = true`.
+
+### Fixed
+
+- **One unusable workflow no longer takes down the whole instance.** Task input
+  parsing runs inside engine construction, after the loader has decided what to
+  load, so a stored row that fails it aborted the process at boot and took every
+  channel on every node down on reload — defeating the per-channel quarantine.
+  Unregistered function names and malformed `channel_call` inputs are now
+  detected during the load and quarantine only their own channel.
+- **`channel_call` accepts a `channel_logic`-only task.** The schema, docs and
+  validation rule all declare `channel` optional when `channel_logic` is given,
+  but the input struct required it, so such a workflow passed admin validation
+  and then failed the engine build with `missing field 'channel'`.
+- Unknown or archived channels return 404 on the data plane rather than a
+  generic engine error.
+- `channel_call` refuses a missing target instead of failing opaquely; the
+  recursion depth and cycle guards are now covered by tests.
+- TTL stores and circuit-breaker cooldowns use a monotonic, pausable clock, so
+  a wall-clock step no longer extends or shortens either.
+
+### Changed
+
+- CI and CodeQL now run on `release/**` and `v*` branches. The release
+  workflows require a successful CI run at the tag SHA, which no commit on a
+  release branch could previously have.
+
 ## [1.0.0] - 2026-07-27
 
 Multi-instance (HA) support: N replicas of `orion-server` behind a load

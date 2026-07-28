@@ -20,6 +20,13 @@ pub struct AdminAuthConfig {
     pub header: String,
 }
 
+/// Minimum length for a *plaintext* `admin_auth.api_keys` entry. 32 characters
+/// is the usual floor for a bearer credential — `openssl rand -hex 32` produces
+/// 64. Shorter keys are a hard error in production and a warning elsewhere, so
+/// local development stays ergonomic. `sha256:` entries are exempt: a digest
+/// says nothing about the strength of the key behind it.
+const MIN_PLAINTEXT_KEY_LEN: usize = 32;
+
 /// A configured admin API key, normalized to its SHA-256 digest so the
 /// middleware always compares fixed-width values (S11).
 pub struct AdminKey {
@@ -77,16 +84,34 @@ impl AdminAuthConfig {
             });
         }
         for key in self.effective_keys() {
-            if let Some(hex_digest) = key.strip_prefix("sha256:")
-                && decode_sha256_hex(hex_digest).is_none()
-            {
-                let shown: String = hex_digest.chars().take(16).collect();
-                return Err(OrionError::Config {
-                    message: format!(
-                        "admin_auth.api_keys: 'sha256:' entries must be followed by the \
-                         64-character hex SHA-256 digest of the key, got 'sha256:{shown}'"
-                    ),
-                });
+            if let Some(hex_digest) = key.strip_prefix("sha256:") {
+                if decode_sha256_hex(hex_digest).is_none() {
+                    let shown: String = hex_digest.chars().take(16).collect();
+                    return Err(OrionError::Config {
+                        message: format!(
+                            "admin_auth.api_keys: 'sha256:' entries must be followed by the \
+                             64-character hex SHA-256 digest of the key, got 'sha256:{shown}'"
+                        ),
+                    });
+                }
+                // A digest carries no information about the strength of the key
+                // it was derived from, so the length floor below cannot apply.
+                continue;
+            }
+            // Plaintext keys: enforce a minimum length. `api_keys = ["a"]` was
+            // previously a valid production admin credential (proposal S12).
+            if key.len() < MIN_PLAINTEXT_KEY_LEN {
+                let message = format!(
+                    "admin_auth.api_keys: plaintext keys must be at least \
+                     {MIN_PLAINTEXT_KEY_LEN} characters (got one of length {}). \
+                     Generate one with `openssl rand -hex 32`, or store the digest \
+                     as 'sha256:<64-hex>'",
+                    key.len()
+                );
+                if is_production {
+                    return Err(OrionError::Config { message });
+                }
+                tracing::warn!("{message}");
             }
         }
         if !self.enabled {
@@ -206,5 +231,44 @@ mod tests {
         let entry = format!("sha256:{}", hex::encode(Sha256::digest(b"k")));
         let config = config_with_keys(&[&entry]);
         assert!(config.validate(false).is_ok());
+    }
+
+    // -- plaintext key strength (S12) -----------------------------------
+
+    #[test]
+    fn short_plaintext_key_is_rejected_in_production() {
+        // `api_keys = ["a"]` was a valid production admin credential.
+        let err = config_with_keys(&["a"])
+            .validate(true)
+            .expect_err("a 1-char production admin key must be refused");
+        let message = err.to_string();
+        assert!(
+            message.contains("at least 32 characters"),
+            "the error must say what is wrong: {message}"
+        );
+        assert!(
+            message.contains("openssl rand"),
+            "the error must say how to fix it: {message}"
+        );
+    }
+
+    #[test]
+    fn short_plaintext_key_is_only_a_warning_outside_production() {
+        // Local development stays ergonomic.
+        assert!(config_with_keys(&["dev"]).validate(false).is_ok());
+    }
+
+    #[test]
+    fn long_plaintext_key_is_accepted_in_production() {
+        let key = "x".repeat(MIN_PLAINTEXT_KEY_LEN);
+        assert!(config_with_keys(&[&key]).validate(true).is_ok());
+    }
+
+    #[test]
+    fn hashed_key_is_exempt_from_the_length_floor_in_production() {
+        // A digest is always 64 hex chars and says nothing about the strength
+        // of the key behind it, so the floor cannot meaningfully apply.
+        let entry = format!("sha256:{}", hex::encode(Sha256::digest(b"short")));
+        assert!(config_with_keys(&[&entry]).validate(true).is_ok());
     }
 }

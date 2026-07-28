@@ -60,6 +60,20 @@ pub struct AppStateInner {
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
     /// Multi-instance coordination runtime. Inert when `cluster.enabled = false`.
     pub cluster: Arc<crate::cluster::ClusterRuntime>,
+    /// Per-client failed-admin-auth backoff. Node-local and ephemeral by
+    /// design: it exists to blunt online guessing, not to be a shared ledger.
+    pub admin_auth_failures: Arc<crate::server::admin_auth::FailedAuthTracker>,
+}
+
+impl AppStateInner {
+    /// Trusted-proxy list used for client identification, empty when rate
+    /// limiting is disabled (the list lives on the rate-limit config).
+    pub fn rate_limit_trusted_proxies(&self) -> &[ipnet::IpNet] {
+        self.rate_limit_state
+            .as_ref()
+            .map(|s| s.trusted_proxies.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
 /// Shared application state accessible from all route handlers.

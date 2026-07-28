@@ -328,7 +328,7 @@ Platform-level limits, applied per client identity. Per-channel limits are separ
 | `rate_limit.default_rps` | `100` | `ORION_RATE_LIMIT__DEFAULT_RPS` | Sustained requests per second per client. |
 | `rate_limit.default_burst` | `50` | `ORION_RATE_LIMIT__DEFAULT_BURST` | Burst allowance above the sustained rate. |
 | `rate_limit.trusted_proxies` | `[]` | `ORION_RATE_LIMIT__TRUSTED_PROXIES` | **Set this if Orion sits behind a load balancer** — see below. |
-| `rate_limit.endpoints.admin_rps` | — | `ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS` | Separate limit for the admin API; unset means it uses `default_rps`. Set the variable to an empty string to clear it. |
+| `rate_limit.endpoints.admin_rps` | `20` | `ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS` | Separate limit for the admin API. Set the variable to an empty string to clear it, which makes the admin plane use `default_rps`. |
 | `rate_limit.endpoints.data_rps` | — | `ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS` | Separate limit for the data plane; unset means it uses `default_rps`. Set the variable to an empty string to clear it. |
 
 **`trusted_proxies` changes behaviour for every proxied deployment.** The direct peer IP is authoritative. `X-Forwarded-For` and `X-Real-IP` are honoured *only* when the peer address falls inside one of these CIDR blocks (bare IPs are accepted and treated as `/32` or `/128`). The default is empty, which means **forwarded headers are never trusted**.

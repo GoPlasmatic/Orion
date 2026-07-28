@@ -93,11 +93,35 @@ fn parse_proxy_entry(entry: &str) -> Result<ipnet::IpNet, &'static str> {
         .map_err(|_| "expected an IP address or CIDR block (e.g. \"10.0.0.0/8\")")
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// Default requests-per-second for the admin plane when `rate_limit.enabled`.
+///
+/// Previously `None`, which meant admin traffic fell back to `default_rps`
+/// (100) — the same budget as the anonymous data plane, on the surface that
+/// holds every mutating operation and the credentials to reach them. Admin use
+/// is interactive and low-volume; 20/s is generous for a human or a deploy
+/// pipeline and far below what online credential guessing needs (S12).
+fn default_admin_rps() -> Option<u32> {
+    Some(20)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EndpointRateLimits {
+    /// Per-client limit for admin routes. `None` means "no separate limit" —
+    /// fall back to `default_rps`.
+    #[serde(default = "default_admin_rps")]
     pub admin_rps: Option<u32>,
+    /// Per-client limit for the data plane. `None` falls back to `default_rps`.
     pub data_rps: Option<u32>,
+}
+
+impl Default for EndpointRateLimits {
+    fn default() -> Self {
+        Self {
+            admin_rps: default_admin_rps(),
+            data_rps: None,
+        }
+    }
 }
 
 #[cfg(test)]

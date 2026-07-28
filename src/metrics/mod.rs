@@ -54,6 +54,22 @@ pub fn record_error(error_type: &'static str) {
     counter!("errors_total", "type" => error_type).increment(1);
 }
 
+/// Record a rejected admin-API authentication attempt.
+///
+/// Separate from `errors_total{type="auth_failure"}`, which it replaces for
+/// this purpose: that counter is shared with ~15 unrelated `record_error` call
+/// sites (`panic`, `dedup_backend`, `kafka_retry`, …), so alerting on
+/// credential guessing meant a filter that also matched all of them
+/// (proposal O11).
+///
+/// `reason` is one of `missing_or_malformed`, `invalid_key`, `locked_out`.
+pub fn record_admin_auth_failure(reason: &'static str) {
+    if !is_enabled() {
+        return;
+    }
+    counter!("admin_auth_failures_total", "reason" => reason).increment(1);
+}
+
 // ---------------------------------------------------------------------------
 // Histogram helpers
 // ---------------------------------------------------------------------------

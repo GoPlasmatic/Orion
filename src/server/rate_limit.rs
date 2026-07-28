@@ -18,7 +18,7 @@ pub struct RateLimitState {
     default_limiter: Arc<KeyedLimiter>,
     admin_limiter: Option<Arc<KeyedLimiter>>,
     data_limiter: Option<Arc<KeyedLimiter>>,
-    trusted_proxies: Vec<IpNet>,
+    pub(crate) trusted_proxies: Vec<IpNet>,
 }
 
 impl RateLimitState {
@@ -55,7 +55,7 @@ impl RateLimitState {
 /// otherwise any client could mint a fresh rate-limit bucket per request by
 /// spoofing `X-Forwarded-For`. When no `ConnectInfo` is present (e.g.
 /// `tower::oneshot` in tests), falls back to the header-only behavior.
-fn extract_client_ip(req: &Request, trusted_proxies: &[IpNet]) -> String {
+pub(crate) fn extract_client_ip(req: &Request, trusted_proxies: &[IpNet]) -> String {
     // to_canonical: a server bound on `[::]` sees IPv4 peers as v4-mapped
     // IPv6 (`::ffff:1.2.3.4`), which would never match an IPv4 CIDR.
     let peer = req
@@ -518,8 +518,28 @@ mod tests {
             ..Default::default()
         };
         let state = RateLimitState::from_config(&config);
-        assert!(state.admin_limiter.is_none());
+        // The admin plane gets its own, tighter limiter by default (S12) —
+        // it used to share the anonymous data plane's 100/s budget.
+        assert!(
+            state.admin_limiter.is_some(),
+            "admin_rps must default to a real limit"
+        );
         assert!(state.data_limiter.is_none());
+    }
+
+    #[test]
+    fn test_admin_rps_can_be_explicitly_unset() {
+        // `admin_rps = null` still means "no separate limit".
+        let config = RateLimitConfig {
+            enabled: true,
+            endpoints: crate::config::EndpointRateLimits {
+                admin_rps: None,
+                data_rps: None,
+            },
+            ..Default::default()
+        };
+        let state = RateLimitState::from_config(&config);
+        assert!(state.admin_limiter.is_none());
     }
 
     #[test]

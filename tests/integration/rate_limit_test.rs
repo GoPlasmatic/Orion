@@ -118,7 +118,23 @@ async fn test_rate_limit_different_ips_independent() {
 
 #[tokio::test]
 async fn test_rate_limit_admin_endpoint() {
-    let app = rate_limited_app(1, 1).await;
+    // Admin routes are governed by `endpoints.admin_rps`, which now defaults to
+    // a real value (S12) instead of falling back to `default_rps`. Set it
+    // explicitly so this exercises the admin limiter rather than the default one.
+    let app = common::test_app_with_config(AppConfig {
+        rate_limit: RateLimitConfig {
+            enabled: true,
+            default_rps: 100,
+            default_burst: 50,
+            endpoints: orion::config::EndpointRateLimits {
+                admin_rps: Some(1),
+                data_rps: None,
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
 
     let req = Request::builder()
         .method("GET")

@@ -645,5 +645,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         kafka_producer,
         trace_persistence_queue,
         cluster,
+        admin_auth_failures: Arc::new(Default::default()),
     })
 }
