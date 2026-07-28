@@ -359,6 +359,78 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 /// silently skipped. Callers feed these into `ChannelRegistry::reload`, which
 /// quarantines the channel: previously it stayed registered in the route
 /// table with no workflow behind it, so requests got an opaque engine error.
+/// Every function name registered by [`build_custom_functions`].
+///
+/// A task naming anything else lands in `FunctionConfig::Custom` and makes
+/// `precompile_custom_inputs` fail with `FunctionNotFound` — which aborts the
+/// *whole* engine build. Checking membership here downgrades that to a
+/// per-channel quarantine (proposal F41). Kept next to `build_custom_functions`;
+/// `registered_handler_names_match_the_constant` pins the two together.
+pub const CUSTOM_HANDLER_FUNCTIONS: &[&str] = &[
+    "cache_read",
+    "cache_write",
+    "channel_call",
+    "data_query",
+    "data_write",
+    "db_read",
+    "db_write",
+    "http_call",
+    "mongo_read",
+    "publish_kafka",
+];
+
+/// Run the same `serde` deserialization that `dataflow_rs`'s
+/// `precompile_custom_inputs` will run at engine construction.
+///
+/// `AsyncFunctionHandler::parse_input_box` delegates to
+/// `serde_json::from_value::<Self::Input>`, which is purely type-driven — no
+/// handler state is consulted — so checking the type here is equivalent to
+/// checking it there. The engine's own handler map is not reachable once the
+/// engine exists (`Engine::new` consumes it and the field is private), which is
+/// why this is a table rather than a lookup.
+///
+/// Only `channel_call` has a typed `Input`; every other Orion handler takes
+/// `serde_json::Value` and accepts any JSON. (`http_call` and `publish_kafka`
+/// are dataflow-rs *builtins* — their typed configs are already parsed during
+/// `workflow_to_dataflow`, so they never reach `Custom`.)
+fn custom_input_parse_check(name: &str, input: &serde_json::Value) -> Result<(), String> {
+    fn check<T: serde::de::DeserializeOwned>(v: &serde_json::Value) -> Result<(), String> {
+        serde_json::from_value::<T>(v.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    match name {
+        "channel_call" => check::<functions::channel_call::ChannelCallInput>(input),
+        _ => Ok(()),
+    }
+}
+
+/// Validate every custom task before the engine is built.
+///
+/// Without this, an unregistered function name or a typed-input mismatch is
+/// invisible until engine construction — which is a whole-instance failure, not
+/// a per-channel one: at boot the process aborts, and on reload every channel on
+/// every node goes down because one stored row is unusable. That defeats the
+/// F33/F35 quarantine, whose premise is that one broken row must never stop the
+/// instance. Checking here turns it back into a `ChannelLoadIssue` (F41).
+fn check_custom_inputs(wf: &dataflow_rs::Workflow) -> Result<(), String> {
+    use dataflow_rs::engine::functions::config::FunctionConfig;
+    for task in &wf.tasks {
+        let FunctionConfig::Custom { name, input, .. } = &task.function else {
+            continue;
+        };
+        if !CUSTOM_HANDLER_FUNCTIONS.contains(&name.as_str()) {
+            return Err(format!(
+                "task '{}' calls unregistered function '{name}'",
+                task.id
+            ));
+        }
+        custom_input_parse_check(name, input)
+            .map_err(|e| format!("task '{}' has invalid input for '{name}': {e}", task.id))?;
+    }
+    Ok(())
+}
+
 pub fn build_engine_workflows(
     channels: &[Channel],
     workflows: &[Workflow],
@@ -398,7 +470,15 @@ pub fn build_engine_workflows(
         if wf_versions.len() == 1 && wf_versions[0].rollout_percentage == 100 {
             // Single version at 100% — convert normally
             match workflow_to_dataflow(wf_versions[0], &channel.name) {
-                Ok(w) => result.push(w),
+                Ok(w) => match check_custom_inputs(&w) {
+                    Ok(()) => result.push(w),
+                    Err(e) => {
+                        issues.push(crate::channel::ChannelLoadIssue {
+                            channel: channel.name.clone(),
+                            reason: format!("workflow '{wf_id}' has an unusable task: {e}"),
+                        });
+                    }
+                },
                 Err(e) => {
                     issues.push(crate::channel::ChannelLoadIssue {
                         channel: channel.name.clone(),
@@ -417,7 +497,10 @@ pub fn build_engine_workflows(
             for wf in &sorted {
                 let bucket_min = bucket_offset;
                 let bucket_max = bucket_offset + wf.rollout_percentage;
-                match workflow_to_dataflow_with_rollout(wf, &channel.name, bucket_min, bucket_max) {
+                match workflow_to_dataflow_with_rollout(wf, &channel.name, bucket_min, bucket_max)
+                    .map_err(|e| e.to_string())
+                    .and_then(|w| check_custom_inputs(&w).map(|()| w))
+                {
                     Ok(w) => converted.push(w),
                     Err(e) => {
                         issues.push(crate::channel::ChannelLoadIssue {
@@ -745,5 +828,101 @@ mod tests {
         let filtered = filter_channels(channels, &config);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "orders");
+    }
+
+    // -- F41: a malformed task input quarantines its channel, not the engine --
+
+    fn workflow_with_raw_tasks(wf_id: &str, tasks_json: &str) -> Workflow {
+        let mut wf = make_workflow(wf_id, 1, 100);
+        wf.tasks_json = tasks_json.to_string();
+        wf
+    }
+
+    #[test]
+    fn unregistered_custom_function_quarantines_only_its_channel() {
+        // A task naming a function that is neither a dataflow-rs builtin nor a
+        // registered Orion handler lands in FunctionConfig::Custom, where
+        // precompile_custom_inputs fails with FunctionNotFound — aborting the
+        // *entire* engine build. Before F41 that meant boot aborted, or a reload
+        // took down every channel on every node, because of one stored row.
+        let mut good = make_channel("good");
+        good.workflow_id = Some("wf-good".to_string());
+        let mut bad = make_channel("bad");
+        bad.workflow_id = Some("wf-bad".to_string());
+
+        let wfs = vec![
+            make_workflow("wf-good", 1, 100),
+            workflow_with_raw_tasks(
+                "wf-bad",
+                r#"[{"id":"t1","name":"oops","function":{"name":"totally_not_a_function",
+                   "input":{}}}]"#,
+            ),
+        ];
+
+        let (converted, issues) = build_engine_workflows(&[good, bad], &wfs);
+
+        assert_eq!(
+            converted.len(),
+            1,
+            "the healthy channel must still be built"
+        );
+        assert_eq!(converted[0].channel, "good");
+        assert_eq!(issues.len(), 1, "issues = {issues:?}");
+        assert_eq!(issues[0].channel, "bad");
+        assert!(
+            issues[0]
+                .reason
+                .contains("unregistered function 'totally_not_a_function'"),
+            "reason should name the offending function: {}",
+            issues[0].reason
+        );
+    }
+
+    #[test]
+    fn channel_call_with_only_channel_logic_builds() {
+        // F23: the schema (and the docs) declare `channel` optional when
+        // `channel_logic` is given, but the struct required it — so this exact
+        // workflow passed admin validation and then failed the engine build.
+        let mut channel = make_channel("dyn");
+        channel.workflow_id = Some("wf-dyn".to_string());
+        let wfs = vec![workflow_with_raw_tasks(
+            "wf-dyn",
+            r#"[{"id":"t1","name":"fan","function":{"name":"channel_call",
+               "input":{"channel_logic":{"var":"target"}}}}]"#,
+        )];
+
+        let (converted, issues) = build_engine_workflows(&[channel], &wfs);
+        assert!(issues.is_empty(), "unexpected issues: {issues:?}");
+        assert_eq!(converted.len(), 1);
+    }
+
+    #[test]
+    fn channel_call_input_rejects_a_wrongly_typed_field() {
+        // `channel` is defaulted (F23) but still typed: a non-string must not
+        // slip through to the engine build.
+        assert!(
+            custom_input_parse_check("channel_call", &serde_json::json!({ "channel": 7 })).is_err()
+        );
+        assert!(
+            custom_input_parse_check("channel_call", &serde_json::json!({ "channel": "a" }))
+                .is_ok()
+        );
+        // A `Value`-input handler accepts anything.
+        assert!(custom_input_parse_check("db_read", &serde_json::json!({ "x": 1 })).is_ok());
+    }
+
+    #[test]
+    fn known_functions_covers_every_registered_custom_handler() {
+        // A name registered as a handler but missing from KNOWN_FUNCTIONS is
+        // rejected by admin validation even though it would work; the reverse
+        // (in KNOWN_FUNCTIONS, unregistered, not a builtin) reaches the engine
+        // build and kills it. Both directions must hold.
+        for name in CUSTOM_HANDLER_FUNCTIONS {
+            assert!(
+                KNOWN_FUNCTIONS.contains(name),
+                "handler '{name}' is registered but absent from KNOWN_FUNCTIONS, \
+                 so workflows using it are rejected at activation"
+            );
+        }
     }
 }

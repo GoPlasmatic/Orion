@@ -19,6 +19,13 @@ const META_CALL_CHAIN: &str = "_orion_call_chain";
 /// Input configuration for the channel_call function.
 #[derive(Debug, Deserialize)]
 pub struct ChannelCallInput {
+    /// Static target channel. Defaulted rather than required because the schema
+    /// (and the docs) declare it optional when `channel_logic` is given — a
+    /// `channel_logic`-only task passed admin validation and then failed engine
+    /// construction with `missing field 'channel'`, taking every channel down
+    /// with it (proposal F23). The empty default is rejected at call time by the
+    /// existing target check below.
+    #[serde(default)]
     pub channel: String,
     #[serde(default)]
     pub channel_logic: Option<Value>,
