@@ -5,8 +5,9 @@ use clap::Parser;
 use orion::config;
 use orion::server::state::AppState;
 
-mod bootstrap;
 mod cli;
+
+use orion::bootstrap;
 
 #[derive(Parser)]
 #[command(

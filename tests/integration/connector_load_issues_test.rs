@@ -359,3 +359,63 @@ async fn the_stored_type_column_wins_over_an_inner_type() {
         body["connectors"]["failed_to_load"]
     );
 }
+
+/// F16 fail-fast: with `engine.fail_on_connector_load_error = true`, boot
+/// must refuse when an enabled connector fails to load — through the REAL
+/// startup wiring (`orion::bootstrap::build_engine_components`, reachable
+/// from tests since bootstrap moved into the lib). Previously this refusal
+/// was structurally untestable and only its runtime health-reporting side
+/// had coverage.
+#[tokio::test]
+async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
+    sqlx::any::install_default_drivers();
+    let pool = orion::storage::init_pool(&orion::config::StorageConfig {
+        url: "sqlite::memory:".to_string(),
+        max_connections: 5,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // An enabled connector whose env:// secret cannot resolve: valid in the
+    // DB, broken at registry load time (secret_resolution stage).
+    pool.execute_query(
+        r#"INSERT INTO connectors (id, name, connector_type, config_json, enabled)
+           VALUES ('f16-fatal', 'f16-fatal', 'http',
+                   '{"url":"https://example.com","auth":{"type":"bearer","token":"env://ORION_F16_NEVER_SET"}}',
+                   true)"#,
+        sea_query_binder::SqlxValues(sea_query::Values(Vec::new())),
+    )
+    .await
+    .expect("seed broken connector");
+
+    let repos = orion::bootstrap::Repositories::new(&pool);
+    let mut config = orion::config::AppConfig::default();
+    config.engine.fail_on_connector_load_error = true;
+
+    let err = orion::bootstrap::build_engine_components(
+        &config,
+        &repos,
+        std::sync::Arc::new(orion::channel::ChannelRegistry::new()),
+    )
+    .await
+    .err()
+    .expect("boot must refuse with a broken connector and fail-fast on");
+    let msg = err.to_string();
+    assert!(msg.contains("refused to start"), "{msg}");
+    assert!(msg.contains("f16-fatal"), "must name the connector: {msg}");
+    assert!(
+        msg.contains("fail_on_connector_load_error"),
+        "must name the escape hatch: {msg}"
+    );
+
+    // Same database, flag off → boots degraded instead of refusing.
+    config.engine.fail_on_connector_load_error = false;
+    orion::bootstrap::build_engine_components(
+        &config,
+        &repos,
+        std::sync::Arc::new(orion::channel::ChannelRegistry::new()),
+    )
+    .await
+    .expect("with fail-fast off the same state must boot (degraded)");
+}
