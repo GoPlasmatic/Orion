@@ -252,5 +252,10 @@ async fn test_swagger_ui_accessible() {
         .await
         .unwrap();
     let html = String::from_utf8_lossy(&bytes);
-    assert!(html.contains("swagger") || html.contains("Swagger") || html.contains("html"));
+    // Any HTML page contains "html"; require the Swagger UI itself.
+    assert!(
+        html.to_lowercase().contains("swagger"),
+        "expected the Swagger UI page, got: {}",
+        html.chars().take(200).collect::<String>()
+    );
 }

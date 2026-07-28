@@ -156,8 +156,36 @@ async fn test_deeply_nested_json_payload() {
         .await
         .unwrap();
 
-    // Should process without stack overflow -- either succeeds or returns a client/server error
-    assert!(resp.status().as_u16() < 600);
+    // 100 levels is inside serde_json's 128-level recursion limit: the
+    // payload parses and the request completes normally.
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+}
+
+/// Past serde_json's 128-level recursion limit the payload must be refused
+/// as a client error — a controlled rejection, not a stack overflow (which
+/// would abort the process and fail the whole test binary).
+#[tokio::test]
+async fn test_json_past_recursion_limit_is_rejected_as_client_error() {
+    let app = common::test_app().await;
+
+    let mut nested = json!({"leaf": true});
+    for _ in 0..200 {
+        nested = json!({"nested": nested});
+    }
+    // Serialize manually: the request body string itself is fine to build,
+    // only deserialization on the server enforces the depth limit.
+    let body_string = serde_json::to_string(&json!({"data": nested})).unwrap();
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/data/orders")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(body_string))
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 // ============================================================
@@ -737,13 +765,18 @@ async fn test_metrics_endpoint_open_when_auth_disabled() {
         .oneshot(json_request("GET", "/metrics", None))
         .await
         .unwrap();
+    // The contract under test: no auth required when admin auth is disabled.
+    // Exposition *content* is not asserted here — the Prometheus recorder is
+    // process-global, so in this shared test binary only the first-created
+    // app's handle is wired and every other app renders an empty body.
     assert_eq!(resp.status(), StatusCode::OK);
-
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
         .await
         .unwrap();
-    let body = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(!body.contains("error"));
+    assert!(
+        String::from_utf8(bytes.to_vec()).is_ok(),
+        "exposition must be valid UTF-8 text"
+    );
 }
 
 // ============================================================

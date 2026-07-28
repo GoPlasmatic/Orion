@@ -31,7 +31,9 @@ async fn test_pool_exhaustion_no_panics() {
                 .oneshot(common::json_request("GET", "/api/v1/admin/workflows", None))
                 .await
                 .unwrap();
-            resp.status()
+            let status = resp.status();
+            let body = common::body_json(resp).await;
+            (status, body)
         }));
     }
 
@@ -40,20 +42,30 @@ async fn test_pool_exhaustion_no_panics() {
         results.push(task.await.unwrap());
     }
 
-    // Count successes and failures
-    let ok_count = results.iter().filter(|s| **s == StatusCode::OK).count();
-    let error_count = results.iter().filter(|s| s.is_server_error()).count();
+    // Contract under pool starvation: every request resolves to either a
+    // success or a *well-formed* storage-error envelope — a clean HTTP
+    // refusal, never a crash, a hang (proven by completion), or a bare body.
+    let mut ok_count = 0;
+    for (status, body) in &results {
+        match *status {
+            StatusCode::OK => {
+                assert!(body["data"].is_array(), "OK response must carry data");
+                ok_count += 1;
+            }
+            StatusCode::INTERNAL_SERVER_ERROR => {
+                assert!(
+                    body["error"]["code"].is_string(),
+                    "pool-starved refusal must use the error envelope, got {body}"
+                );
+            }
+            other => panic!("unexpected status under pool exhaustion: {other} ({body})"),
+        }
+    }
 
-    // At least some should succeed (the pool serves one at a time)
-    assert!(ok_count > 0, "Expected at least some successful requests");
-
-    // The key assertion: no panics occurred (proven by reaching this point)
-    // and any failures are clean HTTP errors, not crashes
-    eprintln!(
-        "Pool exhaustion test: {} ok, {} server errors out of {}",
-        ok_count,
-        error_count,
-        results.len()
+    // The pool serves one request at a time, so progress must be made.
+    assert!(
+        ok_count > 0,
+        "expected at least some successes; all 20 starved"
     );
 }
 
