@@ -1040,3 +1040,64 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use crate::query::schema::EntityRegistry;
+    use crate::query::write::resolve_write;
+    use proptest::prelude::*;
+
+    /// Render an update whose `set` values and `filter` comparison all carry
+    /// `value`, plus an insert row carrying it — the three channels a user
+    /// scalar travels through. Returns (sql texts, all bind values).
+    fn rendered(value: &str, dialect: SqlDialect) -> (Vec<String>, Vec<sea_query::Value>) {
+        let update = serde_json::json!({
+            "op": "update",
+            "target": "users",
+            "set": { "name": value },
+            "filter": { "==": [{"field": "name"}, value] }
+        });
+        let insert = serde_json::json!({
+            "op": "insert",
+            "target": "users",
+            "values": { "name": value }
+        });
+        let mut sqls = Vec::new();
+        let mut binds = Vec::new();
+        for input in [update, insert] {
+            let resolved =
+                resolve_write(&input, &serde_json::Map::new(), &EntityRegistry::default())
+                    .expect("resolve");
+            let (sql, values) = render_write(&resolved, dialect).expect("render");
+            sqls.push(sql);
+            binds.extend(values.0.0);
+        }
+        (sqls, binds)
+    }
+
+    proptest! {
+        /// The injection-resistance invariant SECURITY.md puts in scope,
+        /// stated as value-independence: the rendered SQL text is a function
+        /// of the envelope SHAPE only. If any user scalar — quotes, SQL
+        /// fragments, unicode, control bytes — ever leaked into the SQL
+        /// string instead of the binds, the text would differ from the
+        /// baseline rendering of the same shape.
+        #[test]
+        fn sql_text_is_independent_of_user_values(value in ".*") {
+            for dialect in [SqlDialect::Postgres, SqlDialect::Sqlite, SqlDialect::Mysql] {
+                let (sqls, binds) = rendered(&value, dialect);
+                let (baseline_sqls, _) = rendered("baseline", dialect);
+                prop_assert_eq!(&sqls, &baseline_sqls, "dialect {:?}", dialect);
+                // And the value must actually travel — via the binds.
+                prop_assert!(
+                    binds.iter().any(
+                        |v| matches!(v, sea_query::Value::String(Some(s)) if s.as_str() == value)
+                    ),
+                    "value must appear among the binds for {:?}",
+                    dialect
+                );
+            }
+        }
+    }
+}

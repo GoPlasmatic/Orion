@@ -241,3 +241,60 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod prop_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn table() -> RouteTable {
+        RouteTable {
+            entries: vec![
+                RouteEntry {
+                    channel_name: "users.get".to_string(),
+                    methods: vec!["GET".to_string()],
+                    segments: parse_route_pattern("/users/{id}/orders/{oid}"),
+                    priority: 0,
+                },
+                RouteEntry {
+                    channel_name: "static.post".to_string(),
+                    methods: vec!["POST".to_string()],
+                    segments: parse_route_pattern("/a/b/c"),
+                    priority: 0,
+                },
+            ],
+        }
+    }
+
+    proptest! {
+        /// Totality: any method/path bytes — unicode, `%`-escapes, `..`,
+        /// empty segments, control characters — must resolve to Some/None,
+        /// never panic. The data plane feeds this attacker-controlled input.
+        #[test]
+        fn match_route_is_total(method in ".*", path in ".*") {
+            let _ = table().match_route(&method, &path);
+        }
+
+        /// Extracted params round-trip verbatim: whatever slash-free segment
+        /// arrives in a param position comes back unchanged — no truncation
+        /// or decoding surprises at this layer.
+        #[test]
+        fn extracted_params_round_trip(id in "[^/]+", oid in "[^/]+") {
+            let path = format!("users/{id}/orders/{oid}");
+            let m = table().match_route("GET", &path).expect("must match");
+            prop_assert_eq!(m.channel_name.as_str(), "users.get");
+            prop_assert_eq!(m.params.get("id").expect("id").as_str(), id.as_str());
+            prop_assert_eq!(m.params.get("oid").expect("oid").as_str(), oid.as_str());
+        }
+
+        /// A pattern never matches outside its shape: extra or missing
+        /// segments must not resolve to the two-param route.
+        #[test]
+        fn wrong_arity_never_matches(id in "[^/]+") {
+            let short = format!("users/{id}");
+            let long = format!("users/{id}/orders/{id}/extra");
+            prop_assert!(table().match_route("GET", &short).is_none());
+            prop_assert!(table().match_route("GET", &long).is_none());
+        }
+    }
+}

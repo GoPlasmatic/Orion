@@ -144,3 +144,6 @@ rcgen = "0.14"
 # Pre-main initializer: the one place `std::env::set_var` is sound in a
 # multi-threaded test binary (secret_references_test's env:// fixture).
 ctor = "0.4"
+# Property-based tests: the SQL renderer's value-independence invariant and
+# route-matching totality (in-crate #[cfg(test)] modules).
+proptest = "1"
