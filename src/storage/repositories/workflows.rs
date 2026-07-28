@@ -746,13 +746,49 @@ pub fn synthetic_workflow(
     })
 }
 
+/// Rewrite `input.output` to `input.response_path` on every `http_call` task.
+///
+/// Orion's task contract names the destination path `output` for all ten
+/// handlers (proposal F43). Nine of them are Orion-owned and take the field
+/// directly — `channel_call` via a serde alias, the rest via
+/// `connector_helpers::extract_output_path`. `http_call` is the exception:
+/// dataflow-rs claims the name as a **built-in**, so `{"name": "http_call"}`
+/// deserializes into the upstream `HttpCallConfig` struct, whose field is
+/// `response_path` and which Orion cannot annotate. Renaming it here, at the
+/// one boundary where workflow JSON becomes a `DataflowWorkflow`, keeps the
+/// public contract uniform without forking the dependency.
+///
+/// `response_path` is still honoured (it is what the upstream struct reads),
+/// so 0.3.x workflows load unchanged. When both are present `output` wins,
+/// matching the alias precedence on `channel_call`.
+fn normalize_http_call_output(tasks: &mut serde_json::Value) {
+    let Some(tasks) = tasks.as_array_mut() else {
+        return;
+    };
+    for task in tasks {
+        let Some(function) = task.get_mut("function") else {
+            continue;
+        };
+        if function.get("name").and_then(|n| n.as_str()) != Some("http_call") {
+            continue;
+        }
+        let Some(input) = function.get_mut("input").and_then(|i| i.as_object_mut()) else {
+            continue;
+        };
+        if let Some(output) = input.remove("output") {
+            input.insert("response_path".to_string(), output);
+        }
+    }
+}
+
 /// Convert a Workflow DB model to a dataflow-rs Workflow via JSON deserialization.
 /// The `channel_name` parameter is supplied externally (from the Channel entity).
 pub fn workflow_to_dataflow(
     workflow: &Workflow,
     channel_name: &str,
 ) -> Result<DataflowWorkflow, OrionError> {
-    let tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
+    let mut tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
+    normalize_http_call_output(&mut tasks);
     let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
     let tags: Vec<String> = serde_json::from_str(&workflow.tags)?;
 
@@ -782,7 +818,8 @@ pub fn workflow_to_dataflow_with_rollout(
     bucket_min: i64,
     bucket_max: i64,
 ) -> Result<DataflowWorkflow, OrionError> {
-    let tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
+    let mut tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
+    normalize_http_call_output(&mut tasks);
     let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
     let tags: Vec<String> = serde_json::from_str(&workflow.tags)?;
 

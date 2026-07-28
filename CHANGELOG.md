@@ -25,6 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **One output-field name across every function: `output`.** `http_call` and
+  `channel_call` called their destination path `response_path` while the other
+  eight handlers called it `output` — two names for one concept, and the
+  most-touched field in the task JSON contract. Both handlers now take
+  `output`. `response_path` is still accepted so 0.3.x workflows load
+  unchanged; when a task carries both, `output` wins.
+
+  | Function | Pre-1.0 | 1.0 | Default if omitted |
+  |---|---|---|---|
+  | `http_call` | `response_path` | `output` | response discarded |
+  | `channel_call` | `response_path` | `output` | `"data"` |
+  | the other eight | `output` | `output` | `"data"` |
+
+  The differing defaults are deliberate and unchanged in this release.
 - **Every metric is renamed with an `orion_` prefix** — `messages_total` is now
   `orion_messages_total`, and so on for all 33 families. The bare names were
   generic enough to collide in a shared registry (`errors_total`,

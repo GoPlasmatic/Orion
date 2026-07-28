@@ -551,7 +551,7 @@ Invoke another channel's workflow in-process for service composition:
     { "id": "enrich", "function": { "name": "channel_call", "input": {
         "channel": "customer-lookup",
         "data_logic": { "var": "data.order.customer_id" },
-        "response_path": "data.customer"
+        "output": "data.customer"
     }}},
     { "id": "process", "condition": { "==": [{ "var": "data.customer.tier" }, "vip"] }, "function": { "..." : "..." } }
   ]

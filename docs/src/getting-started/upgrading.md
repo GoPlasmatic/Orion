@@ -433,6 +433,28 @@ orion-server migrate --dry-run
 
 ## 7. Smaller behaviour changes
 
+### `response_path` is now called `output`
+
+**What changed.** Eight of the ten connector functions named their destination
+path `output`; `http_call` and `channel_call` named it `response_path`. All ten
+now take `output`.
+
+**How you'll notice.** You won't — `response_path` is still honoured, so
+existing workflows keep running. It is documented as deprecated and will be
+removed in a later major. If a task somehow carries both keys, `output` wins.
+
+**What to do.** Rename the key at your leisure:
+
+```json
+// before
+{ "name": "http_call", "input": { "connector": "crm", "response_path": "data.customer" } }
+// after
+{ "name": "http_call", "input": { "connector": "crm", "output": "data.customer" } }
+```
+
+The *defaults* are unchanged and still differ by function: omitting `output` on
+`http_call` discards the response, while every other handler writes to `"data"`.
+
 ### Polling an async trace now requires the token returned with the 202
 
 **What changed.** `POST /api/v1/data/{channel}/async` returns a `trace_token`

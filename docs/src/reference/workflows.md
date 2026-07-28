@@ -81,9 +81,11 @@ areas your JSONLogic can read:
 - `metadata` — request context such as headers, query params, and path params,
   available to conditions and validation.
 
-Most functions write their result to a **dotted output path** (e.g.
-`response_path`, `output`, or a `map` mapping `path`), which is created inside
-the context if it doesn't exist.
+Every connector function writes its result to a **dotted output path** named
+`output` (a `map` task uses its mapping `path` instead), which is created
+inside the context if it doesn't exist. Before 1.0 `http_call` and
+`channel_call` called this field `response_path`; that name is still accepted
+but `output` wins when both are present.
 
 > **The parse-then-process pattern.** A workflow that reads request data should
 > start with `parse_json`; otherwise conditions referencing `data.*` see an

@@ -9,7 +9,7 @@ A workflow is an ordered list of **tasks**, and every task invokes one built-in
   "name": "Look up customer",
   "function": {
     "name": "http_call",
-    "input": { "connector": "crm", "path": "/customers/42", "response_path": "data.customer" }
+    "input": { "connector": "crm", "path": "/customers/42", "output": "data.customer" }
   }
 }
 ```
@@ -233,7 +233,7 @@ support. The connector supplies the base URL and auth.
 | `headers` | object | no | `{}` | Extra request headers (string → string) |
 | `body` | any | no | — | Static request body (serialized as JSON) |
 | `body_logic` | JSONLogic | no | — | Compute the body dynamically (use instead of `body`) |
-| `response_path` | string | no | — | Dotted path where the response body is written; omit to discard it |
+| `output` | string | no | — | Dotted path where the response body is written; omit to discard it. Accepts the pre-1.0 name `response_path` |
 | `timeout_ms` | number | no | `30000` | Per-request timeout in milliseconds |
 
 ```json
@@ -244,7 +244,7 @@ support. The connector supplies the base URL and auth.
     "method": "POST",
     "path": "/charge",
     "body_logic": { "var": "data.payment" },
-    "response_path": "data.charge_result",
+    "output": "data.charge_result",
     "timeout_ms": 5000
   }
 }
@@ -488,7 +488,7 @@ and at most one of `data`/`data_logic`.
 | `channel_logic` | JSONLogic | one of `channel`/`channel_logic` | — | Expression that resolves to the target channel name |
 | `data` | any | no | request payload | Static payload passed to the target channel |
 | `data_logic` | JSONLogic | no | — | Expression that derives the payload |
-| `response_path` | string | no | `"data"` | Dotted path where the called channel's response is stored |
+| `output` | string | no | `"data"` | Dotted path where the called channel's response is stored. Accepts the pre-1.0 name `response_path` |
 | `timeout_ms` | number | no | from config | Per-call timeout in milliseconds |
 
 ```json
@@ -497,7 +497,7 @@ and at most one of `data`/`data_logic`.
   "input": {
     "channel": "customer-lookup",
     "data_logic": { "var": "data.order.customer_id" },
-    "response_path": "data.customer"
+    "output": "data.customer"
   }
 }
 ```

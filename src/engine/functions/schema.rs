@@ -410,8 +410,8 @@ const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         resolvable: false,
     },
     FieldSchema {
-        name: "response_path",
-        description: "Dotted path where the called channel's response is stored.",
+        name: "output",
+        description: "Dotted path where the called channel's response is stored. Defaults to \"data\". (Was `response_path` before 1.0; still accepted.)",
         kind: FieldKind::String,
         required: false,
         resolvable: false,
@@ -476,8 +476,8 @@ const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         resolvable: false,
     },
     FieldSchema {
-        name: "response_path",
-        description: "Dotted path where the response body is written. Omit to discard it.",
+        name: "output",
+        description: "Dotted path where the response body is written. Omit to discard it. (Was `response_path` before 1.0; still accepted.)",
         kind: FieldKind::String,
         required: false,
         resolvable: false,

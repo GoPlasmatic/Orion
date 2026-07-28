@@ -29,8 +29,12 @@ pub struct ChannelCallInput {
     pub channel: String,
     #[serde(default)]
     pub channel_logic: Option<Value>,
-    #[serde(default)]
-    pub response_path: Option<String>,
+    /// Dotted path where the called channel's response is written. Named
+    /// `output` to match the other nine handlers (proposal F43);
+    /// `response_path` stays accepted as a deprecated alias so 0.3.x
+    /// workflows keep loading.
+    #[serde(default, alias = "response_path")]
+    pub output: Option<String>,
     #[serde(default)]
     pub data: Option<Value>,
     #[serde(default)]
@@ -177,7 +181,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             // Refuse loudly: `process_message_for_channel` on an unknown
             // channel matches zero workflows and reports success, which
             // would silently drop the call (a typo'd channel name would
-            // "work" with response_path never populated).
+            // "work" with `output` never populated).
             if target_runtime.is_none() {
                 return Err(DataflowError::function_execution(
                     format!("channel_call to '{target_channel}': channel not found or not active"),
@@ -247,11 +251,8 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             // to filter; we then convert the parts we care about back.
             let result_data_json: Value = child_message.data().into();
 
-            if let Some(ref response_path) = input.response_path {
-                ctx.set_json(response_path, &result_data_json);
-            } else {
-                ctx.set_json("data", &result_data_json);
-            }
+            let output = input.output.as_deref().unwrap_or("data");
+            ctx.set_json(output, &result_data_json);
 
             Ok(TaskOutcome::Success)
         })
