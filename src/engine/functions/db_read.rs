@@ -10,7 +10,7 @@ use sqlx::any::{AnyRow, AnyTypeInfoKind};
 use sqlx::{Column, Row, ValueRef};
 
 use super::connector_helpers::{
-    apply_output, bind_json_params, extract_output_path, observed_handler, reject_mongo_connector,
+    apply_output, bind_json_params, extract_output_path, guarded_handler, reject_mongo_connector,
     require_db_connector, require_op_allowed, require_str_field, resolve_bind_params,
     resolve_connector, timed_query, to_connect_error,
 };
@@ -44,51 +44,59 @@ impl AsyncFunctionHandler for DbReadHandler {
         // F40: read the channel before the body borrows `ctx` mutably.
         let channel = super::extract_channel(ctx.message()).to_string();
 
-        observed_handler("db_read", input, &channel, async move {
-            let connector_name = require_str_field(input, "connector", "db_read")?;
-            let query = require_str_field(input, "query", "db_read")?;
+        // F6: the breaker now wraps every egress path, not just http_call.
+        let connector_name = require_str_field(input, "connector", "db_read")?;
 
-            let connector_config = resolve_connector(&self.registry, connector_name).await?;
-            let db_config = require_db_connector(&connector_config, connector_name)?;
-            reject_mongo_connector("db_read", connector_name, db_config)?;
-            require_op_allowed(&db_config.operations, "read", connector_name)?;
+        guarded_handler(
+            "db_read",
+            &self.registry,
+            connector_name,
+            &channel,
+            async move {
+                let query = require_str_field(input, "query", "db_read")?;
 
-            let pool = self
-                .pool_cache
-                .get_pool(connector_name, db_config)
-                .await
-                .map_err(to_connect_error)?;
+                let connector_config = resolve_connector(&self.registry, connector_name).await?;
+                let db_config = require_db_connector(&connector_config, connector_name)?;
+                reject_mongo_connector("db_read", connector_name, db_config)?;
+                require_op_allowed(&db_config.operations, "read", connector_name)?;
 
-            let sqlx_query = bind_json_params(sqlx::query(query), &params);
+                let pool = self
+                    .pool_cache
+                    .get_pool(connector_name, db_config)
+                    .await
+                    .map_err(to_connect_error)?;
 
-            let max_rows = self.max_rows;
-            let rows: Vec<AnyRow> = timed_query(db_config.query_timeout_ms, "db_read", async {
-                use futures::TryStreamExt;
-                let mut stream = sqlx_query.fetch(&pool);
-                let mut rows: Vec<AnyRow> = Vec::new();
-                while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
-                    if rows.len() >= max_rows {
-                        // F42: marked so `timed_query` reports it as a 400
-                        // with the text intact rather than a 500 with the
-                        // guidance sanitised away.
-                        return Err(format!(
-                            "{}db_read result exceeds query.max_limit ({max_rows} rows) — \
+                let sqlx_query = bind_json_params(sqlx::query(query), &params);
+
+                let max_rows = self.max_rows;
+                let rows: Vec<AnyRow> = timed_query(db_config.query_timeout_ms, "db_read", async {
+                    use futures::TryStreamExt;
+                    let mut stream = sqlx_query.fetch(&pool);
+                    let mut rows: Vec<AnyRow> = Vec::new();
+                    while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
+                        if rows.len() >= max_rows {
+                            // F42: marked so `timed_query` reports it as a 400
+                            // with the text intact rather than a 500 with the
+                            // guidance sanitised away.
+                            return Err(format!(
+                                "{}db_read result exceeds query.max_limit ({max_rows} rows) — \
                              add a LIMIT to the query or raise the cap",
-                            crate::engine::functions::connector_helpers::LIMIT_MARKER
-                        ));
+                                crate::engine::functions::connector_helpers::LIMIT_MARKER
+                            ));
+                        }
+                        rows.push(row);
                     }
-                    rows.push(row);
-                }
-                Ok(rows)
-            })
-            .await?;
+                    Ok(rows)
+                })
+                .await?;
 
-            let result = rows_to_json(&rows)?;
+                let result = rows_to_json(&rows)?;
 
-            let output_path = extract_output_path(input);
-            apply_output(ctx, output_path, result);
-            Ok(TaskOutcome::Success)
-        })
+                let output_path = extract_output_path(input);
+                apply_output(ctx, output_path, result);
+                Ok(TaskOutcome::Success)
+            },
+        )
         .await
     }
 }

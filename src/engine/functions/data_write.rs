@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, es_request, es_write_error, extract_output_path, is_mongo, observed_handler,
+    apply_output, es_request, es_write_error, extract_output_path, guarded_handler, is_mongo,
     require_op_allowed, require_str_field, resolve_connector, resolve_params, send_es, timed_query,
     to_connect_error, to_exec_error,
 };
@@ -56,80 +56,88 @@ impl AsyncFunctionHandler for DataWriteHandler {
         // F40: read the channel before the body borrows `ctx` mutably.
         let channel = super::extract_channel(ctx.message()).to_string();
 
-        observed_handler("data_write", input, &channel, async move {
-            let connector_name = require_str_field(input, "connector", "data_write")?;
-            let connector_config = resolve_connector(&self.registry, connector_name).await?;
+        // F6: the breaker now wraps every egress path, not just http_call.
+        let connector_name = require_str_field(input, "connector", "data_write")?;
 
-            // Optional inline schema (privileged config): renames, allowlist, and
-            // the per-column `writable` flag.
-            let registry = match input.get("schema") {
-                Some(s) => query::EntityRegistry::from_json(s)?,
-                None => query::EntityRegistry::default(),
-            };
+        guarded_handler(
+            "data_write",
+            &self.registry,
+            connector_name,
+            &channel,
+            async move {
+                let connector_config = resolve_connector(&self.registry, connector_name).await?;
 
-            // W7: the mutation envelope is nested under `write`, mirroring
-            // `data_query`'s `query`. Before 1.0 it was flat, sharing a
-            // namespace with the handler keys (`connector`, `schema`,
-            // `params`, `database`, `output`) — so those five names could
-            // never be used by the dialect, and there was no single JSON
-            // value that *was* the envelope. The flat form is still accepted
-            // for one release.
-            let envelope = input.get("write").unwrap_or(input);
+                // Optional inline schema (privileged config): renames, allowlist, and
+                // the per-column `writable` flag.
+                let registry = match input.get("schema") {
+                    Some(s) => query::EntityRegistry::from_json(s)?,
+                    None => query::EntityRegistry::default(),
+                };
 
-            // One backend-neutral resolution: parse envelope, fold params into
-            // values/set, resolve physical names, coerce, and lower the filter.
-            let resolved = query::write::resolve_write(envelope, &params, &registry)?;
-            self.check_guards(&resolved)?;
+                // W7: the mutation envelope is nested under `write`, mirroring
+                // `data_query`'s `query`. Before 1.0 it was flat, sharing a
+                // namespace with the handler keys (`connector`, `schema`,
+                // `params`, `database`, `output`) — so those five names could
+                // never be used by the dialect, and there was no single JSON
+                // value that *was* the envelope. The flat form is still accepted
+                // for one release.
+                let envelope = input.get("write").unwrap_or(input);
 
-            // Per-connector operation gates: a connector config can disable
-            // individual ops (e.g. delete) regardless of what workflows ask for.
-            if let Some(gates) = connector_config.operation_gates() {
-                require_op_allowed(gates, resolved.op.as_str(), connector_name)?;
-            }
+                // One backend-neutral resolution: parse envelope, fold params into
+                // values/set, resolve physical names, coerce, and lower the filter.
+                let resolved = query::write::resolve_write(envelope, &params, &registry)?;
+                self.check_guards(&resolved)?;
 
-            let result = match connector_config.as_ref() {
-                ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
-                    let database = require_str_field(input, "database", "data_write")?;
-                    let mw = query::backend::mongo::render_write(&resolved)?;
-                    let client = self
-                        .mongo_pool_cache
-                        .get_client(connector_name, db)
-                        .await
-                        .map_err(to_connect_error)?;
-                    // F11: bound the write like the SQL branches bound theirs.
-                    timed_query(db.query_timeout_ms, "data_write", async {
-                        execute_mongo(&client, database, mw)
+                // Per-connector operation gates: a connector config can disable
+                // individual ops (e.g. delete) regardless of what workflows ask for.
+                if let Some(gates) = connector_config.operation_gates() {
+                    require_op_allowed(gates, resolved.op.as_str(), connector_name)?;
+                }
+
+                let result = match connector_config.as_ref() {
+                    ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
+                        let database = require_str_field(input, "database", "data_write")?;
+                        let mw = query::backend::mongo::render_write(&resolved)?;
+                        let client = self
+                            .mongo_pool_cache
+                            .get_client(connector_name, db)
                             .await
-                            .map_err(|e| e.to_string())
-                    })
-                    .await?
-                }
-                ConnectorConfig::Db(db) => {
-                    let dialect: SqlDialect = detect_backend(&db.connection_string)
-                        .map_err(to_exec_error)?
-                        .into();
-                    let (sql, values) = query::backend::sql::render_write(&resolved, dialect)?;
-                    let pool = self
-                        .pool_cache
-                        .get_pool(connector_name, db)
-                        .await
-                        .map_err(to_connect_error)?;
-                    execute_sql(&pool, &sql, values, &resolved, db.query_timeout_ms).await?
-                }
-                ConnectorConfig::Es(es) => {
-                    let ew = query::backend::es::render_write(&resolved)?;
-                    run_es_write(&self.http_client, es, ew).await?
-                }
-                _ => {
-                    return Err(DataflowError::Validation(format!(
-                        "Connector '{connector_name}' is not a db or es connector"
-                    )));
-                }
-            };
+                            .map_err(to_connect_error)?;
+                        // F11: bound the write like the SQL branches bound theirs.
+                        timed_query(db.query_timeout_ms, "data_write", async {
+                            execute_mongo(&client, database, mw)
+                                .await
+                                .map_err(|e| e.to_string())
+                        })
+                        .await?
+                    }
+                    ConnectorConfig::Db(db) => {
+                        let dialect: SqlDialect = detect_backend(&db.connection_string)
+                            .map_err(to_exec_error)?
+                            .into();
+                        let (sql, values) = query::backend::sql::render_write(&resolved, dialect)?;
+                        let pool = self
+                            .pool_cache
+                            .get_pool(connector_name, db)
+                            .await
+                            .map_err(to_connect_error)?;
+                        execute_sql(&pool, &sql, values, &resolved, db.query_timeout_ms).await?
+                    }
+                    ConnectorConfig::Es(es) => {
+                        let ew = query::backend::es::render_write(&resolved)?;
+                        run_es_write(&self.http_client, es, ew).await?
+                    }
+                    _ => {
+                        return Err(DataflowError::Validation(format!(
+                            "Connector '{connector_name}' is not a db or es connector"
+                        )));
+                    }
+                };
 
-            apply_output(ctx, extract_output_path(input), result);
-            Ok(TaskOutcome::Success)
-        })
+                apply_output(ctx, extract_output_path(input), result);
+                Ok(TaskOutcome::Success)
+            },
+        )
         .await
     }
 }

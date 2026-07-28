@@ -8,8 +8,8 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    json_type_name, observed_handler, require_cache_connector, require_str_field,
-    resolve_connector, resolve_required_str, resolve_value, to_connect_error, to_exec_error,
+    guarded_handler, json_type_name, require_cache_connector, require_str_field, resolve_connector,
+    resolve_required_str, resolve_value, to_connect_error, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -46,44 +46,51 @@ impl AsyncFunctionHandler for CacheWriteHandler {
         // F40: read the channel before the body borrows `ctx` mutably.
         let channel = super::extract_channel(ctx.message()).to_string();
 
-        observed_handler("cache_write", input, &channel, async move {
-            let connector_name = require_str_field(input, "connector", "cache_write")?;
+        // F6: the breaker now wraps every egress path, not just http_call.
+        let connector_name = require_str_field(input, "connector", "cache_write")?;
 
-            let connector_config = resolve_connector(&self.registry, connector_name).await?;
-            let cache_config = require_cache_connector(&connector_config, connector_name)?;
+        guarded_handler(
+            "cache_write",
+            &self.registry,
+            connector_name,
+            &channel,
+            async move {
+                let connector_config = resolve_connector(&self.registry, connector_name).await?;
+                let cache_config = require_cache_connector(&connector_config, connector_name)?;
 
-            let backend = self
-                .cache_pool
-                .get_backend(connector_name, cache_config)
-                .await
-                .map_err(to_connect_error)?;
-
-            // Always JSON-encode, including strings, so `cache_read` is the
-            // exact inverse. Storing strings raw made the round-trip lossy:
-            // writing "123" stored `123`, which read back as the *number* 123,
-            // and "true"/"null" likewise changed type — silently breaking any
-            // downstream JSONLogic comparison (proposal N13).
-            let value_str = serde_json::to_string(&value).map_err(|e| {
-                DataflowError::Validation(format!("Failed to serialize value for cache: {e}"))
-            })?;
-
-            if let Some(ttl) = ttl {
-                backend
-                    .set_ex(&key, &value_str, ttl)
+                let backend = self
+                    .cache_pool
+                    .get_backend(connector_name, cache_config)
                     .await
-                    .map_err(to_exec_error)?;
-            } else {
-                backend.set(&key, &value_str).await.map_err(to_exec_error)?;
-            }
+                    .map_err(to_connect_error)?;
 
-            tracing::debug!(
-                key = %key,
-                ttl = ?ttl,
-                "Wrote value to cache"
-            );
+                // Always JSON-encode, including strings, so `cache_read` is the
+                // exact inverse. Storing strings raw made the round-trip lossy:
+                // writing "123" stored `123`, which read back as the *number* 123,
+                // and "true"/"null" likewise changed type — silently breaking any
+                // downstream JSONLogic comparison (proposal N13).
+                let value_str = serde_json::to_string(&value).map_err(|e| {
+                    DataflowError::Validation(format!("Failed to serialize value for cache: {e}"))
+                })?;
 
-            Ok(TaskOutcome::Success)
-        })
+                if let Some(ttl) = ttl {
+                    backend
+                        .set_ex(&key, &value_str, ttl)
+                        .await
+                        .map_err(to_exec_error)?;
+                } else {
+                    backend.set(&key, &value_str).await.map_err(to_exec_error)?;
+                }
+
+                tracing::debug!(
+                    key = %key,
+                    ttl = ?ttl,
+                    "Wrote value to cache"
+                );
+
+                Ok(TaskOutcome::Success)
+            },
+        )
         .await
     }
 }

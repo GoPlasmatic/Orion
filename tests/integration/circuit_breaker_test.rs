@@ -386,3 +386,109 @@ async fn test_breaker_disabled_by_default() {
         "Circuit breakers should be disabled by default"
     );
 }
+
+// ---------------------------------------------------------------------------
+// F6: the breaker guards every egress path, not just http_call
+// ---------------------------------------------------------------------------
+
+/// A dead database now trips the breaker. Before F6 the breaker wrapped only
+/// `http_call`, so `[engine.circuit_breaker]` read as global resilience while
+/// a hung Postgres or Redis pinned every worker.
+#[tokio::test]
+async fn a_failing_db_connector_trips_the_breaker() {
+    let app = common::test_app_with_config(cb_config(2, 300)).await;
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite("cb-dead-db", "postgres://127.0.0.1:1/nope"),
+    )
+    .await;
+    common::create_and_activate_channel(
+        &app,
+        "ch-cb-db",
+        common::workflow_with_tasks(
+            "cb",
+            json!([{
+                "id": "r", "name": "r",
+                "function": { "name": "db_read", "input": {
+                    "connector": "cb-dead-db",
+                    "query": "SELECT 1",
+                    "output": "data.rows"
+                }}
+            }]),
+        ),
+    )
+    .await;
+
+    for _ in 0..4 {
+        let _ = common::dsl::post(&app, "ch-cb-db", json!({ "data": {} })).await;
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v1/admin/connectors/circuit-breakers",
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = common::body_json(resp).await;
+    let breakers = body["data"]["breakers"].as_object().expect("breakers map");
+    assert!(
+        breakers.keys().any(|k| k.contains("cb-dead-db")),
+        "an unreachable db connector must be tracked by the breaker: {body}"
+    );
+}
+
+/// The property that makes F6 safe to apply to a database: a query the backend
+/// *rejected* says nothing about the dependency's health. Counting it would let
+/// one bad workflow trip the breaker on a healthy database and take down every
+/// other channel using it.
+#[tokio::test]
+async fn a_rejected_query_does_not_trip_the_breaker() {
+    let app = common::test_app_with_config(cb_config(1, 300)).await;
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite("cb-live-db", "sqlite:file:cb_live?mode=memory&cache=shared"),
+    )
+    .await;
+    common::create_and_activate_channel(
+        &app,
+        "ch-cb-bad-sql",
+        common::workflow_with_tasks(
+            "cb",
+            json!([{
+                "id": "r", "name": "r",
+                "function": { "name": "db_read", "input": {
+                    "connector": "cb-live-db",
+                    "query": "SELCT * FROM nope",
+                    "output": "data.rows"
+                }}
+            }]),
+        ),
+    )
+    .await;
+
+    for _ in 0..5 {
+        let _ = common::dsl::post(&app, "ch-cb-bad-sql", json!({ "data": {} })).await;
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "GET",
+            "/api/v1/admin/connectors/circuit-breakers",
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = common::body_json(resp).await;
+    let open = body["data"]["breakers"]
+        .as_object()
+        .map(|m| m.values().any(|v| v == "open"))
+        .unwrap_or(false);
+    assert!(
+        !open,
+        "a syntax error must not trip the breaker on a healthy database: {body}"
+    );
+}

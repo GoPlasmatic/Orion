@@ -7,7 +7,7 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, bind_json_params, extract_output_path, observed_handler, reject_mongo_connector,
+    apply_output, bind_json_params, extract_output_path, guarded_handler, reject_mongo_connector,
     require_db_connector, require_op_allowed, require_str_field, resolve_bind_params,
     resolve_connector, timed_query, to_connect_error,
 };
@@ -38,39 +38,47 @@ impl AsyncFunctionHandler for DbWriteHandler {
         // F40: read the channel before the body borrows `ctx` mutably.
         let channel = super::extract_channel(ctx.message()).to_string();
 
-        observed_handler("db_write", input, &channel, async move {
-            let connector_name = require_str_field(input, "connector", "db_write")?;
-            let query = require_str_field(input, "query", "db_write")?;
+        // F6: the breaker now wraps every egress path, not just http_call.
+        let connector_name = require_str_field(input, "connector", "db_write")?;
 
-            let connector_config = resolve_connector(&self.registry, connector_name).await?;
-            let db_config = require_db_connector(&connector_config, connector_name)?;
-            reject_mongo_connector("db_write", connector_name, db_config)?;
-            // Raw SQL cannot be classified per-op; it has its own gate.
-            require_op_allowed(&db_config.operations, "raw_write", connector_name)?;
+        guarded_handler(
+            "db_write",
+            &self.registry,
+            connector_name,
+            &channel,
+            async move {
+                let query = require_str_field(input, "query", "db_write")?;
 
-            let pool = self
-                .pool_cache
-                .get_pool(connector_name, db_config)
-                .await
-                .map_err(to_connect_error)?;
+                let connector_config = resolve_connector(&self.registry, connector_name).await?;
+                let db_config = require_db_connector(&connector_config, connector_name)?;
+                reject_mongo_connector("db_write", connector_name, db_config)?;
+                // Raw SQL cannot be classified per-op; it has its own gate.
+                require_op_allowed(&db_config.operations, "raw_write", connector_name)?;
 
-            let sqlx_query = bind_json_params(sqlx::query(query), &params);
+                let pool = self
+                    .pool_cache
+                    .get_pool(connector_name, db_config)
+                    .await
+                    .map_err(to_connect_error)?;
 
-            let result = timed_query(
-                db_config.query_timeout_ms,
-                "db_write",
-                sqlx_query.execute(&pool),
-            )
-            .await?;
+                let sqlx_query = bind_json_params(sqlx::query(query), &params);
 
-            let output = serde_json::json!({
-                "rows_affected": result.rows_affected(),
-            });
+                let result = timed_query(
+                    db_config.query_timeout_ms,
+                    "db_write",
+                    sqlx_query.execute(&pool),
+                )
+                .await?;
 
-            let output_path = extract_output_path(input);
-            apply_output(ctx, output_path, output);
-            Ok(TaskOutcome::Success)
-        })
+                let output = serde_json::json!({
+                    "rows_affected": result.rows_affected(),
+                });
+
+                let output_path = extract_output_path(input);
+                apply_output(ctx, output_path, output);
+                Ok(TaskOutcome::Success)
+            },
+        )
         .await
     }
 }

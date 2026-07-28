@@ -30,8 +30,9 @@ impl AsyncFunctionHandler for HttpCallHandler {
         // F40: read the channel before the body borrows `ctx` mutably.
         let channel = super::extract_channel(ctx.message()).to_string();
 
-        super::connector_helpers::observed_handler_named(
+        super::connector_helpers::guarded_handler(
             "http_call",
+            &self.registry,
             &input.connector,
             &channel,
             async move {
@@ -76,43 +77,21 @@ impl AsyncFunctionHandler for HttpCallHandler {
                         timeout.saturating_mul(retry_config.max_retries.saturating_add(1)),
                     ),
                 };
-                let response_body = if self.registry.circuit_breaker_enabled() {
-                    let channel = super::extract_channel(ctx.message());
-                    let key = format!("{}:{}", channel, input.connector);
-                    let breaker = self.registry.get_or_create_breaker(&key).await;
-                    super::execute_with_circuit_breaker(
-                        &breaker,
-                        &input.connector,
-                        channel,
-                        policy,
-                        "HTTP call",
-                        || {
-                            http_common::execute_request(
-                                &self.client,
-                                &method,
-                                &url,
-                                Some(&input.headers),
-                                http_config,
-                                body.as_ref(),
-                                timeout,
-                            )
-                        },
+                // F6: the breaker is applied by `guarded_handler` above, the
+                // same shell every other egress path now uses. This branch used
+                // to carry its own copy — the only one in the codebase.
+                let response_body = super::retry_with_policy(policy, "HTTP call", || {
+                    http_common::execute_request(
+                        &self.client,
+                        &method,
+                        &url,
+                        Some(&input.headers),
+                        http_config,
+                        body.as_ref(),
+                        timeout,
                     )
-                    .await?
-                } else {
-                    super::retry_with_policy(policy, "HTTP call", || {
-                        http_common::execute_request(
-                            &self.client,
-                            &method,
-                            &url,
-                            Some(&input.headers),
-                            http_config,
-                            body.as_ref(),
-                            timeout,
-                        )
-                    })
-                    .await?
-                };
+                })
+                .await?;
 
                 if let Some(ref response_path) = input.response_path {
                     ctx.set_json(response_path, &response_body);

@@ -67,6 +67,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The circuit breaker now guards all nine egress paths, not just
+  `http_call`.** `db_read`, `db_write`, `data_query`, `data_write`,
+  `mongo_read`, `cache_read`, `cache_write` and `publish_kafka` reached their
+  pools directly, so `[engine.circuit_breaker]` read as global resilience while
+  a hung PostgreSQL or Redis pinned every worker.
+
+  **Only retryable failures trip it.** A query the backend *rejected* — a syntax
+  error, a constraint violation, a row-cap breach — says nothing about the
+  dependency's health, and counting it would let one bad workflow trip the
+  breaker on a healthy database and take down every other channel using it. The
+  error taxonomy above is what makes "retryable" mean "the dependency is in
+  trouble" rather than "something went wrong".
+
+  Breaker keys keep their `channel:connector` shape, and the whole thing stays a
+  no-op while `engine.circuit_breaker.enabled` is false (still the default). If
+  you enable it, expect breakers for database and cache connectors that
+  previously only appeared for HTTP.
+
 - **Connector failures are classified instead of all becoming non-retryable
   500s.** Every non-HTTP connector error went through one constructor producing
   `FunctionExecution { source: None }`, which dataflow-rs classifies as **not

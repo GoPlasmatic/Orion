@@ -30,8 +30,9 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
         // F40: read the channel before the body borrows `ctx` mutably.
         let channel = super::extract_channel(ctx.message()).to_string();
 
-        super::connector_helpers::observed_handler_named(
+        super::connector_helpers::guarded_handler(
             "publish_kafka",
+            &self.registry,
             &input.connector,
             &channel,
             async move {

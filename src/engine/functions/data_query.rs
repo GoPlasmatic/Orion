@@ -12,7 +12,7 @@ use serde_json::Value;
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, es_request, extract_output_path, is_mongo, observed_handler, require_op_allowed,
+    apply_output, es_request, extract_output_path, guarded_handler, is_mongo, require_op_allowed,
     require_str_field, resolve_connector, resolve_params, timed_query, to_connect_error,
     to_exec_error,
 };
@@ -53,114 +53,122 @@ impl AsyncFunctionHandler for DataQueryHandler {
         // F40: read the channel before the body borrows `ctx` mutably.
         let channel = super::extract_channel(ctx.message()).to_string();
 
-        observed_handler("data_query", input, &channel, async move {
-            let connector_name = require_str_field(input, "connector", "data_query")?;
-            let query = input.get("query").ok_or_else(|| {
-                DataflowError::Validation("data_query requires 'query' field".to_string())
-            })?;
+        // F6: the breaker now wraps every egress path, not just http_call.
+        let connector_name = require_str_field(input, "connector", "data_query")?;
 
-            let connector_config = resolve_connector(&self.registry, connector_name).await?;
+        guarded_handler(
+            "data_query",
+            &self.registry,
+            connector_name,
+            &channel,
+            async move {
+                let query = input.get("query").ok_or_else(|| {
+                    DataflowError::Validation("data_query requires 'query' field".to_string())
+                })?;
 
-            // Per-connector operation gates: reads can be disabled too
-            // (e.g. a write-only audit sink).
-            if let Some(gates) = connector_config.operation_gates() {
-                require_op_allowed(gates, "read", connector_name)?;
-            }
+                let connector_config = resolve_connector(&self.registry, connector_name).await?;
 
-            // Optional inline schema (privileged config authored alongside the
-            // query): renames, type hints, allowlist, and relation declarations.
-            let registry = match input.get("schema") {
-                Some(s) => query::EntityRegistry::from_json(s)?,
-                None => query::EntityRegistry::default(),
-            };
-
-            let result = match connector_config.as_ref() {
-                ConnectorConfig::Es(es) => {
-                    // Elasticsearch: render a search body and POST it via HTTP.
-                    let eq = query::translate_es(
-                        query,
-                        &params,
-                        &registry,
-                        self.default_limit,
-                        self.max_limit,
-                    )?;
-                    run_es_search(&self.http_client, es, &eq).await?
+                // Per-connector operation gates: reads can be disabled too
+                // (e.g. a write-only audit sink).
+                if let Some(gates) = connector_config.operation_gates() {
+                    require_op_allowed(gates, "read", connector_name)?;
                 }
-                ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
-                    // MongoDB: render a `find` and execute it via the Mongo pool.
-                    let database = require_str_field(input, "database", "data_query")?;
-                    let mq = query::translate_mongo(
-                        query,
-                        &params,
-                        &registry,
-                        self.default_limit,
-                        self.max_limit,
-                    )?;
-                    let client = self
-                        .mongo_pool_cache
-                        .get_client(connector_name, db)
-                        .await
-                        .map_err(to_connect_error)?;
-                    let coll = client
-                        .database(database)
-                        .collection::<Document>(&mq.collection);
-                    // F11: DbConnectorConfig.query_timeout_ms never applied
-                    // to Mongo — an unresponsive server hung the request for
-                    // the channel timeout, which is itself optional.
-                    let docs: Vec<Document> =
-                        timed_query(db.query_timeout_ms, "data_query", async {
-                            let mut find = coll.find(mq.filter);
-                            if let Some(p) = mq.projection {
-                                find = find.projection(p);
-                            }
-                            if let Some(s) = mq.sort {
-                                find = find.sort(s);
-                            }
-                            if let Some(sk) = mq.skip {
-                                find = find.skip(sk);
-                            }
-                            find = find.limit(mq.limit as i64);
-                            let cursor = find.await.map_err(|e| e.to_string())?;
-                            cursor.try_collect().await.map_err(|e| e.to_string())
-                        })
-                        .await?;
-                    Value::Array(
-                        docs.iter()
-                            .filter_map(|d| serde_json::to_value(d).ok())
-                            .collect(),
-                    )
-                }
-                ConnectorConfig::Db(db) => {
-                    // SQL: dialect from the connection-string scheme (the same
-                    // source `AnyPool` uses), so the rendered SQL matches the pool.
-                    let dialect: SqlDialect = detect_backend(&db.connection_string)
-                        .map_err(to_exec_error)?
-                        .into();
-                    let plan = query::plan_sql(
-                        query,
-                        &params,
-                        &registry,
-                        dialect,
-                        self.default_limit,
-                        self.max_limit,
-                    )?;
-                    let pool = self
-                        .pool_cache
-                        .get_pool(connector_name, db)
-                        .await
-                        .map_err(to_connect_error)?;
-                    run_sql_with_includes(&pool, &plan, dialect, db.query_timeout_ms).await?
-                }
-                _ => {
-                    return Err(DataflowError::Validation(format!(
-                        "Connector '{connector_name}' is not a db or es connector"
-                    )));
-                }
-            };
 
-            apply_output(ctx, extract_output_path(input), result);
-            Ok(TaskOutcome::Success)
-        })
+                // Optional inline schema (privileged config authored alongside the
+                // query): renames, type hints, allowlist, and relation declarations.
+                let registry = match input.get("schema") {
+                    Some(s) => query::EntityRegistry::from_json(s)?,
+                    None => query::EntityRegistry::default(),
+                };
+
+                let result = match connector_config.as_ref() {
+                    ConnectorConfig::Es(es) => {
+                        // Elasticsearch: render a search body and POST it via HTTP.
+                        let eq = query::translate_es(
+                            query,
+                            &params,
+                            &registry,
+                            self.default_limit,
+                            self.max_limit,
+                        )?;
+                        run_es_search(&self.http_client, es, &eq).await?
+                    }
+                    ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
+                        // MongoDB: render a `find` and execute it via the Mongo pool.
+                        let database = require_str_field(input, "database", "data_query")?;
+                        let mq = query::translate_mongo(
+                            query,
+                            &params,
+                            &registry,
+                            self.default_limit,
+                            self.max_limit,
+                        )?;
+                        let client = self
+                            .mongo_pool_cache
+                            .get_client(connector_name, db)
+                            .await
+                            .map_err(to_connect_error)?;
+                        let coll = client
+                            .database(database)
+                            .collection::<Document>(&mq.collection);
+                        // F11: DbConnectorConfig.query_timeout_ms never applied
+                        // to Mongo — an unresponsive server hung the request for
+                        // the channel timeout, which is itself optional.
+                        let docs: Vec<Document> =
+                            timed_query(db.query_timeout_ms, "data_query", async {
+                                let mut find = coll.find(mq.filter);
+                                if let Some(p) = mq.projection {
+                                    find = find.projection(p);
+                                }
+                                if let Some(s) = mq.sort {
+                                    find = find.sort(s);
+                                }
+                                if let Some(sk) = mq.skip {
+                                    find = find.skip(sk);
+                                }
+                                find = find.limit(mq.limit as i64);
+                                let cursor = find.await.map_err(|e| e.to_string())?;
+                                cursor.try_collect().await.map_err(|e| e.to_string())
+                            })
+                            .await?;
+                        Value::Array(
+                            docs.iter()
+                                .filter_map(|d| serde_json::to_value(d).ok())
+                                .collect(),
+                        )
+                    }
+                    ConnectorConfig::Db(db) => {
+                        // SQL: dialect from the connection-string scheme (the same
+                        // source `AnyPool` uses), so the rendered SQL matches the pool.
+                        let dialect: SqlDialect = detect_backend(&db.connection_string)
+                            .map_err(to_exec_error)?
+                            .into();
+                        let plan = query::plan_sql(
+                            query,
+                            &params,
+                            &registry,
+                            dialect,
+                            self.default_limit,
+                            self.max_limit,
+                        )?;
+                        let pool = self
+                            .pool_cache
+                            .get_pool(connector_name, db)
+                            .await
+                            .map_err(to_connect_error)?;
+                        run_sql_with_includes(&pool, &plan, dialect, db.query_timeout_ms).await?
+                    }
+                    _ => {
+                        return Err(DataflowError::Validation(format!(
+                            "Connector '{connector_name}' is not a db or es connector"
+                        )));
+                    }
+                };
+
+                apply_output(ctx, extract_output_path(input), result);
+                Ok(TaskOutcome::Success)
+            },
+        )
         .await
     }
 }

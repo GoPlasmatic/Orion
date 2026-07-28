@@ -7,8 +7,8 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, extract_output_path, observed_handler, require_cache_connector,
-    require_str_field, resolve_connector, resolve_required_str, to_connect_error, to_exec_error,
+    apply_output, extract_output_path, guarded_handler, require_cache_connector, require_str_field,
+    resolve_connector, resolve_required_str, to_connect_error, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -36,33 +36,40 @@ impl AsyncFunctionHandler for CacheReadHandler {
         // F40: read the channel before the body borrows `ctx` mutably.
         let channel = super::extract_channel(ctx.message()).to_string();
 
-        observed_handler("cache_read", input, &channel, async move {
-            let connector_name = require_str_field(input, "connector", "cache_read")?;
+        // F6: the breaker now wraps every egress path, not just http_call.
+        let connector_name = require_str_field(input, "connector", "cache_read")?;
 
-            let connector_config = resolve_connector(&self.registry, connector_name).await?;
-            let cache_config = require_cache_connector(&connector_config, connector_name)?;
+        guarded_handler(
+            "cache_read",
+            &self.registry,
+            connector_name,
+            &channel,
+            async move {
+                let connector_config = resolve_connector(&self.registry, connector_name).await?;
+                let cache_config = require_cache_connector(&connector_config, connector_name)?;
 
-            let backend = self
-                .cache_pool
-                .get_backend(connector_name, cache_config)
-                .await
-                .map_err(to_connect_error)?;
+                let backend = self
+                    .cache_pool
+                    .get_backend(connector_name, cache_config)
+                    .await
+                    .map_err(to_connect_error)?;
 
-            let value = backend.get(&key).await.map_err(to_exec_error)?;
+                let value = backend.get(&key).await.map_err(to_exec_error)?;
 
-            // `cache_write` JSON-encodes everything, so parsing is its exact
-            // inverse. The raw-string fallback is kept deliberately: a key
-            // written by something other than Orion may hold a bare string,
-            // and surfacing that as a string beats failing the task.
-            let result = match value {
-                Some(v) => serde_json::from_str::<Value>(&v).unwrap_or(Value::String(v)),
-                None => Value::Null,
-            };
+                // `cache_write` JSON-encodes everything, so parsing is its exact
+                // inverse. The raw-string fallback is kept deliberately: a key
+                // written by something other than Orion may hold a bare string,
+                // and surfacing that as a string beats failing the task.
+                let result = match value {
+                    Some(v) => serde_json::from_str::<Value>(&v).unwrap_or(Value::String(v)),
+                    None => Value::Null,
+                };
 
-            let output_path = extract_output_path(input);
-            apply_output(ctx, output_path, result);
-            Ok(TaskOutcome::Success)
-        })
+                let output_path = extract_output_path(input);
+                apply_output(ctx, output_path, result);
+                Ok(TaskOutcome::Success)
+            },
+        )
         .await
     }
 }

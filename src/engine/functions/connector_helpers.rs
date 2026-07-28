@@ -158,6 +158,69 @@ where
     observed_handler_named(fn_name, connector, channel, fut).await
 }
 
+/// [`observed_handler_named`] plus the circuit breaker (F6).
+///
+/// The breaker used to wrap exactly one of the nine egress paths — `http_call`.
+/// `db_read`, `db_write`, `data_query`, `data_write`, `mongo_read`,
+/// `cache_read`, `cache_write` and `publish_kafka` reached their pools
+/// directly, so `[engine.circuit_breaker]` read as global resilience while a
+/// hung Postgres or Redis pinned every worker.
+///
+/// **Only retryable failures trip it.** That distinction is what makes this
+/// safe to apply to a database: a query the backend *rejected* — a syntax
+/// error, a constraint violation, a row-cap breach — says nothing about the
+/// dependency's health, and counting it would let one bad workflow trip the
+/// breaker on a perfectly healthy database and take down every other channel
+/// using it. F42's taxonomy is what makes "retryable" mean "the dependency is
+/// in trouble" rather than "something went wrong".
+///
+/// A no-op when `engine.circuit_breaker.enabled` is false (the default), which
+/// leaves the observability in [`observed_handler_named`] unconditional.
+pub async fn guarded_handler<F>(
+    fn_name: &'static str,
+    registry: &ConnectorRegistry,
+    connector: &str,
+    channel: &str,
+    fut: F,
+) -> dataflow_rs::Result<TaskOutcome>
+where
+    F: std::future::Future<Output = dataflow_rs::Result<TaskOutcome>>,
+{
+    if !registry.circuit_breaker_enabled() {
+        return observed_handler_named(fn_name, connector, channel, fut).await;
+    }
+
+    // Same key shape as the pre-existing `http_call` path, so an operator's
+    // `channel:connector` keys keep meaning what they meant.
+    let breaker = registry
+        .get_or_create_breaker(&format!("{channel}:{connector}"))
+        .await;
+    if !breaker.check() {
+        crate::metrics::record_circuit_breaker_rejection(connector, channel);
+        return Err(crate::errors::circuit_open_dataflow_error(
+            connector, channel,
+        ));
+    }
+
+    let result = observed_handler_named(fn_name, connector, channel, fut).await;
+    match &result {
+        Ok(_) => breaker.record_success(),
+        Err(e) if e.retryable() => {
+            if breaker.record_failure() {
+                tracing::warn!(
+                    connector = connector,
+                    channel = channel,
+                    "Circuit breaker tripped"
+                );
+                crate::metrics::record_circuit_breaker_trip(connector, channel);
+            }
+        }
+        // A failure the caller caused is not evidence about the dependency.
+        Err(_) => {}
+    }
+    result
+}
+
 /// [`observed_handler`] for the two handlers whose input is a typed struct
 /// rather than a `Value`, so the connector name is passed directly.
 pub async fn observed_handler_named<F>(
@@ -567,10 +630,11 @@ mod tests {
 
 #[cfg(test)]
 mod observability_tests {
-    /// F40: every connector handler must run its body inside
-    /// [`observed_handler`] (or [`observed_handler_named`] for the two with
-    /// typed inputs), because that is the only thing emitting
-    /// `connector_requests_total` / `connector_request_duration_seconds`.
+    /// F40/F6: every connector handler must run its body inside the shared
+    /// shell — [`guarded_handler`], or [`observed_handler`] for a handler with
+    /// no connector to guard. That shell is the only thing emitting
+    /// `connector_requests_total` / `connector_request_duration_seconds`, and
+    /// the only place the circuit breaker is applied.
     ///
     /// Asserted against the sources rather than by scraping `/metrics`: the
     /// metrics recorder is process-global, so only the first test app in a
@@ -595,7 +659,9 @@ mod observability_tests {
         for handler in HANDLERS {
             let path = format!("{dir}/{handler}.rs");
             let src = std::fs::read_to_string(&path).expect("handler source");
-            if !src.contains("observed_handler") {
+            // `guarded_handler` (F6) wraps `observed_handler_named`, so either
+            // name means the handler is inside the shell.
+            if !src.contains("observed_handler") && !src.contains("guarded_handler") {
                 unwrapped.push(handler);
             }
             // The wrapper is useless if the body still reaches for the raw
