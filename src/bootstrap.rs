@@ -570,3 +570,80 @@ pub fn start_background_tasks(
         },
     )
 }
+
+/// Inputs to [`build_app_state`] that aren't already carried by
+/// [`Repositories`] / [`EngineComponents`].
+pub struct AppStateParams {
+    pub config: Arc<config::AppConfig>,
+    pub pool: crate::storage::DbPool,
+    pub repos: Repositories,
+    pub components: EngineComponents,
+    pub channel_registry: Arc<crate::channel::ChannelRegistry>,
+    pub trace_queue: crate::queue::TraceQueue,
+    pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
+    pub rate_limit_state: Option<Arc<crate::server::rate_limit::RateLimitState>>,
+    pub metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
+    pub ready: Arc<std::sync::atomic::AtomicBool>,
+    pub kafka_consumer_handle: Option<crate::kafka::consumer::ConsumerHandle>,
+    pub cluster: Arc<crate::cluster::ClusterRuntime>,
+}
+
+/// Assemble `AppState` from the bootstrap products — the single place the
+/// [`Repositories`] / [`EngineComponents`] fields map onto `AppStateInner`,
+/// shared by `main.rs` and the integration-test harness so the two can never
+/// drift apart.
+pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState {
+    let AppStateParams {
+        config,
+        pool,
+        repos,
+        components,
+        channel_registry,
+        trace_queue,
+        trace_persistence_queue,
+        rate_limit_state,
+        metrics_handle,
+        ready,
+        kafka_consumer_handle,
+        cluster,
+    } = params;
+    let EngineComponents {
+        connector_registry,
+        http_client,
+        datalogic,
+        engine,
+        cache_pool,
+        sql_pool_cache,
+        mongo_pool_cache,
+        // Already consumed by `load_channels_and_build_engine`.
+        custom_functions: _,
+        kafka_producer,
+    } = components;
+    crate::server::state::AppState::new(crate::server::state::AppStateInner {
+        engine,
+        channel_repo: repos.channels,
+        workflow_repo: repos.workflows,
+        connector_repo: repos.connectors,
+        trace_repo: repos.traces,
+        trace_dlq_repo: repos.trace_dlq,
+        audit_log_repo: repos.audit_logs,
+        connector_registry,
+        cache_pool,
+        channel_registry,
+        trace_queue,
+        db_pool: pool,
+        config,
+        start_time: chrono::Utc::now(),
+        metrics_handle,
+        http_client,
+        datalogic,
+        rate_limit_state,
+        ready,
+        sql_pool_cache,
+        mongo_pool_cache,
+        kafka_consumer_handle: Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle)),
+        kafka_producer,
+        trace_persistence_queue,
+        cluster,
+    })
+}

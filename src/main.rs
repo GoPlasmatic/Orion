@@ -3,7 +3,6 @@ use std::sync::Arc;
 use clap::Parser;
 
 use orion::config;
-use orion::server::state::AppState;
 
 mod cli;
 
@@ -210,25 +209,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Mark the service as ready now that the engine and channel registry are loaded
     ready.store(true, std::sync::atomic::Ordering::Release);
 
-    let bootstrap::EngineComponents {
-        connector_registry,
-        http_client,
-        datalogic: datalogic_engine,
-        engine,
-        cache_pool,
-        sql_pool_cache,
-        mongo_pool_cache,
-        custom_functions: _,
-        kafka_producer,
-    } = components;
-
     let kafka_consumer_handle = bootstrap::start_kafka_ingest(
         &config.kafka,
         &channels,
-        engine.clone(),
+        components.engine.clone(),
         channel_registry.clone(),
-        datalogic_engine.clone(),
-        kafka_producer.clone(),
+        components.datalogic.clone(),
+        components.kafka_producer.clone(),
         cluster.enabled.then(|| cluster.instance_id.as_str()),
     )?;
 
@@ -238,7 +225,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (trace_persistence_queue, trace_queue, mut task_handles) =
         bootstrap::start_background_tasks(
             &config,
-            engine.clone(),
+            components.engine.clone(),
             &repos,
             channel_registry.clone(),
             &cluster,
@@ -253,63 +240,59 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Build state and router
     let config = Arc::new(config);
 
-    let kafka_consumer_handle_arc = Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle));
-
-    let state = AppState::new(orion::server::state::AppStateInner {
-        engine,
-        channel_repo: repos.channels,
-        workflow_repo: repos.workflows,
-        connector_repo: repos.connectors,
-        trace_repo: repos.traces,
-        trace_dlq_repo: repos.trace_dlq,
-        audit_log_repo: repos.audit_logs,
-        connector_registry,
-        cache_pool,
+    let state = bootstrap::build_app_state(bootstrap::AppStateParams {
+        config: config.clone(),
+        pool,
+        repos,
+        components,
         channel_registry,
         trace_queue,
-        db_pool: pool,
-        config: config.clone(),
-        start_time: chrono::Utc::now(),
-        metrics_handle,
-        http_client,
-        datalogic: datalogic_engine,
-        rate_limit_state,
-        ready: ready.clone(),
-        sql_pool_cache,
-        mongo_pool_cache,
-        kafka_consumer_handle: kafka_consumer_handle_arc.clone(),
-        kafka_producer,
         trace_persistence_queue,
+        rate_limit_state,
+        metrics_handle,
+        ready: ready.clone(),
+        kafka_consumer_handle,
         cluster,
     });
 
     // Cluster background tasks (epoch watcher). Empty when disabled.
     task_handles.cluster_task_handles = orion::cluster::start_cluster_tasks(&state);
 
-    let router = orion::server::build_router(state);
-
-    let addr = format!("{}:{}", config.server.host, config.server.port);
+    let router = orion::server::build_router(state.clone());
 
     if config.server.tls.enabled {
-        serve_tls(&addr, &config, ready.clone(), router).await?;
-    } else {
-        serve_plain_http(
-            &addr,
-            &config.storage.url,
-            config.server.shutdown_drain_secs,
-            config.server.shutdown_force_timeout_secs,
+        let handle = axum_server::Handle::new();
+        orion::server::serve::serve_tls(
+            config.clone(),
             ready.clone(),
             router,
+            handle,
+            orion::server::shutdown_signal(),
+        )
+        .await?;
+    } else {
+        let addr = format!("{}:{}", config.server.host, config.server.port);
+        let listener = orion::server::serve::create_tcp_listener(&addr)?;
+        orion::server::serve::serve_plain_http(
+            listener,
+            config.clone(),
+            ready.clone(),
+            router,
+            orion::server::shutdown_signal(),
         )
         .await?;
     }
 
     // Graceful shutdown
-    if let Some(handle) = kafka_consumer_handle_arc.lock().await.take() {
+    if let Some(handle) = state.kafka_consumer_handle.lock().await.take() {
         tracing::info!("Shutting down Kafka consumer...");
         handle.shutdown().await;
     }
 
+    // Release the state's trace-queue sender before draining the workers —
+    // they exit when the last sender closes, and holding `state` here would
+    // stall the drain until its timeout.
+    drop(state);
     task_handles.shutdown().await;
 
     // Flush pending OTel spans before exit
@@ -321,140 +304,5 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     tracing::info!("Orion shut down cleanly");
-    Ok(())
-}
-
-/// Create a bound TCP listener with `TCP_NODELAY` enabled (avoids Nagle's
-/// 40 ms latency on small responses) and `SO_REUSEADDR` set.
-fn create_tcp_listener(addr: &str) -> Result<tokio::net::TcpListener, orion::errors::OrionError> {
-    let socket_addr = addr.parse::<std::net::SocketAddr>().map_err(|e| {
-        orion::errors::OrionError::Internal(format!("Invalid address '{addr}': {e}"))
-    })?;
-    let domain = if socket_addr.is_ipv4() {
-        socket2::Domain::IPV4
-    } else {
-        socket2::Domain::IPV6
-    };
-    let map_err = |stage: &str, e: std::io::Error| orion::errors::OrionError::InternalSource {
-        context: format!("Failed to {stage} for {addr}"),
-        source: Box::new(e),
-    };
-    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))
-        .map_err(|e| map_err("create socket", e))?;
-    socket.set_tcp_nodelay(true).ok();
-    socket.set_reuse_address(true).ok();
-    socket
-        .bind(&socket_addr.into())
-        .map_err(|e| map_err("bind", e))?;
-    socket.listen(1024).map_err(|e| map_err("listen", e))?;
-    socket.set_nonblocking(true).ok();
-    tokio::net::TcpListener::from_std(socket.into())
-        .map_err(|e| map_err("create async listener", e))
-}
-
-/// Bind a TLS (HTTPS) listener via axum-server and serve `router` with
-/// graceful shutdown — same drain sequence as the plain-HTTP path.
-async fn serve_tls(
-    addr: &str,
-    config: &config::AppConfig,
-    ready: Arc<std::sync::atomic::AtomicBool>,
-    router: axum::Router,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let rustls_config = orion::server::tls::load_rustls_config(
-        &config.server.tls.cert_path,
-        &config.server.tls.key_path,
-    )
-    .await?;
-
-    let bind_addr: std::net::SocketAddr = addr.parse()?;
-    let handle = axum_server::Handle::new();
-    let shutdown_handle = handle.clone();
-    let drain_secs = config.server.shutdown_drain_secs;
-    let force_timeout_secs = config.server.shutdown_force_timeout_secs;
-    let ready_for_drain = ready.clone();
-    tokio::spawn(async move {
-        // Withdraw readiness, keep accepting through the LB grace window,
-        // THEN stop accepting — same sequence as the plain-HTTP path.
-        orion::server::drain::drain_gate(
-            orion::server::shutdown_signal(),
-            ready_for_drain,
-            std::time::Duration::from_secs(drain_secs),
-        )
-        .await;
-        let force =
-            (force_timeout_secs > 0).then(|| std::time::Duration::from_secs(force_timeout_secs));
-        shutdown_handle.graceful_shutdown(force);
-    });
-
-    tracing::info!(
-        address = %addr,
-        storage = %config.storage.url,
-        tls = true,
-        "Orion is ready (HTTPS)"
-    );
-
-    axum_server::bind_rustls(bind_addr, rustls_config)
-        .handle(handle)
-        .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .await?;
-    Ok(())
-}
-
-/// Bind a plain (non-TLS) HTTP listener and serve `router` with graceful
-/// shutdown.
-async fn serve_plain_http(
-    addr: &str,
-    storage_url: &str,
-    drain_secs: u64,
-    force_timeout_secs: u64,
-    ready: Arc<std::sync::atomic::AtomicBool>,
-    router: axum::Router,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let listener = create_tcp_listener(addr)?;
-    tracing::info!(
-        address = %addr,
-        storage = %storage_url,
-        tcp_nodelay = true,
-        "Orion is ready"
-    );
-    // `drained` fires when the gate resolves (accept stopped); the force
-    // timeout counts from that point, bounding the in-flight wait.
-    let (drained_tx, drained_rx) = tokio::sync::oneshot::channel::<()>();
-    let gate = async move {
-        orion::server::drain::drain_gate(
-            orion::server::shutdown_signal(),
-            ready,
-            std::time::Duration::from_secs(drain_secs),
-        )
-        .await;
-        let _ = drained_tx.send(());
-    };
-    let serve = axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-    )
-    .with_graceful_shutdown(gate);
-    if force_timeout_secs == 0 {
-        serve.await?;
-    } else {
-        tokio::select! {
-            result = serve => result?,
-            _ = async {
-                // Wait for the gate, then bound the in-flight drain. If the
-                // server finishes first the sender is dropped and this arm
-                // pends forever — the select resolves through `serve`.
-                match drained_rx.await {
-                    Ok(()) => {
-                        tokio::time::sleep(std::time::Duration::from_secs(force_timeout_secs)).await;
-                        tracing::warn!(
-                            force_timeout_secs,
-                            "Shutdown force timeout elapsed; aborting remaining in-flight connections"
-                        );
-                    }
-                    Err(_) => std::future::pending::<()>().await,
-                }
-            } => {}
-        }
-    }
     Ok(())
 }
