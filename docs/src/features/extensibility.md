@@ -283,32 +283,6 @@ Use `cache_read` and `cache_write` in workflows:
 }
 ```
 
-### Storage Connector (S3/GCS)
-
-S3, GCS, or local filesystem for file operations:
-
-```json
-{
-  "name": "uploads",
-  "connector_type": "storage",
-  "config": {
-    "type": "storage",
-    "provider": "s3",
-    "bucket": "my-uploads",
-    "region": "us-east-1",
-    "base_path": "/data"
-  }
-}
-```
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `provider` | required | Storage provider: `s3`, `gcs`, `local` |
-| `bucket` | `null` | Bucket or container name |
-| `region` | `null` | Cloud region |
-| `base_path` | `null` | Base path prefix for all operations |
-| `retry` | 3 retries, 1000ms | Retry with exponential backoff |
-
 ### MongoDB Connector (NoSQL)
 
 MongoDB uses a `db` connector with a `mongodb://` connection string:

@@ -8,7 +8,6 @@ pub enum ConnectorConfig {
     Kafka(KafkaConnectorConfig),
     Db(DbConnectorConfig),
     Cache(CacheConnectorConfig),
-    Storage(StorageConnectorConfig),
     Es(EsConnectorConfig),
 }
 
@@ -180,20 +179,6 @@ pub struct CacheConnectorConfig {
     pub retry: RetryConfig,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StorageConnectorConfig {
-    pub provider: String,
-    #[serde(default)]
-    pub bucket: Option<String>,
-    #[serde(default)]
-    pub region: Option<String>,
-    #[serde(default)]
-    pub base_path: Option<String>,
-    pub auth: Option<AuthConfig>,
-    #[serde(default)]
-    pub retry: RetryConfig,
-}
-
 /// Elasticsearch connector: a REST endpoint queried by the `data_query` handler
 /// (executed via the shared HTTP client — no dedicated ES driver).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,15 +204,18 @@ pub struct EsConnectorConfig {
 }
 
 /// Allowed connector type values.
-pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "storage", "es"];
+pub const VALID_CONNECTOR_TYPES: &[&str] = &["http", "kafka", "db", "cache", "es"];
 
 /// Allowed cache backend values.
 pub const VALID_CACHE_BACKENDS: &[&str] = &["redis", "memory"];
 
 /// Typed enum for the connector `type` field on create/update requests.
-/// Wire format is lowercase ("http", "kafka", "db", "cache", "storage");
-/// deserialization is case-insensitive so "HTTP" or "Kafka" also parse —
-/// strictly additive on v0.1's accepted set.
+/// Wire format is lowercase ("http", "kafka", "db", "cache", "es");
+/// deserialization is case-insensitive so "HTTP" or "Kafka" also parse.
+///
+/// `"storage"` was accepted through the whole 0.x line with no handler behind
+/// it and was removed in 1.0 (proposal F15); `load_from_repo` reports stored
+/// rows as a load issue naming the removal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectorType {
@@ -235,7 +223,6 @@ pub enum ConnectorType {
     Kafka,
     Db,
     Cache,
-    Storage,
     Es,
 }
 
@@ -246,7 +233,6 @@ impl ConnectorType {
             Self::Kafka => "kafka",
             Self::Db => "db",
             Self::Cache => "cache",
-            Self::Storage => "storage",
             Self::Es => "es",
         }
     }
@@ -266,7 +252,6 @@ impl<'de> serde::Deserialize<'de> for ConnectorType {
             "kafka" => Ok(Self::Kafka),
             "db" => Ok(Self::Db),
             "cache" => Ok(Self::Cache),
-            "storage" => Ok(Self::Storage),
             "es" => Ok(Self::Es),
             other => Err(serde::de::Error::unknown_variant(
                 other,
@@ -373,19 +358,16 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// `storage` was an accepted connector type with no handler behind it
+    /// (proposal F15): it validated, persisted, and listed, and every workflow
+    /// referencing it failed at request time. Removed in 1.0 — the type must
+    /// now be refused at the door.
     #[test]
-    fn test_connector_config_deserialization_storage() {
-        let json =
-            r#"{"type":"storage","provider":"s3","bucket":"my-bucket","region":"us-east-1"}"#;
-        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
-        match config {
-            ConnectorConfig::Storage(storage) => {
-                assert_eq!(storage.provider, "s3");
-                assert_eq!(storage.bucket, Some("my-bucket".to_string()));
-                assert_eq!(storage.region, Some("us-east-1".to_string()));
-            }
-            _ => unreachable!("Expected Storage config"),
-        }
+    fn storage_connector_type_is_rejected() {
+        let json = r#"{"type":"storage","provider":"s3","bucket":"my-bucket"}"#;
+        serde_json::from_str::<ConnectorConfig>(json)
+            .expect_err("`storage` must no longer deserialize");
+        assert!(!VALID_CONNECTOR_TYPES.contains(&"storage"));
     }
 
     #[test]
@@ -408,7 +390,6 @@ mod tests {
         assert!(VALID_CONNECTOR_TYPES.contains(&"kafka"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"db"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"cache"));
-        assert!(VALID_CONNECTOR_TYPES.contains(&"storage"));
         assert!(VALID_CONNECTOR_TYPES.contains(&"es"));
         assert!(!VALID_CONNECTOR_TYPES.contains(&"grpc"));
     }

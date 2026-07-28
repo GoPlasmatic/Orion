@@ -3225,13 +3225,12 @@
       },
       "ConnectorType": {
         "type": "string",
-        "description": "Typed enum for the connector `type` field on create/update requests.\nWire format is lowercase (\"http\", \"kafka\", \"db\", \"cache\", \"storage\");\ndeserialization is case-insensitive so \"HTTP\" or \"Kafka\" also parse —\nstrictly additive on v0.1's accepted set.",
+        "description": "Typed enum for the connector `type` field on create/update requests.\nWire format is lowercase (\"http\", \"kafka\", \"db\", \"cache\", \"es\");\ndeserialization is case-insensitive so \"HTTP\" or \"Kafka\" also parse.\n\n`\"storage\"` was accepted through the whole 0.x line with no handler behind\nit and was removed in 1.0 (proposal F15); `load_from_repo` reports stored\nrows as a load issue naming the removal.",
         "enum": [
           "http",
           "kafka",
           "db",
           "cache",
-          "storage",
           "es"
         ]
       },

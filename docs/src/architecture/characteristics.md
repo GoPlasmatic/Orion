@@ -60,7 +60,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
 
 | Area | Capabilities |
 |------|-------------|
-| [Connectors](../features/extensibility.md#connectors) | HTTP & Webhooks · Kafka pub/sub · Database (SQL) · Cache (Memory & Redis) · Storage (S3/GCS) · MongoDB (NoSQL) |
+| [Connectors](../features/extensibility.md#connectors) | HTTP & Webhooks · Kafka pub/sub · Database (SQL) · Cache (Memory & Redis) · Elasticsearch · MongoDB (NoSQL) |
 | [Custom Functions](../features/extensibility.md#custom-functions) | Async function handlers · Built-in function library · JSONLogic expressions |
 | [Channel Protocols](../features/extensibility.md#channel-protocols) | REST with route matching (sync) · Simple HTTP (sync) · Kafka (async) |
 
@@ -173,7 +173,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
       color: isDark ? '#0F2822' : '#D0F0E5', border: '#4CBD97',
       children: [
         { name: 'Connectors', link: '../features/extensibility.html#connectors',
-          children: ['HTTP & Webhooks', 'Kafka pub/sub', 'Database (SQL)', 'Cache (Memory & Redis)', 'Storage (S3/GCS)', 'MongoDB (NoSQL)'] },
+          children: ['HTTP & Webhooks', 'Kafka pub/sub', 'Database (SQL)', 'Cache (Memory & Redis)', 'Elasticsearch', 'MongoDB (NoSQL)'] },
         { name: 'Custom Functions', link: '../features/extensibility.html#custom-functions',
           children: ['Async function handlers', 'Built-in function library', 'JSONLogic expressions'] },
         { name: 'Channel Protocols', link: '../features/extensibility.html#channel-protocols',

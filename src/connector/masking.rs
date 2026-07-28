@@ -318,12 +318,12 @@ mod tests {
     fn credential_bundles_mask_every_child() {
         // The bundle's children are not individually secret-looking, so only
         // the propagated flag saves them.
-        let config = r#"{"type":"storage","credentials":{"id":"AKIAEXAMPLE","value":"wJalrXUtn"},"bucket":"assets"}"#;
+        let config = r#"{"type":"db","credentials":{"id":"AKIAEXAMPLE","value":"wJalrXUtn"},"database":"assets"}"#;
         let masked = mask_connector_secrets(config);
         let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["credentials"]["id"], "******");
         assert_eq!(val["credentials"]["value"], "******");
-        assert_eq!(val["bucket"], "assets");
+        assert_eq!(val["database"], "assets");
     }
 
     #[test]

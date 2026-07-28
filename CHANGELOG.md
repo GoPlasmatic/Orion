@@ -25,6 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **The `storage` connector type is removed.** It was accepted, validated,
+  persisted and listed by `GET /connectors` for the whole 0.x line with no
+  handler behind it — `POST /connectors` returned 201 and every workflow
+  referencing the connector failed at request time. The documentation
+  advertised S3, GCS and local-filesystem support with a full field table for
+  something that did not exist; that section is gone.
+
+  `connector_type: "storage"` is now rejected at create. An existing stored row
+  is reported as a connector load issue (`stage: "removed_type"`) naming the
+  removal, visible on `/health` and `GET /api/v1/admin/connectors` — and fatal
+  at boot when `engine.fail_on_connector_load_error = true`. **Delete or
+  disable such connectors before upgrading.** Nothing that worked stops
+  working: there was never a working configuration to preserve.
 - **An unknown key in the config file is now a startup error.** Every config
   struct was `#[serde(default)]` with no unknown-field rejection, so
   `[server] wrokers = 4`, or a whole misspelled section, booted clean with

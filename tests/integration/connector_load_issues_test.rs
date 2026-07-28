@@ -419,3 +419,58 @@ async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
     .await
     .expect("with fail-fast off the same state must boot (degraded)");
 }
+
+/// F15: `storage` was an accepted connector type for the whole 0.x line with
+/// no handler behind it — it validated, persisted, and appeared in
+/// `GET /connectors`, and every workflow referencing one failed at request
+/// time. It is removed in 1.0.
+///
+/// The type can no longer be created through the API, so the only way a row
+/// exists is an upgrade from 0.3.x. That row must produce a load issue naming
+/// the removal and the remedy, not the bare serde `unknown variant
+/// \`storage\`` an operator cannot act on.
+#[tokio::test]
+async fn a_stored_storage_connector_reports_the_removal() {
+    sqlx::any::install_default_drivers();
+    let pool = orion::storage::init_pool(&orion::config::StorageConfig {
+        url: "sqlite::memory:".to_string(),
+        max_connections: 5,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Exactly what a 0.3.x instance would have persisted.
+    pool.execute_query(
+        r#"INSERT INTO connectors (id, name, connector_type, config_json, enabled)
+           VALUES ('legacy-uploads', 'legacy-uploads', 'storage',
+                   '{"provider":"s3","bucket":"my-uploads","region":"us-east-1"}',
+                   true)"#,
+        sea_query_binder::SqlxValues(sea_query::Values(Vec::new())),
+    )
+    .await
+    .expect("seed a 0.3.x storage connector");
+
+    let registry =
+        std::sync::Arc::new(orion::connector::ConnectorRegistry::new(Default::default()));
+    let repo = orion::storage::repositories::connectors::SqlConnectorRepository::new(pool.clone());
+    registry.load_from_repo(&repo).await.expect("load");
+
+    let issues = registry.load_issues().await;
+    assert_eq!(issues.len(), 1, "expected one load issue: {issues:?}");
+    assert_eq!(issues[0].connector, "legacy-uploads");
+    assert_eq!(
+        issues[0].stage, "removed_type",
+        "a removed type is its own stage, not a generic deserialize failure"
+    );
+    assert!(
+        issues[0].reason.contains("removed in 1.0"),
+        "the reason must say the type is gone: {}",
+        issues[0].reason
+    );
+    assert!(
+        issues[0].reason.contains("delete or disable"),
+        "the reason must say what to do about it: {}",
+        issues[0].reason
+    );
+}
