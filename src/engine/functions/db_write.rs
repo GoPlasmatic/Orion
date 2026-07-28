@@ -9,7 +9,7 @@ use serde_json::Value;
 use super::connector_helpers::{
     apply_output, bind_json_params, extract_output_path, observed_handler, reject_mongo_connector,
     require_db_connector, require_op_allowed, require_str_field, resolve_bind_params,
-    resolve_connector, timed_query, to_exec_error,
+    resolve_connector, timed_query, to_connect_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
@@ -52,7 +52,7 @@ impl AsyncFunctionHandler for DbWriteHandler {
                 .pool_cache
                 .get_pool(connector_name, db_config)
                 .await
-                .map_err(to_exec_error)?;
+                .map_err(to_connect_error)?;
 
             let sqlx_query = bind_json_params(sqlx::query(query), &params);
 

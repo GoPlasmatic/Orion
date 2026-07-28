@@ -13,7 +13,8 @@ use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
     apply_output, es_request, extract_output_path, is_mongo, observed_handler, require_op_allowed,
-    require_str_field, resolve_connector, resolve_params, timed_query, to_exec_error,
+    require_str_field, resolve_connector, resolve_params, timed_query, to_connect_error,
+    to_exec_error,
 };
 use super::db_read::rows_to_json;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -99,7 +100,7 @@ impl AsyncFunctionHandler for DataQueryHandler {
                         .mongo_pool_cache
                         .get_client(connector_name, db)
                         .await
-                        .map_err(to_exec_error)?;
+                        .map_err(to_connect_error)?;
                     let coll = client
                         .database(database)
                         .collection::<Document>(&mq.collection);
@@ -147,7 +148,7 @@ impl AsyncFunctionHandler for DataQueryHandler {
                         .pool_cache
                         .get_pool(connector_name, db)
                         .await
-                        .map_err(to_exec_error)?;
+                        .map_err(to_connect_error)?;
                     run_sql_with_includes(&pool, &plan, dialect, db.query_timeout_ms).await?
                 }
                 _ => {

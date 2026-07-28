@@ -12,7 +12,7 @@ use sqlx::any::AnyRow;
 use super::connector_helpers::{
     apply_output, es_request, es_write_error, extract_output_path, is_mongo, observed_handler,
     require_op_allowed, require_str_field, resolve_connector, resolve_params, send_es, timed_query,
-    to_exec_error,
+    to_connect_error, to_exec_error,
 };
 use super::db_read::rows_to_json;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -95,7 +95,7 @@ impl AsyncFunctionHandler for DataWriteHandler {
                         .mongo_pool_cache
                         .get_client(connector_name, db)
                         .await
-                        .map_err(to_exec_error)?;
+                        .map_err(to_connect_error)?;
                     // F11: bound the write like the SQL branches bound theirs.
                     timed_query(db.query_timeout_ms, "data_write", async {
                         execute_mongo(&client, database, mw)
@@ -113,7 +113,7 @@ impl AsyncFunctionHandler for DataWriteHandler {
                         .pool_cache
                         .get_pool(connector_name, db)
                         .await
-                        .map_err(to_exec_error)?;
+                        .map_err(to_connect_error)?;
                     execute_sql(&pool, &sql, values, &resolved, db.query_timeout_ms).await?
                 }
                 ConnectorConfig::Es(es) => {

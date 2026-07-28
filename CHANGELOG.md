@@ -67,6 +67,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Connector failures are classified instead of all becoming non-retryable
+  500s.** Every non-HTTP connector error went through one constructor producing
+  `FunctionExecution { source: None }`, which dataflow-rs classifies as **not
+  retryable**. Two consequences:
+
+  - A dead PostgreSQL, Redis or MongoDB was a non-retryable 500, while the
+    *identical* HTTP outage was a retryable `Io` — so **DLQ retry policy
+    diverged by backend** for no principled reason. Failures to *reach* a
+    backend now produce `Io` and retry like the HTTP path; a query the backend
+    rejected stays non-retryable, which is correct.
+  - A caller-fixable limit reported through the 500 path, so its message was
+    replaced by the generic internal-error text. `db_read`'s row cap — *"add a
+    LIMIT to the query or raise the cap"* — was sanitised away exactly when the
+    caller needed it. Limits are now **400** with the guidance intact.
+
+  **`GET`-style row-cap failures change status from 500 to 400.** If you alert
+  on 5xx from the data plane, a previously-500 row-cap breach now shows as a
+  client error, which is what it is.
+
 - **An async REST channel's `route_pattern` is no longer silently ignored.**
   The route table filtered to `channel_type == "sync"`, while channel validation
   *requires* a `route_pattern` for the `rest`/`http` protocols regardless of

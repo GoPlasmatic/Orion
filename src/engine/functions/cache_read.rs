@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::connector_helpers::{
     apply_output, extract_output_path, observed_handler, require_cache_connector,
-    require_str_field, resolve_connector, resolve_required_str, to_exec_error,
+    require_str_field, resolve_connector, resolve_required_str, to_connect_error, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -46,7 +46,7 @@ impl AsyncFunctionHandler for CacheReadHandler {
                 .cache_pool
                 .get_backend(connector_name, cache_config)
                 .await
-                .map_err(to_exec_error)?;
+                .map_err(to_connect_error)?;
 
             let value = backend.get(&key).await.map_err(to_exec_error)?;
 

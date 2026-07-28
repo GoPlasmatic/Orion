@@ -512,6 +512,8 @@ async fn test_db_read_row_cap_enforced() {
     .await;
 
     // 3 rows > max_limit 2 → the task fails rather than buffering unbounded.
+    // F42: a caller-fixable limit is a 400 with its guidance intact, not a 500
+    // with the message sanitised away.
     let resp = app
         .clone()
         .oneshot(common::json_request(
@@ -521,7 +523,17 @@ async fn test_db_read_row_cap_enforced() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = common::body_json(resp).await;
+    let message = serde_json::to_string(&body).unwrap();
+    assert!(
+        message.contains("add a LIMIT to the query or raise the cap"),
+        "the guidance must survive to the caller: {body}"
+    );
+    assert!(
+        !message.contains("orion.limit:"),
+        "the internal marker must be stripped: {body}"
+    );
 
     // A capped query still works.
     common::create_and_activate_channel(

@@ -190,6 +190,37 @@ pub fn to_exec_error(e: impl std::fmt::Display) -> DataflowError {
     DataflowError::function_execution(e.to_string(), None)
 }
 
+/// A failure to *reach* a backend — pool acquisition, connection setup, DNS.
+///
+/// `DataflowError::Io` rather than `FunctionExecution` because dataflow-rs
+/// classifies the latter (with `source: None`) as **not retryable**, while
+/// `Io` is. Before F42 every non-HTTP connector failure went through
+/// [`to_exec_error`], so a dead Postgres, Redis or MongoDB was a non-retryable
+/// 500 while the *identical* HTTP outage was a retryable `Io` — DLQ retry
+/// policy diverged by backend for no principled reason.
+///
+/// Use for "could not connect"; keep [`to_exec_error`] for "connected, and the
+/// query failed", which is genuinely not worth retrying.
+pub fn to_connect_error(e: impl std::fmt::Display) -> DataflowError {
+    DataflowError::Io(e.to_string())
+}
+
+/// A caller-fixable limit or shape problem, e.g. a result set over
+/// `query.max_limit`.
+///
+/// `Validation` maps to 400 with the message preserved. Routing these through
+/// [`to_exec_error`] made them 500 `ENGINE_ERROR` with the text replaced, so
+/// deliberately helpful guidance — *"add a LIMIT to the query or raise the
+/// cap"* — was sanitised away exactly when the caller needed it (F42).
+pub fn to_limit_error(message: impl std::fmt::Display) -> DataflowError {
+    DataflowError::Validation(message.to_string())
+}
+
+/// Prefix a `timed_query` operation puts on a message that is a caller-fixable
+/// limit rather than a backend failure, so the wrapper can classify it (F42).
+/// Stripped before the message is surfaced.
+pub const LIMIT_MARKER: &str = "orion.limit: ";
+
 /// Extracts a required string field from a JSON value, returning a validation
 /// error that names the handler and field on failure.
 pub fn require_str_field<'a>(
@@ -478,7 +509,13 @@ where
             DataflowError::Timeout(format!("{handler_name} query timed out after {ms}ms"))
         })?
         .map_err(|e| {
-            DataflowError::function_execution(format!("{handler_name} query failed: {e}"), None)
+            // F42: a limit the caller can fix is a 400 with its text intact,
+            // not a 500 with the guidance replaced.
+            let text = e.to_string();
+            if let Some(detail) = text.strip_prefix(LIMIT_MARKER) {
+                return to_limit_error(detail);
+            }
+            DataflowError::function_execution(format!("{handler_name} query failed: {text}"), None)
         })
 }
 
@@ -572,6 +609,69 @@ mod observability_tests {
         assert!(
             unwrapped.is_empty(),
             "these connector handlers emit no connector metrics: {unwrapped:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod error_taxonomy_tests {
+    use super::*;
+
+    /// F42: a dead Postgres/Redis/Mongo used to be a **non-retryable** 500
+    /// while the identical HTTP outage was a retryable `Io`, so DLQ retry
+    /// policy diverged by backend for no principled reason. dataflow-rs
+    /// classifies `FunctionExecution { source: None }` as not retryable and
+    /// `Io` as retryable, so the distinction has to be made at construction.
+    #[test]
+    fn a_failure_to_connect_is_retryable_but_a_failed_query_is_not() {
+        assert!(
+            to_connect_error("connection refused").retryable(),
+            "an unreachable backend must be retryable, like the HTTP path"
+        );
+        assert!(
+            !to_exec_error("syntax error at or near \"SELCT\"").retryable(),
+            "a query the backend rejected is not worth retrying"
+        );
+    }
+
+    /// A caller-fixable limit is a 400 that keeps its guidance, not a 500 that
+    /// loses it to sanitisation.
+    #[test]
+    fn a_limit_error_is_validation_not_execution() {
+        let err = to_limit_error("result exceeds query.max_limit — add a LIMIT");
+        assert!(
+            matches!(err, DataflowError::Validation(_)),
+            "expected Validation, got {err:?}"
+        );
+        assert!(!err.retryable(), "a limit does not fix itself on retry");
+    }
+
+    /// `timed_query` is where the marker is turned back into a classification;
+    /// the marker itself must never reach a caller.
+    #[tokio::test]
+    async fn timed_query_classifies_a_marked_limit_and_strips_the_marker() {
+        let err = timed_query(Some(1_000), "db_read", async {
+            Err::<(), String>(format!("{LIMIT_MARKER}too many rows — add a LIMIT"))
+        })
+        .await
+        .expect_err("the operation failed");
+        assert!(
+            matches!(err, DataflowError::Validation(ref m) if m == "too many rows — add a LIMIT"),
+            "expected a stripped Validation, got {err:?}"
+        );
+    }
+
+    /// An unmarked failure keeps the old behaviour: a 500 naming the handler.
+    #[tokio::test]
+    async fn timed_query_leaves_an_ordinary_failure_as_execution() {
+        let err = timed_query(Some(1_000), "db_read", async {
+            Err::<(), String>("connection reset".to_string())
+        })
+        .await
+        .expect_err("the operation failed");
+        assert!(
+            matches!(err, DataflowError::FunctionExecution { .. }),
+            "expected FunctionExecution, got {err:?}"
         );
     }
 }

@@ -12,7 +12,7 @@ use serde_json::Value;
 use super::connector_helpers::{
     apply_output, extract_output_path, is_mongo, observed_handler, require_db_connector,
     require_op_allowed, require_str_field, resolve_connector, resolve_value, timed_query,
-    to_exec_error,
+    to_connect_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::mongo_pool::MongoPoolCache;
@@ -71,7 +71,7 @@ impl AsyncFunctionHandler for MongoReadHandler {
                 .pool_cache
                 .get_client(connector_name, db_config)
                 .await
-                .map_err(to_exec_error)?;
+                .map_err(to_connect_error)?;
 
             let coll = client.database(database).collection::<Document>(collection);
             let max_rows = self.max_rows;

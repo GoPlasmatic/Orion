@@ -12,7 +12,7 @@ use sqlx::{Column, Row, ValueRef};
 use super::connector_helpers::{
     apply_output, bind_json_params, extract_output_path, observed_handler, reject_mongo_connector,
     require_db_connector, require_op_allowed, require_str_field, resolve_bind_params,
-    resolve_connector, timed_query, to_exec_error,
+    resolve_connector, timed_query, to_connect_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::pool_cache::SqlPoolCache;
@@ -57,7 +57,7 @@ impl AsyncFunctionHandler for DbReadHandler {
                 .pool_cache
                 .get_pool(connector_name, db_config)
                 .await
-                .map_err(to_exec_error)?;
+                .map_err(to_connect_error)?;
 
             let sqlx_query = bind_json_params(sqlx::query(query), &params);
 
@@ -68,9 +68,13 @@ impl AsyncFunctionHandler for DbReadHandler {
                 let mut rows: Vec<AnyRow> = Vec::new();
                 while let Some(row) = stream.try_next().await.map_err(|e| e.to_string())? {
                     if rows.len() >= max_rows {
+                        // F42: marked so `timed_query` reports it as a 400
+                        // with the text intact rather than a 500 with the
+                        // guidance sanitised away.
                         return Err(format!(
-                            "db_read result exceeds query.max_limit ({max_rows} rows) — \
-                             add a LIMIT to the query or raise the cap"
+                            "{}db_read result exceeds query.max_limit ({max_rows} rows) — \
+                             add a LIMIT to the query or raise the cap",
+                            crate::engine::functions::connector_helpers::LIMIT_MARKER
                         ));
                     }
                     rows.push(row);
