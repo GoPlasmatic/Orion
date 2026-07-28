@@ -27,104 +27,112 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
         ctx: &mut TaskContext<'_>,
         input: &PublishKafkaConfig,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        crate::engine::profile::record("publish_kafka", Some(&input.connector), async move {
-            let connector =
-                super::connector_helpers::resolve_connector(&self.registry, &input.connector)
-                    .await?;
-            let kafka_config = super::connector_helpers::require_kafka_connector(
-                connector.as_ref(),
-                &input.connector,
-            )?;
+        // F40: read the channel before the body borrows `ctx` mutably.
+        let channel = super::extract_channel(ctx.message()).to_string();
 
-            let producers = match &self.producers {
-                Some(p) => p,
-                None => {
-                    return Err(DataflowError::FunctionExecution {
-                        context: format!(
-                            "Kafka publishing to topic '{}' is not available. \
+        super::connector_helpers::observed_handler_named(
+            "publish_kafka",
+            &input.connector,
+            &channel,
+            async move {
+                let connector =
+                    super::connector_helpers::resolve_connector(&self.registry, &input.connector)
+                        .await?;
+                let kafka_config = super::connector_helpers::require_kafka_connector(
+                    connector.as_ref(),
+                    &input.connector,
+                )?;
+
+                let producers = match &self.producers {
+                    Some(p) => p,
+                    None => {
+                        return Err(DataflowError::FunctionExecution {
+                            context: format!(
+                                "Kafka publishing to topic '{}' is not available. \
                          Enable Kafka in configuration to use publish_kafka.",
-                            input.topic
-                        ),
-                        source: None,
-                    });
-                }
-            };
-            // F13: publish to the cluster the *connector* names, not the one
-            // globally configured. Empty brokers keep the previous meaning:
-            // the global cluster.
-            let producer = producers
-                .for_brokers(&kafka_config.brokers)
-                .await
-                .map_err(|e| {
-                    DataflowError::function_execution(
-                        format!(
-                            "Failed to create Kafka producer for connector '{}': {e}",
-                            input.connector
-                        ),
-                        None,
-                    )
-                })?;
+                                input.topic
+                            ),
+                            source: None,
+                        });
+                    }
+                };
+                // F13: publish to the cluster the *connector* names, not the one
+                // globally configured. Empty brokers keep the previous meaning:
+                // the global cluster.
+                let producer = producers
+                    .for_brokers(&kafka_config.brokers)
+                    .await
+                    .map_err(|e| {
+                        DataflowError::function_execution(
+                            format!(
+                                "Failed to create Kafka producer for connector '{}': {e}",
+                                input.connector
+                            ),
+                            None,
+                        )
+                    })?;
 
-            let key = if let Some(compiled) = input.compiled_key_logic.as_deref() {
-                let result: Value = ctx
-                    .datalogic()
-                    .session()
-                    .eval_into(compiled, &ctx.message().context)
-                    .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-                let key_str = if let Some(s) = result.as_str() {
-                    s.to_string()
+                let key = if let Some(compiled) = input.compiled_key_logic.as_deref() {
+                    let result: Value = ctx
+                        .datalogic()
+                        .session()
+                        .eval_into(compiled, &ctx.message().context)
+                        .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
+                    let key_str = if let Some(s) = result.as_str() {
+                        s.to_string()
+                    } else {
+                        serde_json::to_string(&result).map_err(|e| {
+                            DataflowError::function_execution(
+                                format!("Failed to serialize Kafka message key: {e}"),
+                                None,
+                            )
+                        })?
+                    };
+                    Some(key_str)
                 } else {
+                    None
+                };
+
+                let value = if let Some(compiled) = input.compiled_value_logic.as_deref() {
+                    let result: Value = ctx
+                        .datalogic()
+                        .session()
+                        .eval_into(compiled, &ctx.message().context)
+                        .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
                     serde_json::to_string(&result).map_err(|e| {
                         DataflowError::function_execution(
-                            format!("Failed to serialize Kafka message key: {e}"),
+                            format!("Failed to serialize Kafka message value: {e}"),
+                            None,
+                        )
+                    })?
+                } else {
+                    let data_json: Value = ctx.data().into();
+                    serde_json::to_string(&data_json).map_err(|e| {
+                        DataflowError::function_execution(
+                            format!("Failed to serialize Kafka message value: {e}"),
                             None,
                         )
                     })?
                 };
-                Some(key_str)
-            } else {
-                None
-            };
 
-            let value = if let Some(compiled) = input.compiled_value_logic.as_deref() {
-                let result: Value = ctx
-                    .datalogic()
-                    .session()
-                    .eval_into(compiled, &ctx.message().context)
-                    .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-                serde_json::to_string(&result).map_err(|e| {
-                    DataflowError::function_execution(
-                        format!("Failed to serialize Kafka message value: {e}"),
-                        None,
-                    )
-                })?
-            } else {
-                let data_json: Value = ctx.data().into();
-                serde_json::to_string(&data_json).map_err(|e| {
-                    DataflowError::function_execution(
-                        format!("Failed to serialize Kafka message value: {e}"),
-                        None,
-                    )
-                })?
-            };
+                producer
+                    .send(&input.topic, key.as_deref(), value.as_bytes())
+                    .await
+                    .map_err(|e| {
+                        DataflowError::function_execution(
+                            format!("Kafka publish to '{}' failed: {e}", input.topic),
+                            None,
+                        )
+                    })?;
 
-            producer
-                .send(&input.topic, key.as_deref(), value.as_bytes())
-                .await
-                .map_err(|e| {
-                    DataflowError::function_execution(
-                        format!("Kafka publish to '{}' failed: {e}", input.topic),
-                        None,
-                    )
-                })?;
+                tracing::debug!(
+                    topic = %input.topic,
+                    "Published message to Kafka"
+                );
 
-            tracing::debug!(
-                topic = %input.topic,
-                "Published message to Kafka"
-            );
-
-            Ok(TaskOutcome::Success)
-        })
+                Ok(TaskOutcome::Success)
+            },
+        )
         .await
     }
 }

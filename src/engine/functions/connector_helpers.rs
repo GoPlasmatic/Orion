@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::task_context::TaskContext;
+use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::{Map, Value};
 
 use crate::connector::{
@@ -120,6 +121,60 @@ where
 {
     let connector_peek = input.get("connector").and_then(|v| v.as_str());
     crate::engine::profile::record(fn_name, connector_peek, fut).await
+}
+
+/// [`profile_handler`] plus the connector request/latency metrics (F40).
+///
+/// `connector_requests_total` and `connector_request_duration_seconds` used to
+/// be emitted from exactly one place — inside `execute_with_circuit_breaker` —
+/// which `http_call` reaches only when `engine.circuit_breaker.enabled` is
+/// true. That defaults to **false**, so a default install emitted **zero**
+/// connector-level counts or latencies for *any* of the ten handlers: every
+/// external dependency was dark in Prometheus until an operator flipped an
+/// unrelated resilience flag.
+///
+/// Observability is not conditional on resilience config, so every connector
+/// handler calls this unconditionally. The circuit breaker stays an inner,
+/// optional layer (F6 tracks extending it past `http_call`).
+///
+/// `channel` must be read from the message *before* the handler body takes
+/// `ctx` mutably.
+pub async fn observed_handler<F>(
+    fn_name: &'static str,
+    input: &Value,
+    channel: &str,
+    fut: F,
+) -> dataflow_rs::Result<TaskOutcome>
+where
+    F: std::future::Future<Output = dataflow_rs::Result<TaskOutcome>>,
+{
+    // The same peek `profile_handler` does. `unknown` rather than skipping the
+    // metric: a handler that failed before resolving its connector is exactly
+    // the case an operator needs to see.
+    let connector = input
+        .get("connector")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    observed_handler_named(fn_name, connector, channel, fut).await
+}
+
+/// [`observed_handler`] for the two handlers whose input is a typed struct
+/// rather than a `Value`, so the connector name is passed directly.
+pub async fn observed_handler_named<F>(
+    fn_name: &'static str,
+    connector: &str,
+    channel: &str,
+    fut: F,
+) -> dataflow_rs::Result<TaskOutcome>
+where
+    F: std::future::Future<Output = dataflow_rs::Result<TaskOutcome>>,
+{
+    let start = std::time::Instant::now();
+    let result = crate::engine::profile::record(fn_name, Some(connector), fut).await;
+    let status = if result.is_ok() { "ok" } else { "error" };
+    crate::metrics::record_connector_request(connector, channel, status);
+    crate::metrics::record_connector_duration(connector, channel, start.elapsed().as_secs_f64());
+    result
 }
 
 /// Extracts the `output` field from the input JSON, defaulting to `"data"`.
@@ -470,5 +525,53 @@ mod tests {
         .await;
 
         assert!(result.is_ok());
+    }
+}
+
+#[cfg(test)]
+mod observability_tests {
+    /// F40: every connector handler must run its body inside
+    /// [`observed_handler`] (or [`observed_handler_named`] for the two with
+    /// typed inputs), because that is the only thing emitting
+    /// `connector_requests_total` / `connector_request_duration_seconds`.
+    ///
+    /// Asserted against the sources rather than by scraping `/metrics`: the
+    /// metrics recorder is process-global, so only the first test app in a
+    /// binary installs a real one and a scrape-based test would pass or fail
+    /// on test ordering. This checks the property that actually regresses —
+    /// a handler added without the wrapper.
+    #[test]
+    fn every_connector_handler_is_wrapped_in_the_observability_shell() {
+        const HANDLERS: [&str; 9] = [
+            "cache_read",
+            "cache_write",
+            "db_read",
+            "db_write",
+            "data_query",
+            "data_write",
+            "mongo_read",
+            "http_call",
+            "publish_kafka",
+        ];
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/src/engine/functions");
+        let mut unwrapped = Vec::new();
+        for handler in HANDLERS {
+            let path = format!("{dir}/{handler}.rs");
+            let src = std::fs::read_to_string(&path).expect("handler source");
+            if !src.contains("observed_handler") {
+                unwrapped.push(handler);
+            }
+            // The wrapper is useless if the body still reaches for the raw
+            // profiler, which records no connector metrics.
+            assert!(
+                !src.contains("profile_handler("),
+                "{handler} still calls profile_handler; use observed_handler so \
+                 its connector metrics are not conditional on the circuit breaker"
+            );
+        }
+        assert!(
+            unwrapped.is_empty(),
+            "these connector handlers emit no connector metrics: {unwrapped:?}"
+        );
     }
 }

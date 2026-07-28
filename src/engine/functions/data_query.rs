@@ -12,7 +12,7 @@ use serde_json::Value;
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, es_request, extract_output_path, is_mongo, profile_handler, require_op_allowed,
+    apply_output, es_request, extract_output_path, is_mongo, observed_handler, require_op_allowed,
     require_str_field, resolve_connector, resolve_params, timed_query, to_exec_error,
 };
 use super::db_read::rows_to_json;
@@ -49,7 +49,10 @@ impl AsyncFunctionHandler for DataQueryHandler {
         // SQL, which the pure translation path then folds into the filter.
         let params = resolve_params(input.get("params"), ctx);
 
-        profile_handler("data_query", input, async move {
+        // F40: read the channel before the body borrows `ctx` mutably.
+        let channel = super::extract_channel(ctx.message()).to_string();
+
+        observed_handler("data_query", input, &channel, async move {
             let connector_name = require_str_field(input, "connector", "data_query")?;
             let query = input.get("query").ok_or_else(|| {
                 DataflowError::Validation("data_query requires 'query' field".to_string())

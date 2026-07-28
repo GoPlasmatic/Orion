@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    apply_output, es_request, es_write_error, extract_output_path, is_mongo, profile_handler,
+    apply_output, es_request, es_write_error, extract_output_path, is_mongo, observed_handler,
     require_op_allowed, require_str_field, resolve_connector, resolve_params, send_es, timed_query,
     to_exec_error,
 };
@@ -53,7 +53,10 @@ impl AsyncFunctionHandler for DataWriteHandler {
         // message touches the mutation); it produces literals, not SQL.
         let params = resolve_params(input.get("params"), ctx);
 
-        profile_handler("data_write", input, async move {
+        // F40: read the channel before the body borrows `ctx` mutably.
+        let channel = super::extract_channel(ctx.message()).to_string();
+
+        observed_handler("data_write", input, &channel, async move {
             let connector_name = require_str_field(input, "connector", "data_write")?;
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
 

@@ -27,56 +27,80 @@ impl AsyncFunctionHandler for HttpCallHandler {
         ctx: &mut TaskContext<'_>,
         input: &HttpCallConfig,
     ) -> dataflow_rs::Result<TaskOutcome> {
-        crate::engine::profile::record("http_call", Some(&input.connector), async move {
-            let connector_config =
-                super::connector_helpers::resolve_connector(&self.registry, &input.connector)
-                    .await?;
-            let http_config = super::connector_helpers::require_http_connector(
-                connector_config.as_ref(),
-                &input.connector,
-            )?;
+        // F40: read the channel before the body borrows `ctx` mutably.
+        let channel = super::extract_channel(ctx.message()).to_string();
 
-            let path = super::resolve_path(&input.path, input.compiled_path_logic.as_deref(), ctx)?;
-            let url = build_url(&http_config.url, path.as_deref());
-
-            let method = super::to_reqwest_method(&input.method);
-
-            let body = resolve_body(&input.body, input.compiled_body_logic.as_deref(), ctx)?;
-
-            let timeout = Duration::from_millis(input.timeout_ms);
-
-            // F8: retrying a non-idempotent method resends the side effect.
-            // A POST that times out is indistinguishable from one the server
-            // applied, so re-sending it means double charges and double
-            // orders — out of the box, since max_retries defaults to 3.
-            // Idempotent methods retry as before; others need an explicit
-            // per-connector opt-in (the workflow can carry its own
-            // idempotency key in headers).
-            let retryable_method = is_idempotent(&method) || http_config.retry_non_idempotent;
-            let retry_config = &http_config.retry;
-            let policy = super::RetryPolicy {
-                max_retries: if retryable_method {
-                    retry_config.max_retries
-                } else {
-                    0
-                },
-                retry_delay_ms: retry_config.retry_delay_ms,
-                // Bound the whole loop by the task's own timeout budget, so
-                // one http_call cannot outlive the channel deadline it sits
-                // under (attempts + backoff were previously unbounded).
-                deadline: Some(timeout.saturating_mul(retry_config.max_retries.saturating_add(1))),
-            };
-            let response_body = if self.registry.circuit_breaker_enabled() {
-                let channel = super::extract_channel(ctx.message());
-                let key = format!("{}:{}", channel, input.connector);
-                let breaker = self.registry.get_or_create_breaker(&key).await;
-                super::execute_with_circuit_breaker(
-                    &breaker,
+        super::connector_helpers::observed_handler_named(
+            "http_call",
+            &input.connector,
+            &channel,
+            async move {
+                let connector_config =
+                    super::connector_helpers::resolve_connector(&self.registry, &input.connector)
+                        .await?;
+                let http_config = super::connector_helpers::require_http_connector(
+                    connector_config.as_ref(),
                     &input.connector,
-                    channel,
-                    policy,
-                    "HTTP call",
-                    || {
+                )?;
+
+                let path =
+                    super::resolve_path(&input.path, input.compiled_path_logic.as_deref(), ctx)?;
+                let url = build_url(&http_config.url, path.as_deref());
+
+                let method = super::to_reqwest_method(&input.method);
+
+                let body = resolve_body(&input.body, input.compiled_body_logic.as_deref(), ctx)?;
+
+                let timeout = Duration::from_millis(input.timeout_ms);
+
+                // F8: retrying a non-idempotent method resends the side effect.
+                // A POST that times out is indistinguishable from one the server
+                // applied, so re-sending it means double charges and double
+                // orders — out of the box, since max_retries defaults to 3.
+                // Idempotent methods retry as before; others need an explicit
+                // per-connector opt-in (the workflow can carry its own
+                // idempotency key in headers).
+                let retryable_method = is_idempotent(&method) || http_config.retry_non_idempotent;
+                let retry_config = &http_config.retry;
+                let policy = super::RetryPolicy {
+                    max_retries: if retryable_method {
+                        retry_config.max_retries
+                    } else {
+                        0
+                    },
+                    retry_delay_ms: retry_config.retry_delay_ms,
+                    // Bound the whole loop by the task's own timeout budget, so
+                    // one http_call cannot outlive the channel deadline it sits
+                    // under (attempts + backoff were previously unbounded).
+                    deadline: Some(
+                        timeout.saturating_mul(retry_config.max_retries.saturating_add(1)),
+                    ),
+                };
+                let response_body = if self.registry.circuit_breaker_enabled() {
+                    let channel = super::extract_channel(ctx.message());
+                    let key = format!("{}:{}", channel, input.connector);
+                    let breaker = self.registry.get_or_create_breaker(&key).await;
+                    super::execute_with_circuit_breaker(
+                        &breaker,
+                        &input.connector,
+                        channel,
+                        policy,
+                        "HTTP call",
+                        || {
+                            http_common::execute_request(
+                                &self.client,
+                                &method,
+                                &url,
+                                Some(&input.headers),
+                                http_config,
+                                body.as_ref(),
+                                timeout,
+                            )
+                        },
+                    )
+                    .await?
+                } else {
+                    super::retry_with_policy(policy, "HTTP call", || {
                         http_common::execute_request(
                             &self.client,
                             &method,
@@ -86,30 +110,17 @@ impl AsyncFunctionHandler for HttpCallHandler {
                             body.as_ref(),
                             timeout,
                         )
-                    },
-                )
-                .await?
-            } else {
-                super::retry_with_policy(policy, "HTTP call", || {
-                    http_common::execute_request(
-                        &self.client,
-                        &method,
-                        &url,
-                        Some(&input.headers),
-                        http_config,
-                        body.as_ref(),
-                        timeout,
-                    )
-                })
-                .await?
-            };
+                    })
+                    .await?
+                };
 
-            if let Some(ref response_path) = input.response_path {
-                ctx.set_json(response_path, &response_body);
-            }
+                if let Some(ref response_path) = input.response_path {
+                    ctx.set_json(response_path, &response_body);
+                }
 
-            Ok(TaskOutcome::Success)
-        })
+                Ok(TaskOutcome::Success)
+            },
+        )
         .await
     }
 }

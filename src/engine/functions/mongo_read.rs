@@ -10,7 +10,7 @@ use mongodb::bson::{self, Document};
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, extract_output_path, is_mongo, profile_handler, require_db_connector,
+    apply_output, extract_output_path, is_mongo, observed_handler, require_db_connector,
     require_op_allowed, require_str_field, resolve_connector, resolve_value, timed_query,
     to_exec_error,
 };
@@ -45,7 +45,10 @@ impl AsyncFunctionHandler for MongoReadHandler {
         let filter_doc = bson::to_document(&filter_val)
             .map_err(|e| DataflowError::Validation(format!("Invalid MongoDB filter: {e}")))?;
 
-        profile_handler("mongo_read", input, async move {
+        // F40: read the channel before the body borrows `ctx` mutably.
+        let channel = super::extract_channel(ctx.message()).to_string();
+
+        observed_handler("mongo_read", input, &channel, async move {
             let connector_name = require_str_field(input, "connector", "mongo_read")?;
             let database = require_str_field(input, "database", "mongo_read")?;
             let collection = require_str_field(input, "collection", "mongo_read")?;

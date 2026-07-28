@@ -109,10 +109,8 @@ where
     match &result {
         Ok(_) => {
             breaker.record_success();
-            crate::metrics::record_connector_request(connector, channel, "ok");
         }
         Err(_) => {
-            crate::metrics::record_connector_request(connector, channel, "error");
             if breaker.record_failure() {
                 tracing::warn!(
                     connector = connector,
@@ -123,7 +121,11 @@ where
             }
         }
     }
-    crate::metrics::record_connector_duration(connector, channel, duration_secs);
+    // F40: request count and latency are recorded by `observed_handler`,
+    // which every connector handler calls unconditionally. Emitting them here
+    // too would double-count on the one path that has a breaker, and — more to
+    // the point — made them conditional on `circuit_breaker.enabled`.
+    let _ = duration_secs;
 
     result
 }

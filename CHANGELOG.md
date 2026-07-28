@@ -67,6 +67,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Connector metrics are now emitted by default.** `connector_requests_total`
+  and `connector_request_duration_seconds` were emitted from exactly one place
+  — inside the circuit-breaker wrapper — which only `http_call` reached, and
+  only when `engine.circuit_breaker.enabled` was true. That defaults to
+  **`false`**, so a default install emitted **zero** connector-level request
+  counts or latencies for *any* of the ten handlers: every external dependency
+  was dark in Prometheus until an operator flipped an unrelated resilience flag.
+
+  All nine connector handlers (`http_call`, `db_read`, `db_write`,
+  `data_query`, `data_write`, `mongo_read`, `cache_read`, `cache_write`,
+  `publish_kafka`) now record both metrics unconditionally. Observability no
+  longer depends on resilience configuration.
+
+  **Not changed:** the circuit breaker itself still only wraps `http_call`. The
+  eight other egress paths reach their pools directly, so a hung Postgres or
+  Redis is still not breaker-protected.
+
 - **Retention cleanup no longer runs as one unbounded `DELETE`.** All three
   retention jobs — traces, audit logs and DLQ purge — issued a single
   `DELETE … WHERE created_at < cutoff` per tick. The first tick after enabling

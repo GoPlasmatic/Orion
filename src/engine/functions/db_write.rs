@@ -7,7 +7,7 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    apply_output, bind_json_params, extract_output_path, profile_handler, reject_mongo_connector,
+    apply_output, bind_json_params, extract_output_path, observed_handler, reject_mongo_connector,
     require_db_connector, require_op_allowed, require_str_field, resolve_bind_params,
     resolve_connector, timed_query, to_exec_error,
 };
@@ -35,7 +35,10 @@ impl AsyncFunctionHandler for DbWriteHandler {
         // request-controlled part of the statement.
         let params = resolve_bind_params(input, "db_write", ctx)?;
 
-        profile_handler("db_write", input, async move {
+        // F40: read the channel before the body borrows `ctx` mutably.
+        let channel = super::extract_channel(ctx.message()).to_string();
+
+        observed_handler("db_write", input, &channel, async move {
             let connector_name = require_str_field(input, "connector", "db_write")?;
             let query = require_str_field(input, "query", "db_write")?;
 

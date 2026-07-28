@@ -8,8 +8,8 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    json_type_name, profile_handler, require_cache_connector, require_str_field, resolve_connector,
-    resolve_required_str, resolve_value, to_exec_error,
+    json_type_name, observed_handler, require_cache_connector, require_str_field,
+    resolve_connector, resolve_required_str, resolve_value, to_exec_error,
 };
 use crate::connector::ConnectorRegistry;
 use crate::connector::cache_backend::CachePool;
@@ -43,7 +43,10 @@ impl AsyncFunctionHandler for CacheWriteHandler {
         };
         let ttl = resolve_ttl_secs(input, ctx)?;
 
-        profile_handler("cache_write", input, async move {
+        // F40: read the channel before the body borrows `ctx` mutably.
+        let channel = super::extract_channel(ctx.message()).to_string();
+
+        observed_handler("cache_write", input, &channel, async move {
             let connector_name = require_str_field(input, "connector", "cache_write")?;
 
             let connector_config = resolve_connector(&self.registry, connector_name).await?;
