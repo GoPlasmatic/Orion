@@ -19,9 +19,12 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tokio::sync::mpsc;
+// Flush-deadline clock: tokio's Instant so the deadline arithmetic and the
+// `tokio::time::timeout` it feeds share one (pausable) clock.
+use tokio::time::Instant;
 
 use crate::config::{AsyncOnOverflow, TraceStorageMode, TracingStorageConfig};
 use crate::metrics;

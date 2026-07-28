@@ -150,7 +150,9 @@ where
     Fut: Future<Output = dataflow_rs::Result<Value>>,
 {
     let mut last_error = None;
-    let started = std::time::Instant::now();
+    // tokio's Instant: shares a (pausable) clock with the backoff sleeps
+    // below, so the retry deadline stays coherent under a paused test clock.
+    let started = tokio::time::Instant::now();
 
     const MAX_BACKOFF_MS: u64 = 60_000;
 

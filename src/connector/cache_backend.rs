@@ -9,10 +9,15 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+// TTL clock. `tokio::time::Instant` is a transparent wrapper over
+// `std::time::Instant` in production builds (the mock clock only exists
+// under the dev-only `test-util` feature), but lets TTL tests drive expiry
+// deterministically with a paused clock instead of real sleeps.
+use tokio::time::Instant;
 
 use crate::connector::CacheConnectorConfig;
 use crate::errors::OrionError;
@@ -363,7 +368,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_memory_set_ex_expires() {
         let backend = MemoryCacheBackend::new(60, 0);
         backend.set_ex("k1", "v1", 1).await.expect("test");
@@ -371,7 +376,7 @@ mod tests {
             backend.get("k1").await.expect("test"),
             Some("v1".to_string())
         );
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::advance(Duration::from_secs(2)).await;
         assert!(backend.get("k1").await.expect("test").is_none());
     }
 
@@ -403,21 +408,21 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_memory_check_and_insert_expired() {
         let backend = MemoryCacheBackend::new(60, 0);
         assert!(backend.check_and_insert("k", 1).await.expect("test"));
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::advance(Duration::from_secs(2)).await;
         // After expiry, key is treated as new
         assert!(backend.check_and_insert("k", 1).await.expect("test"));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_memory_purge_expired() {
         let backend = MemoryCacheBackend::new(60, 0);
         backend.set_ex("keep", "val", 3600).await.expect("test");
         backend.set_ex("expire", "val", 1).await.expect("test");
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::advance(Duration::from_secs(2)).await;
         backend.purge_expired();
         assert!(backend.get("keep").await.expect("test").is_some());
         assert!(backend.get("expire").await.expect("test").is_none());
@@ -498,7 +503,7 @@ mod tests {
         assert!(backend.get("overflow").await.expect("test").is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn test_memory_expired_entries_evicted_before_live_ones() {
         let backend = MemoryCacheBackend::new(3600, 4);
         for i in 0..4 {
@@ -507,7 +512,7 @@ mod tests {
                 .await
                 .expect("test");
         }
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        tokio::time::advance(Duration::from_secs(2)).await;
         backend.set("live", "v").await.expect("test");
         assert_eq!(
             backend.get("live").await.expect("test"),

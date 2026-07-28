@@ -38,7 +38,14 @@ impl Default for CircuitBreakerConfig {
 pub struct CircuitBreaker {
     state: AtomicU8,
     failure_count: AtomicU32,
+    /// Milliseconds since `base` at which the breaker last opened.
     opened_at: AtomicI64,
+    /// Monotonic reference captured at construction. Cooldowns are measured
+    /// against this instead of the wall clock, so an NTP step can no longer
+    /// shorten or extend them. `tokio::time::Instant` == `std::time::Instant`
+    /// in production builds (the mock clock is dev-only `test-util`), and
+    /// `now()` falls back to std outside a runtime.
+    base: tokio::time::Instant,
     config: CircuitBreakerConfig,
 }
 
@@ -48,8 +55,14 @@ impl CircuitBreaker {
             state: AtomicU8::new(STATE_CLOSED),
             failure_count: AtomicU32::new(0),
             opened_at: AtomicI64::new(0),
+            base: tokio::time::Instant::now(),
             config,
         }
+    }
+
+    /// Milliseconds elapsed since construction — the breaker's clock.
+    fn now_ms(&self) -> i64 {
+        self.base.elapsed().as_millis() as i64
     }
 
     /// Check if requests are allowed. Returns `true` if allowed, `false` if circuit is open.
@@ -59,7 +72,7 @@ impl CircuitBreaker {
             STATE_CLOSED => true,
             STATE_OPEN => {
                 let opened = self.opened_at.load(Ordering::Acquire);
-                let now = chrono::Utc::now().timestamp_millis();
+                let now = self.now_ms();
                 let cooldown_ms = (self.config.recovery_timeout_secs * 1000) as i64;
                 if now - opened >= cooldown_ms {
                     // Try to transition to HalfOpen — only one thread wins the CAS
@@ -97,8 +110,7 @@ impl CircuitBreaker {
         match state {
             STATE_HALF_OPEN => {
                 // Probe failed — back to Open
-                self.opened_at
-                    .store(chrono::Utc::now().timestamp_millis(), Ordering::Release);
+                self.opened_at.store(self.now_ms(), Ordering::Release);
                 let _ = self.state.compare_exchange(
                     STATE_HALF_OPEN,
                     STATE_OPEN,
@@ -110,8 +122,7 @@ impl CircuitBreaker {
             STATE_CLOSED => {
                 let prev = self.failure_count.fetch_add(1, Ordering::AcqRel);
                 if prev + 1 >= self.config.failure_threshold {
-                    self.opened_at
-                        .store(chrono::Utc::now().timestamp_millis(), Ordering::Release);
+                    self.opened_at.store(self.now_ms(), Ordering::Release);
                     if self
                         .state
                         .compare_exchange(
