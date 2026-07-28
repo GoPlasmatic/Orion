@@ -991,3 +991,55 @@ async fn test_activate_rejects_missing_connector() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ============================================================
+// Single-draft invariant (proposal D9)
+// ============================================================
+
+#[tokio::test]
+async fn a_second_draft_cannot_be_created_for_one_workflow() {
+    // Postgres enforces this with a partial unique index covering INSERT and
+    // UPDATE; SQLite and MySQL had BEFORE INSERT triggers only, so an UPDATE
+    // that set status='draft' produced a second draft on two of three
+    // backends — after which draft lookups silently pick an arbitrary row.
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "Draft One",
+                "tasks": [{"id": "t1", "name": "Log",
+                           "function": {"name": "log", "input": {"message": "x"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = common::body_json(resp).await;
+    let workflow_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+
+    // A draft already exists for this id, so asking for another new version
+    // must be refused rather than yielding two drafts.
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/admin/workflows/{workflow_id}/versions"),
+            Some(json!({
+                "name": "Draft Two",
+                "tasks": [{"id": "t1", "name": "Log",
+                           "function": {"name": "log", "input": {"message": "y"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "a second draft must be refused, got {}",
+        resp.status()
+    );
+}
