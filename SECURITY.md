@@ -20,9 +20,19 @@ in the release notes unless you prefer otherwise.
 
 ## Supported versions
 
-Orion is pre-1.0: security fixes land on `main` and ship in the **latest
-release**. Older minor versions are not patched — upgrade to the newest
-release to receive fixes.
+| Version            | Supported                                  |
+|--------------------|--------------------------------------------|
+| Latest 1.x release | ✅ Receives all fixes, including security   |
+| Older 1.x releases | ⬆️ Upgrade to the latest release for fixes  |
+| 0.x releases       | ❌ End of life                              |
+
+Security fixes land on `main` and ship as a **patch release of the current
+minor version**. Older releases are not back-patched: migrations are embedded
+in the binary and the upgrade path between releases is documented, so the
+supported response to a vulnerability is always to upgrade to the newest
+release. The full statement of what "supported" covers — versioning, upgrade
+guarantees, MSRV, database and platform compatibility — is the
+[Support & Compatibility policy](https://goplasmatic.github.io/Orion/reference/support.html).
 
 ## Scope
 

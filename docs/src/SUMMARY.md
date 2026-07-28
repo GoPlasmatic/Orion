@@ -45,6 +45,7 @@
 - [Workflow Reference](./reference/workflows.md)
 - [Function Reference](./reference/functions.md)
 - [Portable Data Dialect](./reference/data-dialect.md)
+- [Support & Compatibility](./reference/support.md)
 
 # Tutorials
 
