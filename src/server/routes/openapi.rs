@@ -98,6 +98,33 @@ fn error_response(description: &str) -> RefOr<Response> {
     )
 }
 
+/// Give every declared-but-empty 4xx/5xx the `ErrorResponse` body (R22).
+///
+/// A `(status = 404, description = "…")` in a `#[utoipa::path]` emits a
+/// response with no `content` — utoipa only fills one in when the annotation
+/// also names a `body`. Thirty of them were published that way, saying an
+/// error exists but not what it looks like. Every non-2xx body Orion can
+/// produce is rendered by `OrionError`'s `IntoResponse`, so the shape is known
+/// centrally; filling it here means a new endpoint cannot forget it. A
+/// response that *does* declare content is left alone.
+fn fill_error_content(operation: &mut Operation) {
+    for (status, response) in operation.responses.responses.iter_mut() {
+        if !status.starts_with('4') && !status.starts_with('5') {
+            continue;
+        }
+        if let RefOr::T(response) = response
+            && response.content.is_empty()
+        {
+            response.content.insert(
+                "application/json".to_string(),
+                ContentBuilder::new()
+                    .schema(Some(Ref::from_schema_name("ErrorResponse")))
+                    .build(),
+            );
+        }
+    }
+}
+
 /// Insert `response` under `status` unless the operation already documents it.
 fn ensure_response(operation: &mut Operation, status: &str, response: RefOr<Response>) {
     operation
@@ -171,6 +198,7 @@ impl Modify for SecurityAddon {
                     "500",
                     error_response("Unexpected internal error (`INTERNAL_ERROR`)"),
                 );
+                fill_error_content(operation);
             }
         }
     }
@@ -276,10 +304,12 @@ validation failures.",
     ),
     components(
         schemas(
-            crate::storage::models::Workflow,
-            crate::storage::models::Channel,
+            // R22: only shapes an endpoint actually returns. The `Workflow`,
+            // `Channel` and `Trace` row structs were registered here and
+            // `$ref`d by nothing — they described `condition_json`/`tasks_json`
+            // as strings, which no response carries. `Connector` stays: the
+            // masked row *is* the wire shape for a single connector.
             crate::storage::models::Connector,
-            crate::storage::models::Trace,
             crate::storage::repositories::workflows::CreateWorkflowRequest,
             crate::storage::repositories::workflows::UpdateWorkflowRequest,
             crate::storage::repositories::workflows::StatusChangeRequest,
@@ -382,6 +412,69 @@ mod tests {
         }
     }
 
+    /// R22: a response that names a status but no body is a spec that says
+    /// "an error happens here" without saying what it looks like. 44 of the 48
+    /// 2xx responses and 30 of the 4xx/5xx were published that way. `204` is
+    /// exempt — a body would be a protocol violation.
+    #[test]
+    fn every_response_that_can_carry_a_body_describes_one() {
+        let spec = spec();
+        let mut missing = Vec::new();
+        for (path, item) in &spec.paths.paths {
+            for (verb, operation) in [
+                ("GET", &item.get),
+                ("PUT", &item.put),
+                ("POST", &item.post),
+                ("DELETE", &item.delete),
+                ("PATCH", &item.patch),
+            ] {
+                let Some(operation) = operation else { continue };
+                for (status, response) in &operation.responses.responses {
+                    if status == "204" {
+                        continue;
+                    }
+                    let RefOr::T(response) = response else {
+                        continue;
+                    };
+                    if response.content.is_empty() {
+                        missing.push(format!("{verb} {path} -> {status}"));
+                    }
+                }
+            }
+        }
+        missing.sort();
+        assert!(
+            missing.is_empty(),
+            "{} response(s) declare a status with no body schema:\n  {}",
+            missing.len(),
+            missing.join("\n  ")
+        );
+    }
+
+    /// The row structs describe storage, not the wire. Registering one
+    /// publishes `condition_json` / `tasks_json` as opaque strings on a shape
+    /// no client ever receives (R22, D17). `Connector`, `TraceDlqEntry` and
+    /// `AuditLogEntry` are the exceptions: their handlers return them verbatim.
+    #[test]
+    fn no_storage_row_struct_is_published_unless_it_is_the_wire_shape() {
+        let spec = spec();
+        let schemas = spec
+            .components
+            .as_ref()
+            .expect("components")
+            .schemas
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for lying in ["Workflow", "Channel", "Trace"] {
+            assert!(
+                !schemas.contains(&lying.to_string()),
+                "`{lying}` is a storage row and no endpoint returns it — \
+                 publish the DTO ({lying}Response) instead"
+            );
+        }
+    }
+
     /// The data plane is the product's primary API and must not be
     /// unauthenticated *and* undocumented at the same time.
     #[test]
@@ -430,4 +523,246 @@ mod tests {
             "202 must document the `Warning: 299` header emitted when tracing is off"
         );
     }
+}
+
+// ============================================================
+// Response envelopes (R17 shape, R22 schemas)
+// ============================================================
+
+/// The `{"data": …}` envelope every admin 2xx carries (R17).
+///
+/// Generic so each resource gets a described response without a hand-written
+/// wrapper struct per endpoint. utoipa inlines the type parameter, so
+/// `DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44
+/// of the 48 2xx responses had no `content` block at all.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct DataEnvelope<T> {
+    #[allow(dead_code)] // Schema-only: the runtime builds this with `json!`.
+    data: T,
+}
+
+/// The paginated envelope: `data` plus the three counters, and nothing else.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct PaginatedEnvelope<T> {
+    #[allow(dead_code)]
+    data: Vec<T>,
+    /// Total rows matching the filter, ignoring `limit`/`offset`.
+    #[allow(dead_code)]
+    total: i64,
+    #[allow(dead_code)]
+    limit: i64,
+    #[allow(dead_code)]
+    offset: i64,
+}
+
+// ---------------------------------------------------------------------------
+// Schema-only bodies for the operational and batch endpoints (R22).
+//
+// These endpoints build their responses with `json!`, so there is no runtime
+// struct to point `body =` at. Declaring the shape here is what makes the
+// published document describe them at all; the
+// `every_response_that_can_carry_a_body_describes_one` test keeps it that way.
+// ---------------------------------------------------------------------------
+
+/// One row of `GET /api/v1/admin/connectors`: the stored connector with
+/// secrets masked, plus the registry's view of whether it actually loaded.
+///
+/// Declared separately from [`crate::storage::models::Connector`] because
+/// `PaginatedEnvelope<Connector>` would under-describe the row by exactly the
+/// three fields an operator reads the list for.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ConnectorListItem {
+    id: String,
+    name: String,
+    connector_type: String,
+    /// Connector config with every secret replaced by `******`.
+    config_json: String,
+    enabled: bool,
+    created_at: String,
+    updated_at: String,
+    /// `loaded`, `failed`, or `disabled`.
+    #[schema(example = "loaded")]
+    load_status: String,
+    /// Why the connector failed to load. Present only when
+    /// `load_status = "failed"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    load_error: Option<String>,
+    /// Which load stage failed. Present only when `load_status = "failed"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    load_error_stage: Option<String>,
+}
+
+/// Result of a bulk import, in both dry-run and real modes (R18).
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct ImportResult {
+    /// `true` when the request carried `?dry_run=true`; nothing was written.
+    dry_run: bool,
+    /// Items created — or, in a dry run, the count that would be created.
+    imported: u64,
+    /// Items rejected. Non-zero with a **200** status: check this field, not
+    /// the status code.
+    failed: u64,
+    /// One entry per failed item, carrying its index in the request array.
+    errors: Vec<Value>,
+}
+
+/// `GET /api/v1/admin/engine/status`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct EngineStatus {
+    version: String,
+    uptime_seconds: i64,
+    workflows_count: u64,
+    active_workflows: u64,
+    /// Distinct channel names across the loaded workflows.
+    channels: Vec<String>,
+}
+
+/// `POST /api/v1/admin/engine/reload`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct EngineReloaded {
+    reloaded: bool,
+    workflows_count: u64,
+}
+
+/// `GET /api/v1/admin/connectors/circuit-breakers`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct CircuitBreakerStates {
+    /// Whether `engine.circuit_breaker.enabled` is set. When false, `breakers`
+    /// is empty because nothing is tracked.
+    enabled: bool,
+    /// `channel:connector` → `closed` | `open` | `half_open`. Node-local.
+    breakers: std::collections::HashMap<String, String>,
+}
+
+/// `POST /api/v1/admin/connectors/circuit-breakers/{key}`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct CircuitBreakerReset {
+    reset: bool,
+    key: String,
+}
+
+/// `POST /api/v1/admin/trace-dlq/purge`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct DlqPurgeResult {
+    /// Rows deleted.
+    purged: u64,
+    /// Echo of the requested age bound.
+    older_than_hours: i64,
+}
+
+/// `POST /api/v1/admin/workflows/{id}/test` — a dry run against sample input.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct WorkflowTestResult {
+    /// Whether the workflow's condition matched the supplied input.
+    matched: bool,
+    /// Per-step execution trace: `task_id` and `result`
+    /// (`executed` | `skipped` | `failed`) for each step.
+    trace: Value,
+    /// The message data after the pipeline ran.
+    output: Value,
+    errors: Vec<Value>,
+}
+
+/// The backup `POST /api/v1/admin/backups` just wrote.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct BackupFile {
+    filename: String,
+    /// Absolute path on the node that served the request.
+    path: String,
+    size_bytes: u64,
+    created_at: String,
+}
+
+/// One row of `GET /api/v1/admin/backups`. Deliberately not [`BackupFile`]:
+/// the listing reads `mtime` off the directory entry and has no `path`, so
+/// the two responses differ by two fields.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct BackupListItem {
+    filename: String,
+    size_bytes: u64,
+    modified_at: String,
+}
+
+/// One row of `GET /api/v1/admin/traces` — payload-free by design (S14).
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct TraceListItem {
+    id: String,
+    /// Channel name as it was when the trace ran — a snapshot, not a key.
+    channel: String,
+    channel_id: Option<String>,
+    /// `sync` | `async`.
+    mode: String,
+    /// `pending` | `running` | `completed` | `failed`.
+    status: String,
+    error_message: Option<String>,
+    duration_ms: Option<i64>,
+    started_at: Option<String>,
+    completed_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+/// `GET /api/v1/admin/traces/{id}` — the list row plus the payloads.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct TraceDetail {
+    id: String,
+    status: String,
+    mode: String,
+    channel: String,
+    channel_id: Option<String>,
+    created_at: String,
+    /// The full engine message. Present only when `status = "completed"`.
+    /// `context.metadata` is stripped from the projection (S14).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<Value>,
+    /// Present only when `status = "failed"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_ms: Option<i64>,
+    /// Per-task execution trace, when the channel enabled `task_details`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_trace_json: Option<Value>,
+}
+
+/// One task-function input schema from `GET /api/v1/admin/functions`.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct FunctionSchemaItem {
+    name: String,
+    description: String,
+    /// `connector`, `control`, `transform`, …
+    category: String,
+    input_fields: Vec<Value>,
+}
+
+/// A liveness / readiness / health probe body.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct HealthStatus {
+    /// `ok` | `degraded`.
+    status: String,
+    version: String,
+    uptime_seconds: i64,
+    /// Per-subsystem state: `database`, `engine`, `connectors`, `channels`.
+    components: Value,
+    /// Build provenance and detail, served only to an admin caller (O9).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_hash: Option<String>,
 }

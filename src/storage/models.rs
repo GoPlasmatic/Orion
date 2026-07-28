@@ -162,7 +162,10 @@ pub const TRACE_MODE_ASYNC: &str = "async";
 // Workflow (replaces Rule)
 // ============================================================
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
+// R22: no `ToSchema`. `Workflow` is a storage row, and no endpoint returns it —
+// the published schema described `*_json` columns as strings on a shape no
+// client ever receives. The wire shape is the DTO alongside it.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct Workflow {
     pub workflow_id: String,
     pub version: i64,
@@ -180,7 +183,10 @@ pub struct Workflow {
 }
 
 /// API-friendly representation of a Workflow with parsed JSON fields.
-#[derive(Debug, Clone, Serialize)]
+///
+/// This — not the `Workflow` row struct — is what every workflow endpoint
+/// returns, so it is what the OpenAPI document describes (R22).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct WorkflowResponse {
     pub workflow_id: String,
     pub version: i64,
@@ -229,7 +235,10 @@ impl TryFrom<&Workflow> for WorkflowResponse {
 // Channel
 // ============================================================
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
+// R22: no `ToSchema`. `Channel` is a storage row, and no endpoint returns it —
+// the published schema described `*_json` columns as strings on a shape no
+// client ever receives. The wire shape is the DTO alongside it.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct Channel {
     pub channel_id: String,
     pub version: i64,
@@ -251,7 +260,10 @@ pub struct Channel {
 }
 
 /// API-friendly representation of a Channel with parsed JSON fields.
-#[derive(Debug, Clone, Serialize)]
+///
+/// This — not the `Channel` row struct — is what every channel endpoint
+/// returns, so it is what the OpenAPI document describes (R22).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ChannelResponse {
     pub channel_id: String,
     pub version: i64,
@@ -329,7 +341,10 @@ pub struct Connector {
 // Trace
 // ============================================================
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
+// R22: no `ToSchema`. `Trace` is a storage row, and no endpoint returns it —
+// the published schema described `*_json` columns as strings on a shape no
+// client ever receives. The wire shape is the DTO alongside it.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct Trace {
     pub id: String,
     /// The channel **name** as it was at execution time — an immutable
@@ -368,7 +383,9 @@ pub struct Trace {
 
 // -- Trace DLQ model --
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+// Returned verbatim by its admin endpoints, so unlike the other row
+// structs this one *is* a wire shape and carries `ToSchema` (R22).
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct TraceDlqEntry {
     pub id: String,
     pub trace_id: String,
@@ -383,7 +400,9 @@ pub struct TraceDlqEntry {
     pub updated_at: NaiveDateTime,
 }
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+// Returned verbatim by its admin endpoints, so unlike the other row
+// structs this one *is* a wire shape and carries `ToSchema` (R22).
+#[derive(Debug, Clone, Serialize, sqlx::FromRow, utoipa::ToSchema)]
 pub struct AuditLogEntry {
     pub id: String,
     pub principal: String,

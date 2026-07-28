@@ -7,10 +7,15 @@ use crate::connector::mask_connector;
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::{OrionJson, OrionQuery};
+use crate::server::routes::openapi::{
+    CircuitBreakerReset, CircuitBreakerStates, ConnectorListItem, DataEnvelope, ImportResult,
+    PaginatedEnvelope,
+};
 use crate::server::routes::response_helpers::{
     created_response, data_response, paginated_response,
 };
 use crate::server::state::AppState;
+use crate::storage::models::Connector;
 use crate::storage::repositories::connectors::{
     ConnectorFilter, CreateConnectorRequest, UpdateConnectorRequest,
 };
@@ -53,7 +58,7 @@ async fn evict_connector_pools(state: &AppState, connector_name: &str) {
             `load_status`: `loaded` when the connector is live in the registry, \
             `failed` (with `load_error`) when it is enabled but could not be loaded, \
             and `disabled` when it is not enabled. A `failed` connector is absent at \
-            request time, so every workflow using it returns a 500."),
+            request time, so every workflow using it returns a 500.", body = PaginatedEnvelope<ConnectorListItem>),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -102,7 +107,7 @@ pub(crate) async fn list_connectors(
     tag = "Connectors",
     request_body = CreateConnectorRequest,
     responses(
-        (status = 201, description = "Connector created"),
+        (status = 201, description = "Connector created", body = DataEnvelope<Connector>),
         (status = 409, description = "Connector name conflict"),
     )
 )]
@@ -132,7 +137,7 @@ pub(crate) async fn create_connector(
     tag = "Connectors",
     params(("id" = String, Path, description = "Connector ID")),
     responses(
-        (status = 200, description = "Connector details"),
+        (status = 200, description = "Connector details", body = DataEnvelope<Connector>),
         (status = 404, description = "Connector not found"),
     )
 )]
@@ -153,7 +158,7 @@ pub(crate) async fn get_connector(
     params(("id" = String, Path, description = "Connector ID")),
     request_body = UpdateConnectorRequest,
     responses(
-        (status = 200, description = "Connector updated"),
+        (status = 200, description = "Connector updated", body = DataEnvelope<Connector>),
         (status = 404, description = "Connector not found"),
     )
 )]
@@ -251,8 +256,8 @@ pub(crate) async fn delete_connector(
     responses(
         (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
             Dry-run validates each item's shape and values only — it does NOT read the database, so it \
-            cannot detect name conflicts. Connectors whose names already exist are reported as would_create \
-            and will surface as Conflict on the real (non-dry-run) import."),
+            cannot detect name conflicts. Connectors whose names already exist are counted in `imported` \
+            and will surface as Conflict on the real (non-dry-run) import.", body = DataEnvelope<ImportResult>),
     )
 )]
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
@@ -300,7 +305,7 @@ pub(crate) async fn import_connectors(
     path = "/api/v1/admin/connectors/circuit-breakers",
     tag = "Connectors",
     responses(
-        (status = 200, description = "Circuit breaker states"),
+        (status = 200, description = "Circuit breaker states", body = DataEnvelope<CircuitBreakerStates>),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -320,7 +325,7 @@ pub(crate) async fn list_circuit_breakers(
     tag = "Connectors",
     params(("key" = String, Path, description = "Circuit breaker key (channel:connector)")),
     responses(
-        (status = 200, description = "Circuit breaker reset"),
+        (status = 200, description = "Circuit breaker reset", body = DataEnvelope<CircuitBreakerReset>),
         (status = 404, description = "Circuit breaker not found"),
     )
 )]

@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::{OrionJson, OrionQuery};
+use crate::server::routes::openapi::{DataEnvelope, ImportResult, PaginatedEnvelope};
 use crate::server::routes::response_helpers::{created_response, data_response, paginated_into};
 use crate::server::state::AppState;
 use crate::storage::models::{ChannelResponse, StatusAction};
@@ -27,7 +28,7 @@ use super::audit_log_draft_only;
     params(ChannelFilter),
     tag = "Channels",
     responses(
-        (status = 200, description = "Paginated list of channels"),
+        (status = 200, description = "Paginated list of channels", body = PaginatedEnvelope<ChannelResponse>),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -45,7 +46,7 @@ pub(crate) async fn list_channels(
     tag = "Channels",
     request_body = CreateChannelRequest,
     responses(
-        (status = 201, description = "Channel created as draft"),
+        (status = 201, description = "Channel created as draft", body = DataEnvelope<ChannelResponse>),
         (status = 400, description = "Invalid input"),
     )
 )]
@@ -73,7 +74,7 @@ pub(crate) async fn create_channel(
     tag = "Channels",
     params(("id" = String, Path, description = "Channel ID")),
     responses(
-        (status = 200, description = "Channel details"),
+        (status = 200, description = "Channel details", body = DataEnvelope<ChannelResponse>),
         (status = 404, description = "Channel not found"),
     )
 )]
@@ -93,7 +94,7 @@ pub(crate) async fn get_channel(
     params(("id" = String, Path, description = "Channel ID")),
     request_body = UpdateChannelRequest,
     responses(
-        (status = 200, description = "Draft channel updated"),
+        (status = 200, description = "Draft channel updated", body = DataEnvelope<ChannelResponse>),
         (status = 400, description = "No draft version or invalid input"),
         (status = 404, description = "Channel not found"),
     )
@@ -148,7 +149,7 @@ pub(crate) async fn delete_channel(
     params(("id" = String, Path, description = "Channel ID")),
     request_body = ChannelStatusChangeRequest,
     responses(
-        (status = 200, description = "Status updated"),
+        (status = 200, description = "Status updated", body = DataEnvelope<ChannelResponse>),
         (status = 400, description = "Invalid status transition"),
         (status = 404, description = "Channel not found"),
     )
@@ -188,7 +189,7 @@ pub(crate) async fn change_channel_status(
         ("id" = String, Path, description = "Channel ID"),
     ),
     responses(
-        (status = 200, description = "Paginated version history"),
+        (status = 200, description = "Paginated version history", body = PaginatedEnvelope<ChannelResponse>),
         (status = 404, description = "Channel not found"),
     )
 )]
@@ -213,7 +214,7 @@ pub(crate) async fn list_channel_versions(
     tag = "Channels",
     params(("id" = String, Path, description = "Channel ID")),
     responses(
-        (status = 201, description = "New draft version created"),
+        (status = 201, description = "New draft version created", body = DataEnvelope<ChannelResponse>),
         (status = 409, description = "Draft already exists"),
     )
 )]
@@ -247,8 +248,8 @@ pub(crate) async fn create_new_channel_version(
     responses(
         (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
             Dry-run validates each item's shape and values only — it does NOT read the database, so it \
-            cannot detect name conflicts. Channels whose names already exist are reported as would_create \
-            and will surface as Conflict on the real (non-dry-run) import."),
+            cannot detect name conflicts. Channels whose names already exist are counted in `imported` \
+            and will surface as Conflict on the real (non-dry-run) import.", body = DataEnvelope<ImportResult>),
     )
 )]
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]

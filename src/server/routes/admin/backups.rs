@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
+use crate::server::routes::openapi::{BackupFile, BackupListItem, DataEnvelope};
 use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
 
@@ -34,7 +35,7 @@ fn reject_in_cluster_mode(state: &AppState) -> Result<(), OrionError> {
     path = "/api/v1/admin/backups",
     tag = "Backups",
     responses(
-        (status = 200, description = "Backup created (SQLite only — VACUUM INTO a timestamped file)"),
+        (status = 200, description = "Backup created (SQLite only — VACUUM INTO a timestamped file)", body = DataEnvelope<BackupFile>),
         (status = 400, description = "Backup unavailable (non-SQLite backend, or cluster mode — use managed-DB snapshots/PITR)"),
     )
 )]
@@ -112,7 +113,7 @@ pub(crate) async fn create_backup(
     path = "/api/v1/admin/backups",
     tag = "Backups",
     responses(
-        (status = 200, description = "List of backup files in the configured backup directory"),
+        (status = 200, description = "List of backup files in the configured backup directory", body = DataEnvelope<Vec<BackupListItem>>),
         (status = 400, description = "Unavailable in cluster mode — backups are node-local files"),
     )
 )]

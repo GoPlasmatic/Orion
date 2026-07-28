@@ -6,6 +6,7 @@ use axum::Json;
 use serde_json::Value;
 
 use crate::errors::OrionError;
+use crate::server::routes::openapi::{DataEnvelope, FunctionSchemaItem};
 use crate::server::routes::response_helpers::data_response;
 
 #[utoipa::path(
@@ -13,7 +14,7 @@ use crate::server::routes::response_helpers::data_response;
     path = "/api/v1/admin/functions",
     tag = "Functions",
     responses(
-        (status = 200, description = "Registered workflow function schemas")
+        (status = 200, description = "Registered workflow function schemas", body = DataEnvelope<Vec<FunctionSchemaItem>>)
     )
 )]
 #[tracing::instrument]

@@ -10,6 +10,7 @@ use crate::errors::OrionError;
 use crate::server::extract::OrionQuery;
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::server::routes::openapi::ErrorResponse;
+use crate::server::routes::openapi::{DataEnvelope, PaginatedEnvelope, TraceDetail, TraceListItem};
 use crate::server::routes::response_helpers::{data_response, paginated_response};
 use crate::server::state::AppState;
 use crate::storage::repositories::traces::TraceFilter;
@@ -28,7 +29,7 @@ use crate::storage::repositories::traces::TraceFilter;
         ("sort_order" = Option<String>, Query, description = "Sort direction: asc or desc (default)"),
     ),
     responses(
-        (status = 200, description = "Paginated list of traces"),
+        (status = 200, description = "Paginated list of traces", body = PaginatedEnvelope<TraceListItem>),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -93,7 +94,7 @@ before 1.0.1) are admin-plane only when admin auth is enabled.",
         TraceAccessQuery,
     ),
     responses(
-        (status = 200, description = "Trace status and result"),
+        (status = 200, description = "Trace status and result", body = DataEnvelope<TraceDetail>),
         (status = 401, description = "Missing or wrong trace token / admin credential", body = ErrorResponse),
         (status = 404, description = "Trace not found", body = ErrorResponse),
     )

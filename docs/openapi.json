@@ -93,10 +93,24 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated audit log entries: `{data, total, limit, offset}`"
+            "description": "Paginated audit log entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_AuditLogEntry"
+                }
+              }
+            }
           },
           "400": {
-            "description": "Unknown query parameter or malformed timestamp"
+            "description": "Unknown query parameter or malformed timestamp",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -137,10 +151,24 @@
         "operationId": "list_backups",
         "responses": {
           "200": {
-            "description": "List of backup files in the configured backup directory"
+            "description": "List of backup files in the configured backup directory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Vec_BackupListItem"
+                }
+              }
+            }
           },
           "400": {
-            "description": "Unavailable in cluster mode — backups are node-local files"
+            "description": "Unavailable in cluster mode — backups are node-local files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -179,10 +207,24 @@
         "operationId": "create_backup",
         "responses": {
           "200": {
-            "description": "Backup created (SQLite only — VACUUM INTO a timestamped file)"
+            "description": "Backup created (SQLite only — VACUUM INTO a timestamped file)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_BackupFile"
+                }
+              }
+            }
           },
           "400": {
-            "description": "Backup unavailable (non-SQLite backend, or cluster mode — use managed-DB snapshots/PITR)"
+            "description": "Backup unavailable (non-SQLite backend, or cluster mode — use managed-DB snapshots/PITR)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -285,7 +327,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated list of channels"
+            "description": "Paginated list of channels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_ChannelResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -334,10 +383,24 @@
         },
         "responses": {
           "201": {
-            "description": "Channel created as draft"
+            "description": "Channel created as draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ChannelResponse"
+                }
+              }
+            }
           },
           "400": {
-            "description": "Invalid input"
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -402,7 +465,14 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Dry-run validates each item's shape and values only — it does NOT read the database, so it cannot detect name conflicts. Channels whose names already exist are reported as would_create and will surface as Conflict on the real (non-dry-run) import."
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Dry-run validates each item's shape and values only — it does NOT read the database, so it cannot detect name conflicts. Channels whose names already exist are counted in `imported` and will surface as Conflict on the real (non-dry-run) import.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ImportResult"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -454,7 +524,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Channel details"
+            "description": "Channel details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ChannelResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -467,7 +544,14 @@
             }
           },
           "404": {
-            "description": "Channel not found"
+            "description": "Channel not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -517,10 +601,24 @@
         },
         "responses": {
           "200": {
-            "description": "Draft channel updated"
+            "description": "Draft channel updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ChannelResponse"
+                }
+              }
+            }
           },
           "400": {
-            "description": "No draft version or invalid input"
+            "description": "No draft version or invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -533,7 +631,14 @@
             }
           },
           "404": {
-            "description": "Channel not found"
+            "description": "Channel not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -586,7 +691,14 @@
             }
           },
           "404": {
-            "description": "Channel not found"
+            "description": "Channel not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -638,10 +750,24 @@
         },
         "responses": {
           "200": {
-            "description": "Status updated"
+            "description": "Status updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ChannelResponse"
+                }
+              }
+            }
           },
           "400": {
-            "description": "Invalid status transition"
+            "description": "Invalid status transition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -654,7 +780,14 @@
             }
           },
           "404": {
-            "description": "Channel not found"
+            "description": "Channel not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -696,7 +829,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated version history"
+            "description": "Paginated version history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_ChannelResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -709,7 +849,14 @@
             }
           },
           "404": {
-            "description": "Channel not found"
+            "description": "Channel not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -749,7 +896,14 @@
         ],
         "responses": {
           "201": {
-            "description": "New draft version created"
+            "description": "New draft version created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ChannelResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -762,7 +916,14 @@
             }
           },
           "409": {
-            "description": "Draft already exists"
+            "description": "Draft already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -813,7 +974,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated list of connectors. Each row carries `load_status`: `loaded` when the connector is live in the registry, `failed` (with `load_error`) when it is enabled but could not be loaded, and `disabled` when it is not enabled. A `failed` connector is absent at request time, so every workflow using it returns a 500."
+            "description": "Paginated list of connectors. Each row carries `load_status`: `loaded` when the connector is live in the registry, `failed` (with `load_error`) when it is enabled but could not be loaded, and `disabled` when it is not enabled. A `failed` connector is absent at request time, so every workflow using it returns a 500.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_ConnectorListItem"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -862,7 +1030,14 @@
         },
         "responses": {
           "201": {
-            "description": "Connector created"
+            "description": "Connector created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Connector"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -875,7 +1050,14 @@
             }
           },
           "409": {
-            "description": "Connector name conflict"
+            "description": "Connector name conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -906,7 +1088,14 @@
         "operationId": "list_circuit_breakers",
         "responses": {
           "200": {
-            "description": "Circuit breaker states"
+            "description": "Circuit breaker states",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_CircuitBreakerStates"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -958,7 +1147,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Circuit breaker reset"
+            "description": "Circuit breaker reset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_CircuitBreakerReset"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -971,7 +1167,14 @@
             }
           },
           "404": {
-            "description": "Circuit breaker not found"
+            "description": "Circuit breaker not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -1026,7 +1229,14 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Dry-run validates each item's shape and values only — it does NOT read the database, so it cannot detect name conflicts. Connectors whose names already exist are reported as would_create and will surface as Conflict on the real (non-dry-run) import."
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Dry-run validates each item's shape and values only — it does NOT read the database, so it cannot detect name conflicts. Connectors whose names already exist are counted in `imported` and will surface as Conflict on the real (non-dry-run) import.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ImportResult"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1078,7 +1288,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Connector details"
+            "description": "Connector details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Connector"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1091,7 +1308,14 @@
             }
           },
           "404": {
-            "description": "Connector not found"
+            "description": "Connector not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -1141,7 +1365,14 @@
         },
         "responses": {
           "200": {
-            "description": "Connector updated"
+            "description": "Connector updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Connector"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1154,7 +1385,14 @@
             }
           },
           "404": {
-            "description": "Connector not found"
+            "description": "Connector not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -1207,7 +1445,14 @@
             }
           },
           "404": {
-            "description": "Connector not found"
+            "description": "Connector not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -1238,7 +1483,14 @@
         "operationId": "engine_reload",
         "responses": {
           "200": {
-            "description": "Engine reloaded"
+            "description": "Engine reloaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_EngineReloaded"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1279,7 +1531,14 @@
         "operationId": "engine_status",
         "responses": {
           "200": {
-            "description": "Engine status"
+            "description": "Engine status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_EngineStatus"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1320,7 +1579,14 @@
         "operationId": "list_functions",
         "responses": {
           "200": {
-            "description": "Registered workflow function schemas"
+            "description": "Registered workflow function schemas",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Vec_FunctionSchemaItem"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1401,7 +1667,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated DLQ entries (`{data, total, limit, offset}`) without payloads — fetch one by id for the payload"
+            "description": "Paginated DLQ entries without payloads — fetch one by id for the payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_TraceDlqEntry"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1452,7 +1725,14 @@
         },
         "responses": {
           "200": {
-            "description": "Exhausted entries older than `older_than_hours` deleted; returns `{purged, older_than_hours}`"
+            "description": "Exhausted entries older than `older_than_hours` deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_DlqPurgeResult"
+                }
+              }
+            }
           },
           "400": {
             "description": "Missing or malformed `older_than_hours`",
@@ -1514,7 +1794,14 @@
         ],
         "responses": {
           "200": {
-            "description": "DLQ entry including the failed payload and metadata"
+            "description": "DLQ entry including the failed payload and metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_TraceDlqEntry"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1576,7 +1863,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Entry reset to retry_count = 0 and scheduled for immediate retry"
+            "description": "Entry reset to retry_count = 0 and scheduled for immediate retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_TraceDlqEntry"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1694,7 +1988,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated list of traces"
+            "description": "Paginated list of traces",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_TraceListItem"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1756,7 +2057,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Trace status and result"
+            "description": "Trace status and result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_TraceDetail"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or wrong trace token / admin credential",
@@ -1853,7 +2161,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated list of workflows"
+            "description": "Paginated list of workflows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_WorkflowResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -1902,10 +2217,24 @@
         },
         "responses": {
           "201": {
-            "description": "Workflow created as draft"
+            "description": "Workflow created as draft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_WorkflowResponse"
+                }
+              }
+            }
           },
           "400": {
-            "description": "Invalid input"
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2000,7 +2329,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Exported workflows"
+            "description": "Exported workflows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Vec_WorkflowResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2065,7 +2401,14 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true)"
+            "description": "Import results with counts (or would-be results when ?dry_run=true)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_ImportResult"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2175,7 +2518,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Workflow details"
+            "description": "Workflow details",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_WorkflowResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2188,7 +2538,14 @@
             }
           },
           "404": {
-            "description": "Workflow not found"
+            "description": "Workflow not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -2238,10 +2595,24 @@
         },
         "responses": {
           "200": {
-            "description": "Draft workflow updated"
+            "description": "Draft workflow updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_WorkflowResponse"
+                }
+              }
+            }
           },
           "400": {
-            "description": "No draft version or invalid input"
+            "description": "No draft version or invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2254,7 +2625,14 @@
             }
           },
           "404": {
-            "description": "Workflow not found"
+            "description": "Workflow not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -2307,7 +2685,14 @@
             }
           },
           "404": {
-            "description": "Workflow not found"
+            "description": "Workflow not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -2359,10 +2744,24 @@
         },
         "responses": {
           "200": {
-            "description": "Rollout percentage updated"
+            "description": "Rollout percentage updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_WorkflowResponse"
+                }
+              }
+            }
           },
           "400": {
-            "description": "Invalid rollout configuration"
+            "description": "Invalid rollout configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2424,10 +2823,24 @@
         },
         "responses": {
           "200": {
-            "description": "Status updated"
+            "description": "Status updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_WorkflowResponse"
+                }
+              }
+            }
           },
           "400": {
-            "description": "Invalid status transition"
+            "description": "Invalid status transition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2440,7 +2853,14 @@
             }
           },
           "404": {
-            "description": "Workflow not found"
+            "description": "Workflow not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -2492,7 +2912,14 @@
         },
         "responses": {
           "200": {
-            "description": "Test result with trace"
+            "description": "Test result with trace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_WorkflowTestResult"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2505,7 +2932,14 @@
             }
           },
           "404": {
-            "description": "Workflow not found"
+            "description": "Workflow not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -2547,7 +2981,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated version history"
+            "description": "Paginated version history",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_WorkflowResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2560,7 +3001,14 @@
             }
           },
           "404": {
-            "description": "Workflow not found"
+            "description": "Workflow not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -2600,7 +3048,14 @@
         ],
         "responses": {
           "201": {
-            "description": "New draft version created"
+            "description": "New draft version created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_WorkflowResponse"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -2613,7 +3068,14 @@
             }
           },
           "409": {
-            "description": "Draft already exists"
+            "description": "Draft already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -2930,7 +3392,14 @@
         "operationId": "health_check",
         "responses": {
           "200": {
-            "description": "Service healthy"
+            "description": "Service healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -2943,7 +3412,14 @@
             }
           },
           "503": {
-            "description": "Service degraded"
+            "description": "Service degraded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -2958,7 +3434,14 @@
         "operationId": "liveness_probe",
         "responses": {
           "200": {
-            "description": "Process is alive"
+            "description": "Process is alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -3028,7 +3511,14 @@
         "operationId": "readiness_probe",
         "responses": {
           "200": {
-            "description": "All components ready — `{\"status\":\"ready\",\"components\":{...}}`"
+            "description": "All components ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                }
+              }
+            }
           },
           "500": {
             "description": "Unexpected internal error (`INTERNAL_ERROR`)",
@@ -3041,7 +3531,14 @@
             }
           },
           "503": {
-            "description": "At least one component is not ready — same body shape with `\"status\":\"not_ready\"`"
+            "description": "At least one component is not ready — same body shape with `\"status\":\"not_ready\"`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -3069,16 +3566,112 @@
           }
         }
       },
-      "Channel": {
+      "AuditLogEntry": {
         "type": "object",
+        "required": [
+          "id",
+          "principal",
+          "action",
+          "resource_type",
+          "resource_id",
+          "created_at"
+        ],
+        "properties": {
+          "action": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "details": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "principal": {
+            "type": "string"
+          },
+          "resource_id": {
+            "type": "string"
+          },
+          "resource_type": {
+            "type": "string"
+          }
+        }
+      },
+      "BackupFile": {
+        "type": "object",
+        "description": "The backup `POST /api/v1/admin/backups` just wrote.",
+        "required": [
+          "filename",
+          "path",
+          "size_bytes",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path on the node that served the request."
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "BackupListItem": {
+        "type": "object",
+        "description": "One row of `GET /api/v1/admin/backups`. Deliberately not [`BackupFile`]:\nthe listing reads `mtime` off the directory entry and has no `path`, so\nthe two responses differ by two fields.",
+        "required": [
+          "filename",
+          "size_bytes",
+          "modified_at"
+        ],
+        "properties": {
+          "filename": {
+            "type": "string"
+          },
+          "modified_at": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ChannelProtocol": {
+        "type": "string",
+        "enum": [
+          "rest",
+          "http",
+          "kafka"
+        ]
+      },
+      "ChannelResponse": {
+        "type": "object",
+        "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the `Channel` row struct — is what every channel endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
         "required": [
           "channel_id",
           "version",
           "name",
           "channel_type",
           "protocol",
-          "transport_config_json",
-          "config_json",
+          "transport_config",
+          "config",
           "status",
           "priority",
           "created_at",
@@ -3091,9 +3684,7 @@
           "channel_type": {
             "type": "string"
           },
-          "config_json": {
-            "type": "string"
-          },
+          "config": {},
           "consumer_group": {
             "type": [
               "string",
@@ -3110,12 +3701,7 @@
               "null"
             ]
           },
-          "methods": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
+          "methods": {},
           "name": {
             "type": "string"
           },
@@ -3141,9 +3727,7 @@
               "null"
             ]
           },
-          "transport_config_json": {
-            "type": "string"
-          },
+          "transport_config": {},
           "updated_at": {
             "type": "string",
             "format": "date-time"
@@ -3159,14 +3743,6 @@
             ]
           }
         }
-      },
-      "ChannelProtocol": {
-        "type": "string",
-        "enum": [
-          "rest",
-          "http",
-          "kafka"
-        ]
       },
       "ChannelStatusChangeRequest": {
         "type": "object",
@@ -3185,6 +3761,46 @@
           "sync",
           "async"
         ]
+      },
+      "CircuitBreakerReset": {
+        "type": "object",
+        "description": "`POST /api/v1/admin/connectors/circuit-breakers/{key}`.",
+        "required": [
+          "reset",
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "reset": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CircuitBreakerStates": {
+        "type": "object",
+        "description": "`GET /api/v1/admin/connectors/circuit-breakers`.",
+        "required": [
+          "enabled",
+          "breakers"
+        ],
+        "properties": {
+          "breakers": {
+            "type": "object",
+            "description": "`channel:connector` → `closed` | `open` | `half_open`. Node-local.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether `engine.circuit_breaker.enabled` is set. When false, `breakers`\nis empty because nothing is tracked."
+          }
+        }
       },
       "Connector": {
         "type": "object",
@@ -3220,6 +3836,63 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "ConnectorListItem": {
+        "type": "object",
+        "description": "One row of `GET /api/v1/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::Connector`] because\n`PaginatedEnvelope<Connector>` would under-describe the row by exactly the\nthree fields an operator reads the list for.",
+        "required": [
+          "id",
+          "name",
+          "connector_type",
+          "config_json",
+          "enabled",
+          "created_at",
+          "updated_at",
+          "load_status"
+        ],
+        "properties": {
+          "config_json": {
+            "type": "string",
+            "description": "Connector config with every secret replaced by `******`."
+          },
+          "connector_type": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "load_error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the connector failed to load. Present only when\n`load_status = \"failed\"`."
+          },
+          "load_error_stage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Which load stage failed. Present only when `load_status = \"failed\"`."
+          },
+          "load_status": {
+            "type": "string",
+            "description": "`loaded`, `failed`, or `disabled`.",
+            "example": "loaded"
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
           }
         }
       },
@@ -3365,6 +4038,849 @@
           }
         }
       },
+      "DataEnvelope_BackupFile": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "The backup `POST /api/v1/admin/backups` just wrote.",
+            "required": [
+              "filename",
+              "path",
+              "size_bytes",
+              "created_at"
+            ],
+            "properties": {
+              "created_at": {
+                "type": "string"
+              },
+              "filename": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string",
+                "description": "Absolute path on the node that served the request."
+              },
+              "size_bytes": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_ChannelResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the `Channel` row struct — is what every channel endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+            "required": [
+              "channel_id",
+              "version",
+              "name",
+              "channel_type",
+              "protocol",
+              "transport_config",
+              "config",
+              "status",
+              "priority",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "channel_id": {
+                "type": "string"
+              },
+              "channel_type": {
+                "type": "string"
+              },
+              "config": {},
+              "consumer_group": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "methods": {},
+              "name": {
+                "type": "string"
+              },
+              "priority": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "protocol": {
+                "type": "string"
+              },
+              "route_pattern": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "topic": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "transport_config": {},
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "version": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "workflow_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_CircuitBreakerReset": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "`POST /api/v1/admin/connectors/circuit-breakers/{key}`.",
+            "required": [
+              "reset",
+              "key"
+            ],
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "reset": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_CircuitBreakerStates": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "`GET /api/v1/admin/connectors/circuit-breakers`.",
+            "required": [
+              "enabled",
+              "breakers"
+            ],
+            "properties": {
+              "breakers": {
+                "type": "object",
+                "description": "`channel:connector` → `closed` | `open` | `half_open`. Node-local.",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "propertyNames": {
+                  "type": "string"
+                }
+              },
+              "enabled": {
+                "type": "boolean",
+                "description": "Whether `engine.circuit_breaker.enabled` is set. When false, `breakers`\nis empty because nothing is tracked."
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_Connector": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "connector_type",
+              "config_json",
+              "enabled",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "config_json": {
+                "type": "string"
+              },
+              "connector_type": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "enabled": {
+                "type": "boolean"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_DlqPurgeResult": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "`POST /api/v1/admin/trace-dlq/purge`.",
+            "required": [
+              "purged",
+              "older_than_hours"
+            ],
+            "properties": {
+              "older_than_hours": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Echo of the requested age bound."
+              },
+              "purged": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Rows deleted.",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_EngineReloaded": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "`POST /api/v1/admin/engine/reload`.",
+            "required": [
+              "reloaded",
+              "workflows_count"
+            ],
+            "properties": {
+              "reloaded": {
+                "type": "boolean"
+              },
+              "workflows_count": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_EngineStatus": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "`GET /api/v1/admin/engine/status`.",
+            "required": [
+              "version",
+              "uptime_seconds",
+              "workflows_count",
+              "active_workflows",
+              "channels"
+            ],
+            "properties": {
+              "active_workflows": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "channels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Distinct channel names across the loaded workflows."
+              },
+              "uptime_seconds": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "version": {
+                "type": "string"
+              },
+              "workflows_count": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_ImportResult": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "Result of a bulk import, in both dry-run and real modes (R18).",
+            "required": [
+              "dry_run",
+              "imported",
+              "failed",
+              "errors"
+            ],
+            "properties": {
+              "dry_run": {
+                "type": "boolean",
+                "description": "`true` when the request carried `?dry_run=true`; nothing was written."
+              },
+              "errors": {
+                "type": "array",
+                "items": {},
+                "description": "One entry per failed item, carrying its index in the request array."
+              },
+              "failed": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Items rejected. Non-zero with a **200** status: check this field, not\nthe status code.",
+                "minimum": 0
+              },
+              "imported": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Items created — or, in a dry run, the count that would be created.",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_TraceDetail": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "`GET /api/v1/admin/traces/{id}` — the list row plus the payloads.",
+            "required": [
+              "id",
+              "status",
+              "mode",
+              "channel",
+              "created_at"
+            ],
+            "properties": {
+              "channel": {
+                "type": "string"
+              },
+              "channel_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "completed_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": "string"
+              },
+              "duration_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64"
+              },
+              "error": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Present only when `status = \"failed\"`."
+              },
+              "id": {
+                "type": "string"
+              },
+              "message": {
+                "description": "The full engine message. Present only when `status = \"completed\"`.\n`context.metadata` is stripped from the projection (S14)."
+              },
+              "mode": {
+                "type": "string"
+              },
+              "started_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "status": {
+                "type": "string"
+              },
+              "task_trace_json": {
+                "description": "Per-task execution trace, when the channel enabled `task_details`."
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_TraceDlqEntry": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "required": [
+              "id",
+              "trace_id",
+              "channel",
+              "payload_json",
+              "metadata_json",
+              "error_message",
+              "retry_count",
+              "max_retries",
+              "next_retry_at",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "channel": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "error_message": {
+                "type": "string"
+              },
+              "id": {
+                "type": "string"
+              },
+              "max_retries": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "metadata_json": {
+                "type": "string"
+              },
+              "next_retry_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "payload_json": {
+                "type": "string"
+              },
+              "retry_count": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "trace_id": {
+                "type": "string"
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_Vec_BackupListItem": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One row of `GET /api/v1/admin/backups`. Deliberately not [`BackupFile`]:\nthe listing reads `mtime` off the directory entry and has no `path`, so\nthe two responses differ by two fields.",
+              "required": [
+                "filename",
+                "size_bytes",
+                "modified_at"
+              ],
+              "properties": {
+                "filename": {
+                  "type": "string"
+                },
+                "modified_at": {
+                  "type": "string"
+                },
+                "size_bytes": {
+                  "type": "integer",
+                  "format": "int64",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_Vec_FunctionSchemaItem": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One task-function input schema from `GET /api/v1/admin/functions`.",
+              "required": [
+                "name",
+                "description",
+                "category",
+                "input_fields"
+              ],
+              "properties": {
+                "category": {
+                  "type": "string",
+                  "description": "`connector`, `control`, `transform`, …"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "input_fields": {
+                  "type": "array",
+                  "items": {}
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_Vec_WorkflowResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the `Workflow` row struct — is what every workflow endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+              "required": [
+                "workflow_id",
+                "version",
+                "name",
+                "priority",
+                "status",
+                "rollout_percentage",
+                "condition",
+                "tasks",
+                "tags",
+                "continue_on_error",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "condition": {},
+                "continue_on_error": {
+                  "type": "boolean"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "rollout_percentage": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "tags": {},
+                "tasks": {},
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "version": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "workflow_id": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_WorkflowResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the `Workflow` row struct — is what every workflow endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+            "required": [
+              "workflow_id",
+              "version",
+              "name",
+              "priority",
+              "status",
+              "rollout_percentage",
+              "condition",
+              "tasks",
+              "tags",
+              "continue_on_error",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "condition": {},
+              "continue_on_error": {
+                "type": "boolean"
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "priority": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "rollout_percentage": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "status": {
+                "type": "string"
+              },
+              "tags": {},
+              "tasks": {},
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "version": {
+                "type": "integer",
+                "format": "int64"
+              },
+              "workflow_id": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_WorkflowTestResult": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "`POST /api/v1/admin/workflows/{id}/test` — a dry run against sample input.",
+            "required": [
+              "matched",
+              "trace",
+              "output",
+              "errors"
+            ],
+            "properties": {
+              "errors": {
+                "type": "array",
+                "items": {}
+              },
+              "matched": {
+                "type": "boolean",
+                "description": "Whether the workflow's condition matched the supplied input."
+              },
+              "output": {
+                "description": "The message data after the pipeline ran."
+              },
+              "trace": {
+                "description": "Per-step execution trace: `task_id` and `result`\n(`executed` | `skipped` | `failed`) for each step."
+              }
+            }
+          }
+        }
+      },
+      "DlqPurgeResult": {
+        "type": "object",
+        "description": "`POST /api/v1/admin/trace-dlq/purge`.",
+        "required": [
+          "purged",
+          "older_than_hours"
+        ],
+        "properties": {
+          "older_than_hours": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Echo of the requested age bound."
+          },
+          "purged": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rows deleted.",
+            "minimum": 0
+          }
+        }
+      },
+      "EngineReloaded": {
+        "type": "object",
+        "description": "`POST /api/v1/admin/engine/reload`.",
+        "required": [
+          "reloaded",
+          "workflows_count"
+        ],
+        "properties": {
+          "reloaded": {
+            "type": "boolean"
+          },
+          "workflows_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "EngineStatus": {
+        "type": "object",
+        "description": "`GET /api/v1/admin/engine/status`.",
+        "required": [
+          "version",
+          "uptime_seconds",
+          "workflows_count",
+          "active_workflows",
+          "channels"
+        ],
+        "properties": {
+          "active_workflows": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Distinct channel names across the loaded workflows."
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": "string"
+          },
+          "workflows_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "EntityStatus": {
         "type": "string",
         "enum": [
@@ -3441,6 +4957,627 @@
         "properties": {
           "error": {
             "$ref": "#/components/schemas/ErrorDetail"
+          }
+        }
+      },
+      "FunctionSchemaItem": {
+        "type": "object",
+        "description": "One task-function input schema from `GET /api/v1/admin/functions`.",
+        "required": [
+          "name",
+          "description",
+          "category",
+          "input_fields"
+        ],
+        "properties": {
+          "category": {
+            "type": "string",
+            "description": "`connector`, `control`, `transform`, …"
+          },
+          "description": {
+            "type": "string"
+          },
+          "input_fields": {
+            "type": "array",
+            "items": {}
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "HealthStatus": {
+        "type": "object",
+        "description": "A liveness / readiness / health probe body.",
+        "required": [
+          "status",
+          "version",
+          "uptime_seconds",
+          "components"
+        ],
+        "properties": {
+          "components": {
+            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`."
+          },
+          "git_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Build provenance and detail, served only to an admin caller (O9)."
+          },
+          "status": {
+            "type": "string",
+            "description": "`ok` | `degraded`."
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "ImportResult": {
+        "type": "object",
+        "description": "Result of a bulk import, in both dry-run and real modes (R18).",
+        "required": [
+          "dry_run",
+          "imported",
+          "failed",
+          "errors"
+        ],
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "`true` when the request carried `?dry_run=true`; nothing was written."
+          },
+          "errors": {
+            "type": "array",
+            "items": {},
+            "description": "One entry per failed item, carrying its index in the request array."
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Items rejected. Non-zero with a **200** status: check this field, not\nthe status code.",
+            "minimum": 0
+          },
+          "imported": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Items created — or, in a dry run, the count that would be created.",
+            "minimum": 0
+          }
+        }
+      },
+      "PaginatedEnvelope_AuditLogEntry": {
+        "type": "object",
+        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "principal",
+                "action",
+                "resource_type",
+                "resource_id",
+                "created_at"
+              ],
+              "properties": {
+                "action": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "details": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "principal": {
+                  "type": "string"
+                },
+                "resource_id": {
+                  "type": "string"
+                },
+                "resource_type": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
+      "PaginatedEnvelope_ChannelResponse": {
+        "type": "object",
+        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the `Channel` row struct — is what every channel endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+              "required": [
+                "channel_id",
+                "version",
+                "name",
+                "channel_type",
+                "protocol",
+                "transport_config",
+                "config",
+                "status",
+                "priority",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "channel_id": {
+                  "type": "string"
+                },
+                "channel_type": {
+                  "type": "string"
+                },
+                "config": {},
+                "consumer_group": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "methods": {},
+                "name": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "protocol": {
+                  "type": "string"
+                },
+                "route_pattern": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": "string"
+                },
+                "topic": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "transport_config": {},
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "version": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "workflow_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
+      "PaginatedEnvelope_ConnectorListItem": {
+        "type": "object",
+        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One row of `GET /api/v1/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::Connector`] because\n`PaginatedEnvelope<Connector>` would under-describe the row by exactly the\nthree fields an operator reads the list for.",
+              "required": [
+                "id",
+                "name",
+                "connector_type",
+                "config_json",
+                "enabled",
+                "created_at",
+                "updated_at",
+                "load_status"
+              ],
+              "properties": {
+                "config_json": {
+                  "type": "string",
+                  "description": "Connector config with every secret replaced by `******`."
+                },
+                "connector_type": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "load_error": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Why the connector failed to load. Present only when\n`load_status = \"failed\"`."
+                },
+                "load_error_stage": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Which load stage failed. Present only when `load_status = \"failed\"`."
+                },
+                "load_status": {
+                  "type": "string",
+                  "description": "`loaded`, `failed`, or `disabled`.",
+                  "example": "loaded"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
+      "PaginatedEnvelope_TraceDlqEntry": {
+        "type": "object",
+        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "trace_id",
+                "channel",
+                "payload_json",
+                "metadata_json",
+                "error_message",
+                "retry_count",
+                "max_retries",
+                "next_retry_at",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "channel": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "error_message": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "max_retries": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "metadata_json": {
+                  "type": "string"
+                },
+                "next_retry_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "payload_json": {
+                  "type": "string"
+                },
+                "retry_count": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "trace_id": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
+      "PaginatedEnvelope_TraceListItem": {
+        "type": "object",
+        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "One row of `GET /api/v1/admin/traces` — payload-free by design (S14).",
+              "required": [
+                "id",
+                "channel",
+                "mode",
+                "status",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "channel": {
+                  "type": "string",
+                  "description": "Channel name as it was when the trace ran — a snapshot, not a key."
+                },
+                "channel_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "completed_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string"
+                },
+                "duration_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "error_message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "id": {
+                  "type": "string"
+                },
+                "mode": {
+                  "type": "string",
+                  "description": "`sync` | `async`."
+                },
+                "started_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "description": "`pending` | `running` | `completed` | `failed`."
+                },
+                "updated_at": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
+      "PaginatedEnvelope_WorkflowResponse": {
+        "type": "object",
+        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the `Workflow` row struct — is what every workflow endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+              "required": [
+                "workflow_id",
+                "version",
+                "name",
+                "priority",
+                "status",
+                "rollout_percentage",
+                "condition",
+                "tasks",
+                "tags",
+                "continue_on_error",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "condition": {},
+                "continue_on_error": {
+                  "type": "boolean"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "name": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "rollout_percentage": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "status": {
+                  "type": "string"
+                },
+                "tags": {},
+                "tasks": {},
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "version": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "workflow_id": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
           }
         }
       },
@@ -3573,8 +5710,131 @@
           "metadata": {}
         }
       },
-      "Trace": {
+      "TraceDetail": {
         "type": "object",
+        "description": "`GET /api/v1/admin/traces/{id}` — the list row plus the payloads.",
+        "required": [
+          "id",
+          "status",
+          "mode",
+          "channel",
+          "created_at"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "channel_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string"
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present only when `status = \"failed\"`."
+          },
+          "id": {
+            "type": "string"
+          },
+          "message": {
+            "description": "The full engine message. Present only when `status = \"completed\"`.\n`context.metadata` is stripped from the projection (S14)."
+          },
+          "mode": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "task_trace_json": {
+            "description": "Per-task execution trace, when the channel enabled `task_details`."
+          }
+        }
+      },
+      "TraceDlqEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "trace_id",
+          "channel",
+          "payload_json",
+          "metadata_json",
+          "error_message",
+          "retry_count",
+          "max_retries",
+          "next_retry_at",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error_message": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "max_retries": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "metadata_json": {
+            "type": "string"
+          },
+          "next_retry_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "payload_json": {
+            "type": "string"
+          },
+          "retry_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "trace_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TraceListItem": {
+        "type": "object",
+        "description": "One row of `GET /api/v1/admin/traces` — payload-free by design (S14).",
         "required": [
           "id",
           "channel",
@@ -3586,32 +5846,29 @@
         "properties": {
           "channel": {
             "type": "string",
-            "description": "The channel **name** as it was at execution time — an immutable\nsnapshot, not a lookup key (D26). It is deliberately kept alongside\n`channel_id` and deliberately not refreshed: renaming a channel must\nnot rewrite the history of what already ran, and a trace has to stay\nreadable after its channel is deleted. Filter and group by\n`channel_id` when you mean \"this channel\"; read `channel` when you\nmean \"what it was called then\"."
+            "description": "Channel name as it was when the trace ran — a snapshot, not a key."
           },
           "channel_id": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Stable identity of the channel that ran, when one was resolved. `None`\nfor rows written before the column existed."
+            ]
           },
           "completed_at": {
             "type": [
               "string",
               "null"
-            ],
-            "format": "date-time"
+            ]
           },
           "created_at": {
-            "type": "string",
-            "format": "date-time"
+            "type": "string"
           },
           "duration_ms": {
             "type": [
-              "number",
+              "integer",
               "null"
             ],
-            "format": "double"
+            "format": "int64"
           },
           "error_message": {
             "type": [
@@ -3622,41 +5879,22 @@
           "id": {
             "type": "string"
           },
-          "input_json": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "mode": {
-            "type": "string"
-          },
-          "result_json": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string",
+            "description": "`sync` | `async`."
           },
           "started_at": {
             "type": [
               "string",
               "null"
-            ],
-            "format": "date-time"
+            ]
           },
           "status": {
-            "type": "string"
-          },
-          "task_trace_json": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Per-task `dataflow_rs::ExecutionTrace` JSON, captured only when the\nchannel has `config.tracing.task_details = true`. Workflow authors\ncan inspect intermediate inputs/outputs for each task to debug\npipelines without re-running them in dry-run."
+            "type": "string",
+            "description": "`pending` | `running` | `completed` | `failed`."
           },
           "updated_at": {
-            "type": "string",
-            "format": "date-time"
+            "type": "string"
           }
         }
       },
@@ -3840,8 +6078,9 @@
           }
         }
       },
-      "Workflow": {
+      "WorkflowResponse": {
         "type": "object",
+        "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the `Workflow` row struct — is what every workflow endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
         "required": [
           "workflow_id",
           "version",
@@ -3849,17 +6088,15 @@
           "priority",
           "status",
           "rollout_percentage",
-          "condition_json",
-          "tasks_json",
+          "condition",
+          "tasks",
           "tags",
           "continue_on_error",
           "created_at",
           "updated_at"
         ],
         "properties": {
-          "condition_json": {
-            "type": "string"
-          },
+          "condition": {},
           "continue_on_error": {
             "type": "boolean"
           },
@@ -3887,12 +6124,8 @@
           "status": {
             "type": "string"
           },
-          "tags": {
-            "type": "string"
-          },
-          "tasks_json": {
-            "type": "string"
-          },
+          "tags": {},
+          "tasks": {},
           "updated_at": {
             "type": "string",
             "format": "date-time"
@@ -3903,6 +6136,32 @@
           },
           "workflow_id": {
             "type": "string"
+          }
+        }
+      },
+      "WorkflowTestResult": {
+        "type": "object",
+        "description": "`POST /api/v1/admin/workflows/{id}/test` — a dry run against sample input.",
+        "required": [
+          "matched",
+          "trace",
+          "output",
+          "errors"
+        ],
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {}
+          },
+          "matched": {
+            "type": "boolean",
+            "description": "Whether the workflow's condition matched the supplied input."
+          },
+          "output": {
+            "description": "The message data after the pipeline ran."
+          },
+          "trace": {
+            "description": "Per-step execution trace: `task_id` and `result`\n(`executed` | `skipped` | `failed`) for each step."
           }
         }
       }

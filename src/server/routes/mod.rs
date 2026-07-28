@@ -57,7 +57,7 @@ names and failure reasons) is included only for requests presenting a valid \
 admin credential; anonymous callers get status, version, uptime and coarse \
 per-component states. Probes should use `/healthz` and `/readyz`.",
     responses(
-        (status = 200, description = "Service healthy"),
+        (status = 200, description = "Service healthy", body = crate::server::routes::openapi::HealthStatus),
         (status = 503, description = "Service degraded"),
     )
 )]
@@ -192,7 +192,7 @@ dependency checks, so a database or Redis outage must not restart the pod. \
 Use `/readyz` for rotation decisions and `/health` for a detailed report. \
 Unauthenticated, so probes work without provisioning an admin key.",
     responses(
-        (status = 200, description = "Process is alive"),
+        (status = 200, description = "Process is alive", body = crate::server::routes::openapi::HealthStatus),
     )
 )]
 pub(crate) async fn liveness_check() -> impl IntoResponse {
@@ -247,7 +247,7 @@ returning 200s.
 The `components.cluster_redis` field is present only in cluster mode. \
 Unauthenticated, so probes work without provisioning an admin key.",
     responses(
-        (status = 200, description = "All components ready — `{\"status\":\"ready\",\"components\":{...}}`"),
+        (status = 200, description = "All components ready", body = crate::server::routes::openapi::HealthStatus),
         (status = 503, description = "At least one component is not ready — same body shape with `\"status\":\"not_ready\"`"),
     )
 )]

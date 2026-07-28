@@ -5,8 +5,10 @@ use serde_json::Value;
 
 use crate::errors::OrionError;
 use crate::server::extract::OrionQuery;
+use crate::server::routes::openapi::PaginatedEnvelope;
 use crate::server::routes::response_helpers::paginated_response;
 use crate::server::state::AppState;
+use crate::storage::models::AuditLogEntry;
 use crate::storage::repositories::audit_logs::AuditLogFilter;
 
 // ============================================================
@@ -70,7 +72,7 @@ fn parse_timestamp(field: &str, raw: &str) -> Result<chrono::NaiveDateTime, Orio
         ("end_time" = Option<String>, Query, description = "Exclusive upper bound on `created_at`, RFC 3339"),
     ),
     responses(
-        (status = 200, description = "Paginated audit log entries: `{data, total, limit, offset}`"),
+        (status = 200, description = "Paginated audit log entries", body = PaginatedEnvelope<AuditLogEntry>),
         (status = 400, description = "Unknown query parameter or malformed timestamp"),
     )
 )]

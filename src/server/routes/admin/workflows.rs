@@ -8,6 +8,9 @@ use std::collections::HashSet;
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::{OrionJson, OrionQuery};
+use crate::server::routes::openapi::{
+    DataEnvelope, ImportResult, PaginatedEnvelope, WorkflowTestResult,
+};
 use crate::server::routes::response_helpers::{created_response, data_response, paginated_into};
 use crate::server::state::AppState;
 use crate::storage::models::{StatusAction, WorkflowResponse};
@@ -30,7 +33,7 @@ use super::audit_log_draft_only;
     params(WorkflowFilter),
     tag = "Workflows",
     responses(
-        (status = 200, description = "Paginated list of workflows"),
+        (status = 200, description = "Paginated list of workflows", body = PaginatedEnvelope<WorkflowResponse>),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -48,7 +51,7 @@ pub(crate) async fn list_workflows(
     tag = "Workflows",
     request_body = CreateWorkflowRequest,
     responses(
-        (status = 201, description = "Workflow created as draft"),
+        (status = 201, description = "Workflow created as draft", body = DataEnvelope<WorkflowResponse>),
         (status = 400, description = "Invalid input"),
     )
 )]
@@ -76,7 +79,7 @@ pub(crate) async fn create_workflow(
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID")),
     responses(
-        (status = 200, description = "Workflow details"),
+        (status = 200, description = "Workflow details", body = DataEnvelope<WorkflowResponse>),
         (status = 404, description = "Workflow not found"),
     )
 )]
@@ -96,7 +99,7 @@ pub(crate) async fn get_workflow(
     params(("id" = String, Path, description = "Workflow ID")),
     request_body = UpdateWorkflowRequest,
     responses(
-        (status = 200, description = "Draft workflow updated"),
+        (status = 200, description = "Draft workflow updated", body = DataEnvelope<WorkflowResponse>),
         (status = 400, description = "No draft version or invalid input"),
         (status = 404, description = "Workflow not found"),
     )
@@ -146,7 +149,7 @@ pub(crate) async fn delete_workflow(
     params(("id" = String, Path, description = "Workflow ID")),
     request_body = StatusChangeRequest,
     responses(
-        (status = 200, description = "Status updated"),
+        (status = 200, description = "Status updated", body = DataEnvelope<WorkflowResponse>),
         (status = 400, description = "Invalid status transition"),
         (status = 404, description = "Workflow not found"),
     )
@@ -245,7 +248,7 @@ async fn ensure_workflow_connectors_exist(
     params(("id" = String, Path, description = "Workflow ID")),
     request_body = RolloutUpdateRequest,
     responses(
-        (status = 200, description = "Rollout percentage updated"),
+        (status = 200, description = "Rollout percentage updated", body = DataEnvelope<WorkflowResponse>),
         (status = 400, description = "Invalid rollout configuration"),
     )
 )]
@@ -276,7 +279,7 @@ pub(crate) async fn update_rollout(
         ("id" = String, Path, description = "Workflow ID"),
     ),
     responses(
-        (status = 200, description = "Paginated version history"),
+        (status = 200, description = "Paginated version history", body = PaginatedEnvelope<WorkflowResponse>),
         (status = 404, description = "Workflow not found"),
     )
 )]
@@ -304,7 +307,7 @@ pub(crate) async fn list_workflow_versions(
     tag = "Workflows",
     params(("id" = String, Path, description = "Workflow ID")),
     responses(
-        (status = 201, description = "New draft version created"),
+        (status = 201, description = "New draft version created", body = DataEnvelope<WorkflowResponse>),
         (status = 409, description = "Draft already exists"),
     )
 )]
@@ -343,7 +346,7 @@ pub(crate) struct TestWorkflowRequest {
     params(("id" = String, Path, description = "Workflow ID")),
     request_body = TestWorkflowRequest,
     responses(
-        (status = 200, description = "Test result with trace"),
+        (status = 200, description = "Test result with trace", body = DataEnvelope<WorkflowTestResult>),
         (status = 404, description = "Workflow not found"),
     )
 )]
@@ -432,7 +435,7 @@ pub(crate) struct ImportQuery {
     request_body = Vec<CreateWorkflowRequest>,
     params(ImportQuery),
     responses(
-        (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true)"),
+        (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true)", body = DataEnvelope<ImportResult>),
     )
 )]
 #[tracing::instrument(skip(state, workflows, principal), fields(count = workflows.len()))]
@@ -476,7 +479,7 @@ pub(crate) async fn import_workflows(
     tag = "Workflows",
     params(WorkflowFilter),
     responses(
-        (status = 200, description = "Exported workflows"),
+        (status = 200, description = "Exported workflows", body = DataEnvelope<Vec<WorkflowResponse>>),
     )
 )]
 #[tracing::instrument(skip(state))]

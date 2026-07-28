@@ -6,8 +6,10 @@ use serde_json::{Value, json};
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::{OrionJson, OrionQuery};
+use crate::server::routes::openapi::{DataEnvelope, DlqPurgeResult, PaginatedEnvelope};
 use crate::server::routes::response_helpers::{data_response, paginated_response};
 use crate::server::state::AppState;
+use crate::storage::models::TraceDlqEntry;
 use crate::storage::repositories::trace_dlq::TraceDlqFilter;
 
 use super::audit_log;
@@ -50,7 +52,7 @@ pub(crate) struct PurgeTraceDlqRequest {
         ("limit" = Option<i64>, Query, description = "Page size, clamped to [1, 1000] (default 50)"),
     ),
     responses(
-        (status = 200, description = "Paginated DLQ entries (`{data, total, limit, offset}`) without payloads — fetch one by id for the payload"),
+        (status = 200, description = "Paginated DLQ entries without payloads — fetch one by id for the payload", body = PaginatedEnvelope<TraceDlqEntry>),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -82,7 +84,7 @@ pub(crate) async fn list_trace_dlq(
     tag = "Trace DLQ",
     params(("id" = String, Path, description = "DLQ entry id")),
     responses(
-        (status = 200, description = "DLQ entry including the failed payload and metadata"),
+        (status = 200, description = "DLQ entry including the failed payload and metadata", body = DataEnvelope<TraceDlqEntry>),
         (status = 404, description = "No such DLQ entry", body = crate::server::routes::openapi::ErrorResponse),
     )
 )]
@@ -100,7 +102,7 @@ pub(crate) async fn get_trace_dlq_entry(
     tag = "Trace DLQ",
     params(("id" = String, Path, description = "DLQ entry id")),
     responses(
-        (status = 200, description = "Entry reset to retry_count = 0 and scheduled for immediate retry"),
+        (status = 200, description = "Entry reset to retry_count = 0 and scheduled for immediate retry", body = DataEnvelope<TraceDlqEntry>),
         (status = 404, description = "No such DLQ entry", body = crate::server::routes::openapi::ErrorResponse),
     )
 )]
@@ -127,7 +129,7 @@ pub(crate) async fn requeue_trace_dlq_entry(
     tag = "Trace DLQ",
     request_body = PurgeTraceDlqRequest,
     responses(
-        (status = 200, description = "Exhausted entries older than `older_than_hours` deleted; returns `{purged, older_than_hours}`"),
+        (status = 200, description = "Exhausted entries older than `older_than_hours` deleted", body = DataEnvelope<DlqPurgeResult>),
         (status = 400, description = "Missing or malformed `older_than_hours`", body = crate::server::routes::openapi::ErrorResponse),
     )
 )]

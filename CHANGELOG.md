@@ -23,6 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `write.allow_unfiltered`, deleting every row. The guard now derives from the
   lowered condition rather than the presence of a `filter` key.
 
+### Fixed
+
+- **The OpenAPI document now describes every response it serves.** Measured
+  against the committed `docs/openapi.json`: **44 of the 48** 2xx responses had
+  no `content` block, as did **30** declared 4xx/5xx — the spec named a status
+  and said nothing about its body, so generated clients got `any` where a type
+  belonged. All 45 body-carrying 2xx and all 141 error responses are now typed
+  (`204` stays bodiless, as it must). Two tests hold the line: one fails on any
+  response that declares a status without a schema, the other on any storage row
+  struct being published.
+
+  Also corrected: `Workflow`, `Channel` and `Trace` were registered as schemas
+  and referenced by **nothing**. They describe database rows — `condition_json`
+  and `tasks_json` as opaque **strings** — while the endpoints return
+  `WorkflowResponse`/`ChannelResponse` with those fields parsed. The row structs
+  are gone from the document and the DTOs are published in their place.
+  `Connector`, `TraceDlqEntry` and `AuditLogEntry` stay: their handlers do
+  return them verbatim.
+
+  This is spec-only — no endpoint changed shape. Regenerate clients to pick up
+  the types.
+
 ### Breaking
 
 - **`data_write`'s mutation envelope is nested under `write`,** mirroring

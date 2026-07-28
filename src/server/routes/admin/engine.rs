@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
+use crate::server::routes::openapi::{DataEnvelope, EngineReloaded, EngineStatus};
 use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
 
@@ -18,7 +19,7 @@ use super::audit_and_reload;
     path = "/api/v1/admin/engine/status",
     tag = "Engine",
     responses(
-        (status = 200, description = "Engine status"),
+        (status = 200, description = "Engine status", body = DataEnvelope<EngineStatus>),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -54,7 +55,7 @@ pub(crate) async fn engine_status(
     path = "/api/v1/admin/engine/reload",
     tag = "Engine",
     responses(
-        (status = 200, description = "Engine reloaded"),
+        (status = 200, description = "Engine reloaded", body = DataEnvelope<EngineReloaded>),
     )
 )]
 #[tracing::instrument(skip(state, principal))]
