@@ -63,6 +63,9 @@ pub fn translate_sql_with_schema(
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
     };
+    // W2: projection and sort go through the same allowlist / rename /
+    // identifier gate as the filter, before any backend sees the spec.
+    let spec = spec.resolve_names(reg)?;
     let root_table = reg.physical_table(&spec.source)?;
     backend::sql::render(&spec, &cond, &root_table, dialect, default_limit, max_limit)
 }
@@ -107,6 +110,9 @@ pub fn plan_sql(
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
     };
+    // W2: projection and sort go through the same allowlist / rename /
+    // identifier gate as the filter, before any backend sees the spec.
+    let spec = spec.resolve_names(reg)?;
 
     let mut main_spec = spec.clone();
     let mut includes = Vec::new();
@@ -167,6 +173,9 @@ pub fn translate_mongo(
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
     };
+    // W2: projection and sort go through the same allowlist / rename /
+    // identifier gate as the filter, before any backend sees the spec.
+    let spec = spec.resolve_names(reg)?;
     let collection = reg.physical_table(&spec.source)?;
     backend::mongo::render(&spec, &cond, &collection, default_limit, max_limit)
 }
@@ -186,6 +195,9 @@ pub fn translate_es(
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
     };
+    // W2: projection and sort go through the same allowlist / rename /
+    // identifier gate as the filter, before any backend sees the spec.
+    let spec = spec.resolve_names(reg)?;
     let index = reg.physical_table(&spec.source)?;
     backend::es::render(&spec, &cond, &index, default_limit, max_limit)
 }

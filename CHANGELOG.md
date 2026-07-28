@@ -17,6 +17,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doubling to a 30 s cap, cleared on success). Failures are counted by the new
   `admin_auth_failures_total{reason}` metric instead of the shared
   `errors_total{type="auth_failure"}`.
+- **`fields` and `sort` no longer bypass the schema entirely.** `resolve_field`
+  had exactly one call site — the filter lowerer — so the projection and sort
+  keys reached SQL, MongoDB and Elasticsearch as **raw logical strings**. Three
+  consequences, all silent:
+
+  - With `{"secret": {"queryable": false}}`, `fields: ["secret"]` still emitted
+    `SELECT "secret"` and returned the value. The allowlist the dialect
+    documents protected the filter and nothing else. **A schema relying on
+    `queryable: false` was not hiding the column from a projection.**
+  - `sort` could order by a column the caller may not read.
+  - A column rename applied to the filter and not to the projection, so
+    `fields: ["email"]` against `{"email": {"name": "email_addr"}}` selected a
+    quoted *literal* rather than the renamed column.
+
+  The whole envelope — `fields`, `sort` and `include.fields` — is now resolved
+  before any backend sees the spec, so no renderer can receive a logical name.
+  Relation join keys resolve too (renames and identifier rules, deliberately
+  not the caller-facing allowlist: they are operator-declared structure, not
+  caller input), which fixes include grouping against a renamed key column.
+
 - **`returning` no longer bypasses the read allowlist.** `data_write`'s
   `returning` resolved through a helper that fell through to the raw column
   name regardless of policy, so `{"op": "insert", …, "returning": ["secret"]}`

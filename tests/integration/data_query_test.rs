@@ -386,3 +386,176 @@ async fn test_data_query_include_nested() {
     assert_eq!(rows[1]["id"], "u2");
     assert_eq!(rows[1]["orders"].as_array().expect("orders array").len(), 1);
 }
+
+// ---------------------------------------------------------------------------
+// W2: projection and sort go through schema resolution
+// ---------------------------------------------------------------------------
+
+async fn sqlite_app(conn: &str, mem: &str) -> axum::Router {
+    let app = common::test_app().await;
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite(conn, &format!("sqlite:file:{mem}?mode=memory&cache=shared")),
+    )
+    .await;
+    app
+}
+
+/// `resolve_field` used to have exactly one call site — the filter lowerer —
+/// so `fields` and `sort` reached the backends as raw logical strings. With
+/// `{"secret": {"queryable": false}}`, `fields: ["secret"]` still emitted
+/// `SELECT "secret"`: the allowlist documented for the dialect protected the
+/// filter and nothing else.
+#[tokio::test]
+async fn projection_cannot_read_a_non_queryable_column() {
+    let conn = "dq-w2";
+    let app = sqlite_app(conn, "dq_w2").await;
+
+    let schema = json!({ "entities": { "items": {
+        "physical": "w2_items",
+        "columns": {
+            "id":     { "queryable": true },
+            "name":   { "queryable": true },
+            "secret": { "queryable": false }
+        }
+    }}});
+
+    common::create_and_activate_channel(
+        &app,
+        "ch-dq-w2",
+        common::workflow_with_tasks(
+            "dq",
+            json!([
+                ddl(
+                    conn,
+                    "t_ddl",
+                    "CREATE TABLE IF NOT EXISTS w2_items (id INTEGER, name TEXT, secret TEXT)"
+                ),
+                ddl(
+                    conn,
+                    "t_seed",
+                    "INSERT INTO w2_items VALUES (1, 'Widget', 's3cr3t')"
+                ),
+                json!({
+                    "id": "q", "name": "q",
+                    "function": { "name": "data_query", "input": {
+                        "connector": conn,
+                        "schema": schema,
+                        "query": { "source": "items", "fields": ["id", "secret"] },
+                        "output": "data.result"
+                    }}
+                }),
+            ]),
+        ),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dq-w2", json!({ "data": {} })).await;
+    let text = serde_json::to_string(&body).unwrap();
+    assert!(
+        is_rejection(status, &body) || !text.contains("s3cr3t"),
+        "`fields` leaked a non-queryable column: {body}"
+    );
+}
+
+/// The same gate on `sort`: ordering by a column reveals information about it
+/// and must not sidestep the allowlist either.
+#[tokio::test]
+async fn sort_cannot_name_a_non_queryable_column() {
+    let conn = "dq-w2s";
+    let app = sqlite_app(conn, "dq_w2s").await;
+
+    let schema = json!({ "entities": { "items": {
+        "physical": "w2s_items",
+        "columns": { "id": { "queryable": true }, "secret": { "queryable": false } }
+    }}});
+
+    common::create_and_activate_channel(
+        &app,
+        "ch-dq-w2s",
+        common::workflow_with_tasks(
+            "dq",
+            json!([
+                ddl(
+                    conn,
+                    "t_ddl",
+                    "CREATE TABLE IF NOT EXISTS w2s_items (id INTEGER, secret TEXT)"
+                ),
+                json!({
+                    "id": "q", "name": "q",
+                    "function": { "name": "data_query", "input": {
+                        "connector": conn,
+                        "schema": schema,
+                        "query": { "source": "items", "sort": [{ "secret": "asc" }] },
+                        "output": "data.result"
+                    }}
+                }),
+            ]),
+        ),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dq-w2s", json!({ "data": {} })).await;
+    assert!(
+        is_rejection(status, &body),
+        "`sort` must respect the allowlist: {body}"
+    );
+}
+
+/// A column rename used to apply to the filter and silently not to the
+/// projection, so `fields: ["email"]` selected a column that does not exist.
+#[tokio::test]
+async fn projection_and_sort_honour_a_column_rename() {
+    let conn = "dq-w2r";
+    let app = sqlite_app(conn, "dq_w2r").await;
+
+    let schema = json!({ "entities": { "users": {
+        "physical": "w2r_users",
+        "columns": {
+            "id":    { "name": "user_pk" },
+            "email": { "name": "email_addr" }
+        }
+    }}});
+
+    common::create_and_activate_channel(
+        &app,
+        "ch-dq-w2r",
+        common::workflow_with_tasks(
+            "dq",
+            json!([
+                ddl(
+                    conn,
+                    "t_ddl",
+                    "CREATE TABLE IF NOT EXISTS w2r_users (user_pk INTEGER, email_addr TEXT)"
+                ),
+                ddl(
+                    conn,
+                    "t_seed",
+                    "INSERT INTO w2r_users VALUES (1, 'ada@x.io'), (2, 'grace@x.io')"
+                ),
+                json!({
+                    "id": "q", "name": "q",
+                    "function": { "name": "data_query", "input": {
+                        "connector": conn,
+                        "schema": schema,
+                        "query": {
+                            "source": "users",
+                            "fields": ["email"],
+                            "sort": [{ "email": "asc" }]
+                        },
+                        "output": "data.result"
+                    }}
+                }),
+            ]),
+        ),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dq-w2r", json!({ "data": {} })).await;
+    assert_eq!(status, StatusCode::OK, "body = {body}");
+    assert_eq!(
+        body["data"]["result"],
+        json!([{ "email_addr": "ada@x.io" }, { "email_addr": "grace@x.io" }]),
+        "the rename must reach projection and sort, not just the filter: {body}"
+    );
+}

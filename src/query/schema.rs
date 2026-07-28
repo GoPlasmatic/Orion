@@ -209,6 +209,25 @@ impl EntityRegistry {
         }
     }
 
+    /// Physical name for a column named by the *schema itself* — a relation's
+    /// join keys — rather than by a caller.
+    ///
+    /// Honours renames and [`validate_identifier`], deliberately **not** the
+    /// `queryable` / `writable` allowlist: those gate what a caller may name,
+    /// and a join key is structure the operator declared. This is the
+    /// distinction `physical_column` was reaching for before W3 — legitimate
+    /// here, illegitimate for a caller-supplied `returning`.
+    fn structural_column(&self, entity: &str, name: &str, at: &str) -> Result<String, QueryError> {
+        let physical = self
+            .entities
+            .get(entity)
+            .and_then(|e| e.columns.get(name))
+            .and_then(|c| c.name.clone())
+            .unwrap_or_else(|| name.to_string());
+        validate_identifier(&physical, at)?;
+        Ok(physical)
+    }
+
     /// Resolve a relation on `entity` to a physical [`RelRef`] plus the target
     /// entity name (the scope for the inner predicate). Undeclared relations are
     /// a clear error — relations are never inferred.
@@ -235,8 +254,13 @@ impl EntityRegistry {
             RelRef {
                 name: name.to_string(),
                 target_table: self.physical_table(&rel.to)?,
-                local: rel.local.clone(),
-                foreign: rel.foreign.clone(),
+                // Join keys are operator-declared structure, not caller input,
+                // so they honour renames and identifier rules but not the
+                // caller-facing `queryable` allowlist (W2). Before this they
+                // were passed through raw, so a renamed key column silently
+                // broke include grouping.
+                local: self.structural_column(entity, &rel.local, at)?,
+                foreign: self.structural_column(&rel.to, &rel.foreign, at)?,
                 through,
                 mongo: rel.mongo,
                 es: rel.es,

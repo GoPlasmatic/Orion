@@ -185,3 +185,51 @@ fn parse_u64(v: Option<&Json>, name: &str) -> Result<Option<u64>, QueryError> {
         }
     }
 }
+
+impl QuerySpec {
+    /// Replace every logical name in the projection and sort with its physical
+    /// name, honouring renames, the `queryable` allowlist, `unmapped` policy
+    /// and identifier rules — the same gate the filter already went through
+    /// (W2).
+    ///
+    /// `resolve_field` used to have exactly one call site, the filter lowerer.
+    /// `fields` and `sort` went to the backends as raw logical strings, so with
+    /// `"unmapped": "reject"` and `{"secret": {"queryable": false}}`,
+    /// `fields: ["secret"]` still emitted `SELECT "secret"` — the allowlist
+    /// protected the filter and nothing else. A column rename broke projection
+    /// and sort silently for the same reason.
+    ///
+    /// Applied once per translation, before any backend sees the spec, so no
+    /// renderer can receive a logical name.
+    pub fn resolve_names(&self, reg: &crate::query::EntityRegistry) -> Result<Self, QueryError> {
+        let mut out = self.clone();
+
+        for (i, field) in out.fields.iter_mut().enumerate() {
+            *field = reg
+                .resolve_field(&self.source, field, &format!("fields[{i}]"))?
+                .physical;
+        }
+        for (i, key) in out.sort.iter_mut().enumerate() {
+            key.field = reg
+                .resolve_field(&self.source, &key.field, &format!("sort[{i}]"))?
+                .physical;
+        }
+        // `include.fields` name columns on the *related* entity, so they
+        // resolve against the relation's target, not the root.
+        for inc in out.include.iter_mut() {
+            let target = reg
+                .resolve_relation(&self.source, &inc.relation, "include")?
+                .1;
+            for (i, field) in inc.fields.iter_mut().enumerate() {
+                *field = reg
+                    .resolve_field(
+                        &target,
+                        field,
+                        &format!("include.{}.fields[{i}]", inc.relation),
+                    )?
+                    .physical;
+            }
+        }
+        Ok(out)
+    }
+}
