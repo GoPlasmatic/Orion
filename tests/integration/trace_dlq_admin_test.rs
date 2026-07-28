@@ -172,7 +172,7 @@ async fn purge_removes_only_exhausted_entries() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(common::body_json(resp).await["purged"], 1);
+    assert_eq!(common::body_json(resp).await["data"]["purged"], 1);
 
     let resp = app
         .oneshot(common::json_request("GET", "/api/v1/admin/trace-dlq", None))
@@ -225,7 +225,7 @@ async fn purge_respects_the_age_bound() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(common::body_json(resp).await["purged"], 0);
+    assert_eq!(common::body_json(resp).await["data"]["purged"], 0);
 
     let resp = app
         .oneshot(common::json_request("GET", "/api/v1/admin/trace-dlq", None))

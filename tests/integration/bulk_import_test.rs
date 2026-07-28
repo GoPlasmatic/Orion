@@ -41,8 +41,8 @@ async fn channels_import_creates_each_item() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["imported"], 2);
-    assert_eq!(body["failed"], 0);
+    assert_eq!(body["data"]["imported"], 2);
+    assert_eq!(body["data"]["failed"], 0);
 }
 
 #[tokio::test]
@@ -74,10 +74,9 @@ async fn channels_import_dry_run_does_not_persist() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["dry_run"], true);
-    assert_eq!(body["would_create"], 1);
-    assert_eq!(body["would_fail"], 1);
-    assert_eq!(body["imported"], 0);
+    assert_eq!(body["data"]["dry_run"], true);
+    assert_eq!(body["data"]["imported"], 1);
+    assert_eq!(body["data"]["failed"], 1);
 
     // Confirm the would-be channel was NOT actually persisted.
     let resp = app
@@ -110,7 +109,7 @@ async fn connectors_import_creates_each_item() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["imported"], 2);
+    assert_eq!(body["data"]["imported"], 2);
 }
 
 #[tokio::test]
@@ -130,9 +129,9 @@ async fn connectors_import_dry_run_reports_validation_outcome() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["dry_run"], true);
-    assert_eq!(body["would_create"], 1);
-    assert_eq!(body["would_fail"], 1);
+    assert_eq!(body["data"]["dry_run"], true);
+    assert_eq!(body["data"]["imported"], 1);
+    assert_eq!(body["data"]["failed"], 1);
 }
 
 #[tokio::test]
@@ -167,10 +166,10 @@ async fn channels_import_dry_run_reports_enum_typo_per_item() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["dry_run"], true);
-    assert_eq!(body["would_create"], 1);
-    assert_eq!(body["would_fail"], 1);
-    let errors = body["errors"].as_array().unwrap();
+    assert_eq!(body["data"]["dry_run"], true);
+    assert_eq!(body["data"]["imported"], 1);
+    assert_eq!(body["data"]["failed"], 1);
+    let errors = body["data"]["errors"].as_array().unwrap();
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0]["index"], 1);
 }
@@ -204,8 +203,8 @@ async fn channels_import_real_run_skips_only_the_bad_enum_item() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["imported"], 1);
-    assert_eq!(body["failed"], 1);
+    assert_eq!(body["data"]["imported"], 1);
+    assert_eq!(body["data"]["failed"], 1);
 }
 
 #[tokio::test]
@@ -225,10 +224,10 @@ async fn connectors_import_dry_run_reports_enum_typo_per_item() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["dry_run"], true);
-    assert_eq!(body["would_create"], 1);
-    assert_eq!(body["would_fail"], 1);
-    let errors = body["errors"].as_array().unwrap();
+    assert_eq!(body["data"]["dry_run"], true);
+    assert_eq!(body["data"]["imported"], 1);
+    assert_eq!(body["data"]["failed"], 1);
+    let errors = body["data"]["errors"].as_array().unwrap();
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0]["index"], 1);
 }
@@ -253,9 +252,9 @@ async fn workflows_import_dry_run_does_not_persist() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["dry_run"], true);
-    assert_eq!(body["would_create"], 1);
-    assert_eq!(body["imported"], 0);
+    assert_eq!(body["data"]["dry_run"], true);
+    assert_eq!(body["data"]["imported"], 1);
+    assert_eq!(body["data"]["failed"], 0);
     // No row persisted.
     let resp = app
         .clone()

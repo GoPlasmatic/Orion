@@ -106,10 +106,10 @@ async fn test_breaker_trips_after_threshold() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["enabled"], json!(true));
+    assert_eq!(body["data"]["enabled"], json!(true));
 
     // The breakers field is a map of key -> state. Find one that is "open".
-    let breakers = body["breakers"]
+    let breakers = body["data"]["breakers"]
         .as_object()
         .expect("breakers should be an object");
     assert!(
@@ -165,7 +165,7 @@ async fn test_breaker_reset_via_admin_api() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let breakers = body["breakers"]
+    let breakers = body["data"]["breakers"]
         .as_object()
         .expect("breakers should be an object");
     // Find the key for our breaker (format is "channel:connector")
@@ -187,8 +187,8 @@ async fn test_breaker_reset_via_admin_api() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["reset"], json!(true));
-    assert_eq!(body["key"], json!(breaker_key));
+    assert_eq!(body["data"]["reset"], json!(true));
+    assert_eq!(body["data"]["key"], json!(breaker_key));
 
     // Verify it is now closed
     let resp = app
@@ -202,7 +202,7 @@ async fn test_breaker_reset_via_admin_api() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let breakers = body["breakers"]
+    let breakers = body["data"]["breakers"]
         .as_object()
         .expect("breakers should be an object");
     let state = breakers
@@ -249,7 +249,7 @@ async fn test_breaker_half_open_recovery() {
         .await
         .unwrap();
     let body = body_json(resp).await;
-    let breakers = body["breakers"].as_object().unwrap();
+    let breakers = body["data"]["breakers"].as_object().unwrap();
     let (key, state) = breakers
         .iter()
         .find(|(k, _)| k.contains("halfopen-api"))
@@ -289,7 +289,7 @@ async fn test_breaker_half_open_recovery() {
         .await
         .unwrap();
     let body = body_json(resp).await;
-    let breakers = body["breakers"].as_object().unwrap();
+    let breakers = body["data"]["breakers"].as_object().unwrap();
     // It may show "open" (re-opened after failed probe) or "half_open"
     // (if the state check didn't transition yet). Either way it should NOT be "closed".
     let breaker_key = breakers
@@ -317,7 +317,7 @@ async fn test_breaker_half_open_recovery() {
         .await
         .unwrap();
     let body = body_json(resp).await;
-    let breakers = body["breakers"].as_object().unwrap();
+    let breakers = body["data"]["breakers"].as_object().unwrap();
     let key = breakers
         .iter()
         .find(|(k, _)| k.contains("halfopen-api"))
@@ -336,7 +336,7 @@ async fn test_breaker_half_open_recovery() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["reset"], json!(true));
+    assert_eq!(body["data"]["reset"], json!(true));
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ async fn test_breaker_disabled_by_default() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     assert_eq!(
-        body["enabled"],
+        body["data"]["enabled"],
         json!(false),
         "Circuit breakers should be disabled by default"
     );

@@ -466,12 +466,12 @@ async fn test_engine_status_with_loaded_workflows() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert!(body["workflows_count"].as_i64().unwrap() >= 1);
-    assert!(body["active_workflows"].as_i64().unwrap() >= 1);
-    assert!(body.get("channels").is_some());
-    assert!(body.get("version").is_some());
-    assert!(body.get("uptime_seconds").is_some());
-    let channels = body["channels"].as_array().unwrap();
+    assert!(body["data"]["workflows_count"].as_i64().unwrap() >= 1);
+    assert!(body["data"]["active_workflows"].as_i64().unwrap() >= 1);
+    assert!(body["data"].get("channels").is_some());
+    assert!(body["data"].get("version").is_some());
+    assert!(body["data"].get("uptime_seconds").is_some());
+    let channels = body["data"]["channels"].as_array().unwrap();
     assert!(channels.iter().any(|c| c == "status-ch"));
 }
 
@@ -671,7 +671,7 @@ async fn test_validate_workflow_with_task_condition() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["valid"], true);
+    assert_eq!(body["data"]["valid"], true);
 }
 
 #[tokio::test]
@@ -705,7 +705,7 @@ async fn test_validate_workflow_with_connector_warning() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let warnings = body["warnings"].as_array().unwrap();
+    let warnings = body["data"]["warnings"].as_array().unwrap();
     let has_connector_warning = warnings
         .iter()
         .any(|w| w["message"].as_str().unwrap_or("").contains("not found"));
@@ -735,8 +735,8 @@ async fn test_validate_workflow_with_empty_name() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["valid"], false);
-    let errors = body["errors"].as_array().unwrap();
+    assert_eq!(body["data"]["valid"], false);
+    let errors = body["data"]["errors"].as_array().unwrap();
     let has_name_error = errors
         .iter()
         .any(|e| e["field"].as_str().unwrap_or("") == "name");
@@ -781,10 +781,10 @@ async fn test_workflow_test_with_metadata() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert!(body.get("matched").is_some());
-    assert!(body.get("trace").is_some());
-    assert!(body.get("output").is_some());
-    assert!(body.get("errors").is_some());
+    assert!(body["data"].get("matched").is_some());
+    assert!(body["data"].get("trace").is_some());
+    assert!(body["data"].get("output").is_some());
+    assert!(body["data"].get("errors").is_some());
 }
 
 #[tokio::test]

@@ -2120,7 +2120,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ValidationResponse"
+                  "$ref": "#/components/schemas/ValidationEnvelope"
                 }
               }
             }
@@ -3784,6 +3784,18 @@
             }
           },
           "tasks": {}
+        }
+      },
+      "ValidationEnvelope": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope (R17) around a [`ValidationResponse`]. Typed\nrather than a `json!` literal so the declared `body =` below cannot drift\nfrom what the handler actually sends.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ValidationResponse"
+          }
         }
       },
       "ValidationIssue": {

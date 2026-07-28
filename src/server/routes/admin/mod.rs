@@ -136,19 +136,17 @@ where
 }
 
 /// The `?dry_run=true` response envelope shared by all three import endpoints.
+///
+/// Same four fields as [`import_response`], distinguished only by
+/// `dry_run: true` (proposal R18). Pre-1.0 this returned six fields for two
+/// facts — `would_create`/`would_fail` alongside a hardcoded `imported: 0`
+/// and a `failed` that always equalled `would_fail`.
 pub(crate) fn dry_run_response(
-    would_create: u64,
+    would_import: u64,
     would_fail: u64,
     errors: Vec<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
-    axum::Json(json!({
-        "dry_run": true,
-        "would_create": would_create,
-        "would_fail": would_fail,
-        "imported": 0,
-        "failed": would_fail,
-        "errors": errors,
-    }))
+    import_envelope(true, would_import, would_fail, errors)
 }
 
 /// The real-import response envelope shared by all three import endpoints.
@@ -157,10 +155,22 @@ pub(crate) fn import_response(
     failed: u64,
     errors: Vec<serde_json::Value>,
 ) -> axum::Json<serde_json::Value> {
+    import_envelope(false, imported, failed, errors)
+}
+
+fn import_envelope(
+    dry_run: bool,
+    imported: u64,
+    failed: u64,
+    errors: Vec<serde_json::Value>,
+) -> axum::Json<serde_json::Value> {
     axum::Json(json!({
-        "imported": imported,
-        "failed": failed,
-        "errors": errors,
+        "data": {
+            "dry_run": dry_run,
+            "imported": imported,
+            "failed": failed,
+            "errors": errors,
+        }
     }))
 }
 

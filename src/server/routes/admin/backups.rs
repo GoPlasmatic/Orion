@@ -99,13 +99,11 @@ pub(crate) async fn create_backup(
         &filename,
     );
 
-    Ok(Json(json!({
-        "data": {
-            "filename": filename,
-            "path": backup_path_str,
-            "size_bytes": metadata.len(),
-            "created_at": chrono::Utc::now().to_rfc3339(),
-        }
+    Ok(data_response(json!({
+        "filename": filename,
+        "path": backup_path_str,
+        "size_bytes": metadata.len(),
+        "created_at": chrono::Utc::now().to_rfc3339(),
     })))
 }
 

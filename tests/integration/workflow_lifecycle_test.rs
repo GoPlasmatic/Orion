@@ -68,18 +68,18 @@ async fn test_dry_run_with_matching_condition() {
     let body = body_json(resp).await;
 
     // Should match (condition is true)
-    assert_eq!(body["matched"], true);
+    assert_eq!(body["data"]["matched"], true);
 
     // Output should contain the computed value
-    assert_eq!(body["output"]["computed"], 42);
+    assert_eq!(body["data"]["output"]["computed"], 42);
 
     // Trace should be present and non-empty
-    assert!(body["trace"].is_object());
-    let steps = body["trace"]["steps"].as_array().unwrap();
+    assert!(body["data"]["trace"].is_object());
+    let steps = body["data"]["trace"]["steps"].as_array().unwrap();
     assert!(!steps.is_empty(), "trace should contain at least one step");
 
     // No errors
-    let errors = body["errors"].as_array().unwrap();
+    let errors = body["data"]["errors"].as_array().unwrap();
     assert!(errors.is_empty(), "should have no errors");
 }
 
@@ -146,7 +146,7 @@ async fn test_dry_run_unmatched_condition() {
     let body = body_json(resp).await;
 
     // The trace should contain a workflow-level skip step
-    let steps = body["trace"]["steps"].as_array().unwrap();
+    let steps = body["data"]["trace"]["steps"].as_array().unwrap();
     assert!(!steps.is_empty(), "trace should have at least one step");
 
     // All steps should be "skipped" — no task was actually executed
@@ -165,7 +165,9 @@ async fn test_dry_run_unmatched_condition() {
 
     // Output should be empty (no data was produced)
     assert!(
-        body["output"].as_object().is_none_or(|o| o.is_empty()),
+        body["data"]["output"]
+            .as_object()
+            .is_none_or(|o| o.is_empty()),
         "output should be empty when workflow is skipped"
     );
 }
@@ -226,10 +228,10 @@ async fn test_dry_run_with_connector_functions() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
 
-    assert_eq!(body["matched"], true);
+    assert_eq!(body["data"]["matched"], true);
 
     // No errors from the cache_write execution
-    let errors = body["errors"].as_array().unwrap();
+    let errors = body["data"]["errors"].as_array().unwrap();
     assert!(
         errors.is_empty(),
         "cache_write should not produce errors: {errors:?}"
@@ -480,12 +482,12 @@ async fn test_import_export_round_trip() {
     assert_eq!(resp.status(), StatusCode::OK);
     let import_body = body_json(resp).await;
     assert_eq!(
-        import_body["imported"].as_i64().unwrap(),
+        import_body["data"]["imported"].as_i64().unwrap(),
         exported.len() as i64,
         "all exported workflows should import successfully"
     );
-    assert_eq!(import_body["failed"], 0);
-    assert!(import_body["errors"].as_array().unwrap().is_empty());
+    assert_eq!(import_body["data"]["failed"], 0);
+    assert!(import_body["data"]["errors"].as_array().unwrap().is_empty());
 
     // Verify workflows exist on app2 as drafts
     let resp = app2
@@ -535,8 +537,8 @@ async fn test_validate_endpoint() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["valid"], true);
-    assert!(body["errors"].as_array().unwrap().is_empty());
+    assert_eq!(body["data"]["valid"], true);
+    assert!(body["data"]["errors"].as_array().unwrap().is_empty());
 
     // --- Empty name ---
     let resp = app
@@ -554,8 +556,8 @@ async fn test_validate_endpoint() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["valid"], false);
-    let errors = body["errors"].as_array().unwrap();
+    assert_eq!(body["data"]["valid"], false);
+    let errors = body["data"]["errors"].as_array().unwrap();
     assert!(
         errors.iter().any(|e| e["field"] == "name"),
         "should have error on 'name' field: {errors:?}"
@@ -577,8 +579,8 @@ async fn test_validate_endpoint() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["valid"], false);
-    let errors = body["errors"].as_array().unwrap();
+    assert_eq!(body["data"]["valid"], false);
+    let errors = body["data"]["errors"].as_array().unwrap();
     assert!(
         errors.iter().any(|e| e["field"] == "tasks"),
         "should have error on 'tasks' field: {errors:?}"
@@ -603,8 +605,8 @@ async fn test_validate_endpoint() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["valid"], false);
-    let errors = body["errors"].as_array().unwrap();
+    assert_eq!(body["data"]["valid"], false);
+    let errors = body["data"]["errors"].as_array().unwrap();
     let has_dup_error = errors.iter().any(|e| {
         e["message"]
             .as_str()
@@ -635,8 +637,8 @@ async fn test_validate_endpoint() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["valid"], false);
-    let errors = body["errors"].as_array().unwrap();
+    assert_eq!(body["data"]["valid"], false);
+    let errors = body["data"]["errors"].as_array().unwrap();
     let has_name_error = errors
         .iter()
         .any(|e| e["field"].as_str().unwrap_or("").contains("name"));

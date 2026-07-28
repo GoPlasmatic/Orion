@@ -9,6 +9,7 @@ mod common;
 
 mod admin_channels_test;
 mod admin_connectors_test;
+mod admin_envelope_test;
 mod admin_workflows_test;
 mod async_traces_test;
 mod audit_log_test;

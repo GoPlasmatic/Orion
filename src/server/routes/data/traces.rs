@@ -10,6 +10,7 @@ use crate::errors::OrionError;
 use crate::server::extract::OrionQuery;
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::server::routes::openapi::ErrorResponse;
+use crate::server::routes::response_helpers::{data_response, paginated_response};
 use crate::server::state::AppState;
 use crate::storage::repositories::traces::TraceFilter;
 
@@ -60,12 +61,12 @@ pub(crate) async fn list_traces(
             })
         })
         .collect();
-    Ok(Json(json!({
-        "data": rows,
-        "total": result.total,
-        "limit": result.limit,
-        "offset": result.offset,
-    })))
+    Ok(paginated_response(
+        rows,
+        result.total,
+        result.limit,
+        result.offset,
+    ))
 }
 
 /// Query parameters for `GET /traces/{id}`.
@@ -184,5 +185,5 @@ pub(crate) async fn get_trace(
         response["task_trace_json"] = v;
     }
 
-    Ok(Json(response))
+    Ok(data_response(response))
 }

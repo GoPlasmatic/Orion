@@ -148,7 +148,7 @@ pub(crate) async fn purge_trace_dlq(
         "trace_dlq",
         &format!("older_than_hours={}", req.older_than_hours),
     );
-    Ok(Json(json!({
+    Ok(data_response(json!({
         "purged": purged,
         "older_than_hours": req.older_than_hours,
     })))

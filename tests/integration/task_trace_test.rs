@@ -53,7 +53,7 @@ async fn dry_run_test_endpoint_returns_per_step_message_snapshots() {
 
     // dataflow_rs::ExecutionTrace exposes steps[] with per-step task_id +
     // message snapshot. Confirm the shape so workflow authors can rely on it.
-    let steps = body["trace"]["steps"]
+    let steps = body["data"]["trace"]["steps"]
         .as_array()
         .expect("trace.steps must be an array");
     assert!(
@@ -153,7 +153,7 @@ async fn sync_request_with_task_details_persists_task_trace_json() {
     assert_eq!(resp.status(), StatusCode::OK);
     let detail = body_json(resp).await;
     // The captured ExecutionTrace must be persisted and served on the detail.
-    let parsed = &detail["task_trace_json"];
+    let parsed = &detail["data"]["task_trace_json"];
     let steps = parsed["steps"]
         .as_array()
         .expect("task_trace_json must be populated when task_details=true");
@@ -215,7 +215,8 @@ async fn sync_request_without_task_details_omits_task_trace_json() {
         .unwrap();
     let detail = body_json(resp).await;
     assert!(
-        detail.get("task_trace_json").is_none() || detail["task_trace_json"].is_null(),
+        detail["data"].get("task_trace_json").is_none()
+            || detail["data"]["task_trace_json"].is_null(),
         "task_trace_json should be omitted when task_details is unset, detail={detail:?}"
     );
 }
@@ -274,7 +275,7 @@ async fn sync_get_trace_endpoint_returns_task_trace_json() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let steps = body["task_trace_json"]["steps"]
+    let steps = body["data"]["task_trace_json"]["steps"]
         .as_array()
         .expect("single-trace GET must return task_trace_json.steps when task_details=true");
     assert!(!steps.is_empty());

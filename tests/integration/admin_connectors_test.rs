@@ -240,8 +240,8 @@ async fn test_circuit_breaker_list_endpoint() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["enabled"], false);
-    assert!(body.get("breakers").is_some());
+    assert_eq!(body["data"]["enabled"], false);
+    assert!(body["data"].get("breakers").is_some());
 }
 
 #[tokio::test]

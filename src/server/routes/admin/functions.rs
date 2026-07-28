@@ -3,9 +3,10 @@
 //! IDEs, docs) that needs to know what each workflow function accepts.
 
 use axum::Json;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::errors::OrionError;
+use crate::server::routes::response_helpers::data_response;
 
 #[utoipa::path(
     get,
@@ -18,5 +19,5 @@ use crate::errors::OrionError;
 #[tracing::instrument]
 pub(crate) async fn list_functions() -> Result<Json<Value>, OrionError> {
     let schemas = crate::engine::functions::schema::registry();
-    Ok(Json(json!({ "data": schemas })))
+    Ok(data_response(schemas))
 }

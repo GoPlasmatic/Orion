@@ -352,13 +352,15 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows/<workflow-id>/test 
 
 ```json
 {
-  "matched": true,
-  "trace": { "steps": [
-    { "task_id": "parse", "result": "executed" },
-    { "task_id": "high_risk", "result": "executed" },
-    { "task_id": "normal_risk", "result": "skipped" }
-  ]},
-  "output": { "txn": { "amount": 50000, "currency": "USD", "risk_level": "high", "requires_review": true } }
+  "data": {
+    "matched": true,
+    "trace": { "steps": [
+      { "task_id": "parse", "result": "executed" },
+      { "task_id": "high_risk", "result": "executed" },
+      { "task_id": "normal_risk", "result": "skipped" }
+    ]},
+    "output": { "txn": { "amount": 50000, "currency": "USD", "risk_level": "high", "requires_review": true } }
+  }
 }
 ```
 

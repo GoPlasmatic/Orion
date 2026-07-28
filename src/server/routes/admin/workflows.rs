@@ -402,7 +402,7 @@ pub(crate) async fn test_workflow(
 
     let trace_value = serde_json::to_value(&trace)?;
 
-    Ok(Json(json!({
+    Ok(data_response(json!({
         "matched": matched,
         "trace": trace_value,
         "output": message.data(),
@@ -509,26 +509,30 @@ pub(crate) struct ValidationResponse {
     warnings: Vec<ValidationIssue>,
 }
 
+/// The `{"data": …}` envelope (R17) around a [`ValidationResponse`]. Typed
+/// rather than a `json!` literal so the declared `body =` below cannot drift
+/// from what the handler actually sends.
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ValidationEnvelope {
+    data: ValidationResponse,
+}
+
 #[utoipa::path(
     post,
     path = "/api/v1/admin/workflows/validate",
     tag = "Workflows",
     request_body = CreateWorkflowRequest,
     responses(
-        (status = 200, description = "Validation result", body = ValidationResponse),
+        (status = 200, description = "Validation result", body = ValidationEnvelope),
     )
 )]
 #[tracing::instrument(skip(state, req))]
 pub(crate) async fn validate_workflow(
     State(state): State<AppState>,
     OrionJson(req): OrionJson<CreateWorkflowRequest>,
-) -> Result<Json<Value>, OrionError> {
-    let result = run_validation(&req, &state).await;
-    Ok(Json(json!({
-        "valid": result.valid,
-        "errors": result.errors,
-        "warnings": result.warnings,
-    })))
+) -> Result<Json<ValidationEnvelope>, OrionError> {
+    let data = run_validation(&req, &state).await;
+    Ok(Json(ValidationEnvelope { data }))
 }
 
 async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> ValidationResponse {

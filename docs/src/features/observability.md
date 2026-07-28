@@ -144,10 +144,12 @@ readinessProbe:
 
 ```json
 {
-  "version": "0.2.0",
-  "uptime_seconds": 3600,
-  "workflows_count": 42,
-  "active_workflows": 38,
-  "channels": ["orders", "events", "alerts"]
+  "data": {
+    "version": "1.0.0",
+    "uptime_seconds": 3600,
+    "workflows_count": 42,
+    "active_workflows": 38,
+    "channels": ["orders", "events", "alerts"]
+  }
 }
 ```

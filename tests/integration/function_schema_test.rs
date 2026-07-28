@@ -125,8 +125,8 @@ async fn validate_endpoint_returns_schema_errors_in_errors_array() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["valid"], false);
-    let errs = body["errors"].as_array().unwrap();
+    assert_eq!(body["data"]["valid"], false);
+    let errs = body["data"]["errors"].as_array().unwrap();
     let paths: Vec<&str> = errs
         .iter()
         .map(|e| e["field"].as_str().unwrap_or(""))

@@ -308,7 +308,7 @@ pub(crate) async fn list_circuit_breakers(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, OrionError> {
     let states = state.connector_registry.circuit_breaker_states().await;
-    Ok(Json(json!({
+    Ok(data_response(json!({
         "enabled": state.connector_registry.circuit_breaker_enabled(),
         "breakers": states,
     })))
@@ -348,7 +348,7 @@ pub(crate) async fn reset_circuit_breaker(
                 .last_seen_breaker_epoch
                 .fetch_max(breaker_epoch, std::sync::atomic::Ordering::AcqRel);
         }
-        Ok(Json(json!({ "reset": true, "key": key })))
+        Ok(data_response(json!({ "reset": true, "key": key })))
     } else {
         Err(OrionError::NotFound(format!(
             "Circuit breaker '{key}' not found"

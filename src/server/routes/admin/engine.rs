@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 
 use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
+use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
 
 use super::audit_and_reload;
@@ -39,7 +40,7 @@ pub(crate) async fn engine_status(
 
     let uptime = chrono::Utc::now() - state.start_time;
 
-    Ok(Json(json!({
+    Ok(data_response(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "uptime_seconds": uptime.num_seconds(),
         "workflows_count": workflows.len(),
@@ -66,7 +67,7 @@ pub(crate) async fn engine_reload(
     let engine = crate::engine::acquire_engine_read(&state.engine).await;
     let workflows_count = engine.workflows().len();
 
-    Ok(Json(json!({
+    Ok(data_response(json!({
         "reloaded": true,
         "workflows_count": workflows_count,
     })))

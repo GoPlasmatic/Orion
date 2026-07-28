@@ -111,16 +111,18 @@ The response includes a full execution trace showing which tasks ran and which w
 
 ```json
 {
-  "matched": true,
-  "trace": {
-    "steps": [
-      { "task_id": "parse", "result": "executed" },
-      { "task_id": "high_risk", "result": "executed" },
-      { "task_id": "normal_risk", "result": "skipped" }
-    ]
-  },
-  "output": {
-    "txn": { "amount": 50000, "risk_level": "high", "requires_review": true }
+  "data": {
+    "matched": true,
+    "trace": {
+      "steps": [
+        { "task_id": "parse", "result": "executed" },
+        { "task_id": "high_risk", "result": "executed" },
+        { "task_id": "normal_risk", "result": "skipped" }
+      ]
+    },
+    "output": {
+      "txn": { "amount": 50000, "risk_level": "high", "requires_review": true }
+    }
   }
 }
 ```

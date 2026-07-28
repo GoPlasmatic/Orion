@@ -433,6 +433,74 @@ orion-server migrate --dry-run
 
 ## 7. Smaller behaviour changes
 
+### Every admin response is now wrapped in `data`
+
+**What changed.** Three response envelopes used to coexist on the admin plane:
+`{"data": …}`, the paginated `{data, total, limit, offset}`, and — from ten
+handlers — the fields bare at the top level. Now there is one. Every admin 2xx
+body puts its payload under `data`; list endpoints add the three pagination
+counters alongside it and nothing else.
+
+**How you'll notice.** Ten endpoints return a body one level deeper than before:
+
+| Endpoint | Was | Now |
+|---|---|---|
+| `GET /admin/engine/status` | `{version, uptime_seconds, …}` | `{"data": {…}}` |
+| `POST /admin/engine/reload` | `{reloaded, workflows_count}` | `{"data": {…}}` |
+| `GET /admin/connectors/circuit-breakers` | `{enabled, breakers}` | `{"data": {…}}` |
+| `POST /admin/connectors/circuit-breakers/{key}` | `{reset, key}` | `{"data": {…}}` |
+| `POST /admin/trace-dlq/purge` | `{purged, older_than_hours}` | `{"data": {…}}` |
+| `POST /admin/workflows/{id}/test` | `{matched, trace, output, errors}` | `{"data": {…}}` |
+| `POST /admin/workflows/validate` | `{valid, errors, warnings}` | `{"data": {…}}` |
+| `POST /admin/{workflows,channels,connectors}/import` | `{imported, failed, errors}` | `{"data": {…}}` |
+| `GET /admin/traces/{id}` | bare trace object | `{"data": {…}}` |
+
+Everything already returning `{"data": …}` — all CRUD reads and writes, every
+list endpoint, `GET /admin/functions`, `POST`/`GET /admin/backups`,
+`GET /admin/traces` — is byte-identical. Only the ten rows above changed.
+
+**What to do.** Add `.data` to the affected call sites:
+
+```bash
+# before
+curl -s localhost:8080/api/v1/admin/engine/status | jq '.workflows_count'
+# after
+curl -s localhost:8080/api/v1/admin/engine/status | jq '.data.workflows_count'
+```
+
+Error bodies are unaffected — they stay `{"error": {code, message}}`, so
+`.data` present and `.error` present remain mutually exclusive. The data plane
+is unaffected too: `POST /api/v1/data/…` still answers
+`{"status": "ok", "data": …}` as before.
+
+The `orion-server dry-run` CLI subcommand prints the **unwrapped** shape
+(`{matched, trace, output, errors}`) — it writes JSON to stdout for `jq`, not
+an HTTP response, so it gains nothing from an envelope.
+
+### Bulk import reports dry runs in the same fields as real runs
+
+**What changed.** `POST /admin/{workflows,channels,connectors}/import?dry_run=true`
+used to return six fields for two facts: `would_create` and `would_fail`
+alongside a hardcoded `imported: 0` and a `failed` that always equalled
+`would_fail`. Both modes now return the same four fields.
+
+```jsonc
+// before, ?dry_run=true
+{ "dry_run": true, "would_create": 12, "would_fail": 1, "imported": 0, "failed": 1, "errors": [...] }
+// after, ?dry_run=true          (and wrapped in `data`, per the section above)
+{ "data": { "dry_run": true, "imported": 12, "failed": 1, "errors": [...] } }
+// after, real run
+{ "data": { "dry_run": false, "imported": 12, "failed": 1, "errors": [...] } }
+```
+
+**What to do.** Read `imported`/`failed` in both modes and branch on `dry_run`.
+The one trap: in a dry run `imported` is now the count that *would* be created,
+where it used to be a constant `0`. Any check of the form `if imported == 0` as
+a proxy for "this was a dry run" will now be wrong — test `dry_run` instead.
+
+**Not changed:** all three imports still return **200** even when every item
+failed, so check `failed` rather than the status code.
+
 ### `response_path` is now called `output`
 
 **What changed.** Eight of the ten connector functions named their destination

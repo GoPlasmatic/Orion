@@ -2,6 +2,22 @@
 
 All admin endpoints are under `/api/v1/admin/`. When admin authentication is enabled, requests must include a valid bearer token or API key.
 
+## Success Response Format
+
+Every admin 2xx body puts its payload under a top-level `data` key — one shape, so one unwrapping function works everywhere:
+
+```json
+{ "data": { "workflow_id": "wf_...", "name": "Order Processing", "...": "..." } }
+```
+
+List endpoints add the three pagination counters alongside it, and nothing else:
+
+```json
+{ "data": [ ... ], "total": 137, "limit": 50, "offset": 0 }
+```
+
+This is uniform as of 1.0. Before that, ten handlers — engine status and reload, the circuit-breaker list and reset, DLQ purge, workflow test and validate, the three bulk imports — returned their fields bare at the top level. See the [upgrade guide](../getting-started/upgrading.md) for the full list.
+
 ## Channels
 
 | Method | Path | Description |

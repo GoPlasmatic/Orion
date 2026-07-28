@@ -545,7 +545,7 @@ async fn test_audit_import() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["imported"], 2);
+    assert_eq!(body["data"]["imported"], 2);
 
     wait_for_audit_entries(&app, &[("workflow", "import")]).await;
 

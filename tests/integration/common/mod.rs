@@ -653,6 +653,10 @@ pub async fn submit_async(
 /// `token` is the `trace_token` from the async 202; `None` works only for
 /// tokenless traces (sync rows) or when presenting admin credentials is
 /// unnecessary (auth disabled).
+///
+/// Returns the **unwrapped** trace — the `data` envelope every admin 2xx
+/// carries since R17 is stripped here so callers assert on trace fields.
+/// The envelope itself is pinned by `admin_envelope_test`.
 pub async fn poll_trace_until_done(
     app: &axum::Router,
     trace_id: &str,
@@ -672,7 +676,8 @@ pub async fn poll_trace_until_done(
         let req = builder.body(Body::empty()).unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
-        body = body_json(resp).await;
+        let mut envelope = body_json(resp).await;
+        body = envelope["data"].take();
         let status = body["status"].as_str().unwrap_or("");
         if status == "completed" || status == "failed" {
             break;

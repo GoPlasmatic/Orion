@@ -25,6 +25,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **One response envelope across the admin plane.** Every admin 2xx body now
+  carries its payload under a top-level `data` key; list endpoints add `total`,
+  `limit` and `offset` alongside it and nothing else. Three envelopes used to
+  coexist, and ten handlers returned their fields bare at the top level:
+
+  | Endpoint | Was | Now |
+  |---|---|---|
+  | `GET /admin/engine/status` | `{version, uptime_seconds, …}` | `{"data": {…}}` |
+  | `POST /admin/engine/reload` | `{reloaded, workflows_count}` | `{"data": {…}}` |
+  | `GET /admin/connectors/circuit-breakers` | `{enabled, breakers}` | `{"data": {…}}` |
+  | `POST /admin/connectors/circuit-breakers/{key}` | `{reset, key}` | `{"data": {…}}` |
+  | `POST /admin/trace-dlq/purge` | `{purged, older_than_hours}` | `{"data": {…}}` |
+  | `POST /admin/workflows/{id}/test` | `{matched, trace, output, errors}` | `{"data": {…}}` |
+  | `POST /admin/workflows/validate` | `{valid, errors, warnings}` | `{"data": {…}}` |
+  | `POST /admin/{workflows,channels,connectors}/import` | `{imported, failed, errors}` | `{"data": {…}}` |
+  | `GET /admin/traces/{id}` | bare trace object | `{"data": {…}}` |
+
+  `POST /admin/backups` and `GET /admin/functions` hand-rolled the `{"data": …}`
+  wrapper and are unchanged on the wire; `GET /admin/traces` hand-rolled the
+  pagination envelope and is likewise unchanged. All three now go through the
+  shared helpers, so they cannot drift again.
+
+- **Bulk import returns the same four fields whether or not it is a dry run.**
+  `?dry_run=true` used to answer with six fields for two facts —
+  `would_create` and `would_fail` next to a hardcoded `imported: 0` and a
+  `failed` that always equalled `would_fail`. Both modes now return
+  `{dry_run, imported, failed, errors}`; in a dry run `imported` is the count
+  that *would* be created rather than a constant 0. Read `dry_run` to tell the
+  modes apart.
+
+  Unchanged: all three imports still return **200** even when every item
+  failed. Callers must check `failed`, not the status code.
+
 - **The trace read endpoints moved to the admin plane:**
   `GET /api/v1/data/traces` → `GET /api/v1/admin/traces`, and
   `GET /api/v1/data/traces/{id}` → `GET /api/v1/admin/traces/{id}`. **No
