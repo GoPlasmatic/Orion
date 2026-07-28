@@ -166,6 +166,17 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                         None,
                     )
                 })?;
+            // A target absent from the registry is not an active channel.
+            // Refuse loudly: `process_message_for_channel` on an unknown
+            // channel matches zero workflows and reports success, which
+            // would silently drop the call (a typo'd channel name would
+            // "work" with response_path never populated).
+            if target_runtime.is_none() {
+                return Err(DataflowError::function_execution(
+                    format!("channel_call to '{target_channel}': channel not found or not active"),
+                    None,
+                ));
+            }
             crate::channel::guards::validate_input(
                 &target_channel,
                 &target_runtime,
