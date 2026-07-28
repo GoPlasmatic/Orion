@@ -9,69 +9,11 @@ use orion::config::{AppConfig, EngineConfig};
 use orion::connector::circuit_breaker::CircuitBreakerConfig;
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers — the mock server / connector / workflow fixtures live in `common`
+// (shared with the cluster breaker fan-out test).
 // ---------------------------------------------------------------------------
 
-/// Spin up a mock HTTP server that always returns 500 Internal Server Error.
-async fn start_failing_server() -> std::net::SocketAddr {
-    let mock_app = axum::Router::new().route(
-        "/fail",
-        axum::routing::post(|| async {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": "boom"})),
-            )
-        }),
-    );
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, mock_app).await.unwrap();
-    });
-    addr
-}
-
-/// Create an HTTP connector pointing at the given address with zero retries.
-async fn create_http_connector(app: &axum::Router, name: &str, addr: std::net::SocketAddr) {
-    common::create_connector(
-        app,
-        json!({
-            "id": name,
-            "name": name,
-            "connector_type": "http",
-            "config": {
-                "type": "http",
-                "url": format!("http://{}", addr),
-                "retry": {"max_retries": 0, "retry_delay_ms": 10},
-                "allow_private_urls": true
-            }
-        }),
-    )
-    .await;
-}
-
-/// Build a workflow whose single task calls http_call on the given connector
-/// to POST /fail.
-fn failing_http_workflow(name: &str, connector: &str) -> serde_json::Value {
-    common::workflow_with_tasks(
-        name,
-        json!([{
-            "id": "t1",
-            "name": "Call failing endpoint",
-            "function": {
-                "name": "http_call",
-                "input": {
-                    "connector": connector,
-                    "method": "POST",
-                    "path": "/fail",
-                    "body": {"test": true},
-                    "response_path": "data.result",
-                    "timeout_ms": 5000
-                }
-            }
-        }]),
-    )
-}
+use crate::common::{create_http_connector, failing_http_workflow, start_failing_server};
 
 /// Build an AppConfig with circuit breakers enabled and the given parameters.
 fn cb_config(threshold: u32, recovery_secs: u64) -> AppConfig {

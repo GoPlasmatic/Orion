@@ -395,6 +395,20 @@ pub async fn create_and_activate_channel_with_config(
     workflow_json: serde_json::Value,
     channel_config: serde_json::Value,
 ) -> (String, String) {
+    let (_channel_id, workflow_id) =
+        create_and_activate_channel_full(app, channel_name, workflow_json, channel_config).await;
+    (channel_name.to_string(), workflow_id)
+}
+
+/// Like [`create_and_activate_channel_with_config`] but returns
+/// `(channel_id, workflow_id)` — for tests that drive status changes or
+/// deletes against the channel id (e.g. the cluster propagation tests).
+pub async fn create_and_activate_channel_full(
+    app: &axum::Router,
+    channel_name: &str,
+    workflow_json: serde_json::Value,
+    channel_config: serde_json::Value,
+) -> (String, String) {
     // Create workflow
     let resp = app
         .clone()
@@ -455,7 +469,75 @@ pub async fn create_and_activate_channel_with_config(
         .unwrap();
     assert_eq!(resp.status(), axum::http::StatusCode::OK);
 
-    (channel_name.to_string(), workflow_id)
+    (channel_id, workflow_id)
+}
+
+// ============================================================
+// Circuit-breaker fixtures (shared by circuit_breaker_test and the
+// cluster breaker fan-out test)
+// ============================================================
+
+/// Spin up a mock HTTP server that always returns 500 Internal Server Error.
+pub async fn start_failing_server() -> std::net::SocketAddr {
+    let mock_app = axum::Router::new().route(
+        "/fail",
+        axum::routing::post(|| async {
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({"error": "boom"})),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, mock_app).await.unwrap();
+    });
+    addr
+}
+
+/// Create an HTTP connector pointing at the given address with zero retries.
+/// `allow_private_urls` is required — SSRF validation refuses loopback
+/// targets otherwise.
+pub async fn create_http_connector(app: &axum::Router, name: &str, addr: std::net::SocketAddr) {
+    create_connector(
+        app,
+        serde_json::json!({
+            "id": name,
+            "name": name,
+            "connector_type": "http",
+            "config": {
+                "type": "http",
+                "url": format!("http://{}", addr),
+                "retry": {"max_retries": 0, "retry_delay_ms": 10},
+                "allow_private_urls": true
+            }
+        }),
+    )
+    .await;
+}
+
+/// Build a workflow whose single task calls http_call on the given connector
+/// to POST /fail.
+pub fn failing_http_workflow(name: &str, connector: &str) -> serde_json::Value {
+    workflow_with_tasks(
+        name,
+        serde_json::json!([{
+            "id": "t1",
+            "name": "Call failing endpoint",
+            "function": {
+                "name": "http_call",
+                "input": {
+                    "connector": connector,
+                    "method": "POST",
+                    "path": "/fail",
+                    "body": {"test": true},
+                    "response_path": "data.result",
+                    "timeout_ms": 5000
+                }
+            }
+        }]),
+    )
 }
 
 /// Build a POST request with a custom Idempotency-Key header.
