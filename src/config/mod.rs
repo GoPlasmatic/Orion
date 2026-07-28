@@ -45,7 +45,7 @@ use crate::errors::OrionError;
 /// produced (F36). `config_docs_drift_test` asserts the two agree for every
 /// setting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
     /// Deployment environment (e.g. "development", "production").
     /// Controls safety checks like CORS wildcard rejection.
@@ -107,7 +107,7 @@ impl AppConfig {
 
 /// Controls which channels an Orion instance loads from the database.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ChannelLoadingConfig {
     /// Glob patterns for channels to include. Empty means include all.
     pub include: Vec<String>,
@@ -195,6 +195,79 @@ format = "json"
     fn test_load_config_nonexistent_file() {
         let result = load_config(Some("/nonexistent/path/config.toml"));
         assert!(result.is_err());
+    }
+
+    // -- C4b: unknown keys are a hard error, not a silent default --
+    //
+    // Every config struct is `#[serde(default)]`, so before 1.0 a misspelled
+    // key simply did not deserialize and the field kept its default. There is
+    // no effective-config dump to notice from, which made a typo in a
+    // *security* setting fail open and silent. These tests pin the three
+    // shapes a typo actually takes.
+
+    /// A misspelled key inside a real section must name the offending key.
+    #[test]
+    fn misspelled_key_is_rejected() {
+        let err = toml::from_str::<AppConfig>("[server]\nwrokers = 4\n")
+            .expect_err("a typo'd key must not deserialize to the default");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("wrokers"),
+            "the error must name the unknown key so it can be found, got: {msg}"
+        );
+    }
+
+    /// A misspelled *section* is caught by `deny_unknown_fields` on AppConfig
+    /// itself — otherwise an entire block of settings silently does nothing.
+    #[test]
+    fn misspelled_section_is_rejected() {
+        let err = toml::from_str::<AppConfig>("[serverr]\nport = 3000\n")
+            .expect_err("a typo'd section must not be ignored");
+        assert!(err.to_string().contains("serverr"));
+    }
+
+    /// The case that motivated this: a typo in an auth setting used to leave
+    /// the guard at its default while the operator believed it was set.
+    #[test]
+    fn misspelled_security_key_is_rejected() {
+        let err = toml::from_str::<AppConfig>("[admin_auth]\nenable = true\n")
+            .expect_err("`enable` is not `enabled` and must not silently disable admin auth");
+        assert!(err.to_string().contains("enable"));
+    }
+
+    /// Nested sections carry the attribute too, not just top-level ones.
+    #[test]
+    fn misspelled_nested_key_is_rejected() {
+        let err = toml::from_str::<AppConfig>("[server.tls]\nenabld = true\n")
+            .expect_err("nested structs must reject unknown keys as well");
+        assert!(err.to_string().contains("enabld"));
+    }
+
+    /// The flip side: everything the shipped example documents must still
+    /// load. `deny_unknown_fields` is only safe if the docs are accurate.
+    #[test]
+    fn documented_keys_still_parse() {
+        let toml_str = r#"
+[server]
+host = "127.0.0.1"
+port = 3000
+
+[server.tls]
+enabled = false
+
+[admin_auth]
+enabled = true
+api_keys = ["0123456789abcdef0123456789abcdef"]
+
+[rate_limit]
+enabled = true
+
+[rate_limit.endpoints]
+admin_rps = 20
+"#;
+        let config: AppConfig = toml::from_str(toml_str).expect("documented keys must parse");
+        assert_eq!(config.server.port, 3000);
+        assert!(config.admin_auth.enabled);
     }
 
     /// Helper for tests below: writes `content` to a unique temp file

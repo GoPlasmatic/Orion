@@ -12,8 +12,10 @@
 #      levels): ORION_SERVER__PORT=3000, ORION_STORAGE__URL=..., and so on.
 #      Env vars win over this file. Every setting's variable is listed in
 #      docs/src/configuration/reference.md.
-#   2. Placeholders inside this file: `${VAR}` (required — startup fails if
-#      unset) or `${VAR:-default}` (optional). `$$` escapes a literal `$`.
+#   2. Placeholders inside this file: `$${VAR}` (required — startup fails if
+#      unset) or `$${VAR:-default}` (optional). `$$` escapes a literal `$`,
+#      which is why the two names above are written with a doubled `$`:
+#      substitution runs over the raw file text, comments included.
 #      The same substitution runs on connector `config_json` blobs at startup,
 #      so secrets stay out of the database:
 #         [storage]
@@ -183,7 +185,7 @@
 # security_protocol = "sasl_ssl"     # plaintext | ssl | sasl_plaintext | sasl_ssl
 # sasl_mechanism = "SCRAM-SHA-256"   # PLAIN | SCRAM-SHA-256 | SCRAM-SHA-512
 # sasl_username = "orion"
-# sasl_password = "change-me"        # Prefer ORION_KAFKA__AUTH__SASL_PASSWORD or ${KAFKA_PASSWORD}
+# sasl_password = "change-me"        # Prefer ORION_KAFKA__AUTH__SASL_PASSWORD or $${KAFKA_PASSWORD}
 # ssl_ca_location = ""               # CA bundle for broker verification, e.g. "/etc/kafka/ca.pem";
                                      # unset uses the system trust store
 #
@@ -195,8 +197,8 @@
 #   [kafka.auth]
 #   security_protocol = "sasl_ssl"
 #   sasl_mechanism = "PLAIN"
-#   sasl_username = "${CONFLUENT_API_KEY}"
-#   sasl_password = "${CONFLUENT_API_SECRET}"
+#   sasl_username = "$${CONFLUENT_API_KEY}"
+#   sasl_password = "$${CONFLUENT_API_SECRET}"
 #
 # AWS MSK with IAM is not supported; use MSK's SCRAM-SHA-512 credentials:
 #   security_protocol = "sasl_ssl"

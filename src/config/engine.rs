@@ -5,7 +5,7 @@ use crate::errors::OrionError;
 
 /// Engine configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EngineConfig {
     pub circuit_breaker: crate::connector::circuit_breaker::CircuitBreakerConfig,
     /// Timeout in seconds for acquiring engine read lock in health checks.

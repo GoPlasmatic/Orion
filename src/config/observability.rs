@@ -4,13 +4,13 @@ use crate::config::validation::{require_nonempty, require_nonzero};
 use crate::errors::OrionError;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MetricsConfig {
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TracingConfig {
     /// Enable OpenTelemetry trace export at runtime. Compiled into every build.
     pub enabled: bool,
@@ -134,7 +134,7 @@ pub enum AsyncOnOverflow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TracingStorageConfig {
     /// Persistence policy. Applies to `store_completed` (sync result write)
     /// and `set_result` / `update_status` (async result writes). The async
@@ -197,7 +197,7 @@ impl Default for TracingStorageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CorsConfig {
     /// Allowed origins. Use `["*"]` (default) for permissive CORS.
     pub allowed_origins: Vec<String>,

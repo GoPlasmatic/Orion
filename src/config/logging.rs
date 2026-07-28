@@ -6,7 +6,7 @@ use crate::errors::OrionError;
 const VALID_LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LoggingConfig {
     pub level: String,
     pub format: LogFormat,

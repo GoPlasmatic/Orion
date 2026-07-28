@@ -5,7 +5,7 @@ use crate::errors::OrionError;
 
 /// Admin API authentication configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AdminAuthConfig {
     /// Enable authentication for admin API endpoints.
     pub enabled: bool,

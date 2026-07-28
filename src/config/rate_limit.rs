@@ -10,7 +10,7 @@ use crate::errors::OrionError;
 /// file (the pure-env shape the Helm chart and Docker image encourage) failed
 /// startup validation with "must be > 0" (F36).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RateLimitConfig {
     pub enabled: bool,
     #[serde(default = "default_rps")]
@@ -105,7 +105,7 @@ fn default_admin_rps() -> Option<u32> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct EndpointRateLimits {
     /// Per-client limit for admin routes. `None` means "no separate limit" —
     /// fall back to `default_rps`.

@@ -11,7 +11,7 @@ use crate::errors::OrionError;
 /// logical system: config changes propagate via a DB epoch, dedup/response
 /// caches default to the shared Redis, and background jobs single-flight.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ClusterConfig {
     /// Enable multi-replica coordination.
     pub enabled: bool,

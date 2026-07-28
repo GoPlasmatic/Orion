@@ -567,3 +567,19 @@ fn config_example_parses_as_toml() {
     let source = read(EXAMPLE_TOML);
     toml::from_str::<AppConfig>(&source).expect("config.toml.example must be valid TOML");
 }
+
+/// Parsing the file as TOML is not the same as *loading* it, and the gap is
+/// where a real bug lived: `${VAR}` substitution runs over the raw file text
+/// before the TOML parser ever sees it, comments included. Two prose comments
+/// mentioning `${VAR}` and three showing `${CONFLUENT_API_KEY}`-style secrets
+/// were therefore read as required variables, and the shipped example refused
+/// to load with *"Required environment variable 'VAR' is not set"* on a clean
+/// machine — the one file every new user starts from.
+///
+/// This goes through the real entry point, with no variables set, so the
+/// substitution pass is covered rather than skipped.
+#[test]
+fn config_example_loads_through_the_real_entry_point() {
+    orion::config::load_config(Some(EXAMPLE_TOML))
+        .expect("config.toml.example must load with no environment variables set");
+}

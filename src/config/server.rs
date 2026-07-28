@@ -6,7 +6,7 @@ use crate::config::validation::{require_nonempty, require_nonzero};
 use crate::errors::OrionError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ServerConfig {
     pub host: String,
     pub port: u16,
@@ -76,7 +76,7 @@ impl IngestConfig {
 /// can grow slightly after gzip overhead). Operators serving large responses
 /// should opt in.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CompressionConfig {
     pub enabled: bool,
 }
@@ -84,7 +84,7 @@ pub struct CompressionConfig {
 /// TLS configuration for HTTPS support.
 /// When `enabled` is false (default), the server runs plain HTTP.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TlsConfig {
     /// Enable TLS. Requires `cert_path` and `key_path` to be set.
     pub enabled: bool,
@@ -95,7 +95,7 @@ pub struct TlsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct IngestConfig {
     pub max_payload_size: usize,
 }

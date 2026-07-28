@@ -10,7 +10,7 @@ use crate::errors::OrionError;
 /// both sets `"all": true` on the envelope and `allow_unfiltered` is enabled here.
 /// See `proposals/data-write-dialect.md` §6.1–6.2.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct WriteConfig {
     /// Hard maximum number of rows per bulk `insert`/`upsert`. Over this is rejected.
     pub max_rows: u64,

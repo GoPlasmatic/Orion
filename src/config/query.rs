@@ -9,7 +9,7 @@ use crate::errors::OrionError;
 /// `max_limit` is rejected (never silently clamped), so no query is ever
 /// unbounded by accident. See `proposals/query-dialect.md` §5.12.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct QueryConfig {
     /// Page size applied when a `data_query` omits `limit`.
     pub default_limit: u64,

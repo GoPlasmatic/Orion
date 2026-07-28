@@ -4,7 +4,7 @@ use crate::config::validation::{require_nonempty, require_nonzero};
 use crate::errors::OrionError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct StorageConfig {
     /// Database connection URL.
     /// Examples: "sqlite:orion.db", "postgres://user:pass@host/db", "mysql://user:pass@host/db"

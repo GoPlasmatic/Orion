@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::errors::OrionError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct KafkaIngestConfig {
     /// Enable Kafka consumer ingestion.
     pub enabled: bool,
@@ -129,6 +129,7 @@ impl KafkaIngestConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TopicMapping {
     pub topic: String,
     pub channel: String,
@@ -148,7 +149,7 @@ const VALID_SASL_MECHANISMS: [&str; 3] = ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-5
 /// field maps 1:1 onto a librdkafka property; unset fields leave librdkafka
 /// defaults (plaintext, no auth) untouched.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct KafkaAuthConfig {
     /// librdkafka `security.protocol`: `plaintext`, `ssl`, `sasl_plaintext`,
     /// or `sasl_ssl` (case-insensitive).
@@ -206,7 +207,7 @@ impl KafkaAuthConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DlqConfig {
     /// Enable dead-letter queue for failed messages.
     pub enabled: bool,

@@ -4,7 +4,7 @@ use crate::config::validation::require_nonzero;
 use crate::errors::OrionError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct QueueConfig {
     /// Maximum number of concurrent async trace workers.
     pub workers: usize,

@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **An unknown key in the config file is now a startup error.** Every config
+  struct was `#[serde(default)]` with no unknown-field rejection, so
+  `[server] wrokers = 4`, or a whole misspelled section, booted clean with
+  defaults and no way to notice. All 24 structs now carry
+  `deny_unknown_fields`, and the error names the offending key.
+
+  This covers the **config file only**. A misspelled `ORION_*` environment
+  variable is still ignored silently: overrides are read by name rather than
+  deserialized, so there is nothing for serde to reject. Check spelling against
+  `docs/src/configuration/reference.md`.
 - **One output-field name across every function: `output`.** `http_call` and
   `channel_call` called their destination path `response_path` while the other
   eight handlers called it `output` — two names for one concept, and the
@@ -73,6 +83,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The shipped `config.toml.example` now loads on a clean machine.**
+  Placeholder substitution runs over the raw file text before TOML parsing, so
+  the `${VAR}` in the header comment that *documents* the placeholder syntax —
+  and three `${CONFLUENT_API_KEY}`-style examples further down — were read as
+  required variables. Copying the example and starting Orion failed with
+  *"Required environment variable 'VAR' is not set"*. The comments now use the
+  `$$` escape, and the drift test loads the file through the real entry point
+  instead of only parsing it as TOML.
 - **One unusable workflow no longer takes down the whole instance.** Task input
   parsing runs inside engine construction, after the loader has decided what to
   load, so a stored row that fails it aborted the process at boot and took every
