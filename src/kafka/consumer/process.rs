@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use rdkafka::Message as _;
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::Consumer;
 use tokio::sync::watch;
 
 use crate::metrics;
@@ -298,12 +298,35 @@ fn extract_kafka_trace_context(
 }
 
 /// Initial delay between in-place retries of an uncommittable message.
-pub(super) const INITIAL_RETRY_BACKOFF_MS: u64 = 1_000;
+/// Shared with the consumer restart supervisor (K7).
+pub(crate) const INITIAL_RETRY_BACKOFF_MS: u64 = 1_000;
 /// Cap for the exponential retry backoff.
 const MAX_RETRY_BACKOFF_MS: u64 = 60_000;
 
+/// Default in-place retry budget: 80% of librdkafka's default
+/// `max.poll.interval.ms` (300s). The budget must stay safely below that
+/// interval because the retry loop blocks polling, and a consumer that
+/// stops polling for longer than `max.poll.interval.ms` is evicted from
+/// the group while still working (and finally committing) the message.
+pub(super) const DEFAULT_IN_PLACE_RETRY_BUDGET_MS: u64 = 240_000;
+
+/// How long [`process_until_committed`] may keep one message in the
+/// in-place retry loop before rewinding the partition and returning to the
+/// poll loop: 80% of `max.poll.interval.ms` when `kafka.extra_config` sets
+/// it, else [`DEFAULT_IN_PLACE_RETRY_BUDGET_MS`] (the same 80% of
+/// librdkafka's 300s default). A value librdkafka would reject
+/// (non-numeric) falls back to the default — consumer creation refuses the
+/// property before the budget could ever be used.
+pub(super) fn in_place_retry_budget_ms(extra_config: &HashMap<String, String>) -> u64 {
+    extra_config
+        .get("max.poll.interval.ms")
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|v| v / 5 * 4)
+        .unwrap_or(DEFAULT_IN_PLACE_RETRY_BUDGET_MS)
+}
+
 /// Double the retry backoff, capped at [`MAX_RETRY_BACKOFF_MS`].
-pub(super) fn next_backoff_ms(current_ms: u64) -> u64 {
+pub(crate) fn next_backoff_ms(current_ms: u64) -> u64 {
     current_ms.saturating_mul(2).min(MAX_RETRY_BACKOFF_MS)
 }
 
@@ -312,21 +335,61 @@ pub(super) fn next_backoff_ms(current_ms: u64) -> u64 {
 /// [`MsgOutcome::Failed`] (see the module doc for the delivery guarantee).
 /// Returns `false` when shutdown was requested mid-retry — the offset is
 /// left uncommitted so the message is redelivered after restart.
+///
+/// K8 — what the revocation checks can and cannot see: rdkafka dispatches
+/// rebalance callbacks only from the thread polling the consumer queue, and
+/// this task awaits processing inline, so no poll runs while a message is
+/// being worked. [`super::context::RebalanceState::is_revoked`] can
+/// therefore flip only inside `recv()`, between messages — never mid-retry.
+/// The checks below catch a revocation dispatched by an earlier poll (the
+/// message was already handed to this loop); they cannot observe one that
+/// arrives while it sleeps.
+///
+/// That blind spot is why the in-place retry is *bounded*
+/// ([`in_place_retry_budget_ms`]): retrying forever would also block
+/// polling past `max.poll.interval.ms`, get this consumer evicted from the
+/// group, and keep it working — and finally committing — a partition it no
+/// longer owns. When the budget expires the message is neither committed
+/// nor dropped: the partition is rewound to the message's offset and
+/// control returns to the poll loop, so rebalance callbacks fire and the
+/// same message is redelivered (at-least-once preserved; head-of-line
+/// blocking on a poison message persists, as the module doc documents).
 pub(super) async fn process_until_committed(
     ctx: &ConsumeLoopContext,
     msg: &rdkafka::message::BorrowedMessage<'_>,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> bool {
+    let deadline = Instant::now() + std::time::Duration::from_millis(ctx.retry_budget_ms);
     let mut backoff_ms = INITIAL_RETRY_BACKOFF_MS;
     let mut attempt: u64 = 0;
     loop {
+        if abandon_if_revoked(ctx, msg, "before processing") {
+            return true;
+        }
         let outcome = process_one_kafka_message(ctx, msg, attempt == 0).await;
         if outcome.commits_offset() {
-            commit_offset(&ctx.consumer, msg);
+            // A revocation dispatched by the poll that delivered this
+            // message means its offset is the new owner's to commit, not
+            // ours (the flag cannot have flipped since — see above).
+            if abandon_if_revoked(ctx, msg, "after processing") {
+                return true;
+            }
+            commit_offset(ctx, msg);
             return true;
         }
         attempt += 1;
         metrics::record_error("kafka_retry");
+        // Would the next sleep plus a worst-case attempt overrun the retry
+        // budget? Stop retrying in place before that can happen, so the
+        // total time away from the poll loop stays safely below
+        // max.poll.interval.ms. (`processing_timeout_ms` bounds the engine
+        // dispatch — the dominant cost of an attempt — so it is the
+        // projection used for "worst case".)
+        let projected_ms = backoff_ms.saturating_add(ctx.processing_timeout_ms);
+        if Instant::now() + std::time::Duration::from_millis(projected_ms) >= deadline {
+            seek_back_for_redelivery(ctx, msg, attempt);
+            return true;
+        }
         tracing::error!(
             topic = %msg.topic(),
             partition = msg.partition(),
@@ -347,13 +410,80 @@ pub(super) async fn process_until_committed(
     }
 }
 
-/// Commit the offset for a consumed message, logging any errors. Async
-/// commit failures only risk redelivery (the offset is re-committed on the
-/// next message or restored by rebalance), never message loss.
-fn commit_offset(consumer: &StreamConsumer, msg: &rdkafka::message::BorrowedMessage<'_>) {
+/// The in-place retry budget is exhausted (K8): rewind the partition to the
+/// message's offset and go back to the poll loop. The next `recv()` both
+/// lets rdkafka dispatch any pending rebalance callbacks and redelivers
+/// this same message — neither committed nor dropped, so at-least-once
+/// holds. A failed seek on a partition that was concurrently revoked is
+/// harmless (the new owner redelivers from the last committed offset); on
+/// a partition this consumer still owns it means the fetch position stays
+/// past the message until the next rebalance or restart, so it is logged
+/// as an error.
+fn seek_back_for_redelivery(
+    ctx: &ConsumeLoopContext,
+    msg: &rdkafka::message::BorrowedMessage<'_>,
+    attempts: u64,
+) {
+    metrics::record_error("kafka_retry_budget_exhausted");
+    match ctx.consumer.seek(
+        msg.topic(),
+        msg.partition(),
+        rdkafka::Offset::Offset(msg.offset()),
+        std::time::Duration::from_secs(5),
+    ) {
+        Ok(()) => tracing::warn!(
+            topic = %msg.topic(),
+            partition = msg.partition(),
+            offset = msg.offset(),
+            attempts,
+            budget_ms = ctx.retry_budget_ms,
+            "In-place retry budget exhausted; partition rewound so the message is redelivered through the poll loop (offset not committed)"
+        ),
+        Err(e) => tracing::error!(
+            topic = %msg.topic(),
+            partition = msg.partition(),
+            offset = msg.offset(),
+            error = %e,
+            "Failed to rewind partition after exhausting the retry budget; if this consumer still owns the partition, the message is not redelivered until the next rebalance or restart"
+        ),
+    }
+}
+
+/// `true` when the message's partition was revoked (K8): records the metric,
+/// logs where in the lifecycle the revocation was noticed, and tells the
+/// caller to abandon the message uncommitted for its new owner.
+fn abandon_if_revoked(
+    ctx: &ConsumeLoopContext,
+    msg: &rdkafka::message::BorrowedMessage<'_>,
+    stage: &'static str,
+) -> bool {
+    if !ctx.rebalance.is_revoked(msg.topic(), msg.partition()) {
+        return false;
+    }
+    metrics::record_error("kafka_partition_revoked");
+    tracing::warn!(
+        topic = %msg.topic(),
+        partition = msg.partition(),
+        offset = msg.offset(),
+        stage,
+        "Partition revoked; abandoning message uncommitted for its new owner"
+    );
+    true
+}
+
+/// Commit the offset for a consumed message. The commit is asynchronous;
+/// its result surfaces in the context's `commit_callback`, and the
+/// next-to-consume offset is recorded so a revocation can flush it
+/// synchronously in `pre_rebalance` (K8) — a rebalance does *not* restore
+/// an in-flight async commit on its own. A commit lost anyway (enqueue
+/// failure, revocation flush failure) risks redelivery, never message loss.
+fn commit_offset(ctx: &ConsumeLoopContext, msg: &rdkafka::message::BorrowedMessage<'_>) {
     use rdkafka::consumer::CommitMode;
-    if let Err(e) = consumer.commit_message(msg, CommitMode::Async) {
-        tracing::error!(error = %e, "Failed to commit Kafka offset");
+    match ctx.consumer.commit_message(msg, CommitMode::Async) {
+        Ok(()) => ctx
+            .rebalance
+            .record_committable(msg.topic(), msg.partition(), msg.offset() + 1),
+        Err(e) => tracing::error!(error = %e, "Failed to commit Kafka offset"),
     }
 }
 
@@ -392,6 +522,31 @@ mod tests {
         assert!(MsgOutcome::Processed.commits_offset());
         assert!(MsgOutcome::DeadLettered.commits_offset());
         assert!(!MsgOutcome::Failed.commits_offset());
+    }
+
+    /// K8: the in-place retry window must stay safely below
+    /// `max.poll.interval.ms` (librdkafka default 300s) or the group evicts
+    /// the consumer mid-retry.
+    #[test]
+    fn test_retry_budget_defaults_below_default_max_poll_interval() {
+        assert_eq!(in_place_retry_budget_ms(&HashMap::new()), 240_000);
+    }
+
+    #[test]
+    fn test_retry_budget_derives_from_configured_max_poll_interval() {
+        let extra = HashMap::from([("max.poll.interval.ms".to_string(), "100000".to_string())]);
+        assert_eq!(in_place_retry_budget_ms(&extra), 80_000);
+    }
+
+    /// librdkafka refuses a non-numeric value at client creation, so the
+    /// fallback only has to be sane, never load-bearing.
+    #[test]
+    fn test_retry_budget_ignores_unparseable_values() {
+        let extra = HashMap::from([("max.poll.interval.ms".to_string(), "ten".to_string())]);
+        assert_eq!(
+            in_place_retry_budget_ms(&extra),
+            DEFAULT_IN_PLACE_RETRY_BUDGET_MS
+        );
     }
 
     #[test]

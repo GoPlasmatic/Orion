@@ -680,6 +680,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         sql_pool_cache,
         mongo_pool_cache,
         kafka_consumer_handle: Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle)),
+        kafka_ingest_status: Arc::new(crate::kafka::KafkaIngestStatus::new()),
         kafka_producer,
         trace_persistence_queue,
         cluster,

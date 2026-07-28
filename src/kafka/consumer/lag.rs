@@ -9,9 +9,11 @@ use tokio::sync::watch;
 
 use crate::metrics;
 
+use super::context::KafkaConsumerContext;
+
 /// Periodically poll committed offsets and high watermarks to compute consumer lag.
 pub(super) async fn poll_consumer_lag(
-    consumer: Arc<StreamConsumer>,
+    consumer: Arc<StreamConsumer<KafkaConsumerContext>>,
     mut shutdown_rx: watch::Receiver<bool>,
     interval_secs: u64,
 ) {
@@ -42,7 +44,10 @@ pub(super) async fn poll_consumer_lag(
 }
 
 /// Compute and report lag for each topic-partition in the committed offsets list.
-fn report_lag_for_partitions(consumer: &StreamConsumer, committed: &TopicPartitionList) {
+fn report_lag_for_partitions(
+    consumer: &StreamConsumer<KafkaConsumerContext>,
+    committed: &TopicPartitionList,
+) {
     for elem in committed.elements() {
         let topic = elem.topic();
         let partition = elem.partition();

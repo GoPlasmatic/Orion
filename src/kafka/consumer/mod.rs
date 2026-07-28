@@ -5,12 +5,28 @@
 //! was confirmed written to the DLQ. On any other outcome (processing
 //! failure with the DLQ disabled, or a failed DLQ write) the offset stays
 //! uncommitted and the consumer retries the same message in place with
-//! capped exponential backoff. Messages are handled sequentially, so no
-//! later offset — which would implicitly commit earlier ones — is ever
-//! committed past an unresolved failure; a restart redelivers from the
-//! failed message. Enable `kafka.dlq` to avoid head-of-line blocking on
-//! poison messages (e.g. payloads that will never parse).
+//! capped exponential backoff. The in-place window is bounded to stay
+//! safely below `max.poll.interval.ms` — 80% of it, 240s against
+//! librdkafka's 300s default — because retrying blocks polling, and a
+//! consumer that stops polling for that long is evicted from the group.
+//! On expiry the partition is rewound to the message's offset and the loop
+//! returns to polling, so the same message is redelivered and rebalance
+//! callbacks keep firing (rdkafka dispatches them only from the polling
+//! thread).
+//!
+//! Processing is **strictly sequential** — one message at a time per
+//! consumer, across all of its assigned partitions. This is load-bearing
+//! for the guarantee above: committing an offset implicitly commits every
+//! earlier offset on that partition, so any in-consumer concurrency would
+//! let a fast later message commit past a failed earlier one and lose it
+//! (K4 — the former `kafka.max_inflight` knob advertised concurrency that
+//! never existed and was removed). Scale throughput by running more
+//! instances in the same consumer group, which spreads partitions across
+//! them; a restart redelivers from the failed message. Enable `kafka.dlq`
+//! to avoid head-of-line blocking on poison messages (e.g. payloads that
+//! will never parse).
 
+mod context;
 mod dlq;
 mod lag;
 mod process;
@@ -26,13 +42,15 @@ use crate::config::KafkaIngestConfig;
 use crate::errors::OrionError;
 use crate::kafka::producer::KafkaProducer;
 
+use context::{KafkaConsumerContext, RebalanceState};
 use lag::poll_consumer_lag;
 use process::process_until_committed;
+pub(crate) use process::{INITIAL_RETRY_BACKOFF_MS, next_backoff_ms};
 
 /// Bundled context for the Kafka consume loop, grouping parameters that share
 /// the same lifecycle and reducing positional argument count.
 struct ConsumeLoopContext {
-    consumer: Arc<StreamConsumer>,
+    consumer: Arc<StreamConsumer<KafkaConsumerContext>>,
     topic_map: HashMap<String, String>,
     engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
@@ -40,15 +58,24 @@ struct ConsumeLoopContext {
     dlq_producer: Option<Arc<KafkaProducer>>,
     dlq_topic: Option<String>,
     processing_timeout_ms: u64,
-    max_inflight: usize,
     lag_poll_interval_secs: u64,
+    /// Rebalance bookkeeping shared with the consumer context (K8). The
+    /// revocation flag is dispatched only from `recv()` polls, so the retry
+    /// loop can observe it between messages, never mid-retry — see
+    /// `process::process_until_committed` for the dispatch semantics and
+    /// the bounded-retry consequence.
+    rebalance: Arc<RebalanceState>,
+    /// In-place retry budget (K8): how long `process_until_committed` may
+    /// stay away from the poll loop before rewinding the partition. Derived
+    /// from `max.poll.interval.ms` by `process::in_place_retry_budget_ms`.
+    retry_budget_ms: u64,
 }
 
 /// Handle for managing the Kafka consumer lifecycle.
 pub struct ConsumerHandle {
     shutdown_tx: watch::Sender<bool>,
     join_handle: tokio::task::JoinHandle<()>,
-    consumer: Arc<StreamConsumer>,
+    consumer: Arc<StreamConsumer<KafkaConsumerContext>>,
     topics: HashSet<String>,
 }
 
@@ -73,12 +100,22 @@ impl ConsumerHandle {
         self.with_assignment("resume", |c, a| c.resume(a))
     }
 
+    /// Whether the consume loop has exited. After a graceful shutdown the
+    /// handle itself is consumed, so a finished task behind a live handle
+    /// means the consumer died — surfaced by `/health` and `/readyz` (O10).
+    pub fn is_finished(&self) -> bool {
+        self.join_handle.is_finished()
+    }
+
     /// Fetch the current assignment and apply `op` to it; a consumer with no
     /// assigned partitions is a no-op. Shared plumbing for pause/resume.
     fn with_assignment(
         &self,
         op: &str,
-        f: impl Fn(&StreamConsumer, &rdkafka::TopicPartitionList) -> rdkafka::error::KafkaResult<()>,
+        f: impl Fn(
+            &StreamConsumer<KafkaConsumerContext>,
+            &rdkafka::TopicPartitionList,
+        ) -> rdkafka::error::KafkaResult<()>,
     ) -> Result<(), OrionError> {
         let assignment = self
             .consumer
@@ -133,13 +170,15 @@ pub fn start_consumer(
     // Applied last so kafka.extra_config can override any of the above
     super::apply_client_auth(&mut client_config, &config.auth, &config.extra_config);
 
-    let consumer: StreamConsumer =
-        client_config
-            .create()
-            .map_err(|e| OrionError::InternalSource {
-                context: "Failed to create Kafka consumer".to_string(),
-                source: Box::new(e),
-            })?;
+    // K8: a custom context so revocations flush in-flight commits and are
+    // visible to the retry loop — the default context has no rebalance hooks.
+    let rebalance = Arc::new(RebalanceState::new());
+    let consumer: StreamConsumer<KafkaConsumerContext> = client_config
+        .create_with_context(KafkaConsumerContext::new(rebalance.clone()))
+        .map_err(|e| OrionError::InternalSource {
+            context: "Failed to create Kafka consumer".to_string(),
+            source: Box::new(e),
+        })?;
 
     // Verify broker connectivity (non-fatal — brokers may come online later)
     match consumer.fetch_metadata(None, std::time::Duration::from_secs(5)) {
@@ -176,7 +215,6 @@ pub fn start_consumer(
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let processing_timeout_ms = config.processing_timeout_ms;
-    let max_inflight = config.max_inflight;
     let lag_poll_interval_secs = config.lag_poll_interval_secs;
 
     let consumer = Arc::new(consumer);
@@ -191,8 +229,9 @@ pub fn start_consumer(
         dlq_producer,
         dlq_topic,
         processing_timeout_ms,
-        max_inflight,
         lag_poll_interval_secs,
+        rebalance,
+        retry_budget_ms: process::in_place_retry_budget_ms(&config.extra_config),
     };
     let handle = tokio::spawn(consume_loop(ctx, shutdown_rx));
 
@@ -205,8 +244,6 @@ pub fn start_consumer(
 }
 
 async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<bool>) {
-    let backpressure = Arc::new(tokio::sync::Semaphore::new(ctx.max_inflight));
-
     // Spawn consumer lag monitoring task
     let lag_handle = if ctx.lag_poll_interval_secs > 0 {
         let lag_consumer = ctx.consumer.clone();
@@ -222,22 +259,16 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
 
     tracing::info!(
         topics = ?ctx.topic_map.keys().collect::<Vec<_>>(),
-        max_inflight = ctx.max_inflight,
         lag_poll_secs = ctx.lag_poll_interval_secs,
-        "Kafka consumer started"
+        "Kafka consumer started (strictly sequential processing)"
     );
 
     // Current backoff after consecutive `recv()` failures; cleared on success.
     let mut recv_backoff_ms: Option<u64> = None;
 
+    // One message at a time, awaited inline: sequential processing is the
+    // at-least-once contract's foundation (see the module doc).
     loop {
-        // Backpressure: wait for a permit before reading the next message.
-        // This pauses the consumer when max_inflight messages are in progress.
-        let _permit = match backpressure.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => break, // Semaphore closed
-        };
-
         tokio::select! {
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {

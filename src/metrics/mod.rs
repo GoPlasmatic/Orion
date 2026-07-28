@@ -451,6 +451,17 @@ pub fn set_kafka_consumer_lag(topic: &str, partition: i32, lag: f64) {
     .set(lag);
 }
 
+/// `1` while Kafka ingestion is down — a consumer (re)start failed and the
+/// supervisor has not recovered it yet — and `0` otherwise. Mirrors the
+/// `kafka` component of `/readyz` so the outage is alertable from a scrape
+/// as well as from the probe (K7).
+pub fn set_kafka_ingest_degraded(degraded: bool) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("orion_kafka_ingest_degraded").set(if degraded { 1.0 } else { 0.0 });
+}
+
 // ---------------------------------------------------------------------------
 // Database pool gauges
 // ---------------------------------------------------------------------------

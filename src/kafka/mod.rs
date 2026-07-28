@@ -2,10 +2,61 @@ pub mod consumer;
 pub mod producer;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rdkafka::ClientConfig;
 
 use crate::config::KafkaAuthConfig;
+
+/// Health signal for the Kafka ingest consumer, shared between the reload
+/// path, the restart supervisor and the readiness endpoints (K7/O10).
+///
+/// `degraded` means "ingestion should be running and is not": a consumer
+/// (re)start failed and the supervisor has not brought one back yet. It is
+/// deliberately *not* set when the merged topic list is empty — a consumer
+/// with nothing to consume is idle, not broken.
+#[derive(Default)]
+pub struct KafkaIngestStatus {
+    degraded: AtomicBool,
+    /// Single-occupancy slot for the restart supervisor, so overlapping
+    /// reload failures spawn one retry loop, not one each.
+    supervisor_active: AtomicBool,
+}
+
+impl KafkaIngestStatus {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn is_degraded(&self) -> bool {
+        self.degraded.load(Ordering::Acquire)
+    }
+
+    /// Flip the degraded signal, mirrored to the
+    /// `orion_kafka_ingest_degraded` gauge so it can be alerted on.
+    pub fn set_degraded(&self, degraded: bool) {
+        self.degraded.store(degraded, Ordering::Release);
+        crate::metrics::set_kafka_ingest_degraded(degraded);
+    }
+
+    /// Claim the restart-supervisor slot; `false` when one is already running.
+    pub(crate) fn claim_supervisor(&self) -> bool {
+        self.supervisor_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub(crate) fn release_supervisor(&self) {
+        self.supervisor_active.store(false, Ordering::Release);
+    }
+
+    /// Whether the restart-supervisor slot is currently claimed. A read-only
+    /// probe for tests and diagnostics; the slot itself is managed only by
+    /// `claim_supervisor` / `release_supervisor`.
+    pub fn supervisor_active(&self) -> bool {
+        self.supervisor_active.load(Ordering::Acquire)
+    }
+}
 
 /// Apply `[kafka.auth]` and then `kafka.extra_config` to an rdkafka client
 /// config. Shared by the ingest consumer and the producer so every Kafka

@@ -111,11 +111,17 @@ pub(crate) async fn health_check(
     // only signal that they are not being served.
     let quarantined_channels = state.channel_registry.quarantined().await;
 
+    // O10/K7: dead Kafka ingestion is otherwise silent — HTTP keeps serving
+    // 200s while no message is consumed. Absent entirely when Kafka is off.
+    let kafka_state = kafka_component(&state);
+
     // Degraded, not unhealthy: the rest of the instance still serves traffic,
     // and returning 503 would take a node out of its load balancer over a
     // connector or channel that may be used by nothing currently in flight.
     let overall_healthy = db_healthy && engine_healthy;
-    let fully_loaded = connector_issues.is_empty() && quarantined_channels.is_empty();
+    let fully_loaded = connector_issues.is_empty()
+        && quarantined_channels.is_empty()
+        && kafka_state != Some("error");
     let status_str = if overall_healthy && fully_loaded {
         "ok"
     } else {
@@ -148,6 +154,9 @@ pub(crate) async fn health_check(
             "channels": if quarantined_channels.is_empty() { "ok" } else { "degraded" },
         },
     });
+    if let Some(kafka) = kafka_state {
+        body["components"]["kafka"] = json!(kafka);
+    }
     if show_detail {
         body["git_hash"] = json!(env!("GIT_HASH"));
         body["build_timestamp"] = json!(env!("BUILD_TIMESTAMP"));
@@ -243,8 +252,33 @@ async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
     )
 }
 
-/// Readiness probe — checks DB, engine, cluster Redis, and startup readiness.
-/// Use for Kubernetes `readinessProbe`.
+/// Coarse state of the Kafka ingest consumer for `/health` and `/readyz`:
+/// `None` when Kafka is disabled, so non-Kafka deployments carry no `kafka`
+/// component at all (O10).
+///
+/// `"ok"` covers both a running consumer and one intentionally not started
+/// (no topics to consume). `"error"` means ingestion should be running and
+/// is not: the K7 degraded flag is set (a consumer restart failed and the
+/// supervisor has not recovered it yet), or the consume loop itself died.
+fn kafka_component(state: &AppState) -> Option<&'static str> {
+    if !state.config.kafka.enabled {
+        return None;
+    }
+    if state.kafka_ingest_status.is_degraded() {
+        return Some("error");
+    }
+    let consumer_dead = match state.kafka_consumer_handle.try_lock() {
+        Ok(guard) => guard.as_ref().is_some_and(|h| h.is_finished()),
+        // A reload holds the lock mid-restart. The degraded flag above is
+        // the authoritative down signal and it said healthy — a probe must
+        // not block on (or fail during) a routine restart.
+        Err(_) => false,
+    };
+    Some(if consumer_dead { "error" } else { "ok" })
+}
+
+/// Readiness probe — checks DB, engine, cluster Redis, Kafka ingestion, and
+/// startup readiness. Use for Kubernetes `readinessProbe`.
 #[utoipa::path(
     get,
     path = "/readyz",
@@ -253,14 +287,17 @@ async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
     summary = "Readiness probe",
     description = "\
 Readiness probe. Reports `ready` only when the database responds, the engine \
-lock is acquirable, startup has completed, and — in cluster mode — the shared \
-Redis answers `PING`. The Redis check matters because that degradation is \
-otherwise silent: deduplication fails open, the shared response cache misses, \
-and cluster rate limiting stops enforcing, all while the data plane keeps \
+lock is acquirable, startup has completed, — in cluster mode — the shared \
+Redis answers `PING`, and — with Kafka enabled — the ingest consumer is not \
+degraded. Both conditional checks matter because those degradations are \
+otherwise silent: without Redis, deduplication fails open, the shared \
+response cache misses, and cluster rate limiting stops enforcing; with the \
+consumer down, no message is ingested — all while the data plane keeps \
 returning 200s.
 
-The `components.cluster_redis` field is present only in cluster mode. \
-Unauthenticated, so probes work without provisioning an admin key.",
+The `components.cluster_redis` field is present only in cluster mode, and \
+`components.kafka` only when `kafka.enabled` is true. Unauthenticated, so \
+probes work without provisioning an admin key.",
     responses(
         (status = 200, description = "All components ready", body = crate::server::routes::openapi::HealthStatus),
         (status = 503, description = "At least one component is not ready — same body shape with `\"status\":\"not_ready\"`"),
@@ -278,8 +315,13 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     .is_ok();
     let initialized = state.ready.load(Ordering::Acquire);
     let redis_healthy = cluster_redis_healthy(&state).await;
+    let kafka_state = kafka_component(&state);
 
-    let all_ready = db_healthy && engine_healthy && initialized && redis_healthy.unwrap_or(true);
+    let all_ready = db_healthy
+        && engine_healthy
+        && initialized
+        && redis_healthy.unwrap_or(true)
+        && kafka_state != Some("error");
     let http_status = if all_ready {
         StatusCode::OK
     } else {
@@ -293,6 +335,9 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     });
     if let Some(healthy) = redis_healthy {
         components["cluster_redis"] = json!(if healthy { "ok" } else { "error" });
+    }
+    if let Some(kafka) = kafka_state {
+        components["kafka"] = json!(kafka);
     }
 
     let body = json!({

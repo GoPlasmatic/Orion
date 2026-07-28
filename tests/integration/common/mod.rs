@@ -129,8 +129,9 @@ async fn test_state_inner(
         .expect("load channels");
     ready.store(true, std::sync::atomic::Ordering::Release);
 
-    // Provably None today (the DB is empty at boot, so the merged topic set
-    // is empty), but wired for parity with production.
+    // None unless the test's config carries `[kafka.topics]` mappings (the
+    // DB is empty at boot, so DB-driven topics never contribute); wired for
+    // parity with production either way.
     let kafka_consumer_handle = orion::bootstrap::start_kafka_ingest(
         &config.kafka,
         &channels,

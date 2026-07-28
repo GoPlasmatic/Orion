@@ -159,7 +159,7 @@ message omits the submitter's request context (`context.metadata`).
 |--------|------|-------------|
 | GET | `/health` | Health check (200 OK / 503 degraded). Checks DB, engine, uptime |
 | GET | `/healthz` | Kubernetes liveness probe. Always returns 200 |
-| GET | `/readyz` | Kubernetes readiness probe. 503 if DB, engine, or startup not ready |
+| GET | `/readyz` | Kubernetes readiness probe. 503 if DB, engine, startup, cluster Redis (cluster mode), or Kafka ingestion (when enabled) not ready |
 | GET | `/metrics` | Prometheus metrics (when enabled) |
 | GET | `/docs` | Swagger UI |
 | GET | `/api/v1/openapi.json` | OpenAPI 3.0 specification |

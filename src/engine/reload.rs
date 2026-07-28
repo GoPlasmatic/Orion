@@ -189,49 +189,146 @@ async fn restart_kafka_consumer_if_needed(
         old_handle.shutdown().await;
     }
 
-    if all_topics.is_empty() {
-        tracing::info!("No Kafka topics configured or from DB, consumer not started");
-        return;
-    }
-
-    let merged_config = crate::config::KafkaIngestConfig {
-        topics: all_topics,
-        ..state.config.kafka.clone()
-    };
-
-    let dlq_producer = if state.config.kafka.dlq.enabled {
-        state.kafka_producer.clone()
-    } else {
-        None
-    };
-    let dlq_topic = if state.config.kafka.dlq.enabled {
-        Some(state.config.kafka.dlq.topic.clone())
-    } else {
-        None
-    };
-
-    let static_member = state
-        .cluster
-        .enabled
-        .then(|| state.cluster.instance_id.as_str());
-    match crate::kafka::consumer::start_consumer(
-        &merged_config,
-        state.engine.clone(),
-        state.channel_registry.clone(),
-        state.datalogic.clone(),
-        dlq_producer,
-        dlq_topic,
-        static_member,
-    ) {
-        Ok(new_handle) => {
+    // K7: the old handle is gone. A start failure below must not leave that
+    // as the permanent end state with every probe green — flag ingestion as
+    // degraded and hand recovery to the supervisor.
+    match try_start_ingest(state, channels) {
+        Ok(Some(new_handle)) => {
             tracing::info!(
                 topics = ?new_topic_set,
                 "Kafka consumer restarted with updated topics"
             );
             *handle_guard = Some(new_handle);
+            state.kafka_ingest_status.set_degraded(false);
+        }
+        Ok(None) => {
+            tracing::info!("No Kafka topics configured or from DB, consumer not started");
+            state.kafka_ingest_status.set_degraded(false);
         }
         Err(e) => {
-            tracing::error!(error = %e, "Failed to restart Kafka consumer");
+            state.kafka_ingest_status.set_degraded(true);
+            crate::metrics::record_error("kafka_restart");
+            tracing::error!(
+                error = %e,
+                "Failed to restart Kafka consumer; ingestion is down — retrying with backoff"
+            );
+            drop(handle_guard);
+            spawn_kafka_restart_supervisor(state);
         }
     }
+}
+
+/// Start an ingest consumer for the current channel set through the same
+/// builder startup uses ([`crate::bootstrap::start_kafka_ingest`]), so the
+/// boot, reload and supervisor paths cannot drift. `Ok(None)` when the
+/// merged topic list is empty. The error is stringified because the caller
+/// holds it across a spawned task boundary.
+fn try_start_ingest(
+    state: &AppState,
+    channels: &[crate::storage::models::Channel],
+) -> Result<Option<crate::kafka::consumer::ConsumerHandle>, String> {
+    crate::bootstrap::start_kafka_ingest(
+        &state.config.kafka,
+        channels,
+        state.engine.clone(),
+        state.channel_registry.clone(),
+        state.datalogic.clone(),
+        state.kafka_producer.clone(),
+        state
+            .cluster
+            .enabled
+            .then(|| state.cluster.instance_id.as_str()),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Supervise a Kafka consumer that failed to (re)start: retry with capped
+/// exponential backoff (1 s doubling to 60 s) until a consumer is running
+/// again, then clear the degraded flag (K7). The channel list is re-read
+/// from the database on every attempt, so topic changes made while
+/// ingestion was down are honoured. At most one supervisor runs per
+/// process; it stands down when another reload restores the consumer first,
+/// or when the node starts draining.
+///
+/// Slot invariant: every exit path releases the supervisor slot while the
+/// handle mutex is still held. A failed reload runs its start attempt and
+/// `set_degraded(true)` inside that same mutex, so by the time it drops the
+/// mutex and calls `claim_supervisor` the slot is either free (this
+/// supervisor's final critical section already ran — the claim succeeds and
+/// a fresh supervisor spawns) or claimed by a supervisor that is still
+/// looping and will retry the new failure itself. Releasing *after* the
+/// mutex was a TOCTOU: a reload failing in the unlock→release gap saw the
+/// slot occupied, spawned nothing, and left the process degraded with no
+/// supervisor until the next reload.
+pub fn spawn_kafka_restart_supervisor(state: &AppState) {
+    if !state.kafka_ingest_status.claim_supervisor() {
+        return;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        let mut backoff_ms = crate::kafka::consumer::INITIAL_RETRY_BACKOFF_MS;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+            let mut handle_guard = state.kafka_consumer_handle.lock().await;
+            // Draining: do not resurrect a consumer mid-shutdown. (Checked
+            // under the mutex like every other exit, so even this release
+            // cannot race a failing reload's claim — and a spawn lost to a
+            // drain-window race would only ever supervise a node that is
+            // shutting down.)
+            if !state.ready.load(std::sync::atomic::Ordering::Acquire) {
+                state.kafka_ingest_status.release_supervisor();
+                break;
+            }
+            if handle_guard.is_some() {
+                // Another reload already restarted the consumer.
+                state.kafka_ingest_status.release_supervisor();
+                break;
+            }
+            let channels = match state.channel_repo.list_active().await {
+                Ok(channels) => {
+                    crate::engine::filter_channels(channels, &state.config.channel_filter)
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        backoff_ms,
+                        "Kafka restart supervisor could not list channels; will retry"
+                    );
+                    drop(handle_guard);
+                    backoff_ms = crate::kafka::consumer::next_backoff_ms(backoff_ms);
+                    continue;
+                }
+            };
+            let started = try_start_ingest(&state, &channels);
+            match started {
+                Ok(Some(handle)) => {
+                    *handle_guard = Some(handle);
+                    // Slot before flag: both are Release stores, so an
+                    // observer that sees the degraded flag cleared also
+                    // sees the slot free.
+                    state.kafka_ingest_status.release_supervisor();
+                    state.kafka_ingest_status.set_degraded(false);
+                    tracing::info!("Kafka consumer restored by restart supervisor");
+                    break;
+                }
+                Ok(None) => {
+                    // Nothing to ingest any more — idle, not degraded.
+                    state.kafka_ingest_status.release_supervisor();
+                    state.kafka_ingest_status.set_degraded(false);
+                    tracing::info!("No Kafka topics remain; restart supervisor standing down");
+                    break;
+                }
+                Err(e) => {
+                    crate::metrics::record_error("kafka_restart");
+                    tracing::error!(
+                        error = %e,
+                        backoff_ms,
+                        "Kafka consumer restart failed; ingestion still down"
+                    );
+                    drop(handle_guard);
+                    backoff_ms = crate::kafka::consumer::next_backoff_ms(backoff_ms);
+                }
+            }
+        }
+    });
 }

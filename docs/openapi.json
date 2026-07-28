@@ -3529,7 +3529,7 @@
           "Operational"
         ],
         "summary": "Readiness probe",
-        "description": "Readiness probe. Reports `ready` only when the database responds, the engine lock is acquirable, startup has completed, and — in cluster mode — the shared Redis answers `PING`. The Redis check matters because that degradation is otherwise silent: deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing, all while the data plane keeps returning 200s.\n\nThe `components.cluster_redis` field is present only in cluster mode. Unauthenticated, so probes work without provisioning an admin key.",
+        "description": "Readiness probe. Reports `ready` only when the database responds, the engine lock is acquirable, startup has completed, — in cluster mode — the shared Redis answers `PING`, and — with Kafka enabled — the ingest consumer is not degraded. Both conditional checks matter because those degradations are otherwise silent: without Redis, deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing; with the consumer down, no message is ingested — all while the data plane keeps returning 200s.\n\nThe `components.cluster_redis` field is present only in cluster mode, and `components.kafka` only when `kafka.enabled` is true. Unauthenticated, so probes work without provisioning an admin key.",
         "operationId": "readiness_probe",
         "responses": {
           "200": {
@@ -5047,7 +5047,7 @@
         ],
         "properties": {
           "components": {
-            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`."
+            "description": "Per-subsystem state: `database`, `engine`, `connectors`, `channels`,\nplus `kafka` when `kafka.enabled` (O10) and `cluster_redis` in\ncluster mode."
           },
           "git_hash": {
             "type": [

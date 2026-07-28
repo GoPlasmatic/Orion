@@ -131,7 +131,7 @@ The health check tests the database with `SELECT 1` and verifies engine availabi
 | Endpoint | Purpose | Behavior |
 |----------|---------|----------|
 | `GET /healthz` | Liveness probe | Always returns 200. If the process is running, it's alive |
-| `GET /readyz` | Readiness probe | Returns 200 only when DB is reachable, engine is loaded, and startup is complete; 503 otherwise |
+| `GET /readyz` | Readiness probe | Returns 200 only when DB is reachable, engine is loaded, startup is complete, and — when enabled — cluster Redis answers and Kafka ingestion is not degraded; 503 otherwise |
 
 ```yaml
 livenessProbe:

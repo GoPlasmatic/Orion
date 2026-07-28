@@ -61,6 +61,10 @@ pub struct AppStateInner {
     /// Kafka consumer handle — stored here so engine reload can restart the
     /// consumer when async channel topic mappings change.
     pub kafka_consumer_handle: Arc<Mutex<Option<crate::kafka::consumer::ConsumerHandle>>>,
+    /// Kafka ingest health (K7): set degraded when a consumer (re)start
+    /// fails, cleared once a consumer runs again. Reported as the `kafka`
+    /// component of `/health` and `/readyz` (O10).
+    pub kafka_ingest_status: Arc<crate::kafka::KafkaIngestStatus>,
     /// Kafka producer — needed to restart consumer with DLQ support.
     pub kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
     /// Background queue for trace-storage writes. A no-op handle in sync/off modes.

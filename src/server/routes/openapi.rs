@@ -793,7 +793,9 @@ pub(crate) struct HealthStatus {
     status: String,
     version: String,
     uptime_seconds: i64,
-    /// Per-subsystem state: `database`, `engine`, `connectors`, `channels`.
+    /// Per-subsystem state: `database`, `engine`, `connectors`, `channels`,
+    /// plus `kafka` when `kafka.enabled` (O10) and `cluster_redis` in
+    /// cluster mode.
     components: Value,
     /// Build provenance and detail, served only to an admin caller (O9).
     #[serde(skip_serializing_if = "Option::is_none")]

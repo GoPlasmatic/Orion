@@ -159,8 +159,9 @@ topic = "orion-dlq"
 | Config | Default | Description |
 |--------|---------|-------------|
 | `kafka.processing_timeout_ms` | `60000` | Per-message processing timeout |
-| `kafka.max_inflight` | `100` | Max in-flight messages |
 | `kafka.lag_poll_interval_secs` | `30` | Consumer lag polling interval |
+
+Messages are processed strictly sequentially per consumer — required by the at-least-once commit contract. Scale throughput by running more instances in the same consumer group.
 
 ### Database Connector (SQL)
 

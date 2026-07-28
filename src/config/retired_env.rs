@@ -1,4 +1,5 @@
-//! Environment-variable names retired by the C22 config renames.
+//! Environment-variable names retired by the C22 config renames and the K4
+//! config removal.
 //!
 //! Lives in its own module so `config_docs_drift_test`'s scraper — which
 //! harvests every `"ORION_…"` literal out of `env_overrides.rs` — cannot
@@ -6,7 +7,8 @@
 
 use crate::errors::OrionError;
 
-/// Every variable name C22 retired, paired with its replacement.
+/// Every variable name retired pre-1.0 (the C22 renames plus the K4
+/// removal), paired with its replacement or removal reason.
 ///
 /// Env overrides are matched by name, not deserialised, so `deny_unknown_fields`
 /// cannot see them: a renamed section would leave `ORION_QUEUE__WORKERS` set and
@@ -69,6 +71,12 @@ const RETIRED_ENV_VARS: &[(&str, &str)] = &[
     ),
     ("ORION_CHANNELS__INCLUDE", "ORION_CHANNEL_FILTER__INCLUDE"),
     ("ORION_CHANNELS__EXCLUDE", "ORION_CHANNEL_FILTER__EXCLUDE"),
+    (
+        "ORION_KAFKA__MAX_INFLIGHT",
+        "removed in 1.0 (K4): Kafka messages are processed strictly sequentially per \
+         consumer — the at-least-once commit contract requires it — so there is no \
+         in-flight limit to configure; scale out with more instances in the group",
+    ),
     ("ORION_TRACING__STORAGE__MODE", "ORION_TRACE_STORAGE__MODE"),
     (
         "ORION_TRACING__STORAGE__SAMPLE_RATE",
@@ -124,8 +132,8 @@ where
     }
     Err(OrionError::Config {
         message: format!(
-            "these environment variables were renamed in 1.0 and are no longer read \
-             (see docs/src/getting-started/upgrading.md):\n{}",
+            "these environment variables were renamed or removed in 1.0 and are no \
+             longer read (see docs/src/getting-started/upgrading.md):\n{}",
             found.join("\n")
         ),
     })
@@ -185,6 +193,19 @@ mod tests {
                 "missing {expected} in: {message}"
             );
         }
+    }
+
+    /// K4 removed `kafka.max_inflight` outright (it advertised concurrency
+    /// that never existed). A manifest still setting the override must get
+    /// the removal reason, not a silent no-op.
+    #[test]
+    fn kafka_max_inflight_is_refused_with_the_removal_reason() {
+        let err =
+            reject_retired_env_vars(reader(HashMap::from([("ORION_KAFKA__MAX_INFLIGHT", "50")])))
+                .expect_err("the removed override must be refused");
+        let message = err.to_string();
+        assert!(message.contains("ORION_KAFKA__MAX_INFLIGHT"), "{message}");
+        assert!(message.contains("sequential"), "{message}");
     }
 
     /// The table is only useful if it covers every name the renames retired.

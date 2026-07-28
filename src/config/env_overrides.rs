@@ -261,7 +261,6 @@ where
     ov!(kafka.enabled: bool);
     ov!(kafka.group_id: String);
     ov!(kafka.processing_timeout_ms: u64);
-    ov!(kafka.max_inflight: usize);
     ov!(kafka.lag_poll_interval_secs: u64);
     ov!(kafka.session_timeout_ms: u64);
     ov!(kafka.dlq.enabled: bool);

@@ -262,9 +262,10 @@ Consumer and producer are compiled into every binary and gated at runtime by `ka
 | `kafka.group_id` | `"orion"` | `ORION_KAFKA__GROUP_ID` | Give each deployment its own group so they do not share offsets. |
 | `kafka.topics` | `[]` | `ORION_KAFKA__TOPICS` | Topic-to-channel mappings — see below. |
 | `kafka.processing_timeout_ms` | `60000` | `ORION_KAFKA__PROCESSING_TIMEOUT_MS` | Per-message deadline. |
-| `kafka.max_inflight` | `100` | `ORION_KAFKA__MAX_INFLIGHT` | Concurrent in-flight messages. |
 | `kafka.lag_poll_interval_secs` | `30` | `ORION_KAFKA__LAG_POLL_INTERVAL_SECS` | `0` disables consumer-lag metrics. |
 | `kafka.session_timeout_ms` | `45000` | `ORION_KAFKA__SESSION_TIMEOUT_MS` | Consumer group session timeout; applied whether or not cluster mode is on. In cluster mode it pairs with static group membership (`group.instance.id`) so rolling restarts rejoin without a full rebalance. |
+
+Messages are processed **strictly sequentially** per consumer — the at-least-once delivery contract requires it, because committing an offset implicitly commits every earlier offset on that partition. Scale throughput by running more instances in the same consumer group. (The pre-1.0 `kafka.max_inflight` setting is gone; it advertised concurrency that never existed.)
 
 Topic mappings are TOML array-of-tables, and channels with a Kafka protocol contribute their own topics from the database — the two sets are merged at startup:
 

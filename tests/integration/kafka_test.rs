@@ -72,7 +72,6 @@ fn test_kafka_config(brokers: &str, topic: &str, channel: &str) -> KafkaIngestCo
             topic: format!("{}-dlq", topic),
         },
         processing_timeout_ms: 5_000,
-        max_inflight: 10,
         lag_poll_interval_secs: 0, // disable in tests — no real broker to query
         ..Default::default()
     }
@@ -578,23 +577,21 @@ async fn test_consumer_metadata_injection() {
 }
 
 // ============================================================
-// Concurrent message processing tests
+// Throughput tests (K4: processing is strictly sequential per consumer)
 // ============================================================
 
-/// Produce many messages concurrently and verify the consumer handles them all.
+/// Produce many messages concurrently and verify the consumer works through
+/// all of them sequentially without skipping or wedging.
 #[tokio::test]
 #[ignore]
-async fn test_concurrent_message_processing() {
+async fn test_concurrent_producers_all_committed() {
     let (_container, brokers) = start_kafka().await;
 
     let topic = "test-concurrent";
     let channel = "concurrent-channel";
     let msg_count = 50;
 
-    let config = KafkaIngestConfig {
-        max_inflight: 10,
-        ..test_kafka_config(&brokers, topic, channel)
-    };
+    let config = test_kafka_config(&brokers, topic, channel);
     let engine = empty_engine();
 
     let handle = consumer::start_consumer(
@@ -638,28 +635,25 @@ async fn test_concurrent_message_processing() {
         task.await.unwrap();
     }
 
-    // All 50 must be processed to commit with max_inflight=10 < msg_count:
-    // the in-flight permit cycle has to keep releasing (no deadlock) and no
-    // message may be skipped for the committed total to reach 50.
+    // All 50 must be processed to commit: the sequential loop has to keep
+    // advancing (no wedge on any message) and no message may be skipped for
+    // the committed total to reach 50.
     wait_for_committed(&brokers, &config.group_id, topic, 1, msg_count, 60).await;
 
     shutdown_within(handle, 10).await;
 }
 
-/// Produce a rapid burst of messages and verify the consumer keeps up.
+/// Produce a rapid burst of messages and verify the sequential consumer
+/// keeps up.
 #[tokio::test]
 #[ignore]
-async fn test_consumer_backpressure_under_load() {
+async fn test_rapid_burst_all_committed() {
     let (_container, brokers) = start_kafka().await;
 
-    let topic = "test-backpressure";
-    let channel = "bp-channel";
+    let topic = "test-burst";
+    let channel = "burst-channel";
 
-    // Low max_inflight to force backpressure behavior
-    let config = KafkaIngestConfig {
-        max_inflight: 2,
-        ..test_kafka_config(&brokers, topic, channel)
-    };
+    let config = test_kafka_config(&brokers, topic, channel);
     let engine = empty_engine();
 
     let handle = consumer::start_consumer(
@@ -691,9 +685,9 @@ async fn test_consumer_backpressure_under_load() {
             .expect("Failed to produce message");
     }
 
-    // With max_inflight=2 the consumer takes at most 2 messages at a time;
-    // all 20 reaching the committed offset proves the backpressure permits
-    // keep cycling under a rapid burst instead of deadlocking or dropping.
+    // The consumer takes one message at a time; all 20 reaching the
+    // committed offset proves the sequential loop keeps cycling under a
+    // rapid burst instead of wedging or dropping.
     wait_for_committed(&brokers, &config.group_id, topic, 1, 20, 60).await;
 
     shutdown_within(handle, 10).await;
@@ -727,7 +721,6 @@ async fn test_consumer_multiple_topics() {
             topic: "unused".to_string(),
         },
         processing_timeout_ms: 5_000,
-        max_inflight: 10,
         lag_poll_interval_secs: 0,
         ..Default::default()
     };
@@ -833,7 +826,6 @@ async fn test_consumer_partition_rebalance() {
             topic: "unused".to_string(),
         },
         processing_timeout_ms: 5_000,
-        max_inflight: 10,
         lag_poll_interval_secs: 0,
         ..Default::default()
     };

@@ -28,10 +28,14 @@ pub struct KafkaIngestConfig {
     /// `ORION_KAFKA__EXTRA_CONFIG`; set this via TOML only.
     pub extra_config: HashMap<String, String>,
     /// Maximum time in milliseconds for processing a single Kafka message.
+    ///
+    /// Messages are processed strictly sequentially — one at a time per
+    /// consumer — because the at-least-once commit contract requires it
+    /// (committing an offset implicitly commits everything below it). The
+    /// pre-1.0 `max_inflight` field advertised concurrency that never
+    /// existed and was removed (K4); scale throughput by running more
+    /// instances in the same consumer group.
     pub processing_timeout_ms: u64,
-    /// Maximum number of in-flight messages being processed concurrently.
-    /// The consumer pauses reading when this limit is reached (backpressure).
-    pub max_inflight: usize,
     /// Interval in seconds between consumer lag metric polls.
     /// Set to 0 to disable lag monitoring.
     pub lag_poll_interval_secs: u64,
@@ -52,7 +56,6 @@ impl Default for KafkaIngestConfig {
             auth: KafkaAuthConfig::default(),
             extra_config: HashMap::new(),
             processing_timeout_ms: 60_000,
-            max_inflight: 100,
             lag_poll_interval_secs: 30,
             session_timeout_ms: 45_000,
         }
@@ -92,11 +95,6 @@ impl KafkaIngestConfig {
                     message: format!("kafka.brokers[{i}] '{broker}' has invalid port"),
                 });
             }
-        }
-        if self.max_inflight == 0 {
-            return Err(OrionError::Config {
-                message: "kafka.max_inflight must be > 0".to_string(),
-            });
         }
         self.auth.validate()?;
         // Topics can be empty in config when async channels provide them from DB
@@ -291,6 +289,17 @@ mod tests {
         };
         let err = enabled_config(auth).validate().expect_err("test");
         assert!(err.to_string().contains("sasl_mechanism"));
+    }
+
+    /// K4: `max_inflight` advertised concurrency that never existed —
+    /// processing is strictly sequential — so the field was removed.
+    /// `deny_unknown_fields` turns a stale config into a precise startup
+    /// error instead of a silently ignored knob.
+    #[test]
+    fn removed_max_inflight_key_is_rejected() {
+        let err = toml::from_str::<KafkaIngestConfig>("max_inflight = 100")
+            .expect_err("the removed key must be refused, not ignored");
+        assert!(err.to_string().contains("max_inflight"), "{err}");
     }
 
     #[test]
