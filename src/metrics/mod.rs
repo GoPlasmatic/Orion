@@ -11,7 +11,7 @@ static METRICS_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Enable or disable metric recording globally. Call once at startup based on
 /// `config.metrics.enabled`. Safe to call again later (e.g., from tests).
-fn set_enabled(enabled: bool) {
+pub(crate) fn set_enabled(enabled: bool) {
     METRICS_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
@@ -291,6 +291,36 @@ pub fn record_cache_miss(channel: &str) {
         return;
     }
     counter!("orion_response_cache_misses_total", "channel" => channel.to_owned()).increment(1);
+}
+
+// ---------------------------------------------------------------------------
+// Background job health
+// ---------------------------------------------------------------------------
+
+/// Stamp the last-success gauge for a named background job with the current
+/// unix time, in seconds.
+///
+/// The periodic jobs — trace cleanup, audit-log cleanup, DLQ retry, the
+/// cluster epoch watcher, and the Kafka lag poller — deliberately swallow
+/// per-tick errors and keep looping, because a transient DB blip must not
+/// kill the loop. That left a *sustained* failure with no alertable signal:
+/// the task was still running, but had not done its job in hours, and
+/// cleanup/retry silently stopped cluster-wide (O3). Alert on
+/// `time() - orion_job_last_success_timestamp_seconds{job="…"} > threshold`.
+///
+/// `job` is one of `trace_cleanup`, `audit_cleanup`, `dlq_retry`,
+/// `epoch_watcher`, `kafka_lag`. Called once per fully successful tick;
+/// a tick skipped because another node holds the job lease does not count —
+/// on that node the gauge honestly goes stale, and the holder keeps it fresh.
+pub fn record_job_success(job: &'static str) {
+    if !is_enabled() {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    gauge!("orion_job_last_success_timestamp_seconds", "job" => job).set(now);
 }
 
 // ---------------------------------------------------------------------------
@@ -657,6 +687,34 @@ mod tests {
         assert!(
             out.contains("trace_dlq_depth 4"),
             "gauge must hold the latest value:\n{out}"
+        );
+    }
+
+    /// O3: a successful job tick must stamp the gauge with a plausible unix
+    /// time, labelled by job — the signal operators alert on going stale.
+    #[test]
+    fn test_record_job_success_stamps_unix_time_per_job() {
+        let out = render_local(|| {
+            record_job_success("trace_cleanup");
+            record_job_success("dlq_retry");
+        });
+        let value: f64 = out
+            .lines()
+            .find(|l| {
+                l.starts_with(r#"orion_job_last_success_timestamp_seconds{job="trace_cleanup"}"#)
+            })
+            .and_then(|l| l.rsplit(' ').next())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_default();
+        // 2001-09-09 in unix seconds — anything above proves it's a real
+        // timestamp, not a counter, a default zero, or a missing series.
+        assert!(
+            value > 1e9,
+            "expected a unix-seconds gauge for trace_cleanup, got {value}; output:\n{out}"
+        );
+        assert!(
+            out.contains(r#"orion_job_last_success_timestamp_seconds{job="dlq_retry"}"#),
+            "each job must get its own series:\n{out}"
         );
     }
 

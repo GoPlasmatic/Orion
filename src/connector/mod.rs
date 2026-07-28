@@ -17,7 +17,9 @@ pub use config::{
     VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES, is_mongo_url,
 };
 pub(crate) use masking::MASK;
-pub use masking::{find_masked_value, mask_connector, unmask_config};
+pub use masking::{
+    find_masked_value, mask_connector, mask_secrets, redact_url_secrets, unmask_config,
+};
 pub use registry::ConnectorRegistry;
 
 mod pool_access_counter {

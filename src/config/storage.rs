@@ -20,6 +20,12 @@ pub struct StorageConfig {
     pub idle_timeout_secs: u64,
     /// Directory for database backup files (SQLite only).
     pub backup_dir: String,
+    /// Keep only the newest N `orion_backup_*.db` files in `backup_dir`,
+    /// pruning older ones after each successful backup. Unset (the default)
+    /// keeps every backup — but they accumulate on the same disk as the live
+    /// database, so bounded deployments should set this. Must be >= 1 when
+    /// set (SQLite only).
+    pub backup_retention_count: Option<u32>,
     /// Run pending migrations automatically at startup. Set `false` in
     /// multi-replica deployments so boot-racing replicas never migrate;
     /// run `orion-server migrate` as a deploy step instead. Startup fails
@@ -37,6 +43,7 @@ impl Default for StorageConfig {
             acquire_timeout_secs: 3,
             idle_timeout_secs: 300,
             backup_dir: "./backups".to_string(),
+            backup_retention_count: None,
             auto_migrate: true,
         }
     }
@@ -47,6 +54,15 @@ impl StorageConfig {
         require_nonempty(&self.url, "storage.url")?;
         require_nonzero(self.busy_timeout_ms, "storage.busy_timeout_ms")?;
         require_nonzero(self.acquire_timeout_secs, "storage.acquire_timeout_secs")?;
+        // 0 would delete the backup just written; "keep none" is not a
+        // retention policy — leave the field unset to disable pruning.
+        if self.backup_retention_count == Some(0) {
+            return Err(OrionError::Config {
+                message: "storage.backup_retention_count must be >= 1 when set \
+                          (unset keeps every backup)"
+                    .to_string(),
+            });
+        }
         Ok(())
     }
 }

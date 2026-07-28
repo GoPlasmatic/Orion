@@ -68,6 +68,7 @@ enabled = true
 | `orion_circuit_breaker_rejections_total` | Counter | `connector`, `channel` | Requests rejected by open breakers |
 | `orion_channel_executions_total` | Counter | `channel` | Channel invocations |
 | `orion_rate_limit_rejections_total` | Counter | `client` | Rate-limited requests |
+| `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of the last fully successful tick of each background job: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher` (cluster mode), `kafka_lag` (Kafka enabled). The jobs swallow per-tick errors by design, so alert on `time() - orion_job_last_success_timestamp_seconds{job="…"}` exceeding a few tick intervals — that is the signal that cleanup or retry has silently stalled. In cluster mode only the lease-holding node stamps the lease-gated jobs (`trace_cleanup`, `audit_cleanup`, `dlq_retry`); `epoch_watcher` and `kafka_lag` stamp on every node, per `instance`. |
 
 All metrics carry the `orion_` prefix so they cannot collide in a shared
 registry, and in cluster mode every series also carries an `instance` label

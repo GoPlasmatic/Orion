@@ -87,6 +87,31 @@ pub(crate) async fn create_backup(
             source: Box::new(e),
         })?;
 
+    // Retention (O6): the backup succeeded, so prune down to the configured
+    // count. Backups land on the same disk as the live database, so an
+    // unbounded set is a mechanism that can cause the outage it exists to
+    // recover from. Prune failures are logged, never surfaced — the backup
+    // the caller asked for exists.
+    if let Some(retain) = state.config.storage.backup_retention_count {
+        let dir = backup_dir.clone();
+        match tokio::task::spawn_blocking(move || prune_old_backups(&dir, retain as usize)).await {
+            Ok(pruned) if !pruned.is_empty() => {
+                tracing::info!(
+                    pruned = ?pruned,
+                    retained = retain,
+                    "Backup retention: pruned old backup files"
+                );
+            }
+            Ok(_) => {}
+            // A join error (prune task panicked) is still only a prune
+            // failure — the backup the caller asked for exists, so it must
+            // not turn into a 500.
+            Err(e) => {
+                tracing::warn!(error = %e, "Backup retention: prune task failed");
+            }
+        }
+    }
+
     audit_log(
         &state.audit_log_repo,
         &principal,
@@ -101,6 +126,62 @@ pub(crate) async fn create_backup(
         "size_bytes": metadata.len(),
         "created_at": chrono::Utc::now().to_rfc3339(),
     })))
+}
+
+/// Delete the oldest `orion_backup_*.db` files in `backup_dir` so that at
+/// most `retain` remain, returning the filenames actually removed.
+///
+/// Filenames embed a sortable UTC timestamp (`orion_backup_%Y%m%d_%H%M%S.db`),
+/// so lexicographic order is chronological order — the same invariant
+/// `list_backups` sorts by. Only files matching the backup naming pattern are
+/// candidates; anything else in the directory is left alone. Called only
+/// after a successful backup with `retain >= 1` (validated config), so the
+/// file just written is always kept.
+fn prune_old_backups(backup_dir: &str, retain: usize) -> Vec<String> {
+    let dir = match std::fs::read_dir(backup_dir) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::warn!(
+                dir = %backup_dir,
+                error = %e,
+                "Backup retention: cannot read backup directory; skipping prune"
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut names: Vec<String> = dir
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let is_backup = path.extension().is_some_and(|ext| ext == "db")
+                && path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("orion_backup_"));
+            is_backup.then(|| entry.file_name().to_string_lossy().into_owned())
+        })
+        .collect();
+    if names.len() <= retain {
+        return Vec::new();
+    }
+
+    names.sort();
+    let cutoff = names.len() - retain;
+    let mut pruned = Vec::new();
+    for name in names.drain(..cutoff) {
+        let path = std::path::Path::new(backup_dir).join(&name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => pruned.push(name),
+            Err(e) => {
+                tracing::warn!(
+                    file = %name,
+                    error = %e,
+                    "Backup retention: failed to prune old backup file"
+                );
+            }
+        }
+    }
+    pruned
 }
 
 #[utoipa::path(
@@ -165,4 +246,113 @@ pub(crate) async fn list_backups(State(state): State<AppState>) -> Result<Json<V
     .map_err(|e| OrionError::Internal(format!("spawn_blocking failed: {e}")))??;
 
     Ok(data_response(backups))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prune_old_backups;
+
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "orion_prune_test_{label}_{}_{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&path).expect("test dir");
+            Self(path)
+        }
+
+        fn touch(&self, name: &str) {
+            std::fs::write(self.0.join(name), b"x").expect("test file");
+        }
+
+        fn names(&self) -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(&self.0)
+                .expect("test dir")
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        }
+
+        fn path(&self) -> &str {
+            self.0.to_str().expect("utf-8 temp path")
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Oldest-first pruning down to the retention count, reported by name.
+    #[test]
+    fn test_prunes_oldest_backups_beyond_retention() {
+        let dir = TempDir::new("oldest");
+        dir.touch("orion_backup_20240101_000000.db");
+        dir.touch("orion_backup_20240102_000000.db");
+        dir.touch("orion_backup_20240103_000000.db");
+        dir.touch("orion_backup_20240104_000000.db");
+
+        let mut pruned = prune_old_backups(dir.path(), 2);
+        pruned.sort();
+
+        assert_eq!(
+            pruned,
+            vec![
+                "orion_backup_20240101_000000.db",
+                "orion_backup_20240102_000000.db"
+            ],
+            "the two oldest must be pruned and reported"
+        );
+        assert_eq!(
+            dir.names(),
+            vec![
+                "orion_backup_20240103_000000.db",
+                "orion_backup_20240104_000000.db"
+            ],
+            "the two newest must survive"
+        );
+    }
+
+    /// Files that are not `orion_backup_*.db` are never candidates — the
+    /// live database or an operator's own files must not be collateral.
+    #[test]
+    fn test_prune_ignores_non_backup_files() {
+        let dir = TempDir::new("foreign");
+        dir.touch("orion.db");
+        dir.touch("notes.txt");
+        dir.touch("orion_backup_20240101_000000.db");
+        dir.touch("orion_backup_20240102_000000.db");
+
+        let pruned = prune_old_backups(dir.path(), 1);
+
+        assert_eq!(pruned, vec!["orion_backup_20240101_000000.db"]);
+        assert_eq!(
+            dir.names(),
+            vec!["notes.txt", "orion.db", "orion_backup_20240102_000000.db"],
+            "unrelated files must be untouched"
+        );
+    }
+
+    /// At or under the retention count nothing happens — including in an
+    /// empty or missing directory.
+    #[test]
+    fn test_prune_is_a_noop_at_or_under_retention() {
+        let dir = TempDir::new("noop");
+        dir.touch("orion_backup_20240101_000000.db");
+
+        assert!(prune_old_backups(dir.path(), 1).is_empty());
+        assert!(prune_old_backups(dir.path(), 5).is_empty());
+        assert_eq!(dir.names(), vec!["orion_backup_20240101_000000.db"]);
+        assert!(prune_old_backups("/nonexistent/orion-prune-test", 1).is_empty());
+    }
 }

@@ -45,12 +45,17 @@ impl Drop for TestDirs {
 /// This is required for backup tests because `VACUUM INTO` does not work
 /// reliably with sqlx's in-memory SQLite pool (each connection in the pool
 /// gets a separate in-memory database).
-async fn backup_test_app(base_dir: &str, backup_dir: &str) -> axum::Router {
+async fn backup_test_app(
+    base_dir: &str,
+    backup_dir: &str,
+    backup_retention_count: Option<u32>,
+) -> axum::Router {
     let db_path = format!("{}/test.db", base_dir);
     let config = orion::config::AppConfig {
         storage: orion::config::StorageConfig {
             url: format!("sqlite:{}", db_path),
             backup_dir: backup_dir.to_string(),
+            backup_retention_count,
             max_connections: 5,
             ..Default::default()
         },
@@ -92,7 +97,7 @@ async fn test_restore_endpoint_does_not_exist() {
 async fn test_create_backup() {
     let dirs = make_test_dirs("create");
     let (base_dir, backup_dir) = (dirs.base.clone(), dirs.backup_dir.clone());
-    let app = backup_test_app(&base_dir, &backup_dir).await;
+    let app = backup_test_app(&base_dir, &backup_dir, None).await;
 
     let resp = app
         .clone()
@@ -144,7 +149,7 @@ async fn test_create_backup() {
 async fn test_list_backups() {
     let dirs = make_test_dirs("list");
     let (base_dir, backup_dir) = (dirs.base.clone(), dirs.backup_dir.clone());
-    let app = backup_test_app(&base_dir, &backup_dir).await;
+    let app = backup_test_app(&base_dir, &backup_dir, None).await;
 
     // Create first backup
     let resp = app
@@ -196,14 +201,80 @@ async fn test_list_backups() {
 }
 
 // ============================================================
-// 3. Backup contains data (non-trivial size after inserting records)
+// 3. Retention prunes oldest-first after a successful backup (O6)
+// ============================================================
+
+/// With `storage.backup_retention_count = 2`, a successful backup prunes the
+/// directory oldest-first down to two files. The stale backups are seeded on
+/// disk with dates that sort before anything created now, so the test is
+/// deterministic without sleeping through filename-timestamp resolution.
+#[tokio::test]
+async fn test_backup_retention_prunes_oldest_backups() {
+    let dirs = make_test_dirs("retention");
+    let (base_dir, backup_dir) = (dirs.base.clone(), dirs.backup_dir.clone());
+    let stale = [
+        "orion_backup_20200101_000000.db",
+        "orion_backup_20200102_000000.db",
+        "orion_backup_20200103_000000.db",
+    ];
+    for name in stale {
+        std::fs::write(format!("{backup_dir}/{name}"), b"stale").unwrap();
+    }
+
+    let app = backup_test_app(&base_dir, &backup_dir, Some(2)).await;
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", "/api/v1/admin/backups", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let new_backup = body["data"]["filename"]
+        .as_str()
+        .expect("filename should be a string")
+        .to_string();
+
+    // Four backups existed the moment the new one was written; retention 2
+    // keeps the newest two: the fresh backup and the newest stale file.
+    let mut on_disk: Vec<String> = std::fs::read_dir(&backup_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    on_disk.sort();
+    assert_eq!(
+        on_disk,
+        vec!["orion_backup_20200103_000000.db".to_string(), new_backup],
+        "retention must keep exactly the newest 2 backups"
+    );
+
+    // The list endpoint agrees with the disk.
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/backups", None))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["data"]
+            .as_array()
+            .expect("data should be an array")
+            .len(),
+        2,
+        "GET /backups must list only the retained files"
+    );
+}
+
+// ============================================================
+// 4. Backup contains data (non-trivial size after inserting records)
 // ============================================================
 
 #[tokio::test]
 async fn test_backup_contains_data() {
     let dirs = make_test_dirs("data");
     let (base_dir, backup_dir) = (dirs.base.clone(), dirs.backup_dir.clone());
-    let app = backup_test_app(&base_dir, &backup_dir).await;
+    let app = backup_test_app(&base_dir, &backup_dir, None).await;
 
     // Insert some workflows
     for i in 0..3 {

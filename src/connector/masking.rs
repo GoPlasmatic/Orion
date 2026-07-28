@@ -212,7 +212,10 @@ fn render_pair(name: &str, value: Option<&str>) -> String {
 /// whose name satisfies [`is_secret_key`] (`?api_key=…`, `?sig=…`) — one
 /// predicate, two positions (S18). Returns `None` when the string carries
 /// neither, so credential-free URLs are left exactly as authored.
-fn redact_url_secrets(s: &str) -> Option<String> {
+///
+/// Public because `validate-config` reuses it for the URL-shaped values its
+/// summary prints verbatim, such as `storage.url` (O15).
+pub fn redact_url_secrets(s: &str) -> Option<String> {
     let url = split_url(s)?;
     let mut changed = false;
 
@@ -348,13 +351,26 @@ fn mask_in_place(value: &mut Value, key: Option<&str>, force: bool) {
     }
 }
 
+/// Mask every secret in a JSON-shaped tree, in place: scalars under
+/// secret-looking keys are replaced wholesale, and URL userinfo passwords are
+/// redacted at any depth.
+///
+/// This is the exact policy `GET /api/v1/admin/connectors` applies, exposed
+/// so `validate-config` can dump the effective server config through the same
+/// single list of secret-key patterns rather than a drifting copy (O15) —
+/// `kafka.auth.sasl_password` and `admin_auth.api_keys` mask by key,
+/// `storage.url` and `cluster.redis_url` by URL shape.
+pub fn mask_secrets(value: &mut Value) {
+    mask_in_place(value, None, false);
+}
+
 /// Mask sensitive fields in a connector's config_json for API responses.
 pub fn mask_connector_secrets(config_json: &str) -> String {
     let Ok(mut val) = serde_json::from_str::<Value>(config_json) else {
         return config_json.to_string();
     };
 
-    mask_in_place(&mut val, None, false);
+    mask_secrets(&mut val);
 
     serde_json::to_string(&val).unwrap_or_else(|_| config_json.to_string())
 }

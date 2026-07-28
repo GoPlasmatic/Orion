@@ -9,8 +9,9 @@ Defaults on this page are checked against `src/config/*.rs` by an integration te
 ```bash
 orion-server                                       # Start the server (default)
 orion-server -c config.toml                        # Start with a config file
-orion-server validate-config                       # Validate config without starting
-orion-server validate-config -c config.toml        # Validate a specific config file
+orion-server validate-config                       # Validate + print the full effective config (TOML, secrets masked)
+orion-server validate-config -c config.toml        # Same, for a specific config file
+orion-server validate-config --format summary      # Short human summary (also: --format json)
 orion-server migrate                               # Run database migrations
 orion-server migrate --dry-run                     # Preview pending migrations
 orion-server lint path/to/workflow.json            # Strict-validate a workflow JSON file
@@ -28,7 +29,7 @@ Three layers, in increasing precedence:
 2. **The config file**, passed with `-c`. Values may reference process environment variables with `${VAR}` (required — startup fails if unset) or `${VAR:-default}` (optional). `$$` escapes a literal `$`. The same substitution runs against connector `config_json` blobs at startup, so secrets can stay out of the database. The complementary `env://VAR_NAME` resolver runs **after** JSON parsing on connector string fields: `${VAR}` rewrites text, `env://` rewrites parsed values.
 3. **Environment variables**, named `ORION_SECTION__KEY` with a double underscore between levels — `ORION_SERVER__PORT`, `ORION_ENGINE__CIRCUIT_BREAKER__ENABLED`. These win over the file. Every setting's variable is in the tables below; list-valued settings take a comma-separated string.
 
-Run `orion-server validate-config` to check the merged result without starting. Configuration is validated at startup too, and an invalid value stops the boot rather than being silently ignored.
+Run `orion-server validate-config` to see the merged result without starting: it prints the full effective config — every section, serialized from the same structs the server runs on — as TOML (`--format json` and `--format summary` also exist). Secrets are masked with the same policy as the connector API: values under secret-looking keys are replaced with `******`, and passwords embedded in URL-shaped values such as `storage.url` are struck out in place. Configuration is validated at startup too, and an invalid value stops the boot rather than being silently ignored.
 
 ## Deployment Environment
 
@@ -125,6 +126,7 @@ Both endpoints are unauthenticated and the spec publishes the complete admin API
 | `storage.acquire_timeout_secs` | `3` | `ORION_STORAGE__ACQUIRE_TIMEOUT_SECS` | How long a request waits for a free pooled connection before failing. Lower it to shed load faster; raise it only if brief pool exhaustion is expected and acceptable. |
 | `storage.idle_timeout_secs` | `300` | `ORION_STORAGE__IDLE_TIMEOUT_SECS` | Lower it when a proxy (PgBouncer, RDS Proxy) closes idle connections sooner; `0` never closes them. |
 | `storage.backup_dir` | `"./backups"` | `ORION_STORAGE__BACKUP_DIR` | Where `POST /api/v1/admin/backups` writes. SQLite only. |
+| `storage.backup_retention_count` | — | `ORION_STORAGE__BACKUP_RETENTION_COUNT` | Keep only the newest N backups, pruning older ones after each successful backup. Unset keeps every backup — they accumulate on the same disk as the live database. Set the variable to an empty string to clear it. |
 | `storage.auto_migrate` | `true` | `ORION_STORAGE__AUTO_MIGRATE` | **Set `false` for multi-replica deployments** and run `orion-server migrate` as a deploy step. |
 
 **Sizing the pool.** `max_connections` is per process. With N replicas, N × `max_connections` must stay below the server's own `max_connections` (PostgreSQL's default is 100, and superuser slots and other clients come out of that budget) or replicas will fail to connect under load. The default of 50 suits a single node against a dedicated database; three replicas against a stock Postgres want roughly 25 each, less whatever else connects.

@@ -26,7 +26,8 @@ use orion::bootstrap;
 EXAMPLES:\n    \
     orion-server                              Start with default config\n    \
     orion-server -c config.toml               Start with a config file\n    \
-    orion-server validate-config              Validate config and show summary\n    \
+    orion-server validate-config              Validate + dump effective config (TOML)\n    \
+    orion-server validate-config --format summary  Short human summary instead\n    \
     orion-server -c config.toml migrate       Run pending database migrations\n    \
     orion-server migrate --dry-run            Preview pending migrations\n    \
     orion-server lint workflow.json           Validate a workflow JSON file\n    \
@@ -52,8 +53,15 @@ struct Cli {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    /// Validate configuration without starting the server.
-    ValidateConfig,
+    /// Validate configuration without starting the server, then print the
+    /// full effective config (defaults + file + ORION_* env overrides) with
+    /// secrets masked. `--format summary` prints a short human summary
+    /// instead.
+    ValidateConfig {
+        /// Output format for the effective config.
+        #[arg(long, value_enum, default_value = "toml")]
+        format: cli::ConfigFormat,
+    },
     /// Run database migrations without starting the server.
     Migrate {
         /// Preview pending migrations without applying them.
@@ -129,7 +137,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Handle subcommands that exit early (before starting the server)
     match cli.command {
-        Some(Command::ValidateConfig) => return cli::handle_validate_config(&config),
+        Some(Command::ValidateConfig { format }) => {
+            return cli::handle_validate_config(&config, format);
+        }
         Some(Command::Migrate { dry_run }) => return cli::handle_migrate(&config, dry_run).await,
         Some(Command::Lint { workflow }) => return cli::run_lint(&workflow),
         Some(Command::DryRun { workflow, input }) => {

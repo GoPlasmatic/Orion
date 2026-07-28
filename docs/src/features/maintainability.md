@@ -184,6 +184,11 @@ curl -s -X POST http://localhost:8080/api/v1/admin/backups
 curl -s http://localhost:8080/api/v1/admin/backups
 ```
 
+Backups land on the same disk as the live database, so set
+`storage.backup_retention_count` to bound them: after each successful backup
+the oldest `orion_backup_*.db` files are pruned so at most N remain (the prune
+is logged). Unset, every backup is kept — the pre-1.0 behavior.
+
 | Backend | In-product backup | Restore |
 |---------|-------------------|---------|
 | SQLite | `POST /api/v1/admin/backups` (`VACUUM INTO`), single node only | Stop the server, replace the database file, start it again |
@@ -214,7 +219,10 @@ For PostgreSQL and MySQL the same shape applies — stop the replicas, restore
 the snapshot with the database's own tooling, run `orion-server migrate` if
 `storage.auto_migrate = false`, then start the replicas.
 
-**Config validation CLI:** validate your configuration without starting the server:
+**Config validation CLI:** validate your configuration without starting the
+server. On success it prints the full effective config (defaults + file +
+`ORION_*` overrides) as TOML with secrets masked; `--format json` and
+`--format summary` are also available:
 
 ```bash
 orion-server validate-config

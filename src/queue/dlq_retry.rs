@@ -71,6 +71,13 @@ pub fn start_dlq_retry(
                     continue;
                 }
             };
+            // The tick did its job: the claim succeeded, and everything it
+            // returned gets a terminal outcome below (retried / exhausted /
+            // rescheduled — each already counted per entry). What the gauge
+            // must catch is this loop *stalling*: a DB that stops answering
+            // `claim_pending` hits the `continue` above and the timestamp
+            // goes stale (O3).
+            metrics::record_job_success("dlq_retry");
 
             for entry in entries {
                 let payload: serde_json::Value = match serde_json::from_str(&entry.payload_json) {
@@ -566,6 +573,49 @@ mod tests {
         assert!(
             dlq_repo.state.lock().expect("test").count_calls >= 2,
             "the depth gauge must be refreshed on every poll tick"
+        );
+    }
+
+    /// O3: a tick whose claim succeeds must stamp the job health gauge —
+    /// even an empty tick, since "nothing to retry" is the loop working.
+    /// Reverting the `record_job_success("dlq_retry")` call fails this.
+    #[test]
+    fn test_successful_tick_stamps_the_job_health_gauge() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, || {
+            crate::metrics::set_enabled(true);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .start_paused(true)
+                .build()
+                .expect("test runtime")
+                .block_on(async {
+                    let dlq_repo = Arc::new(MockDlqRepo::new(vec![]));
+                    let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
+                    let (queue, _rx) = make_test_queue(10);
+                    let job = start_dlq_retry(
+                        DlqRetryOptions {
+                            poll_interval_secs: 1,
+                            batch_size: 20,
+                            lease_secs: 60,
+                            claimant: "test-node".to_string(),
+                            lease_gate: None,
+                        },
+                        dlq_repo,
+                        queue,
+                        trace_repo,
+                        Arc::new(crate::channel::ChannelRegistry::new()),
+                    );
+                    advance_and_yield(Duration::from_secs(1)).await;
+                    advance_and_yield(Duration::from_secs(1)).await;
+                    job.abort();
+                });
+        });
+        let out = handle.render();
+        assert!(
+            out.contains(r#"orion_job_last_success_timestamp_seconds{job="dlq_retry"}"#),
+            "a successful poll tick must stamp the job health gauge:\n{out}"
         );
     }
 

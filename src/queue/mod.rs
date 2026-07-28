@@ -51,6 +51,7 @@ pub fn start_trace_cleanup(
             }
             match trace_repo.delete_older_than(retention_hours).await {
                 Ok(count) => {
+                    metrics::record_job_success("trace_cleanup");
                     if count > 0 {
                         tracing::info!(
                             deleted = count,
@@ -391,6 +392,110 @@ mod tests {
         assert!(
             matches!(err, crate::errors::OrionError::Queue(_)),
             "expected Queue error, got: {err:?}"
+        );
+    }
+
+    /// `delete_older_than` succeeds and nothing else; every other method is
+    /// off the cleanup path.
+    struct MockCleanupTraceRepo;
+
+    #[async_trait::async_trait]
+    impl TraceRepository for MockCleanupTraceRepo {
+        async fn create_pending(
+            &self,
+            _channel: &str,
+            _channel_id: Option<&str>,
+            _mode: &str,
+            _input_json: Option<&str>,
+            _access_token_hash: Option<&str>,
+        ) -> Result<crate::storage::models::Trace, crate::errors::OrionError> {
+            unimplemented!("not used by trace cleanup")
+        }
+        async fn get_by_id(
+            &self,
+            _id: &str,
+        ) -> Result<crate::storage::models::Trace, crate::errors::OrionError> {
+            unimplemented!("not used by trace cleanup")
+        }
+        async fn update_status(
+            &self,
+            _id: &str,
+            _status: &str,
+            _error_message: Option<&str>,
+        ) -> Result<crate::storage::models::Trace, crate::errors::OrionError> {
+            unimplemented!("not used by trace cleanup")
+        }
+        async fn set_result(
+            &self,
+            _id: &str,
+            _result_json: &str,
+            _duration_ms: f64,
+            _task_trace_json: Option<&str>,
+        ) -> Result<(), crate::errors::OrionError> {
+            unimplemented!("not used by trace cleanup")
+        }
+        async fn store_completed(
+            &self,
+            _channel: &str,
+            _channel_id: Option<&str>,
+            _mode: &str,
+            _input_json: Option<&str>,
+            _result_json: &str,
+            _duration_ms: f64,
+            _task_trace_json: Option<&str>,
+        ) -> Result<String, crate::errors::OrionError> {
+            unimplemented!("not used by trace cleanup")
+        }
+        async fn list_paginated(
+            &self,
+            _filter: &crate::storage::repositories::traces::TraceFilter,
+        ) -> Result<
+            crate::storage::repositories::helpers::PaginatedResult<crate::storage::models::Trace>,
+            crate::errors::OrionError,
+        > {
+            unimplemented!("not used by trace cleanup")
+        }
+        async fn delete_older_than(&self, _hours: u64) -> Result<u64, crate::errors::OrionError> {
+            // "Nothing to delete" is still a successful tick.
+            Ok(0)
+        }
+    }
+
+    /// O3: a successful cleanup tick must stamp `job_last_success_timestamp`
+    /// — the gauge whose staleness is the only alertable signal that the
+    /// cleanup loop is silently failing. Same paused-clock local-recorder
+    /// pattern as the audit_cleanup and dlq_retry tests.
+    #[test]
+    fn test_successful_tick_stamps_the_job_health_gauge() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, || {
+            crate::metrics::set_enabled(true);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .start_paused(true)
+                .build()
+                .expect("test runtime")
+                .block_on(async {
+                    let repo: Arc<dyn TraceRepository> = Arc::new(MockCleanupTraceRepo);
+                    let job = start_trace_cleanup(24, 1, repo, None).expect("job started");
+                    // One advance consumes the skipped immediate tick, the
+                    // next fires the first real one.
+                    tokio::time::advance(Duration::from_secs(1)).await;
+                    for _ in 0..20 {
+                        tokio::task::yield_now().await;
+                    }
+                    tokio::time::advance(Duration::from_secs(1)).await;
+                    for _ in 0..20 {
+                        tokio::task::yield_now().await;
+                    }
+                    job.abort();
+                });
+        });
+        let out = handle.render();
+        assert!(
+            out.contains(r#"orion_job_last_success_timestamp_seconds{job="trace_cleanup"}"#),
+            "a successful cleanup tick must stamp the job health gauge:\n{out}"
         );
     }
 }

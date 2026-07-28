@@ -130,7 +130,9 @@ fn write_temp_toml(content: &str, suffix: &str) -> String {
 fn validate_config_layering_env_beats_file_beats_default() {
     let toml = write_temp_toml("[server]\nport = 6111\n", "layering");
 
-    // Built-in default: no file, no env → 8080.
+    // Built-in default: no file, no env → 8080. The default output is the
+    // full effective config as TOML (O15), so the port appears as a setting
+    // line, not the old hand-formatted "host:port" summary.
     let out = Command::new(orion_bin())
         .args(["validate-config"])
         .env_remove("ORION_SERVER__PORT")
@@ -138,7 +140,10 @@ fn validate_config_layering_env_beats_file_beats_default() {
         .expect("invoke validate-config");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stdout={stdout}");
-    assert!(stdout.contains(":8080"), "default port expected: {stdout}");
+    assert!(
+        stdout.contains("port = 8080"),
+        "default port expected: {stdout}"
+    );
 
     // File beats default.
     let out = Command::new(orion_bin())
@@ -148,7 +153,10 @@ fn validate_config_layering_env_beats_file_beats_default() {
         .expect("invoke validate-config");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stdout={stdout}");
-    assert!(stdout.contains(":6111"), "file port expected: {stdout}");
+    assert!(
+        stdout.contains("port = 6111"),
+        "file port expected: {stdout}"
+    );
 
     // Env beats file.
     let out = Command::new(orion_bin())
@@ -159,11 +167,123 @@ fn validate_config_layering_env_beats_file_beats_default() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "stdout={stdout}");
     assert!(
-        stdout.contains(":6222"),
+        stdout.contains("port = 6222"),
         "env override must beat the file value: {stdout}"
     );
 
     let _ = std::fs::remove_file(&toml);
+}
+
+/// O15: the default TOML dump is serialized from the config structs, so it
+/// carries the whole surface — including the sections the hand-maintained
+/// summary silently omitted (`[cluster]`, the DLQ knobs, `[trace_storage]`)
+/// — and it round-trips: the dump itself must parse as a loadable config.
+#[test]
+fn validate_config_dumps_the_full_effective_config() {
+    let out = Command::new(orion_bin())
+        .args(["validate-config"])
+        .output()
+        .expect("invoke validate-config");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout={stdout}");
+    for needle in [
+        "[cluster]",
+        "[trace_storage]",
+        "dlq_max_retries",
+        "[engine.circuit_breaker]",
+    ] {
+        assert!(
+            stdout.contains(needle),
+            "the dump must include `{needle}`, the kind of setting the old \
+             11-line summary omitted: {stdout}"
+        );
+    }
+    // The validity note must not corrupt the machine-readable stdout.
+    toml::from_str::<toml::Value>(&stdout).unwrap_or_else(|e| {
+        panic!("validate-config stdout is not valid TOML: {e}\n{stdout}");
+    });
+
+    // --format json emits the same tree as JSON.
+    let out = Command::new(orion_bin())
+        .args(["validate-config", "--format", "json"])
+        .env_remove("ORION_SERVER__PORT")
+        .output()
+        .expect("invoke validate-config --format json");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout={stdout}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("--format json output is not valid JSON: {e}\n{stdout}");
+    });
+    assert_eq!(parsed["server"]["port"], 8080, "json dump: {stdout}");
+
+    // --format summary keeps the short human-readable shape.
+    let out = Command::new(orion_bin())
+        .args(["validate-config", "--format", "summary"])
+        .output()
+        .expect("invoke validate-config --format summary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout={stdout}");
+    assert!(
+        stdout.contains("Configuration is valid.") && stdout.contains("server:"),
+        "summary format expected: {stdout}"
+    );
+}
+
+/// O15: the dump must never print a credential. A password embedded in
+/// `storage.url` has to come out masked in every format — the effective-config
+/// dump is exactly the thing that gets pasted into tickets and chat.
+#[test]
+fn validate_config_redacts_url_credentials_in_every_format() {
+    let toml = write_temp_toml(
+        "[storage]\nurl = \"postgres://orion:sup3rsecret@db.internal:5432/orion\"\n",
+        "redaction",
+    );
+
+    for format in ["toml", "json", "summary"] {
+        let out = Command::new(orion_bin())
+            .args(["validate-config", "-c", &toml, "--format", format])
+            // Env beats the file, so a stray override would break the URL
+            // assertions rather than test the redaction.
+            .env_remove("ORION_STORAGE__URL")
+            .output()
+            .expect("invoke validate-config");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "stdout={stdout}, stderr={stderr}");
+        assert!(
+            !stdout.contains("sup3rsecret") && !stderr.contains("sup3rsecret"),
+            "--format {format} leaked the storage.url password: {stdout}"
+        );
+        assert!(
+            stdout.contains("postgres://orion:******@db.internal:5432/orion"),
+            "--format {format} should keep the URL readable with the password \
+             struck out: {stdout}"
+        );
+    }
+
+    // Key-named secrets are masked wholesale, not just URL passwords.
+    let toml_keys = write_temp_toml(
+        "[admin_auth]\nenabled = true\napi_keys = [\"k3y-sup3rsecret-32-chars-long-xx\"]\n",
+        "redaction-keys",
+    );
+    let out = Command::new(orion_bin())
+        .args(["validate-config", "-c", &toml_keys])
+        .env_remove("ORION_ADMIN_AUTH__API_KEYS")
+        .output()
+        .expect("invoke validate-config");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "stdout={stdout}");
+    assert!(
+        !stdout.contains("k3y-sup3rsecret"),
+        "admin_auth.api_keys must be masked: {stdout}"
+    );
+    assert!(
+        stdout.contains("******"),
+        "masked keys should show the mask sentinel: {stdout}"
+    );
+
+    let _ = std::fs::remove_file(&toml);
+    let _ = std::fs::remove_file(&toml_keys);
 }
 
 /// `validate-config` is the pre-boot check operators run in deploy scripts;

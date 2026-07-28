@@ -77,6 +77,9 @@
 # acquire_timeout_secs = 3     # How long a request waits for a pooled connection before erroring
 # idle_timeout_secs = 300      # Close connections idle this long (0 = never)
 # backup_dir = "./backups"     # Where POST /api/v1/admin/backups writes (SQLite only)
+# backup_retention_count = 10  # Keep only the newest N backups, pruning older ones after
+                               # each successful backup. Unset keeps every backup — they
+                               # accumulate on the same disk as the live database.
 # auto_migrate = true          # Run pending migrations at startup. Set false for multi-replica
                                # deployments and run `orion-server migrate` as a deploy step;
                                # startup then fails fast if migrations are still pending.

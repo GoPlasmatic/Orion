@@ -43,6 +43,7 @@ pub fn start_audit_cleanup(
             }
             match audit_repo.delete_older_than(retention_days).await {
                 Ok(count) => {
+                    crate::metrics::record_job_success("audit_cleanup");
                     if count > 0 {
                         tracing::info!(
                             deleted = count,
@@ -184,6 +185,68 @@ mod tests {
             "the first interval tick must run the DELETE"
         );
         handle.abort();
+    }
+
+    /// Run `job` under a thread-local Prometheus recorder on a paused
+    /// current-thread runtime, and render what it recorded. The local
+    /// recorder keeps the assertion immune to every other test in the
+    /// binary sharing the global recorder.
+    fn render_job_metrics<F, Fut>(job: F) -> String
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        ::metrics::with_local_recorder(&recorder, || {
+            crate::metrics::set_enabled(true);
+            tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .start_paused(true)
+                .build()
+                .expect("test runtime")
+                .block_on(job());
+        });
+        handle.render()
+    }
+
+    /// O3: a successful tick must stamp `job_last_success_timestamp` — the
+    /// gauge whose staleness is the only alertable signal that a cleanup
+    /// loop is silently failing.
+    #[test]
+    fn test_successful_tick_stamps_the_job_health_gauge() {
+        let out = render_job_metrics(|| async {
+            let repo = Arc::new(MockAuditRepo::default());
+            let handle = start_audit_cleanup(90, 1, repo, None).expect("job started");
+            advance_and_yield(Duration::from_secs(1)).await;
+            advance_and_yield(Duration::from_secs(1)).await;
+            handle.abort();
+        });
+        assert!(
+            out.contains(r#"orion_job_last_success_timestamp_seconds{job="audit_cleanup"}"#),
+            "a successful tick must stamp the job health gauge:\n{out}"
+        );
+    }
+
+    /// The complement: a node that never wins the lease never succeeds, so
+    /// its gauge must stay unstamped rather than lie about freshness.
+    #[test]
+    fn test_lease_refused_tick_does_not_stamp_the_gauge() {
+        let out = render_job_metrics(|| async {
+            let repo = Arc::new(MockAuditRepo::default());
+            let gate = Arc::new(crate::cluster::JobLeaseGate::new(
+                Arc::new(LeaseHeldElsewhere),
+                "node-b".to_string(),
+            ));
+            let handle = start_audit_cleanup(90, 1, repo, Some(gate)).expect("job started");
+            advance_and_yield(Duration::from_secs(1)).await;
+            advance_and_yield(Duration::from_secs(1)).await;
+            handle.abort();
+        });
+        assert!(
+            !out.contains(r#"job="audit_cleanup""#),
+            "a tick skipped for the lease is not a success:\n{out}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

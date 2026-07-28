@@ -4,10 +4,75 @@
 
 use orion::config;
 
-/// `validate-config` subcommand: report parsed configuration and exit.
+/// Output format for `validate-config`.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub(crate) enum ConfigFormat {
+    /// The full effective config as TOML, secrets masked (the default).
+    Toml,
+    /// The full effective config as JSON, secrets masked.
+    Json,
+    /// A short human-readable summary of the headline settings.
+    Summary,
+}
+
+/// `validate-config` subcommand: dump the effective configuration and exit.
+///
+/// `toml`/`json` print the *entire* config — serialized from the structs the
+/// server actually runs on, so a new section can never be omitted the way the
+/// old hand-maintained summary omitted `[cluster]`, `[queue]` and
+/// `[tracing.storage]` (O15). The validity note goes to stderr so stdout
+/// stays machine-parseable.
 pub(crate) fn handle_validate_config(
     config: &config::AppConfig,
+    format: ConfigFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    match format {
+        ConfigFormat::Summary => print_config_summary(config),
+        ConfigFormat::Toml => {
+            eprintln!("Configuration is valid.");
+            let masked = masked_effective_config(config)?;
+            print!(
+                "{}",
+                toml::to_string_pretty(&toml::Value::try_from(&masked)?)?
+            );
+        }
+        ConfigFormat::Json => {
+            eprintln!("Configuration is valid.");
+            let masked = masked_effective_config(config)?;
+            println!("{}", serde_json::to_string_pretty(&masked)?);
+        }
+    }
+    Ok(())
+}
+
+/// The full effective config — defaults + file + env overrides, as merged at
+/// startup — with secrets masked, as a JSON tree.
+///
+/// The tree goes through `toml::Value` first so unset `Option` fields drop
+/// out the way an authored config file omits them (TOML has no null).
+/// Masking reuses the connector policy (`orion::connector::mask_secrets`):
+/// values under secret-looking keys (`kafka.auth.sasl_password`,
+/// `admin_auth.api_keys`) are replaced wholesale, and URL userinfo passwords
+/// (`storage.url`, `cluster.redis_url`) are redacted in place.
+fn masked_effective_config(
+    config: &config::AppConfig,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
+    let without_unset = toml::Value::try_from(config)?;
+    let mut tree = serde_json::to_value(&without_unset)?;
+    orion::connector::mask_secrets(&mut tree);
+    Ok(tree)
+}
+
+/// URL-shaped values the summary prints verbatim can embed `user:password@`
+/// credentials or secret-named query parameters; show them with both
+/// positions struck out.
+fn redacted(value: &str) -> String {
+    orion::connector::redact_url_secrets(value).unwrap_or_else(|| value.to_string())
+}
+
+/// The `summary` format: the handful of headline settings an operator scans
+/// for on a box. Everything else is in `--format toml`/`json`.
+fn print_config_summary(config: &config::AppConfig) {
     println!("Configuration is valid.\n");
     println!("  environment:     {}", config.environment);
     println!(
@@ -22,7 +87,7 @@ pub(crate) fn handle_validate_config(
             "disabled".to_string()
         }
     );
-    println!("  storage:         {}", config.storage.url);
+    println!("  storage:         {}", redacted(&config.storage.url));
     println!(
         "  logging:         level={}, format={}",
         config.logging.level,
@@ -75,14 +140,22 @@ pub(crate) fn handle_validate_config(
         }
     );
     println!(
-        "  kafka:           {}",
-        if config.kafka.enabled {
-            format!("enabled (brokers={})", config.kafka.brokers.join(","))
+        "  cluster:         {}",
+        if config.cluster.enabled {
+            format!("enabled (instance_id={})", config.cluster.instance_id)
         } else {
             "disabled".to_string()
         }
     );
-    Ok(())
+    println!(
+        "  kafka:           {}",
+        if config.kafka.enabled {
+            let brokers: Vec<String> = config.kafka.brokers.iter().map(|b| redacted(b)).collect();
+            format!("enabled (brokers={})", brokers.join(","))
+        } else {
+            "disabled".to_string()
+        }
+    );
 }
 
 /// `migrate [--dry-run]` subcommand: list or apply pending DB migrations.

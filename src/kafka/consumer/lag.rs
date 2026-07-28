@@ -36,18 +36,28 @@ pub(super) async fn poll_consumer_lag(
                             return;
                         }
                     };
-                    report_lag_for_partitions(&consumer, &committed);
+                    // Stamp only a fully successful tick: committed offsets
+                    // fetched and every watermark lookup answered. A broker
+                    // that stops answering either call freezes the lag
+                    // gauges at their last values — this stamp going stale
+                    // is the signal that they froze (O3).
+                    if report_lag_for_partitions(&consumer, &committed) {
+                        metrics::record_job_success("kafka_lag");
+                    }
                 }).await;
             }
         }
     }
 }
 
-/// Compute and report lag for each topic-partition in the committed offsets list.
+/// Compute and report lag for each topic-partition in the committed offsets
+/// list. Returns `true` when every attempted watermark lookup succeeded —
+/// partitions skipped for their offset kind are not failures.
 fn report_lag_for_partitions(
     consumer: &StreamConsumer<KafkaConsumerContext>,
     committed: &TopicPartitionList,
-) {
+) -> bool {
+    let mut all_ok = true;
     for elem in committed.elements() {
         let topic = elem.topic();
         let partition = elem.partition();
@@ -64,6 +74,7 @@ fn report_lag_for_partitions(
                 metrics::set_kafka_consumer_lag(topic, partition, lag as f64);
             }
             Err(e) => {
+                all_ok = false;
                 tracing::debug!(
                     topic = %topic,
                     partition = partition,
@@ -73,4 +84,5 @@ fn report_lag_for_partitions(
             }
         }
     }
+    all_ok
 }

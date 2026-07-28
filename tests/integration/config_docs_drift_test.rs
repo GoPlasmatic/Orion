@@ -62,6 +62,8 @@ const NO_DEFAULT: &[&str] = &[
     // Option<u32>: unset means the route group has no limit of its own.
     "rate_limit.endpoints.admin_rps",
     "rate_limit.endpoints.data_rps",
+    // Option<u32>: unset means keep every backup (no pruning).
+    "storage.backup_retention_count",
     // Free-form map, and the fields of the `[[kafka.topics]]` array of tables.
     "kafka.extra_config",
     "kafka.topics.topic",

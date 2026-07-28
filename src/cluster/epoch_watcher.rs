@@ -44,6 +44,10 @@ fn start_epoch_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
                 }
             };
 
+            // A tick succeeds when the epoch was read and, if it had
+            // advanced, the resync applied. A failed resync leaves the
+            // gauge stale alongside the retry warning (O3).
+            let mut tick_ok = true;
             let last = state.cluster.last_seen_epoch.load(Ordering::Acquire);
             if row.epoch > last {
                 tracing::info!(
@@ -60,6 +64,7 @@ fn start_epoch_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
                     }
                     Err(e) => {
                         // Do not advance last_seen — retry on the next tick.
+                        tick_ok = false;
                         crate::metrics::record_error("epoch_watcher");
                         tracing::warn!(error = %e, "Epoch watcher: resync failed; will retry");
                     }
@@ -88,6 +93,10 @@ fn start_epoch_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
                     .cluster
                     .last_seen_breaker_epoch
                     .fetch_max(row.breaker_epoch, Ordering::AcqRel);
+            }
+
+            if tick_ok {
+                crate::metrics::record_job_success("epoch_watcher");
             }
         }
     })

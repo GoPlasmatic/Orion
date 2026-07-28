@@ -125,6 +125,7 @@ where
     ov!(storage.busy_timeout_ms: u64);
     ov!(storage.acquire_timeout_secs: u64);
     ov!(storage.backup_dir: String);
+    ov_opt!(storage.backup_retention_count: u32);
     ov!(storage.max_connections: u32);
     ov!(storage.min_connections: u32);
     ov!(storage.idle_timeout_secs: u64);
@@ -374,6 +375,7 @@ mod tests {
         env.insert("ORION_STORAGE__MAX_CONNECTIONS", "77");
         env.insert("ORION_STORAGE__MIN_CONNECTIONS", "7");
         env.insert("ORION_STORAGE__IDLE_TIMEOUT_SECS", "600");
+        env.insert("ORION_STORAGE__BACKUP_RETENTION_COUNT", "12");
         env.insert("ORION_STORAGE__AUTO_MIGRATE", "false");
         env.insert("ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS", "45");
         env.insert("ORION_KAFKA__SESSION_TIMEOUT_MS", "30000");
@@ -434,6 +436,7 @@ mod tests {
         assert_eq!(config.storage.max_connections, 77);
         assert_eq!(config.storage.min_connections, 7);
         assert_eq!(config.storage.idle_timeout_secs, 600);
+        assert_eq!(config.storage.backup_retention_count, Some(12));
         assert!(!config.storage.auto_migrate);
         assert_eq!(config.server.shutdown_force_timeout_secs, 45);
         assert_eq!(config.kafka.session_timeout_ms, 30000);
