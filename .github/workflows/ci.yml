@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Release branches are included so the tag-time `ci-gate` job can find a
+    # successful run at the tag SHA. Without them, cutting a release from a
+    # `v*` branch either blocks the release workflows or ships unverified.
+    branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
   pull_request:
 
 permissions:
