@@ -61,23 +61,69 @@ pub fn build_router(state: AppState) -> Router {
 
     let rate_limit_enabled = state.rate_limit_state.is_some();
 
+    // LAYER ORDER — read this before touching anything below.
+    //
+    // `Router::layer` wraps: the layer added LAST is the OUTERMOST, so it sees
+    // the request FIRST and the response LAST. The list below is therefore in
+    // reverse of request-processing order, innermost first.
+    //
+    // Getting this backwards is not cosmetic (proposal S16). The previous order
+    // put admin auth outside rate limiting, so a wrong key returned 401 without
+    // ever reaching the limiter — credential guessing was entirely unmetered;
+    // put CORS inside admin auth, so browser preflight to any admin route was
+    // 401'd before CorsLayer could answer it (browsers never send credentials on
+    // preflight, making the admin API unusable from a browser); and put the
+    // request-id scope and security headers inside both, so 401 and 429
+    // responses carried neither `x-request-id` nor CSP/nosniff/X-Frame-Options.
+    //
+    // Request order is: set/propagate request id -> request-id scope ->
+    // security headers -> catch panic -> CORS -> HSTS -> OTel -> trace ->
+    // metrics -> rate limit -> admin auth -> compression -> body limit -> route.
     let router = routes::api_routes()
-        .layer(DefaultBodyLimit::max(max_body_size))
-        // Single middleware replaces 5 separate SetResponseHeaderLayer wrappers
-        .layer(axum::middleware::from_fn(security_headers_middleware))
-        // Scope per-request task-local REQUEST_ID so OrionError responses
-        // can embed it in the JSON body (clients then don't need to read
-        // both header and body to correlate). Must run inside SetRequestIdLayer
-        // so the header is populated before we read it.
-        .layer(axum::middleware::from_fn(request_context::request_id_scope))
-        .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
-        .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid));
+        // Innermost: bound the body before a handler ever reads it.
+        .layer(DefaultBodyLimit::max(max_body_size));
 
     // Response compression (gzip/br/zstd via tower-http). Disabled by default —
     // for small JSON responses the DEFLATE cost outweighs any bandwidth saving.
     // Operators serving large responses should opt in.
     let router = if state.config.server.compression.enabled {
         router.layer(CompressionLayer::new())
+    } else {
+        router
+    };
+
+    // Admin auth — INNER to rate limiting, so a rejected key has already been
+    // counted by the limiter. The reverse (the previous order) left credential
+    // guessing completely unthrottled, because this layer returns 401 without
+    // calling `next.run`.
+    let router = if state.config.admin_auth.enabled {
+        router.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            admin_auth::admin_auth_middleware,
+        ))
+    } else {
+        router
+    };
+
+    // Rate limiting — OUTER to admin auth (see above), inner to observability
+    // so throttled requests are still traced and counted.
+    let router = if rate_limit_enabled {
+        router.layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            rate_limit::rate_limit_middleware,
+        ))
+    } else {
+        router
+    };
+
+    // HTTP metrics layer (gated by metrics.enabled — when disabled the no-op
+    // recorder still costs label hashing + indexmap lookups per request via the
+    // metrics crate's macros, so we skip the layer entirely). Inner to
+    // SetRequestIdLayer so it can read the id it logs.
+    let router = if state.config.metrics.enabled {
+        router.layer(axum::middleware::from_fn(
+            observability::http_metrics_middleware,
+        ))
     } else {
         router
     };
@@ -109,7 +155,14 @@ pub fn build_router(state: AppState) -> Router {
         router
     };
 
-    let router = router.layer(cors);
+    // When OTel is enabled, add trace context extraction middleware
+    let router = if otel_enabled {
+        router.layer(axum::middleware::from_fn(
+            trace_context::extract_trace_context,
+        ))
+    } else {
+        router
+    };
 
     // HSTS header (only when TLS is enabled)
     let router = if state.config.server.tls.enabled {
@@ -127,47 +180,14 @@ pub fn build_router(state: AppState) -> Router {
         router
     };
 
-    // Rate limiting layer (conditional)
-    let router = if rate_limit_enabled {
-        router.layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            rate_limit::rate_limit_middleware,
-        ))
-    } else {
-        router
-    };
+    // CORS — OUTER to admin auth so a browser preflight (`OPTIONS`, sent
+    // without credentials by definition) is answered by CorsLayer instead of
+    // being rejected with 401.
+    let router = router.layer(cors);
 
-    // Admin auth layer (conditional, after rate limiting)
-    let router = if state.config.admin_auth.enabled {
-        router.layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            admin_auth::admin_auth_middleware,
-        ))
-    } else {
-        router
-    };
-
-    // HTTP metrics layer (gated by metrics.enabled — when disabled the no-op
-    // recorder still costs label hashing + indexmap lookups per request via the
-    // metrics crate's macros, so we skip the layer entirely).
-    let router = if state.config.metrics.enabled {
-        router.layer(axum::middleware::from_fn(
-            observability::http_metrics_middleware,
-        ))
-    } else {
-        router
-    };
-
-    // When OTel is enabled, add trace context extraction middleware
-    let router = if otel_enabled {
-        router.layer(axum::middleware::from_fn(
-            trace_context::extract_trace_context,
-        ))
-    } else {
-        router
-    };
-
-    // Panic recovery layer (outermost — catches panics from all inner layers)
+    // Panic recovery — outer to every layer that can panic, but INNER to the
+    // response-shaping layers below, so a recovered 500 still leaves through
+    // them and carries security headers and `x-request-id`.
     let router = router.layer(CatchPanicLayer::custom(
         |_: Box<dyn std::any::Any + Send>| {
             crate::metrics::record_error("panic");
@@ -196,6 +216,21 @@ pub fn build_router(state: AppState) -> Router {
                 })
         },
     ));
+
+    // Outermost band — these must wrap *every* response, including the 401 from
+    // admin auth, the 429 from the rate limiter, and the 500 from panic
+    // recovery. Previously they sat innermost, so exactly those three responses
+    // escaped without security headers and without a request id.
+    let router = router
+        // Single middleware replaces 5 separate SetResponseHeaderLayer wrappers.
+        .layer(axum::middleware::from_fn(security_headers_middleware))
+        // Scope per-request task-local REQUEST_ID so OrionError responses can
+        // embed it in the JSON body (clients then don't need to read both
+        // header and body to correlate). Must run inside SetRequestIdLayer so
+        // the header is populated before we read it.
+        .layer(axum::middleware::from_fn(request_context::request_id_scope))
+        .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
+        .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid));
 
     router.with_state(state)
 }

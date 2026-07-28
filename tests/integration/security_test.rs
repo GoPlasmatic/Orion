@@ -324,6 +324,85 @@ async fn test_admin_auth_wrong_token_returns_401() {
     assert_eq!(body["error"]["code"], "UNAUTHORIZED");
 }
 
+// ------------------------------------------------------------
+// Middleware ordering contract (proposal S16)
+//
+// `Router::layer` wraps, so the LAST layer added is the OUTERMOST. Getting
+// this backwards silently removes controls rather than failing loudly, so the
+// consequences are pinned here rather than left to review.
+// ------------------------------------------------------------
+
+#[tokio::test]
+async fn test_401_carries_security_headers_and_request_id() {
+    // The 401 is produced by admin auth, which returns without calling
+    // `next.run`. When the security-header and request-id layers sat *inside*
+    // it, this response escaped with neither.
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["a-sufficiently-long-test-secret-key-000".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    let resp = app
+        .oneshot(json_request("GET", "/api/v1/admin/engine/status", None))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        resp.headers()
+            .get("x-content-type-options")
+            .map(|v| v.to_str().unwrap()),
+        Some("nosniff"),
+        "security headers must wrap the 401"
+    );
+    assert!(
+        resp.headers().contains_key("x-frame-options"),
+        "security headers must wrap the 401"
+    );
+    assert!(
+        resp.headers().contains_key("x-request-id"),
+        "the 401 must be correlatable"
+    );
+
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+    assert!(
+        body["error"]["request_id"].is_string(),
+        "the error envelope must carry the request id, got {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_admin_preflight_is_answered_not_rejected() {
+    // A browser preflight is sent without credentials by definition. With CORS
+    // layered inside admin auth, every preflight to an admin route 401'd and
+    // the admin API was unusable from a browser whenever auth was on.
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["a-sufficiently-long-test-secret-key-000".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    let req = Request::builder()
+        .method("OPTIONS")
+        .uri("/api/v1/admin/workflows")
+        .header("Origin", "https://console.example.com")
+        .header("Access-Control-Request-Method", "GET")
+        .body(Body::empty())
+        .unwrap();
+
+    let resp = app.oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "preflight must be answered by the CORS layer, not rejected by admin auth"
+    );
+    assert!(
+        resp.headers().contains_key("access-control-allow-origin"),
+        "preflight response must carry CORS headers, got {:?}",
+        resp.headers()
+    );
+}
+
 #[tokio::test]
 async fn test_admin_auth_correct_token_returns_200() {
     let mut config = orion::config::AppConfig::default();
