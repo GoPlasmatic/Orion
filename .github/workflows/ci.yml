@@ -276,9 +276,11 @@ jobs:
       # GitHub-hosted ubuntu runners ship Docker, so testcontainers spins up
       # ephemeral Postgres / MySQL / MongoDB / Elasticsearch / Redis / Kafka
       # containers on demand. The name filters run only the container-backed
-      # round-trip + raw-SQL + ES + Redis tests.
+      # round-trip + raw-SQL + ES + Redis tests. Filters are substring matches
+      # on the full module::test path — every module with #[ignore] tests must
+      # appear here by module name, or its tests never run anywhere.
       - name: Run container-backed integration tests
-        run: cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test
+        run: cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test
 
       # Kafka gets its own step: each test starts its own broker container, and
       # sharing one invocation with the Postgres/MySQL/Mongo/ES containers
