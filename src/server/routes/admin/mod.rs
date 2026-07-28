@@ -43,6 +43,26 @@ pub(crate) use workflows::{
     test_workflow, update_rollout, update_workflow, validate_workflow,
 };
 
+/// Largest batch any `/import` endpoint accepts.
+///
+/// Each item is a separate in-request DB round-trip holding a connection, plus
+/// an audit-log write, and the only previous bound was the global 1 MB body
+/// limit — which is tens of thousands of minimal JSON objects. That is a
+/// self-inflicted DoS on the admin plane (proposal R14). Larger migrations
+/// should be chunked.
+pub(crate) const MAX_IMPORT_ITEMS: usize = 1000;
+
+/// Reject an oversized import batch before any work is done.
+pub(crate) fn check_import_batch_size(len: usize) -> Result<(), crate::errors::OrionError> {
+    if len > MAX_IMPORT_ITEMS {
+        return Err(crate::errors::OrionError::validation(format!(
+            "import accepts at most {MAX_IMPORT_ITEMS} items per request, got {len} — \
+             split the batch"
+        )));
+    }
+    Ok(())
+}
+
 /// Fold per-item outcomes into the shared bulk-import counters:
 /// `(succeeded, failed, [{index, error}])`.
 ///

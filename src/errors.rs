@@ -91,6 +91,9 @@ pub enum OrionError {
     #[error("Unsupported media type: {0}")]
     UnsupportedMediaType(String),
 
+    #[error("Method not allowed: {0}")]
+    MethodNotAllowed(String),
+
     #[error("Queue error: {0}")]
     Queue(String),
 
@@ -179,6 +182,11 @@ impl OrionError {
             OrionError::UnsupportedMediaType(msg) => (
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "UNSUPPORTED_MEDIA_TYPE",
+                msg.clone(),
+            ),
+            OrionError::MethodNotAllowed(msg) => (
+                StatusCode::METHOD_NOT_ALLOWED,
+                "METHOD_NOT_ALLOWED",
                 msg.clone(),
             ),
             OrionError::ServiceUnavailable(msg) => (

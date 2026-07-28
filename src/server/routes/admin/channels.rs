@@ -260,6 +260,7 @@ pub(crate) async fn import_channels(
 ) -> Result<Json<Value>, OrionError> {
     // Each create runs through the same validation + persistence as the
     // singular POST endpoint, so behavior matches.
+    super::check_import_batch_size(items.len())?;
     let repo = state.channel_repo.clone();
     let (imported, failed, errors) = super::import_items::<CreateChannelRequest, _, _, _>(
         items,

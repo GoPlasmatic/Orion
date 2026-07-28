@@ -442,6 +442,7 @@ pub(crate) async fn import_workflows(
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(workflows): OrionJson<Vec<CreateWorkflowRequest>>,
 ) -> Result<Json<Value>, OrionError> {
+    super::check_import_batch_size(workflows.len())?;
     if query.dry_run {
         // Validate each item against the same checks the create endpoint
         // would run; never touch the DB. Useful for CI: check that a

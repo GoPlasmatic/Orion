@@ -262,6 +262,7 @@ pub(crate) async fn import_connectors(
     principal: Option<Extension<AdminPrincipal>>,
     OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {
+    super::check_import_batch_size(items.len())?;
     let repo = state.connector_repo.clone();
     let (imported, failed, errors) = super::import_items::<CreateConnectorRequest, _, _, _>(
         items,

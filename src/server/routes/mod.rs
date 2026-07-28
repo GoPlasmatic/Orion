@@ -24,10 +24,25 @@ pub fn api_routes() -> Router<AppState> {
         .nest("/api/v1/admin", admin::admin_routes())
         .nest("/api/v1/data", data::data_routes());
 
-    router.merge(
-        utoipa_swagger_ui::SwaggerUi::new("/docs")
-            .url("/api/v1/openapi.json", openapi::ApiDoc::openapi()),
-    )
+    router
+        .merge(
+            utoipa_swagger_ui::SwaggerUi::new("/docs")
+                .url("/api/v1/openapi.json", openapi::ApiDoc::openapi()),
+        )
+        // R9: without these, an unmatched path and every method mismatch
+        // returned a zero-length body, violating the documented contract that
+        // "every non-2xx response uses the ErrorResponse envelope". Clients
+        // that parse the body on error saw a JSON decode failure instead of an
+        // error code. Registered inside the request-id scope (see server::mod
+        // layer order) so both carry `x-request-id`.
+        .fallback(|| async {
+            crate::errors::OrionError::NotFound("No route matches this path".to_string())
+        })
+        .method_not_allowed_fallback(|| async {
+            crate::errors::OrionError::MethodNotAllowed(
+                "The HTTP method is not allowed for this path".to_string(),
+            )
+        })
 }
 
 #[utoipa::path(

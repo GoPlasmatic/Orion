@@ -269,3 +269,93 @@ async fn test_duplicate_connector_id_returns_conflict() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CONFLICT);
 }
+
+// ============================================================
+// Router fallbacks — every non-2xx uses the error envelope (R9)
+// ============================================================
+
+#[tokio::test]
+async fn unmatched_path_returns_the_error_envelope() {
+    // Previously a zero-length body, which broke any client that parses the
+    // body on error and contradicted the documented contract.
+    let app = common::test_app().await;
+
+    let resp = app
+        .oneshot(json_request("GET", "/no/such/path", None))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    assert!(
+        resp.headers().contains_key("x-request-id"),
+        "the 404 must be correlatable"
+    );
+    let body = common::body_json(resp).await;
+    assert_eq!(body["error"]["code"], "NOT_FOUND");
+    assert!(body["error"]["message"].is_string());
+}
+
+#[tokio::test]
+async fn method_mismatch_returns_405_with_the_error_envelope() {
+    let app = common::test_app().await;
+
+    // /healthz is GET-only.
+    let resp = app
+        .oneshot(json_request("DELETE", "/healthz", None))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let body = common::body_json(resp).await;
+    assert_eq!(body["error"]["code"], "METHOD_NOT_ALLOWED");
+}
+
+// ============================================================
+// Bulk import is bounded (R14)
+// ============================================================
+
+#[tokio::test]
+async fn oversized_import_batch_is_refused_before_any_write() {
+    let app = common::test_app().await;
+
+    let items: Vec<serde_json::Value> = (0..1001)
+        .map(|i| {
+            json!({
+                "name": format!("wf-{i}"),
+                "tasks": [{"id": "t1", "name": "Log",
+                           "function": {"name": "log", "input": {"message": "x"}}}]
+            })
+        })
+        .collect();
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/import",
+            Some(json!(items)),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = common::body_json(resp).await;
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("at most 1000 items"),
+        "the refusal should state the cap: {body}"
+    );
+
+    // Nothing was written.
+    let resp = app
+        .oneshot(json_request("GET", "/api/v1/admin/workflows", None))
+        .await
+        .unwrap();
+    let body = common::body_json(resp).await;
+    assert_eq!(
+        body["total"], 0,
+        "an over-cap batch must not partially apply"
+    );
+}
