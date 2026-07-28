@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::storage::models::{CHANNEL_TYPE_SYNC, Channel, ChannelProtocol};
+use crate::storage::models::{Channel, ChannelProtocol};
 
 /// A single entry in the route table.
 struct RouteEntry {
@@ -84,10 +84,17 @@ impl RouteTable {
     pub(super) fn build(channels: &[Channel]) -> Self {
         let mut entries: Vec<RouteEntry> = channels
             .iter()
+            // F39: REST/HTTP channels register their route whatever their
+            // channel_type. Filtering to `sync` here meant an async REST
+            // channel — which validation *requires* to declare a
+            // `route_pattern` — had that pattern silently ignored: the channel
+            // was reachable by name and its declared route 404'd forever.
+            // `dynamic_handler` strips a trailing `/async` before matching, so
+            // an async channel's pattern works at `/{pattern}/async` with no
+            // further change.
             .filter(|ch| {
-                ch.channel_type == CHANNEL_TYPE_SYNC
-                    && (ch.protocol == ChannelProtocol::Rest.as_str()
-                        || ch.protocol == ChannelProtocol::Http.as_str())
+                (ch.protocol == ChannelProtocol::Rest.as_str()
+                    || ch.protocol == ChannelProtocol::Http.as_str())
                     && ch.route_pattern.is_some()
             })
             .filter_map(|ch| {

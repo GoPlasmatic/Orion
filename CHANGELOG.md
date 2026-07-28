@@ -67,6 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **An async REST channel's `route_pattern` is no longer silently ignored.**
+  The route table filtered to `channel_type == "sync"`, while channel validation
+  *requires* a `route_pattern` for the `rest`/`http` protocols regardless of
+  type. So an async REST channel was forced to declare a route, accepted with a
+  201, activated cleanly — and its declared route 404'd forever, reachable only
+  by channel name. REST/HTTP channels now register their route whatever their
+  type; `/async` is stripped before route matching, so an async channel's
+  pattern works at `POST /api/v1/data/{pattern}/async`.
+
 - **Workflows using the `enrich` built-in were rejected at create.**
   `KNOWN_FUNCTIONS` — the list that gates workflow creation — omitted
   dataflow-rs's `enrich`, so `POST /admin/workflows` refused any task using it

@@ -196,3 +196,63 @@ async fn a_channel_named_traces_is_reachable() {
     let body = common::body_json(resp).await;
     assert_eq!(body["data"]["ok"], "yes");
 }
+
+/// F39: `RouteTable::build` filtered to `channel_type == "sync"`, but channel
+/// validation *requires* a `route_pattern` for REST/HTTP protocols regardless
+/// of type. So an async REST channel was forced to declare a route that was
+/// then silently ignored — the channel was reachable by name and its declared
+/// route 404'd forever, with a 201 at create and a clean activation.
+#[tokio::test]
+async fn an_async_rest_channel_is_reachable_at_its_route_pattern() {
+    let app = common::test_app().await;
+    let wf_id = create_echo_workflow(&app, "Async Route Workflow").await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": "async.orders",
+                "channel_type": "async",
+                "protocol": "rest",
+                "methods": ["POST"],
+                "route_pattern": "/async-orders/{id}",
+                "workflow_id": wf_id,
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let id = common::body_json(resp).await["data"]["channel_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{id}/status"),
+            Some(json!({ "status": "active" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The declared route, submitted asynchronously.
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/async-orders/42/async",
+            Some(json!({ "data": { "x": 1 } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::ACCEPTED,
+        "an async channel's route_pattern must resolve: {}",
+        common::body_json(resp).await
+    );
+}
