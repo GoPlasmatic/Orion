@@ -35,8 +35,8 @@ async fn test_openapi_spec_all_endpoints() {
     // plane (served by one catch-all handler, documented as a templated
     // path), the DLQ group, and the two Kubernetes probes.
     let expected = [
-        "/api/v1/data/traces",
-        "/api/v1/data/traces/{id}",
+        "/api/v1/admin/traces",
+        "/api/v1/admin/traces/{id}",
         "/health",
         "/metrics",
         // B4 additions:
@@ -108,7 +108,7 @@ async fn openapi_declares_admin_security() {
         "/api/v1/admin/connectors",
         "/api/v1/admin/trace-dlq",
         "/api/v1/admin/audit-logs",
-        "/api/v1/data/traces",
+        "/api/v1/admin/traces",
         "/metrics",
     ] {
         let security = &paths[path]["get"]["security"];

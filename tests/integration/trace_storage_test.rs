@@ -28,7 +28,7 @@ fn cfg_with_storage(mode: TraceStorageMode) -> AppConfig {
 async fn list_total(app: &axum::Router) -> u64 {
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/data/traces?limit=1", None))
+        .oneshot(json_request("GET", "/api/v1/admin/traces?limit=1", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -285,7 +285,7 @@ async fn sync_trace_records_channel_id() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/data/traces?channel=ch_cid_sync",
+            "/api/v1/admin/traces?channel=ch_cid_sync",
             None,
         ))
         .await
@@ -324,7 +324,7 @@ async fn async_trace_records_channel_id() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/data/traces/{trace_id}?token={token}"),
+            &format!("/api/v1/admin/traces/{trace_id}?token={token}"),
             None,
         ))
         .await

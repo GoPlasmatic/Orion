@@ -369,7 +369,7 @@ async fn test_error_body_is_sanitized_but_trace_keeps_detail() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/data/traces?channel=g1-errors-ch&limit=1",
+            "/api/v1/admin/traces?channel=g1-errors-ch&limit=1",
             None,
         ))
         .await
@@ -382,7 +382,7 @@ async fn test_error_body_is_sanitized_but_trace_keeps_detail() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/data/traces/{trace_id}"),
+            &format!("/api/v1/admin/traces/{trace_id}"),
             None,
         ))
         .await

@@ -140,7 +140,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders/async \
   -H "Content-Type: application/json" -d '{ "data": { "order_id": "ORD-123" } }'
 
 # Get trace with execution details
-curl -s http://localhost:8080/api/v1/data/traces/{trace-id}
+curl -s http://localhost:8080/api/v1/admin/traces/{trace-id}
 ```
 
 ## Operations

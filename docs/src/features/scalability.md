@@ -82,7 +82,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders/async \
   -d '{ "data": { "order_id": "ORD-123" } }'
 
 # Poll for the result
-curl -s http://localhost:8080/api/v1/data/traces/{trace-id}
+curl -s http://localhost:8080/api/v1/admin/traces/{trace-id}
 ```
 
 The queue is backed by `tokio::sync::mpsc` channels with configurable concurrency:

@@ -15,8 +15,8 @@ use crate::storage::repositories::traces::TraceFilter;
 
 #[utoipa::path(
     get,
-    path = "/api/v1/data/traces",
-    tag = "Data",
+    path = "/api/v1/admin/traces",
+    tag = "Traces",
     params(
         ("status" = Option<String>, Query, description = "Filter by trace status"),
         ("channel" = Option<String>, Query, description = "Filter by channel"),
@@ -79,8 +79,8 @@ pub(crate) struct TraceAccessQuery {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/data/traces/{id}",
-    tag = "Data",
+    path = "/api/v1/admin/traces/{id}",
+    tag = "Traces",
     description = "\
 Fetch one trace. Access follows a two-lane rule (R12): present either a \
 valid admin credential, or — for async submissions — the `trace_token` \

@@ -25,6 +25,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **The trace read endpoints moved to the admin plane:**
+  `GET /api/v1/data/traces` → `GET /api/v1/admin/traces`, and
+  `GET /api/v1/data/traces/{id}` → `GET /api/v1/admin/traces/{id}`. **No
+  redirect** — the old paths now resolve as channel names, so a stale client
+  gets 404.
+
+  The list was already admin-guarded, so its placement on the data plane was a
+  naming lie — and a functional one: both were static routes, which axum
+  resolves ahead of the `/{*path}` catch-all, so **a channel named `traces` was
+  permanently unreachable** (`POST /api/v1/data/traces` returned 405) with no
+  reserved-name check to explain it. The data plane is now a single catch-all
+  and the rate limiter's `traces` special case is gone.
+
+  Access rules are unchanged. `GET /api/v1/admin/traces/{id}` still accepts
+  *either* an admin credential or the submission's `trace_token`, making it the
+  one path under `/api/v1/admin` exempt from the blanket admin guard.
 - **Seven connector config fields that were never read are removed:**
   `db.driver`, `db.auth`, `cache.default_ttl_secs`, `cache.max_connections`,
   `cache.auth`, `cache.retry`, and `kafka.group_id` (the connector one — the

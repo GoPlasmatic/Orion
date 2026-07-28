@@ -10,8 +10,8 @@ The data API handles runtime request processing: routing messages to channels, e
 | `POST` | `/api/v1/data/{channel}/async` | Submit for async processing (returns trace ID) |
 | `ANY` | `/api/v1/data/{path...}` | REST route matching: method + path matched against channel route patterns |
 | `ANY` | `/api/v1/data/{path...}/async` | Async submission via REST route matching |
-| `GET` | `/api/v1/data/traces` | List traces (payload-free rows). Filter with `?status=`, `?channel=`, `?mode=` |
-| `GET` | `/api/v1/data/traces/{id}` | Poll one trace. Requires the submission's `trace_token` or an admin credential |
+| `GET` | `/api/v1/admin/traces` | List traces (payload-free rows). Filter with `?status=`, `?channel=`, `?mode=` |
+| `GET` | `/api/v1/admin/traces/{id}` | Poll one trace. Requires the submission's `trace_token` or an admin credential |
 
 > **Note:** the trace *list* is guarded like `/api/v1/admin/*` and `/metrics`
 > when admin auth is enabled (`[admin_auth]`), and its rows carry no payloads.
@@ -107,7 +107,7 @@ readable, so one caller can never read another's async result.
 set headers):
 
 ```bash
-curl -s http://localhost:8080/api/v1/data/traces/550e8400-e29b-41d4-a716-446655440000 \
+curl -s http://localhost:8080/api/v1/admin/traces/550e8400-e29b-41d4-a716-446655440000 \
   -H "x-trace-token: b1946ac92492d2347c6235b4d2611184"
 ```
 
@@ -119,20 +119,20 @@ List and filter traces:
 
 ```bash
 # List all traces
-curl -s http://localhost:8080/api/v1/data/traces
+curl -s http://localhost:8080/api/v1/admin/traces
 
 # Filter by channel and status
-curl -s "http://localhost:8080/api/v1/data/traces?channel=orders&status=completed"
+curl -s "http://localhost:8080/api/v1/admin/traces?channel=orders&status=completed"
 
 # Filter by mode
-curl -s "http://localhost:8080/api/v1/data/traces?mode=async"
+curl -s "http://localhost:8080/api/v1/admin/traces?mode=async"
 ```
 
 Get a specific trace (async traces need their `trace_token`; sync traces
 follow the admin trust model):
 
 ```bash
-curl -s "http://localhost:8080/api/v1/data/traces/{trace-id}?token={trace-token}"
+curl -s "http://localhost:8080/api/v1/admin/traces/{trace-id}?token={trace-token}"
 ```
 
 List rows are payload-free projections — `input_json`, `result_json` and

@@ -126,7 +126,7 @@ async fn sync_request_with_task_details_persists_task_trace_json() {
     // Wait for the sync-mode trace persistence, then fetch the detail — the
     // list is a payload-free projection (S14), so task_trace_json is served
     // only by the single-trace GET.
-    let body = crate::common::wait_for_body(&app, "/api/v1/data/traces", |b| {
+    let body = crate::common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().any(|r| r["channel"] == channel_name))
@@ -145,7 +145,7 @@ async fn sync_request_with_task_details_persists_task_trace_json() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/data/traces/{trace_id}"),
+            &format!("/api/v1/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -192,7 +192,7 @@ async fn sync_request_without_task_details_omits_task_trace_json() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let body = crate::common::wait_for_body(&app, "/api/v1/data/traces", |b| {
+    let body = crate::common::wait_for_body(&app, "/api/v1/admin/traces", |b| {
         b["data"]
             .as_array()
             .is_some_and(|a| a.iter().any(|r| r["channel"] == channel_name))
@@ -208,7 +208,7 @@ async fn sync_request_without_task_details_omits_task_trace_json() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/data/traces/{trace_id}"),
+            &format!("/api/v1/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -255,7 +255,7 @@ async fn sync_get_trace_endpoint_returns_task_trace_json() {
     // Find the trace row id, then fetch it via the single-trace GET endpoint.
     let body = crate::common::wait_for_body(
         &app,
-        &format!("/api/v1/data/traces?channel={}", channel_name),
+        &format!("/api/v1/admin/traces?channel={}", channel_name),
         |b| b["data"].as_array().is_some_and(|a| !a.is_empty()),
     )
     .await;
@@ -267,7 +267,7 @@ async fn sync_get_trace_endpoint_returns_task_trace_json() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/data/traces/{}", trace_id),
+            &format!("/api/v1/admin/traces/{}", trace_id),
             None,
         ))
         .await

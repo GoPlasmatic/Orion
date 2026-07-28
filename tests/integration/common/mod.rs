@@ -664,7 +664,7 @@ pub async fn poll_trace_until_done(
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let mut builder = Request::builder()
             .method("GET")
-            .uri(format!("/api/v1/data/traces/{}", trace_id))
+            .uri(format!("/api/v1/admin/traces/{}", trace_id))
             .header("content-type", "application/json");
         if let Some(t) = token {
             builder = builder.header("x-trace-token", t);

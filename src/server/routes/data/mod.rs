@@ -4,7 +4,7 @@ pub(crate) mod traces;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get};
+use axum::routing::any;
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -30,12 +30,14 @@ const CREDENTIAL_HEADERS: [&str; 4] = [
 ];
 
 pub fn data_routes() -> Router<AppState> {
-    Router::new()
-        .route("/traces", get(traces::list_traces))
-        .route("/traces/{id}", get(traces::get_trace))
-        // Catch-all: handles simple HTTP channels (/{channel}),
-        // async submissions (/{channel}/async), and REST routes (/{path...}).
-        .route("/{*path}", any(dynamic_handler))
+    // A single catch-all, with no static segments to shadow it. The trace
+    // reads used to sit here as `/traces` and `/traces/{id}`; static routes
+    // win over `/{*path}` in axum, so a channel named `traces` was
+    // permanently unreachable (`POST /api/v1/data/traces` returned 405) and
+    // the rate limiter carried a special case to skip the name. They moved to
+    // `/api/v1/admin/traces` in 1.0 (R8), where the admin-guarded list
+    // endpoint always belonged.
+    Router::new().route("/{*path}", any(dynamic_handler))
 }
 
 // ============================================================
@@ -406,7 +408,7 @@ to any of them). All ingress guards still apply before the queue hand-off: \
 CORS, `validation_logic`, deduplication, and backpressure. The response cache \
 is sync-only, so an async submission never returns a cached body.
 
-Poll `GET /api/v1/data/traces/{id}` with the returned `trace_id` for the \
+Poll `GET /api/v1/admin/traces/{id}` with the returned `trace_id` for the \
 result, presenting the returned `trace_token` via the `x-trace-token` header \
 or `?token=` query parameter. The token scopes the poll to this submission \
 (R12); an admin credential also works.",
@@ -524,7 +526,7 @@ pub(crate) struct ProcessTaskError {
 /// Acknowledgement returned by `POST /api/v1/data/{channel}/async`.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub(crate) struct AsyncSubmitResponse {
-    /// Id to poll via `GET /api/v1/data/traces/{id}`, or `null` when trace
+    /// Id to poll via `GET /api/v1/admin/traces/{id}`, or `null` when trace
     /// persistence is disabled for the channel (see the `Warning` header).
     trace_id: Option<String>,
     /// Capability token scoping the poll to this submission (R12): present

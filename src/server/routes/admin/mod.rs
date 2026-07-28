@@ -314,6 +314,15 @@ pub fn admin_routes() -> Router<AppState> {
 
     let function_routes = Router::new().route("/", get(list_functions));
 
+    // R8: the trace reads live on the admin plane because that is what they
+    // are. `GET /traces` is admin-only, and `GET /traces/{id}` authenticates
+    // itself (admin credential, or the per-submission capability token from
+    // the async 202) — see `admin_auth::is_guarded_path`, which exempts it
+    // from the blanket admin guard for exactly that reason.
+    let trace_routes = Router::new()
+        .route("/", get(crate::server::routes::data::traces::list_traces))
+        .route("/{id}", get(crate::server::routes::data::traces::get_trace));
+
     let trace_dlq_routes = Router::new()
         .route("/", get(list_trace_dlq))
         .route("/purge", post(purge_trace_dlq))
@@ -327,6 +336,7 @@ pub fn admin_routes() -> Router<AppState> {
         .nest("/engine", engine_routes)
         .nest("/functions", function_routes)
         .nest("/audit-logs", audit_routes)
+        .nest("/traces", trace_routes)
         .nest("/trace-dlq", trace_dlq_routes);
 
     let backup_routes = Router::new().route("/", post(create_backup).get(list_backups));

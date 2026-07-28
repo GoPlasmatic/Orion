@@ -22,7 +22,7 @@ pub struct TracingConfig {
     pub sample_rate: f64,
     /// Persistence policy for engine traces (rows written to the `traces` table).
     /// Unrelated to OpenTelemetry export above — this controls Orion's own
-    /// per-request trace records that admins inspect via `/api/v1/data/traces`.
+    /// per-request trace records that admins inspect via `/api/v1/admin/traces`.
     pub storage: TracingStorageConfig,
     /// Allow per-request workflow profiling. When `true`, requests carrying
     /// `X-Orion-Profile: 1` (or `?profile=1`) receive a `profile` object in

@@ -526,7 +526,7 @@ async fn test_traces_list_requires_admin_key() {
     // Without a key → 401 (traces expose full payloads)
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/data/traces", None))
+        .oneshot(json_request("GET", "/api/v1/admin/traces", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -534,7 +534,7 @@ async fn test_traces_list_requires_admin_key() {
     // With the admin key → 200
     let req = Request::builder()
         .method("GET")
-        .uri("/api/v1/data/traces")
+        .uri("/api/v1/admin/traces")
         .header("Authorization", "Bearer test-secret-key")
         .body(Body::empty())
         .unwrap();
@@ -565,7 +565,7 @@ async fn test_trace_get_requires_admin_key_or_token() {
     // Missing trace → 404 regardless of credentials.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/data/traces/some-id", None))
+        .oneshot(json_request("GET", "/api/v1/admin/traces/some-id", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -575,7 +575,7 @@ async fn test_trace_get_requires_admin_key_or_token() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/data/traces/{trace_id}"),
+            &format!("/api/v1/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -585,7 +585,7 @@ async fn test_trace_get_requires_admin_key_or_token() {
     // The admin key grants access without the token…
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/data/traces/{trace_id}"))
+        .uri(format!("/api/v1/admin/traces/{trace_id}"))
         .header("Authorization", "Bearer test-secret-key")
         .body(Body::empty())
         .unwrap();
@@ -596,7 +596,7 @@ async fn test_trace_get_requires_admin_key_or_token() {
     // data-plane caller can poll its own submission under admin auth.
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/data/traces/{trace_id}"))
+        .uri(format!("/api/v1/admin/traces/{trace_id}"))
         .header("x-trace-token", token)
         .body(Body::empty())
         .unwrap();
@@ -625,7 +625,7 @@ async fn test_trace_token_scopes_reads_on_default_config() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/data/traces/{trace_id}"),
+            &format!("/api/v1/admin/traces/{trace_id}"),
             None,
         ))
         .await
@@ -635,7 +635,7 @@ async fn test_trace_token_scopes_reads_on_default_config() {
     // Wrong token → 401.
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/data/traces/{trace_id}"))
+        .uri(format!("/api/v1/admin/traces/{trace_id}"))
         .header("x-trace-token", "not-the-token")
         .body(Body::empty())
         .unwrap();
@@ -647,7 +647,7 @@ async fn test_trace_token_scopes_reads_on_default_config() {
         .clone()
         .oneshot(json_request(
             "GET",
-            &format!("/api/v1/data/traces/{trace_id}?token={token}"),
+            &format!("/api/v1/admin/traces/{trace_id}?token={token}"),
             None,
         ))
         .await

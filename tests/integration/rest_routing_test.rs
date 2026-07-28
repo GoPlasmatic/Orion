@@ -147,3 +147,52 @@ async fn test_async_via_rest_route() {
     let body = common::body_json(resp).await;
     assert!(body["trace_id"].is_string());
 }
+
+/// R8: `traces` is an ordinary channel name again.
+///
+/// `/traces` and `/traces/{id}` used to be static routes on the data plane.
+/// Axum resolves static segments before `/{*path}`, so a channel called
+/// `traces` was permanently unreachable — `POST /api/v1/data/traces` hit the
+/// GET-only trace list and returned 405, with no reserved-name check anywhere
+/// to explain why. The endpoints moved to `/api/v1/admin/traces*` in 1.0,
+/// where the admin-guarded list always belonged, leaving the data plane a
+/// single catch-all.
+#[tokio::test]
+async fn a_channel_named_traces_is_reachable() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel(
+        &app,
+        "traces",
+        json!({
+            "name": "Traces Channel",
+            "condition": true,
+            "tasks": [{
+                "id": "mark",
+                "name": "Mark",
+                "function": {
+                    "name": "map",
+                    "input": {"mappings": [{"path": "data.ok", "logic": {"cat": ["y", "es"]}}]}
+                }
+            }]
+        }),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/traces",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "a channel named `traces` must serve like any other, not 405"
+    );
+    let body = common::body_json(resp).await;
+    assert_eq!(body["data"]["ok"], "yes");
+}

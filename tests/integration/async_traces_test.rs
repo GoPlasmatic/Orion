@@ -190,7 +190,7 @@ async fn test_trace_list_pagination() {
     }
 
     // Wait until all five submissions are persisted, then page.
-    common::wait_for_body(&app, "/api/v1/data/traces?limit=1", |b| {
+    common::wait_for_body(&app, "/api/v1/admin/traces?limit=1", |b| {
         b["total"].as_i64().unwrap_or(0) >= 5
     })
     .await;
@@ -200,7 +200,7 @@ async fn test_trace_list_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/data/traces?limit=2&offset=0",
+            "/api/v1/admin/traces?limit=2&offset=0",
             None,
         ))
         .await
@@ -217,7 +217,7 @@ async fn test_trace_list_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/data/traces?limit=2&offset=2",
+            "/api/v1/admin/traces?limit=2&offset=2",
             None,
         ))
         .await
@@ -263,7 +263,7 @@ async fn test_trace_list_filter_by_status() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/data/traces?status=completed",
+            "/api/v1/admin/traces?status=completed",
             None,
         ))
         .await
@@ -320,7 +320,7 @@ async fn test_trace_list_filter_by_channel() {
     assert_eq!(resp.status(), StatusCode::ACCEPTED);
 
     // Filter by channel-a: exactly the one submission, once persisted.
-    let body = common::wait_for_body(&app, "/api/v1/data/traces?channel=channel-a", |b| {
+    let body = common::wait_for_body(&app, "/api/v1/admin/traces?channel=channel-a", |b| {
         b["data"].as_array().is_some_and(|a| a.len() == 1)
     })
     .await;
@@ -515,7 +515,7 @@ async fn test_trace_read_does_not_expose_request_context() {
     // The list endpoint serves no payload fields at all.
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/data/traces", None))
+        .oneshot(json_request("GET", "/api/v1/admin/traces", None))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

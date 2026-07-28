@@ -88,13 +88,14 @@ fn forwarded_client_ip(req: &Request) -> Option<String> {
 /// Normalise a data-plane URI to the route path `dynamic_handler` resolves
 /// against: the `/api/v1/data/` prefix and any `/async` suffix removed.
 ///
-/// Returns `None` for the trace endpoints, which are real routes rather than
-/// channels.
+/// Every path under `/api/v1/data/` is a channel now. This used to exclude
+/// `traces` and `traces/*`, which sat here as static routes and shadowed any
+/// channel of that name; they moved to `/api/v1/admin/traces*` in 1.0 (R8).
 fn data_route_path(uri_path: &str) -> Option<&str> {
     let path = uri_path.strip_prefix("/api/v1/data/")?;
     let path = path.strip_suffix("/async").unwrap_or(path);
     let path = path.trim_matches('/').trim();
-    if path.is_empty() || path == "traces" || path.starts_with("traces/") {
+    if path.is_empty() {
         return None;
     }
     Some(path)
@@ -459,10 +460,17 @@ mod tests {
         );
     }
 
+    /// R8: `traces` used to be excluded here because two static routes sat on
+    /// the data plane and shadowed any channel of that name. They moved to
+    /// `/api/v1/admin/traces*`, so the name is an ordinary channel now and must
+    /// resolve like one — the special case is gone, not merely unreachable.
     #[test]
-    fn test_data_route_path_traces_excluded() {
-        assert_eq!(data_route_path("/api/v1/data/traces"), None);
-        assert_eq!(data_route_path("/api/v1/data/traces/abc123"), None);
+    fn test_data_route_path_treats_traces_as_a_channel() {
+        assert_eq!(data_route_path("/api/v1/data/traces"), Some("traces"));
+        assert_eq!(
+            data_route_path("/api/v1/data/traces/abc123"),
+            Some("traces/abc123")
+        );
     }
 
     #[test]

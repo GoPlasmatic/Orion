@@ -118,7 +118,7 @@ impl Modify for SecurityAddon {
                         .description(Some(
                             "Admin API key presented as `Authorization: Bearer <key>` — the \
                              default. Enforced on `/api/v1/admin/*`, `/metrics`, and \
-                             `/api/v1/data/traces*` whenever `admin_auth.enabled` is true, which \
+                             `/api/v1/admin/traces*` whenever `admin_auth.enabled` is true, which \
                              the shipped Helm chart and HA compose files set. Keys come from \
                              `admin_auth.api_keys`, either in plaintext or as `sha256:<64-hex>` \
                              digests. The data plane (`POST /api/v1/data/{channel}`) is not \
@@ -185,7 +185,7 @@ impl Modify for SecurityAddon {
 Declarative services runtime platform.
 
 **Authentication.** The admin API (`/api/v1/admin/*`), the Prometheus endpoint \
-(`/metrics`), and the trace read endpoints (`/api/v1/data/traces*`) require an \
+(`/metrics`), and the trace read endpoints (`/api/v1/admin/traces*`) require an \
 admin API key when `admin_auth.enabled` is true — the default in the shipped \
 Helm chart and HA compose files. Operations that need it carry a `security` \
 block; see the `admin_bearer` / `admin_api_key` schemes for how the key is \
@@ -208,6 +208,7 @@ validation failures.",
         (name = "Engine", description = "Engine control"),
         (name = "Functions", description = "Engine function schemas"),
         (name = "Audit", description = "Admin audit-log history"),
+        (name = "Traces", description = "Execution trace listing and polling"),
         (name = "Trace DLQ", description = "Dead-letter queue inspection, replay, and purge"),
         (name = "Backups", description = "Database backup management (SQLite only)"),
         (name = "Data", description = "Data processing"),
@@ -331,13 +332,13 @@ mod tests {
     /// requirement, and nothing else may.
     ///
     /// One path enforces auth in its handler rather than the middleware:
-    /// `GET /api/v1/data/traces/{id}` (R12) accepts *either* an admin
+    /// `GET /api/v1/admin/traces/{id}` (R12) accepts *either* an admin
     /// credential or the per-submission `trace_token`, so it documents a 401
     /// without being in `is_guarded_path`. It is pinned here explicitly so a
     /// new unguarded-but-401 route still fails this test until reviewed.
     #[test]
     fn security_matches_the_middleware_guard() {
-        const HANDLER_ENFORCED_401: &[&str] = &["/api/v1/data/traces/{id}"];
+        const HANDLER_ENFORCED_401: &[&str] = &["/api/v1/admin/traces/{id}"];
         let spec = spec();
         for (path, item) in &spec.paths.paths {
             let expected = is_guarded_path(path);

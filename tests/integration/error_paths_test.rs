@@ -92,7 +92,7 @@ async fn test_nonexistent_trace_returns_404() {
     let resp = app
         .oneshot(json_request(
             "GET",
-            "/api/v1/data/traces/nonexistent-trace-id",
+            "/api/v1/admin/traces/nonexistent-trace-id",
             None,
         ))
         .await

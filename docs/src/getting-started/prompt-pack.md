@@ -84,7 +84,7 @@ GET   /api/v1/admin/functions                      function input schemas
 GET   /api/v1/openapi.json                         full OpenAPI 3.1 spec
 POST  /api/v1/data/{route}                         call a deployed service
 POST  /api/v1/data/{route}/async                   async: returns trace_id
-GET   /api/v1/data/traces/{trace_id}               poll async result
+GET   /api/v1/admin/traces/{trace_id}               poll async result
 
 ## Working style
 

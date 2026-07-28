@@ -455,17 +455,54 @@ removed in a later major. If a task somehow carries both keys, `output` wins.
 The *defaults* are unchanged and still differ by function: omitting `output` on
 `http_call` discards the response, while every other handler writes to `"data"`.
 
+### The trace read endpoints moved to the admin plane
+
+**What changed.** Both trace endpoints moved:
+
+| Before | After |
+|---|---|
+| `GET /api/v1/data/traces` | `GET /api/v1/admin/traces` |
+| `GET /api/v1/data/traces/{id}` | `GET /api/v1/admin/traces/{id}` |
+
+**There is no redirect.** The old paths now resolve as *channel* names on the
+data-plane catch-all, so a request to one returns 404 (or runs a channel you
+happen to have named `traces`) rather than a 308.
+
+**Why.** The list endpoint was already admin-guarded, so its placement on the
+data plane was a naming lie. It was also a functional one: `/traces` and
+`/traces/{id}` were static routes, and axum resolves static segments before the
+`/{*path}` catch-all — so **a channel named `traces` was permanently
+unreachable**, `POST /api/v1/data/traces` returned 405, and the rate limiter
+carried a special case to skip the name. None of that was documented or
+checked; it just silently didn't work.
+
+**How you'll notice.** Any async client that polls `GET /api/v1/data/traces/{id}`
+starts getting 404. Operator tooling hitting the list gets the same.
+
+**What to do.** Update the paths. The access rules are unchanged: the list needs
+an admin credential, and the single-trace GET still takes *either* an admin
+credential or the submission's `trace_token` (see the next section) — despite
+now living under `/api/v1/admin`, which is the one path in that namespace not
+covered by the blanket admin guard.
+
+```bash
+# before
+curl "http://orion:8080/api/v1/data/traces/$id"  -H "x-trace-token: $tok"
+# after
+curl "http://orion:8080/api/v1/admin/traces/$id" -H "x-trace-token: $tok"
+```
+
 ### Polling an async trace now requires the token returned with the 202
 
 **What changed.** `POST /api/v1/data/{channel}/async` returns a `trace_token`
-alongside `trace_id`, and `GET /api/v1/data/traces/{id}` requires it — via the
+alongside `trace_id`, and `GET /api/v1/admin/traces/{id}` requires it — via the
 `x-trace-token` header or a `?token=` query parameter — unless the caller
 presents an admin credential. Previously the endpoint was all-or-nothing admin
 auth: open to everyone on a default config (so any caller could read any other
 caller's payloads by walking trace ids) and closed to the submitter when admin
 auth was on.
 
-The trace *list* (`GET /api/v1/data/traces`) is unchanged in its auth but now
+The trace *list* (`GET /api/v1/admin/traces`) is unchanged in its auth but now
 returns payload-free rows — `input_json`, `result_json` and `task_trace_json`
 are served only by the single-trace GET, whose `message` also no longer
 includes the submitter's request context (`context.metadata`).
@@ -479,7 +516,7 @@ getting `401` on its next poll.
 resp=$(curl -s -X POST http://orion:8080/api/v1/data/orders/async \
   -H 'Content-Type: application/json' -d '{"data":{"order_id":1}}')
 id=$(jq -r .trace_id <<<"$resp"); tok=$(jq -r .trace_token <<<"$resp")
-curl -s "http://orion:8080/api/v1/data/traces/$id" -H "x-trace-token: $tok"
+curl -s "http://orion:8080/api/v1/admin/traces/$id" -H "x-trace-token: $tok"
 ```
 
 Operator tooling that already sends an admin key needs no change. Traces
@@ -554,12 +591,12 @@ the same constant string every time.
 
 **What to do.** Correlate on `request_id` — note it is a **top-level sibling of
 `errors[]`**, not a field inside each entry — and fetch the full detail from
-the persisted trace at `GET /api/v1/data/traces/{id}`. It is also returned as
+the persisted trace at `GET /api/v1/admin/traces/{id}`. It is also returned as
 the `x-request-id` response header. Cached responses store the sanitised body,
 so a cache hit is consistent with a miss.
 
 > **This is data-plane only, and it has a gap by default.**
-> `GET /api/v1/data/traces/{id}` returns the **unsanitised** result. That
+> `GET /api/v1/admin/traces/{id}` returns the **unsanitised** result. That
 > endpoint is guarded only when `admin_auth.enabled = true`, and the default is
 > `false`. Enable admin auth for the sanitisation to hold end to end.
 
@@ -609,7 +646,7 @@ waiting for capacity — an unbounded hang under load. It now sheds immediately.
 
 ### Trace read endpoints require admin auth
 
-**What changed.** `GET /api/v1/data/traces` and `GET /api/v1/data/traces/{id}`
+**What changed.** `GET /api/v1/admin/traces` and `GET /api/v1/admin/traces/{id}`
 return full input and result payloads but were reachable without a key even
 with `admin_auth.enabled = true`. They are now guarded alongside
 `/api/v1/admin/*` and `/metrics`.

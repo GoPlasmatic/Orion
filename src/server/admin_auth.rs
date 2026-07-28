@@ -2,7 +2,7 @@
 //!
 //! When enabled, requires a valid API key for all `/api/v1/admin/*` endpoints,
 //! the `/metrics` endpoint, and the trace read endpoints under
-//! `/api/v1/data/traces` (traces expose full request/response payloads).
+//! `/api/v1/admin/traces` (traces expose full request/response payloads).
 //! Supports `Authorization: Bearer <token>` or custom header (e.g. `X-API-Key: <token>`).
 
 use std::time::Duration;
@@ -138,21 +138,37 @@ impl AdminPrincipal {
 /// True when `path` — an Axum `MatchedPath` template such as
 /// `/api/v1/admin/channels/{id}` — is behind admin authentication.
 ///
-/// The trace *list* returns rows for every caller, so it is guarded like
-/// admin routes. The single-trace GET is **not** in this set (R12): its
-/// handler enforces its own two-lane rule — a valid admin credential, or the
-/// per-submission capability token returned with the async 202 — so a
-/// data-plane caller can poll its own result without holding an admin key.
-/// Channel traffic cannot collide with the traces prefix: its `MatchedPath`
-/// is always the `/api/v1/data/{*path}` catch-all template.
+/// The whole admin plane is guarded, with exactly one carve-out: the
+/// single-trace GET (R12). Its handler enforces its own two-lane rule — a
+/// valid admin credential, **or** the per-submission capability token returned
+/// with the async 202 — so the client that submitted a job can poll its own
+/// result without holding an admin key. Guarding it here would take that
+/// second lane away, since the middleware answers 401 before the handler runs.
+///
+/// The trace *list* returns rows for every caller and stays fully guarded.
+///
+/// Both endpoints moved from `/api/v1/data/traces*` to `/api/v1/admin/traces*`
+/// in 1.0 (R8). The carve-out is why this predicate did not simplify to a bare
+/// prefix test on the move: the exception moved with the route rather than
+/// disappearing. What the move does buy is a data plane with no static
+/// segments — so `traces` is a usable channel name again, and the rate
+/// limiter no longer has to special-case it.
 ///
 /// The OpenAPI `SecurityAddon` (`server::routes::openapi`) applies the spec's
 /// `security` requirement through this same predicate, so the documented
 /// surface cannot drift from what the middleware enforces. The templates it
 /// feeds in are OpenAPI path keys, which are byte-identical to Axum's.
 pub(crate) fn is_guarded_path(path: &str) -> bool {
-    path.starts_with("/api/v1/admin") || path == "/metrics" || path == "/api/v1/data/traces"
+    if path == SINGLE_TRACE_PATH {
+        return false;
+    }
+    path.starts_with("/api/v1/admin") || path == "/metrics"
 }
+
+/// The one admin-plane path that authenticates itself rather than through the
+/// middleware. Named so [`is_guarded_path`] and the route registration cannot
+/// drift apart silently.
+pub(crate) const SINGLE_TRACE_PATH: &str = "/api/v1/admin/traces/{id}";
 
 /// Middleware that authenticates admin API requests.
 ///

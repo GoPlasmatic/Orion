@@ -407,7 +407,7 @@ With `debug_profile_enabled = true`, a request carrying `X-Orion-Profile: 1` (or
 
 ### Trace Persistence
 
-Orion's own per-request trace records — rows in the `traces` table, read via `/api/v1/data/traces`. Unrelated to the OTLP export above. A channel can override the mode with its `config.tracing` field; unset per-channel fields fall back to what is set here.
+Orion's own per-request trace records — rows in the `traces` table, read via `/api/v1/admin/traces`. Unrelated to the OTLP export above. A channel can override the mode with its `config.tracing` field; unset per-channel fields fall back to what is set here.
 
 | Mode | Behaviour |
 |---|---|

@@ -198,7 +198,7 @@ REST     GET /api/v1/data/orders/{id}        → matched by route pattern
 Kafka    topic: order.placed                 → consumed automatically
 ```
 
-Sync channels respond immediately. Async channels return a trace ID; poll `GET /api/v1/data/traces/{id}` for results. Kafka channels consume from topics configured in the DB or config file.
+Sync channels respond immediately. Async channels return a trace ID; poll `GET /api/v1/admin/traces/{id}` for results. Kafka channels consume from topics configured in the DB or config file.
 
 **Bridging is a pattern, not a feature.** A sync workflow can `publish_kafka` and return 202. An async channel picks it up from there.
 
