@@ -32,9 +32,19 @@ pub(super) struct FailureReport<'a> {
 pub(super) async fn report_failure_and_dlq(
     ctx: &ConsumeLoopContext,
     failure: FailureReport<'_>,
+    // K10: `process_until_committed` retries a failed message in place, so
+    // this ran once per *attempt*. With the DLQ disabled, one poison message
+    // inflated messages_total{status="error"} by roughly one per minute
+    // forever, making error-rate alerts fire on a single stuck message and
+    // rendering the rate indistinguishable from real volume. The outcome
+    // counters are now emitted on the first attempt only; retries are counted
+    // by the dedicated `kafka_retry` counter.
+    count_outcome: bool,
 ) -> MsgOutcome {
-    metrics::record_message(failure.channel, failure.message_status);
-    metrics::record_error(failure.error_kind);
+    if count_outcome {
+        metrics::record_message(failure.channel, failure.message_status);
+        metrics::record_error(failure.error_kind);
+    }
     tracing::error!(
         topic = %failure.topic,
         channel = %failure.channel,

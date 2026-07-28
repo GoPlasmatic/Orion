@@ -93,6 +93,16 @@ impl KafkaProducer {
         client_config
             .set("bootstrap.servers", brokers)
             .set("message.timeout.ms", "30000")
+            // K6: `acks=all` alone prevents neither duplicates nor reordering.
+            // librdkafka's default retry on a timed-out produce can duplicate a
+            // record, and the default max.in.flight=5 can reorder within a
+            // partition. Both matter because `publish_kafka` is a workflow side
+            // effect and the DLQ producer shares this client — a duplicated DLQ
+            // envelope is a duplicated failure record. Enabling idempotence
+            // makes librdkafka enforce acks=all, max.in.flight<=5 and
+            // retries=INT32_MAX itself.
+            .set("enable.idempotence", "true")
+            .set("delivery.timeout.ms", "120000")
             .set("acks", "all")
             .set("compression.type", "lz4")
             .set("linger.ms", "5")

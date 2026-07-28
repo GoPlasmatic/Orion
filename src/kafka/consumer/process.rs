@@ -49,6 +49,9 @@ impl MsgOutcome {
 async fn process_one_kafka_message(
     ctx: &ConsumeLoopContext,
     msg: &rdkafka::message::BorrowedMessage<'_>,
+    // True only on the first attempt, so per-message outcome counters are
+    // emitted once rather than once per retry (K10).
+    count_outcome: bool,
 ) -> MsgOutcome {
     let topic = msg.topic().to_string();
     let channel = match ctx.topic_map.get(&topic) {
@@ -65,6 +68,7 @@ async fn process_one_kafka_message(
                     log_msg: "No channel mapping for Kafka topic",
                     dlq_reason: &format!("No channel mapping for topic '{topic}'"),
                 },
+                count_outcome,
             )
             .await;
         }
@@ -84,6 +88,7 @@ async fn process_one_kafka_message(
                     log_msg: "Failed to decode Kafka message payload as UTF-8",
                     dlq_reason: &format!("UTF-8 decode error: {e}"),
                 },
+                count_outcome,
             )
             .await;
         }
@@ -99,6 +104,7 @@ async fn process_one_kafka_message(
                     log_msg: "Empty Kafka message payload",
                     dlq_reason: "Empty message payload",
                 },
+                count_outcome,
             )
             .await;
         }
@@ -118,6 +124,7 @@ async fn process_one_kafka_message(
                     log_msg: "Failed to parse Kafka message as JSON",
                     dlq_reason: &format!("JSON parse error: {e}"),
                 },
+                count_outcome,
             )
             .await;
         }
@@ -151,6 +158,7 @@ async fn process_one_kafka_message(
                     log_msg: "Kafka message for a channel that failed to load",
                     dlq_reason: &e.to_string(),
                 },
+                count_outcome,
             )
             .await;
         }
@@ -173,6 +181,7 @@ async fn process_one_kafka_message(
                 log_msg: "Kafka message rejected by channel validation_logic",
                 dlq_reason: &format!("Validation failed: {e}"),
             },
+            count_outcome,
         )
         .await;
     }
@@ -209,6 +218,7 @@ async fn process_one_kafka_message(
                         ctx.processing_timeout_ms
                     ),
                 },
+                count_outcome,
             )
             .await
         }
@@ -224,6 +234,7 @@ async fn process_one_kafka_message(
                     log_msg: "Failed to process Kafka message",
                     dlq_reason: &format!("Processing error: {e}"),
                 },
+                count_outcome,
             )
             .await
         }
@@ -247,6 +258,7 @@ async fn process_one_kafka_message(
                     log_msg: "Kafka message processed with workflow errors",
                     dlq_reason: &format!("Workflow errors: {summary}"),
                 },
+                count_outcome,
             )
             .await
         }
@@ -286,12 +298,12 @@ fn extract_kafka_trace_context(
 }
 
 /// Initial delay between in-place retries of an uncommittable message.
-const INITIAL_RETRY_BACKOFF_MS: u64 = 1_000;
+pub(super) const INITIAL_RETRY_BACKOFF_MS: u64 = 1_000;
 /// Cap for the exponential retry backoff.
 const MAX_RETRY_BACKOFF_MS: u64 = 60_000;
 
 /// Double the retry backoff, capped at [`MAX_RETRY_BACKOFF_MS`].
-fn next_backoff_ms(current_ms: u64) -> u64 {
+pub(super) fn next_backoff_ms(current_ms: u64) -> u64 {
     current_ms.saturating_mul(2).min(MAX_RETRY_BACKOFF_MS)
 }
 
@@ -308,7 +320,7 @@ pub(super) async fn process_until_committed(
     let mut backoff_ms = INITIAL_RETRY_BACKOFF_MS;
     let mut attempt: u64 = 0;
     loop {
-        let outcome = process_one_kafka_message(ctx, msg).await;
+        let outcome = process_one_kafka_message(ctx, msg, attempt == 0).await;
         if outcome.commits_offset() {
             commit_offset(&ctx.consumer, msg);
             return true;

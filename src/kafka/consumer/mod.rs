@@ -122,10 +122,13 @@ pub fn start_consumer(
         .set("group.id", &config.group_id)
         .set("enable.auto.commit", "false")
         .set("auto.offset.reset", "earliest");
+    // K9: the session timeout applies to every consumer, clustered or not —
+    // it was previously set only alongside `group.instance.id`, so a
+    // single-node operator configuring it got silence. Static membership is
+    // the cluster-only part.
+    client_config.set("session.timeout.ms", config.session_timeout_ms.to_string());
     if let Some(id) = instance_id {
-        client_config
-            .set("group.instance.id", id)
-            .set("session.timeout.ms", config.session_timeout_ms.to_string());
+        client_config.set("group.instance.id", id);
     }
     // Applied last so kafka.extra_config can override any of the above
     super::apply_client_auth(&mut client_config, &config.auth, &config.extra_config);
@@ -224,6 +227,9 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
         "Kafka consumer started"
     );
 
+    // Current backoff after consecutive `recv()` failures; cleared on success.
+    let mut recv_backoff_ms: Option<u64> = None;
+
     loop {
         // Backpressure: wait for a permit before reading the next message.
         // This pauses the consumer when max_inflight messages are in progress.
@@ -242,13 +248,39 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
             msg_result = ctx.consumer.recv() => {
                 match msg_result {
                     Ok(msg) => {
+                        recv_backoff_ms = None;
                         if !process_until_committed(&ctx, &msg, &mut shutdown_rx).await {
                             tracing::info!("Kafka consumer shutting down");
                             break;
                         }
                     }
                     Err(e) => {
-                        tracing::error!(error = %e, "Kafka consumer error");
+                        // K5: this branch used to fall straight back to the top
+                        // of the loop. A persistent recv() error — broker
+                        // unreachable, auth failure, revoked topic
+                        // authorization — then span at full CPU emitting one
+                        // ERROR line per iteration, indefinitely. Back off the
+                        // same way the message-level retry does, and stay
+                        // interruptible by shutdown.
+                        let wait = recv_backoff_ms
+                            .map(process::next_backoff_ms)
+                            .unwrap_or(process::INITIAL_RETRY_BACKOFF_MS);
+                        recv_backoff_ms = Some(wait);
+                        crate::metrics::record_error("kafka_recv");
+                        tracing::error!(
+                            error = %e,
+                            backoff_ms = wait,
+                            "Kafka consumer error; backing off before the next poll"
+                        );
+                        tokio::select! {
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(wait)) => {}
+                            _ = shutdown_rx.changed() => {
+                                if *shutdown_rx.borrow() {
+                                    tracing::info!("Kafka consumer shutting down");
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
             }

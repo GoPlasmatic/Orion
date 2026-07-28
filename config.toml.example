@@ -157,8 +157,9 @@
 # processing_timeout_ms = 60000      # Per-message processing timeout
 # max_inflight = 100                 # In-flight message limit
 # lag_poll_interval_secs = 30        # Consumer lag metric poll interval (0 disables)
-# session_timeout_ms = 45000         # Applied in cluster mode only, with static group membership,
-                                     # so rolling restarts rejoin without a full rebalance
+# session_timeout_ms = 45000         # Consumer group session timeout; always applied. In cluster
+                                     # mode it pairs with static group membership so rolling
+                                     # restarts rejoin without a full rebalance
 
 # [[kafka.topics]]                   # Repeat this block per mapping. Channels with a Kafka
 # topic = "incoming-orders"          # protocol also contribute topics from the database;
