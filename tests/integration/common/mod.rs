@@ -15,18 +15,11 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::Request;
 use serde_json::Value;
-use tokio::sync::RwLock;
 use tower::ServiceExt;
 
 use orion::channel::ChannelRegistry;
 use orion::config::AppConfig;
-use orion::connector::ConnectorRegistry;
-use orion::server::rate_limit::RateLimitState;
 use orion::server::state::AppState;
-use orion::storage::repositories::channels::SqlChannelRepository;
-use orion::storage::repositories::connectors::SqlConnectorRepository;
-use orion::storage::repositories::traces::SqlTraceRepository;
-use orion::storage::repositories::workflows::SqlWorkflowRepository;
 
 /// Create a test app with an in-memory SQLite database.
 pub async fn test_app() -> Router {
@@ -42,20 +35,52 @@ pub async fn test_app_with_config(config: AppConfig) -> Router {
 /// multi-node harnesses (tests/cluster) can hold the state itself — e.g. to
 /// spawn cluster tasks or inspect the channel registry directly.
 pub async fn test_state_with_config(config: AppConfig) -> AppState {
+    test_state_inner(config, None).await.0
+}
+
+/// Like [`test_state_with_config`] but also returns the background-task
+/// handles, so the caller can own the worker lifecycle (abort the loops,
+/// drive `TaskHandles::shutdown()` — the cluster harness and shutdown tests).
+pub async fn test_state_with_handles(
+    config: AppConfig,
+) -> (AppState, orion::bootstrap::TaskHandles) {
     test_state_inner(config, None).await
 }
 
 /// `test_state_with_config` with the Kafka publisher registered against
 /// `brokers`, so `publish_kafka` can be driven through a workflow (T3).
 pub async fn test_state_with_kafka(config: AppConfig, brokers: &str) -> AppState {
-    test_state_inner(config, Some(brokers.to_string())).await
+    test_state_inner(config, Some(brokers.to_string())).await.0
 }
 
-async fn test_state_inner(config: AppConfig, kafka_brokers: Option<String>) -> AppState {
+/// Build `AppState` through the REAL boot path — `orion::bootstrap`'s
+/// builders, in the same order as `main.rs::run()` — so wiring drift between
+/// tests and production startup is impossible.
+///
+/// Deliberate divergences from production bootstrap (everything else must go
+/// through `orion::bootstrap`):
+///
+/// 1. **Storage**: an empty/default URL becomes in-memory SQLite with a pool
+///    of >= 5, via `init_pool` (always migrates) instead of
+///    `init_pool_for_startup` (tests must not trip the migration guard). The
+///    override is NOT written back into `config` — `state.config` keeps what
+///    the test passed (pool_exhaustion_test depends on that).
+/// 2. **Metrics**: `install_recorder()` with a no-op fallback — the recorder
+///    is process-global and only the first test app can install it. Never
+///    `init_metrics_handle`, and never `init_observability` (a global
+///    tracing subscriber would collide across tests).
+/// 3. **DLQ retry loop forced off**: a harness-owned 30 s DLQ poller would
+///    steal claims from tests that drive retries themselves
+///    (trace_dlq_poison_test, trace_dlq_admin_test). Tests that want the
+///    loop call `orion::queue::start_dlq_retry` directly.
+async fn test_state_inner(
+    mut config: AppConfig,
+    kafka_brokers: Option<String>,
+) -> (AppState, orion::bootstrap::TaskHandles) {
     // Install sqlx Any drivers for external connector pools (db_read/db_write tests)
     sqlx::any::install_default_drivers();
 
-    // Use storage URL from config if set, otherwise default to in-memory SQLite
+    // Divergence 1: in-memory SQLite fallback (see doc comment).
     let storage_config = if config.storage.url.is_empty()
         || config.storage.url == orion::config::StorageConfig::default().url
     {
@@ -72,112 +97,63 @@ async fn test_state_inner(config: AppConfig, kafka_brokers: Option<String>) -> A
     };
     let pool = orion::storage::init_pool(&storage_config).await.unwrap();
 
-    let channel_repo = Arc::new(SqlChannelRepository::new(pool.clone()));
-    let workflow_repo = Arc::new(SqlWorkflowRepository::new(pool.clone()));
-    let connector_repo = Arc::new(SqlConnectorRepository::new(pool.clone()));
-    let trace_repo = Arc::new(SqlTraceRepository::new(pool.clone()));
-    let audit_log_repo = Arc::new(
-        orion::storage::repositories::audit_logs::SqlAuditLogRepository::new(pool.clone()),
-    );
-    let connector_registry = Arc::new(ConnectorRegistry::new(
-        config.engine.circuit_breaker.clone(),
-    ));
+    // Divergence 3: no harness-owned DLQ retry loop.
+    config.queue.dlq_retry_enabled = false;
+
+    // Kafka: map the harness broker override onto the config so
+    // bootstrap::setup_kafka_producer registers the publisher through the
+    // same path as production.
+    if let Some(brokers) = kafka_brokers {
+        config.kafka.enabled = true;
+        config.kafka.brokers = vec![brokers];
+    }
+
+    // From here on: the production startup sequence, same order as main::run.
     let cluster = orion::cluster::init_cluster_runtime(&config.cluster, &pool)
         .await
         .expect("cluster runtime");
+    let repos = orion::bootstrap::Repositories::new(&pool);
     let channel_registry = Arc::new(if config.cluster.enabled {
         ChannelRegistry::with_cluster((&*cluster).into())
     } else {
         ChannelRegistry::new()
     });
-    let cache_pool = Arc::new(orion::connector::cache_backend::CachePool::new(
-        config.engine.max_pool_cache_entries,
-        60,
-        config.engine.max_memory_cache_entries,
-    ));
-    let sql_pool_cache = Arc::new(orion::connector::pool_cache::SqlPoolCache::new(
-        config.engine.max_pool_cache_entries,
-    ));
-    let mongo_pool_cache = Arc::new(orion::connector::mongo_pool::MongoPoolCache::new(
-        config.engine.max_pool_cache_entries,
-    ));
+    let mut components =
+        orion::bootstrap::build_engine_components(&config, &repos, channel_registry.clone())
+            .await
+            .expect("engine components");
+    let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (channels, active_workflow_count) = components
+        .load_channels_and_build_engine(&config, &repos, &channel_registry)
+        .await
+        .expect("load channels");
+    ready.store(true, std::sync::atomic::Ordering::Release);
 
-    // Mirror the production client (main.rs): no auto-redirects (execute_request
-    // follows manually with SSRF re-validation) and pinned DNS resolution.
-    let http_client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .dns_resolver(Arc::new(orion::validation::PinnedDnsResolver))
-        .build()
-        .unwrap();
-    let engine = Arc::new(RwLock::new(Arc::new(
-        dataflow_rs::Engine::builder().build().unwrap(),
-    )));
-    let mut custom_functions = orion::engine::build_custom_functions(
-        connector_registry.clone(),
-        http_client.clone(),
-        engine.clone(),
+    // Provably None today (the DB is empty at boot, so the merged topic set
+    // is empty), but wired for parity with production.
+    let kafka_consumer_handle = orion::bootstrap::start_kafka_ingest(
+        &config.kafka,
+        &channels,
+        components.engine.clone(),
         channel_registry.clone(),
-        &config.engine,
-        &config.query,
-        &config.write,
-        cache_pool.clone(),
-        sql_pool_cache.clone(),
-        mongo_pool_cache.clone(),
-    );
-    let kafka_producer = kafka_brokers.map(|brokers| {
-        let producer = Arc::new(
-            orion::kafka::producer::KafkaProducer::new(
-                &brokers,
-                &orion::config::KafkaAuthConfig::default(),
-                &std::collections::HashMap::new(),
-            )
-            .expect("kafka producer"),
-        );
-        let producers = Arc::new(orion::kafka::producer::KafkaProducerCache::new(
-            brokers,
-            producer.clone(),
-            orion::config::KafkaAuthConfig::default(),
-            std::collections::HashMap::new(),
-        ));
-        orion::engine::register_kafka_publisher(
-            &mut custom_functions,
-            connector_registry.clone(),
-            producers,
-        );
-        producer
-    });
-    let built_engine = dataflow_rs::Engine::new(vec![], custom_functions).unwrap();
-    *engine.write().await = Arc::new(built_engine);
+        components.datalogic.clone(),
+        components.kafka_producer.clone(),
+        cluster.enabled.then(|| cluster.instance_id.as_str()),
+    )
+    .expect("kafka ingest");
 
-    // Start a small worker pool for async trace tests
-    let dlq_repo: Arc<dyn orion::storage::repositories::trace_dlq::TraceDlqRepository> =
-        Arc::new(orion::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()));
-    let test_queue_config = orion::config::QueueConfig {
-        workers: 2,
-        buffer_size: 100,
-        shutdown_timeout_secs: 30,
-        processing_timeout_ms: 60_000,
-        max_result_size_bytes: 1_048_576,    // 1 MB
-        max_queue_memory_bytes: 104_857_600, // 100 MB
-        ..Default::default()
-    };
-    let (trace_persistence_queue_for_workers, _trace_persistence_handle) =
-        orion::queue::trace_persistence::start(
-            &config.tracing.storage,
-            trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+    let (trace_persistence_queue, trace_queue, task_handles) =
+        orion::bootstrap::start_background_tasks(
+            &config,
+            components.engine.clone(),
+            &repos,
+            channel_registry.clone(),
+            &cluster,
         );
-    let (trace_queue, _worker_handle) = orion::queue::start_workers(
-        &test_queue_config,
-        engine.clone(),
-        trace_repo.clone() as Arc<dyn orion::storage::repositories::traces::TraceRepository>,
-        Some(dlq_repo.clone()),
-        channel_registry.clone(),
-        trace_persistence_queue_for_workers.clone(),
-        config.tracing.storage.clone(),
-        config.engine.rollout_sticky_header.clone(),
-    );
+    orion::metrics::set_active_workflows(active_workflow_count as f64);
+    let rate_limit_state = orion::bootstrap::build_rate_limit_state(&config);
 
-    // Init metrics recorder (use try — may already be initialized by another test)
+    // Divergence 2: process-global metrics recorder (see doc comment).
     let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
         .install_recorder()
         .unwrap_or_else(|_| {
@@ -187,39 +163,21 @@ async fn test_state_inner(config: AppConfig, kafka_brokers: Option<String>) -> A
                 .handle()
         });
 
-    let rate_limit_state = if config.rate_limit.enabled {
-        Some(Arc::new(RateLimitState::from_config(&config.rate_limit)))
-    } else {
-        None
-    };
-
-    AppState::new(orion::server::state::AppStateInner {
-        engine,
-        channel_repo,
-        workflow_repo,
-        connector_repo,
-        trace_repo,
-        trace_dlq_repo: dlq_repo,
-        audit_log_repo,
-        connector_registry,
-        cache_pool,
+    let state = orion::bootstrap::build_app_state(orion::bootstrap::AppStateParams {
+        config: Arc::new(config),
+        pool,
+        repos,
+        components,
         channel_registry,
         trace_queue,
-        db_pool: pool,
-        config: Arc::new(config),
-        start_time: chrono::Utc::now(),
-        metrics_handle,
-        http_client,
-        datalogic: Arc::new(datalogic_rs::Engine::new()),
+        trace_persistence_queue,
         rate_limit_state,
-        ready: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-        sql_pool_cache,
-        mongo_pool_cache,
-        kafka_consumer_handle: Arc::new(tokio::sync::Mutex::new(None)),
-        kafka_producer,
-        trace_persistence_queue: trace_persistence_queue_for_workers,
+        metrics_handle,
+        ready,
+        kafka_consumer_handle,
         cluster,
-    })
+    });
+    (state, task_handles)
 }
 
 pub fn json_request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {

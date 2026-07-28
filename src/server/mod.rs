@@ -1,12 +1,12 @@
 pub mod admin_auth;
 pub mod drain;
-pub mod serve;
 pub mod extract;
 pub mod observability;
 pub mod otel;
 pub mod rate_limit;
 pub mod request_context;
 pub mod routes;
+pub mod serve;
 pub mod state;
 
 use axum::Router;
