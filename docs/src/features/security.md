@@ -162,9 +162,19 @@ Values are always passed as parameters, never interpolated into SQL strings.
 through the `params` map, and every resolved value becomes a bound parameter
 (SQL), a document value (MongoDB), or a script parameter (Elasticsearch
 painless scripts, where field names *and* values travel as params). Identifiers
-come only from the envelope and schema and are quoted per dialect. An optional
-schema allowlist (`"unmapped": "reject"`) restricts which entities and columns
-workflows can touch, with per-column `queryable`/`writable` flags. See the
+come only from the envelope and schema and are quoted per dialect.
+
+**The dialect is bounded by default:** since 1.0 an undeclared entity or column
+is rejected (`"unmapped": "reject"`), so a task reaches only what its inline
+`schema` declares, with per-column `queryable`/`writable` flags. Through 0.x
+the default was identity mode, which let any workflow author reach every table
+the connector's database user could see. A connector can tighten this further
+with `dialect.require_schema` (refuse the per-task `"unmapped": "identity"`
+opt-out) and `dialect.allowed_entities` (a physical table allowlist that
+renames cannot escape). Both bound the *portable dialect*: `db_read`,
+`db_write` and `mongo_read` name no entity and are gated only by `operations`,
+so a connector reachable by raw SQL is bounded by its database credential
+rather than by its allowlist. See the
 [Portable Data Dialect](../reference/data-dialect.md) reference.
 
 **Write-safety guards:** an unfiltered `data_write` update/delete is rejected

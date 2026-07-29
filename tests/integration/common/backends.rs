@@ -220,13 +220,19 @@ impl BackendHarness {
     /// documents on a metadata `_id` that sits outside the source, and neither
     /// maps a logical `id` onto it implicitly (W10) — so the round-trip declares
     /// the rename, which is what makes inserts carry the id and upsert-on-`id`
-    /// legal. Without it, `id` is an ordinary field; the parity matrix relies on
-    /// exactly that and passes no schema.
+    /// legal.
+    ///
+    /// F24 flipped the unmapped default to `reject`, so the rename has to be
+    /// carried alongside an explicit `"unmapped": "identity"`: the roundtrip
+    /// writes and filters `name`/`age`/`status` too, and this harness is about
+    /// cross-backend parity, not the allowlist. Declaring one column and
+    /// leaving the policy at its default would refuse every other name.
     pub fn schema_json(&self) -> Option<Value> {
         self.backend.is_doc_store().then(|| {
-            json!({ "entities": { "users": {
-                "columns": { "id": { "name": "_id" } }
-            } } })
+            json!({
+                "unmapped": "identity",
+                "entities": { "users": { "columns": { "id": { "name": "_id" } } } }
+            })
         })
     }
 

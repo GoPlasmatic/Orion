@@ -263,7 +263,14 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
 | `connector` | string | yes | — | Name of a `db` or `es` connector |
 | `query` | object | yes | — | The query envelope: `source`, `filter`, `fields`, `sort`, `limit`, `skip`, `include`. An `include` selection is `{ "fields": [..], "sort": [..], "limit": n }`, and its `sort` is required — the per-parent page is cut in the database |
 | `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside the filter; each value is JSONLogic resolved against the context |
-| `schema` | object | no | identity | Inline entity schema: renames, types, allowlist, relations |
+| `schema` | object | **yes in practice** | — | Inline entity schema: renames, types, allowlist, relations. Undeclared entities and columns are rejected, so a call without one reaches nothing; `{"unmapped": "identity"}` restores 0.x pass-through |
+
+`schema` is "yes in practice" rather than plain `yes` because the requirement
+is enforced when the query runs, not when the workflow is created: an
+un-migrated 0.x task is accepted at create and refused at its first request,
+naming the key to add. Nothing else about it is optional — every entity the
+dialect resolves goes through the schema, so there is no schema-less call that
+can succeed.
 | `database` | string | MongoDB only | — | Database name (Mongo connectors) |
 | `output` | string | no | `"data"` | Dotted path where the row array is written |
 
@@ -282,6 +289,16 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
       "limit": 20
     },
     "params": { "cid": { "var": "data.customer_id" } },
+    "schema": {
+      "entities": {
+        "orders": {
+          "columns": {
+            "id": { "type": "int" }, "customer_id": { "type": "int" },
+            "total": { "type": "float" }, "created_at": { "type": "timestamp" }
+          }
+        }
+      }
+    },
     "output": "data.orders"
   }
 }
@@ -323,6 +340,15 @@ Inside `write`:
   "input": {
     "connector": "orders-db",
     "params": { "id": { "var": "data.order_id" } },
+    "schema": {
+      "entities": {
+        "orders": {
+          "columns": {
+            "id": { "type": "int", "writable": false }, "status": { "type": "text" }
+          }
+        }
+      }
+    },
     "output": "data.write_result",
     "write": {
       "op": "update",
@@ -339,9 +365,12 @@ Safety guards: unfiltered mutations are rejected unless `"all": true` **and**
 rejected; and a connector's
 [operation gates](./data-dialect.md#connector-operation-gates) can disable
 individual ops entirely. Results are normalized per backend — SQL returns
-`{ "rows_affected": n }` (plus `returning` / `last_insert_id` where supported);
-MongoDB and Elasticsearch return doc-store counts (`inserted`/`ids`,
-`matched`/`modified`, `deleted`).
+`{ "status": "ok", "rows_affected": n }` (plus `returning` / `last_insert_id`
+where supported); MongoDB and Elasticsearch return doc-store counts
+(`inserted`/`ids`, `matched`/`modified`, `deleted`). Every result carries a
+`status`; a bulk insert that applied only some of its rows reports
+`"partial"` with a per-item array — see
+[Bulk writes](./data-dialect.md#bulk-writes).
 
 ### `db_read`
 

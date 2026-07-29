@@ -160,6 +160,10 @@ async fn test_data_query_mongo_find() {
                         "input": {
                             "connector": "dq-mongo",
                             "database": "orion_test",
+                            // F24: the dialect rejects undeclared names, so
+                            // this pre-schema test asks for pass-through
+                            // explicitly — the one line a 0.x task adds.
+                            "schema": { "unmapped": "identity" },
                             "query": {
                                 "source": "dq_empty_items",
                                 "filter": { "and": [

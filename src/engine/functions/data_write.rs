@@ -10,8 +10,9 @@ use serde_json::{Value, json};
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, es_request, es_write_error, is_mongo, require_op_allowed,
-    resolve_params, send_es, timed_query, to_connect_error, to_exec_error,
+    ConnectorCall, QueryBudget, apply_output, build_entity_registry, es_request, es_write_error,
+    is_mongo, require_op_allowed, resolve_params, send_es, timed_query, to_connect_error,
+    to_exec_error,
 };
 use super::db_read::rows_to_json;
 use super::schema::{FieldKind, FieldSchema};
@@ -26,6 +27,11 @@ use crate::storage::detect_backend;
 
 /// This handler's name in metrics, profiles and error messages (F48).
 const NAME: &str = "data_write";
+
+/// Audit status for a bulk write that applied some but not all of its items
+/// (F28) — HTTP 207 Multi-Status, the code that exists for exactly this. Below
+/// 400, so the workflow continues; not 200, so the trace shows it happened.
+const PARTIAL_STATUS: u16 = 207;
 
 /// Executes a portable `data_write` — one backend-neutral mutation envelope
 /// (`op`/`target`/`values`/`set`/`filter`/`on_conflict`/`returning`) that renders
@@ -67,11 +73,11 @@ impl AsyncFunctionHandler for DataWriteHandler {
             let connector_config = call.resolve(&self.registry, None).await?;
 
             // Optional inline schema (privileged config): renames, allowlist, and
-            // the per-column `writable` flag.
-            let registry = match input.get("schema") {
-                Some(s) => query::EntityRegistry::from_json(s)?,
-                None => query::EntityRegistry::default(),
-            };
+            // the per-column `writable` flag. F24: with no schema the registry
+            // now rejects rather than passing every name through, and the
+            // connector's own guards apply on top.
+            let registry =
+                build_entity_registry(input.get("schema"), &connector_config, call.connector)?;
 
             // W7: the mutation envelope is nested under `write`, mirroring
             // `data_query`'s `query`. Before 1.0 it was flat, sharing a
@@ -112,7 +118,7 @@ impl AsyncFunctionHandler for DataWriteHandler {
                 require_op_allowed(gates, resolved.op.as_str(), call.connector)?;
             }
 
-            let result = match connector_config.as_ref() {
+            let (result, outcome) = match connector_config.as_ref() {
                 ConnectorConfig::Db(db) if is_mongo(&db.connection_string) => {
                     let database = call.require_str(input, "database")?;
                     let mw = query::backend::mongo::render_write(&resolved)?;
@@ -154,29 +160,71 @@ impl AsyncFunctionHandler for DataWriteHandler {
             };
 
             apply_output(ctx, call.output, result);
-            Ok(TaskOutcome::Success)
+            Ok(outcome)
         })
         .await
     }
 }
 
-/// Execute a rendered SQL write. When `returning` is requested the statement
-/// returns rows (`fetch_all`); otherwise it is a plain `execute` returning the
-/// affected-row count (and `last_insert_id` where the driver reports one).
+/// Execute a rendered SQL write.
+///
+/// F28: a **multi-row** write runs inside an explicit transaction. A bulk
+/// insert renders to a single `INSERT … VALUES (…), (…)`, which every supported
+/// engine already applies atomically under autocommit — so this changes no
+/// observable behaviour today. It makes SQL's all-or-nothing guarantee, which
+/// the dialect's documented contract now promises, a property of this function
+/// rather than of the renderer continuing to emit exactly one statement.
+///
+/// A single-row write is left on autocommit deliberately: one statement is
+/// already atomic, and `BEGIN`/`COMMIT` around it would put two extra round
+/// trips on the hot path — and, on SQLite, hold the database's single write
+/// lock across them instead of releasing it when the statement ends.
+///
+/// Every round trip shares one [`QueryBudget`]: `Pool::begin` acquires a
+/// connection *and* sends `BEGIN`, and the commit is another round trip, so
+/// leaving either unbounded would reintroduce the hang F11 closed, and giving
+/// each its own `query_timeout_ms` would triple the bound the connector's owner
+/// configured.
 async fn execute_sql(
     pool: &sqlx::AnyPool,
     sql: &str,
     values: sea_query_binder::SqlxValues,
     w: &ResolvedWrite,
     timeout_ms: Option<u64>,
-) -> Result<Value, DataflowError> {
+) -> Result<(Value, TaskOutcome), DataflowError> {
+    let budget = QueryBudget::start(timeout_ms);
+    let mut out = if w.rows.len() > 1 {
+        let mut tx = budget.run(NAME, pool.begin()).await?;
+        let out = run_write_statement(&mut *tx, sql, values, w, &budget).await?;
+        budget.run(NAME, tx.commit()).await?;
+        out
+    } else {
+        run_write_statement(pool, sql, values, w, &budget).await?
+    };
+    // SQL is the atomic member of the three write models, so its status is
+    // never `partial`; it carries the key so one check works on every backend.
+    out["status"] = json!("ok");
+    Ok((out, TaskOutcome::Success))
+}
+
+/// Run the rendered statement on `executor` (the pool, or a transaction's
+/// connection). When `returning` is requested the statement returns rows
+/// (`fetch_all`); otherwise it is a plain `execute` returning the affected-row
+/// count (and `last_insert_id` where the driver reports one).
+async fn run_write_statement<'e, E>(
+    executor: E,
+    sql: &str,
+    values: sea_query_binder::SqlxValues,
+    w: &ResolvedWrite,
+    budget: &QueryBudget,
+) -> Result<Value, DataflowError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Any>,
+{
     if w.returning.is_empty() {
-        let res = timed_query(
-            timeout_ms,
-            NAME,
-            sqlx::query_with(sql, values).execute(pool),
-        )
-        .await?;
+        let res = budget
+            .run(NAME, sqlx::query_with(sql, values).execute(executor))
+            .await?;
         let mut out = json!({ "rows_affected": res.rows_affected() });
         if matches!(w.op, WriteOp::Insert | WriteOp::Upsert)
             && let Some(id) = res.last_insert_id()
@@ -185,12 +233,9 @@ async fn execute_sql(
         }
         Ok(out)
     } else {
-        let rows: Vec<AnyRow> = timed_query(
-            timeout_ms,
-            NAME,
-            sqlx::query_with(sql, values).fetch_all(pool),
-        )
-        .await?;
+        let rows: Vec<AnyRow> = budget
+            .run(NAME, sqlx::query_with(sql, values).fetch_all(executor))
+            .await?;
         let returning = rows_to_json(&rows)?;
         let count = match &returning {
             Value::Array(a) => a.len(),
@@ -205,24 +250,45 @@ async fn execute_mongo(
     client: &mongodb::Client,
     database: &str,
     mw: MongoWrite,
-) -> Result<Value, DataflowError> {
+) -> Result<(Value, TaskOutcome), DataflowError> {
     let db = client.database(database);
     match mw {
         MongoWrite::Insert { collection, docs } => {
             if docs.is_empty() {
-                return Ok(json!({ "inserted": 0, "ids": [] }));
+                return Ok((
+                    json!({ "status": "ok", "inserted": 0, "ids": [] }),
+                    TaskOutcome::Success,
+                ));
             }
+            let sent = docs.len();
             let coll = db.collection::<Document>(&collection);
-            let res = coll.insert_many(docs).await.map_err(to_exec_error)?;
-            // `inserted_ids` is keyed by input index; return in index order.
-            let mut pairs: Vec<(usize, mongodb::bson::Bson)> =
-                res.inserted_ids.into_iter().collect();
-            pairs.sort_by_key(|(i, _)| *i);
-            let ids: Vec<Value> = pairs
-                .into_iter()
-                .filter_map(|(_, b)| serde_json::to_value(b).ok())
-                .collect();
-            Ok(json!({ "inserted": ids.len(), "ids": ids }))
+            match coll.insert_many(docs).await {
+                Ok(res) => {
+                    // `inserted_ids` is keyed by input index; return in index order.
+                    let mut pairs: Vec<(usize, mongodb::bson::Bson)> =
+                        res.inserted_ids.into_iter().collect();
+                    pairs.sort_by_key(|(i, _)| *i);
+                    let ids: Vec<Option<Value>> = pairs
+                        .into_iter()
+                        .map(|(_, b)| serde_json::to_value(b).ok())
+                        .collect();
+                    Ok((
+                        query::bulk::BulkOutcome::all_ok(ids).to_json(),
+                        TaskOutcome::Success,
+                    ))
+                }
+                // F28: the ordered default means a mid-array failure has
+                // already committed everything before it. Recover the indices
+                // from the driver's error rather than reporting one opaque
+                // message over a half-written collection.
+                Err(e) => match mongo_write_errors(&e) {
+                    Some(failed) => bulk_result(
+                        query::backend::mongo::insert_outcome(sent, &failed),
+                        "MongoDB insert",
+                    ),
+                    None => Err(to_exec_error(e)),
+                },
+            }
         }
         MongoWrite::Update {
             collection,
@@ -243,20 +309,78 @@ async fn execute_mongo(
                     .map_err(to_exec_error)?
             };
             let mut out = json!({
+                "status": "ok",
                 "matched": res.matched_count,
                 "modified": res.modified_count,
             });
             if let Some(id) = res.upserted_id {
                 out["upserted_id"] = serde_json::to_value(id).unwrap_or(Value::Null);
             }
-            Ok(out)
+            Ok((out, TaskOutcome::Success))
         }
         MongoWrite::Delete { collection, filter } => {
             let coll = db.collection::<Document>(&collection);
             let res = coll.delete_many(filter).await.map_err(to_exec_error)?;
-            Ok(json!({ "deleted": res.deleted_count }))
+            Ok((
+                json!({ "status": "ok", "deleted": res.deleted_count }),
+                TaskOutcome::Success,
+            ))
         }
     }
+}
+
+/// Extract `(index, detail)` pairs from an ordered `insert_many` failure.
+///
+/// `None` when the error is not a per-item write failure at all — a dropped
+/// connection, an auth refusal or a write-concern failure says nothing about
+/// which documents landed, so it stays a plain execution error. An *empty*
+/// list counts as `None` for the same reason: reporting no failed item for a
+/// call that failed would turn the error into a success.
+fn mongo_write_errors(e: &mongodb::error::Error) -> Option<Vec<(usize, Value)>> {
+    let mongodb::error::ErrorKind::InsertMany(bulk) = e.kind.as_ref() else {
+        return None;
+    };
+    let errors = bulk.write_errors.as_ref().filter(|w| !w.is_empty())?;
+    Some(
+        errors
+            .iter()
+            .map(|we| {
+                (
+                    we.index,
+                    json!({ "code": we.code, "message": we.message.clone() }),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Turn a bulk outcome into the handler's `(result, outcome)` pair (F28).
+///
+/// A partial bulk is reported as multi-status, not as an error: failing the
+/// task would abort the workflow while leaving the applied prefix unnamed,
+/// which is precisely the defect. `207` keeps the applied/failed detail on the
+/// output path and stamps the audit trail with something other than `200`, so
+/// a partial write is visible in traces without being fatal.
+///
+/// Nothing applied is still a hard error — there is no partial state to
+/// describe, and a silent no-op would be worse than a failed workflow.
+fn bulk_result(
+    outcome: query::bulk::BulkOutcome,
+    what: &str,
+) -> Result<(Value, TaskOutcome), DataflowError> {
+    if outcome.nothing_applied() {
+        let first = outcome.first_error().cloned().unwrap_or(Value::Null);
+        return Err(DataflowError::function_execution(
+            format!("{what} failed, no documents were written: {first}"),
+            None,
+        ));
+    }
+    let task = if outcome.is_partial() {
+        TaskOutcome::Status(PARTIAL_STATUS)
+    } else {
+        TaskOutcome::Success
+    };
+    Ok((outcome.to_json(), task))
 }
 
 /// Build `{base}/{segments...}?{query...}` with percent-encoded path segments
@@ -284,12 +408,16 @@ async fn run_es_write(
     client: &reqwest::Client,
     es: &EsConnectorConfig,
     ew: EsWrite,
-) -> Result<Value, DataflowError> {
+) -> Result<(Value, TaskOutcome), DataflowError> {
     match ew {
         EsWrite::BulkInsert { index, docs } => {
             if docs.is_empty() {
-                return Ok(json!({ "inserted": 0, "ids": [] }));
+                return Ok((
+                    json!({ "status": "ok", "inserted": 0, "ids": [] }),
+                    TaskOutcome::Success,
+                ));
             }
+            let sent = docs.len();
             let url = es_url(&es.url, &[&index, "_bulk"], &[("refresh", "wait_for")])?;
             let req = es_request(client, es, reqwest::Method::POST, &url)
                 .await?
@@ -299,42 +427,26 @@ async fn run_es_write(
             if !status.is_success() {
                 return Err(es_write_error(status, &body));
             }
-            // `_bulk` is ordered but non-transactional: any item error fails the
-            // call (parity with atomic SQL / ordered Mongo), though earlier items
-            // may already be applied — the documented §6.6 divergence.
-            let items = body.get("items").and_then(|i| i.as_array());
-            if body
-                .get("errors")
-                .and_then(|e| e.as_bool())
-                .unwrap_or(false)
-            {
-                let first_error = items
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|it| it.get("index").or_else(|| it.get("create")))
-                    .find_map(|a| a.get("error"))
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                return Err(DataflowError::function_execution(
-                    format!("Elasticsearch bulk insert had failures: {first_error}"),
-                    None,
-                ));
-            }
-            let ids: Vec<Value> = items
-                .into_iter()
-                .flatten()
-                .filter_map(|it| it.get("index").or_else(|| it.get("create")))
-                .filter_map(|a| a.get("_id").cloned())
-                .collect();
-            Ok(json!({ "inserted": ids.len(), "ids": ids }))
+            // F28: `_bulk` attempts every item independently, so any subset can
+            // have landed. Report all of them rather than the first error.
+            bulk_result(
+                query::backend::es::bulk_outcome(&body, sent),
+                "Elasticsearch bulk insert",
+            )
         }
         EsWrite::UpdateByQuery { index, body } => {
             let resp = run_by_query(client, es, &index, "_update_by_query", &body).await?;
-            Ok(json!({ "matched": resp["total"], "modified": resp["updated"] }))
+            Ok((
+                json!({ "status": "ok", "matched": resp["total"], "modified": resp["updated"] }),
+                TaskOutcome::Success,
+            ))
         }
         EsWrite::DeleteByQuery { index, body } => {
             let resp = run_by_query(client, es, &index, "_delete_by_query", &body).await?;
-            Ok(json!({ "deleted": resp["deleted"] }))
+            Ok((
+                json!({ "status": "ok", "deleted": resp["deleted"] }),
+                TaskOutcome::Success,
+            ))
         }
         EsWrite::UpdateDoc { index, id, body } => {
             let url = es_url(
@@ -349,11 +461,14 @@ async fn run_es_write(
             if !status.is_success() {
                 return Err(es_write_error(status, &resp));
             }
-            Ok(match resp.get("result").and_then(|r| r.as_str()) {
-                Some("created") => json!({ "matched": 0, "modified": 0, "upserted_id": id }),
-                Some("noop") => json!({ "matched": 1, "modified": 0 }),
-                _ => json!({ "matched": 1, "modified": 1 }),
-            })
+            let out = match resp.get("result").and_then(|r| r.as_str()) {
+                Some("created") => {
+                    json!({ "status": "ok", "matched": 0, "modified": 0, "upserted_id": id })
+                }
+                Some("noop") => json!({ "status": "ok", "matched": 1, "modified": 0 }),
+                _ => json!({ "status": "ok", "matched": 1, "modified": 1 }),
+            };
+            Ok((out, TaskOutcome::Success))
         }
         EsWrite::CreateDoc { index, id, doc } => {
             let url = es_url(
@@ -367,12 +482,18 @@ async fn run_es_write(
             let (status, resp) = send_es(req, es.max_response_size).await?;
             if status == reqwest::StatusCode::CONFLICT {
                 // The document exists — `action: "nothing"` semantics.
-                return Ok(json!({ "matched": 1, "modified": 0 }));
+                return Ok((
+                    json!({ "status": "ok", "matched": 1, "modified": 0 }),
+                    TaskOutcome::Success,
+                ));
             }
             if !status.is_success() {
                 return Err(es_write_error(status, &resp));
             }
-            Ok(json!({ "matched": 0, "modified": 0, "upserted_id": id }))
+            Ok((
+                json!({ "status": "ok", "matched": 0, "modified": 0, "upserted_id": id }),
+                TaskOutcome::Success,
+            ))
         }
     }
 }
@@ -451,7 +572,9 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "schema",
-        description: "Optional inline entity schema (renames, allowlist, writable flag).",
+        description: "Inline entity schema (renames, allowlist, writable flag). Undeclared \
+                      entities and columns are rejected, so a write without one reaches \
+                      nothing; pass {\"unmapped\": \"identity\"} for pre-1.0 pass-through.",
         kind: FieldKind::Object,
         required: false,
         resolvable: false,
@@ -532,3 +655,70 @@ pub(super) const DATA_WRITE_ENVELOPE_FIELDS: &[FieldSchema] = &[
         resolvable: false,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query::bulk::{BulkOutcome, ItemOutcome};
+
+    /// The three-way classification F28 turns a doc-store bulk into. It is the
+    /// most consequential behaviour change in the wave — a partial write no
+    /// longer aborts the workflow — and it is a pure function over
+    /// `BulkOutcome`, so it is checked here rather than only through a
+    /// container.
+    #[test]
+    fn a_clean_bulk_is_a_plain_success() {
+        let (out, task) = bulk_result(
+            BulkOutcome::all_ok(vec![Some(json!("a")), Some(json!("b"))]),
+            "MongoDB insert",
+        )
+        .expect("a clean bulk is not an error");
+        assert_eq!(task, TaskOutcome::Success);
+        assert_eq!(out["status"], "ok", "{out}");
+        assert_eq!(out["inserted"], 2, "{out}");
+    }
+
+    /// A partial write reports 207 and keeps going: erroring would abort the
+    /// workflow while leaving the applied prefix unnamed, which is the defect.
+    #[test]
+    fn a_partial_bulk_is_multi_status_not_an_error() {
+        let (out, task) = bulk_result(
+            BulkOutcome {
+                items: vec![
+                    ItemOutcome::ok(0, Some(json!("a"))),
+                    ItemOutcome::error(1, json!({ "code": 11000 })),
+                    ItemOutcome::skipped(2),
+                ],
+            },
+            "MongoDB insert",
+        )
+        .expect("a partial write must not fail the task");
+        assert_eq!(
+            task,
+            TaskOutcome::Status(PARTIAL_STATUS),
+            "a partial write must be visible in the audit trail as 207"
+        );
+        assert_eq!(out["status"], "partial", "{out}");
+        assert_eq!(out["items"][1]["index"], 1, "{out}");
+    }
+
+    /// Nothing landed, so there is no partial state to describe — and a
+    /// silent no-op would be worse than a failed workflow. The message names
+    /// the first failure so the trace says *why*.
+    #[test]
+    fn a_bulk_that_applied_nothing_is_a_hard_error() {
+        let err = bulk_result(
+            BulkOutcome {
+                items: vec![
+                    ItemOutcome::error(0, json!({ "message": "duplicate key" })),
+                    ItemOutcome::skipped(1),
+                ],
+            },
+            "MongoDB insert",
+        )
+        .expect_err("a bulk that wrote nothing is a failure");
+        let msg = err.to_string();
+        assert!(msg.contains("MongoDB insert"), "{msg}");
+        assert!(msg.contains("duplicate key"), "must name why: {msg}");
+    }
+}

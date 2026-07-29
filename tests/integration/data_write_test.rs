@@ -501,6 +501,7 @@ async fn flat_and_nested_envelopes_write_the_same_rows() {
         json!({
             "connector": "dw-shapes",
             "output": "data.w",
+            "schema": { "unmapped": "identity" },
             "write": { "op": "insert", "target": "shapes_nested", "values": { "id": 1, "name": "a" } }
         }),
     )
@@ -514,6 +515,8 @@ async fn flat_and_nested_envelopes_write_the_same_rows() {
         json!({
             "connector": "dw-shapes",
             "output": "data.w",
+            // A handler key, so it is stripped from the flat envelope (W7).
+            "schema": { "unmapped": "identity" },
             "op": "insert",
             "target": "shapes_flat",
             "values": { "id": 1, "name": "a" }
@@ -550,6 +553,7 @@ async fn nested_envelope_wins_when_both_shapes_are_present() {
                     "function": { "name": "data_write", "input": {
                         "connector": "dw-both",
                         "output": "data.w",
+                        "schema": { "unmapped": "identity" },
                         // Stale flat keys left behind by a partial migration.
                         "op": "insert",
                         "target": "both_t",

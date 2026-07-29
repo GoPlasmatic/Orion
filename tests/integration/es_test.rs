@@ -52,6 +52,10 @@ async fn test_data_query_es_search() {
                     "id": "t_q", "name": "query",
                     "function": { "name": "data_query", "input": {
                         "connector": h.connector_name,
+                        // F24: the dialect rejects undeclared names, so this
+                        // pre-schema test asks for pass-through explicitly —
+                        // the one line a 0.x task adds.
+                        "schema": { "unmapped": "identity" },
                         "query": {
                             "source": index,
                             "filter": { "and": [

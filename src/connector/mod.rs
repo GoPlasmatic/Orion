@@ -13,8 +13,8 @@ pub(crate) use pool_access_counter::POOL_ACCESS_COUNTER;
 
 pub use config::{
     AuthConfig, CacheConnectorConfig, ConnectorConfig, ConnectorType, DbConnectorConfig,
-    EsConnectorConfig, HttpConnectorConfig, KafkaConnectorConfig, OperationGates, RetryConfig,
-    VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES, is_mongo_url,
+    DialectGuards, EsConnectorConfig, HttpConnectorConfig, KafkaConnectorConfig, OperationGates,
+    RetryConfig, VALID_CACHE_BACKENDS, VALID_CONNECTOR_TYPES, is_mongo_url,
 };
 pub(crate) use masking::MASK;
 pub use masking::{

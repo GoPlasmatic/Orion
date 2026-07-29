@@ -12,8 +12,8 @@ use serde_json::Value;
 use sqlx::any::AnyRow;
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, es_request, is_mongo, resolve_params, timed_query,
-    to_connect_error, to_exec_error,
+    ConnectorCall, apply_output, build_entity_registry, es_request, is_mongo, resolve_params,
+    timed_query, to_connect_error, to_exec_error,
 };
 use super::db_read::rows_to_json;
 use super::schema::{FieldKind, FieldSchema};
@@ -68,10 +68,10 @@ impl AsyncFunctionHandler for DataQueryHandler {
 
             // Optional inline schema (privileged config authored alongside the
             // query): renames, type hints, allowlist, and relation declarations.
-            let registry = match input.get("schema") {
-                Some(s) => query::EntityRegistry::from_json(s)?,
-                None => query::EntityRegistry::default(),
-            };
+            // F24: with no schema the registry now rejects rather than passing
+            // every name through, and the connector's own guards apply on top.
+            let registry =
+                build_entity_registry(input.get("schema"), &connector_config, call.connector)?;
 
             let result = match connector_config.as_ref() {
                 ConnectorConfig::Es(es) => {
@@ -324,8 +324,10 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "schema",
-        description: "Optional inline entity schema (renames, type hints, allowlist, relations) \
-                      enabling some/all/none and typed coercion.",
+        description: "Inline entity schema (renames, type hints, allowlist, relations) enabling \
+                      some/all/none and typed coercion. Undeclared entities and columns are \
+                      rejected, so a query without one reaches nothing; pass \
+                      {\"unmapped\": \"identity\"} for pre-1.0 pass-through.",
         kind: FieldKind::Object,
         required: false,
         resolvable: false,

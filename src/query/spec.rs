@@ -242,15 +242,26 @@ impl QuerySpec {
     /// protected the filter and nothing else. A column rename broke projection
     /// and sort silently for the same reason.
     ///
+    /// A read that names *no* fields is resolved too (F24): an empty `fields`
+    /// renders `SELECT *` — no projection at all on Mongo/ES — which walked
+    /// past the column allowlist entirely, because the caller named nothing to
+    /// check. It is replaced by the entity's declared queryable columns; see
+    /// [`EntityRegistry::default_projection`](crate::query::EntityRegistry::default_projection)
+    /// for the two cases that legitimately stay a wildcard.
+    ///
     /// Applied once per translation, before any backend sees the spec, so no
     /// renderer can receive a logical name.
     pub fn resolve_names(&self, reg: &crate::query::EntityRegistry) -> Result<Self, QueryError> {
         let mut out = self.clone();
 
-        for (i, field) in out.fields.iter_mut().enumerate() {
-            *field = reg
-                .resolve_field(&self.source, field, &format!("fields[{i}]"))?
-                .physical;
+        if out.fields.is_empty() {
+            out.fields = reg.default_projection(&self.source, "fields")?;
+        } else {
+            for (i, field) in out.fields.iter_mut().enumerate() {
+                *field = reg
+                    .resolve_field(&self.source, field, &format!("fields[{i}]"))?
+                    .physical;
+            }
         }
         for (i, key) in out.sort.iter_mut().enumerate() {
             key.field = reg
@@ -258,19 +269,26 @@ impl QuerySpec {
                 .physical;
         }
         // `include.fields` and `include.sort` name columns on the *related*
-        // entity, so they resolve against the relation's target, not the root.
+        // entity, so they resolve against the relation's target, not the root
+        // — including the field-less case, which takes the target's default
+        // projection rather than selecting every column blind.
         for inc in out.include.iter_mut() {
             let target = reg
                 .resolve_relation(&self.source, &inc.relation, "include")?
                 .1;
-            for (i, field) in inc.fields.iter_mut().enumerate() {
-                *field = reg
-                    .resolve_field(
-                        &target,
-                        field,
-                        &format!("include.{}.fields[{i}]", inc.relation),
-                    )?
-                    .physical;
+            if inc.fields.is_empty() {
+                inc.fields =
+                    reg.default_projection(&target, &format!("include.{}.fields", inc.relation))?;
+            } else {
+                for (i, field) in inc.fields.iter_mut().enumerate() {
+                    *field = reg
+                        .resolve_field(
+                            &target,
+                            field,
+                            &format!("include.{}.fields[{i}]", inc.relation),
+                        )?
+                        .physical;
+                }
             }
             for (i, key) in inc.sort.iter_mut().enumerate() {
                 key.field = reg

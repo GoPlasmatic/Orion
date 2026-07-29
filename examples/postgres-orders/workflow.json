@@ -29,6 +29,18 @@
             "total": { "var": "data.req.total" }
           },
           "returning": ["id"],
+          "schema": {
+            "entities": {
+              "orders": {
+                "columns": {
+                  "id": { "type": "int", "writable": false },
+                  "customer_id": { "type": "int" },
+                  "item": { "type": "text" },
+                  "total": { "type": "float" }
+                }
+              }
+            }
+          },
           "output": "data.created"
         }
       }
@@ -49,11 +61,23 @@
           "schema": {
             "entities": {
               "customers": {
+                "columns": {
+                  "id": { "type": "int" },
+                  "name": { "type": "text" },
+                  "email": { "type": "text" }
+                },
                 "relations": {
                   "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "customer_id" }
                 }
               },
-              "orders": {}
+              "orders": {
+                "columns": {
+                  "id": { "type": "int" },
+                  "customer_id": { "type": "int" },
+                  "item": { "type": "text" },
+                  "total": { "type": "float" }
+                }
+              }
             }
           },
           "output": "data.customer"

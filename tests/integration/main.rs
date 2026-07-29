@@ -36,6 +36,7 @@ mod data_query_test;
 mod data_roundtrip_test;
 mod data_write_test;
 mod db_column_types_test;
+mod dialect_schema_test;
 mod drain_test;
 mod dynamic_inputs_test;
 mod error_envelope_test;

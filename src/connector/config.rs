@@ -41,6 +41,59 @@ impl ConnectorConfig {
             _ => None,
         }
     }
+
+    /// The portable-dialect guards for connectors that carry them (db, es).
+    pub fn dialect_guards(&self) -> Option<&DialectGuards> {
+        match self {
+            ConnectorConfig::Db(c) => Some(&c.dialect),
+            ConnectorConfig::Es(c) => Some(&c.dialect),
+            _ => None,
+        }
+    }
+}
+
+/// Operator-owned bounds on what the portable dialect (`data_query` /
+/// `data_write`) may reach through this connector (F24).
+///
+/// [`OperationGates`] answers *which verbs*; this answers *which tables*. The
+/// two are separate because a read-only connector still needs bounding: `read`
+/// alone does not stop a workflow author from selecting the whole database.
+///
+/// Both default to off, because the 1.0 flip of `unmapped` to `reject` already
+/// makes the safe mode the default one. These exist for the case that flip
+/// cannot cover: a task may still write `"unmapped": "identity"` itself, and
+/// only the connector's owner can say that is not allowed here.
+/// Unknown keys are rejected (unlike the connector config around it, which
+/// must keep loading 0.3.x rows carrying since-removed fields). Nothing
+/// pre-1.0 can carry a `dialect` block, and a misspelled key here — the
+/// `requireSchema` / `allowed_entites` class of typo — is privileged security
+/// configuration silently not applying, the same rationale
+/// [`crate::query::schema`] denies unknown fields for.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DialectGuards {
+    /// Refuse any dialect call that did not declare a real schema — no
+    /// entities, or an explicit `"unmapped": "identity"`. Closes the per-task
+    /// opt-out so one forgotten `schema` key cannot reopen the connector.
+    pub require_schema: bool,
+    /// Physical table/collection/index names this connector may touch. Empty
+    /// (the default) means unrestricted. Matched against the name *after*
+    /// schema renames apply, so a rename cannot step around it, and it covers
+    /// relation targets and many-to-many junction tables as well as the
+    /// envelope's own `source`/`target`.
+    pub allowed_entities: Vec<String>,
+}
+
+impl DialectGuards {
+    /// Whether `require_schema` is satisfied by the registry a task supplied.
+    ///
+    /// "A real schema" means both halves: at least one declared entity, and
+    /// allowlist mode. Either alone is empty — an entity list under
+    /// `"unmapped": "identity"` bounds nothing, and allowlist mode with no
+    /// entities can reach nothing anyway.
+    pub fn schema_is_sufficient(&self, declared_entities: bool, identity_mode: bool) -> bool {
+        !self.require_schema || (declared_entities && !identity_mode)
+    }
 }
 
 /// Per-connector operation gates. Everything defaults to allowed; disabling an
@@ -192,6 +245,9 @@ pub struct DbConnectorConfig {
     /// Which operations workflows may run through this connector.
     #[serde(default)]
     pub operations: OperationGates,
+    /// Which tables the portable dialect may reach through this connector.
+    #[serde(default)]
+    pub dialect: DialectGuards,
 }
 
 /// Cache connector. `default_ttl_secs`, `max_connections`, `auth` and `retry`
@@ -233,6 +289,9 @@ pub struct EsConnectorConfig {
     /// Which operations workflows may run through this connector.
     #[serde(default)]
     pub operations: OperationGates,
+    /// Which indices the portable dialect may reach through this connector.
+    #[serde(default)]
+    pub dialect: DialectGuards,
 }
 
 /// A connection string targets MongoDB when it uses a `mongodb` scheme;
@@ -540,6 +599,87 @@ mod tests {
         let gates = config.operation_gates().expect("es has gates");
         assert!(!gates.allows("update"));
         assert!(gates.allows("insert"));
+    }
+
+    // -----------------------------------------------------------------
+    // F24: connector-level dialect guards
+    // -----------------------------------------------------------------
+
+    /// Both guards are opt-in: the 1.0 `unmapped: reject` default is what makes
+    /// the safe mode the default one, and these only add restrictions on top.
+    #[test]
+    fn dialect_guards_default_to_off_on_db_and_es() {
+        for json in [
+            r#"{"type":"db","connection_string":"sqlite::memory:"}"#,
+            r#"{"type":"es","url":"http://localhost:9200"}"#,
+        ] {
+            let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+            let guards = config.dialect_guards().expect("db/es carry dialect guards");
+            assert!(!guards.require_schema, "{json}");
+            assert!(guards.allowed_entities.is_empty(), "{json}");
+        }
+        let http: ConnectorConfig =
+            serde_json::from_str(r#"{"type":"http","url":"https://example.com"}"#).expect("test");
+        assert!(http.dialect_guards().is_none(), "http has no dialect");
+    }
+
+    #[test]
+    fn dialect_guards_parse_from_connector_config() {
+        let json = r#"{"type":"db","connection_string":"sqlite::memory:",
+            "dialect":{"require_schema":true,"allowed_entities":["users","orders"]}}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        let guards = config.dialect_guards().expect("db has guards");
+        assert!(guards.require_schema);
+        assert_eq!(guards.allowed_entities, vec!["users", "orders"]);
+    }
+
+    /// `require_schema` has to reject *both* ways of having no effective
+    /// schema. An entity list under `"unmapped": "identity"` bounds nothing —
+    /// every undeclared name still passes through — so it is not a schema.
+    #[test]
+    fn require_schema_refuses_identity_mode_and_empty_schemas() {
+        let off = DialectGuards::default();
+        assert!(
+            off.schema_is_sufficient(false, true),
+            "off permits anything"
+        );
+
+        let on = DialectGuards {
+            require_schema: true,
+            allowed_entities: vec![],
+        };
+        assert!(
+            on.schema_is_sufficient(true, false),
+            "entities + reject mode is a real schema"
+        );
+        assert!(
+            !on.schema_is_sufficient(false, false),
+            "no entities declared is not a schema"
+        );
+        assert!(
+            !on.schema_is_sufficient(true, true),
+            "entities under identity mode still let every other name through"
+        );
+        assert!(!on.schema_is_sufficient(false, true));
+    }
+
+    /// A misspelled guard key is the guard not applying at all, on a connector
+    /// whose whole purpose is to bound what workflows reach — so it is a
+    /// refused config, not an ignored key.
+    #[test]
+    fn a_misspelled_dialect_guard_is_rejected() {
+        for bad in [
+            r#"{"type":"db","connection_string":"sqlite::memory:",
+                "dialect":{"requireSchema":true}}"#,
+            r#"{"type":"db","connection_string":"sqlite::memory:",
+                "dialect":{"allowed_entites":["users"]}}"#,
+            r#"{"type":"es","url":"http://localhost:9200",
+                "dialect":{"require_schemas":true}}"#,
+        ] {
+            let err = serde_json::from_str::<ConnectorConfig>(bad)
+                .expect_err("a misspelled dialect key must not parse as no guard");
+            assert!(err.to_string().contains("unknown field"), "{err}");
+        }
     }
 
     #[test]

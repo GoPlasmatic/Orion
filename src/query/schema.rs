@@ -5,10 +5,12 @@
 //! adding, only when wanted: renames (logical→physical), type hints, a field
 //! allowlist, and the relation declarations that `some`/`all`/`none` require.
 //!
-//! With no schema the registry is empty and `UnmappedPolicy::Identity` applies:
-//! every field resolves to itself with `FieldType::Unknown` (identity mode).
+//! Since 1.0 the default is `UnmappedPolicy::Reject` (F24): a task that
+//! declares no schema reaches nothing, and identity mode — every name passing
+//! through to the physical one — is an explicit `"unmapped": "identity"`
+//! opt-in that a connector can refuse outright (`dialect.require_schema`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::Deserialize;
 
@@ -26,16 +28,29 @@ use crate::query::ir::{EsStorage, FieldRef, FieldType, JunctionRef, MongoStorage
 pub struct EntityRegistry {
     pub entities: HashMap<String, Entity>,
     pub unmapped: UnmappedPolicy,
+    /// Physical names this connector permits, from the operator-owned
+    /// `dialect.allowed_entities` (F24). `None` means unrestricted.
+    ///
+    /// `serde(skip)` is the point: this is connector configuration installed by
+    /// the handler via [`EntityRegistry::restrict_to`], never something the
+    /// task's own `schema` can set — a workflow author who could widen their
+    /// own allowlist would not have one.
+    #[serde(skip)]
+    allowed_physical: Option<HashSet<String>>,
 }
 
 /// What to do with a field not declared on its entity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UnmappedPolicy {
-    /// Reject any field not declared (allowlist mode).
-    Reject,
-    /// Treat the field name as the physical name (identity mode) — the default.
+    /// Reject any entity or field not declared (allowlist mode) — the default
+    /// since 1.0 (F24).
     #[default]
+    Reject,
+    /// Treat the logical name as the physical name (identity mode). Through
+    /// 0.x this was the default, so any workflow author reached every table
+    /// the connector's database user could see, read *and* write; it is now
+    /// an explicit per-task opt-in that `dialect.require_schema` can forbid.
     Identity,
 }
 
@@ -137,15 +152,141 @@ impl EntityRegistry {
         Ok(reg)
     }
 
-    /// Physical table/collection/index for an entity (declared, else the name).
+    /// An explicitly identity-mode registry: every name resolves to itself.
+    ///
+    /// Test-only. F24 flipped the default policy to `reject`, so the tests that
+    /// predate the schema registry — the ones asserting what *identity mode*
+    /// does — have to ask for it by name. `default()` now means the opposite
+    /// and would pass them for the wrong reason, every name rejected as
+    /// undeclared rather than accepted and checked.
+    #[cfg(test)]
+    pub(crate) fn identity() -> Self {
+        Self {
+            unmapped: UnmappedPolicy::Identity,
+            ..Self::default()
+        }
+    }
+
+    /// Install the connector's `allowed_entities` allowlist (F24). An empty
+    /// list means "no restriction", matching the config default.
+    pub fn restrict_to(&mut self, allowed: &[String]) {
+        if !allowed.is_empty() {
+            self.allowed_physical = Some(allowed.iter().cloned().collect());
+        }
+    }
+
+    /// Whether this registry would let an undeclared name through — i.e. it is
+    /// in identity mode. `dialect.require_schema` refuses such a task (F24).
+    pub fn is_identity_mode(&self) -> bool {
+        self.unmapped == UnmappedPolicy::Identity
+    }
+
+    /// Whether the task declared any entity at all.
+    pub fn is_empty(&self) -> bool {
+        self.entities.is_empty()
+    }
+
+    /// Physical table/collection/index for a **caller-named** entity — the
+    /// envelope's `source` / `target`.
+    ///
+    /// F24: this used to fall back to the logical name unconditionally, so
+    /// `unmapped: "reject"` bounded only *columns*. A query naming no fields at
+    /// all (`{"source": "secrets"}` → `SELECT *`) resolved every table the
+    /// connector's database user could see even in allowlist mode, because no
+    /// field resolution ever ran. Under `reject` an undeclared entity is now
+    /// refused before any backend sees it.
     pub fn physical_table(&self, entity: &str) -> Result<String, QueryError> {
+        if self.unmapped == UnmappedPolicy::Reject && !self.entities.contains_key(entity) {
+            return Err(QueryError::UndeclaredEntity {
+                entity: entity.to_string(),
+            });
+        }
+        self.structural_table(entity)
+    }
+
+    /// Physical table for an entity named by the *schema itself* — a relation's
+    /// `to` target — rather than by a caller.
+    ///
+    /// Skips the undeclared-entity gate for the same reason
+    /// [`structural_column`](Self::structural_column) skips the `queryable`
+    /// allowlist: the operator wrote `"to": "orders"` in the schema, so the
+    /// reference is declared structure, not caller input. The connector's
+    /// `allowed_entities` still applies — that is operator config outranking
+    /// the task's schema, not the schema checking itself.
+    fn structural_table(&self, entity: &str) -> Result<String, QueryError> {
         let table = self
             .entities
             .get(entity)
             .and_then(|e| e.physical.clone())
             .unwrap_or_else(|| entity.to_string());
         validate_identifier(&table, "source")?;
+        self.check_allowed(entity, &table)?;
         Ok(table)
+    }
+
+    /// Enforce the connector's `allowed_entities` against a resolved *physical*
+    /// name. Physical rather than logical deliberately: the allowlist is
+    /// operator config and the schema is authored per task, so a rename
+    /// (`"orders" → "secrets"`) must not be able to step around it.
+    fn check_allowed(&self, entity: &str, physical: &str) -> Result<(), QueryError> {
+        match &self.allowed_physical {
+            Some(allowed) if !allowed.contains(physical) => Err(QueryError::EntityNotAllowed {
+                entity: entity.to_string(),
+                physical: physical.to_string(),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// The projection a read gets when it names no `fields`: every declared
+    /// **queryable** column of `entity`, in a stable (logical-name) order.
+    ///
+    /// F24, the column half of the same hole. Bounding entities left the column
+    /// allowlist bypassable, because a field-less read never resolves a field:
+    /// `fields: []` renders `SELECT *` (and no `_source` on ES, no projection
+    /// document on Mongo), and [`crate::query::spec::QuerySpec::resolve_names`]
+    /// only walks the columns a caller actually named. So with
+    /// `{"password_hash": {"queryable": false}}` declared, `{"source":
+    /// "users"}` still returned it — `queryable` meant "you may not *name* this
+    /// column", not "you may not read it". Under `reject` the wildcard is
+    /// replaced by the declared column list, so the flag means the same thing
+    /// whether or not the caller wrote a `fields` array.
+    ///
+    /// An empty result means *keep the wildcard*, and there are exactly two
+    /// such cases, both of them "no column allowlist was written here":
+    /// identity mode, and an entity declaring no columns at all (a
+    /// relation-only or write-only declaration). An entity that declares
+    /// columns and marks every one non-queryable is the third case and is an
+    /// error, not a wildcard — silently widening back to every column is the
+    /// defect this closes.
+    pub fn default_projection(&self, entity: &str, at: &str) -> Result<Vec<String>, QueryError> {
+        if self.unmapped != UnmappedPolicy::Reject {
+            return Ok(Vec::new());
+        }
+        let Some(ent) = self.entities.get(entity) else {
+            return Ok(Vec::new());
+        };
+        if ent.columns.is_empty() {
+            return Ok(Vec::new());
+        }
+        // `columns` is a HashMap, so sort for a deterministic projection —
+        // rendered SQL must not vary between processes.
+        let mut declared: Vec<&String> = ent
+            .columns
+            .iter()
+            .filter(|(_, c)| c.queryable)
+            .map(|(name, _)| name)
+            .collect();
+        declared.sort();
+        if declared.is_empty() {
+            return Err(QueryError::NoQueryableColumns {
+                entity: entity.to_string(),
+            });
+        }
+        declared
+            .into_iter()
+            .map(|name| Ok(self.resolve_field(entity, name, at)?.physical))
+            .collect()
     }
 
     /// Resolve a single-segment field on `entity` to a physical [`FieldRef`],
@@ -264,6 +405,10 @@ impl EntityRegistry {
                 validate_identifier(&j.table, at)?;
                 validate_identifier(&j.local, at)?;
                 validate_identifier(&j.foreign, at)?;
+                // F24: a junction is a third table this call touches and it
+                // never went through `physical_table`, so it was the one table
+                // name the connector allowlist would otherwise miss.
+                self.check_allowed(&rel.to, &j.table)?;
                 Ok(JunctionRef {
                     table: j.table.clone(),
                     local: j.local.clone(),
@@ -274,7 +419,7 @@ impl EntityRegistry {
         Ok((
             RelRef {
                 name: name.to_string(),
-                target_table: self.physical_table(&rel.to)?,
+                target_table: self.structural_table(&rel.to)?,
                 // Join keys are operator-declared structure, not caller input,
                 // so they honour renames and identifier rules but not the
                 // caller-facing `queryable` allowlist (W2). Before this they
@@ -340,6 +485,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    use crate::query::lower::Params;
+    use EntityRegistry as Reg;
+
+    fn identity() -> EntityRegistry {
+        Reg::identity()
+    }
+
     fn schema_with_relation(rel: serde_json::Value) -> serde_json::Value {
         json!({ "entities": { "users": {
             "columns": {},
@@ -393,7 +545,7 @@ mod tests {
     /// backend a name that means something other than "a column".
     #[test]
     fn identity_mode_rejects_names_that_are_not_plain_identifiers() {
-        let reg = EntityRegistry::default();
+        let reg = identity();
         for bad in [
             // MongoDB reads a leading `$` as an operator sigil, so this
             // reached `mongo.rs` as a raw document key.
@@ -419,7 +571,7 @@ mod tests {
 
     #[test]
     fn ordinary_identifiers_still_resolve_on_both_paths() {
-        let reg = EntityRegistry::default();
+        let reg = identity();
         for good in ["id", "user_id", "createdAt", "col2", "_private"] {
             assert!(reg.resolve_field("users", good, "filter").is_ok(), "{good}");
             assert!(
@@ -594,10 +746,288 @@ mod tests {
         .expect("registry");
         assert!(reg.physical_table("users").is_err());
         assert_eq!(
-            EntityRegistry::default()
-                .physical_table("users")
-                .expect("plain name"),
+            identity().physical_table("users").expect("plain name"),
             "users"
         );
+    }
+
+    // -----------------------------------------------------------------
+    // F24: the safe mode is the default one
+    // -----------------------------------------------------------------
+
+    /// The flip itself. Through 0.x an absent `schema` meant identity mode, so
+    /// a task with no schema reached every table the connector's database user
+    /// could see. An empty registry must now reach nothing.
+    #[test]
+    fn the_default_registry_rejects_rather_than_passing_names_through() {
+        assert_eq!(EntityRegistry::default().unmapped, UnmappedPolicy::Reject);
+
+        let reg = EntityRegistry::default();
+        assert!(
+            reg.physical_table("users").is_err(),
+            "an undeclared entity must not resolve under the default policy"
+        );
+        assert!(reg.resolve_field("users", "id", "filter").is_err());
+        assert!(reg.resolve_write_column("users", "id", "values").is_err());
+    }
+
+    /// The specific hole the policy flip alone would have left open: `reject`
+    /// used to bound only *columns*, and `{"source": "secrets"}` renders
+    /// `SELECT *` without ever resolving a field — so no field check ran and
+    /// the table resolved anyway.
+    #[test]
+    fn an_undeclared_entity_is_refused_even_when_no_field_is_named() {
+        let reg = EntityRegistry::from_json(&json!({
+            "entities": { "users": { "columns": { "id": {} } } }
+        }))
+        .expect("registry");
+
+        assert_eq!(reg.physical_table("users").expect("declared"), "users");
+        let err = reg
+            .physical_table("secrets")
+            .expect_err("an undeclared entity must not resolve");
+        assert_eq!(
+            err,
+            QueryError::UndeclaredEntity {
+                entity: "secrets".to_string()
+            }
+        );
+    }
+
+    /// The error a 0.x workflow hits after upgrading is the one place the fix
+    /// can be explained, so it must name both ways forward.
+    #[test]
+    fn the_undeclared_entity_error_names_exactly_what_to_add() {
+        let msg = QueryError::UndeclaredEntity {
+            entity: "orders".to_string(),
+        }
+        .to_string();
+        assert!(msg.contains("orders"), "{msg}");
+        assert!(
+            msg.contains("\"schema\""),
+            "must name the key to add: {msg}"
+        );
+        assert!(msg.contains("\"entities\""), "{msg}");
+        assert!(
+            msg.contains("\"unmapped\": \"identity\""),
+            "must name the opt-out too: {msg}"
+        );
+    }
+
+    /// A relation's `to` is schema-declared structure, not caller input, so it
+    /// resolves like `structural_column` does — otherwise the documented
+    /// example, which declares a relation to an entity it does not itself
+    /// declare, would stop working under the new default.
+    ///
+    /// The exemption is exactly that far and no further, which is what the
+    /// second half pins: the relation resolves and a wildcard `include` plans,
+    /// but naming a column on an undeclared target is caller input again and
+    /// goes through the ordinary allowlist. So `include: {orders: {}}` works
+    /// and `include: {orders: {fields: ["id"]}}` — or a `some` over `orders` —
+    /// needs `orders` declared.
+    #[test]
+    fn a_relation_target_need_not_be_a_declared_entity() {
+        let schema = json!({ "entities": { "users": {
+            "columns": { "id": {} },
+            "relations": { "orders": {
+                "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id"
+            }}
+        }}});
+        let reg = EntityRegistry::from_json(&schema).expect("registry");
+
+        let (rel, target) = reg
+            .resolve_relation("users", "orders", "filter")
+            .expect("a declared relation resolves even in reject mode");
+        assert_eq!(rel.target_table, "orders");
+        assert_eq!(target, "orders");
+
+        // A whole-relation include plans against the undeclared target.
+        let limits = crate::config::QueryConfig::default();
+        crate::query::plan_sql(
+            &json!({ "source": "users", "include": { "orders": {} } }),
+            &Params::new(),
+            &reg,
+            crate::query::SqlDialect::Sqlite,
+            &limits,
+        )
+        .expect("a wildcard include over an undeclared target plans");
+
+        // Naming one of its columns does not.
+        let err = crate::query::plan_sql(
+            &json!({ "source": "users", "include": { "orders": { "fields": ["id"] } } }),
+            &Params::new(),
+            &reg,
+            crate::query::SqlDialect::Sqlite,
+            &limits,
+        )
+        .expect_err("a column on an undeclared target is caller input");
+        assert!(matches!(err, QueryError::InvalidField { .. }), "{err}");
+
+        // Nor does a predicate over it.
+        let err = crate::query::plan_sql(
+            &json!({ "source": "users", "filter": {
+                "some": [{ "field": "orders" }, { "==": [{ "field": "total" }, 1] }]
+            }}),
+            &Params::new(),
+            &reg,
+            crate::query::SqlDialect::Sqlite,
+            &limits,
+        )
+        .expect_err("a `some` over an undeclared target names its columns");
+        assert!(matches!(err, QueryError::InvalidField { .. }), "{err}");
+    }
+
+    // -----------------------------------------------------------------
+    // F24: the column half — a field-less read is projected, not `SELECT *`
+    // -----------------------------------------------------------------
+
+    /// `queryable: false` used to mean "you may not *name* this column": a
+    /// read that named no fields at all rendered `SELECT *` and returned it,
+    /// because `resolve_names` only walks the columns a caller listed.
+    #[test]
+    fn a_field_less_read_projects_the_declared_queryable_columns() {
+        let reg = EntityRegistry::from_json(&json!({ "entities": { "users": { "columns": {
+            "id": {},
+            "email": { "name": "email_addr" },
+            "password_hash": { "queryable": false }
+        }}}}))
+        .expect("registry");
+
+        assert_eq!(
+            reg.default_projection("users", "fields")
+                .expect("a declared entity projects its queryable columns"),
+            vec!["email_addr".to_string(), "id".to_string()],
+            "the non-queryable column must not be projected, and renames apply"
+        );
+    }
+
+    /// The two cases that legitimately stay a wildcard: nobody wrote a column
+    /// allowlist here.
+    #[test]
+    fn a_read_stays_a_wildcard_when_no_columns_were_declared() {
+        assert!(
+            identity()
+                .default_projection("users", "fields")
+                .expect("identity mode")
+                .is_empty(),
+            "identity mode declares nothing, so there is nothing to project"
+        );
+
+        let reg = EntityRegistry::from_json(&json!({ "entities": { "users": {
+            "relations": { "orders": {
+                "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id"
+            }}
+        }}}))
+        .expect("registry");
+        assert!(
+            reg.default_projection("users", "fields")
+                .expect("relation-only entity")
+                .is_empty()
+        );
+    }
+
+    /// An entity whose every column is `queryable: false` must not fall back
+    /// to the wildcard it was declared to prevent.
+    #[test]
+    fn an_entity_with_no_queryable_column_is_an_error_not_a_wildcard() {
+        let reg = EntityRegistry::from_json(&json!({ "entities": { "audit": { "columns": {
+            "token": { "queryable": false },
+            "secret": { "queryable": false }
+        }}}}))
+        .expect("registry");
+
+        assert_eq!(
+            reg.default_projection("audit", "fields")
+                .expect_err("nothing is readable, so nothing may be returned"),
+            QueryError::NoQueryableColumns {
+                entity: "audit".to_string()
+            }
+        );
+    }
+
+    /// `allowed_entities` is operator config and the schema is authored per
+    /// task, so the allowlist binds the *physical* name — a rename must not be
+    /// able to step around it.
+    #[test]
+    fn the_connector_allowlist_binds_the_physical_name_not_the_logical_one() {
+        let mut reg = EntityRegistry::from_json(&json!({ "entities": {
+            "orders": { "physical": "secrets", "columns": { "id": {} } },
+            "users":  { "columns": { "id": {} } }
+        }}))
+        .expect("registry");
+        reg.restrict_to(&["users".to_string()]);
+
+        assert_eq!(reg.physical_table("users").expect("allowed"), "users");
+        let err = reg
+            .physical_table("orders")
+            .expect_err("a rename onto a disallowed table must be refused");
+        assert_eq!(
+            err,
+            QueryError::EntityNotAllowed {
+                entity: "orders".to_string(),
+                physical: "secrets".to_string(),
+            }
+        );
+    }
+
+    /// The allowlist must cover every table the call touches, not just the
+    /// envelope's `source` — relation targets and junctions are tables too,
+    /// and the junction never went through `physical_table` at all.
+    #[test]
+    fn the_allowlist_covers_relation_targets_and_junctions() {
+        let schema = json!({ "entities": { "users": {
+            "columns": { "id": {} },
+            "relations": {
+                "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" },
+                "tags": {
+                    "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "id",
+                    "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id" }
+                }
+            }
+        }}});
+
+        let mut reg = EntityRegistry::from_json(&schema).expect("registry");
+        reg.restrict_to(&["users".to_string()]);
+        assert!(
+            reg.resolve_relation("users", "orders", "filter").is_err(),
+            "a relation target outside the allowlist must be refused"
+        );
+        assert!(
+            reg.resolve_relation("users", "tags", "filter").is_err(),
+            "a junction table outside the allowlist must be refused"
+        );
+
+        let mut reg = EntityRegistry::from_json(&schema).expect("registry");
+        reg.restrict_to(&[
+            "users".to_string(),
+            "orders".to_string(),
+            "tags".to_string(),
+            "user_tags".to_string(),
+        ]);
+        assert!(reg.resolve_relation("users", "orders", "filter").is_ok());
+        assert!(reg.resolve_relation("users", "tags", "filter").is_ok());
+    }
+
+    /// An empty `allowed_entities` is the config default and must mean "no
+    /// restriction", not "nothing is reachable".
+    #[test]
+    fn an_empty_allowlist_restricts_nothing() {
+        let mut reg = identity();
+        reg.restrict_to(&[]);
+        assert_eq!(
+            reg.physical_table("anything").expect("unrestricted"),
+            "anything"
+        );
+    }
+
+    /// The allowlist is connector configuration. A task that could name it in
+    /// its own `schema` would simply widen it.
+    #[test]
+    fn a_task_schema_cannot_set_the_allowlist_itself() {
+        let err = EntityRegistry::from_json(&json!({
+            "entities": {}, "allowed_physical": ["users"]
+        }))
+        .expect_err("the allowlist is not a task-settable key");
+        assert!(err.to_string().contains("invalid schema"), "{err}");
     }
 }

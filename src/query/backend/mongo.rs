@@ -16,7 +16,10 @@
 
 use mongodb::bson::{Bson, Document};
 
+use serde_json::Value as Json;
+
 use crate::config::QueryConfig;
+use crate::query::bulk::{BulkOutcome, ItemOutcome};
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, FieldRef, MongoStorage, Quant, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir};
@@ -301,6 +304,31 @@ pub enum MongoWrite {
     },
 }
 
+/// Read an ordered `insert_many` failure into per-item outcomes (F28).
+///
+/// `insert_many` defaults to ordered, so the server stops at the first bad
+/// document: every earlier document is committed, the failing one is not, and
+/// the rest are never attempted. The driver's error carried none of that — no
+/// index, no count — so a caller saw one opaque message over a collection that
+/// had in fact been partly written.
+///
+/// `failed` holds the indices the driver reported (`write_errors`) with their
+/// detail. Anything after the earliest reported failure that was not itself
+/// reported is `skipped`, not failed: the server never looked at it.
+pub fn insert_outcome(sent: usize, failed: &[(usize, Json)]) -> BulkOutcome {
+    let first_failure = failed.iter().map(|(i, _)| *i).min();
+    let items = (0..sent)
+        .map(|i| match failed.iter().find(|(idx, _)| *idx == i) {
+            Some((_, detail)) => ItemOutcome::error(i, detail.clone()),
+            // Ids are not recoverable from the driver's error type, so a
+            // committed document reports `ok` without one.
+            None if first_failure.is_none_or(|f| i < f) => ItemOutcome::ok(i, None),
+            None => ItemOutcome::skipped(i),
+        })
+        .collect();
+    BulkOutcome { items }
+}
+
 /// Render a resolved mutation into a [`MongoWrite`]. The `filter` of an
 /// update/delete reuses the query dialect's [`match_doc`]; values become BSON via
 /// the same [`to_bson`] the read path uses. Column names pass through as the
@@ -479,7 +507,7 @@ mod tests {
         translate_mongo(
             &query,
             &serde_json::Map::new(),
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &limits(),
         )
         .expect("translation should succeed")
@@ -601,7 +629,7 @@ mod tests {
                 "source": "users",
                 "filter": { "some": [{"field": "orders"}, {">": [{"field": "total"}, 100]}] }
             }),
-            json!({ "entities": { "users": { "relations": {
+            json!({ "unmapped": "identity", "entities": { "users": { "relations": {
                 "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id", "mongo": "embedded" }
             } } } }),
         );
@@ -619,7 +647,7 @@ mod tests {
                 "filter": { "some": [{"field": "orders"}, {">": [{"field": "total"}, 100]}] }
             }),
             &serde_json::Map::new(),
-            &EntityRegistry::from_json(&json!({ "entities": { "users": { "relations": {
+            &EntityRegistry::from_json(&json!({ "unmapped": "identity", "entities": { "users": { "relations": {
                 "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id", "mongo": "referenced" }
             } } } }))
             .expect("schema"),
@@ -639,12 +667,14 @@ mod tests {
                 "filter": { "some": [{"field": "tags"}, {"==": [{"field": "label"}, "vip"]}] }
             }),
             &serde_json::Map::new(),
-            &EntityRegistry::from_json(&json!({ "entities": { "users": { "relations": {
+            &EntityRegistry::from_json(
+                &json!({ "unmapped": "identity", "entities": { "users": { "relations": {
                 "tags": {
                     "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "id",
                     "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id" }
                 }
-            } } } }))
+            } } } }),
+            )
             .expect("schema"),
             &limits(),
         )
@@ -672,7 +702,7 @@ mod tests {
             let err = translate_mongo(
                 &json!({ "source": "users", "include": { "orders": selection } }),
                 &serde_json::Map::new(),
-                &EntityRegistry::from_json(&json!({ "entities": { "users": { "relations": {
+                &EntityRegistry::from_json(&json!({ "unmapped": "identity", "entities": { "users": { "relations": {
                     "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
                 } } } }))
                 .expect("schema"),
@@ -692,7 +722,7 @@ mod tests {
         let err = translate_mongo(
             &json!({ "source": "t", "limit": 9999 }),
             &serde_json::Map::new(),
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &limits(),
         )
         .expect_err("over cap");
@@ -705,7 +735,7 @@ mod tests {
         let err = translate_mongo(
             &json!({ "source": "t", "skip": 10_001 }),
             &serde_json::Map::new(),
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &limits(),
         )
         .expect_err("over the skip cap");
@@ -718,7 +748,7 @@ mod tests {
         crate::query::write::resolve_write(
             &input,
             &serde_json::Map::new(),
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &crate::config::WriteConfig {
                 max_rows: 1000,
                 allow_unfiltered: true,
@@ -801,5 +831,56 @@ mod tests {
                 multi: false,
             }
         );
+    }
+
+    // -----------------------------------------------------------------
+    // F28: an ordered insert_many failure names the prefix it applied
+    // -----------------------------------------------------------------
+
+    fn dup(index: usize) -> (usize, Json) {
+        (
+            index,
+            json!({ "code": 11000, "message": "duplicate key error" }),
+        )
+    }
+
+    /// The defect: `insert_many` is ordered, so a failure at index 2 has
+    /// already committed 0 and 1 and will never attempt 3 or 4. The driver
+    /// error carried no index, so the caller could not tell which.
+    #[test]
+    fn an_ordered_failure_splits_the_batch_into_applied_failed_and_untried() {
+        let out = insert_outcome(5, &[dup(2)]);
+
+        assert!(out.is_partial(), "{:?}", out);
+        let j = out.to_json();
+        assert_eq!(j["status"], "partial", "{j}");
+        assert_eq!(j["inserted"], 2, "0 and 1 committed: {j}");
+        assert_eq!(j["failed"], 1, "{j}");
+        assert_eq!(j["skipped"], 2, "3 and 4 were never attempted: {j}");
+
+        let items = j["items"].as_array().expect("items");
+        assert_eq!(items[0]["status"], "ok");
+        assert_eq!(items[1]["status"], "ok");
+        assert_eq!(items[2]["status"], "error");
+        assert_eq!(items[2]["error"]["code"], 11000);
+        assert_eq!(items[3]["status"], "skipped");
+        assert_eq!(items[4]["status"], "skipped");
+    }
+
+    /// A failure on the very first document applies nothing, so it is a plain
+    /// failure rather than a partial write.
+    #[test]
+    fn a_failure_at_index_zero_applies_nothing() {
+        let out = insert_outcome(3, &[dup(0)]);
+        assert!(out.nothing_applied(), "{:?}", out);
+        assert!(!out.is_partial());
+        assert_eq!(out.to_json()["skipped"], 2);
+    }
+
+    #[test]
+    fn no_reported_errors_means_every_document_landed() {
+        let out = insert_outcome(3, &[]);
+        assert_eq!(out.inserted(), 3);
+        assert!(!out.is_partial());
     }
 }

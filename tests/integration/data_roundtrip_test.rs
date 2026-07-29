@@ -38,9 +38,13 @@ fn dq(h: &BackendHarness, id: &str, query: Value, out: &str) -> Value {
     let mut input = h.with_db(json!({
         "connector": h.connector_name, "query": query, "output": out
     }));
-    if let Some(schema) = h.schema_json() {
-        input["schema"] = schema;
-    }
+    // F24: the dialect rejects undeclared names, so a backend with no schema of
+    // its own still has to say it wants pass-through — the same one line a 0.x
+    // workflow adds on upgrade. This harness is about cross-backend parity, not
+    // the allowlist.
+    input["schema"] = h
+        .schema_json()
+        .unwrap_or_else(|| json!({ "unmapped": "identity" }));
     json!({ "id": id, "name": id, "function": { "name": "data_query", "input": input } })
 }
 

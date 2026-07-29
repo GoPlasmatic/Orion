@@ -561,6 +561,10 @@ async fn mongo_filter_resolves_from_the_message() {
                         "input": {
                             "connector": "dyn-mongo",
                             "database": "orion_test",
+                            // F24: the dialect rejects undeclared names, so
+                            // this seed asks for pass-through explicitly —
+                            // the one line a 0.x task adds.
+                            "schema": { "unmapped": "identity" },
                             "op": "insert",
                             "target": "dyn_docs",
                             "values": {"id": "doc-1", "owner": "alice"},

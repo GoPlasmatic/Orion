@@ -164,6 +164,7 @@ async fn test_data_query_param_resolved_from_message() {
                     "sort": [{ "age": "asc" }]
                 },
                 "params": { "min": { "var": "data.req.threshold" } },
+                "schema": { "unmapped": "identity" },
                 "output": "data.result"
             }
         }
@@ -382,7 +383,7 @@ async fn test_data_query_relation_some() {
                     "sort": [{ "id": "asc" }],
                     "filter": { "some": [{ "field": "orders" }, { ">": [{ "field": "total" }, 100] }] }
                 },
-                "schema": { "entities": { "users": { "relations": {
+                "schema": { "unmapped": "identity", "entities": { "users": { "relations": {
                     "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
                 } } } },
                 "output": "data.result"
@@ -435,7 +436,7 @@ async fn test_data_query_include_nested() {
                         "fields": ["id", "total"], "sort": [{ "id": "asc" }], "limit": 5
                     } }
                 },
-                "schema": { "entities": { "users": { "relations": {
+                "schema": { "unmapped": "identity", "entities": { "users": { "relations": {
                     "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
                 } } } },
                 "output": "data.result"

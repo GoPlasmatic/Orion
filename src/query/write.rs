@@ -557,7 +557,7 @@ mod tests {
         resolve_write(
             &input,
             &Params::new(),
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &permissive(),
         )
     }
@@ -699,7 +699,7 @@ mod tests {
                 "values": { "total": { "param": "amount" } }
             }),
             &params,
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &permissive(),
         )
         .expect("resolves");
@@ -726,7 +726,7 @@ mod tests {
         let err = resolve_write(
             &json!({ "op": "delete", "target": "orders", "all": true }),
             &Params::new(),
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &WriteConfig {
                 max_rows: 1000,
                 allow_unfiltered: false,
@@ -756,7 +756,7 @@ mod tests {
                 "values": [ {"a": 1}, {"a": 2}, {"a": 3} ]
             }),
             &Params::new(),
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &WriteConfig {
                 max_rows: 2,
                 allow_unfiltered: false,

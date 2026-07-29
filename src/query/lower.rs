@@ -37,7 +37,7 @@ enum Operand {
 /// production always goes through [`lower_with`] with a real registry.
 #[cfg(test)]
 pub fn lower(filter: &Json, params: &Params) -> Result<Cond, QueryError> {
-    lower_with(filter, params, &EntityRegistry::default(), "")
+    lower_with(filter, params, &EntityRegistry::identity(), "")
 }
 
 /// Lower a `filter` rooted at `root_entity`, resolving fields and relations

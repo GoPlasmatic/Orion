@@ -15,6 +15,7 @@
 use serde_json::{Value as Json, json};
 
 use crate::config::QueryConfig;
+use crate::query::bulk::{BulkOutcome, ItemOutcome};
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, EsStorage, FieldRef, Quant, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir};
@@ -468,6 +469,40 @@ pub fn bulk_ndjson(docs: &[(Option<String>, Json)]) -> String {
     out
 }
 
+/// Read a `_bulk` response into per-item outcomes (F28).
+///
+/// `_bulk` is not fail-fast: ES attempts every action and reports each one
+/// separately, so *any* subset can have landed. The handler previously took the
+/// first `error` out of `items`, discarded the rest and failed the call, which
+/// named neither how many documents were written nor which ones — the caller
+/// could not compensate without re-reading the index.
+///
+/// `sent` is the number of documents submitted; an item ES did not report for
+/// is recorded as an error rather than assumed written.
+pub fn bulk_outcome(body: &Json, sent: usize) -> BulkOutcome {
+    let items = body.get("items").and_then(|i| i.as_array());
+    let outcomes = (0..sent)
+        .map(|i| {
+            // Each element is a single-key object naming the action
+            // (`index` / `create`); the result sits under that key.
+            let result = items
+                .and_then(|a| a.get(i))
+                .and_then(|it| it.get("index").or_else(|| it.get("create")));
+            match result {
+                None => ItemOutcome::error(
+                    i,
+                    json!({ "reason": "Elasticsearch reported no result for this item" }),
+                ),
+                Some(r) => match r.get("error") {
+                    Some(e) if !e.is_null() => ItemOutcome::error(i, e.clone()),
+                    _ => ItemOutcome::ok(i, r.get("_id").cloned()),
+                },
+            }
+        })
+        .collect();
+    BulkOutcome { items: outcomes }
+}
+
 /// Lower an optional filter to a query clause (`None` — an acknowledged
 /// unfiltered mutation — matches everything).
 fn cond_to_query(cond: &Option<Cond>) -> Result<Json, WriteError> {
@@ -523,7 +558,7 @@ mod tests {
     use serde_json::json;
 
     fn es(query: Json) -> EsQuery {
-        translate(&query, &EntityRegistry::default())
+        translate(&query, &EntityRegistry::identity())
     }
 
     fn es_schema(query: Json, schema: Json) -> EsQuery {
@@ -636,7 +671,7 @@ mod tests {
                 "source": "users",
                 "filter": { "some": [{"field": "orders"}, {">": [{"field": "total"}, 100]}] }
             }),
-            json!({ "entities": { "users": { "relations": {
+            json!({ "unmapped": "identity", "entities": { "users": { "relations": {
                 "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id", "es": "nested" }
             } } } }),
         );
@@ -655,7 +690,7 @@ mod tests {
                 "source": "users",
                 "filter": { "some": [{"field": "orders"}, {">": [{"field": "total"}, 100]}] }
             }),
-            json!({ "entities": { "users": { "relations": {
+            json!({ "unmapped": "identity", "entities": { "users": { "relations": {
                 "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id", "es": "child" }
             } } } }),
         );
@@ -669,7 +704,7 @@ mod tests {
 
     #[test]
     fn test_all_over_relation_is_capability_error() {
-        let reg = EntityRegistry::from_json(&json!({ "entities": { "users": { "relations": {
+        let reg = EntityRegistry::from_json(&json!({ "unmapped": "identity", "entities": { "users": { "relations": {
             "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id", "es": "nested" }
         } } } }))
         .expect("schema");
@@ -693,12 +728,14 @@ mod tests {
     /// `nested`/`has_child` on the relation name — wrong results, no error.
     #[test]
     fn test_many_to_many_relation_filter_is_capability_error() {
-        let reg = EntityRegistry::from_json(&json!({ "entities": { "users": { "relations": {
+        let reg = EntityRegistry::from_json(
+            &json!({ "unmapped": "identity", "entities": { "users": { "relations": {
             "tags": {
                 "to": "tags", "kind": "many_to_many", "local": "id", "foreign": "id",
                 "through": { "table": "user_tags", "local": "user_id", "foreign": "tag_id" }
             }
-        } } } }))
+        } } } }),
+        )
         .expect("schema");
         let spec = crate::query::spec::parse(&json!({
             "source": "users",
@@ -799,7 +836,7 @@ mod tests {
         crate::query::write::resolve_write(
             &input,
             &serde_json::Map::new(),
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &permissive_writes(),
         )
         .expect("resolve_write should succeed")
@@ -816,8 +853,14 @@ mod tests {
     }
 
     /// The schema declaring that the logical `id` keys the ES document.
+    /// These tests are about ES `_id` handling, not the allowlist: the `id`
+    /// rename still applies (declared columns win over the policy), while the
+    /// other columns they write resolve by identity.
     fn id_schema() -> Json {
-        json!({ "entities": { "users": { "columns": { "id": { "name": "_id" } } } } })
+        json!({
+            "unmapped": "identity",
+            "entities": { "users": { "columns": { "id": { "name": "_id" } } } }
+        })
     }
 
     #[test]
@@ -1074,5 +1117,83 @@ mod tests {
         ))
         .expect_err("updating _id is gated on ES");
         assert!(matches!(err, WriteError::FeatureUnsupportedByTarget { .. }));
+    }
+
+    // -----------------------------------------------------------------
+    // F28: `_bulk` reports every item, not just the first error
+    // -----------------------------------------------------------------
+
+    fn bulk_body(items: Vec<Json>) -> Json {
+        json!({ "errors": true, "items": items })
+    }
+
+    fn ok_item(id: &str) -> Json {
+        json!({ "index": { "_id": id, "status": 201 } })
+    }
+
+    fn err_item(reason: &str) -> Json {
+        json!({ "index": { "status": 409, "error": { "type": "version_conflict_engine_exception", "reason": reason } } })
+    }
+
+    /// The defect: ES applies each action independently, so a three-document
+    /// bulk can land two. The handler used to return the first error and
+    /// discard `items`, naming neither the count nor which ones survived.
+    #[test]
+    fn a_mixed_bulk_reports_each_item_with_its_index() {
+        let body = bulk_body(vec![ok_item("a"), err_item("conflict"), ok_item("c")]);
+        let out = bulk_outcome(&body, 3);
+
+        assert!(out.is_partial(), "two of three landed: {:?}", out);
+        assert_eq!(out.inserted(), 2);
+        assert_eq!(out.ids(), vec![json!("a"), json!("c")]);
+
+        let j = out.to_json();
+        assert_eq!(j["status"], "partial", "{j}");
+        assert_eq!(j["items"][1]["index"], 1, "{j}");
+        assert_eq!(j["items"][1]["status"], "error", "{j}");
+        assert_eq!(
+            j["items"][1]["error"]["type"], "version_conflict_engine_exception",
+            "the item's own error must survive, not just the first one: {j}"
+        );
+    }
+
+    #[test]
+    fn a_clean_bulk_reports_every_id_in_order() {
+        let body = json!({ "errors": false, "items": [ok_item("a"), ok_item("b")] });
+        let out = bulk_outcome(&body, 2);
+        assert!(!out.is_partial());
+        assert_eq!(out.ids(), vec![json!("a"), json!("b")]);
+        assert_eq!(out.to_json()["status"], "ok");
+    }
+
+    /// Nothing landed: there is no partial state, so the handler turns this
+    /// into a hard failure rather than a 207.
+    #[test]
+    fn a_wholly_failed_bulk_reports_nothing_applied() {
+        let body = bulk_body(vec![err_item("a"), err_item("b")]);
+        let out = bulk_outcome(&body, 2);
+        assert!(out.nothing_applied());
+        assert!(!out.is_partial());
+    }
+
+    /// A short or missing `items` array must not be read as "the rest
+    /// succeeded" — an unreported document is one we cannot claim was written.
+    #[test]
+    fn unreported_items_are_errors_not_silent_successes() {
+        let out = bulk_outcome(&bulk_body(vec![ok_item("a")]), 3);
+        assert_eq!(out.inserted(), 1, "{:?}", out);
+        assert_eq!(out.count(crate::query::bulk::ItemStatus::Error), 2);
+
+        let none = bulk_outcome(&json!({ "errors": true }), 2);
+        assert!(none.nothing_applied(), "{:?}", none);
+    }
+
+    /// `create` actions (upsert with `action: "nothing"`) report under a
+    /// different key than `index` and must be read the same way.
+    #[test]
+    fn create_actions_are_read_like_index_actions() {
+        let body =
+            json!({ "errors": false, "items": [{ "create": { "_id": "z", "status": 201 } }] });
+        assert_eq!(bulk_outcome(&body, 1).ids(), vec![json!("z")]);
     }
 }

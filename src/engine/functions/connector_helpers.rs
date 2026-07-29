@@ -10,6 +10,38 @@ use crate::connector::{
     CacheConnectorConfig, ConnectorConfig, ConnectorRegistry, DbConnectorConfig, EsConnectorConfig,
     OperationGates,
 };
+use crate::query::EntityRegistry;
+
+/// Build the dialect's [`EntityRegistry`] for one `data_query` / `data_write`
+/// call: parse the task's optional inline `schema`, then apply the connector's
+/// operator-owned guards to it (F24).
+///
+/// Both handlers took the same two lines before this — `from_json`, else
+/// `default()` — and neither consulted the connector at all. The order matters:
+/// `require_schema` judges what the task actually declared, and the allowlist is
+/// installed afterwards so it cannot be part of what is being judged.
+pub fn build_entity_registry(
+    schema: Option<&Value>,
+    connector_config: &ConnectorConfig,
+    connector_name: &str,
+) -> Result<EntityRegistry, DataflowError> {
+    let mut registry = match schema {
+        Some(s) => EntityRegistry::from_json(s)?,
+        None => EntityRegistry::default(),
+    };
+    if let Some(guards) = connector_config.dialect_guards() {
+        if !guards.schema_is_sufficient(!registry.is_empty(), registry.is_identity_mode()) {
+            return Err(DataflowError::Validation(format!(
+                "{}connector '{connector_name}' requires a declared schema \
+                 (dialect.require_schema): supply \"schema\" with an \"entities\" map \
+                 and without \"unmapped\": \"identity\"",
+                crate::errors::CONNECTOR_DETAIL_MARKER
+            )));
+        }
+        registry.restrict_to(&guards.allowed_entities);
+    }
+    Ok(registry)
+}
 
 /// Reject the call when the connector's operation gates disable `op` — the
 /// per-connector en/disable switch for read / insert / update / delete /
@@ -625,10 +657,66 @@ pub fn bind_json_params<'q>(
     query
 }
 
+/// The query timeout a connector that declares no `query_timeout_ms` gets.
+const DEFAULT_QUERY_TIMEOUT_MS: u64 = 30_000;
+
+/// One wall-clock budget shared by every round trip of a single logical
+/// operation (F11, F28).
+///
+/// `timed_query` bounds *one* future. That is the whole story for a handler
+/// that issues one statement, but a `data_write` that opens a transaction
+/// issues three round trips — acquire + `BEGIN`, the statement, `COMMIT` — and
+/// giving each its own `query_timeout_ms` would silently multiply the
+/// connector's configured bound. A budget is started once and every leg runs
+/// against the same deadline, so `query_timeout_ms` keeps meaning what the
+/// connector's owner set it to.
+#[derive(Debug, Clone, Copy)]
+pub struct QueryBudget {
+    deadline: tokio::time::Instant,
+    total_ms: u64,
+}
+
+impl QueryBudget {
+    /// Start a budget of `timeout_ms` (or the default) from now.
+    pub fn start(timeout_ms: Option<u64>) -> Self {
+        let total_ms = timeout_ms.unwrap_or(DEFAULT_QUERY_TIMEOUT_MS);
+        Self {
+            deadline: tokio::time::Instant::now() + Duration::from_millis(total_ms),
+            total_ms,
+        }
+    }
+
+    /// Run one leg of the operation against the shared deadline.
+    pub async fn run<F, T, E>(&self, handler_name: &str, operation: F) -> Result<T, DataflowError>
+    where
+        F: std::future::Future<Output = Result<T, E>>,
+        E: std::fmt::Display,
+    {
+        let total_ms = self.total_ms;
+        tokio::time::timeout_at(self.deadline, operation)
+            .await
+            .map_err(|_| {
+                DataflowError::Timeout(format!("{handler_name} query timed out after {total_ms}ms"))
+            })?
+            .map_err(|e| {
+                // F42: a limit the caller can fix is a 400 with its text intact,
+                // not a 500 with the guidance replaced.
+                let text = e.to_string();
+                if let Some(detail) = text.strip_prefix(LIMIT_MARKER) {
+                    return to_limit_error(detail);
+                }
+                DataflowError::function_execution(
+                    format!("{handler_name} query failed: {text}"),
+                    None,
+                )
+            })
+    }
+}
+
 /// Execute an async operation with a timeout, mapping errors to
 /// `DataflowError::Timeout` and `DataflowError::FunctionExecution`
 /// respectively.  Consolidates the repeated timeout + error-mapping pattern
-/// in the SQL handler functions.
+/// in the SQL handler functions. A single-round-trip [`QueryBudget`].
 pub async fn timed_query<F, T, E>(
     timeout_ms: Option<u64>,
     handler_name: &str,
@@ -638,26 +726,15 @@ where
     F: std::future::Future<Output = Result<T, E>>,
     E: std::fmt::Display,
 {
-    let ms = timeout_ms.unwrap_or(30_000);
-    tokio::time::timeout(std::time::Duration::from_millis(ms), operation)
+    QueryBudget::start(timeout_ms)
+        .run(handler_name, operation)
         .await
-        .map_err(|_| {
-            DataflowError::Timeout(format!("{handler_name} query timed out after {ms}ms"))
-        })?
-        .map_err(|e| {
-            // F42: a limit the caller can fix is a 400 with its text intact,
-            // not a 500 with the guidance replaced.
-            let text = e.to_string();
-            if let Some(detail) = text.strip_prefix(LIMIT_MARKER) {
-                return to_limit_error(detail);
-            }
-            DataflowError::function_execution(format!("{handler_name} query failed: {text}"), None)
-        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connector::DialectGuards;
 
     fn es_config(allow_private_urls: bool) -> EsConnectorConfig {
         EsConnectorConfig {
@@ -667,6 +744,7 @@ mod tests {
             request_timeout_ms: None,
             allow_private_urls,
             operations: OperationGates::default(),
+            dialect: DialectGuards::default(),
         }
     }
 

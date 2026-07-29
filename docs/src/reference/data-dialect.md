@@ -206,8 +206,8 @@ Elasticsearch. This table is that table.
   `true` on the by-query endpoints), so a `data_query` later in the same
   pipeline sees the write — parity with SQL/Mongo visibility, at a throughput
   cost.
-- **`_bulk` is ordered but non-transactional.** Any item error fails the call,
-  though earlier items may already be applied. Version conflicts on
+- **`_bulk` is non-transactional.** Each action is applied independently, so
+  any subset can land — see [Bulk writes](#bulk-writes). Version conflicts on
   `_update_by_query`/`_delete_by_query` surface as errors (`conflicts=abort`).
 
 ## Result shapes
@@ -217,14 +217,86 @@ Written to the task's `output` path:
 | Backend | Shape |
 |---------|-------|
 | Query (all) | JSON array of rows/documents |
-| SQL write | `{ "rows_affected": n }`, plus `"returning": [..]` where supported and `"last_insert_id": n` on MySQL single-row inserts |
-| MongoDB / ES write | Doc-store keys per op: `{ "inserted": n, "ids": [..] }`, `{ "matched": n, "modified": n }` (+ `"upserted_id"` when created), `{ "deleted": n }` |
+| SQL write | `{ "status": "ok", "rows_affected": n }`, plus `"returning": [..]` where supported and `"last_insert_id": n` on MySQL single-row inserts |
+| MongoDB / ES write | `"status"` plus doc-store keys per op: `{ "inserted": n, "ids": [..] }`, `{ "matched": n, "modified": n }` (+ `"upserted_id"` when created), `{ "deleted": n }` |
+
+Every write result carries a **`status`** — `"ok"` or `"partial"` — so one
+check works across three backends whose failure models genuinely differ.
+
+## Bulk writes
+
+A bulk `insert` (an array of `values`) means three different things
+underneath. All three now report through one shape, but the guarantees are not
+the same and no envelope can make them so:
+
+| Backend | Model | On failure |
+|---|---|---|
+| SQL | **Atomic** | One `INSERT … VALUES (…), (…)` inside an explicit transaction: every row or none. The call fails and nothing is written |
+| MongoDB | **Prefix-applied** | `insert_many` is ordered, so the server stops at the first rejected document. Everything before it is committed; everything after is never attempted |
+| Elasticsearch | **Arbitrary-applied** | `_bulk` attempts every action independently, so any subset can land |
+
+When a call applies **some but not all** of its items, the result is
+`"status": "partial"` and carries a per-item array, and the task reports audit
+status **`207`** rather than `200` — visible in the trace, not fatal, so the
+workflow can compensate:
+
+```json
+{
+  "status": "partial",
+  "inserted": 2,
+  "failed": 1,
+  "skipped": 2,
+  "ids": ["a", "c"],
+  "items": [
+    { "index": 0, "status": "ok", "id": "a" },
+    { "index": 1, "status": "ok", "id": "c" },
+    { "index": 2, "status": "error", "error": { "code": 11000, "message": "duplicate key" } },
+    { "index": 3, "status": "skipped" },
+    { "index": 4, "status": "skipped" }
+  ]
+}
+```
+
+`index` is the position in the `values` array you sent. `skipped` means the
+backend never attempted the item — only ordered MongoDB produces it. `items`
+and the `failed`/`skipped` counters appear only when there is something to
+report; a clean bulk is just `status`/`inserted`/`ids`.
+
+**A partial write does not fail the task.** Erroring would abort the workflow
+while leaving the applied prefix unnamed, which is the thing this reports —
+so a workflow that writes in bulk to MongoDB or Elasticsearch should check
+`status` and compensate. A bulk where *nothing* landed is still a hard error:
+there is no partial state to describe.
 
 ## The schema registry
 
-Both functions accept an optional inline `schema` — **privileged configuration
-authored alongside the workflow, never built from request input**. Without one,
-the dialect runs in *identity mode*: names pass through as-is.
+Both functions take an inline `schema` — **privileged configuration authored
+alongside the workflow, never built from request input**. It is what bounds the
+call: since 1.0 the dialect **rejects undeclared names by default**, so a task
+with no `schema` reaches nothing.
+
+Through 0.x the default was the opposite — *identity mode*, where every name
+passed through to the physical one — which meant any workflow author reached
+every table the connector's database user could see, read and write, unless
+they remembered to opt in to `"unmapped": "reject"` on that task. Identity mode
+is still available, but it now has to be asked for —
+`"schema": { "unmapped": "identity" }`.
+
+An undeclared name reports what to add, naming both routes:
+
+```
+entity 'orders' is not declared in the task's schema: add "schema":
+{"entities": {"orders": {"columns": {"<column>": {}}}}} naming the columns this
+task uses, or add "unmapped": "identity" to that schema to accept undeclared
+names as physical ones (pre-1.0 behaviour)
+```
+
+A relation's `to` target does not itself need declaring *to resolve the
+relation* — like a relation's join keys, it is structure the schema's author
+wrote, not a caller-supplied name. Naming one of its **columns** is caller
+input again, so `include: { "orders": {} }` works against an undeclared
+`orders` while `include: { "orders": { "fields": ["id"] } }` — or any
+`some`/`all`/`none` predicate over it — needs `orders` declared.
 
 ```json
 "schema": {
@@ -250,9 +322,16 @@ the dialect runs in *identity mode*: names pass through as-is.
   Elasticsearch nor MongoDB maps a logical `id` onto the document key
   implicitly, so targeting it is always an explicit rename).
 - **Types** — drive value coercion where a backend needs the hint.
-- **Allowlist** — with `"unmapped": "reject"`, only declared entities/columns
-  are usable; `queryable: false` hides a column from reads, `writable: false`
-  protects it from writes (generated/identity columns).
+- **Allowlist** — under `"unmapped": "reject"` (the default), only declared
+  entities and columns are usable; `queryable: false` hides a column from
+  reads, `writable: false` protects it from writes (generated/identity
+  columns). A read that names no `fields` is **projected**, not a wildcard:
+  it returns exactly the entity's queryable columns, so `queryable: false`
+  means the same thing whether or not the caller listed `fields`. An entity
+  that declares *no* columns (a relation-only or write-only declaration) has
+  no column allowlist to apply and still reads every column; one that declares
+  columns and marks them all non-queryable is refused rather than widened back
+  to `SELECT *`.
 - **Relations** — declare `has_one` / `has_many` / `many_to_many` (the latter
   via `through`) so `some`/`all`/`none` predicates and `include` work.
 
@@ -321,6 +400,55 @@ A gated call fails with a validation error naming the operation and connector
 raw SQL cannot be classified per-statement, `db_write` has its own `raw_write`
 gate — to make a connector fully delete-proof, disable both `delete` and
 `raw_write`.
+
+### Schema guards
+
+`operations` answers *which verbs*; the `dialect` block answers *which tables
+the portable dialect may name*. A `read`-only connector is otherwise unbounded
+through `data_query` — nothing stops a workflow from selecting the whole
+database.
+
+**These guards bound `data_query`/`data_write`, not the connector.** The raw
+escape hatches — `db_read`, `db_write`, `mongo_read` — run on the same
+connector, carry no entity name a guard could match, and are bounded only by
+`operations`. So:
+
+- **Writes** are fully bounded by `allowed_entities` once `"raw_write": false`
+  leaves `data_write` as the only write path.
+- **Reads are not**, because `read` gates `data_query`, `db_read` and
+  `mongo_read` together: a connector that permits the dialect permits raw SQL
+  and raw `find` too. Bound those at the database credential — a role that can
+  only see the allowlisted tables — or keep raw reads on a separate connector.
+- On MongoDB the task's `database` field is not checked against the guard
+  either, so an allowlisted collection name can be read from any database the
+  credential can see. Scope the credential, not just the list.
+
+```json
+"config": {
+  "type": "db",
+  "connection_string": "postgres://…",
+  "dialect": {
+    "require_schema": true,
+    "allowed_entities": ["users", "orders", "order_items"]
+  }
+}
+```
+
+| Field | Default | Effect |
+|---|---|---|
+| `require_schema` | `false` | Refuse any dialect call that did not declare a real schema — no `entities`, or an explicit `"unmapped": "identity"`. Closes the per-task opt-out, so one forgotten `schema` key cannot reopen the connector |
+| `allowed_entities` | `[]` (unrestricted) | Physical table/collection/index names `data_query`/`data_write` may name through this connector |
+
+`allowed_entities` matches the name **after** schema renames apply, because the
+allowlist is the connector owner's and the schema is authored per task — a
+rename (`"orders"` → physical `secrets`) must not be able to step around it. It
+covers every table a call reaches: the envelope's `source`/`target`, relation
+targets, and many-to-many junction tables.
+
+Both default to off. The 1.0 flip of `unmapped` to `reject` is what makes the
+safe mode the default one; these exist for what that flip cannot cover, since a
+task can still write `"unmapped": "identity"` itself and only the connector's
+owner can say that is not allowed here.
 
 ## Configuration
 

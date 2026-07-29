@@ -7,6 +7,7 @@
 //! → [`backend::sql::build_for`] (dialect-specific `(sql, values)` for `AnyPool`).
 
 pub mod backend;
+pub mod bulk;
 pub mod error;
 pub mod ir;
 pub mod lower;
@@ -37,7 +38,7 @@ pub fn translate_sql(
     dialect: SqlDialect,
     limits: &QueryConfig,
 ) -> Result<SelectStatement, QueryError> {
-    translate_sql_with_schema(query, params, &EntityRegistry::default(), dialect, limits)
+    translate_sql_with_schema(query, params, &EntityRegistry::identity(), dialect, limits)
 }
 
 /// Schema-aware variant: resolves fields and relations through `reg` (renames,
@@ -51,6 +52,8 @@ pub fn translate_sql_with_schema(
     limits: &QueryConfig,
 ) -> Result<SelectStatement, QueryError> {
     let spec = spec::parse(query)?;
+    // F24: the entity gate runs *first*. See [`plan_sql`].
+    let root_table = reg.physical_table(&spec.source)?;
     let cond = match &spec.filter {
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
@@ -58,7 +61,6 @@ pub fn translate_sql_with_schema(
     // W2: projection and sort go through the same allowlist / rename /
     // identifier gate as the filter, before any backend sees the spec.
     let spec = spec.resolve_names(reg)?;
-    let root_table = reg.physical_table(&spec.source)?;
     backend::sql::render(&spec, &cond, &root_table, dialect, limits)
 }
 
@@ -193,6 +195,14 @@ pub fn plan_sql(
     limits: &QueryConfig,
 ) -> Result<SqlPlan, QueryError> {
     let spec = spec::parse(query)?;
+    // F24: the entity gate runs *first*, before the filter is lowered and
+    // before any field or relation is resolved. Every one of those steps also
+    // fails on an undeclared entity — with `invalid field reference 'age'` or
+    // `unknown relation 'orders'`, neither of which names the `schema` key that
+    // is actually missing. Resolving the table first means the one error a 0.x
+    // workflow hits is the one that says how to migrate it, whatever else the
+    // query happens to mention.
+    let root_table = reg.physical_table(&spec.source)?;
     let cond = match &spec.filter {
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
@@ -250,7 +260,6 @@ pub fn plan_sql(
         });
     }
 
-    let root_table = reg.physical_table(&spec.source)?;
     let main = backend::sql::render(&main_spec, &cond, &root_table, dialect, limits)?;
     Ok(SqlPlan {
         main,
@@ -269,6 +278,8 @@ pub fn translate_mongo(
     limits: &QueryConfig,
 ) -> Result<backend::mongo::MongoQuery, QueryError> {
     let spec = spec::parse(query)?;
+    // F24: the entity gate runs *first*. See [`plan_sql`].
+    let collection = reg.physical_table(&spec.source)?;
     let cond = match &spec.filter {
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
@@ -276,7 +287,6 @@ pub fn translate_mongo(
     // W2: projection and sort go through the same allowlist / rename /
     // identifier gate as the filter, before any backend sees the spec.
     let spec = spec.resolve_names(reg)?;
-    let collection = reg.physical_table(&spec.source)?;
     backend::mongo::render(&spec, &cond, &collection, limits)
 }
 
@@ -290,6 +300,8 @@ pub fn translate_es(
     limits: &QueryConfig,
 ) -> Result<backend::es::EsQuery, QueryError> {
     let spec = spec::parse(query)?;
+    // F24: the entity gate runs *first*. See [`plan_sql`].
+    let index = reg.physical_table(&spec.source)?;
     let cond = match &spec.filter {
         Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
         None => Cond::True,
@@ -297,7 +309,6 @@ pub fn translate_es(
     // W2: projection and sort go through the same allowlist / rename /
     // identifier gate as the filter, before any backend sees the spec.
     let spec = spec.resolve_names(reg)?;
-    let index = reg.physical_table(&spec.source)?;
     backend::es::render(&spec, &cond, &index, limits)
 }
 

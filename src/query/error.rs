@@ -23,6 +23,16 @@ pub enum QueryError {
     MissingParam { name: String, at: String },
     /// A `some`/`all`/`none` referenced a relation not declared in the schema.
     UnknownRelation { relation: String, at: String },
+    /// The envelope named an entity the schema does not declare, under the
+    /// `reject` unmapped policy — the 1.0 default (F24).
+    UndeclaredEntity { entity: String },
+    /// An entity declares columns but marks every one `queryable: false`, so a
+    /// query that names no `fields` has nothing it may return (F24). Refused
+    /// rather than widened back to `SELECT *`.
+    NoQueryableColumns { entity: String },
+    /// The entity resolves to a physical table/collection/index outside the
+    /// connector's `allowed_entities` list (F24).
+    EntityNotAllowed { entity: String, physical: String },
     /// The requested page size exceeds the configured hard maximum.
     LimitExceeded { requested: u64, max: u64 },
     /// The requested `skip` offset exceeds the configured hard maximum.
@@ -50,6 +60,33 @@ impl std::fmt::Display for QueryError {
             QueryError::UnknownRelation { relation, at } => {
                 write!(f, "unknown relation '{relation}' (at {at})")
             }
+            // F24: the one error a 0.x workflow hits after the unmapped default
+            // flipped to `reject`, so it spells out both ways forward rather
+            // than just stating the refusal.
+            QueryError::UndeclaredEntity { entity } => write!(
+                f,
+                "entity '{entity}' is not declared in the task's schema: add \
+                 \"schema\": {{\"entities\": {{\"{entity}\": {{\"columns\": \
+                 {{\"<column>\": {{}}}}}}}}}} naming the columns this task uses, \
+                 or add \"unmapped\": \"identity\" to that schema to accept \
+                 undeclared names as physical ones (pre-1.0 behaviour)"
+            ),
+            QueryError::NoQueryableColumns { entity } => write!(
+                f,
+                "entity '{entity}' declares columns but none of them are queryable, \
+                 so a query naming no \"fields\" has nothing it may return: mark a \
+                 column \"queryable\": true, or read it through a different entity"
+            ),
+            // G3: the physical name and the existence of an operator allowlist
+            // are connector topology, so the message is tagged for redaction at
+            // the data-plane edge and kept in full in the log and the trace —
+            // the same treatment `require_schema`'s refusal gets.
+            QueryError::EntityNotAllowed { entity, physical } => write!(
+                f,
+                "{}entity '{entity}' resolves to '{physical}', which the connector's \
+                 allowed_entities list does not permit",
+                crate::errors::CONNECTOR_DETAIL_MARKER
+            ),
             QueryError::FeatureUnsupportedByTarget { feature, target } => {
                 write!(f, "{feature} is not supported by the {target} backend")
             }

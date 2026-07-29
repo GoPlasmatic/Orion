@@ -616,6 +616,10 @@ mod tests {
     /// users→orders (has_many) and users↔tags (many-to-many via user_tags).
     fn rel_schema() -> EntityRegistry {
         EntityRegistry::from_json(&json!({
+            // These tests are about relation *rendering*, not the allowlist:
+            // they declare relations and let the inner predicate's columns
+            // resolve by identity, which F24 now makes an explicit opt-in.
+            "unmapped": "identity",
             "entities": {
                 "users": {
                     "relations": {
@@ -1180,7 +1184,7 @@ mod tests {
         let resolved = crate::query::write::resolve_write(
             &input,
             &serde_json::Map::new(),
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &permissive_writes(),
         )
         .expect("resolve_write should succeed");
@@ -1313,7 +1317,7 @@ mod tests {
         let resolved = crate::query::write::resolve_write(
             &input,
             &serde_json::Map::new(),
-            &EntityRegistry::default(),
+            &EntityRegistry::identity(),
             &permissive_writes(),
         )
         .expect("resolve");
@@ -1362,7 +1366,7 @@ mod prop_tests {
             let resolved = resolve_write(
                 &input,
                 &serde_json::Map::new(),
-                &EntityRegistry::default(),
+                &EntityRegistry::identity(),
                 &permissive_writes(),
             )
             .expect("resolve");
@@ -1458,7 +1462,7 @@ mod prop_tests {
                 let resolved = resolve_write(
                     &input,
                     &serde_json::Map::new(),
-                    &EntityRegistry::default(),
+                    &EntityRegistry::identity(),
                     &permissive_writes(),
                 );
                 match resolved {

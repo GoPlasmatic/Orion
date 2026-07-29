@@ -39,7 +39,7 @@ Expected response (ids vary):
 {
   "status": "ok",
   "data": {
-    "created": { "rows_affected": 1, "returning": [{ "id": 4 }] },
+    "created": { "status": "ok", "rows_affected": 1, "returning": [{ "id": 4 }] },
     "customer": [{
       "id": 1, "name": "Ada Lovelace", "email": "ada@example.com",
       "orders": [

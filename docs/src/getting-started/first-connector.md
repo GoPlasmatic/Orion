@@ -97,6 +97,18 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
               "total":       { "param": "total" }
             },
             "returning": ["id"]
+          },
+          "schema": {
+            "entities": {
+              "orders": {
+                "columns": {
+                  "id":          { "type": "int", "writable": false },
+                  "customer_id": { "type": "int" },
+                  "item":        { "type": "text" },
+                  "total":       { "type": "float" }
+                }
+              }
+            }
           }
         } } },
       { "id": "history", "name": "Fetch customer with order history",
@@ -111,11 +123,17 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
           "schema": {
             "entities": {
               "customers": {
+                "columns": { "id": { "type": "int" }, "name": {}, "email": {} },
                 "relations": {
                   "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "customer_id" }
                 }
               },
-              "orders": {}
+              "orders": {
+                "columns": {
+                  "id": { "type": "int" }, "customer_id": { "type": "int" },
+                  "item": {}, "total": { "type": "float" }
+                }
+              }
             }
           },
           "output": "data.customer"
@@ -135,8 +153,9 @@ How the pieces fit:
   construction.
 - **The inline `schema` declares `customers has_many orders`.** That relation
   is what powers `"include": { "orders": … }` (and `some`/`all`/`none`
-  filters over related records). Without a schema the dialect runs in
-  identity mode — names pass through as-is.
+  filters over related records). The schema is also what *permits* the query:
+  the dialect rejects undeclared entities and columns by default, so a task
+  without one reaches nothing.
 - **An `include` states its own `sort`.** The per-customer page is cut inside
   the database, so "the latest 10 orders" needs an order key; without one the
   ten you get would not be a defined answer.
@@ -168,7 +187,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/record-order \
 {
   "status": "ok",
   "data": {
-    "created": { "rows_affected": 1, "returning": [{ "id": 4 }] },
+    "created": { "status": "ok", "rows_affected": 1, "returning": [{ "id": 4 }] },
     "customer": [{
       "id": 1, "name": "Ada Lovelace", "email": "ada@example.com",
       "orders": [

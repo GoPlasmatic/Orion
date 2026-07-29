@@ -9,6 +9,19 @@ use tower::ServiceExt;
 
 use super::{body_json, json_request};
 
+/// The schema a dialect task gets when it does not supply one of its own.
+///
+/// F24 flipped the dialect's default to `unmapped: "reject"`, so a task with no
+/// `schema` now reaches nothing. Most tests here predate the schema registry and
+/// are about something else entirely — filters, sorts, safety guards — so the
+/// builders give them the explicit opt-in that a 0.x workflow needs after
+/// upgrading, which is the same one line the upgrade guide prescribes. Tests
+/// that are *about* the default (`data_query_test` / `data_write_test`'s F24
+/// cases) pass their own `schema`, or bypass these builders entirely.
+fn default_schema() -> Value {
+    json!({ "unmapped": "identity" })
+}
+
 /// A raw `db_write` task (used for DDL, which is outside the portable dialect).
 pub fn ddl(conn: &str, id: &str, sql: &str) -> Value {
     json!({
@@ -41,15 +54,44 @@ pub fn dw(conn: &str, id: &str, input: Value) -> Value {
     handler
         .entry("output".to_string())
         .or_insert_with(|| json!("data.w"));
+    handler
+        .entry("schema".to_string())
+        .or_insert_with(default_schema);
     handler.insert("write".to_string(), Value::Object(envelope));
     json!({ "id": id, "name": id, "function": { "name": "data_write", "input": handler } })
 }
 
 /// A `data_query` read-back task writing rows to `data.result`.
 pub fn dq(conn: &str, id: &str, query: Value) -> Value {
+    dq_schema(conn, id, query, default_schema())
+}
+
+/// A `data_query` task with an explicit inline `schema`.
+pub fn dq_schema(conn: &str, id: &str, query: Value, schema: Value) -> Value {
+    json!({
+        "id": id, "name": id,
+        "function": { "name": "data_query", "input": {
+            "connector": conn, "query": query, "schema": schema, "output": "data.result"
+        } }
+    })
+}
+
+/// A `data_query` task with **no** `schema` key at all — the shape a 0.x
+/// workflow has, and the one F24 now refuses.
+pub fn dq_no_schema(conn: &str, id: &str, query: Value) -> Value {
     json!({
         "id": id, "name": id,
         "function": { "name": "data_query", "input": { "connector": conn, "query": query, "output": "data.result" } }
+    })
+}
+
+/// A `data_write` task with **no** `schema` key at all (see [`dq_no_schema`]).
+pub fn dw_no_schema(conn: &str, id: &str, envelope: Value) -> Value {
+    json!({
+        "id": id, "name": id,
+        "function": { "name": "data_write", "input": {
+            "connector": conn, "write": envelope, "output": "data.w"
+        } }
     })
 }
 
