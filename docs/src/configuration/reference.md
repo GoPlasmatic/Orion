@@ -236,8 +236,18 @@ The async trace pipeline: `POST /{channel}/async` enqueues, workers execute, and
 |---|---|---|---|
 | `audit.retention_days` | `90` | `ORION_AUDIT__RETENTION_DAYS` | Raise to satisfy a retention policy; `0` keeps rows forever. |
 | `audit.cleanup_interval_secs` | `3600` | `ORION_AUDIT__CLEANUP_INTERVAL_SECS` | How often the audit cleanup job runs. |
+| `audit.max_pending` | `1000` | `ORION_AUDIT__MAX_PENDING` | Audit rows accepted but not yet written. Raise on a bursty admin plane; a full queue drops rows and counts them in `orion_audit_events_dropped_total{reason="queue_full"}`. |
+| `audit.drain_timeout_secs` | `5` | `ORION_AUDIT__DRAIN_TIMEOUT_SECS` | How long shutdown waits for the audit queue to drain before abandoning what is left (and saying how much). Rejected at startup if `0` — unlike the other timeouts on this page, zero is not "no bound" here, it would skip the drain. |
 
-**Audit retention.** Every admin mutation writes an `audit_logs` row and nothing else removes them, so `audit.retention_days = 0` grows that table without bound. Before 1.0 these two settings lived in `[queue]` and the cleanup job borrowed the trace job's cadence; they now have their own section and their own interval.
+**Audit retention.** Every admin mutation writes an `audit_logs` row and nothing else removes them, so `audit.retention_days = 0` grows that table without bound. Before 1.0 these settings lived in `[queue]` and the cleanup job borrowed the trace job's cadence; they now have their own section and their own interval.
+
+**Audit durability.** Admin responses never wait on the audit INSERT — the row
+goes onto a bounded queue that one background writer drains in order. That
+queue is drained at shutdown (bounded by `audit.drain_timeout_secs`), so a
+mutation accepted moments before `SIGTERM` is still recorded; before 1.0 the
+write was a detached task and that row was simply lost. Any row that does not
+make it is counted in `orion_audit_events_dropped_total` and logged at `error`
+— alert on that counter being non-zero at all rather than on a threshold.
 
 **DLQ leases.** A claimed row is leased for `dlq_lease_secs`; when the lease expires another node may re-claim it. That is how work from a crashed node is recovered in cluster mode, so the value should comfortably exceed how long one retry takes.
 
@@ -359,6 +369,8 @@ The consequence in both directions:
 - **Behind a load balancer with this unset**, every request appears to come from the balancer, so all clients share a single rate-limit bucket and the limit effectively applies to your whole fleet at once. List the balancer's subnet — `trusted_proxies = ["10.0.0.0/8"]` — to get per-client limiting back.
 - **List a network you do not control** and clients on it can spoof `X-Forwarded-For` to mint a fresh bucket per request, which is exactly no rate limiting at all. List only the addresses of proxies you operate.
 
+**It applies even with `rate_limit.enabled = false`.** The setting lives in this section, but three things resolve the caller's address with it: the rate limiter, the failed-admin-auth backoff, and the `details.client_ip` of every audit row. So on a proxied deployment that has rate limiting off — the default — leaving this empty means every audit row records the load balancer's address rather than the caller's.
+
 Both endpoint limits are optional, so their environment variables are three-state: unset leaves the config-file value alone, a number sets the limit, and an empty string clears it back to "use `default_rps`".
 
 ## Channel Filter
@@ -410,7 +422,28 @@ Exactly `["*"]` is permissive CORS and is **rejected at startup** when `environm
 |---|---|---|---|
 | `logging.level` | `"info"` | `ORION_LOGGING__LEVEL` | `trace`, `debug`, `info`, `warn`, `error`. `RUST_LOG=orion=debug` gives per-crate control. |
 | `logging.format` | `"pretty"` | `ORION_LOGGING__FORMAT` | `json` wherever logs are collected by anything other than a human. |
-| `metrics.enabled` | `false` | `ORION_METRICS__ENABLED` | Enable to serve Prometheus metrics at `GET /metrics`. |
+| `metrics.enabled` | `false` | `ORION_METRICS__ENABLED` | Enable to collect metrics and serve them at `GET /metrics`. With this off the route is not registered at all — `/metrics` 404s rather than answering `200` with a permanently empty body. |
+| `metrics.bind_addr` | — | `ORION_METRICS__BIND_ADDR` | A dedicated `host:port` for an **unauthenticated** listener serving only `GET /metrics`. Unset keeps the endpoint on the main listener, where `admin_auth` guards it. Requires `metrics.enabled = true`; set on its own it raises no listener and startup warns. Refused at startup if it would contend with `server.host`/`server.port` — same port counts as contention whenever either side is a wildcard address. |
+
+**Where `/metrics` is served.** By default it lives on the main listener, so
+with `admin_auth.enabled = true` every scraper must hold an admin API key — a
+credential that can also rewrite workflows and read trace payloads. Setting
+`metrics.bind_addr` moves the endpoint onto its own listener, removes it from
+the main one entirely, and drops the credential requirement:
+
+```toml
+[metrics]
+enabled = true
+bind_addr = "127.0.0.1:9090"     # or a pod IP / a private Compose network
+```
+
+That listener is plain HTTP (`server.tls` governs the main listener only) and
+has no authentication by design, so the address is the access control — bind
+it somewhere only your scrapers can reach. Startup logs a warning if it is not
+a loopback address, and another if `bind_addr` is set while `metrics.enabled`
+is `false` — that combination serves `/metrics` nowhere at all. It joins the same graceful-shutdown path as the main
+listener, keeping the last scrape of a draining node available for
+`server.shutdown_drain_secs`.
 
 ## Tracing
 

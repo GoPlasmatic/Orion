@@ -82,7 +82,20 @@ pub fn init_metrics_with_instance(instance_id: Option<&str>) -> PrometheusHandle
 // Counter helpers
 // ---------------------------------------------------------------------------
 
-/// Increment the messages_total counter.
+/// Count one message through a channel, whatever its outcome.
+///
+/// O14: this is now the *only* per-channel invocation counter.
+/// `orion_channel_executions_total{channel}` used to be incremented next to
+/// the `status="ok"` arm of this one, so it was `orion_messages_total` minus
+/// the label that says how the message ended — strictly less information
+/// under a second name.
+///
+/// `sum by (channel) (orion_messages_total)` is the replacement, and it is a
+/// **superset**, not an identity: the deleted counter had two call sites, both
+/// on the HTTP path, and never saw the Kafka ingest or DLQ paths that also
+/// record messages. Expect the per-channel rate to be higher than the old
+/// series on any deployment that consumes from Kafka — that is the blind spot
+/// closing, not double counting.
 pub fn record_message(channel: &str, status: &'static str) {
     if !is_enabled() {
         return;
@@ -92,11 +105,15 @@ pub fn record_message(channel: &str, status: &'static str) {
 }
 
 /// Increment the errors_total counter.
-pub fn record_error(error_type: &'static str) {
+///
+/// O14: the label is `reason`, not `type`. Every other categorical label in
+/// this file is `reason`, `kind`, `outcome` or `status`; `type` was the lone
+/// exception, and it is also a reserved-feeling word in PromQL tooling.
+pub fn record_error(reason: &'static str) {
     if !is_enabled() {
         return;
     }
-    counter!("orion_errors_total", "type" => error_type).increment(1);
+    counter!("orion_errors_total", "reason" => reason).increment(1);
 }
 
 /// Publish the build-identity gauge, always `1`.
@@ -121,7 +138,7 @@ pub fn record_build_info() {
 
 /// Record a rejected admin-API authentication attempt.
 ///
-/// Separate from `errors_total{type="auth_failure"}`, which it replaces for
+/// Separate from `errors_total{reason="auth_failure"}`, which it replaces for
 /// this purpose: that counter is shared with ~15 unrelated `record_error` call
 /// sites (`panic`, `dedup_backend`, `kafka_retry`, …), so alerting on
 /// credential guessing meant a filter that also matched all of them
@@ -256,14 +273,6 @@ pub fn record_engine_reload(status: &'static str) {
         return;
     }
     counter!("orion_engine_reloads_total", "status" => status).increment(1);
-}
-
-/// Record a channel execution.
-pub fn record_channel_execution(channel: &str) {
-    if !is_enabled() {
-        return;
-    }
-    counter!("orion_channel_executions_total", "channel" => channel.to_owned()).increment(1);
 }
 
 /// Record a rate-limit rejection. `scope` must come from a bounded set — a
@@ -468,13 +477,18 @@ pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: 
 // Kafka consumer lag gauge
 // ---------------------------------------------------------------------------
 
-/// Set the consumer lag for a specific topic-partition.
+/// Set the consumer lag, in messages, for a specific topic-partition.
+///
+/// O14: this was the one family in the process that carried neither the
+/// `orion_` prefix (so it could collide with any other exporter's
+/// `kafka_consumer_lag` in a shared registry — the exact collision the prefix
+/// convention exists to prevent) nor a unit suffix.
 pub fn set_kafka_consumer_lag(topic: &str, partition: i32, lag: f64) {
     if !is_enabled() {
         return;
     }
     gauge!(
-        "kafka_consumer_lag",
+        "orion_kafka_consumer_lag_messages",
         "topic" => topic.to_owned(),
         "partition" => partition.to_string()
     )
@@ -512,6 +526,10 @@ pub fn set_db_pool_idle(idle: f64) {
     gauge!("orion_db_pool_idle").set(idle);
 }
 
+// ---------------------------------------------------------------------------
+// Admin audit trail
+// ---------------------------------------------------------------------------
+
 /// Record an admin audit event.
 pub fn record_admin_audit(action: &str, resource_type: &str) {
     if !is_enabled() {
@@ -523,6 +541,50 @@ pub fn record_admin_audit(action: &str, resource_type: &str) {
         "resource_type" => resource_type.to_owned()
     )
     .increment(1);
+}
+
+/// Count admin actions that happened but were **not** recorded (O7).
+///
+/// Any non-zero value means the audit trail has a hole in it, so this is the
+/// counter to alert on outright rather than to threshold. `reason` is
+/// `"queue_full"` (the writer fell `audit.max_pending` behind), `"write_failed"`
+/// (the INSERT itself failed), `"drain_timeout"` (shutdown gave up on the
+/// remaining rows) or `"writer_stopped"` (submitted after the writer exited).
+pub fn record_audit_events_dropped(reason: &'static str, count: u64) {
+    if !is_enabled() || count == 0 {
+        return;
+    }
+    counter!("orion_audit_events_dropped_total", "reason" => reason).increment(count);
+}
+
+/// [`record_audit_events_dropped`] for the single-event case.
+pub fn record_audit_event_dropped(reason: &'static str) {
+    record_audit_events_dropped(reason, 1);
+}
+
+/// Set the number of audit events accepted but not yet written.
+pub fn set_audit_queue_depth(depth: f64) {
+    if !is_enabled() {
+        return;
+    }
+    gauge!("orion_audit_queue_depth").set(depth);
+}
+
+/// Run `f` against a Prometheus recorder local to this thread and return the
+/// exposition it produced, so assertions see only what `f` emitted — the
+/// global recorder is shared with every other test in the binary.
+///
+/// Thread-local, not task-local: a `tokio` current-thread runtime driven
+/// inside `f` (`rt.block_on(...)`) runs its spawned tasks on this same
+/// thread, so a background writer's `record_*` calls land here too. That is
+/// how `queue::audit_queue` asserts on its drop counter.
+#[cfg(test)]
+pub(crate) fn render_local(f: impl FnOnce()) -> String {
+    set_enabled(true);
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    ::metrics::with_local_recorder(&recorder, f);
+    handle.render()
 }
 
 #[cfg(test)]
@@ -616,27 +678,10 @@ mod tests {
     }
 
     #[test]
-    fn test_record_channel_execution() {
-        ensure_recorder();
-        record_channel_execution("orders");
-    }
-
-    #[test]
     fn test_record_rate_limit_rejected() {
         ensure_recorder();
         record_rate_limit_rejected("orders");
         record_rate_limit_rejected("admin");
-    }
-
-    /// Render into a *local* recorder so the assertions see only what this
-    /// test emitted — the global recorder is shared with every other test in
-    /// the binary.
-    fn render_local(f: impl FnOnce()) -> String {
-        set_enabled(true);
-        let recorder = PrometheusBuilder::new().build_recorder();
-        let handle = recorder.handle();
-        ::metrics::with_local_recorder(&recorder, f);
-        handle.render()
     }
 
     #[test]
@@ -726,6 +771,111 @@ mod tests {
             record_trace_persistence_failure();
         });
         assert!(out.contains("trace_persistence_failures_total 3"), "{out}");
+    }
+
+    // -- O14: metric and label naming ------------------------------------
+
+    /// `orion_errors_total` is labelled `reason`, matching every other
+    /// categorical label in this file. It used to be `type`.
+    #[test]
+    fn errors_total_is_labelled_by_reason() {
+        let out = render_local(|| record_error("engine"));
+        assert!(
+            out.contains(r#"orion_errors_total{reason="engine"}"#),
+            "errors must be labelled by reason:\n{out}"
+        );
+        assert!(
+            !out.contains(r#"type="engine""#),
+            "the old `type` label must be gone:\n{out}"
+        );
+    }
+
+    /// One per-channel invocation counter, not two.
+    /// `orion_channel_executions_total` was `orion_messages_total` minus the
+    /// status label; recording a message must not resurrect it.
+    #[test]
+    fn one_per_channel_invocation_counter() {
+        let out = render_local(|| {
+            record_message("orders", "ok");
+            record_message("orders", "error");
+            record_message_duration("orders", 0.01);
+        });
+        assert!(
+            out.contains(r#"orion_messages_total{channel="orders",status="ok"} 1"#),
+            "messages must carry channel + status:\n{out}"
+        );
+        assert!(
+            out.contains(r#"orion_messages_total{channel="orders",status="error"} 1"#),
+            "the error arm must land on the same family:\n{out}"
+        );
+        assert!(
+            !out.contains("channel_executions_total"),
+            "the redundant second counter must stay gone:\n{out}"
+        );
+    }
+
+    /// The Kafka lag gauge carries the `orion_` prefix (no collisions in a
+    /// shared registry) and its unit. It used to be a bare
+    /// `kafka_consumer_lag`.
+    #[test]
+    fn kafka_lag_gauge_is_prefixed_and_carries_its_unit() {
+        let out = render_local(|| set_kafka_consumer_lag("orders", 3, 42.0));
+        assert!(
+            out.contains(r#"orion_kafka_consumer_lag_messages{"#),
+            "the lag gauge must be prefixed and unit-suffixed:\n{out}"
+        );
+        assert!(out.contains(r#"topic="orders""#), "{out}");
+        assert!(out.contains(r#"partition="3""#), "{out}");
+        assert!(
+            !out.contains("# TYPE kafka_consumer_lag gauge"),
+            "the unprefixed family must stay gone:\n{out}"
+        );
+    }
+
+    // -- O7: the audit trail's own metrics --------------------------------
+
+    /// The counter the observability page tells operators to alert on
+    /// outright. Each reason is a distinct series, and the batch form adds
+    /// its count rather than one.
+    #[test]
+    fn test_record_audit_events_dropped() {
+        let out = render_local(|| {
+            record_audit_event_dropped("queue_full");
+            record_audit_event_dropped("queue_full");
+            record_audit_event_dropped("write_failed");
+            record_audit_events_dropped("drain_timeout", 7);
+            // A zero-length loss is not an event; it must not create a series
+            // that an "alert on existence" rule would then fire on.
+            record_audit_events_dropped("writer_stopped", 0);
+        });
+        assert!(
+            out.contains(r#"orion_audit_events_dropped_total{reason="queue_full"} 2"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"orion_audit_events_dropped_total{reason="write_failed"} 1"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"orion_audit_events_dropped_total{reason="drain_timeout"} 7"#),
+            "the batch form must add its count, not one:\n{out}"
+        );
+        assert!(
+            !out.contains(r#"reason="writer_stopped""#),
+            "a zero-count drop must not create a series:\n{out}"
+        );
+    }
+
+    #[test]
+    fn test_set_audit_queue_depth() {
+        let out = render_local(|| {
+            set_audit_queue_depth(12.0);
+            set_audit_queue_depth(3.0);
+        });
+        assert!(
+            out.contains("orion_audit_queue_depth 3"),
+            "gauge must hold the latest value:\n{out}"
+        );
     }
 
     #[test]

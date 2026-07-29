@@ -11,14 +11,12 @@ use axum::Router;
 use axum::routing::{get, patch, post};
 use serde::Deserialize;
 use serde_json::json;
-use std::sync::Arc;
 
 use axum::Extension;
 
 use crate::engine::reload_engine;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::state::AppState;
-use crate::storage::repositories::audit_logs::AuditLogRepository;
 
 /// A status-change request narrowed to the two transitions the API offers,
 /// so the handler's `match` is exhaustive over what can actually happen.
@@ -258,10 +256,45 @@ impl VersionFilter {
     }
 }
 
+/// The audit actor when no admin credential was presented — which is every
+/// request when `admin_auth.enabled = false`.
+const ANONYMOUS_PRINCIPAL: &str = "anonymous";
+
+/// The request context recorded alongside every audit row (O7).
+///
+/// An audit trail whose only fields are *who* and *what* cannot answer the
+/// question an investigation actually asks — *from where, and as part of which
+/// request*. `client_ip` comes from the same trusted-proxy policy the rate
+/// limiter uses, so a caller cannot dictate it with a forged
+/// `X-Forwarded-For`; `request_id` ties the row to the access log and to the
+/// `error.request_id` the client was handed.
+///
+/// `None` when the task-local is out of scope (a unit test calling a handler
+/// directly), and individual fields are omitted when empty rather than
+/// recorded as `""`.
+fn request_details() -> Option<String> {
+    let ctx = crate::server::request_context::current()?;
+    let mut details = serde_json::Map::new();
+    if !ctx.request_id.is_empty() {
+        details.insert("request_id".into(), json!(ctx.request_id));
+    }
+    if !ctx.client_ip.is_empty() {
+        details.insert("client_ip".into(), json!(ctx.client_ip));
+    }
+    if let Some(ua) = ctx.user_agent {
+        details.insert("user_agent".into(), json!(ua));
+    }
+    (!details.is_empty()).then(|| serde_json::Value::Object(details).to_string())
+}
+
 /// Emit a structured audit log event for admin mutations.
-/// Persists to the database via fire-and-forget to avoid blocking the response.
+///
+/// O7: the row goes onto the bounded, shutdown-drained
+/// [`crate::queue::audit_queue`] rather than into a detached `tokio::spawn`,
+/// so a mutation accepted moments before SIGTERM is still recorded and a slow
+/// database cannot spawn one writer task per admin request.
 fn audit_log(
-    repo: &Arc<dyn AuditLogRepository>,
+    queue: &crate::queue::audit_queue::AuditQueue,
     principal: &Option<Extension<AdminPrincipal>>,
     action: &str,
     resource_type: &str,
@@ -269,45 +302,26 @@ fn audit_log(
 ) {
     let who = principal
         .as_ref()
-        .map(|e| e.0.key_prefix.as_str())
-        .unwrap_or("anonymous");
+        .map(|e| e.0.key_id.as_str())
+        .unwrap_or(ANONYMOUS_PRINCIPAL);
+    let details = request_details();
     tracing::info!(
         target: "audit",
         principal = %who,
         action = %action,
         resource_type = %resource_type,
         resource_id = %resource_id,
+        details = details.as_deref().unwrap_or("{}"),
         "admin_audit_event"
     );
     crate::metrics::record_admin_audit(action, resource_type);
 
-    // Read the request-scoped id here: `tokio::spawn` below starts a fresh
-    // task that does not inherit task-locals.
-    let details = crate::server::request_context::REQUEST_ID
-        .try_with(|id| id.clone())
-        .ok()
-        .filter(|id| !id.is_empty())
-        .map(|id| json!({ "request_id": id }).to_string());
-
-    // Fire-and-forget DB persistence — audit logging must never block admin responses
-    let repo = repo.clone();
-    let who = who.to_string();
-    let action = action.to_string();
-    let resource_type = resource_type.to_string();
-    let resource_id = resource_id.to_string();
-    tokio::spawn(async move {
-        if let Err(e) = repo
-            .insert(
-                &who,
-                &action,
-                &resource_type,
-                &resource_id,
-                details.as_deref(),
-            )
-            .await
-        {
-            tracing::warn!(error = %e, "Failed to persist audit log entry");
-        }
+    queue.submit(crate::queue::audit_queue::AuditEvent {
+        principal: who.to_string(),
+        action: action.to_string(),
+        resource_type: resource_type.to_string(),
+        resource_id: resource_id.to_string(),
+        details,
     });
 }
 
@@ -317,13 +331,13 @@ fn audit_log(
 /// no-reload choice is explicit at the call site rather than implied by
 /// the absence of [`audit_and_reload`].
 fn audit_log_draft_only(
-    repo: &Arc<dyn AuditLogRepository>,
+    queue: &crate::queue::audit_queue::AuditQueue,
     principal: &Option<Extension<AdminPrincipal>>,
     action: &str,
     resource_type: &str,
     resource_id: &str,
 ) {
-    audit_log(repo, principal, action, resource_type, resource_id);
+    audit_log(queue, principal, action, resource_type, resource_id);
 }
 
 /// Record an audit-log event and trigger an engine reload. The standard
@@ -338,7 +352,7 @@ async fn audit_and_reload(
     resource_id: &str,
 ) -> Result<(), crate::errors::OrionError> {
     audit_log(
-        &state.audit_log_repo,
+        &state.audit_queue,
         principal,
         action,
         resource_type,

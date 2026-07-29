@@ -46,6 +46,8 @@ mod function_schema_test;
 mod http_retry_test;
 mod ingress_guards_test;
 mod kafka_test;
+mod metrics_docs_drift_test;
+mod metrics_endpoint_test;
 mod migration_guard_test;
 mod mongodb_test;
 mod mysql_test;

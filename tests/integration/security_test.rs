@@ -830,7 +830,11 @@ async fn test_metrics_endpoint_protected_when_auth_enabled() {
 
 #[tokio::test]
 async fn test_metrics_endpoint_open_when_auth_disabled() {
-    let app = common::test_app().await;
+    // O12: the route exists only when metrics are collected, so this has to
+    // ask for them — `AppConfig::default()` leaves them off.
+    let mut config = orion::config::AppConfig::default();
+    config.metrics.enabled = true;
+    let app = common::test_app_with_config(config).await;
 
     // Process a message first so the exposition has real content
     let _ = app

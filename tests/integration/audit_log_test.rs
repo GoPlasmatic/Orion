@@ -767,3 +767,258 @@ async fn test_audit_unknown_query_param_is_rejected() {
     assert_eq!(body["error"]["code"], "BAD_REQUEST");
     assert!(body.get("data").is_none());
 }
+
+// ============================================================
+// Audit v2 (O7): actor identity, request context, drain, /test
+// ============================================================
+
+/// Two admin keys sharing a long prefix — the case the old 8-character
+/// `key_prefix` actor could not tell apart, because it was literally the first
+/// eight characters of the presented token.
+const KEY_A: &str = "orion_sk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const KEY_B: &str = "orion_sk_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+fn authed_request(
+    method: &str,
+    uri: &str,
+    key: &str,
+    body: Option<serde_json::Value>,
+) -> axum::http::Request<axum::body::Body> {
+    let mut builder = axum::http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("Authorization", format!("Bearer {key}"))
+        .header("user-agent", "orion-tests/1.0")
+        .header("x-request-id", "req-audit-o7");
+    let body = match body {
+        Some(v) => {
+            builder = builder.header("content-type", "application/json");
+            axum::body::Body::from(serde_json::to_string(&v).unwrap())
+        }
+        None => axum::body::Body::empty(),
+    };
+    builder.body(body).unwrap()
+}
+
+async fn authed_app() -> axum::Router {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec![KEY_A.to_string(), KEY_B.to_string()];
+    common::test_app_with_config(config).await
+}
+
+/// Poll the (authenticated) audit list until `pred` holds.
+async fn wait_for_audit<F>(app: &axum::Router, key: &str, pred: F) -> serde_json::Value
+where
+    F: Fn(&serde_json::Value) -> bool,
+{
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let resp = app
+            .clone()
+            .oneshot(authed_request(
+                "GET",
+                "/api/v1/admin/audit-logs?limit=100",
+                key,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        if pred(&body) {
+            return body;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "audit condition not met within 5s; last body: {body}"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+/// Two keys with a shared 9-character prefix must produce two distinct
+/// actors, and neither may echo any part of the credential.
+#[tokio::test]
+async fn audit_actor_distinguishes_keys_sharing_a_prefix() {
+    let app = authed_app().await;
+
+    for key in [KEY_A, KEY_B] {
+        let resp = app
+            .clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/v1/admin/workflows",
+                key,
+                Some(common::simple_log_workflow("O7 actor")),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    let body = wait_for_audit(&app, KEY_A, |b| {
+        b["data"]
+            .as_array()
+            .map(|entries| entries.iter().filter(|e| e["action"] == "create").count() >= 2)
+            .unwrap_or(false)
+    })
+    .await;
+
+    let principals: std::collections::BTreeSet<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["action"] == "create")
+        .filter_map(|e| e["principal"].as_str())
+        .collect();
+    assert_eq!(
+        principals.len(),
+        2,
+        "two distinct keys must be two distinct actors, got {principals:?}"
+    );
+    for p in &principals {
+        assert!(p.starts_with("key-"), "unexpected actor form: {p}");
+        assert!(
+            !p.contains("orion_sk") && !p.contains("aaaa") && !p.contains("bbbb"),
+            "the actor must not echo the credential: {p}"
+        );
+    }
+}
+
+/// Every audit row carries the request context an investigation needs:
+/// request id, client address and user-agent.
+#[tokio::test]
+async fn audit_records_request_context() {
+    let app = authed_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            KEY_A,
+            Some(common::simple_log_workflow("O7 context")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let body = wait_for_audit(&app, KEY_A, |b| {
+        b["data"]
+            .as_array()
+            .map(|entries| entries.iter().any(|e| e["action"] == "create"))
+            .unwrap_or(false)
+    })
+    .await;
+    let entry = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "create")
+        .expect("create entry");
+    let details: serde_json::Value = serde_json::from_str(
+        entry["details"]
+            .as_str()
+            .expect("details must be present, not null"),
+    )
+    .expect("details must be JSON");
+
+    assert_eq!(details["request_id"], "req-audit-o7");
+    assert_eq!(details["user_agent"], "orion-tests/1.0");
+    // `oneshot` supplies no ConnectInfo, so the address resolves to the same
+    // "unknown" the rate limiter uses — the field is populated either way.
+    assert!(
+        details["client_ip"].is_string(),
+        "client_ip must be recorded: {details}"
+    );
+}
+
+/// O7: `POST /workflows/{id}/test` executes the workflow's tasks against
+/// **live connectors** and used to emit no audit event at all.
+#[tokio::test]
+async fn workflow_test_emits_an_audit_event() {
+    let app = authed_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            KEY_A,
+            Some(common::simple_log_workflow("O7 test-run")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let wf_id = body_json(resp).await["data"]["workflow_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            &format!("/api/v1/admin/workflows/{wf_id}/test"),
+            KEY_A,
+            Some(json!({"data": {"x": 1}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = wait_for_audit(&app, KEY_A, |b| {
+        b["data"]
+            .as_array()
+            .map(|entries| entries.iter().any(|e| e["action"] == "test"))
+            .unwrap_or(false)
+    })
+    .await;
+    let entry = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "test")
+        .expect("running live connectors must be on the record");
+    assert_eq!(entry["resource_type"], "workflow");
+    assert_eq!(entry["resource_id"], wf_id);
+}
+
+/// Wiring check for the shutdown drain: the queue an admin handler submits to
+/// must be the one `TaskHandles::shutdown()` drains, and the row must be
+/// readable from the database afterwards. (The drain's *timing* — that a write
+/// still in flight is waited for rather than abandoned — is covered where it
+/// can be forced deterministically, in
+/// `queue::audit_queue::tests::shutdown_drains_events_submitted_at_the_last_moment`.)
+#[tokio::test]
+async fn mutations_just_before_shutdown_are_still_recorded() {
+    let (state, handles) =
+        common::test_state_with_handles(orion::config::AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+    let repo = state.audit_log_repo.clone();
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(common::simple_log_workflow("O7 shutdown")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // Exactly what main.rs does: drop the state (releasing the last audit
+    // sender), then run the background-task shutdown, which drains.
+    drop(state);
+    handles.shutdown().await;
+
+    let rows = repo
+        .list_paginated(&Default::default())
+        .await
+        .expect("audit rows readable after shutdown");
+    assert!(
+        rows.data.iter().any(|e| e.action == "create"),
+        "the drain must persist a mutation accepted immediately before shutdown"
+    );
+}

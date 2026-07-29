@@ -1,9 +1,10 @@
 //! Admin API authentication middleware.
 //!
-//! When enabled, requires a valid API key for all `/api/v1/admin/*` endpoints,
-//! the `/metrics` endpoint, and the trace read endpoints under
-//! `/api/v1/admin/traces` (traces expose full request/response payloads).
-//! Supports `Authorization: Bearer <token>` or custom header (e.g. `X-API-Key: <token>`).
+//! When enabled, requires a valid API key for all `/api/v1/admin/*` endpoints
+//! — including the trace read endpoints under `/api/v1/admin/traces`, which
+//! expose full request/response payloads — and for `/metrics` when this
+//! listener is the one serving it (O12). Supports `Authorization: Bearer
+//! <token>` or a custom header (e.g. `X-API-Key: <token>`).
 
 use std::time::Duration;
 
@@ -110,27 +111,58 @@ impl FailedAuthTracker {
     }
 }
 
+/// Domain separator for the audit key id. Keeps the derived value distinct
+/// from the digest `admin_auth` compares against, so an audit log that leaks
+/// never hands out the same bytes the `sha256:` config form uses.
+const KEY_ID_DOMAIN: &[u8] = b"orion:audit:key-id:v1";
+
+/// Bytes of the derived digest rendered into the key id. 8 bytes / 64 bits:
+/// with the handful of keys an `admin_auth.api_keys` list holds, a collision
+/// is not a consideration, and a short id stays readable in a log line.
+const KEY_ID_BYTES: usize = 8;
+
 /// Identity of the authenticated admin principal, stored in request extensions.
 #[derive(Debug, Clone)]
 pub struct AdminPrincipal {
-    /// Truncated key prefix for audit logging (never the full key).
-    pub key_prefix: String,
+    /// Stable per-key identifier for audit logging. See
+    /// [`AdminPrincipal::from_digest`] for the derivation.
+    pub key_id: String,
 }
 
 impl AdminPrincipal {
-    fn from_token(token: &str) -> Self {
-        let prefix_len = token.len().min(8);
-        Self {
-            key_prefix: format!("{}...", &token[..prefix_len]),
-        }
-    }
-
-    /// For keys configured in the `sha256:` hash-at-rest form: identify by a
-    /// prefix of the (already public-at-rest) hash rather than leak plaintext
-    /// characters of the presented token into audit logs.
+    /// Derive the audit identity of a key from the SHA-256 digest
+    /// `admin_auth` already computed for it.
+    ///
+    /// **Derivation** (O7):
+    /// `key_id = "key-" || hex(SHA-256(KEY_ID_DOMAIN || SHA-256(key))[..8])`.
+    ///
+    /// Three properties this buys, none of which the previous 8-character key
+    /// *prefix* had:
+    ///
+    /// 1. **Distinct keys get distinct ids.** The prefix was the first eight
+    ///    characters of the presented token, so two keys sharing a prefix —
+    ///    which any generator with a fixed `orion_sk_` style leader produces —
+    ///    were indistinguishable in the audit log. The digest covers the whole
+    ///    key.
+    /// 2. **It cannot be reversed to the key**, being two rounds of SHA-256
+    ///    over it. The old form leaked eight literal characters of a live
+    ///    credential into a database table and every log sink downstream.
+    /// 3. **It is the same id whichever way the key is configured.** The
+    ///    digest is identical for a plaintext `api_keys` entry and its
+    ///    `sha256:<hex>` hash-at-rest form, so rotating an operator from one
+    ///    to the other does not silently rename the actor in the audit trail.
+    ///    (The two forms used to produce two different-looking prefixes.)
+    ///
+    /// An operator holding the config can recompute the id for each of their
+    /// keys and so map an audit row back to a key they issued — which is the
+    /// point. Nobody else can go in either direction.
     fn from_digest(digest: &[u8; 32]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(KEY_ID_DOMAIN);
+        hasher.update(digest);
+        let derived: [u8; 32] = hasher.finalize().into();
         Self {
-            key_prefix: format!("sha256:{}...", hex::encode(&digest[..4])),
+            key_id: format!("key-{}", hex::encode(&derived[..KEY_ID_BYTES])),
         }
     }
 }
@@ -154,21 +186,38 @@ impl AdminPrincipal {
 /// segments — so `traces` is a usable channel name again, and the rate
 /// limiter no longer has to special-case it.
 ///
+/// `/metrics` is the second carve-out, and a conditional one:
+/// `metrics_on_this_listener` must be
+/// [`MetricsConfig::on_main_listener`](crate::config::MetricsConfig::on_main_listener)
+/// — the same predicate [`crate::server::routes::api_routes`] registers the
+/// route by. When the route is **not** registered there is no `MatchedPath`,
+/// so this predicate sees the raw URI and would otherwise answer `401` from
+/// inside the fallback, advertising the existence of an endpoint that is not
+/// there. That is the same rule the docs gate obeys (see
+/// [`crate::server::routes::RouteOptions::docs_enabled`]): an unregistered
+/// surface 404s, it does not challenge for a credential.
+///
 /// The OpenAPI `SecurityAddon` (`server::routes::openapi`) applies the spec's
 /// `security` requirement through this same predicate, so the documented
 /// surface cannot drift from what the middleware enforces. The templates it
 /// feeds in are OpenAPI path keys, which are byte-identical to Axum's.
-pub(crate) fn is_guarded_path(path: &str) -> bool {
+pub(crate) fn is_guarded_path(path: &str, metrics_on_this_listener: bool) -> bool {
     if path == SINGLE_TRACE_PATH {
         return false;
     }
-    path.starts_with("/api/v1/admin") || path == "/metrics"
+    if path == METRICS_PATH {
+        return metrics_on_this_listener;
+    }
+    path.starts_with("/api/v1/admin")
 }
 
 /// The one admin-plane path that authenticates itself rather than through the
 /// middleware. Named so [`is_guarded_path`] and the route registration cannot
 /// drift apart silently.
 pub(crate) const SINGLE_TRACE_PATH: &str = "/api/v1/admin/traces/{id}";
+
+/// The Prometheus exposition path, guarded only on a listener that serves it.
+pub(crate) const METRICS_PATH: &str = "/metrics";
 
 /// Middleware that authenticates admin API requests.
 ///
@@ -183,19 +232,22 @@ pub async fn admin_auth_middleware(
         return Ok(next.run(req).await);
     }
 
+    // No `MatchedPath` means no route matched — the request is on its way to
+    // the 404 fallback, which this layer wraps. The raw URI is the best
+    // available answer, and `is_guarded_path` is responsible for not claiming
+    // an unregistered path (O12's `/metrics`).
     let path = matched_path
         .as_ref()
         .map(|m| m.as_str())
         .unwrap_or(req.uri().path());
 
-    if !is_guarded_path(path) {
+    if !is_guarded_path(path, state.config.metrics.on_main_listener()) {
         return Ok(next.run(req).await);
     }
 
     // Identify the caller with the same policy the rate limiter uses, so a
     // spoofed `X-Forwarded-For` cannot mint a fresh lockout budget per request.
-    let client =
-        crate::server::rate_limit::extract_client_ip(&req, state.rate_limit_trusted_proxies());
+    let client = crate::server::rate_limit::extract_client_ip(&req, state.trusted_proxies());
 
     if let Some(remaining) = state.admin_auth_failures.locked_for(&client) {
         metrics::record_admin_auth_failure("locked_out");
@@ -241,13 +293,10 @@ pub async fn admin_auth_middleware(
 
     state.admin_auth_failures.record_success(&client);
 
-    // Store principal identity in request extensions for audit logging
-    let principal = if matched_key.hashed {
-        AdminPrincipal::from_digest(&matched_key.digest)
-    } else {
-        AdminPrincipal::from_token(&token)
-    };
-    req.extensions_mut().insert(principal);
+    // Store principal identity in request extensions for audit logging. Both
+    // config forms derive from the same digest, so one key has one id.
+    req.extensions_mut()
+        .insert(AdminPrincipal::from_digest(&matched_key.digest));
 
     Ok(next.run(req).await)
 }
@@ -373,12 +422,85 @@ mod tests {
         assert!(!keys.iter().any(|k| constant_time_eq(&wrong, &k.digest)));
     }
 
+    // -- guarded surface (O12) -------------------------------------------
+
     #[test]
-    fn test_principal_prefix_for_hashed_key_uses_hash() {
+    fn metrics_is_guarded_only_where_it_is_registered() {
+        // On the main listener with collection on: same credential as the
+        // admin plane.
+        assert!(is_guarded_path(METRICS_PATH, true));
+        // Not registered here — `metrics.enabled = false`, or `bind_addr`
+        // moved it to its own listener. Guarding it would answer 401 from
+        // inside the 404 fallback and advertise an endpoint that is not
+        // there, which is exactly what the docs gate (S17) avoids.
+        assert!(!is_guarded_path(METRICS_PATH, false));
+    }
+
+    #[test]
+    fn the_admin_plane_is_guarded_regardless_of_the_metrics_listener() {
+        for on_main in [true, false] {
+            assert!(is_guarded_path("/api/v1/admin/workflows", on_main));
+            assert!(is_guarded_path("/api/v1/admin/traces", on_main));
+            // R12: the single-trace GET authenticates in its handler.
+            assert!(!is_guarded_path(SINGLE_TRACE_PATH, on_main));
+            assert!(!is_guarded_path("/api/v1/data/{*path}", on_main));
+            assert!(!is_guarded_path("/health", on_main));
+        }
+    }
+
+    // -- audit key id (O7) ------------------------------------------------
+
+    #[test]
+    fn key_id_never_contains_the_key() {
+        let principal = AdminPrincipal::from_digest(&digest("orion_sk_the-real-key"));
+        assert!(principal.key_id.starts_with("key-"));
+        assert!(!principal.key_id.contains("the-real"));
+        assert!(!principal.key_id.contains("orion_sk"));
+        assert_eq!(
+            principal.key_id.len(),
+            "key-".len() + KEY_ID_BYTES * 2,
+            "id width is part of the documented derivation"
+        );
+    }
+
+    #[test]
+    fn key_id_distinguishes_keys_sharing_a_prefix() {
+        // The exact case the 8-character prefix could not tell apart: a
+        // generator that stamps every key with the same leader.
+        let a = AdminPrincipal::from_digest(&digest("orion_sk_aaaaaaaaaaaa"));
+        let b = AdminPrincipal::from_digest(&digest("orion_sk_bbbbbbbbbbbb"));
+        assert_ne!(
+            a.key_id, b.key_id,
+            "two keys sharing a 9-character prefix must not share an audit identity"
+        );
+    }
+
+    #[test]
+    fn key_id_is_stable_across_the_two_config_forms() {
+        // `api_keys = ["k"]` and `api_keys = ["sha256:<hex of k>"]` are the
+        // same credential, so they must be the same actor in the audit log.
+        let plaintext = AdminAuthConfig {
+            enabled: true,
+            api_keys: vec!["the-real-key".to_string()],
+            header: "Authorization".to_string(),
+        };
+        let hashed = AdminAuthConfig {
+            api_keys: vec![format!("sha256:{}", hex::encode(digest("the-real-key")))],
+            ..plaintext.clone()
+        };
+        let id_of = |c: &AdminAuthConfig| {
+            AdminPrincipal::from_digest(&c.admin_keys().first().expect("one key").digest).key_id
+        };
+        assert_eq!(id_of(&plaintext), id_of(&hashed));
+    }
+
+    #[test]
+    fn key_id_is_not_the_stored_digest() {
+        // The `sha256:` config value is public at rest but is still the exact
+        // bytes the middleware compares — the audit trail must not repeat it.
         let d = digest("the-real-key");
         let principal = AdminPrincipal::from_digest(&d);
-        assert!(principal.key_prefix.starts_with("sha256:"));
-        assert!(!principal.key_prefix.contains("the-real"));
+        assert!(!principal.key_id.contains(&hex::encode(&d[..KEY_ID_BYTES])));
     }
 
     // -- failed-auth backoff (S12) --------------------------------------

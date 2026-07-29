@@ -113,7 +113,7 @@ pub(crate) async fn create_backup(
     }
 
     audit_log(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "create",
         "backup",

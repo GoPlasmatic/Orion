@@ -122,13 +122,7 @@ pub(crate) async fn requeue_trace_dlq_entry(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
     let entry = state.trace_dlq_repo.requeue(&id).await?;
-    audit_log(
-        &state.audit_log_repo,
-        &principal,
-        "requeue",
-        "trace_dlq",
-        &id,
-    );
+    audit_log(&state.audit_queue, &principal, "requeue", "trace_dlq", &id);
     Ok(data_response(TraceDlqEntryResponse::from(&entry)))
 }
 
@@ -153,7 +147,7 @@ pub(crate) async fn purge_trace_dlq(
         .purge_exhausted(req.older_than_hours)
         .await?;
     audit_log(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "purge",
         "trace_dlq",

@@ -6,7 +6,92 @@ use crate::errors::OrionError;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct MetricsConfig {
+    /// Collect and expose Prometheus metrics. When `false` nothing is
+    /// recorded **and** `/metrics` is not registered at all — the path 404s
+    /// like any other unknown route (O12). It used to be registered
+    /// unconditionally and answer 200 with an empty body rendered from an
+    /// orphan recorder, so a deployment with metrics off looked like a
+    /// working scrape target that simply never had any series.
     pub enabled: bool,
+
+    /// Optional `host:port` for a dedicated, **unauthenticated** listener
+    /// serving only `GET /metrics` (O12).
+    ///
+    /// Unset (the default) keeps `/metrics` on the main listener, where
+    /// `admin_auth` guards it — so every scraper has to hold an admin API
+    /// key, a credential that can also rewrite workflows and read trace
+    /// payloads. Set this to a private interface (`127.0.0.1:9090`, a pod IP,
+    /// a `metrics` network in Compose) and the scraper needs no credential at
+    /// all, while the main listener stops serving `/metrics` entirely.
+    ///
+    /// Plain HTTP only: `server.tls` applies to the main listener. Bind it
+    /// somewhere a TLS-terminating hop is not required — startup logs a
+    /// warning if the address is not loopback.
+    pub bind_addr: Option<String>,
+}
+
+impl MetricsConfig {
+    pub(crate) fn validate(&self, server: &crate::config::ServerConfig) -> Result<(), OrionError> {
+        let Some(addr) = self.bind_addr.as_deref() else {
+            return Ok(());
+        };
+        let parsed = addr
+            .parse::<std::net::SocketAddr>()
+            .map_err(|e| OrionError::Config {
+                message: format!(
+                    "metrics.bind_addr '{addr}' is not a valid host:port address: {e}"
+                ),
+            })?;
+        // Two listeners on one address is a boot-time bind failure at best and,
+        // with SO_REUSEADDR set on both sockets, a platform-dependent split of
+        // incoming connections at worst. Say so here instead.
+        if parsed.port() == server.port && Self::hosts_overlap(&server.host, parsed.ip()) {
+            return Err(OrionError::Config {
+                message: format!(
+                    "metrics.bind_addr '{addr}' overlaps server.host/server.port \
+                     ('{}:{}') — the metrics listener needs an address of its own \
+                     (leave it unset to keep /metrics on the main listener)",
+                    server.host, server.port
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Whether a metrics listener on `metrics_ip` would contend with a main
+    /// listener on `server_host`, both on the same port.
+    ///
+    /// Exact equality is not enough. `create_tcp_listener` sets
+    /// `SO_REUSEADDR` on both sockets and the metrics listener binds first, so
+    /// on BSD/macOS `server.host = "0.0.0.0"` plus
+    /// `metrics.bind_addr = "127.0.0.1:8080"` both bind successfully and the
+    /// more specific socket captures every loopback connection to the main
+    /// port — precisely the split this check exists to prevent. A wildcard on
+    /// either side therefore covers the other.
+    ///
+    /// `server.host` may also be a hostname (`localhost`, a service name), in
+    /// which case there is nothing to compare and the previous check silently
+    /// passed everything. Treat that as overlapping: sharing a port with a
+    /// host this process cannot resolve here is not something to guess at.
+    fn hosts_overlap(server_host: &str, metrics_ip: std::net::IpAddr) -> bool {
+        let Ok(server_ip) = server_host.parse::<std::net::IpAddr>() else {
+            return true;
+        };
+        server_ip.is_unspecified() || metrics_ip.is_unspecified() || server_ip == metrics_ip
+    }
+
+    /// True when the *main* router should register `/metrics`: collection is
+    /// on and no dedicated listener has claimed the endpoint.
+    pub fn on_main_listener(&self) -> bool {
+        self.enabled && self.bind_addr.is_none()
+    }
+
+    /// The dedicated listener address, only when metrics are actually
+    /// collected — `bind_addr` with `enabled = false` would serve an empty
+    /// body forever, which is the O12 defect one interface over.
+    pub fn dedicated_bind_addr(&self) -> Option<&str> {
+        self.enabled.then_some(self.bind_addr.as_deref()).flatten()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +325,132 @@ impl CorsConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ServerConfig;
+
+    // -- metrics listener (O12) ------------------------------------------
+
+    fn metrics(bind_addr: Option<&str>) -> MetricsConfig {
+        MetricsConfig {
+            enabled: true,
+            bind_addr: bind_addr.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn bind_addr_must_be_a_host_port_pair() {
+        let err = metrics(Some("not-an-address"))
+            .validate(&ServerConfig::default())
+            .expect_err("a bad address must fail at startup, not at bind");
+        assert!(err.to_string().contains("metrics.bind_addr"), "{err}");
+        // A bare port is the likely typo and must not silently mean "any host".
+        assert!(
+            metrics(Some("9090"))
+                .validate(&ServerConfig::default())
+                .is_err()
+        );
+        assert!(
+            metrics(Some("127.0.0.1:9090"))
+                .validate(&ServerConfig::default())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn bind_addr_must_not_collide_with_the_main_listener() {
+        let server = ServerConfig {
+            host: "127.0.0.1".to_string(),
+            port: 8080,
+            ..ServerConfig::default()
+        };
+        let err = metrics(Some("127.0.0.1:8080"))
+            .validate(&server)
+            .expect_err("two listeners on one address must be refused");
+        assert!(err.to_string().contains("overlaps"), "{err}");
+        assert!(metrics(Some("127.0.0.1:9090")).validate(&server).is_ok());
+    }
+
+    /// The case exact `SocketAddr` equality let through: with `SO_REUSEADDR`
+    /// on both sockets and the metrics listener bound first, a specific
+    /// address alongside a wildcard is accepted by the OS and the specific
+    /// socket then swallows that interface's traffic to the main port.
+    #[test]
+    fn a_wildcard_on_either_side_overlaps_the_same_port() {
+        let wildcard = |host: &str| ServerConfig {
+            host: host.to_string(),
+            port: 8080,
+            ..ServerConfig::default()
+        };
+        for host in ["0.0.0.0", "::"] {
+            let err = metrics(Some("127.0.0.1:8080"))
+                .validate(&wildcard(host))
+                .expect_err("a wildcard server.host must overlap a specific metrics address");
+            assert!(err.to_string().contains("overlaps"), "{err} (host {host})");
+        }
+        // ...and the mirror image: a wildcard metrics listener over a
+        // specific main listener.
+        assert!(
+            metrics(Some("0.0.0.0:8080"))
+                .validate(&ServerConfig {
+                    host: "10.0.0.5".to_string(),
+                    port: 8080,
+                    ..ServerConfig::default()
+                })
+                .is_err()
+        );
+        // Distinct interfaces on the same port genuinely do not contend.
+        assert!(
+            metrics(Some("127.0.0.1:8080"))
+                .validate(&ServerConfig {
+                    host: "10.0.0.5".to_string(),
+                    port: 8080,
+                    ..ServerConfig::default()
+                })
+                .is_ok()
+        );
+    }
+
+    /// A hostname cannot be compared here, so sharing a port with one is
+    /// refused rather than waved through — the old check degraded to a no-op
+    /// the moment `server.host` was not a literal address.
+    #[test]
+    fn an_unresolvable_server_host_on_the_same_port_is_refused() {
+        let server = ServerConfig {
+            host: "localhost".to_string(),
+            port: 8080,
+            ..ServerConfig::default()
+        };
+        assert!(metrics(Some("127.0.0.1:8080")).validate(&server).is_err());
+        assert!(metrics(Some("127.0.0.1:9090")).validate(&server).is_ok());
+    }
+
+    #[test]
+    fn registration_follows_enabled_and_bind_addr() {
+        // Off: nowhere. On + unset: the main listener. On + set: the dedicated
+        // one, and *only* the dedicated one.
+        let off = MetricsConfig::default();
+        assert!(!off.on_main_listener());
+        assert_eq!(off.dedicated_bind_addr(), None);
+
+        let main_only = metrics(None);
+        assert!(main_only.on_main_listener());
+        assert_eq!(main_only.dedicated_bind_addr(), None);
+
+        let dedicated = metrics(Some("127.0.0.1:9090"));
+        assert!(
+            !dedicated.on_main_listener(),
+            "a dedicated listener moves the endpoint, it does not duplicate it"
+        );
+        assert_eq!(dedicated.dedicated_bind_addr(), Some("127.0.0.1:9090"));
+
+        // A bind_addr with collection off must not raise a listener that could
+        // only ever serve an empty body.
+        let disabled_but_bound = MetricsConfig {
+            enabled: false,
+            bind_addr: Some("127.0.0.1:9090".to_string()),
+        };
+        assert_eq!(disabled_but_bound.dedicated_bind_addr(), None);
+        assert!(!disabled_but_bound.on_main_listener());
+    }
 
     #[test]
     fn batch_size_is_bounded_against_sqlite_bind_limit() {

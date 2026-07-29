@@ -319,9 +319,7 @@ impl IntoResponse for OrionError {
         // middleware. Omitted when the task-local isn't in scope (e.g. unit
         // tests calling IntoResponse directly) or when the inbound request
         // had no x-request-id header for the SetRequestIdLayer to populate.
-        if let Ok(rid) = crate::server::request_context::REQUEST_ID.try_with(|id| id.clone())
-            && !rid.is_empty()
-        {
+        if let Some(rid) = crate::server::request_context::request_id() {
             error_obj.insert("request_id".to_string(), Value::String(rid));
         }
 
@@ -799,9 +797,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_id_embedded_when_scoped() {
-        use crate::server::request_context::REQUEST_ID;
-        let response = REQUEST_ID
-            .scope("req-abc-123".to_string(), async {
+        use crate::server::request_context::{REQUEST_CONTEXT, RequestContext};
+        let ctx = RequestContext {
+            request_id: "req-abc-123".to_string(),
+            ..Default::default()
+        };
+        let response = REQUEST_CONTEXT
+            .scope(ctx, async {
                 OrionError::BadRequest("x".to_string()).into_response()
             })
             .await;
@@ -811,9 +813,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_id_absent_when_empty() {
-        use crate::server::request_context::REQUEST_ID;
-        let response = REQUEST_ID
-            .scope(String::new(), async {
+        use crate::server::request_context::{REQUEST_CONTEXT, RequestContext};
+        let response = REQUEST_CONTEXT
+            .scope(RequestContext::default(), async {
                 OrionError::BadRequest("x".to_string()).into_response()
             })
             .await;

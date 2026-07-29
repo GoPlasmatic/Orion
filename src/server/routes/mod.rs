@@ -13,23 +13,54 @@ use utoipa::OpenApi;
 
 use crate::server::state::AppState;
 
-/// `max_admin_body_size` bounds admin request bodies independently of the
-/// data plane (R16) — see [`admin::admin_routes`].
+/// What the main listener's router should contain, resolved from config by
+/// [`crate::server::build_router`].
 ///
-/// `docs_enabled` gates `/docs` and `/api/v1/openapi.json` (S17, resolved by
-/// [`crate::config::AppConfig::docs_enabled`]): the spec publishes the whole
-/// admin API surface anonymously, so production deployments keep it off by
-/// default. When disabled the routes are simply not registered — both paths
-/// fall through to the 404 fallback rather than answering 401, so their very
-/// existence is not advertised.
-pub fn api_routes(max_admin_body_size: usize, docs_enabled: bool) -> Router<AppState> {
+/// A struct rather than three positional scalars: two of the three are bare
+/// `bool`s with the same type, so a transposition at the call site would
+/// compile and silently unregister the wrong surface.
+#[derive(Debug, Clone, Copy)]
+pub struct RouteOptions {
+    /// Bounds admin request bodies independently of the data plane (R16) —
+    /// see [`admin::admin_routes`].
+    pub max_admin_body_size: usize,
+    /// Gates `/docs` and `/api/v1/openapi.json` (S17, resolved by
+    /// [`crate::config::AppConfig::docs_enabled`]): the spec publishes the
+    /// whole admin API surface anonymously, so production deployments keep it
+    /// off by default. When disabled the routes are simply not registered —
+    /// both paths fall through to the 404 fallback rather than answering 401,
+    /// so their very existence is not advertised.
+    pub docs_enabled: bool,
+    /// Gates `/metrics` on **this** listener (O12). False both when
+    /// `metrics.enabled = false` and when `metrics.bind_addr` has moved the
+    /// endpoint to its own listener; in either case the path 404s here rather
+    /// than answering 200 with an empty body.
+    pub metrics_enabled: bool,
+}
+
+/// The main listener's router.
+pub fn api_routes(options: RouteOptions) -> Router<AppState> {
+    let RouteOptions {
+        max_admin_body_size,
+        docs_enabled,
+        metrics_enabled,
+    } = options;
     let router = Router::new()
         .route("/health", get(health_check))
         .route("/healthz", get(liveness_check))
         .route("/readyz", get(readiness_check))
-        .route("/metrics", get(metrics_endpoint))
         .nest("/api/v1/admin", admin::admin_routes(max_admin_body_size))
         .nest("/api/v1/data", data::data_routes());
+
+    // O12: registered only when this listener actually serves metrics.
+    // Unconditional registration meant `metrics.enabled = false` answered 200
+    // with an empty body from an orphan recorder — a scrape target that looked
+    // healthy and reported nothing, forever.
+    let router = if metrics_enabled {
+        router.route("/metrics", get(metrics_endpoint))
+    } else {
+        router
+    };
 
     let router = if docs_enabled {
         router.merge(
@@ -180,9 +211,15 @@ pub(crate) async fn health_check(
     path = "/metrics",
     tag = "Operational",
     description = "\
-Prometheus exposition endpoint. Guarded by the same admin credential as \
-`/api/v1/admin/*` when `admin_auth.enabled` is true — scrapers must be \
-configured with the key.",
+Prometheus exposition endpoint. Registered only when `metrics.enabled` is \
+true — otherwise the path 404s, so a deployment with metrics off is not \
+mistaken for a working scrape target.
+
+On this listener it is guarded by the same admin credential as \
+`/api/v1/admin/*` when `admin_auth.enabled` is true, so scrapers must be \
+configured with the key. Setting `metrics.bind_addr` instead moves the \
+endpoint to a dedicated unauthenticated listener on a private interface and \
+removes it from this one entirely.",
     responses(
         (status = 200, description = "Prometheus metrics", content_type = "text/plain"),
     )

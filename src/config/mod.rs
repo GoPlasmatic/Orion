@@ -145,6 +145,18 @@ pub struct AuditConfig {
     pub retention_days: u64,
     /// How often the audit-log cleanup task runs, in seconds.
     pub cleanup_interval_secs: u64,
+    /// Bound on audit rows accepted but not yet written (O7). Admin mutations
+    /// never wait on the INSERT; this caps how far behind the writer may fall
+    /// before submissions are dropped and counted in
+    /// `orion_audit_events_dropped_total{reason="queue_full"}`.
+    pub max_pending: usize,
+    /// How long shutdown waits for the audit queue to drain, in seconds.
+    /// A database that has stopped accepting writes must not hold the process
+    /// open, so the drain gives up after this and logs how many rows it
+    /// abandoned. Must be non-zero — `0` is not "no bound" here, it would
+    /// elapse on the first poll and skip the drain entirely, which is the
+    /// defect O7 exists to fix.
+    pub drain_timeout_secs: u64,
 }
 
 impl Default for AuditConfig {
@@ -152,7 +164,21 @@ impl Default for AuditConfig {
         Self {
             retention_days: 90,
             cleanup_interval_secs: 3600,
+            max_pending: 1000,
+            drain_timeout_secs: 5,
         }
+    }
+}
+
+impl AuditConfig {
+    pub(crate) fn validate(&self) -> Result<(), OrionError> {
+        validation::require_nonzero(self.max_pending as u64, "audit.max_pending")?;
+        // Elsewhere 0 is a "disabled" sentinel (`server.shutdown_force_timeout_secs`,
+        // `kafka.lag_poll_interval_secs`), so an operator could reasonably read
+        // it as "wait forever". It is the opposite: `tokio::time::timeout`
+        // elapses on the first poll, so the drain is skipped and every clean
+        // shutdown logs a drain failure with `lost = 0`.
+        validation::require_nonzero(self.drain_timeout_secs, "audit.drain_timeout_secs")
     }
 }
 
@@ -431,6 +457,32 @@ data_rps = 500
         assert_eq!(config.otlp_endpoint, "http://localhost:4317");
         assert_eq!(config.service_name, "orion");
         assert!((config.sample_rate - 1.0).abs() < f64::EPSILON);
+    }
+
+    /// Both audit knobs are load-bearing and neither has a meaningful zero:
+    /// `max_pending = 0` is a queue that accepts nothing, and
+    /// `drain_timeout_secs = 0` silently skips the drain O7 exists to add.
+    #[test]
+    fn audit_queue_knobs_reject_zero() {
+        assert!(AuditConfig::default().validate().is_ok());
+        let err = AuditConfig {
+            max_pending: 0,
+            ..AuditConfig::default()
+        }
+        .validate()
+        .expect_err("a zero-capacity audit queue must be refused");
+        assert!(err.to_string().contains("audit.max_pending"), "{err}");
+
+        let err = AuditConfig {
+            drain_timeout_secs: 0,
+            ..AuditConfig::default()
+        }
+        .validate()
+        .expect_err("a zero drain timeout skips the drain, it does not disable the bound");
+        assert!(
+            err.to_string().contains("audit.drain_timeout_secs"),
+            "{err}"
+        );
     }
 
     #[test]

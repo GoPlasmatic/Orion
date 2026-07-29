@@ -465,6 +465,7 @@ pub fn build_rate_limit_state(
 pub struct TaskHandles {
     trace_persistence_handle: crate::queue::trace_persistence::PersistenceWorkerHandle,
     worker_handle: crate::queue::WorkerHandle,
+    audit_writer_handle: crate::queue::audit_queue::AuditWriterHandle,
     trace_cleanup_handle: Option<tokio::task::JoinHandle<()>>,
     audit_cleanup_handle: Option<tokio::task::JoinHandle<()>>,
     dlq_retry_handle: Option<tokio::task::JoinHandle<()>>,
@@ -502,6 +503,11 @@ impl TaskHandles {
 
         tracing::info!("Draining trace persistence queue...");
         self.trace_persistence_handle.shutdown().await;
+
+        // O7: last, and bounded. The caller has already dropped `AppState`
+        // (and with it the last `AuditQueue` sender), so the writer sees the
+        // channel close, finishes what it holds, and exits.
+        self.audit_writer_handle.shutdown().await;
     }
 }
 
@@ -518,8 +524,20 @@ pub fn start_background_tasks(
 ) -> (
     crate::queue::TracePersistenceQueue,
     crate::queue::TraceQueue,
+    crate::queue::audit_queue::AuditQueue,
     TaskHandles,
 ) {
+    // Audit writer (O7): one bounded queue, one in-order writer, drained at
+    // shutdown. Started first so no admin mutation can be accepted before
+    // there is somewhere to record it.
+    let (audit_queue, audit_writer_handle) =
+        crate::queue::audit_queue::start(&config.audit, repos.audit_logs.clone());
+    tracing::info!(
+        max_pending = config.audit.max_pending,
+        drain_timeout_secs = config.audit.drain_timeout_secs,
+        "Audit-log writer started"
+    );
+
     // Start trace persistence queue (async/batch modes). A no-op queue is
     // returned for `sync` / `off`, so callers can submit unconditionally.
     let (trace_persistence_queue, trace_persistence_handle) =
@@ -602,9 +620,11 @@ pub fn start_background_tasks(
     (
         trace_persistence_queue,
         trace_queue,
+        audit_queue,
         TaskHandles {
             trace_persistence_handle,
             worker_handle,
+            audit_writer_handle,
             trace_cleanup_handle,
             audit_cleanup_handle,
             dlq_retry_handle,
@@ -623,6 +643,7 @@ pub struct AppStateParams {
     pub channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub trace_queue: crate::queue::TraceQueue,
     pub trace_persistence_queue: crate::queue::TracePersistenceQueue,
+    pub audit_queue: crate::queue::audit_queue::AuditQueue,
     pub rate_limit_state: Option<Arc<crate::server::rate_limit::RateLimitState>>,
     pub metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
     pub ready: Arc<std::sync::atomic::AtomicBool>,
@@ -643,6 +664,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         channel_registry,
         trace_queue,
         trace_persistence_queue,
+        audit_queue,
         rate_limit_state,
         metrics_handle,
         ready,
@@ -659,6 +681,10 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         mongo_pool_cache,
         kafka_producer,
     } = components;
+    // Parsed once, and independent of `rate_limit.enabled`: the audit trail
+    // and the failed-auth backoff resolve the caller's address with this list
+    // too. See `AppStateInner::trusted_proxies`.
+    let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         engine,
         channel_repo: repos.channels,
@@ -667,6 +693,7 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         trace_repo: repos.traces,
         trace_dlq_repo: repos.trace_dlq,
         audit_log_repo: repos.audit_logs,
+        audit_queue,
         connector_registry,
         cache_pool,
         channel_registry,
@@ -687,5 +714,6 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         trace_persistence_queue,
         cluster,
         admin_auth_failures: Arc::new(Default::default()),
+        trusted_proxies,
     })
 }

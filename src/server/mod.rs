@@ -79,10 +79,11 @@ pub fn build_router(state: AppState) -> Router {
     // Request order is: set/propagate request id -> request-id scope ->
     // security headers -> catch panic -> CORS -> HSTS -> OTel -> trace ->
     // metrics -> rate limit -> admin auth -> compression -> body limit -> route.
-    let router = routes::api_routes(
-        state.config.server.max_admin_body_size,
-        state.config.docs_enabled(),
-    )
+    let router = routes::api_routes(routes::RouteOptions {
+        max_admin_body_size: state.config.server.max_admin_body_size,
+        docs_enabled: state.config.docs_enabled(),
+        metrics_enabled: state.config.metrics.on_main_listener(),
+    })
     // Innermost: bound the body before a handler ever reads it. This is the
     // data-plane bound; `admin_routes` re-applies its own, closer to the
     // handler, so raising one does not raise the other (R16).
@@ -229,15 +230,48 @@ pub fn build_router(state: AppState) -> Router {
     let router = router
         // Single middleware replaces 5 separate SetResponseHeaderLayer wrappers.
         .layer(axum::middleware::from_fn(security_headers_middleware))
-        // Scope per-request task-local REQUEST_ID so OrionError responses can
-        // embed it in the JSON body (clients then don't need to read both
-        // header and body to correlate). Must run inside SetRequestIdLayer so
-        // the header is populated before we read it.
-        .layer(axum::middleware::from_fn(request_context::request_id_scope))
+        // Scope the per-request task-local REQUEST_CONTEXT so OrionError
+        // responses can embed the request id in the JSON body (clients then
+        // don't need to read both header and body to correlate) and the audit
+        // log can record the caller's address and user-agent (O7). Must run
+        // inside SetRequestIdLayer so the header is populated before we read
+        // it.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            request_context::request_context_scope,
+        ))
         .layer(PropagateRequestIdLayer::new(x_request_id.clone()))
         .layer(SetRequestIdLayer::new(x_request_id, MakeRequestUuid));
 
     router.with_state(state)
+}
+
+/// Build the router for the dedicated metrics listener (`metrics.bind_addr`,
+/// O12).
+///
+/// Deliberately minimal: one route, no admin auth, no CORS, no rate limiting,
+/// no compression, no request-id plumbing. The whole point of the second
+/// listener is that a scraper reaching it needs no credential — so the
+/// operator, not this process, is responsible for keeping the address off any
+/// network that should not have it. Everything else 404s through the same
+/// JSON-envelope fallback as the main listener, and panics are still caught so
+/// a scrape can never take the process down.
+///
+/// Only ever built when `metrics.enabled` is true (see
+/// [`crate::config::MetricsConfig::dedicated_bind_addr`]) — a second listener
+/// serving a permanently empty body would be the same defect one interface
+/// over.
+pub fn metrics_router(state: AppState) -> Router {
+    Router::new()
+        .route("/metrics", axum::routing::get(routes::metrics_endpoint))
+        .fallback(|| async {
+            crate::errors::OrionError::NotFound(
+                "This listener serves GET /metrics only".to_string(),
+            )
+        })
+        .layer(axum::middleware::from_fn(security_headers_middleware))
+        .layer(CatchPanicLayer::new())
+        .with_state(state)
 }
 
 /// Build a CORS layer from configuration.

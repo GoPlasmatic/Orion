@@ -343,7 +343,6 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
         Ok(()) => {
             metrics::record_message(metrics_channel, "ok");
             metrics::record_message_duration(metrics_channel, duration_secs);
-            metrics::record_channel_execution(metrics_channel);
 
             persist_success(
                 &ctx,

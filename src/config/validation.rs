@@ -30,12 +30,14 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     config.ingest.validate()?;
     config.storage.validate()?;
     config.logging.validate()?;
+    config.metrics.validate(&config.server)?;
     config.tracing.validate()?;
     config.trace_storage.validate()?;
     config.admin_auth.validate(is_prod)?;
     config.cors.validate(is_prod)?;
     config.engine.validate()?;
     config.trace_queue.validate()?;
+    config.audit.validate()?;
     config.query.validate()?;
     config.write.validate()?;
     config.rate_limit.validate()?;

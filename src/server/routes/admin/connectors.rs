@@ -148,7 +148,7 @@ pub(crate) async fn create_connector(
     crate::validation::validate_create_connector(&req)?;
     let connector = state.connector_repo.create(&req).await?;
     audit_log(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "create",
         "connector",
@@ -266,13 +266,7 @@ pub(crate) async fn update_connector(
     if let Some(old_name) = renamed_from {
         evict_connector_pools(&state, &old_name).await;
     }
-    audit_log(
-        &state.audit_log_repo,
-        &principal,
-        "update",
-        "connector",
-        &id,
-    );
+    audit_log(&state.audit_queue, &principal, "update", "connector", &id);
     reload_connectors(&state).await?;
     let masked = mask_connector(&connector);
     Ok(data_response(masked))
@@ -298,13 +292,7 @@ pub(crate) async fn delete_connector(
     let connector = state.connector_repo.get_by_id(&id).await?;
     state.connector_repo.delete(&id).await?;
     evict_connector_pools(&state, &connector.name).await;
-    audit_log(
-        &state.audit_log_repo,
-        &principal,
-        "delete",
-        "connector",
-        &id,
-    );
+    audit_log(&state.audit_queue, &principal, "delete", "connector", &id);
     reload_connectors(&state).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -359,7 +347,7 @@ pub(crate) async fn import_connectors(
         return Ok(super::dry_run_response(imported, failed, errors));
     }
     audit_log(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "import",
         "connector",
@@ -431,7 +419,7 @@ pub(crate) async fn reset_circuit_breaker(
     }
 
     audit_log(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "reset",
         "circuit_breaker",

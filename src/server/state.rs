@@ -34,6 +34,10 @@ pub struct AppStateInner {
     /// instance the worker pool and the retry loop write to.
     pub trace_dlq_repo: Arc<dyn TraceDlqRepository>,
     pub audit_log_repo: Arc<dyn AuditLogRepository>,
+    /// Bounded producer for admin audit rows (O7). Admin handlers submit
+    /// here; one background writer persists in order and is drained at
+    /// shutdown, so a mutation accepted moments before SIGTERM still lands.
+    pub audit_queue: crate::queue::audit_queue::AuditQueue,
     pub connector_registry: Arc<ConnectorRegistry>,
     pub cache_pool: Arc<CachePool>,
     pub channel_registry: Arc<ChannelRegistry>,
@@ -74,16 +78,25 @@ pub struct AppStateInner {
     /// Per-client failed-admin-auth backoff. Node-local and ephemeral by
     /// design: it exists to blunt online guessing, not to be a shared ledger.
     pub admin_auth_failures: Arc<crate::server::admin_auth::FailedAuthTracker>,
+    /// `rate_limit.trusted_proxies`, parsed once at startup.
+    ///
+    /// Held here rather than read off `rate_limit_state` because client
+    /// identification is not only the rate limiter's concern: the audit trail
+    /// (O7) and the failed-auth backoff (S12) resolve the caller's address
+    /// with the same policy. Sourcing it from the limiter tied it to
+    /// `rate_limit.enabled`, which is `false` by default — so on any
+    /// deployment behind an ingress or load balancer, every audit row
+    /// recorded the proxy's address and there was no way to change that short
+    /// of turning on rate limiting.
+    pub trusted_proxies: Arc<Vec<ipnet::IpNet>>,
 }
 
 impl AppStateInner {
-    /// Trusted-proxy list used for client identification, empty when rate
-    /// limiting is disabled (the list lives on the rate-limit config).
-    pub fn rate_limit_trusted_proxies(&self) -> &[ipnet::IpNet] {
-        self.rate_limit_state
-            .as_ref()
-            .map(|s| s.trusted_proxies.as_slice())
-            .unwrap_or(&[])
+    /// Reverse proxies whose `X-Forwarded-For` / `X-Real-IP` are honoured
+    /// when identifying the client. Empty by default, in which case the
+    /// direct peer is the client — see [`Self::trusted_proxies`].
+    pub fn trusted_proxies(&self) -> &[ipnet::IpNet] {
+        &self.trusted_proxies
     }
 
     /// `(size, idle)` connection counts for the `/health` gauges (R26).

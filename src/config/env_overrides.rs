@@ -174,6 +174,8 @@ where
     // Audit-log retention
     ov!(audit.retention_days: u64);
     ov!(audit.cleanup_interval_secs: u64);
+    ov!(audit.max_pending: usize);
+    ov!(audit.drain_timeout_secs: u64);
 
     // Query dialect
     ov!(query.default_limit: u64);
@@ -186,6 +188,7 @@ where
 
     // Metrics
     ov!(metrics.enabled: bool);
+    ov_opt_str!(metrics.bind_addr);
 
     // Tracing
     ov!(tracing.enabled: bool);

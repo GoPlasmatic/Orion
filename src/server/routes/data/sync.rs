@@ -301,7 +301,6 @@ pub(super) async fn process_sync_for_channel(
             let duration_ms = duration.as_secs_f64() * 1000.0;
             metrics::record_message(metrics_channel, "ok");
             metrics::record_message_duration(metrics_channel, duration_secs);
-            metrics::record_channel_execution(metrics_channel);
 
             let response = response_envelope(
                 message.id(),
@@ -325,9 +324,7 @@ pub(super) async fn process_sync_for_channel(
             // correlation id; the persisted trace keeps the full detail.
             let has_errors = message.has_errors();
             let public_response = if has_errors {
-                let request_id = crate::server::request_context::REQUEST_ID
-                    .try_with(|id| id.clone())
-                    .unwrap_or_default();
+                let request_id = crate::server::request_context::request_id().unwrap_or_default();
                 Some(response_envelope(
                     message.id(),
                     crate::engine::utils::data_without_rollout_bucket(&message),

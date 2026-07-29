@@ -166,6 +166,14 @@
                                      # forever). Every admin mutation writes one and nothing
                                      # else removes them, so 0 grows `audit_logs` without bound.
 # cleanup_interval_secs = 3600       # How often the audit cleanup job runs
+# max_pending = 1000                 # Audit rows accepted but not yet written. Admin mutations
+                                     # never wait on the INSERT; past this bound submissions are
+                                     # dropped and counted in orion_audit_events_dropped_total.
+# drain_timeout_secs = 5             # How long shutdown waits for the audit queue to drain. A
+                                     # database that stopped accepting writes must not hold the
+                                     # process open, so the drain gives up and logs the loss.
+                                     # Must be > 0: unlike other timeouts here, 0 does not mean
+                                     # "no bound" — it would skip the drain entirely.
 
 [query]                              # Page-size bounds for the portable `data_query` handler
 # default_limit = 100                # Page size when a query omits `limit`
@@ -297,7 +305,16 @@
 # format = "pretty"             # pretty or json — use json wherever logs are collected
 
 [metrics]
-# enabled = false               # Serve Prometheus metrics at GET /metrics
+# enabled = false               # Collect metrics and serve them at GET /metrics. With this off the
+                                # route is not registered at all, so /metrics 404s rather than
+                                # answering 200 with a permanently empty body.
+# bind_addr = "127.0.0.1:9090"  # Optional dedicated, UNAUTHENTICATED listener serving only
+                                # GET /metrics. Unset (default) keeps the endpoint on the main
+                                # listener, where admin_auth guards it — so every scraper has to
+                                # hold an admin key that can also rewrite workflows. Point this at
+                                # a private interface instead. Plain HTTP; server.tls covers the
+                                # main listener only. Needs enabled = true — set on its own it
+                                # raises no listener and startup warns.
 
 [tracing]                       # OpenTelemetry export; gated at runtime by `enabled`
 # enabled = false

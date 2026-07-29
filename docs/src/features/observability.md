@@ -51,24 +51,81 @@ Enable metrics and scrape at `GET /metrics` (Prometheus text format):
 enabled = true
 ```
 
+With `metrics.enabled = false` the route is not registered at all: `/metrics`
+returns `404`, so a deployment with metrics off cannot be mistaken for a
+working scrape target that simply has no series.
+
+`/metrics` is guarded by `admin_auth` like the rest of the admin plane. Since
+that credential can also rewrite workflows and read trace payloads, prefer
+giving the scraper a listener of its own:
+
+```toml
+[metrics]
+enabled = true
+bind_addr = "127.0.0.1:9090"    # unauthenticated; the address is the access control
+```
+
+`bind_addr` moves the endpoint onto its own plain-HTTP listener and removes it
+from the main one. See
+[the configuration reference](../configuration/reference.md#logging-and-metrics).
+
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `orion_build_info` | Gauge | `version`, `git_hash`, `build_timestamp` | Always `1`. Join against it to see which build each replica runs. |
-| `orion_messages_total` | Counter | `channel`, `status` | Total messages processed |
+| `orion_messages_total` | Counter | `channel`, `status` | Messages processed per channel, by outcome (`ok`, `error`, `timeout`, …). `sum by (channel)` is the per-channel invocation rate. |
 | `orion_message_duration_seconds` | Histogram | `channel` | Processing latency |
 | `orion_active_workflows` | Gauge | — | Workflows loaded in engine |
-| `orion_errors_total` | Counter | `type` | Errors encountered |
+| `orion_errors_total` | Counter | `reason` | Errors encountered, by cause (`engine`, `timeout`, `panic`, `kafka_retry`, …) |
 | `orion_admin_auth_failures_total` | Counter | `reason` | Rejected admin credentials (`missing_or_malformed`, `invalid_key`, `locked_out`) |
 | `orion_http_requests_total` | Counter | `method`, `path`, `status` | HTTP requests served |
 | `orion_http_request_duration_seconds` | Histogram | `method`, `path`, `status` | HTTP request latency |
 | `orion_db_query_duration_seconds` | Histogram | `operation` | Database query latency |
+| `orion_db_pool_size` | Gauge | — | Connections in the primary database pool. Sampled on each scrape. |
+| `orion_db_pool_idle` | Gauge | — | Idle connections in the primary pool. Sustained `0` with a growing latency histogram is pool exhaustion. |
 | `orion_engine_reloads_total` | Counter | `status` | Engine reload events |
 | `orion_engine_reload_duration_seconds` | Histogram | — | Engine reload latency |
+| `orion_engine_lock_wait_seconds` | Histogram | `mode` | Time spent waiting for the engine lock (`read` / `write`) |
 | `orion_circuit_breaker_trips_total` | Counter | `connector`, `channel` | Circuit breaker trip events |
 | `orion_circuit_breaker_rejections_total` | Counter | `connector`, `channel` | Requests rejected by open breakers |
-| `orion_channel_executions_total` | Counter | `channel` | Channel invocations |
-| `orion_rate_limit_rejections_total` | Counter | `client` | Rate-limited requests |
+| `orion_connector_requests_total` | Counter | `connector`, `channel`, `status` | Outbound connector calls, by outcome |
+| `orion_connector_request_duration_seconds` | Histogram | `connector`, `channel` | Outbound connector latency |
+| `orion_rate_limit_rejections_total` | Counter | `scope` | Rate-limited requests. `scope` is a registry-confirmed channel name or a route group — never the client address, which spoofed headers would turn into unbounded cardinality. |
+| `orion_response_cache_hits_total` | Counter | `channel` | Per-channel response-cache hits |
+| `orion_response_cache_misses_total` | Counter | `channel` | Per-channel response-cache misses |
 | `orion_job_last_success_timestamp_seconds` | Gauge | `job` | Unix time of the last fully successful tick of each background job: `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher` (cluster mode), `kafka_lag` (Kafka enabled). The jobs swallow per-tick errors by design, so alert on `time() - orion_job_last_success_timestamp_seconds{job="…"}` exceeding a few tick intervals — that is the signal that cleanup or retry has silently stalled. In cluster mode only the lease-holding node stamps the lease-gated jobs (`trace_cleanup`, `audit_cleanup`, `dlq_retry`); `epoch_watcher` and `kafka_lag` stamp on every node, per `instance`. |
+
+### Trace queue and persistence
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `orion_trace_queue_depth` | Gauge | — | Async submissions waiting for a worker |
+| `orion_trace_queue_memory_bytes` | Gauge | — | Approximate memory held by queued payloads |
+| `orion_trace_workers_active` | Gauge | — | Trace workers currently running a job |
+| `orion_trace_workers_total` | Gauge | — | Configured trace worker capacity |
+| `orion_trace_queue_rejected_total` | Counter | `reason` | Submissions shed at the door (`full`, `memory`). Both surface to the caller as `503`. |
+| `orion_trace_dropped_total` | Counter | `reason` | Traces not persisted (`overflow`, `sampled_out`, `errors_only`, `off`) |
+| `orion_trace_persistence_queue_depth` | Gauge | — | Trace writes waiting in `async` / `batch` mode |
+| `orion_trace_persistence_batch_size` | Histogram | — | Rows committed per batch flush |
+| `orion_trace_persistence_failures_total` | Counter | — | Trace writes the persistence workers could not complete. These are lost, so this counter is the only signal. |
+| `orion_trace_dlq_depth` | Gauge | — | Rows in the trace DLQ. Refreshed by the retry loop, so it goes stale if `trace_queue.dlq_retry_enabled = false`. |
+| `orion_trace_dlq_retries_total` | Counter | `outcome` | DLQ entries reaching a terminal state (`retried`, `exhausted`, `failed`) |
+
+### Admin audit trail
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `orion_admin_audit_events_total` | Counter | `action`, `resource_type` | Admin mutations recorded |
+| `orion_audit_queue_depth` | Gauge | — | Audit rows accepted but not yet written. Refreshed on every submission and every completed write, so a writer stalled behind a hanging database still shows the backlog rising. |
+| `orion_audit_events_dropped_total` | Counter | `reason` | Admin actions that happened but were **not** recorded (`queue_full`, `write_failed`, `drain_timeout`, `writer_stopped`). Any non-zero value is a hole in the audit trail — alert on the counter existing, not on a threshold. |
+
+### Kafka ingest
+
+Present only when `kafka.enabled = true`.
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `orion_kafka_consumer_lag_messages` | Gauge | `topic`, `partition` | Consumer lag in messages. Polled every `kafka.lag_poll_interval_secs`; set that to `0` to disable the poller. |
+| `orion_kafka_ingest_degraded` | Gauge | — | `1` while ingestion is down — a consumer (re)start failed and the supervisor has not recovered it. Mirrors the `kafka` component of `/readyz`. |
 
 All metrics carry the `orion_` prefix so they cannot collide in a shared
 registry, and in cluster mode every series also carries an `instance` label

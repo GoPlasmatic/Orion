@@ -29,12 +29,15 @@ const MIN_PLAINTEXT_KEY_LEN: usize = 32;
 
 /// A configured admin API key, normalized to its SHA-256 digest so the
 /// middleware always compares fixed-width values (S11).
+///
+/// Which config form the key came from is deliberately *not* recorded: both
+/// forms are the same credential, so both must compare and audit identically
+/// (see `AdminPrincipal::from_digest`). Carrying the distinction only ever
+/// invited code that treats them differently.
 pub struct AdminKey {
     /// SHA-256 digest of the key, compared against the digest of the
     /// presented token.
     pub digest: [u8; 32],
-    /// True when configured in the `sha256:<hex>` hash-at-rest form.
-    pub hashed: bool,
 }
 
 /// Decode a `sha256:` entry's 64-hex-char payload into a digest.
@@ -60,14 +63,10 @@ impl AdminAuthConfig {
             .into_iter()
             .filter_map(|key| {
                 if let Some(hex_digest) = key.strip_prefix("sha256:") {
-                    decode_sha256_hex(hex_digest).map(|digest| AdminKey {
-                        digest,
-                        hashed: true,
-                    })
+                    decode_sha256_hex(hex_digest).map(|digest| AdminKey { digest })
                 } else {
                     Some(AdminKey {
                         digest: Sha256::digest(key.as_bytes()).into(),
-                        hashed: false,
                     })
                 }
             })
@@ -183,7 +182,6 @@ mod tests {
         let config = config_with_keys(&["my-secret"]);
         let keys = config.admin_keys();
         assert_eq!(keys.len(), 1);
-        assert!(!keys[0].hashed);
         let expected: [u8; 32] = Sha256::digest(b"my-secret").into();
         assert_eq!(keys[0].digest, expected);
     }
@@ -195,7 +193,6 @@ mod tests {
         let config = config_with_keys(&[&entry]);
         let keys = config.admin_keys();
         assert_eq!(keys.len(), 1);
-        assert!(keys[0].hashed);
         // The stored hash and a freshly hashed plaintext token must agree
         let presented: [u8; 32] = Sha256::digest(b"my-secret").into();
         assert_eq!(keys[0].digest, presented);

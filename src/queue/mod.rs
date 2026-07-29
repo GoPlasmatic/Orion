@@ -1,4 +1,5 @@
 pub mod audit_cleanup;
+pub mod audit_queue;
 mod dlq_retry;
 mod processing;
 

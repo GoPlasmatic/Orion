@@ -22,6 +22,7 @@ use crate::storage::repositories::workflows::{
 use super::StatusAction;
 use super::VersionFilter;
 use super::audit_and_reload;
+use super::audit_log;
 use super::audit_log_draft_only;
 
 // ============================================================
@@ -66,7 +67,7 @@ pub(crate) async fn create_workflow(
     crate::validation::validate_create_workflow(&req)?;
     let workflow = state.workflow_repo.create(&req).await?;
     audit_log_draft_only(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "create",
         "workflow",
@@ -115,7 +116,7 @@ pub(crate) async fn update_workflow(
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_workflow(&req)?;
     let workflow = state.workflow_repo.update_draft(&id, &req).await?;
-    audit_log_draft_only(&state.audit_log_repo, &principal, "update", "workflow", &id);
+    audit_log_draft_only(&state.audit_queue, &principal, "update", "workflow", &id);
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 
@@ -399,7 +400,7 @@ pub(crate) async fn create_new_workflow_version(
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let workflow = state.workflow_repo.create_new_version(&id).await?;
     audit_log_draft_only(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "create_version",
         "workflow",
@@ -430,15 +431,26 @@ pub(crate) struct TestWorkflowRequest {
         (status = 404, description = "Workflow not found"),
     )
 )]
-#[tracing::instrument(skip(state, req))]
+#[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn test_workflow(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    principal: Option<Extension<AdminPrincipal>>,
     OrionJson(req): OrionJson<TestWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
     use crate::storage::repositories::workflows::workflow_to_dataflow;
 
     let workflow = state.workflow_repo.get_by_id(&id).await?;
+
+    // O7: this endpoint runs the workflow's tasks against **live connectors** —
+    // it will POST to real webhooks, write to real databases and publish to
+    // real topics. It read as a harmless dry run and emitted no audit event at
+    // all, so the most side-effecting call on the admin plane was the one
+    // operation the trail could not show. Recorded before execution, so the
+    // attempt is on the record even if the run itself fails or the process
+    // dies mid-task.
+    audit_log(&state.audit_queue, &principal, "test", "workflow", &id);
+
     let df_workflow = workflow_to_dataflow(&workflow, "__test__")?;
 
     // Create an isolated engine with just this one workflow, reusing the shared HTTP client.
@@ -537,7 +549,7 @@ pub(crate) async fn import_workflows(
     }
 
     audit_log_draft_only(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "import",
         "workflow",

@@ -99,6 +99,45 @@ pub async fn serve_tls(
         })
 }
 
+/// Serve the dedicated metrics listener (`metrics.bind_addr`, O12) over a
+/// pre-bound plain-HTTP listener.
+///
+/// Joins the existing shutdown path rather than inventing one: it keeps
+/// accepting for the same `server.shutdown_drain_secs` grace the main listener
+/// observes, so the scrape that lands while the load balancer is still
+/// draining this node still succeeds, and it stops accepting at the same
+/// moment. It does **not** touch the readiness flag — `/readyz` belongs to the
+/// main listener, and two writers flipping one flag would make the drain
+/// sequence depend on task scheduling.
+///
+/// Plain HTTP by design; `server.tls` governs the main listener only.
+pub async fn serve_metrics(
+    listener: tokio::net::TcpListener,
+    config: Arc<AppConfig>,
+    router: axum::Router,
+    shutdown: impl std::future::Future<Output = ()> + Send + 'static,
+) -> Result<(), OrionError> {
+    let drain = std::time::Duration::from_secs(config.server.shutdown_drain_secs);
+    let addr = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
+    tracing::info!(
+        address = %addr,
+        "Metrics listener ready (GET /metrics, unauthenticated)"
+    );
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async move {
+            shutdown.await;
+            tokio::time::sleep(drain).await;
+        })
+        .await
+        .map_err(|e| OrionError::InternalSource {
+            context: format!("Metrics server error on {addr}"),
+            source: Box::new(e),
+        })
+}
+
 /// Serve `router` over a pre-bound plain (non-TLS) HTTP listener with
 /// graceful shutdown.
 pub async fn serve_plain_http(

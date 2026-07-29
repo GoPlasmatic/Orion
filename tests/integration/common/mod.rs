@@ -143,7 +143,7 @@ async fn test_state_inner(
     )
     .expect("kafka ingest");
 
-    let (trace_persistence_queue, trace_queue, task_handles) =
+    let (trace_persistence_queue, trace_queue, audit_queue, task_handles) =
         orion::bootstrap::start_background_tasks(
             &config,
             components.engine.clone(),
@@ -172,6 +172,7 @@ async fn test_state_inner(
         channel_registry,
         trace_queue,
         trace_persistence_queue,
+        audit_queue,
         rate_limit_state,
         metrics_handle,
         ready,

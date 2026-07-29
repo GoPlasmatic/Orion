@@ -61,7 +61,7 @@ pub(crate) async fn create_channel(
     crate::validation::validate_create_channel(&req)?;
     let channel = state.channel_repo.create(&req).await?;
     audit_log_draft_only(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "create",
         "channel",
@@ -115,7 +115,7 @@ pub(crate) async fn update_channel(
     let current = state.channel_repo.get_by_id(&id).await?;
     crate::validation::validate_update_channel(&current, &req)?;
     let channel = state.channel_repo.update_draft(&id, &req).await?;
-    audit_log_draft_only(&state.audit_log_repo, &principal, "update", "channel", &id);
+    audit_log_draft_only(&state.audit_queue, &principal, "update", "channel", &id);
     Ok(data_response(ChannelResponse::try_from(&channel)?))
 }
 
@@ -301,7 +301,7 @@ pub(crate) async fn create_new_channel_version(
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     let channel = state.channel_repo.create_new_version(&id).await?;
     audit_log_draft_only(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "create_version",
         "channel",
@@ -360,7 +360,7 @@ pub(crate) async fn import_channels(
         return Ok(super::dry_run_response(imported, failed, errors));
     }
     audit_log_draft_only(
-        &state.audit_log_repo,
+        &state.audit_queue,
         &principal,
         "import",
         "channel",

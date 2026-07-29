@@ -9,6 +9,13 @@ use utoipa::{Modify, OpenApi};
 
 use crate::server::admin_auth::is_guarded_path;
 
+/// The spec is generated without a config, so it has to pick one deployment
+/// shape to describe for the paths whose registration is config-dependent.
+/// `/metrics` is documented as a path of the main listener, so the guard
+/// predicate is evaluated as if it is registered there — see
+/// [`is_guarded_path`].
+const METRICS_ON_DOCUMENTED_LISTENER: bool = true;
+
 /// Error response body matching Orion's
 /// `{"error": {"code": "...", "message": "...", "request_id": "..."}}` format.
 ///
@@ -170,7 +177,13 @@ impl Modify for SecurityAddon {
         }
 
         for (path, item) in openapi.paths.paths.iter_mut() {
-            let guarded = is_guarded_path(path);
+            // `true`: this document describes the main listener, and it
+            // documents `/metrics` — so it must describe the configuration in
+            // which that path exists there (`metrics.enabled = true`, no
+            // `metrics.bind_addr`). The other two configurations do not serve
+            // `/metrics` on this listener at all, and the operation's own
+            // description says so.
+            let guarded = is_guarded_path(path, METRICS_ON_DOCUMENTED_LISTENER);
             let operations = [
                 item.get.as_mut(),
                 item.put.as_mut(),
@@ -374,7 +387,7 @@ mod tests {
         const HANDLER_ENFORCED_401: &[&str] = &["/api/v1/admin/traces/{id}"];
         let spec = spec();
         for (path, item) in &spec.paths.paths {
-            let expected = is_guarded_path(path);
+            let expected = is_guarded_path(path, METRICS_ON_DOCUMENTED_LISTENER);
             let handler_enforced = HANDLER_ENFORCED_401.contains(&path.as_str());
             for (method, operation) in [
                 ("get", &item.get),
