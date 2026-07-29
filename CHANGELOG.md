@@ -65,178 +65,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `write.allow_unfiltered`, deleting every row. The guard now derives from the
   lowered condition rather than the presence of a `filter` key.
 
-### Added
+- **A many-to-many junction reached the SQL renderer unvalidated.**
+  `resolve_relation` copied a junction's `table`, `local` and `foreign` names
+  into the renderer without `validate_identifier` — the one identifier channel
+  that skipped the boundary rule, so a schema carrying quote characters in a
+  junction name reached `Alias::new` raw. The gap is closed, and identifier
+  safety no longer rests untested on a transitive dependency: two property
+  tests now fuzz every identifier channel of the write path (insert `target`
+  and inserted column, update `set` column and `returning` name) and the read
+  path (`source`, `fields`, `sort`, filter fields) with quotes, backslashes and
+  unicode, asserting boundary rejection or safe quoting on all three SQL
+  dialects (F25).
 
-- **`server.max_admin_body_size`** (default 8 MB) bounds admin request bodies
-  independently of the data plane. The limit was a single global layer set
-  from `ingest.max_payload_size` — a name that says *data plane* — so raising
-  it for a bulk import also raised it for anonymous channel traffic.
+- **The SSRF validator never looked at the URL scheme.**
+  `validate_url_not_private` parsed the URL and vetted every resolved address,
+  so `gopher://public.example:70/` passed, and the `unwrap_or(80)` port default
+  could pin the wrong `SocketAddr` set for a non-http scheme. Anything outside
+  `http`/`https` is now rejected before any host or DNS work — *"only http and
+  https are allowed"*. Every caller is an HTTP egress path, so nothing
+  legitimate is lost (S7).
 
-### Fixed
+- **Connector secrets in URL query strings round-tripped in the clear.** URL
+  redaction covered userinfo only, so `?api_key=SECRET` and friends came back
+  verbatim from `GET /api/v1/admin/connectors`. Query parameters whose name
+  satisfies the same secret-key predicate as object keys are now masked
+  (`?api_key=…`, `?sig=…`, `?X-Amz-Signature=…`), and the denylist gains
+  `bearer`, `dsn`, `webhook` (substrings) plus `pat` and `sig` (exact matches).
 
-- **`?dry_run=true` on an import now reads the database.** It performed no DB
-  reads at all, as its own doc comment said. The stated use case is CI
-  pre-flight and the most common real failure is a name conflict, which is
-  exactly what a no-DB dry-run cannot see — so a green dry-run said nothing
-  about whether the real import would work. It now reports conflicts against
-  stored rows *and* duplicates within the batch; the second was free and
-  previously missed entirely.
+  Because one string can now carry several maskable positions, the mask
+  round-trip guard is positional: each masked position — the userinfo password,
+  each secret-named query value — is restored independently from the stored
+  value, so rotating one in-URL secret while sending the other back masked
+  restores the masked one instead of persisting `******` as the live
+  credential. A masked position with no stored counterpart — including a
+  literal `******` query value under a non-secret parameter name, which masking
+  can never produce — is refused with `400` on create and update.
 
-- **`POST /admin/workflows/validate` no longer green-lights payloads
-  `POST /admin/workflows` rejects.** `validate_workflow_tasks_schema` carried
-  the doc comment *"Public so the `/validate` endpoint can reuse it"* and had
-  **zero external callers**; the endpoint re-implemented the same walk and the
-  two disagreed by design — an unknown `function.name` was a hard error at
-  create and a *warning* here. A linter that green-lights a rejected payload
-  is worse than no linter. The create-path validator now runs first and
-  verbatim; the endpoint's remaining checks are only ever additional.
+  **Still shown in the clear:** a capability token embedded in a URL *path* (a
+  Slack-style webhook) under a generic key, because a path segment carries no
+  name to judge. Store it under a secret-looking key (`webhook_url`) and the
+  key-name rule masks the whole value (S18).
 
-- **A poisoned profile mutex no longer fails the request.** The per-request
-  profiler took its locks inside the request future and `.expect()`ed them, so
-  one panic anywhere poisoned the mutex for the collector's lifetime and turned
-  every subsequent profiled request into an opaque 500 — with no request id and
-  no security headers, because it surfaced through the panic-catch layer. The
-  same layer sat behind `json_response`, which `.expect()`ed a
-  `Response::builder()` result on **every successful data request**; the
-  response is now assembled directly, with no `Result` to assert past.
+- **`/docs` and `/api/v1/openapi.json` were served unconditionally, to
+  anonymous callers, in production (breaking).** Both endpoints are
+  unauthenticated and the spec publishes the complete admin API surface — route
+  shapes, request schemas, the `admin_auth.header` semantics — so every
+  production deployment advertised it. The new `server.docs.enabled`
+  (`ORION_SERVER__DOCS__ENABLED`) gates them: unset serves them only when
+  `environment` is not a production variant (the same prefix rule that turns
+  the admin-auth and CORS-wildcard checks fatal), an explicit `true`/`false`
+  always wins, and disabled means the routes are not registered at all — `404`,
+  not `401`, so their existence is not advertised. Production tooling that
+  reads the served spec should set `server.docs.enabled = true` or switch to
+  `orion-server dump-openapi`, which works offline regardless (S17).
 
-- **A second render of a profile is no longer blank.** `to_json` drained the
-  engine-lock, workflow-total and trace-store timings as it read them, and the
-  sync path renders one profile for the response and another for the persisted
-  trace — so the stored copy had its phase timings missing and
-  `workflow_overhead_ms` recomputed from nothing.
+- **A workflow could poison its own channel's dedup store and response cache
+  (breaking).** Every `backend: "memory"` cache connector, the built-in dedup
+  store and the response cache shared one in-process instance, so a workflow
+  `cache_write` with a crafted `dedup:{channel}:{key}` key manufactured a `409`
+  for a real request, a forged `cache:{channel}:{hash}` entry was served as a
+  cached response, two memory connectors silently shared one keyspace, and a
+  hot workflow cache evicted dedup entries out of the single shared LRU budget.
+  In-memory backends are now distinct instances per purpose (workflow / dedup /
+  response cache) and connector name, each with its own
+  `engine.max_memory_cache_entries` budget.
 
-- **`channel_call` is attributed in `by_connector`.** It passed no label, so the
-  one handler whose fan-out most needs attribution showed up as unattributed
-  entries with no way to tell which target was slow. Samples are now labelled
-  with the target channel, static or resolved from `channel_logic`.
-
-- **A connector task missing `connector` says so first.** The handlers resolved
-  `key` / `filter` / `params` against the message before checking that a
-  connector was even named, so a task missing both reported the other field —
-  the author fixed that, re-ran, and only then learned about `connector`.
-
-- **The circuit breaker now guards all nine egress paths, not just
-  `http_call`.** `db_read`, `db_write`, `data_query`, `data_write`,
-  `mongo_read`, `cache_read`, `cache_write` and `publish_kafka` reached their
-  pools directly, so `[engine.circuit_breaker]` read as global resilience while
-  a hung PostgreSQL or Redis pinned every worker.
-
-  **Only retryable failures trip it.** A query the backend *rejected* — a syntax
-  error, a constraint violation, a row-cap breach — says nothing about the
-  dependency's health, and counting it would let one bad workflow trip the
-  breaker on a healthy database and take down every other channel using it. The
-  error taxonomy above is what makes "retryable" mean "the dependency is in
-  trouble" rather than "something went wrong".
-
-  Breaker keys keep their `channel:connector` shape, and the whole thing stays a
-  no-op while `engine.circuit_breaker.enabled` is false (still the default). If
-  you enable it, expect breakers for database and cache connectors that
-  previously only appeared for HTTP.
-
-- **Connector failures are classified instead of all becoming non-retryable
-  500s.** Every non-HTTP connector error went through one constructor producing
-  `FunctionExecution { source: None }`, which dataflow-rs classifies as **not
-  retryable**. Two consequences:
-
-  - A dead PostgreSQL, Redis or MongoDB was a non-retryable 500, while the
-    *identical* HTTP outage was a retryable `Io` — so **DLQ retry policy
-    diverged by backend** for no principled reason. Failures to *reach* a
-    backend now produce `Io` and retry like the HTTP path; a query the backend
-    rejected stays non-retryable, which is correct.
-  - A caller-fixable limit reported through the 500 path, so its message was
-    replaced by the generic internal-error text. `db_read`'s row cap — *"add a
-    LIMIT to the query or raise the cap"* — was sanitised away exactly when the
-    caller needed it. Limits are now **400** with the guidance intact.
-
-  **`GET`-style row-cap failures change status from 500 to 400.** If you alert
-  on 5xx from the data plane, a previously-500 row-cap breach now shows as a
-  client error, which is what it is.
-
-- **An async REST channel's `route_pattern` is no longer silently ignored.**
-  The route table filtered to `channel_type == "sync"`, while channel validation
-  *requires* a `route_pattern` for the `rest`/`http` protocols regardless of
-  type. So an async REST channel was forced to declare a route, accepted with a
-  201, activated cleanly — and its declared route 404'd forever, reachable only
-  by channel name. REST/HTTP channels now register their route whatever their
-  type; `/async` is stripped before route matching, so an async channel's
-  pattern works at `POST /api/v1/data/{pattern}/async`.
-
-- **Workflows using the `enrich` built-in were rejected at create.**
-  `KNOWN_FUNCTIONS` — the list that gates workflow creation — omitted
-  dataflow-rs's `enrich`, so `POST /admin/workflows` refused any task using it
-  with `unknown_function`, even though the engine runs it fine. The list is now
-  pinned by a test that derives the authoritative set from the engine's own
-  `FunctionNotFound` message, so a dependency bump that adds or renames a
-  built-in fails CI instead of silently rejecting valid workflows.
-
-- **Circuit-breaker reads no longer present node-local state as cluster-wide.**
-  `GET /admin/connectors/circuit-breakers` and `/health` returned one replica's
-  breaker map unqualified. That read as cluster state precisely because its
-  sibling — the *reset* — **is** cluster-aware and fans out over the epoch bus.
-  Both payloads now carry `scope: "node"` and the `instance_id` whose map it is.
-
-  Relatedly, `POST /admin/connectors/circuit-breakers/{key}` no longer returns
-  **404 in cluster mode** when the key is not open on the receiving node. Breakers
-  are per-replica, so the key an operator wants to clear is usually open on a
-  different node than the one the load balancer picked — and the fan-out is what
-  actually clears it. The response gained `found_on_this_node` to distinguish the
-  two cases. Single-node deployments still 404.
-
-- **Connector metrics are now emitted by default.** `connector_requests_total`
-  and `connector_request_duration_seconds` were emitted from exactly one place
-  — inside the circuit-breaker wrapper — which only `http_call` reached, and
-  only when `engine.circuit_breaker.enabled` was true. That defaults to
-  **`false`**, so a default install emitted **zero** connector-level request
-  counts or latencies for *any* of the ten handlers: every external dependency
-  was dark in Prometheus until an operator flipped an unrelated resilience flag.
-
-  All nine connector handlers (`http_call`, `db_read`, `db_write`,
-  `data_query`, `data_write`, `mongo_read`, `cache_read`, `cache_write`,
-  `publish_kafka`) now record both metrics unconditionally. Observability no
-  longer depends on resilience configuration.
-
-  **Not changed:** the circuit breaker itself still only wraps `http_call`. The
-  eight other egress paths reach their pools directly, so a hung Postgres or
-  Redis is still not breaker-protected.
-
-- **Retention cleanup no longer runs as one unbounded `DELETE`.** All three
-  retention jobs — traces, audit logs and DLQ purge — issued a single
-  `DELETE … WHERE created_at < cutoff` per tick. The first tick after enabling
-  retention is then one transaction over potentially millions of rows: SQLite
-  holds the write lock for its whole duration, so **every other writer hits the
-  5 s `busy_timeout` and fails**; PostgreSQL bloats WAL and blocks autovacuum;
-  MySQL can exceed `innodb_lock_wait_timeout`. In cluster mode the job lease
-  (`interval_secs + 60`) could expire mid-delete, letting a second node start a
-  duplicate.
-
-  Deletes now run in 1 000-row chunks, yielding between them, capped at 5 000
-  chunks per tick with the remainder left for the next one. The statement is
-  identical on all three backends — the nested derived table is what makes
-  MySQL accept a subquery over the table being deleted (error 1093).
-
-  No configuration change and no behaviour change beyond the locking profile:
-  the same rows are removed.
-
-- **The OpenAPI document now describes every response it serves.** Measured
-  against the committed `docs/openapi.json`: **44 of the 48** 2xx responses had
-  no `content` block, as did **30** declared 4xx/5xx — the spec named a status
-  and said nothing about its body, so generated clients got `any` where a type
-  belonged. All 45 body-carrying 2xx and all 141 error responses are now typed
-  (`204` stays bodiless, as it must). Two tests hold the line: one fails on any
-  response that declares a status without a schema, the other on any storage row
-  struct being published.
-
-  Also corrected: `Workflow`, `Channel` and `Trace` were registered as schemas
-  and referenced by **nothing**. They describe database rows — `condition_json`
-  and `tasks_json` as opaque **strings** — while the endpoints return
-  `WorkflowResponse`/`ChannelResponse` with those fields parsed. The row structs
-  are gone from the document and the DTOs are published in their place.
-  `Connector`, `TraceDlqEntry` and `AuditLogEntry` stay: their handlers do
-  return them verbatim.
-
-  This is spec-only — no endpoint changed shape. Regenerate clients to pick up
-  the types.
+  That makes the setting a **per-namespace** bound rather than a shared one —
+  worst-case resident entries are `max_memory_cache_entries` × (2 built-in
+  stores + up to 3 namespaces per memory connector) — so a memory-constrained
+  host sized against the old single bound should divide the setting by its
+  namespace count. Memory state never survived a restart, so migration is a
+  no-op. Redis backends are deliberately *not* partitioned: they are external,
+  shared across nodes, and legitimately read keys other systems wrote — use
+  separate Redis databases where you need isolation (S19, N11).
 
 ### Breaking
 
@@ -526,8 +427,425 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CORS layer** rather than rejected with 401. Any client relying on preflight
   failing closed should note the admin API was previously unusable from a
   browser whenever `admin_auth.enabled = true`.
+- **Both dialect envelopes and the inline `schema` are strict.** Unknown keys
+  in the `data_query` envelope, the `data_write` envelope, `include` selections
+  and `on_conflict` were silently ignored: `"fileds"` selected every column,
+  `"lmit": 5000` fell back to the default 100, `"retuning"` returned nothing,
+  and a misspelled `filter` key made a mutation unfiltered. They are now
+  rejected with an error naming the offending key — fix the key it names. The
+  pre-1.0 flat `data_write` form keeps working: the handler strips its own keys
+  before the strict parse.
+
+  Every `schema` struct rejects unknown keys too, which surfaces a trap the
+  documentation's own example set. It used `"table"` where the field is
+  `physical` — silently dropped, so authors got a wide-open identity-mode
+  registry believing they had configured a rename — and `"type": "string"`,
+  which is not a `FieldType`. The example is fixed, and a test parses it
+  verbatim and asserts it means what the prose says. A stored schema carrying a
+  stray key now fails loudly instead of silently not applying (W6, W5).
+- **`include` and many-to-many filters raise a capability error on MongoDB and
+  Elasticsearch.** `include` was parsed and silently dropped by both doc-store
+  translators — the caller got parents with no children and no error — and a
+  `some`/`all`/`none` over a `through` relation rendered as a plain
+  `$elemMatch`/`nested` on the relation name, returning wrong rows. Both now
+  raise `FeatureUnsupportedByTarget`, the same gate include planning already
+  applied to m2m on SQL, and the parity table documents both rows. On a doc
+  store, fetch the related documents with a second query, or model them
+  embedded/nested and filter with `some` (F26, W11).
+- **Mongo projections no longer leak `_id`.** `fields: ["name"]` returned
+  `{name}` on SQL and Elasticsearch and `{_id, name}` on MongoDB — one
+  envelope, two result shapes. `_id` is now suppressed unless explicitly
+  projected; project it if you relied on it (W9).
+- **`skip` is capped on every backend.** Only Elasticsearch bounded it (via its
+  result window); SQL and MongoDB scanned arbitrarily deep. The new
+  `query.max_skip` (default `10000`) rejects — never clamps — a larger offset
+  on all three. Raise it (or `ORION_QUERY__MAX_SKIP`) if you genuinely page
+  deeper (W12).
+- **REST route matching is byte-exact and percent-decodes path parameters
+  exactly once.** Static segments matched case-insensitively, and the data
+  plane matched a path axum had already percent-decoded — so `%2F` acted as a
+  segment separator before matching, a literal `/` was inexpressible inside a
+  parameter, and the rate-limit middleware (which matches the raw URI) could
+  resolve a different channel than the handler. Matching now splits on raw `/`
+  first and decodes each segment exactly once: `/ORDERS/1` no longer matches
+  `/orders/{id}` (RFC 3986 paths are case-sensitive; `%6F` still equals `o` —
+  encoding an unreserved character is equivalence, not difference),
+  `metadata.params` arrive decoded (`/orders/a%2Fb` yields `id == "a/b"`), and
+  an invalid percent-sequence (`%ZZ`) is answered with `400` instead of being
+  matched literally.
+
+  Fix client URLs whose casing no longer matches, and drop any hand-decoding a
+  workflow did on a param — decoding twice changes meaning. Route-conflict
+  canonicalisation is case-preserving to match, so two casings of one path are
+  two co-activatable routes. `route_pattern` also rejects `%` now, on create,
+  update and import: patterns are written literally and requests match by
+  their decoded value, so write the character itself. Already-active channels
+  keep their (unreachable-as-written) behaviour until you next edit one (N10).
+- **`backpressure.max_concurrent` is renamed `max_concurrent_per_node`.** The
+  semaphore is per process, but the name read as an absolute cap while sitting
+  beside dedup and rate-limit controls that *are* shared in cluster mode — two
+  controls in one config block with opposite cluster semantics and no naming
+  difference. The old key is accepted as a deserialization alias for one
+  release, so stored configs keep working; rename it the next time you edit the
+  channel (N9).
+- **Async trace results are never sampled away.** `trace_storage.sample_rate`
+  on the async path dropped the *result* while the pending/running/completed
+  status rows were still written — the caller polled a `completed` trace with
+  nothing in it, and the storage was spent anyway. `for_async_submission` now
+  pins `sample_rate` to `1.0`, exactly as it upgrades `mode = "off"` to `sync`:
+  a 202 is a receipt for a fetchable result. **Async trace storage for sampled
+  channels will grow** — bound it with `errors_only` or a shorter
+  `trace_queue.retention_hours` instead. Sampling applies in full on the sync
+  path, where the draw happens once per trace at the single point persistence
+  is decided and a sampled-out trace produces no rows at all (N22).
+- **`kafka.max_inflight` is removed — it advertised concurrency that never
+  existed.** The consumer created the semaphore, acquired a permit and then
+  awaited each message inline, so concurrency was always exactly 1 whatever the
+  value said; the field, its validation and the startup log line all described
+  behaviour the code never had. Sequential processing is load-bearing for the
+  at-least-once contract — committing an offset implicitly commits every
+  earlier offset on the partition — so the honest fix is removal, not
+  parallelism. A config file still carrying the key fails startup via
+  `deny_unknown_fields`, and a manifest still setting
+  `ORION_KAFKA__MAX_INFLIGHT` is refused at startup with the removal reason.
+  Delete both; scale throughput by running more instances in the same consumer
+  group (K4).
+- **`orion-server validate-config` prints the full effective config, and stops
+  printing database credentials.** The old output was a hand-maintained summary
+  of a dozen settings that omitted `[cluster]` entirely, all the DLQ knobs,
+  `[trace_storage]`, `[ingest]`, `[query]`, `[write]`, most of `[engine]` and
+  `[kafka.auth]` — exactly the settings most likely to be wrong in production —
+  and printed `storage.url` verbatim, embedded password included. The default
+  output is now the entire merged config (defaults + file + `ORION_*`
+  overrides), serialized from the same structs the server runs on, so a new
+  section can never be omitted again; secrets are masked with the same policy
+  as the connector API. Anything that grepped the old summary shape, or scraped
+  a credential out of it, breaks: parse stdout as TOML, or pass
+  `--format json`; `--format summary` restores a short human summary (now also
+  masked). Under `toml` and `json` the validity note moves to stderr so stdout
+  stays machine-parseable; `--format summary` keeps it on stdout. Exit codes are
+  unchanged — `validate-config || exit 1` needs no edit (O15).
+
+### Added
+
+- **`server.max_admin_body_size`** (default 8 MB) bounds admin request bodies
+  independently of the data plane. The limit was a single global layer set
+  from `ingest.max_payload_size` — a name that says *data plane* — so raising
+  it for a bulk import also raised it for anonymous channel traffic.
+
+- **`query.max_skip`** (default `10000`) — hard cap on the `data_query` `skip`
+  offset, enforced identically on SQL, MongoDB and Elasticsearch. A query
+  skipping deeper is rejected, never clamped, exactly like `query.max_limit`.
+  Override with `ORION_QUERY__MAX_SKIP` (W12).
+
+- **`on_backend_error: "allow" | "deny"` on a channel's `rate_limit` and
+  `deduplication`.** Both guards failed open on Redis errors unconditionally,
+  with fail-open pinned as a trait contract — a Redis blip silently removed all
+  rate limiting and all idempotency cluster-wide, and `/readyz` catches only a
+  full outage. The default stays `allow` (availability wins); payment and
+  idempotency workloads can opt into `deny`, which refuses with `503` — never a
+  lying `409` or `429`, because the key or limit is unverifiable rather than
+  violated — until the backend recovers (N7).
+
+- **`storage.backup_retention_count`** bounds SQLite backups: after each
+  successful `POST /api/v1/admin/backups` the oldest `orion_backup_*.db` files
+  are pruned so at most N remain (the prune is logged, and only files matching
+  the backup naming pattern are ever candidates). Backups land on the same disk
+  as the live database, so an unbounded set was a backup mechanism that could
+  cause the outage it exists to recover from. Unset keeps every backup — the
+  previous behaviour; `0` is refused at startup, because "keep none" is not a
+  retention policy. Env override `ORION_STORAGE__BACKUP_RETENTION_COUNT` (O6).
+
+- **`orion_job_last_success_timestamp_seconds{job}`** — a gauge stamped with
+  the unix time of each background job's last fully successful tick:
+  `trace_cleanup`, `audit_cleanup`, `dlq_retry`, `epoch_watcher` (cluster mode)
+  and `kafka_lag` (Kafka enabled). The periodic jobs deliberately swallow
+  per-tick errors and keep looping, so a sustained DB blip silently stopped
+  trace cleanup and DLQ retry cluster-wide with no alertable signal. Alert on
+  `time() - orion_job_last_success_timestamp_seconds{job="…"}` exceeding a few
+  tick intervals. In cluster mode only the lease-holding node stamps the
+  lease-gated jobs — a node that loses the lease honestly goes stale rather
+  than lying about freshness — and the lag poller stamps only when both the
+  committed offsets and every watermark lookup answered, so a broker that
+  freezes the lag gauges freezes the stamp with them (O3).
+
+- **`/health` and `/readyz` observe Kafka ingestion.** Both probes carry a
+  `kafka` component — present only when `kafka.enabled`, so non-Kafka
+  deployments get byte-identical bodies — reporting `error` while ingestion is
+  degraded or the consume loop has died. `/readyz` includes it in readiness, so
+  a node that consumes nothing returns `503` and leaves the load-balancer
+  rotation; `/health` reports `status: "degraded"` while HTTP itself keeps
+  serving. The probes take the consumer handle with a non-blocking lock, so a
+  routine reload restart can never stall them. The new
+  `orion_kafka_ingest_degraded` gauge (0/1) carries the same signal for
+  Prometheus (O10, K7).
+
+- **`orion_build_info{version, git_hash, build_timestamp}`** — the standard way
+  to answer "which build is each replica running?" from Prometheus. Previously
+  that information existed only in `--version`, one boot log line, and the
+  admin-gated `/health` body, none of which a scrape can join against.
+- **`orion_admin_auth_failures_total{reason}`** — rejected admin credentials,
+  split out from the shared `errors_total{type="auth_failure"}` so credential
+  guessing can be alerted on without also matching `panic`, `dedup_backend`
+  and a dozen other unrelated call sites.
 
 ### Fixed
+
+- **`?dry_run=true` on an import now reads the database.** It performed no DB
+  reads at all, as its own doc comment said. The stated use case is CI
+  pre-flight and the most common real failure is a name conflict, which is
+  exactly what a no-DB dry-run cannot see — so a green dry-run said nothing
+  about whether the real import would work. It now reports conflicts against
+  stored rows *and* duplicates within the batch; the second was free and
+  previously missed entirely.
+
+- **`POST /admin/workflows/validate` no longer green-lights payloads
+  `POST /admin/workflows` rejects.** `validate_workflow_tasks_schema` carried
+  the doc comment *"Public so the `/validate` endpoint can reuse it"* and had
+  **zero external callers**; the endpoint re-implemented the same walk and the
+  two disagreed by design — an unknown `function.name` was a hard error at
+  create and a *warning* here. A linter that green-lights a rejected payload
+  is worse than no linter. The create-path validator now runs first and
+  verbatim; the endpoint's remaining checks are only ever additional.
+
+- **A poisoned profile mutex no longer fails the request.** The per-request
+  profiler took its locks inside the request future and `.expect()`ed them, so
+  one panic anywhere poisoned the mutex for the collector's lifetime and turned
+  every subsequent profiled request into an opaque 500 — with no request id and
+  no security headers, because it surfaced through the panic-catch layer. The
+  same layer sat behind `json_response`, which `.expect()`ed a
+  `Response::builder()` result on **every successful data request**; the
+  response is now assembled directly, with no `Result` to assert past.
+
+- **A second render of a profile is no longer blank.** `to_json` drained the
+  engine-lock, workflow-total and trace-store timings as it read them, and the
+  sync path renders one profile for the response and another for the persisted
+  trace — so the stored copy had its phase timings missing and
+  `workflow_overhead_ms` recomputed from nothing.
+
+- **`channel_call` is attributed in `by_connector`.** It passed no label, so the
+  one handler whose fan-out most needs attribution showed up as unattributed
+  entries with no way to tell which target was slow. Samples are now labelled
+  with the target channel, static or resolved from `channel_logic`.
+
+- **A connector task missing `connector` says so first.** The handlers resolved
+  `key` / `filter` / `params` against the message before checking that a
+  connector was even named, so a task missing both reported the other field —
+  the author fixed that, re-ran, and only then learned about `connector`.
+
+- **The circuit breaker now guards all nine egress paths, not just
+  `http_call`.** `db_read`, `db_write`, `data_query`, `data_write`,
+  `mongo_read`, `cache_read`, `cache_write` and `publish_kafka` reached their
+  pools directly, so `[engine.circuit_breaker]` read as global resilience while
+  a hung PostgreSQL or Redis pinned every worker.
+
+  **Only retryable failures trip it.** A query the backend *rejected* — a syntax
+  error, a constraint violation, a row-cap breach — says nothing about the
+  dependency's health, and counting it would let one bad workflow trip the
+  breaker on a healthy database and take down every other channel using it. The
+  error taxonomy above is what makes "retryable" mean "the dependency is in
+  trouble" rather than "something went wrong".
+
+  Breaker keys keep their `channel:connector` shape, and the whole thing stays a
+  no-op while `engine.circuit_breaker.enabled` is false (still the default). If
+  you enable it, expect breakers for database and cache connectors that
+  previously only appeared for HTTP.
+
+- **Connector failures are classified instead of all becoming non-retryable
+  500s.** Every non-HTTP connector error went through one constructor producing
+  `FunctionExecution { source: None }`, which dataflow-rs classifies as **not
+  retryable**. Two consequences:
+
+  - A dead PostgreSQL, Redis or MongoDB was a non-retryable 500, while the
+    *identical* HTTP outage was a retryable `Io` — so **DLQ retry policy
+    diverged by backend** for no principled reason. Failures to *reach* a
+    backend now produce `Io` and retry like the HTTP path; a query the backend
+    rejected stays non-retryable, which is correct.
+  - A caller-fixable limit reported through the 500 path, so its message was
+    replaced by the generic internal-error text. `db_read`'s row cap — *"add a
+    LIMIT to the query or raise the cap"* — was sanitised away exactly when the
+    caller needed it. Limits are now **400** with the guidance intact.
+
+  **`GET`-style row-cap failures change status from 500 to 400.** If you alert
+  on 5xx from the data plane, a previously-500 row-cap breach now shows as a
+  client error, which is what it is.
+
+- **An async REST channel's `route_pattern` is no longer silently ignored.**
+  The route table filtered to `channel_type == "sync"`, while channel validation
+  *requires* a `route_pattern` for the `rest`/`http` protocols regardless of
+  type. So an async REST channel was forced to declare a route, accepted with a
+  201, activated cleanly — and its declared route 404'd forever, reachable only
+  by channel name. REST/HTTP channels now register their route whatever their
+  type; `/async` is stripped before route matching, so an async channel's
+  pattern works at `POST /api/v1/data/{pattern}/async`.
+
+- **Workflows using the `enrich` built-in were rejected at create.**
+  `KNOWN_FUNCTIONS` — the list that gates workflow creation — omitted
+  dataflow-rs's `enrich`, so `POST /admin/workflows` refused any task using it
+  with `unknown_function`, even though the engine runs it fine. The list is now
+  pinned by a test that derives the authoritative set from the engine's own
+  `FunctionNotFound` message, so a dependency bump that adds or renames a
+  built-in fails CI instead of silently rejecting valid workflows.
+
+- **Circuit-breaker reads no longer present node-local state as cluster-wide.**
+  `GET /admin/connectors/circuit-breakers` and `/health` returned one replica's
+  breaker map unqualified. That read as cluster state precisely because its
+  sibling — the *reset* — **is** cluster-aware and fans out over the epoch bus.
+  Both payloads now carry `scope: "node"` and the `instance_id` whose map it is.
+
+  Relatedly, `POST /admin/connectors/circuit-breakers/{key}` no longer returns
+  **404 in cluster mode** when the key is not open on the receiving node. Breakers
+  are per-replica, so the key an operator wants to clear is usually open on a
+  different node than the one the load balancer picked — and the fan-out is what
+  actually clears it. The response gained `found_on_this_node` to distinguish the
+  two cases. Single-node deployments still 404.
+
+- **Connector metrics are now emitted by default.** `connector_requests_total`
+  and `connector_request_duration_seconds` were emitted from exactly one place
+  — inside the circuit-breaker wrapper — which only `http_call` reached, and
+  only when `engine.circuit_breaker.enabled` was true. That defaults to
+  **`false`**, so a default install emitted **zero** connector-level request
+  counts or latencies for *any* of the ten handlers: every external dependency
+  was dark in Prometheus until an operator flipped an unrelated resilience flag.
+
+  All nine connector handlers (`http_call`, `db_read`, `db_write`,
+  `data_query`, `data_write`, `mongo_read`, `cache_read`, `cache_write`,
+  `publish_kafka`) now record both metrics unconditionally. Observability no
+  longer depends on resilience configuration.
+
+  **Not changed:** the circuit breaker itself still only wraps `http_call`. The
+  eight other egress paths reach their pools directly, so a hung Postgres or
+  Redis is still not breaker-protected.
+
+- **Retention cleanup no longer runs as one unbounded `DELETE`.** All three
+  retention jobs — traces, audit logs and DLQ purge — issued a single
+  `DELETE … WHERE created_at < cutoff` per tick. The first tick after enabling
+  retention is then one transaction over potentially millions of rows: SQLite
+  holds the write lock for its whole duration, so **every other writer hits the
+  5 s `busy_timeout` and fails**; PostgreSQL bloats WAL and blocks autovacuum;
+  MySQL can exceed `innodb_lock_wait_timeout`. In cluster mode the job lease
+  (`interval_secs + 60`) could expire mid-delete, letting a second node start a
+  duplicate.
+
+  Deletes now run in 1 000-row chunks, yielding between them, capped at 5 000
+  chunks per tick with the remainder left for the next one. The statement is
+  identical on all three backends — the nested derived table is what makes
+  MySQL accept a subquery over the table being deleted (error 1093).
+
+  No configuration change and no behaviour change beyond the locking profile:
+  the same rows are removed.
+
+- **The OpenAPI document now describes every response it serves.** Measured
+  against the committed `docs/openapi.json`: **44 of the 48** 2xx responses had
+  no `content` block, as did **30** declared 4xx/5xx — the spec named a status
+  and said nothing about its body, so generated clients got `any` where a type
+  belonged. All 45 body-carrying 2xx and all 141 error responses are now typed
+  (`204` stays bodiless, as it must). Two tests hold the line: one fails on any
+  response that declares a status without a schema, the other on any storage row
+  struct being published.
+
+  Also corrected: `Workflow`, `Channel` and `Trace` were registered as schemas
+  and referenced by **nothing**. They describe database rows — `condition_json`
+  and `tasks_json` as opaque **strings** — while the endpoints return
+  `WorkflowResponse`/`ChannelResponse` with those fields parsed. The row structs
+  are gone from the document and the DTOs are published in their place.
+  `Connector`, `TraceDlqEntry` and `AuditLogEntry` stay: their handlers do
+  return them verbatim.
+
+  This is spec-only — no endpoint changed shape. Regenerate clients to pick up
+  the types.
+
+- **A duplicate `create` answers `409`, not `500`.** `POST /admin/workflows`
+  and `POST /admin/channels` with an existing id returned
+  `{"code":"INTERNAL_ERROR"}` for a plain client error — connectors already
+  said `409`, and the existing tests asserted only `is_err()`, so they passed
+  on the wrong status. A shared `map_duplicate` helper now maps both duplicate
+  shapes to `CONFLICT`: the structured `UniqueViolation` kind (Postgres'
+  partial unique index, primary-key collisions on every backend) and the
+  generic errors the SQLite/MySQL single-draft triggers raise, which carry no
+  kind sqlx can classify and are matched on the trigger's message. **Retry
+  logic that treated the 500 as transient must treat the 409 as permanent** —
+  pick a different id, or use the import endpoints, which report conflicts per
+  item without failing the batch (D16).
+
+- **`GET /admin/workflows/export` no longer materialises every workflow in one
+  query.** `WorkflowRepository::list` ignored the `limit`/`offset` its own
+  filter carries and skipped the `timed_db_op` wrapper every sibling has — and
+  it backed export, so one admin request loaded every current workflow with
+  full `tasks_json` at once. `list` now honours the filter (clamped to the same
+  50-default / 1000-cap as every list, with a `workflow_id` tiebreaker so
+  paging cannot skip or repeat rows) and is instrumented; export pages through
+  it 500 rows at a time until exhausted and still returns the complete result.
+
+  **The export is no longer a point-in-time snapshot.** Each page is an
+  independent query with no transaction spanning them, so a workflow created,
+  deleted or renamed mid-export can be missed or appear twice in one response.
+  Quiesce workflow mutations (or re-export until two consecutive responses
+  match) if you use export as a backup (D7).
+
+- **`claim_pending` no longer formats a runtime value into SQL text.** The DLQ
+  claim was the last hand-written SQL under `src/storage/`: three backend arms
+  interpolated `limit` into the statement and hand-wrote six column
+  identifiers, so a rename in `schema.rs` compiled and failed only at runtime,
+  on all three backends. Every arm is sea-query built now — the limit travels
+  as a bound parameter, identifiers come from the `Iden` enum, and the
+  exhaustion predicate is built once and shared with the DLQ list filter and
+  purge. A per-backend rendered-SQL shape test pins `RETURNING`,
+  `FOR UPDATE SKIP LOCKED` and the placeholder limit (D25).
+
+- **Per-channel limiter and backpressure state survives an engine reload.**
+  Every admin mutation — and, in cluster mode, every epoch resync on every node
+  — rebuilt the channel registry with fresh rate limiters and semaphores,
+  refilling every consumed burst and forgetting every in-flight permit, so a
+  caller could bypass a per-channel limit by causing (or waiting for) a reload.
+  The registry now reuses a channel's limiter while `(requests_per_second,
+  burst, key_logic)` is unchanged and its semaphore while
+  `max_concurrent_per_node` is unchanged (N6).
+
+- **A failed Kafka consumer restart no longer stops ingestion permanently with
+  every probe green.** Engine reload took the consumer handle out of its mutex
+  and, when the restart errored, only logged — so a transient broker outage
+  during any reload silenced ingestion for the process lifetime while the pod
+  stayed in rotation. The restart path now flags ingestion degraded (mirrored
+  to the `orion_kafka_ingest_degraded` gauge) and spawns a single-occupancy
+  supervisor that retries with capped exponential backoff (1 s doubling to
+  60 s), re-reading the active channel list on each attempt so topic changes
+  made while ingestion was down are honoured, and standing down on recovery,
+  when no topics remain, or when the node drains. The supervisor releases its
+  occupancy slot while still holding the consumer-handle mutex, closing a
+  window where a reload failing between the unlock and the release spawned no
+  replacement and left the node degraded with no supervisor. Boot, reload and
+  the supervisor now start consumers through one shared builder, so the three
+  paths cannot drift (K7).
+
+- **Rebalances no longer lose in-flight offset commits.** The consumer ran with
+  rdkafka's default context — no `pre_rebalance`, no `post_rebalance`, no
+  `commit_callback` — while committing asynchronously, so an unconfirmed commit
+  was simply lost on revocation and failures were logged at the enqueue site
+  and nowhere else. A `ConsumerContext` now flushes unconfirmed commits
+  synchronously in `pre_rebalance` while the consumer still owns the
+  partitions, records revoked partitions in shared state the message loop
+  checks before working a message and again before committing it (abandoning it
+  uncommitted for its new owner), and surfaces async commit failures through
+  `commit_callback` with an `orion_errors_total{type="kafka_commit"}` count
+  instead of silence (K8).
+
+- **A failing Kafka message no longer retries its consumer out of the group.**
+  The in-place retry loop blocks polling, so retrying without a cap meant
+  eviction once the poll gap passed `max.poll.interval.ms` — while the consumer
+  kept working, and would finally commit, a partition it no longer owned.
+  Retrying in place is now bounded to 80% of `max.poll.interval.ms` (240 s
+  against librdkafka's 300 s default, derived from `kafka.extra_config` when it
+  sets the property). On expiry the consumer seeks the partition back to the
+  message's offset and returns to the poll loop, so the message is redelivered
+  — neither committed nor dropped, at-least-once intact — rebalance callbacks
+  fire, and group membership is kept. Head-of-line blocking on a poison message
+  is unchanged: enabling `[kafka.dlq]` remains the fix. Each expiry counts
+  `orion_errors_total{type="kafka_retry_budget_exhausted"}` alongside the
+  existing `kafka_retry` counter (K8).
+
+- `default_resolvers()` is built once per connector reload instead of once per
+  connector inside the load loop (N23).
 
 - **MongoDB connectors now honour `max_connections` and `connect_timeout_ms`.**
   Both live on the same `db` connector struct the SQL path reads, and the SQL
@@ -560,22 +878,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TTL stores and circuit-breaker cooldowns use a monotonic, pausable clock, so
   a wall-clock step no longer extends or shortens either.
 
-### Added
-
-- **`orion_build_info{version, git_hash, build_timestamp}`** — the standard way
-  to answer "which build is each replica running?" from Prometheus. Previously
-  that information existed only in `--version`, one boot log line, and the
-  admin-gated `/health` body, none of which a scrape can join against.
-- **`orion_admin_auth_failures_total{reason}`** — rejected admin credentials,
-  split out from the shared `errors_total{type="auth_failure"}` so credential
-  guessing can be alerted on without also matching `panic`, `dedup_backend`
-  and a dozen other unrelated call sites.
-
 ### Changed
 
 - CI and CodeQL now run on `release/**` and `v*` branches. The release
   workflows require a successful CI run at the tag SHA, which no commit on a
   release branch could previously have.
+- **The shipped deployment artefacts are hardened and pinned.** The Helm chart
+  had no `securityContext` anywhere, failing Pod Security Standards
+  `restricted` and every policy scanner out of the box; it inherited
+  Kubernetes' `maxUnavailable: 25%`, which at 2 replicas removes a pod before
+  its replacement is Ready and defeats the graceful-drain design; the migrate
+  Job carried the full `postgres://user:pass@…` URL as a plain env value,
+  visible in `kubectl get job -o yaml` and every audit sink; and the compose
+  files floated on `:latest` while `docker-compose.ha.yml` set `build:`
+  alongside `image:`, so `docker compose build` silently overwrote the
+  published tag with a dev build.
+
+  The Deployment and the migrate Job now run non-root with a read-only root
+  filesystem, `allowPrivilegeEscalation: false`, all capabilities dropped and
+  the `RuntimeDefault` seccomp profile (all values-overridable); the image
+  pins its user to numeric UID/GID `10001` — the kubelet cannot verify
+  `runAsNonRoot` against a named `USER` — and the chart's
+  `runAsUser`/`runAsGroup`/`fsGroup` match, which also makes freshly
+  provisioned PVCs writable. The read-only rootfs gets an emptyDir at `/tmp`
+  and a data volume at `/app/data`, with new `persistence.*` values providing a
+  kept-on-uninstall PVC for single-node SQLite installs (and `backup_dir`
+  pointed at it — with a read-only rootfs, `POST /admin/backups` needs either
+  `persistence.enabled` or a `storage.backup_dir` under a writable mount).
+  `spec.strategy` is explicit (`maxUnavailable: 0`,
+  `maxSurge: 1`), a soft pod anti-affinity spreads replicas across nodes with a
+  `topologySpreadConstraints` passthrough, and a `startupProbe` on `/healthz`
+  gives boot a five-minute budget before liveness takes over. The migrate Job
+  reads the URL through `secretKeyRef` in both the install and the upgrade case
+  via a hook-scoped copy of the storage Secret, leaving the Secret the server
+  reads a normal release resource. All three compose topologies pin
+  `ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.0.0}`, with local HA builds
+  moved to the `docker-compose.ha.build.yml` override that retags them as
+  `orion:local`. Finally, `.dockerignore` excludes `.git/`, so every released
+  container reported `git_hash=unknown` from `/health`, `/metrics` and
+  `--version` — the Dockerfile now takes `ARG GIT_HASH`, `build.rs` prefers an
+  already-set env var, and both the release and CI image builds pass the commit
+  SHA (P2, P4, P5, P6, P7, P10, P11, C23).
+- **CI gates licenses and supply chain, not just advisories.** `cargo audit`
+  covered advisories only: no license-compatibility check across the ~600-crate
+  tree, and unmaintained or yanked crates passed silently. `cargo deny check`
+  replaces it against a new `deny.toml` gating advisories (carrying over the
+  documented RUSTSEC-2023-0071 `rsa`/sqlx-mysql ignore), an Apache-2.0-compatible
+  license allow-list, wildcard and source bans, and yanked crates — which
+  surfaced and removed the yanked `spin 0.9.8`. Alongside it: Dependabot version
+  updates for `cargo` and `github-actions`, weekly — cargo minor/patch bumps
+  grouped with majors raised separately, Actions bumps grouped together — the
+  automation `SECURITY.md` already claimed — plus a `CODEOWNERS`
+  file routing every PR to the active maintainer; a pinned-mdbook build job on
+  every PR with `create-missing = false`, so a dangling `SUMMARY.md` entry fails
+  the build instead of fabricating an empty page; concurrency groups that cancel
+  a superseded PR run instead of burning the full matrix, while branch pushes
+  group by commit SHA so every pushed SHA runs to completion and the
+  release-time gate always finds a completed run at the tagged SHA; and
+  `tests/README.md` back in step with CI's container-test filter, which was
+  missing `db_column_types_test` and `dynamic_inputs_test`
+  (T12, T17, T19, T25, C17).
+- `resolve_write` enforces the `TooManyRows` / `UnfilteredMutation` /
+  `UnfilteredNotAllowed` guards itself, behind a `&WriteConfig`, instead of
+  leaving them to the `data_write` handler — the function documented as doing
+  "the whole backend-neutral transformation" was unsafe to call alone.
+  Handler-visible behaviour is identical (W15).
+
+### Removed
+
+- **`src/storage/migration_gen.rs`.** 803 test-only lines that could not
+  produce the shipped schema — no `audit_logs`, `config_epoch` or `job_leases`,
+  four columns missing (`traces.task_trace_json`, `traces.access_token_hash`,
+  `trace_dlq.claimed_by`, `trace_dlq.claimed_until`),
+  `text`/`timestamp` on MySQL where the shipped set needs
+  `varchar(n)`/`datetime` — and whose module doc instructed contributors to
+  regenerate checksum-frozen migrations. CONTRIBUTING.md now documents what the
+  project actually does: copy the newest backend's `001_initial.sql` and adapt
+  the dialect by hand (D12).
 
 ## [1.0.0] - 2026-07-27
 

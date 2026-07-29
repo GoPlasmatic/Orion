@@ -26,7 +26,12 @@ Work through this list. Each row links to the section with the detail.
 | 6 | [Back up before migrating](#6-database-migrations) | You are on PostgreSQL |
 | 7 | [Pass `trace_token` when polling async traces](#polling-an-async-trace-now-requires-the-token-returned-with-the-202) | You submit to `/async` and poll `GET /traces/{id}` without an admin key |
 | 8 | [Rename the renamed config keys](#7-config-keys-four-sections-renamed) | You set `[queue]`, `[channels]`, `[tracing.storage]`, or `ORION_ENV` |
-| 9 | [Review the smaller changes](#8-smaller-behaviour-changes) | Always |
+| 9 | [Delete `kafka.max_inflight`](#7-config-keys-four-sections-renamed) | You set `kafka.max_inflight` in the config file or `ORION_KAFKA__MAX_INFLIGHT` in the environment — Kafka enabled or not |
+| 10 | [Check client URL casing](#rest-routes-match-byte-exactly-and-decode-parameters-once) | You call data-plane REST routes with casing that differs from the channel's `route_pattern` |
+| 11 | [Re-check `data_query` / `data_write` envelopes](#the-data-dialect-rejects-what-it-used-to-ignore) | Any workflow uses the portable data dialect |
+| 12 | [Re-point anything scraping `/docs`](#docs-and-the-openapi-spec-are-off-in-production) | You fetch `/docs` or `/api/v1/openapi.json` and run with `environment = "production"` |
+| 13 | [`chown` existing data volumes](#the-charts-pod-defaults-are-hardened-and-the-images-are-pinned) | You upgrade a Docker or compose deployment with an existing `/app/data` mount |
+| 14 | [Review the smaller changes](#8-smaller-behaviour-changes) | Always |
 
 **Take a database backup before upgrading.** Migrations run automatically at
 boot unless you set `storage.auto_migrate = false`.
@@ -286,14 +291,24 @@ Each retry cycle increments `orion_errors_total{type="kafka_retry"}`.
 
 **How you'll notice.** With `kafka.dlq.enabled = false` — which is still the
 default — a permanently-poison message **stalls the consumer indefinitely**.
-There is no attempt cap and no give-up path: the retry loop exits only on a
-committable outcome or on shutdown. Because messages are processed
-sequentially, this halts **every partition of every subscribed topic** on that
-instance, not just the poison message's partition. Restarting does not help —
-the offset was never committed, so the same message is redelivered.
+There is no give-up path: the message is never dropped and its offset is never
+committed. The in-place retrying *is* bounded, but only so that the consumer
+keeps polling — one cycle runs for at most **80% of `max.poll.interval.ms`**
+(240s against librdkafka's 300s default, or 80% of the value you set for
+`max.poll.interval.ms` in `kafka.extra_config`). On expiry the consumer seeks
+the partition back to the message's offset and returns to the poll loop, so the
+very same message is redelivered and the cycle starts over. The stall is
+therefore unchanged from an operator's point of view, but the consumer keeps
+polling: it stays in its group instead of being evicted for exceeding
+`max.poll.interval.ms`, and rebalance callbacks stay live. Because messages are
+processed sequentially, this halts **every partition of every subscribed
+topic** on that instance, not just the poison message's partition. Restarting
+does not help — the offset was never committed, so the same message is
+redelivered.
 
 Symptoms: consumer lag climbing on all partitions, `orion_errors_total{type="kafka_retry"}`
-incrementing on a ~60s cadence, and the same message logged repeatedly.
+incrementing on a ~60s cadence, `orion_errors_total{type="kafka_retry_budget_exhausted"}`
+incrementing once per budget expiry, and the same message logged repeatedly.
 
 **What to do.** Enable the dead-letter queue. This is the recommended action
 and turns the stall into an advancing offset plus a message you can inspect:
@@ -376,7 +391,7 @@ export ORION_ADMIN_API_KEYS="key-one,key-two"
 docker compose -f docker-compose.ha.yml up -d
 ```
 
-**`ORION_ENVIRONMENT=production` forces exactly two things**, and the second one
+**`ORION_ENVIRONMENT=production` forces three things**, and the second one
 surprises people:
 
 1. **Admin auth must be enabled and have at least one key**, or the server
@@ -392,8 +407,78 @@ surprises people:
    allowed_origins = ["https://app.example.com"]
    ```
 
-Nothing else keys off `production` — logging, TLS, and route exposure are
-unaffected.
+3. **`/docs` and `/api/v1/openapi.json` are not served** unless you opt back in
+   with `server.docs.enabled = true` — see
+   [the section below](#docs-and-the-openapi-spec-are-off-in-production).
+
+Nothing else keys off `production` — logging and TLS are unaffected.
+
+### The chart's pod defaults are hardened, and the images are pinned
+
+**What changed.** The chart shipped with no `securityContext` at all, so it
+failed Pod Security Standards `restricted` and every policy scanner out of the
+box; it inherited Kubernetes' default `maxUnavailable: 25%`, which at two
+replicas removes a pod before its replacement is Ready and defeats the
+graceful-drain design; the migrate Job inlined the full
+`postgres://user:pass@…` URL into its pod spec when `storage.existingSecret`
+was unset; and the compose files floated on `:latest`.
+
+Chart installs now run non-root with a **read-only root filesystem** — the only
+writable paths are an emptyDir at `/tmp` and the data volume at `/app/data` —
+no capabilities, `allowPrivilegeEscalation: false`, and the `RuntimeDefault`
+seccomp profile. Rolling deploys surge instead of dipping
+(`maxUnavailable: 0`, `maxSurge: 1`), a soft pod anti-affinity spreads replicas
+across nodes, and a `startupProbe` on `/healthz` gives boot a five-minute
+budget before liveness (10s period, 3 failures) takes over. The migrate Job
+reads the storage URL through `secretKeyRef` in every case.
+
+**How you'll notice.**
+
+- A workload that wrote anywhere else in the container filesystem now fails —
+  override `podSecurityContext` / `securityContext` in values if you need it.
+  `POST /api/v1/admin/backups` is one such writer: `storage.backup_dir`
+  defaults to `./backups`, which is on the now read-only rootfs. Set
+  `persistence.enabled=true` (the chart then points `backup_dir` at the data
+  volume) or give `storage.backup_dir` a path under a writable mount.
+- The cluster needs headroom for one extra replica during an upgrade, or
+  override `strategy`. Setting `affinity` replaces the default anti-affinity
+  verbatim.
+- **Images built from this Dockerfile run as UID:GID `10001:10001`** instead of
+  the previously auto-assigned system UID. Bind mounts and named volumes
+  created by an older image (`/app/data` under Docker or compose) may need
+  `chown -R 10001:10001`; on Kubernetes the chart's new `fsGroup: 10001`
+  handles PVC ownership on mount. If you override `podSecurityContext`, carry
+  the numeric `runAsUser`/`runAsGroup`/`fsGroup` forward or `runAsNonRoot`
+  verification fails against the image's user.
+- The migrate Job's hook-scoped Secret copy — `<release>-orion-storage-migrate`,
+  rendered only when `storage.existingSecret` is unset — is not release-managed,
+  so `helm uninstall` leaves it behind; delete it manually if you want it gone.
+  The Secret the server replicas read is a normal release resource and is
+  removed as usual.
+- `docker-compose.yml`, `docker-compose.ha.yml` and
+  `examples/postgres-orders/docker-compose.yml` now pin
+  `ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.0.0}` instead of `:latest`. Set
+  `ORION_VERSION` to move. Local HA builds moved to an override file that
+  retags them `orion:local`, so `docker compose build` can no longer clobber
+  the published tag:
+
+  ```bash
+  docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml up -d --wait
+  ```
+
+**Single-node SQLite installs are now first-class.** Set
+`persistence.enabled=true` (a PVC at `/app/data`, kept on uninstall) together
+with `cluster.enabled=false`, `replicaCount=1`, `strategy.type=Recreate` (a
+ReadWriteOnce claim cannot serve a surge replica), `migrateJob.enabled=false`
+and `storage.autoMigrate=true`. Backups then land under `/app/data/backups`.
+
+**Local `docker build` and `git_hash`.** `.dockerignore` excludes `.git/`, so a
+locally built image reports `git_hash=unknown` from `/health`, `/metrics` and
+`--version` unless you pass the SHA (the published images now do):
+
+```bash
+docker build --build-arg GIT_HASH=$(git rev-parse --short HEAD) -t orion .
+```
 
 ---
 
@@ -448,6 +533,7 @@ cleanup cadence.
 | `[channels]` | `[channel_filter]` |
 | `[tracing.storage]` | `[trace_storage]` |
 | `ORION_ENV` | `ORION_ENVIRONMENT` |
+| `kafka.max_inflight` | *removed* — see below |
 
 Every other `[queue]` key keeps its name under `[trace_queue]`, and every
 `[tracing.storage]` key keeps its name under `[trace_storage]`. Environment
@@ -464,6 +550,19 @@ docs had to say so in three places. `[tracing]` is OpenTelemetry export while
 under one name. `ORION_ENV` was the only variable not derived from its field
 path.
 
+**One key was removed outright: `kafka.max_inflight`** (and
+`ORION_KAFKA__MAX_INFLIGHT`). It was configured, validated and logged — and
+inert: the consumer acquired a permit and then awaited each message inline, so
+concurrency was always exactly 1 whatever the value said. That sequential
+behaviour is load-bearing for the
+[at-least-once contract](#4-kafka-delivery-is-now-at-least-once) — committing
+an offset implicitly commits every earlier offset on the partition, so
+in-consumer concurrency would let a fast later message commit past a failed
+earlier one and lose it. Rather than ship a knob that lies, 1.0 removes it.
+Nothing about runtime behaviour changes; delete the key and the variable. To
+increase throughput, run more Orion instances in the same consumer group
+(`kafka.group_id`) — Kafka spreads the partitions across them.
+
 **How you'll notice.** Both halves fail loudly:
 
 - **Config file** — a retired key is rejected by `deny_unknown_fields`
@@ -472,11 +571,16 @@ path.
   offender and its replacement:
 
   ```
-  Error: Configuration error: these environment variables were renamed in 1.0
-  and are no longer read (see docs/src/getting-started/upgrading.md):
+  Error: Configuration error: these environment variables were renamed or
+  removed in 1.0 and are no longer read (see
+  docs/src/getting-started/upgrading.md):
     ORION_ENV -> ORION_ENVIRONMENT
     ORION_QUEUE__WORKERS -> ORION_TRACE_QUEUE__WORKERS
   ```
+
+  A removed variable names its reason rather than a replacement, so
+  `ORION_KAFKA__MAX_INFLIGHT` reports `removed in 1.0 (K4): Kafka messages are
+  processed strictly sequentially per consumer …`.
 
   This is deliberate rather than convenient. Overrides are matched by name, not
   deserialized, so nothing would otherwise notice that `ORION_QUEUE__WORKERS`
@@ -916,13 +1020,27 @@ This is what finally covers `url` and `brokers[]`. A credential-free URL is
 still shown in full — masking it wholesale would hide connector endpoints from
 the admin UI for no security gain.
 
-**What to do — important.** **Never round-trip a connector config through
-`GET` → `PUT`.** `update` replaces `config_json` wholesale rather than merging,
-and nothing un-masks on the way in, so a GET-then-PUT writes the literal
-`"******"` into the database and permanently destroys the credential. Omit the
-`config` field from the `PUT` body to preserve the stored config, or send the
-real values. This hazard pre-dates 1.0.0 for keyed fields; the URL rule
-broadens it to values that previously round-tripped intact.
+**Query parameters with secret-looking names are masked too.** `?api_key=…`,
+`?sig=…` and `?X-Amz-Signature=…` used to round-trip in the clear inside a URL
+value. The parameter name is now judged by the same predicate as an object key,
+and that predicate gained `bearer`, `dsn` and `webhook` (substring matches)
+plus `pat` and `sig` (exact matches).
+
+**What to do — nothing, but know the round-trip rules.** `update` replaces
+`config_json` wholesale rather than merging, so a `GET` → edit → `PUT` sends
+masked values back. Each masked position — a masked field, the userinfo
+password, each secret-named query value — is restored from the stored row
+*independently*, so rotating one in-URL secret while returning the other still
+masked does the right thing. A mask with no stored counterpart is refused with
+`400` naming the field rather than silently overwriting a credential, and so is
+a literal `******` sent under a non-secret query parameter name (masking can
+never produce one there). Omit the `config` field from the `PUT` body entirely
+if you do not intend to change it.
+
+**One credential shape is still shown in the clear:** a token embedded in a URL
+*path* — a Slack-style webhook — under a generic key such as `url`, because a
+path segment carries no name to judge. Store it under a secret-looking key
+(`webhook_url`) and the key-name rule masks the whole value.
 
 ### Audit-log queries reject unknown parameters
 
@@ -995,7 +1113,11 @@ WHERE config_json LIKE '%queue_depth%';
 
 The one case that does fail is `backpressure` present with `queue_depth` but
 **no `max_concurrent`** — that field is required and always was; the failure is
-just loud now instead of swallowed.
+just loud now instead of swallowed. (It is named
+[`max_concurrent_per_node`](#backpressuremax_concurrent-is-now-max_concurrent_per_node)
+as of this release, with `max_concurrent` accepted as a deserialization alias
+for one release, so a stored config satisfies the requirement under either
+spelling.)
 
 ### Storage pool defaults: a docs correction, not a behaviour change
 
@@ -1018,6 +1140,232 @@ it against the real one. The actual defaults are:
 In cluster mode this multiplies: *replicas × `max_connections`* must fit inside
 your PostgreSQL `max_connections`, minus headroom for the migration job and
 your own tooling.
+
+### The data dialect rejects what it used to ignore
+
+**What changed.** `data_query`/`data_write` no longer approximate silently.
+Five changes can turn a previously "working" workflow into an explicit error —
+in every case the old behaviour was silently returning wrong or incomplete
+data.
+
+- **Unknown envelope keys are rejected.** Stray or misspelled keys in the
+  `query` envelope, the `write` envelope, an `include` selection, `on_conflict`
+  or the inline `schema` (at any level) now fail. They used to be ignored:
+  `"fileds"` selected every column, `"lmit": 5000` fell back to the default
+  100, and a misspelled `filter` key made a delete unfiltered. *How you'll
+  notice:* a task fails with `unknown key '…' in query envelope` (or `write
+  envelope`, `include.<relation>`, `on_conflict`, or an unknown-field error
+  from the schema). *What to do:* fix the key — the error names it. The pre-1.0
+  flat `data_write` form is still accepted.
+- **If you copied the old schema example, it never did what you thought.**
+  `"table": "app_users"` was silently dropped — no rename, and identity mode
+  where you believed you had an allowlist. The field is `physical`, and
+  `"type": "string"` should be `"text"`. The strict schema surfaces this as an
+  error instead of silently under-protecting.
+- **`include` and many-to-many filters error on MongoDB and Elasticsearch.**
+  They used to return parents with silently empty children, or wrong rows; both
+  now raise `FeatureUnsupportedByTarget`. *What to do:* on a doc store, fetch
+  the related documents with a second query, or model them embedded/nested and
+  filter with `some`.
+- **Mongo projections no longer include `_id` unless you project it.**
+  `fields: ["name"]` now returns `{name}` on every backend. Project the id
+  explicitly if you relied on it.
+- **`skip` is capped at `query.max_skip` (default `10000`) on every backend.**
+  A deeper offset is rejected, never clamped — SQL and MongoDB previously
+  accepted any depth. Raise `query.max_skip` (or `ORION_QUERY__MAX_SKIP`) if
+  you genuinely page deeper.
+
+### `/docs` and the OpenAPI spec are off in production
+
+**What changed.** Swagger UI (`/docs`) and `/api/v1/openapi.json` used to be
+registered unconditionally and unauthenticated, so every deployment published
+the complete admin API surface to anonymous callers. They are now gated by
+`server.docs.enabled`: unset (the default) serves them only when `environment`
+does not start with `prod`; an explicit `true`/`false` always wins.
+
+**How you'll notice.** With `environment = "production"`, `GET /docs` and
+`GET /api/v1/openapi.json` return **404** — not 401. The routes are not
+registered at all, so their existence is not advertised either.
+
+**What to do.** Usually nothing; this is the intended hardening. If production
+tooling reads the served spec, either set `server.docs.enabled = true` (or
+`ORION_SERVER__DOCS__ENABLED=true`) to opt back in, or switch to
+`orion-server dump-openapi > spec.json`, which works offline regardless of this
+setting.
+
+### Workflow caches, dedup stores and response caches no longer share one keyspace
+
+**What changed.** Every `backend: "memory"` cache connector, plus the built-in
+dedup store and response cache, shared a single in-process instance and one LRU
+budget. In-memory backends are now separate instances per purpose (workflow
+cache / dedup / response cache) and per connector name, each with its own
+`engine.max_memory_cache_entries` budget.
+
+**How you'll notice.** Only if something depended on the aliasing: a workflow
+`cache_read` can no longer observe dedup or response-cache entries (or another
+memory connector's keys), and a workflow `cache_write` can no longer influence
+dedup or response-cache decisions. Memory contents never survived a restart, so
+there is no data migration.
+
+**What to do.** Re-check your sizing if the host is memory-constrained:
+`engine.max_memory_cache_entries` is now a **per-namespace** bound, so the
+worst case is that value × (2 built-in stores + up to 3 namespaces per memory
+connector). Divide the setting by your namespace count to keep the old ceiling.
+
+Redis cache connectors are deliberately *not* partitioned: pointing a workflow
+connector and a channel's dedup store at the same Redis database still shares a
+keyspace — use separate databases (`redis://host/0`, `/1`, …) where you need
+isolation.
+
+### Non-http schemes are refused by SSRF validation
+
+**What changed.** The SSRF validator accepted any URL scheme and only checked
+the resolved addresses; it now rejects anything outside `http`/`https` before
+any DNS work.
+
+**How you'll notice.** An `http_call` or Elasticsearch egress whose URL uses
+another scheme (`gopher://`, `ftp://`, `file://`, …) fails with *"only http and
+https are allowed"*. No supported configuration produced such URLs, so this
+should be invisible.
+
+### REST routes match byte-exactly and decode parameters once
+
+**What changed.** Three visible changes on `/api/v1/data/*`:
+
+- **Case matters now.** `/ORDERS/1` no longer matches a channel declaring
+  `/orders/{id}` — it 404s. Fix client URLs, or register the alternate casing
+  as its own route (two casings are two distinct routes now, so both can be
+  active).
+- **`metadata.params` arrive percent-decoded exactly once.** `/orders/a%2Fb`
+  now matches with `id == "a/b"`; previously `%2F` was decoded *before*
+  matching and acted as a path separator, so the request never matched at all.
+  If a workflow hand-decoded a param, remove that step — decoding twice changes
+  meaning (`a%252Fb` arrives as `a%2Fb`, not `a/b`).
+- **Malformed escapes are refused.** A path carrying an invalid
+  percent-sequence (`%ZZ`, a truncated `%2`) is answered with `400` instead of
+  being matched literally.
+
+Percent-encoding an unreserved character is still equivalence per RFC 3986:
+`/%6Frders/1` matches `/orders/{id}`.
+
+**Also a validation-time break:** a `route_pattern` containing `%` is now
+rejected on create, update and import. Patterns are written literally and
+requests match by their decoded value, so an escape in a pattern was only ever
+reachable through a double-encoded request — write the literal character
+instead. Already-active channels keep their existing behaviour until you next
+edit them.
+
+### `backpressure.max_concurrent` is now `max_concurrent_per_node`
+
+**What changed.** The limit was always per node (N replicas admit up to N× the
+value); the name now says so, which matters because dedup and rate limiting sit
+in the same config block and *are* cluster-shared.
+
+**What to do.** Nothing immediately — stored configs using `max_concurrent`
+keep working, as it is a deserialization alias for this release. Update the key
+the next time you edit the channel; the alias is scheduled for removal in the
+following release.
+
+### Async submissions are exempt from trace sampling
+
+**What changed.** Channels with `trace_storage.sample_rate < 1.0` serving
+`/async` traffic used to write the trace's status rows but drop its *result* —
+a `completed` trace with nothing in it, and the storage was spent anyway. The
+result is now always persisted for an async submission: the 202's `trace_id` is
+a receipt for a fetchable result, exactly as `mode = "off"` is already upgraded
+to `sync` on that path.
+
+**What to do.** If you used `sample_rate` to bound async trace storage, switch
+to `errors_only = true` or tighten `trace_queue.retention_hours`. The sync path
+samples exactly as configured, and a sampled-out sync trace now leaves no row
+at all.
+
+### Optional: fail closed when a guard's backend is down
+
+`rate_limit.on_backend_error` and `deduplication.on_backend_error` are new
+per-channel settings accepting `"allow"` (the default, today's fail-open
+behaviour) or `"deny"`, which refuses requests with `503` while the guard's
+backend cannot answer — never a `409` or `429`, because the key or limit is
+unverifiable rather than violated. Nothing changes unless you set it. Consider
+`"deny"` on payment or idempotency-critical channels, where a Redis blip
+silently removing all idempotency is worse than refusing the request.
+
+### Duplicate creates now return 409
+
+`POST /api/v1/admin/workflows` and `POST /api/v1/admin/channels` with an id
+that already exists now return `409 Conflict` with
+`{"error": {"code": "CONFLICT", "message": "…"}}`. Through 0.3.x these returned
+`500 INTERNAL_ERROR`. Clients or retry logic that treated the 500 as transient
+should treat the 409 as a permanent client error — pick a different id, or use
+the import endpoints, which report conflicts per item without failing the
+batch.
+
+### Workflow export reads in bounded pages
+
+`GET /api/v1/admin/workflows/export` still returns every matching workflow in
+one response; it now reads the database in bounded 500-row pages instead of one
+unbounded query.
+
+**One caveat if you use export as a backup:** it is no longer a point-in-time
+snapshot. The pages are independent queries, so a workflow created, deleted or
+renamed during an export can be missed or appear twice in a single response.
+Quiesce workflow mutations during export, or re-export until two consecutive
+responses match, when you need a consistent copy.
+
+If you embed Orion as a library, note that `WorkflowRepository::list` now
+honours its filter's `limit`/`offset` (default 50, max 1000 per call) instead
+of returning the whole table — page through it if you need everything.
+
+### `validate-config` prints the full effective config
+
+**What changed.** `orion-server validate-config` no longer prints the old
+hand-maintained summary of a dozen settings. By default it prints the *full
+effective config* — every section, merged from defaults, the config file and
+`ORION_*` overrides — as TOML on stdout, with secrets masked (`******` for
+key-named secrets, passwords struck out of URL-shaped values such as
+`storage.url`). Under `--format toml` and `--format json` the
+`Configuration is valid.` note goes to stderr so stdout stays machine-parseable;
+`--format summary` keeps it on stdout.
+
+**How you'll notice.** Deploy scripts that grep the old summary (`:8080`-style
+host:port lines, `storage: sqlite:orion.db`) stop matching. Anything that read
+a database password out of the old output stops working — that was a credential
+leak, and it is masked in every format now.
+
+**What to do.** Parse stdout as TOML, or run `--format json` and parse JSON;
+`--format summary` restores a short human-readable summary (also masked). Exit
+codes are unchanged, so plain pre-flight checks (`validate-config || exit 1`)
+need no change.
+
+### `/readyz` and `/health` observe Kafka ingestion
+
+**What changed.** With `kafka.enabled = true`, both probes gain a
+`components.kafka` field, and **`/readyz` returns 503 while ingestion is
+degraded** — that is, a consumer (re)start failed and the built-in restart
+supervisor (new in 1.0, capped 1s → 60s backoff) has not yet brought one back.
+Previously a node in that state reported ready while consuming nothing.
+`/health` reports `status: "degraded"` while HTTP itself keeps serving.
+
+**What to do.** If your readiness alerting assumed only the database, engine or
+startup could unready a node, account for the new component; a degraded node
+now leaves the load-balancer rotation. The `orion_kafka_ingest_degraded` gauge
+(0/1) carries the same signal for Prometheus. Deployments with Kafka disabled
+see byte-identical probe bodies.
+
+### New operational settings, no action required
+
+- **`storage.backup_retention_count`** — unset by default, which keeps every
+  backup (the pre-1.0 behaviour). Set it to bound SQLite backups: after each
+  successful `POST /api/v1/admin/backups` the oldest `orion_backup_*.db` files
+  are pruned so at most N remain. `0` is refused at startup. Env override
+  `ORION_STORAGE__BACKUP_RETENTION_COUNT`; set it to an empty string to clear.
+- **`orion_job_last_success_timestamp_seconds{job}`** — a gauge for the
+  background jobs (`trace_cleanup`, `audit_cleanup`, `dlq_retry`,
+  `epoch_watcher`, `kafka_lag`). Alert on
+  `time() - orion_job_last_success_timestamp_seconds{job="…"}` exceeding a few
+  tick intervals: the jobs swallow per-tick errors by design, so this gauge
+  going stale is the only signal that cleanup or DLQ retry has silently
+  stalled.
 
 ---
 
