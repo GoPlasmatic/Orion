@@ -129,7 +129,11 @@ impl BackendHarness {
                 "type": "db",
                 "connection_string": self.connection_string,
                 "max_connections": 2,
-                "query_timeout_ms": 10000
+                "query_timeout_ms": 10000,
+                // Testcontainers publish on localhost, which the S6 endpoint
+                // check would otherwise refuse. Harmless for the sqlite
+                // backend, whose connection string has no host at all.
+                "allow_private_urls": true
             }
         })
     }

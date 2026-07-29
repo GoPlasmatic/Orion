@@ -44,6 +44,11 @@ impl SqlPoolCache {
         let max_conns = config.max_connections.unwrap_or(5);
         let connect_timeout = config.connect_timeout_ms.unwrap_or(5000);
 
+        // S6: refuse a private/internal target before dialling. Only on the
+        // create path — a cached pool was checked when it was opened, and
+        // re-resolving per query would put a DNS round trip on the hot path.
+        crate::validation::check_db_endpoint(connector_name, config).await?;
+
         self.cache
             .get_or_create(connector_name, || async move {
                 AnyPoolOptions::new()

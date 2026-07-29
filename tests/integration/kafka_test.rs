@@ -1055,7 +1055,10 @@ async fn publish_kafka_publishes_to_the_connectors_brokers() {
             "config": {
                 "type": "kafka",
                 "brokers": [brokers.clone()],
-                "topic": topic
+                "topic": topic,
+                // The broker container publishes on 127.0.0.1, which the S6
+                // endpoint check refuses without this.
+                "allow_private_urls": true
             }
         }),
     )

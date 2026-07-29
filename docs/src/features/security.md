@@ -60,7 +60,10 @@ max_payload_size = 1048576   # 1 MB
 
 ## Network Security
 
-**SSRF protection:** HTTP connectors validate URLs to prevent Server-Side Request Forgery. By default, requests to private/internal IP addresses (RFC 1918, loopback, link-local) are blocked:
+**SSRF protection:** connectors validate their endpoints to prevent Server-Side
+Request Forgery. By default, connections to private/internal IP addresses
+(RFC 1918, loopback, link-local, CGNAT, and the cloud metadata range
+`169.254.169.254`) are blocked:
 
 ```json
 {
@@ -74,7 +77,43 @@ max_payload_size = 1048576   # 1 MB
 }
 ```
 
-Set `allow_private_urls: true` only when calling internal services.
+Set `allow_private_urls: true` only when the target is intentionally on a
+private network.
+
+This applies to **every** connector type, not just `http`. Two layers enforce
+it:
+
+| Layer | When | What it checks |
+|---|---|---|
+| Scheme allow-list | create / update | The endpoint's scheme suits its backend |
+| Private-address check | first connection | The resolved address is not private |
+
+The scheme allow-list refuses a connector whose endpoint could not belong to
+its backend — a `db` connector holding `http://169.254.169.254/…`, say:
+
+| Type | Allowed schemes |
+|---|---|
+| `http` | `http`, `https` |
+| `es` | `http`, `https` |
+| `db` | `postgres`, `postgresql`, `mysql`, `mariadb`, `sqlite`, `mongodb`, `mongodb+srv` |
+| `cache` (redis) | `redis`, `rediss` |
+| `kafka` | *n/a* — brokers are bare `host:port`, validated for shape |
+
+It runs on schemes only, never DNS: storing a connector must not depend on the
+target being reachable.
+
+The private-address check runs when the connection is first opened, and is
+skipped where there is no address to judge — `sqlite:` opens a file, and
+`backend: "memory"` opens nothing. For MongoDB the check runs against the
+hosts the driver resolved, so a replica-set URI is checked host by host and a
+`mongodb+srv://` URI is checked after its SRV record is looked up.
+
+> **Databases and caches are usually private, so most deployments will set
+> `allow_private_urls: true` on them.** That is the intended outcome: the flag
+> exists so reaching an internal address is a stated decision rather than the
+> default. Because the driver re-resolves the hostname when it dials, this is
+> a guard rather than a guarantee — pair it with network-level egress policy
+> where the distinction matters.
 
 **TLS/HTTPS:** enable TLS termination in the server:
 

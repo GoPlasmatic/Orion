@@ -36,6 +36,7 @@ Work through this list. Each row links to the section with the detail.
 | 15 | [Stop reading `total` from the trace list](#the-trace-list-no-longer-returns-total-by-default) | You page `GET /api/v1/admin/traces` |
 | 16 | [Re-point anything scraping `/docs`](#docs-and-the-openapi-spec-are-off-in-production) | You fetch `/docs` or `/api/v1/openapi.json` and run with `environment = "production"` |
 | 17 | [`chown` existing data volumes](#the-charts-pod-defaults-are-hardened-and-the-images-are-pinned) | You upgrade a Docker or compose deployment with an existing `/app/data` mount |
+| 17b | [Set `allow_private_urls` on private db/cache/kafka connectors](#connectors-on-private-networks-need-allow_private_urls) | Any `db`, `cache` or `kafka` connector points at a private address — **which is the normal case** |
 | 18 | [Review the smaller changes](#8-smaller-behaviour-changes) | Always |
 
 **Take a database backup before upgrading.** Migrations run automatically at
@@ -956,6 +957,55 @@ correct name is `ORION_ADMIN_AUTH__API_KEYS` (plural, comma-separated). The
 singular form was never read, so admin auth was enabled with no keys loaded.
 The page is fixed, and the singular name is now a startup error rather than a
 silent one.
+
+---
+
+### Connectors on private networks need `allow_private_urls`
+
+**What changed.** SSRF protection used to cover the `http` connector and the
+Elasticsearch helper, and nothing else — no `db`, `cache`, `mongo` or `kafka`
+path checked its endpoint at all. A connector holding
+`postgres://…@169.254.169.254/…` was accepted and dialled. Now every connector
+type is checked twice: a **scheme allow-list** when it is created or updated,
+and a **private-address check** when the connection is first opened.
+
+**How you'll notice.** Two different ways, and only the first is loud:
+
+- On create/update, a connector whose scheme cannot belong to its backend is
+  refused with `400` and a message naming the allowed schemes. `db` accepts
+  `postgres`, `postgresql`, `mysql`, `mariadb`, `sqlite`, `mongodb`,
+  `mongodb+srv`; `cache` (redis) accepts `redis`, `rediss`; `es` accepts
+  `http`, `https`; Kafka `brokers` must be bare `host:port`, not URLs.
+  **Existing stored connectors are not re-validated** — you meet this the next
+  time you edit one.
+- At runtime, the **first request** through a connector pointed at a private
+  address fails. The response is generic (the data plane is anonymous), but the
+  trace carries the full message, naming the address and the flag.
+
+**What to do.** Set `allow_private_urls: true` on every `db`, `cache` and
+`kafka` connector whose target is intentionally on a private network — which is
+the normal case for a database or a cache:
+
+```json
+{
+  "connector_type": "db",
+  "config": {
+    "type": "db",
+    "connection_string": "postgres://orion:…@postgres.internal:5432/orion",
+    "allow_private_urls": true
+  }
+}
+```
+
+The flag is not a workaround; it is the point. A database on `10.x` is
+expected, and stating it keeps the *unstated* case — a workflow-authored
+connector reaching `169.254.169.254` — refused by default. Nothing here is
+skipped for `sqlite:` connection strings or `backend: "memory"` caches, because
+neither opens a socket.
+
+Because the driver re-resolves the hostname when it dials, this is a guard
+rather than a guarantee. Keep network-level egress policy where the difference
+matters.
 
 ---
 

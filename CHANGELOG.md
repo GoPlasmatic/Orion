@@ -228,6 +228,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **Every connector's endpoint is now scheme- and address-checked, not just
+  `http` (S6).** Until now `validate_url_not_private` was called from exactly
+  two places — the HTTP handler and the Elasticsearch helper — so no db, cache,
+  mongo or kafka path checked anything, and a connector holding
+  `connection_string: "postgres://…@169.254.169.254/…"` was accepted and
+  dialled. Two layers close it:
+
+  - **A scheme allow-list at create/update.** `db` accepts `postgres`,
+    `postgresql`, `mysql`, `mariadb`, `sqlite`, `mongodb` and `mongodb+srv`;
+    `cache` (redis) accepts `redis` and `rediss`; `es` accepts `http` and
+    `https`; Kafka `brokers` must be bare `host:port`, not URLs. Schemes only —
+    storing a connector never depends on DNS. **A stored connector using
+    anything else is refused the next time it is created or updated**, and an
+    existing one keeps loading until then.
+  - **A private-address check when the connection is first opened**, with the
+    same `allow_private_urls` opt-out `http` and `es` already had, now also on
+    `db`, `cache` and `kafka`. Skipped where there is no address to judge:
+    `sqlite:` opens a file and `backend: "memory"` opens nothing. MongoDB is
+    checked against the hosts the driver resolved, so replica-set URIs are
+    checked host by host and `mongodb+srv://` after its SRV lookup.
+
+  **Most deployments will need to set `allow_private_urls: true` on their
+  database and cache connectors**, because those normally *are* on a private
+  network — that is the intended outcome, so that reaching an internal address
+  is a stated decision rather than the default. Symptom if you miss one: the
+  connector stores fine and the first request through it fails, naming the
+  address and the flag.
+
 - **A REST channel's `route_pattern` and `methods` must now be well-formed.**
   They were checked for non-emptiness and nothing else, so
   `methods: ["POTS"]` and `route_pattern: "orders/{id"` were created,

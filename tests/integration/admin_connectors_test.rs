@@ -1186,3 +1186,246 @@ async fn test_connector_retry_count_is_bounded() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
 }
+
+// ---------------------------------------------------------------------------
+// S6: every connector variant's endpoint is scheme-checked at the door, and
+// address-checked when it is first dialled. Before 1.0 only `http` was gated,
+// so a db connector holding `postgres://…@169.254.169.254/…` was accepted and
+// connected to.
+// ---------------------------------------------------------------------------
+
+async fn create_connector_status(
+    app: &axum::Router,
+    id: &str,
+    connector_type: &str,
+    config: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors",
+            Some(json!({
+                "id": id,
+                "name": id,
+                "connector_type": connector_type,
+                "config": config,
+            })),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, body_json(resp).await)
+}
+
+#[tokio::test]
+async fn s6_db_connector_rejects_schemes_that_are_not_databases() {
+    let app = common::test_app().await;
+
+    for (id, conn) in [
+        ("s6-db-http", "http://169.254.169.254/latest/meta-data"),
+        ("s6-db-file", "file:///etc/passwd"),
+        ("s6-db-redis", "redis://cache.example.com:6379"),
+        ("s6-db-gopher", "gopher://example.com:70/"),
+        ("s6-db-bare", "/var/lib/orion/orion.db"),
+    ] {
+        let (status, body) =
+            create_connector_status(&app, id, "db", json!({"connection_string": conn})).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "{conn} must be refused, got {body}"
+        );
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("Allowed:"),
+            "{conn}: message should name the allowed schemes, got {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn s6_db_connector_accepts_every_real_backend_scheme() {
+    let app = common::test_app().await;
+
+    for (id, conn) in [
+        ("s6-ok-pg", "postgres://u:p@db.example.com/orion"),
+        ("s6-ok-pgsql", "postgresql://u:p@db.example.com/orion"),
+        ("s6-ok-mysql", "mysql://u:p@db.example.com/orion"),
+        ("s6-ok-sqlite", "sqlite::memory:"),
+        ("s6-ok-mongo", "mongodb://m.example.com:27017/orion"),
+        ("s6-ok-srv", "mongodb+srv://cluster.example.com/orion"),
+    ] {
+        let (status, body) =
+            create_connector_status(&app, id, "db", json!({"connection_string": conn})).await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "{conn} must be accepted: {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn s6_cache_and_kafka_endpoints_are_shape_checked() {
+    let app = common::test_app().await;
+
+    // A redis cache pointed at an HTTP endpoint.
+    let (status, body) = create_connector_status(
+        &app,
+        "s6-cache-http",
+        "cache",
+        json!({"backend": "redis", "url": "http://cache.example.com"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // rediss:// (TLS) is legitimate.
+    let (status, body) = create_connector_status(
+        &app,
+        "s6-cache-tls",
+        "cache",
+        json!({"backend": "redis", "url": "rediss://cache.example.com:6379"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // Kafka brokers are host:port, never URLs — a scheme here is a mistake
+    // librdkafka would only report much later.
+    let (status, body) = create_connector_status(
+        &app,
+        "s6-kafka-url",
+        "kafka",
+        json!({"brokers": ["http://b:9092"], "topic": "t"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    let (status, body) = create_connector_status(
+        &app,
+        "s6-kafka-ok",
+        "kafka",
+        json!({"brokers": ["b1.example.com:9092", "b2.example.com:9092"], "topic": "t"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// The scheme gate is not the address gate: a perfectly well-formed
+/// `postgres://` URL aimed at the cloud metadata endpoint is stored happily
+/// and refused when the pool is opened.
+#[tokio::test]
+async fn s6_private_db_target_is_refused_when_the_pool_is_opened() {
+    let app = common::test_app().await;
+
+    common::create_connector(
+        &app,
+        json!({
+            "id": "s6-metadata",
+            "name": "s6-metadata",
+            "connector_type": "db",
+            "config": {
+                "type": "db",
+                "connection_string": "postgres://u:p@169.254.169.254:5432/orion",
+                "connect_timeout_ms": 1000
+            }
+        }),
+    )
+    .await;
+
+    common::create_and_activate_channel(
+        &app,
+        "s6-ch",
+        common::workflow_with_tasks(
+            "s6",
+            json!([{
+                "id": "r", "name": "r",
+                "continue_on_error": true,
+                "function": { "name": "db_read", "input": {
+                    "connector": "s6-metadata",
+                    "query": "SELECT 1",
+                    "output": "data.rows"
+                }}
+            }]),
+        ),
+    )
+    .await;
+
+    let (_, body) = common::dsl::post(&app, "s6-ch", json!({ "data": {} })).await;
+
+    // The task must have failed — the connection was refused, not made.
+    assert!(
+        !body["errors"].as_array().is_none_or(|e| e.is_empty()),
+        "db_read against a link-local target must fail: {body}"
+    );
+
+    // G3 keeps the detail off the anonymous data plane ("full detail is
+    // available in the trace"), so the message that names the target and the
+    // opt-out is asserted where it actually lives.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/traces?channel=s6-ch&limit=1",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let list = body_json(resp).await;
+    let trace_id = list["data"][0]["id"].as_str().expect("trace id");
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/traces/{trace_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let rendered = body_json(resp).await.to_string();
+    assert!(
+        rendered.contains("169.254.169.254") && rendered.contains("allow_private_urls"),
+        "the trace must name the refused target and the opt-out: {rendered}"
+    );
+}
+
+/// ...and the opt-out has to actually work, or every private-network
+/// deployment is broken.
+#[tokio::test]
+async fn s6_allow_private_urls_lets_a_loopback_db_through() {
+    let app = common::test_app().await;
+
+    // sqlite has no host, so use it to prove the *scheme* path stays open;
+    // the address path is proved by the container suites, which all run
+    // against 127.0.0.1 with allow_private_urls set.
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite("s6-local", "sqlite:file:s6_local?mode=memory&cache=shared"),
+    )
+    .await;
+
+    common::create_and_activate_channel(
+        &app,
+        "s6-local-ch",
+        common::workflow_with_tasks(
+            "s6-local",
+            json!([{
+                "id": "r", "name": "r",
+                "function": { "name": "db_read", "input": {
+                    "connector": "s6-local",
+                    "query": "SELECT 1 AS one",
+                    "output": "data.rows"
+                }}
+            }]),
+        ),
+    )
+    .await;
+
+    let (status, body) = common::dsl::post(&app, "s6-local-ch", json!({ "data": {} })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}

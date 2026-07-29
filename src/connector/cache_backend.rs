@@ -723,6 +723,7 @@ mod tests {
         CacheConnectorConfig {
             backend: "memory".to_string(),
             url: None,
+            allow_private_urls: false,
             operations: Default::default(),
         }
     }

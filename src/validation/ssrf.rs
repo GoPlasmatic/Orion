@@ -158,12 +158,54 @@ pub async fn validate_url_not_private(url: &str) -> Result<Vec<SocketAddr>, Stri
     // Always `Some` for http/https (checked above); 80 is unreachable.
     let port = parsed.port_or_known_default().unwrap_or(80);
 
-    // IP-literal URLs involve no DNS at connect time, so no pinning is needed.
+    check_host_not_private(host, port, &format!("URL '{url}'"), true).await
+}
+
+/// Refuse a `host:port` that resolves to a private/internal address, for
+/// callers that already hold a split host and port rather than a URL (S6):
+/// MongoDB's driver-parsed `ServerAddress` list, and Kafka's bare
+/// `host:port` broker entries, neither of which is a parseable URL.
+///
+/// No pinning: [`PinnedDnsResolver`] is consulted only by the shared reqwest
+/// client, and a database or broker driver re-resolves through the system
+/// resolver regardless. The gap between this check and the driver's own
+/// connect is therefore a genuine TOCTOU that pinning cannot close from here
+/// — it is narrowed, not eliminated, which is why the private-IP check is a
+/// guard rather than the only control. Prefer network-level egress policy for
+/// the strong version.
+pub async fn validate_hostport_not_private(
+    host: &str,
+    port: u16,
+) -> Result<Vec<SocketAddr>, String> {
+    let parsed = url::Host::parse(host).map_err(|e| format!("Invalid host '{host}': {e}"))?;
+    let display = format!("host '{host}:{port}'");
+    match parsed {
+        url::Host::Ipv4(ip) => check_host_not_private(url::Host::Ipv4(ip), port, &display, false),
+        url::Host::Ipv6(ip) => check_host_not_private(url::Host::Ipv6(ip), port, &display, false),
+        url::Host::Domain(ref d) => {
+            check_host_not_private(url::Host::Domain(d.as_str()), port, &display, false)
+        }
+    }
+    .await
+}
+
+/// Shared core of the SSRF check: judge an already-parsed host, resolving it
+/// first when it is a domain.
+///
+/// `target` is what error messages name (a full URL for the HTTP paths, a
+/// `host:port` for the connector paths). `pin` records the validated
+/// addresses for [`PinnedDnsResolver`], which only the reqwest client reads —
+/// so only the http/https callers set it.
+async fn check_host_not_private(
+    host: url::Host<&str>,
+    port: u16,
+    target: &str,
+    pin: bool,
+) -> Result<Vec<SocketAddr>, String> {
+    // IP-literal targets involve no DNS at connect time, so no pinning is needed.
     let check_ip = |ip: IpAddr| {
         if is_private_ip(&ip) {
-            Err(format!(
-                "URL '{url}' targets private/internal IP address {ip}"
-            ))
+            Err(format!("{target} targets private/internal IP address {ip}"))
         } else {
             Ok(vec![SocketAddr::new(ip, port)])
         }
@@ -175,24 +217,25 @@ pub async fn validate_url_not_private(url: &str) -> Result<Vec<SocketAddr>, Stri
         url::Host::Domain(domain) => {
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((domain, port))
                 .await
-                .map_err(|e| format!("Failed to resolve host '{domain}' for URL '{url}': {e}"))?
+                .map_err(|e| format!("Failed to resolve host '{domain}' for {target}: {e}"))?
                 .collect();
 
             if addrs.is_empty() {
                 return Err(format!(
-                    "Host '{domain}' for URL '{url}' resolved to no addresses"
+                    "Host '{domain}' for {target} resolved to no addresses"
                 ));
             }
             for socket_addr in &addrs {
                 if is_private_ip(&socket_addr.ip()) {
                     return Err(format!(
-                        "URL '{}' resolves to private/internal IP address {}",
-                        url,
+                        "{target} resolves to private/internal IP address {}",
                         socket_addr.ip()
                     ));
                 }
             }
-            pin_validated(domain, &addrs);
+            if pin {
+                pin_validated(domain, &addrs);
+            }
             Ok(addrs)
         }
     }

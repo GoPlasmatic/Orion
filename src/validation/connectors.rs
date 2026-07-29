@@ -33,6 +33,11 @@ pub fn validate_connector_config(
 
     validate_operation_gate_keys(connector_type, config)?;
 
+    // S6: every variant's endpoint gets a scheme allow-list, not just HTTP's.
+    // Schemes only — the private-address check runs on the pool-open paths,
+    // because storing a connector must not depend on DNS.
+    super::endpoints::validate_endpoint_schemes(&parsed)?;
+
     // For HTTP connectors, validate the URL scheme
     if let ConnectorConfig::Http(http_config) = &parsed
         && !http_config.url.is_empty()

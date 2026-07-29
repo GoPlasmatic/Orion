@@ -317,6 +317,9 @@ pub fn cache_connector_memory(name: &str) -> serde_json::Value {
 }
 
 /// A Redis-backed cache connector (for #[ignore] tests).
+///
+/// `allow_private_urls` is required — the S6 endpoint check refuses loopback
+/// targets, and the Redis container publishes on 127.0.0.1.
 pub fn cache_connector_redis(name: &str, url: &str) -> serde_json::Value {
     serde_json::json!({
         "id": name,
@@ -325,7 +328,8 @@ pub fn cache_connector_redis(name: &str, url: &str) -> serde_json::Value {
         "config": {
             "type": "cache",
             "backend": "redis",
-            "url": url
+            "url": url,
+            "allow_private_urls": true
         }
     })
 }

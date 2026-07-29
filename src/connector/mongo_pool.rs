@@ -36,6 +36,8 @@ impl MongoPoolCache {
         let conn_str = config.connection_string.clone();
         let max_conns = config.max_connections;
         let connect_timeout = config.connect_timeout_ms;
+        let allow_private = config.allow_private_urls;
+        let name = connector_name.to_string();
 
         self.cache
             .get_or_create(connector_name, || async move {
@@ -47,6 +49,25 @@ impl MongoPoolCache {
                         ),
                         source: Box::new(e),
                     })?;
+
+                // S6: check the addresses the driver actually resolved. A
+                // replica-set URI names several hosts and is not parseable as
+                // a single URL, and `mongodb+srv://` has no hosts at all until
+                // the SRV record is looked up — which `parse` just did. This
+                // is the only place the real target list exists.
+                let hosts: Vec<(String, Option<u16>)> = opts
+                    .hosts
+                    .iter()
+                    .filter_map(|addr| match addr {
+                        mongodb::options::ServerAddress::Tcp { host, port } => {
+                            Some((host.clone(), *port))
+                        }
+                        // A Unix socket has no address to judge; it is also
+                        // not reachable from a workflow-authored hostname.
+                        _ => None,
+                    })
+                    .collect();
+                crate::validation::check_mongo_hosts(&name, &hosts, allow_private).await?;
                 if let Some(max) = max_conns {
                     opts.max_pool_size = Some(max);
                 }

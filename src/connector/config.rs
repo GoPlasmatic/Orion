@@ -333,6 +333,11 @@ impl Default for RetryConfig {
 pub struct KafkaConnectorConfig {
     pub brokers: Vec<String>,
     pub topic: String,
+    /// Allow brokers on private/internal IP addresses. Default false (SSRF
+    /// protection, S6). Brokers are bare `host:port` rather than URLs, so
+    /// they are checked as host/port pairs rather than parsed as a URL.
+    #[serde(default)]
+    pub allow_private_urls: bool,
     /// Whether workflows may publish through this connector.
     #[serde(default)]
     pub operations: KafkaOperationGates,
@@ -362,6 +367,14 @@ pub struct DbConnectorConfig {
     pub connect_timeout_ms: Option<u64>,
     #[serde(default)]
     pub query_timeout_ms: Option<u64>,
+    /// Allow connecting to private/internal IP addresses. Default false
+    /// (SSRF protection, S6) — the same opt-out the HTTP and ES connectors
+    /// carry. A database on a private network is the normal case, so this is
+    /// the field most deployments will set; it exists so that reaching
+    /// `169.254.169.254` or a neighbouring service is a deliberate act rather
+    /// than the default. Ignored for `sqlite:`, which opens a file.
+    #[serde(default)]
+    pub allow_private_urls: bool,
     /// Which operations workflows may run through this connector.
     #[serde(default)]
     pub operations: OperationGates,
@@ -382,6 +395,12 @@ pub struct CacheConnectorConfig {
     /// Carries credentials when Redis needs them: `redis://user:pass@host:6379`.
     #[serde(default)]
     pub url: Option<String>,
+    /// Allow connecting to private/internal IP addresses. Default false
+    /// (SSRF protection, S6). Redis is usually private, so this is commonly
+    /// set; the point is that it is stated rather than assumed. Ignored for
+    /// `backend = "memory"`, which opens no socket.
+    #[serde(default)]
+    pub allow_private_urls: bool,
     /// Which operations workflows may run through this connector.
     #[serde(default)]
     pub operations: CacheOperationGates,

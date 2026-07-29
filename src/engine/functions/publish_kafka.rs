@@ -70,6 +70,25 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
                         });
                     }
                 };
+                // S6: the broker list is connector data, so judge it against
+                // the private-address guard before dialling. An empty list
+                // means the globally configured cluster — operator config,
+                // not connector data — and is deliberately not re-judged.
+                if !kafka_config.brokers.is_empty() {
+                    crate::validation::check_broker_endpoints(
+                        &input.connector,
+                        &kafka_config.brokers,
+                        kafka_config.allow_private_urls,
+                    )
+                    .await
+                    .map_err(|e| {
+                        DataflowError::Validation(format!(
+                            "{}{e}",
+                            crate::errors::CONNECTOR_DETAIL_MARKER
+                        ))
+                    })?;
+                }
+
                 // F13: publish to the cluster the *connector* names, not the one
                 // globally configured. Empty brokers keep the previous meaning:
                 // the global cluster.
