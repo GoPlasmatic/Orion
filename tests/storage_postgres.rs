@@ -378,3 +378,113 @@ async fn upgrade_from_0_3_0_schema_with_data_preserves_rows() {
     assert_eq!(claimed[0].retry_count, 3);
     assert_eq!(claimed[0].max_retries, 5);
 }
+
+/// D8 keyset pagination, on the backend whose `timestamp` type the cursor
+/// actually has to bind against.
+///
+/// The SQLite tests in `src/storage/repositories/traces.rs` compare a
+/// `NaiveDateTime` against a `timestamp_text` *string* column; here it is a
+/// real `timestamp`, so this is the first proof that the cursor's
+/// `(created_at, id)` comparison round-trips through the wire format at all.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_postgres -- --ignored"]
+async fn postgres_keyset_pagination_walks_every_trace_once() {
+    use orion::storage::repositories::traces::{SqlTraceRepository, TraceFilter, TraceRepository};
+
+    let (_container, pool) = postgres_pool().await;
+    let repo = SqlTraceRepository::new(pool.clone());
+
+    let mut seeded = std::collections::BTreeSet::new();
+    for _ in 0..7 {
+        seeded.insert(
+            repo.store_completed("orders", Some("ch-orders"), "sync", None, "{}", 1.0, None)
+                .await
+                .expect("seed trace"),
+        );
+    }
+
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    for _ in 0..10 {
+        let page = repo
+            .list_paginated(&TraceFilter {
+                limit: Some(3),
+                cursor: cursor.clone(),
+                ..Default::default()
+            })
+            .await
+            .expect("keyset page");
+        seen.extend(page.data.iter().map(|t| t.id.clone()));
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(
+        seen.len(),
+        7,
+        "the walk must visit every trace once: {seen:?}"
+    );
+    assert_eq!(
+        seen.iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        seeded,
+        "and exactly the seeded ones"
+    );
+
+    // `total` is opt-in (D8) and the count itself still has to be right.
+    assert_eq!(
+        repo.list_paginated(&TraceFilter::default())
+            .await
+            .expect("default page")
+            .total,
+        None
+    );
+    assert_eq!(
+        repo.list_paginated(&TraceFilter {
+            include_total: Some(true),
+            ..Default::default()
+        })
+        .await
+        .expect("counted page")
+        .total,
+        Some(7)
+    );
+}
+
+/// The point of the migration, on the backend it was written for: the planner
+/// can satisfy the keyset ordering from `idx_traces_created_at_id` alone.
+///
+/// `enable_seqscan = off` is what makes this meaningful on a table with seven
+/// rows — without it Postgres correctly reads the whole thing. The assertion
+/// is that *an index path exists for this ordering*, which is exactly what
+/// migration 011 added.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_postgres -- --ignored"]
+async fn postgres_keyset_ordering_is_served_by_the_new_index() {
+    let (_container, pool) = postgres_pool().await;
+    let DbPool::Postgres(pg) = &pool else {
+        panic!("expected postgres pool");
+    };
+
+    sqlx::query("SET enable_seqscan = off")
+        .execute(pg)
+        .await
+        .expect("disable seqscan");
+    let plan: Vec<(String,)> =
+        sqlx::query_as("EXPLAIN SELECT * FROM traces ORDER BY created_at DESC, id DESC LIMIT 50")
+            .fetch_all(pg)
+            .await
+            .expect("explain");
+    let plan = plan
+        .into_iter()
+        .map(|(line,)| line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        plan.contains("idx_traces_created_at_id"),
+        "the keyset ordering must be servable from the (created_at, id) index \
+         added by migration 011, else every page sorts the table:\n{plan}"
+    );
+}

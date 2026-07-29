@@ -212,7 +212,26 @@ async fn trace_list_pages_the_same_way() {
         )
         .await;
     }
-    common::wait_for_body(&app, "/api/v1/admin/traces", |b| b["total"] == 3).await;
+    common::wait_for_body(&app, "/api/v1/admin/traces?include_total=true", |b| {
+        b["total"] == 3
+    })
+    .await;
 
-    assert_pagination_contract(&app, "/api/v1/admin/traces", 3).await;
+    // Traces are the one endpoint whose `total` is opt-in (D8): the count is a
+    // full scan of the filtered set on Postgres and InnoDB, and a 10M-row table
+    // was paying it on every page. Asking for it restores the shared contract
+    // exactly.
+    assert_pagination_contract(&app, "/api/v1/admin/traces?include_total=true", 3).await;
+
+    // And the deviation itself: no flag, no count — but the rest of the
+    // envelope is unchanged, so a caller that never reads `total` sees the
+    // same shape it always did.
+    let page = get(&app, "/api/v1/admin/traces").await;
+    assert!(
+        page["total"].is_null(),
+        "traces must not count unless asked: {page}"
+    );
+    assert_eq!(page["limit"], 50);
+    assert_eq!(page["offset"], 0);
+    assert_eq!(page["data"].as_array().expect("data").len(), 3);
 }

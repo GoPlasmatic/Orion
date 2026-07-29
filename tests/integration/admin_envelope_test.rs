@@ -87,11 +87,38 @@ async fn admin_2xx_bodies_all_carry_the_data_envelope() {
         "/api/v1/admin/channels",
         "/api/v1/admin/connectors",
         "/api/v1/admin/audit-logs",
-        "/api/v1/admin/traces",
         "/api/v1/admin/trace-dlq",
     ] {
         assert_paginated_envelope(&get(&app, uri).await, uri);
     }
+}
+
+/// The trace list is the one paginated endpoint that does not always carry
+/// `total` (D8): the count is a full scan of the filtered set, so it is opt-in.
+/// `include_total=true` puts it back, byte for byte.
+#[tokio::test]
+async fn trace_list_omits_total_unless_asked() {
+    let app = test_app().await;
+
+    let body = get(&app, "/api/v1/admin/traces").await;
+    let mut keys: Vec<&str> = body
+        .as_object()
+        .expect("object body")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["data", "limit", "offset"],
+        "an unasked-for `total` costs a COUNT(*) per page: {body}"
+    );
+
+    let counted = get(&app, "/api/v1/admin/traces?include_total=true").await;
+    assert_eq!(
+        counted["total"], 0,
+        "include_total=true must restore the count: {counted}"
+    );
 }
 
 #[tokio::test]

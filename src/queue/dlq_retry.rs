@@ -234,7 +234,7 @@ pub fn start_dlq_retry(
 mod tests {
     use super::*;
     use crate::errors::OrionError;
-    use crate::storage::models::{Trace, TraceDlqEntry, TraceListRow};
+    use crate::storage::models::{Trace, TraceDlqEntry};
     use crate::storage::repositories::helpers::PaginatedResult;
     use crate::storage::repositories::trace_dlq::TraceDlqRepository;
     use crate::storage::repositories::traces::TraceRepository;
@@ -430,7 +430,7 @@ mod tests {
         async fn list_paginated(
             &self,
             _filter: &crate::storage::repositories::traces::TraceFilter,
-        ) -> Result<PaginatedResult<TraceListRow>, OrionError> {
+        ) -> Result<crate::storage::repositories::traces::TracePage, OrionError> {
             unimplemented!()
         }
         async fn delete_older_than(&self, _hours: u64) -> Result<u64, OrionError> {

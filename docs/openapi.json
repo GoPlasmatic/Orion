@@ -1980,11 +1980,29 @@
           {
             "name": "offset",
             "in": "query",
-            "description": "Page offset",
+            "description": "Page offset. Mutually exclusive with `cursor`",
             "required": false,
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Keyset cursor: the previous page's `next_cursor`, passed back unmodified. Only valid with the default `created_at` ordering, and cheaper than `offset` on a large table because it never skips rows",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_total",
+            "in": "query",
+            "description": "Compute `total` for this page (default false). The count scans the whole filtered set, so it is opt-in",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -2008,11 +2026,21 @@
         ],
         "responses": {
           "200": {
-            "description": "Paginated list of traces",
+            "description": "Page of traces",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PaginatedEnvelope_TraceListItem"
+                  "$ref": "#/components/schemas/TracePageEnvelope"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed cursor, or cursor combined with offset or a non-default sort",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -5448,100 +5476,6 @@
           }
         }
       },
-      "PaginatedEnvelope_TraceListItem": {
-        "type": "object",
-        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
-        "required": [
-          "data",
-          "total",
-          "limit",
-          "offset"
-        ],
-        "properties": {
-          "data": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "description": "One row of `GET /api/v1/admin/traces` — payload-free by design (S14).",
-              "required": [
-                "id",
-                "channel",
-                "mode",
-                "status",
-                "created_at",
-                "updated_at"
-              ],
-              "properties": {
-                "channel": {
-                  "type": "string",
-                  "description": "Channel name as it was when the trace ran — a snapshot, not a key."
-                },
-                "channel_id": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "completed_at": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "created_at": {
-                  "type": "string"
-                },
-                "duration_ms": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "format": "int64"
-                },
-                "error_message": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "id": {
-                  "type": "string"
-                },
-                "mode": {
-                  "type": "string",
-                  "description": "`sync` | `async`."
-                },
-                "started_at": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "status": {
-                  "type": "string",
-                  "description": "`pending` | `running` | `completed` | `failed`."
-                },
-                "updated_at": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "limit": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "offset": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "total": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
-          }
-        }
-      },
       "PaginatedEnvelope_WorkflowResponse": {
         "type": "object",
         "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
@@ -5996,6 +5930,46 @@
           },
           "updated_at": {
             "type": "string"
+          }
+        }
+      },
+      "TracePageEnvelope": {
+        "type": "object",
+        "description": "`GET /api/v1/admin/traces` — a page of trace rows.\n\nNot [`PaginatedEnvelope`] (D8): `total` is present only when the request\nasked for it with `include_total=true`, because the count scans the whole\nfiltered set; and `next_cursor` carries the keyset position of the last row\nso the next page can be fetched without an `offset` skip.",
+        "required": [
+          "data",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TraceListItem"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass back as `?cursor=` to fetch the next page. Present when the page\nis ordered by `created_at` (the default) and may have a successor.\nOpaque — do not parse it."
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Rows matching the filter, ignoring `limit`/`offset`. Present only with\n`include_total=true`."
           }
         }
       },

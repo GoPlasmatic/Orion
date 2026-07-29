@@ -76,6 +76,8 @@ The `docker-compose.ha.yml` reference topology wires all of this up (2× Orion +
 
 **Migrations during deploys:** in cluster mode set `storage.auto_migrate = false` and run `orion-server migrate` as a deploy step before new replicas start (startup fails hard on a pending migration). Write migrations expand/contract style: first ship a migration that only *adds* (columns, tables, indexes) alongside code that works with both schemas, and only *remove* the old shape in a later release once no running replica depends on it — during a rolling deploy, old and new binaries briefly share one database.
 
+**Index migrations must not lock the table.** On PostgreSQL a plain `CREATE INDEX` holds a `SHARE` lock for the whole build, which blocks every insert and update — on `traces` that is a write outage as long as the build takes. Index migrations in `migrations/postgres/` therefore begin with the literal `-- no-transaction` marker (sqlx wraps every other migration in a transaction, and `CONCURRENTLY` cannot run inside one) and carry **one statement per file**, because PostgreSQL puts a multi-statement query into an implicit transaction block too. See `migrations/postgres/010_trace_updated_at_index.sql` for the pattern and for what to do if a `CONCURRENTLY` build fails and leaves an `INVALID` index behind. MySQL states `ALGORITHM=INPLACE LOCK=NONE` so an engine that cannot build online fails the migration instead of silently locking; SQLite has no online build and does not need one, being single-node and embedded.
+
 ## Versioning
 
 Both workflows and channels follow a **draft → active → archived** lifecycle with automatic version tracking:

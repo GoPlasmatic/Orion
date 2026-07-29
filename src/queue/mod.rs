@@ -450,12 +450,8 @@ mod tests {
         async fn list_paginated(
             &self,
             _filter: &crate::storage::repositories::traces::TraceFilter,
-        ) -> Result<
-            crate::storage::repositories::helpers::PaginatedResult<
-                crate::storage::models::TraceListRow,
-            >,
-            crate::errors::OrionError,
-        > {
+        ) -> Result<crate::storage::repositories::traces::TracePage, crate::errors::OrionError>
+        {
             unimplemented!("not used by trace cleanup")
         }
         async fn delete_older_than(&self, _hours: u64) -> Result<u64, crate::errors::OrionError> {

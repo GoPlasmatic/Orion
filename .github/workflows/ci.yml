@@ -352,6 +352,14 @@ jobs:
       - name: MySQL storage backend tests
         run: cargo test --test storage_mysql -- --ignored
 
+      # D10: migrate all three backends from scratch and assert the schemas
+      # agree — columns and their nullability, normalised types, and every
+      # idx_* index with its ordered column list. Only the SQLite half runs
+      # without Docker, so on a machine with no daemon this step is the only
+      # place the three are compared.
+      - name: Schema parity across backends
+        run: cargo test --test schema_parity -- --ignored
+
       # Multi-node cluster-mode tests: two AppStates over one Postgres + one
       # Redis container per test. Serial — each test runs its own containers.
       - name: Cluster mode multi-node tests

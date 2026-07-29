@@ -31,6 +31,16 @@ pub struct StorageConfig {
     /// run `orion-server migrate` as a deploy step instead. Startup fails
     /// hard when this is `false` and migrations are pending.
     pub auto_migrate: bool,
+    /// How long to keep retrying the initial database connection at startup,
+    /// in seconds (D14). `0` fails fast on the first error.
+    ///
+    /// A Postgres/MySQL failover takes tens of seconds; without a retry window
+    /// every replica exits, and the container restart backoff then outlives
+    /// the outage. Retries are bounded by this window with a fixed exponential
+    /// backoff, and the *migration* check stays fail-fast. Ignored for SQLite,
+    /// whose connect failures (bad path, permissions, corrupt file) are not
+    /// transient.
+    pub connect_retry_secs: u64,
 }
 
 impl Default for StorageConfig {
@@ -45,6 +55,7 @@ impl Default for StorageConfig {
             backup_dir: "./backups".to_string(),
             backup_retention_count: None,
             auto_migrate: true,
+            connect_retry_secs: 60,
         }
     }
 }

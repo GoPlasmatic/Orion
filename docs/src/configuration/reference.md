@@ -128,6 +128,7 @@ Both endpoints are unauthenticated and the spec publishes the complete admin API
 | `storage.backup_dir` | `"./backups"` | `ORION_STORAGE__BACKUP_DIR` | Where `POST /api/v1/admin/backups` writes. SQLite only. |
 | `storage.backup_retention_count` | — | `ORION_STORAGE__BACKUP_RETENTION_COUNT` | Keep only the newest N backups, pruning older ones after each successful backup. Unset keeps every backup — they accumulate on the same disk as the live database. Set the variable to an empty string to clear it. |
 | `storage.auto_migrate` | `true` | `ORION_STORAGE__AUTO_MIGRATE` | **Set `false` for multi-replica deployments** and run `orion-server migrate` as a deploy step. |
+| `storage.connect_retry_secs` | `60` | `ORION_STORAGE__CONNECT_RETRY_SECS` | How long startup keeps retrying an unreachable database before giving up (`0` = fail fast). Sized so a pod rides out a Postgres/MySQL failover instead of crash-looping through it. Ignored for SQLite, whose connect failures are not transient; the `auto_migrate = false` pending-migration check stays fail-fast regardless. |
 
 **Sizing the pool.** `max_connections` is per process. With N replicas, N × `max_connections` must stay below the server's own `max_connections` (PostgreSQL's default is 100, and superuser slots and other clients come out of that budget) or replicas will fail to connect under load. The default of 50 suits a single node against a dedicated database; three replicas against a stock Postgres want roughly 25 each, less whatever else connects.
 

@@ -190,9 +190,11 @@ async fn test_trace_list_pagination() {
     }
 
     // Wait until all five submissions are persisted, then page.
-    common::wait_for_body(&app, "/api/v1/admin/traces?limit=1", |b| {
-        b["total"].as_i64().unwrap_or(0) >= 5
-    })
+    common::wait_for_body(
+        &app,
+        "/api/v1/admin/traces?limit=1&include_total=true",
+        |b| b["total"].as_i64().unwrap_or(0) >= 5,
+    )
     .await;
 
     // Page 1: limit=2, offset=0
@@ -200,7 +202,7 @@ async fn test_trace_list_pagination() {
         .clone()
         .oneshot(json_request(
             "GET",
-            "/api/v1/admin/traces?limit=2&offset=0",
+            "/api/v1/admin/traces?limit=2&offset=0&include_total=true",
             None,
         ))
         .await
@@ -226,6 +228,79 @@ async fn test_trace_list_pagination() {
     let body = body_json(resp).await;
     assert_eq!(body["data"].as_array().unwrap().len(), 2);
     assert_eq!(body["offset"], 2);
+}
+
+/// D8: keyset paging over the same five traces. Following `next_cursor`
+/// visits every row exactly once and never sends an `offset` the database has
+/// to count past.
+#[tokio::test]
+async fn test_trace_list_keyset_pagination() {
+    let app = common::test_app().await;
+    common::create_and_activate_channel(
+        &app,
+        "orders",
+        common::simple_log_workflow("Orders Workflow"),
+    )
+    .await;
+
+    for i in 0..5 {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/orders/async",
+                Some(json!({"data": {"item": i}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+    common::wait_for_body(
+        &app,
+        "/api/v1/admin/traces?limit=1&include_total=true",
+        |b| b["total"].as_i64().unwrap_or(0) >= 5,
+    )
+    .await;
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut uri = "/api/v1/admin/traces?limit=2".to_string();
+    for _ in 0..10 {
+        let resp = app
+            .clone()
+            .oneshot(json_request("GET", &uri, None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "GET {uri}");
+        let body = body_json(resp).await;
+        for row in body["data"].as_array().unwrap() {
+            seen.push(row["id"].as_str().unwrap().to_string());
+        }
+        match body["next_cursor"].as_str() {
+            Some(cursor) => uri = format!("/api/v1/admin/traces?limit=2&cursor={cursor}"),
+            None => break,
+        }
+    }
+
+    assert_eq!(
+        seen.len(),
+        5,
+        "keyset walk must visit every trace: {seen:?}"
+    );
+    let unique: std::collections::BTreeSet<&String> = seen.iter().collect();
+    assert_eq!(unique.len(), 5, "and none of them twice: {seen:?}");
+
+    // A cursor is meaningless for an ordering it cannot resume — say so
+    // rather than silently returning the first page again.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/traces?sort_by=updated_at&cursor=1.abc",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

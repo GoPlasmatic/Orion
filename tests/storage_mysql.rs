@@ -151,3 +151,88 @@ async fn mysql_dlq_claim_leases_rows() {
         1
     );
 }
+
+/// D8 keyset pagination on MySQL — the backend where the tie-break is not
+/// optional.
+///
+/// `traces.created_at` is a `datetime` with no fractional seconds, so a burst
+/// of traces genuinely shares one `created_at` value. A cursor over
+/// `created_at` alone would either loop forever or skip the whole group; only
+/// the `(created_at, id)` comparison makes progress. That is not reproducible
+/// on SQLite or Postgres, whose timestamps are sub-second.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test storage_mysql -- --ignored"]
+async fn mysql_keyset_pagination_walks_every_trace_once() {
+    use orion::storage::repositories::traces::{SqlTraceRepository, TraceFilter, TraceRepository};
+
+    let (_container, pool) = mysql_pool().await;
+    let repo = SqlTraceRepository::new(pool.clone());
+
+    let mut seeded = std::collections::BTreeSet::new();
+    for _ in 0..7 {
+        seeded.insert(
+            repo.store_completed("orders", Some("ch-orders"), "sync", None, "{}", 1.0, None)
+                .await
+                .expect("seed trace"),
+        );
+    }
+
+    // Pin every row to one timestamp so the walk can only advance on `id`.
+    let orion::storage::DbPool::Mysql(mysql) = &pool else {
+        panic!("expected mysql pool");
+    };
+    sqlx::query("UPDATE traces SET created_at = '2026-01-01 00:00:00'")
+        .execute(mysql)
+        .await
+        .expect("flatten created_at");
+
+    let mut seen = Vec::new();
+    let mut cursor = None;
+    for _ in 0..10 {
+        let page = repo
+            .list_paginated(&TraceFilter {
+                limit: Some(3),
+                cursor: cursor.clone(),
+                ..Default::default()
+            })
+            .await
+            .expect("keyset page");
+        seen.extend(page.data.iter().map(|t| t.id.clone()));
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(
+        seen.len(),
+        7,
+        "seven traces sharing a `created_at` must still be walked exactly \
+         once each — the cursor's id tie-break is what makes that possible: \
+         {seen:?}"
+    );
+    assert_eq!(
+        seen.iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        seeded
+    );
+
+    // `total` is opt-in (D8) and the count itself still has to be right.
+    assert_eq!(
+        repo.list_paginated(&TraceFilter::default())
+            .await
+            .expect("default page")
+            .total,
+        None
+    );
+    assert_eq!(
+        repo.list_paginated(&TraceFilter {
+            include_total: Some(true),
+            ..Default::default()
+        })
+        .await
+        .expect("counted page")
+        .total,
+        Some(7)
+    );
+}

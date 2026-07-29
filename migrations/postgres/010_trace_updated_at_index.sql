@@ -1,0 +1,44 @@
+-- no-transaction
+--
+-- Index for `sort_by=updated_at` on the trace list (proposal D8), part 1 of 3.
+--
+-- `sort_by=updated_at` has been in the sort whitelist since 0.1 with no index
+-- behind it on any backend, so every page of `GET /api/v1/admin/traces` sorted
+-- that way was a full scan plus a sort of the hottest table in the schema. The
+-- column is worth keeping — "what changed most recently" is the query an
+-- operator runs during an incident — so it gets an index rather than being
+-- dropped from the whitelist.
+--
+-- ## Why this file is three files, and why the first line is a marker
+--
+-- On PostgreSQL a plain `CREATE INDEX` takes a SHARE lock on the table, which
+-- blocks every INSERT and UPDATE for the whole build. `traces` is the table
+-- this proposal exists because it grows to eight figures, so that is a write
+-- outage measured in minutes, during which the runtime cannot record a single
+-- trace. `CREATE INDEX CONCURRENTLY` builds without blocking writers.
+--
+-- CONCURRENTLY cannot run inside a transaction block, and sqlx wraps every
+-- migration in one unless the file *begins* with the literal `-- no-transaction`
+-- (`sql.starts_with(...)` in sqlx-core's migration source loader) — so that
+-- marker has to be the first line, ahead of even this comment block.
+--
+-- That is still not enough: sqlx sends the whole file as one simple-query
+-- message, and PostgreSQL wraps a *multi-statement* simple query in an implicit
+-- transaction block, which CONCURRENTLY also refuses. Hence one statement per
+-- migration file: 010 adds the updated_at index, 011 adds (created_at, id) and
+-- 012 drops the created_at index it supersedes.
+--
+-- ## If this migration fails
+--
+-- A failed CONCURRENTLY build leaves an INVALID index behind: it is not used by
+-- the planner, but it *is* maintained on every write. `IF NOT EXISTS` makes a
+-- re-run safe but will happily skip the invalid leftover, so check for one
+-- before re-running:
+--
+--   SELECT c.relname FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+--   WHERE NOT i.indisvalid AND c.relname LIKE 'idx_traces%';
+--
+-- and clear it with `REINDEX INDEX CONCURRENTLY <name>;` (PG 12+) or
+-- `DROP INDEX CONCURRENTLY <name>;` followed by re-running the migration.
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_traces_updated_at" ON "traces" ("updated_at");

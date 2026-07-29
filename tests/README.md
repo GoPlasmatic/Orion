@@ -2,7 +2,7 @@
 
 ## Test Binaries
 
-The suite is split into four test binaries. The storage backend is pinned per
+The suite is split into five test binaries. The storage backend is pinned per
 process (a global `DB_BACKEND` OnceLock), which is why the Postgres/MySQL
 storage tests and the cluster tests cannot live in the integration binary.
 
@@ -12,6 +12,24 @@ storage tests and the cluster tests cannot live in the integration binary.
 | `cluster` | `tests/cluster/` | Postgres + Redis testcontainers | required (all `#[ignore]`) |
 | `storage_postgres` | `tests/storage_postgres.rs` | Postgres testcontainer | required (all `#[ignore]`) |
 | `storage_mysql` | `tests/storage_mysql.rs` | MySQL testcontainer | required (all `#[ignore]`) |
+| `schema_parity` | `tests/schema_parity.rs` | all three | only for the cross-backend test |
+
+`schema_parity` (D10) migrates each backend from scratch and asserts the three
+schemas agree — columns with their normalised types and nullability, every
+`idx_*` index **with its ordered column list**, and the view columns. Comparing
+index columns rather than just names is the point: an index that exists on all
+three but covers different columns serves a different query. It goes through
+`orion::storage::migrator_for` rather than `run_migrations`, which is how one
+process can migrate a backend it is not pinned to. Its SQLite half and its
+normaliser tests run in the default suite; the cross-backend comparison is
+`#[ignore]`d and needs Docker. Failure messages name the table, the column and
+both types so a CI-only failure is diagnosable from the log alone.
+
+Two allow-lists carry the deliberate exceptions, each entry with its reason:
+`BACKEND_SPECIFIC_INDEXES` (partial and partial-unique indexes MySQL cannot
+express) and `DIVERGENT_INDEX_COLUMNS` (the DLQ claim index, whose predicate
+lives in a `WHERE` clause on SQLite/Postgres and in the key on MySQL). Anything
+not listed must match on all three.
 
 ## Default Suite
 
@@ -76,6 +94,9 @@ cargo test --test integration -- --ignored kafka_test
 # Orion's own storage on Postgres / MySQL
 cargo test --test storage_postgres -- --ignored
 cargo test --test storage_mysql -- --ignored
+
+# Cross-backend schema parity (all three migration sets)
+cargo test --test schema_parity -- --ignored
 
 # Multi-node cluster mode (two AppStates over shared Postgres + Redis)
 cargo test --test cluster -- --ignored --test-threads=1

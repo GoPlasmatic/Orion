@@ -10,7 +10,7 @@ The data API handles runtime request processing: routing messages to channels, e
 | `POST` | `/api/v1/data/{channel}/async` | Submit for async processing (returns trace ID) |
 | `ANY` | `/api/v1/data/{path...}` | REST route matching: method + path matched against channel route patterns |
 | `ANY` | `/api/v1/data/{path...}/async` | Async submission via REST route matching |
-| `GET` | `/api/v1/admin/traces` | List traces (payload-free rows). Filter with `?status=`, `?channel=`, `?mode=` |
+| `GET` | `/api/v1/admin/traces` | List traces (payload-free rows). Filter with `?status=`, `?channel=`, `?mode=`; page with `?cursor=`; count with `?include_total=true` |
 | `GET` | `/api/v1/admin/traces/{id}` | Poll one trace. Requires the submission's `trace_token` or an admin credential |
 
 > **Note:** the trace *list* is guarded like `/api/v1/admin/*` and `/metrics`
@@ -141,6 +141,31 @@ curl -s "http://localhost:8080/api/v1/admin/traces?channel=orders&status=complet
 # Filter by mode
 curl -s "http://localhost:8080/api/v1/admin/traces?mode=async"
 ```
+
+### Paging a large `traces` table
+
+The page envelope is `{data, limit, offset}`. Two things are conditional:
+
+- **`total` is opt-in.** Counting the filtered set is a full scan on
+  PostgreSQL and InnoDB, and it used to be paid on every page. Ask for it with
+  `?include_total=true` when you actually need it.
+- **`next_cursor`** appears when the page is in the default `created_at`
+  ordering and may have a successor. Pass it back as `?cursor=` to get the
+  next page without an `OFFSET` the database has to count past — the only
+  paging mode that stays flat as the table grows. Treat the value as opaque.
+
+```bash
+# First page
+curl -s "http://localhost:8080/api/v1/admin/traces?limit=100"
+# → {"data": [...], "limit": 100, "offset": 0, "next_cursor": "1753900000123456.<uuid>"}
+
+# Next page
+curl -s "http://localhost:8080/api/v1/admin/traces?limit=100&cursor=1753900000123456.<uuid>"
+```
+
+`cursor` is rejected with a 400 alongside `offset` (two paging modes) or with
+`sort_by` set to anything but `created_at` — `updated_at` is rewritten in place
+by every status change, so a cursor over it would skip rows.
 
 Get a specific trace (async traces need their `trace_token`; sync traces
 follow the admin trust model):

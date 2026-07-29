@@ -83,6 +83,11 @@
 # auto_migrate = true          # Run pending migrations at startup. Set false for multi-replica
                                # deployments and run `orion-server migrate` as a deploy step;
                                # startup then fails fast if migrations are still pending.
+# connect_retry_secs = 60      # How long to keep retrying the initial database connection
+                               # (0 = fail fast). A failover takes tens of seconds; without a
+                               # window every replica exits and the restart backoff outlives
+                               # the outage. Ignored for SQLite; the migration check above
+                               # stays fail-fast either way.
 
 [cluster]
 # Multi-instance (HA) coordination. With enabled = false (the default) Orion is

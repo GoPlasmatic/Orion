@@ -785,6 +785,29 @@ pub(crate) struct TraceListItem {
     updated_at: String,
 }
 
+/// `GET /api/v1/admin/traces` — a page of trace rows.
+///
+/// Not [`PaginatedEnvelope`] (D8): `total` is present only when the request
+/// asked for it with `include_total=true`, because the count scans the whole
+/// filtered set; and `next_cursor` carries the keyset position of the last row
+/// so the next page can be fetched without an `offset` skip.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+#[allow(dead_code)]
+pub(crate) struct TracePageEnvelope {
+    data: Vec<TraceListItem>,
+    /// Rows matching the filter, ignoring `limit`/`offset`. Present only with
+    /// `include_total=true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total: Option<i64>,
+    limit: i64,
+    offset: i64,
+    /// Pass back as `?cursor=` to fetch the next page. Present when the page
+    /// is ordered by `created_at` (the default) and may have a successor.
+    /// Opaque — do not parse it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
+
 /// `GET /api/v1/admin/traces/{id}` — the list row plus the payloads.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]

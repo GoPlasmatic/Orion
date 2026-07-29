@@ -130,6 +130,7 @@ where
     ov!(storage.min_connections: u32);
     ov!(storage.idle_timeout_secs: u64);
     ov!(storage.auto_migrate: bool);
+    ov!(storage.connect_retry_secs: u64);
 
     // Cluster
     ov!(cluster.enabled: bool);

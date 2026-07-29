@@ -10,8 +10,8 @@ use crate::errors::OrionError;
 use crate::server::extract::OrionQuery;
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::server::routes::openapi::ErrorResponse;
-use crate::server::routes::openapi::{DataEnvelope, PaginatedEnvelope, TraceDetail, TraceListItem};
-use crate::server::routes::response_helpers::{data_response, paginated_response};
+use crate::server::routes::openapi::{DataEnvelope, TraceDetail, TracePageEnvelope};
+use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
 use crate::storage::repositories::traces::TraceFilter;
 
@@ -24,12 +24,15 @@ use crate::storage::repositories::traces::TraceFilter;
         ("channel" = Option<String>, Query, description = "Filter by channel"),
         ("mode" = Option<String>, Query, description = "Filter by mode: sync, async"),
         ("limit" = Option<i64>, Query, description = "Page size (default 50, max 1000)"),
-        ("offset" = Option<i64>, Query, description = "Page offset"),
+        ("offset" = Option<i64>, Query, description = "Page offset. Mutually exclusive with `cursor`"),
+        ("cursor" = Option<String>, Query, description = "Keyset cursor: the previous page's `next_cursor`, passed back unmodified. Only valid with the default `created_at` ordering, and cheaper than `offset` on a large table because it never skips rows"),
+        ("include_total" = Option<bool>, Query, description = "Compute `total` for this page (default false). The count scans the whole filtered set, so it is opt-in"),
         ("sort_by" = Option<String>, Query, description = "Sort column: created_at (default), updated_at, status, channel, mode"),
         ("sort_order" = Option<String>, Query, description = "Sort direction: asc or desc (default)"),
     ),
     responses(
-        (status = 200, description = "Paginated list of traces", body = PaginatedEnvelope<TraceListItem>),
+        (status = 200, description = "Page of traces", body = TracePageEnvelope),
+        (status = 400, description = "Malformed cursor, or cursor combined with offset or a non-default sort", body = ErrorResponse),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -62,12 +65,20 @@ pub(crate) async fn list_traces(
             })
         })
         .collect();
-    Ok(paginated_response(
-        rows,
-        result.total,
-        result.limit,
-        result.offset,
-    ))
+    // `total` and `next_cursor` are both conditional (D8), so this page is
+    // assembled here rather than through `paginated_response`.
+    let mut body = json!({
+        "data": rows,
+        "limit": result.limit,
+        "offset": result.offset,
+    });
+    if let Some(total) = result.total {
+        body["total"] = json!(total);
+    }
+    if let Some(cursor) = result.next_cursor {
+        body["next_cursor"] = json!(cursor);
+    }
+    Ok(Json(body))
 }
 
 /// Query parameters for `GET /traces/{id}`.

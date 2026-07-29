@@ -29,7 +29,11 @@ fn cfg_with_storage(mode: TraceStorageMode) -> AppConfig {
 async fn list_total(app: &axum::Router) -> u64 {
     let resp = app
         .clone()
-        .oneshot(json_request("GET", "/api/v1/admin/traces?limit=1", None))
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/traces?limit=1&include_total=true",
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
