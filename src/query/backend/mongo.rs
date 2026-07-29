@@ -594,7 +594,10 @@ mod tests {
                 "fields": ["id", "name"],
                 "sort": [{ "name": "asc" }, { "age": "desc" }]
             }),
-            json!({ "entities": { "users": { "columns": { "id": { "name": "_id" } } } } }),
+            json!({
+                "unmapped": "identity",
+                "entities": { "users": { "columns": { "id": { "name": "_id" } } } }
+            }),
         );
         // `_id` is explicitly projected (via the rename) — no suppression.
         assert_eq!(q.projection, Some(doc! { "_id": 1_i32, "name": 1_i32 }));

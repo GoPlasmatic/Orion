@@ -512,7 +512,7 @@ async fn test_data_query_include_joins_keys_the_driver_rendered_differently() {
                         "fields": ["total"], "sort": [{ "id": "asc" }], "limit": 5
                     } }
                 },
-                "schema": { "entities": { "users": { "relations": {
+                "schema": { "unmapped": "identity", "entities": { "users": { "relations": {
                     "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
                 } } } },
                 "output": "data.result"

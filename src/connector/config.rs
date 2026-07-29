@@ -79,7 +79,7 @@ impl ConnectorConfig {
 /// `requireSchema` / `allowed_entites` class of typo — is privileged security
 /// configuration silently not applying, the same rationale
 /// [`crate::query::schema`] denies unknown fields for.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DialectGuards {
     /// Refuse any dialect call that did not declare a real schema — no

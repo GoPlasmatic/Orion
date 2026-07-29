@@ -55,10 +55,12 @@ use serde_json::{Value, json};
 /// exercises schema resolution and not just identity mode. Renaming is the
 /// dialect's most load-bearing schema feature and it is applied in four
 /// separate places — `filter`, `fields`, `sort` and `include` — by four
-/// different code paths, on five backends. The `unmapped` policy stays at its
-/// default (identity), so every other column keeps passing through by name.
+/// different code paths, on five backends. The `unmapped` policy is pinned to
+/// `identity` explicitly — F24 made `reject` the default, and this matrix is
+/// about cross-backend agreement rather than the allowlist, so every other
+/// column keeps passing through by name.
 fn parity_schema() -> Value {
-    json!({ "entities": { "users": {
+    json!({ "unmapped": "identity", "entities": { "users": {
         "columns": { "handle": { "name": "nickname" } },
         "relations": {
             "orders": {

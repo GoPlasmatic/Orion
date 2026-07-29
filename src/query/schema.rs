@@ -820,11 +820,14 @@ mod tests {
     /// declare, would stop working under the new default.
     ///
     /// The exemption is exactly that far and no further, which is what the
-    /// second half pins: the relation resolves and a wildcard `include` plans,
-    /// but naming a column on an undeclared target is caller input again and
-    /// goes through the ordinary allowlist. So `include: {orders: {}}` works
-    /// and `include: {orders: {fields: ["id"]}}` — or a `some` over `orders` —
-    /// needs `orders` declared.
+    /// second half pins: the relation itself resolves, but every *column* on
+    /// the target is caller input again and goes through the ordinary
+    /// allowlist. Combined with F27 — which requires each `include` to name a
+    /// deterministic `sort` key — that means an `include` over an undeclared
+    /// target cannot plan at all under the default policy: the sort key it is
+    /// obliged to name is a column the allowlist refuses. Declaring the target
+    /// entity is what makes an `include` usable; the relation exemption only
+    /// keeps `resolve_relation` itself working.
     #[test]
     fn a_relation_target_need_not_be_a_declared_entity() {
         let schema = json!({ "entities": { "users": {
@@ -841,16 +844,34 @@ mod tests {
         assert_eq!(rel.target_table, "orders");
         assert_eq!(target, "orders");
 
-        // A whole-relation include plans against the undeclared target.
+        // But an `include` must name a `sort` key (F27), and that key is a
+        // column on the target — so under the default policy an include over an
+        // undeclared target cannot plan, whichever way the caller writes it.
         let limits = crate::config::QueryConfig::default();
-        crate::query::plan_sql(
+        let err = crate::query::plan_sql(
             &json!({ "source": "users", "include": { "orders": {} } }),
             &Params::new(),
             &reg,
             crate::query::SqlDialect::Sqlite,
             &limits,
         )
-        .expect("a wildcard include over an undeclared target plans");
+        .expect_err("an include with no sort is refused");
+        assert!(
+            err.to_string().contains("sort"),
+            "expected the missing-sort error, got: {err}"
+        );
+
+        let err = crate::query::plan_sql(
+            &json!({ "source": "users", "include": { "orders": {
+                "sort": [{ "id": "asc" }]
+            } } }),
+            &Params::new(),
+            &reg,
+            crate::query::SqlDialect::Sqlite,
+            &limits,
+        )
+        .expect_err("the sort key is a column on an undeclared target");
+        assert!(matches!(err, QueryError::InvalidField { .. }), "{err}");
 
         // Naming one of its columns does not.
         let err = crate::query::plan_sql(
