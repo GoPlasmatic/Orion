@@ -4,6 +4,9 @@ metadata:
   name: {{ include "orion.fullname" . }}
   labels:
     {{- include "orion.labels" . | nindent 4 }}
+    # Distinguishes this Service from the devStack postgres/redis Services,
+    # which carry the same base labels. The ServiceMonitor selects on it.
+    app.kubernetes.io/component: server
 spec:
   type: {{ .Values.service.type }}
   ports:
@@ -11,6 +14,12 @@ spec:
       targetPort: http
       protocol: TCP
       name: http
+    {{- if and .Values.metrics.enabled .Values.metrics.service.enabled }}
+    - port: {{ .Values.metrics.port }}
+      targetPort: metrics
+      protocol: TCP
+      name: metrics
+    {{- end }}
   selector:
     {{- include "orion.selectorLabels" . | nindent 4 }}
     # Excludes the devStack postgres/redis pods, which share the base

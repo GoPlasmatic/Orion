@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Orion Helm chart values",
+  "description": "Every required value on this chart is a string, so without a schema a misspelled key (--set cluster.enabld=true) silently no-ops instead of failing the install. additionalProperties is false on each enumerated object for exactly that reason; free-form maps (annotations, labels, nodeSelector, resources, security contexts, probes, affinity) stay permissive.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "replicaCount": { "type": "integer", "minimum": 1 },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": ["string", "null"] },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": { "type": "array", "items": { "type": "object" } },
+    "nameOverride": { "type": ["string", "null"] },
+    "fullnameOverride": { "type": ["string", "null"] },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "annotations": { "type": ["object", "null"] },
+        "name": { "type": ["string", "null"] }
+      }
+    },
+    "env": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Free-form. Orion treats any value starting with 'prod' (case-insensitive) as a production variant, which forces admin auth on and refuses a CORS wildcard."
+    },
+    "adminAuth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "existingSecret": { "type": ["string", "null"] },
+        "apiKeys": { "type": ["array", "null"], "items": { "type": "string" } }
+      }
+    },
+    "cors": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowedOrigins": { "type": ["array", "null"], "items": { "type": "string" } }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "redisUrl": { "type": ["string", "null"] },
+        "epochPollIntervalMs": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "url": { "type": ["string", "null"] },
+        "existingSecret": { "type": ["string", "null"] },
+        "autoMigrate": { "type": "boolean" }
+      }
+    },
+    "migrateJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "backoffLimit": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "shutdownDrainSecs": { "type": "integer", "minimum": 0 },
+        "shutdownForceTimeoutSecs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format": { "type": "string", "enum": ["json", "pretty"] },
+        "level": { "type": "string", "enum": ["trace", "debug", "info", "warn", "error"] }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "bindAddr": {
+          "type": ["string", "null"],
+          "description": "Literal IP:port. Orion rejects a hostname at boot. Empty means 0.0.0.0:<metrics.port>.",
+          "pattern": "^$|^\\[?[0-9a-fA-F:.]+\\]?:[0-9]{1,5}$"
+        },
+        "prometheusAnnotations": { "type": "boolean" },
+        "service": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "enabled": { "type": "boolean" } }
+        },
+        "serviceMonitor": { "$ref": "#/definitions/prometheusMonitor" },
+        "podMonitor": { "$ref": "#/definitions/prometheusMonitor" }
+      }
+    },
+    "extraEnv": { "type": ["array", "null"], "items": { "type": "object" } },
+    "extraEnvFrom": { "type": ["array", "null"], "items": { "type": "object" } },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ClusterIP", "NodePort", "LoadBalancer", "ExternalName"]
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": ["string", "null"] },
+        "annotations": { "type": ["object", "null"] },
+        "hosts": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "host": { "type": "string" },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "path": { "type": "string" },
+                    "pathType": {
+                      "type": "string",
+                      "enum": ["Exact", "Prefix", "ImplementationSpecific"]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": { "type": ["array", "null"], "items": { "type": "object" } }
+      }
+    },
+    "resources": { "type": ["object", "null"] },
+    "strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["RollingUpdate", "Recreate"] },
+        "rollingUpdate": { "type": ["object", "null"] }
+      }
+    },
+    "podSecurityContext": { "type": ["object", "null"] },
+    "securityContext": { "type": ["object", "null"] },
+    "startupProbe": { "type": ["object", "null"] },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "existingClaim": { "type": ["string", "null"] },
+        "storageClass": { "type": ["string", "null"] },
+        "accessModes": { "type": "array", "items": { "type": "string" } },
+        "size": { "type": "string" },
+        "annotations": { "type": ["object", "null"] },
+        "mountPath": { "type": "string", "minLength": 1 }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 },
+        "targetCPUUtilizationPercentage": { "type": "integer", "minimum": 1, "maximum": 100 }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "maxUnavailable": { "type": ["integer", "string"] }
+      }
+    },
+    "podAnnotations": { "type": ["object", "null"] },
+    "podLabels": { "type": ["object", "null"] },
+    "nodeSelector": { "type": ["object", "null"] },
+    "tolerations": { "type": ["array", "null"], "items": { "type": "object" } },
+    "affinity": { "type": ["object", "null"] },
+    "topologySpreadConstraints": { "type": ["array", "null"], "items": { "type": "object" } },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "enabled": { "type": "boolean" } }
+    },
+    "devStack": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "postgres": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "minLength": 1 },
+            "user": { "type": "string", "minLength": 1 },
+            "password": { "type": "string", "minLength": 1 },
+            "database": { "type": "string", "minLength": 1 }
+          }
+        },
+        "redis": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "image": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "prometheusMonitor": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "interval": { "type": "string" },
+        "scrapeTimeout": { "type": ["string", "null"] },
+        "labels": { "type": ["object", "null"] },
+        "annotations": { "type": ["object", "null"] },
+        "honorLabels": { "type": "boolean" },
+        "relabelings": { "type": ["array", "null"], "items": { "type": "object" } },
+        "metricRelabelings": { "type": ["array", "null"], "items": { "type": "object" } }
+      }
+    }
+  }
+}

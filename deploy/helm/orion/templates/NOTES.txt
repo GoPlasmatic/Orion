@@ -6,6 +6,29 @@ Reach the API:
   curl http://localhost:{{ .Values.service.port }}/health
   open http://localhost:{{ .Values.service.port }}/docs
 
+Verify the install:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+{{- if .Values.metrics.enabled }}
+
+Metrics are on a dedicated, unauthenticated listener at :{{ .Values.metrics.port }}/metrics
+(the main listener no longer serves /metrics — there it would sit behind admin
+auth). It is not routed by the Ingress; keep it cluster-internal.
+{{- if not (or .Values.metrics.serviceMonitor.enabled .Values.metrics.podMonitor.enabled .Values.metrics.prometheusAnnotations) }}
+
+  Nothing is scraping it yet. With the Prometheus Operator:
+    --set metrics.serviceMonitor.enabled=true
+    --set metrics.serviceMonitor.labels.release=<your-prometheus-release>
+  Without it:
+    --set metrics.prometheusAnnotations=true
+{{- end }}
+{{- else }}
+
+Metrics are OFF (metrics.enabled=false), so /metrics 404s and the 1.0
+operational alerts (orion_trace_dlq_depth, orion_trace_queue_rejected_total,
+orion_circuit_breaker_rejections_total) have no scrape target.
+{{- end }}
+
 {{- if .Values.devStack.enabled }}
 
 WARNING: devStack is enabled — the in-namespace Postgres/Redis are throwaway

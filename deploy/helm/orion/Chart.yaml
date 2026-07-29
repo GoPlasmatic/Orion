@@ -14,3 +14,15 @@ keywords:
   - workflow
   - integration
   - runtime
+# No email: the project routes contact through GitHub (see SECURITY.md, which
+# takes vulnerability reports via private advisories rather than a mailbox).
+maintainers:
+  - name: Plasmatic
+    url: https://github.com/GoPlasmatic
+annotations:
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/links: |
+    - name: Documentation
+      url: https://goplasmatic.github.io/Orion/
+    - name: Chart source
+      url: https://github.com/GoPlasmatic/Orion/tree/main/deploy/helm/orion

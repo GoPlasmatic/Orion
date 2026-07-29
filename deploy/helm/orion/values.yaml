@@ -82,6 +82,56 @@ logging:
   format: json
   level: info
 
+# Prometheus metrics. On by default: this chart deploys a production cluster,
+# and the operational alerts 1.0 documents (orion_trace_dlq_depth,
+# orion_trace_queue_rejected_total, orion_circuit_breaker_rejections_total)
+# all need a scrape target to exist.
+#
+# Metrics are served by a DEDICATED listener on metrics.port, not on the main
+# HTTP port. On the main listener /metrics sits behind admin auth, so a
+# scraper would have to hold an admin API key — a credential that can also
+# rewrite workflows and read trace payloads. The dedicated listener needs no
+# credential, and setting it makes the main listener stop serving /metrics
+# entirely. Because it is unauthenticated it is deliberately NOT reachable
+# through the Ingress, which targets the named `http` port only.
+metrics:
+  enabled: true
+  port: 9090
+  # Address the dedicated listener binds. Must be a literal IP:port —
+  # Orion rejects a hostname at boot. Empty means 0.0.0.0:<metrics.port>,
+  # which is what makes it reachable from a Prometheus pod.
+  bindAddr: ""
+  # Publish the metrics port on the Service. ServiceMonitor scrapes Service
+  # endpoints and needs this; PodMonitor scrapes pods directly and does not.
+  service:
+    enabled: true
+  # Emit prometheus.io/{scrape,port,path} pod annotations, for a Prometheus
+  # that discovers by annotation instead of by Operator CRD.
+  prometheusAnnotations: false
+  # Prometheus Operator ServiceMonitor. Off by default because the CRD is
+  # not present on every cluster and a missing CRD fails the install.
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: ""
+    # Set to match your Prometheus `serviceMonitorSelector`.
+    labels: {}
+    annotations: {}
+    honorLabels: false
+    relabelings: []
+    metricRelabelings: []
+  # Prometheus Operator PodMonitor, for setups that scrape pods directly.
+  # Works with metrics.service.enabled=false.
+  podMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: ""
+    labels: {}
+    annotations: {}
+    honorLabels: false
+    relabelings: []
+    metricRelabelings: []
+
 # Extra environment variables for the Orion container (ORION_* overrides).
 # - name: ORION_ENGINE__ROLLOUT_STICKY_HEADER
 #   value: x-user-id
@@ -201,6 +251,12 @@ affinity: {}
 #     matchLabels:
 #       app.kubernetes.io/name: orion
 topologySpreadConstraints: []
+
+# `helm test` hooks: a DB/Kafka probe via the binary's own test-connectivity
+# subcommand, and a live check of /health, /readyz and (when enabled) the
+# unauthenticated metrics port. Inert until `helm test` is run.
+tests:
+  enabled: true
 
 # Throwaway in-namespace Postgres + Redis for dev/demo installs ONLY.
 # No persistence tuning, no HA, no backups — never use in production.

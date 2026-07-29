@@ -25,9 +25,16 @@ spec:
       app.kubernetes.io/component: server
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- if or .Values.podAnnotations (and .Values.metrics.enabled .Values.metrics.prometheusAnnotations) }}
       annotations:
+        {{- if and .Values.metrics.enabled .Values.metrics.prometheusAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.metrics.port | quote }}
+        prometheus.io/path: /metrics
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       labels:
         {{- include "orion.selectorLabels" . | nindent 8 }}
@@ -69,6 +76,13 @@ spec:
             - name: http
               containerPort: {{ .Values.server.port }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            # Dedicated, unauthenticated /metrics listener. Not routed by the
+            # Ingress, which backends the named `http` port only.
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           env:
             {{- include "orion.env" . | nindent 12 }}
           {{- with .Values.extraEnvFrom }}

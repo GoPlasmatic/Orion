@@ -1,0 +1,48 @@
+{{- if and .Values.metrics.enabled .Values.metrics.podMonitor.enabled }}
+# Requires the Prometheus Operator CRDs (monitoring.coreos.com/v1). Scrapes
+# pods directly, so unlike the ServiceMonitor it works with
+# metrics.service.enabled=false — useful when the metrics port should not be
+# reachable through the Service at all.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "orion.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+    {{- with .Values.metrics.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.podMonitor.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  jobLabel: app.kubernetes.io/instance
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "orion.selectorLabels" . | nindent 6 }}
+      # Excludes the devStack postgres/redis pods, which share the base labels.
+      app.kubernetes.io/component: server
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      interval: {{ .Values.metrics.podMonitor.interval }}
+      {{- with .Values.metrics.podMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      honorLabels: {{ .Values.metrics.podMonitor.honorLabels }}
+      {{- with .Values.metrics.podMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metrics.podMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

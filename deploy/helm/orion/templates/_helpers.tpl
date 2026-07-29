@@ -103,7 +103,25 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
-{{/* Shared ORION_* environment for the server and migrate containers. */}}
+{{/* Address the dedicated metrics listener binds.
+
+     Orion parses this as a literal SocketAddr and refuses a hostname, so the
+     computed default is an IP. 0.0.0.0 rather than 127.0.0.1: the scraper is
+     in another pod, and a loopback bind would be reachable only from inside
+     this container. */}}
+{{- define "orion.metricsBindAddr" -}}
+{{- if .Values.metrics.bindAddr }}
+{{- .Values.metrics.bindAddr }}
+{{- else }}
+{{- printf "0.0.0.0:%v" .Values.metrics.port }}
+{{- end }}
+{{- end }}
+
+{{/* Shared ORION_* environment for the server and migrate containers.
+
+     In practice only the Deployment includes this block; the migrate Job
+     builds its own minimal env (storage URL alone), since `migrate` returns
+     before observability, metrics or the listener are ever initialised. */}}
 {{- define "orion.env" -}}
 - name: ORION_STORAGE__URL
   valueFrom:
@@ -143,6 +161,21 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.logging.format | quote }}
 - name: ORION_LOGGING__LEVEL
   value: {{ .Values.logging.level | quote }}
+- name: ORION_METRICS__ENABLED
+  value: {{ .Values.metrics.enabled | quote }}
+{{- if .Values.metrics.enabled }}
+{{- /* Two listeners on one port is a bind failure at best and, with
+       SO_REUSEADDR on both sockets, a platform-dependent split of incoming
+       connections at worst. Orion refuses it at boot; catching it at render
+       time turns a CrashLoop into a failed `helm upgrade`. Only checkable
+       here for the computed default — an explicit bindAddr is the operator's
+       to own, and boot validation still covers it. */}}
+{{- if and (not .Values.metrics.bindAddr) (eq (int .Values.metrics.port) (int .Values.server.port)) }}
+{{- fail (printf "metrics.port (%v) must differ from server.port (%v): the dedicated metrics listener needs an address of its own. Set metrics.enabled=false to keep /metrics on the main listener behind admin auth." .Values.metrics.port .Values.server.port) }}
+{{- end }}
+- name: ORION_METRICS__BIND_ADDR
+  value: {{ include "orion.metricsBindAddr" . | quote }}
+{{- end }}
 - name: ORION_ENVIRONMENT
   value: {{ include "orion.environment" . | quote }}
 {{- if or .Values.adminAuth.existingSecret .Values.adminAuth.apiKeys }}

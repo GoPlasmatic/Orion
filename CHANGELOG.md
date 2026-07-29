@@ -892,6 +892,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **The Helm chart can serve metrics, and ships a ServiceMonitor (P3).** The
+  chart never emitted `ORION_METRICS__ENABLED`, and `metrics.enabled` defaults
+  to `false` — so since O12 the route was not registered at all and `/metrics`
+  404'd on every chart install, while 1.0 ships `orion_trace_dlq_depth`,
+  `orion_trace_queue_rejected_total` and `orion_circuit_breaker_rejections_total`
+  and tells operators to alert on them. `metrics.enabled` now defaults to
+  `true` and binds the **dedicated** listener (`metrics.port`, default `9090`)
+  rather than putting `/metrics` on the main one, where admin auth would make
+  every scraper hold a credential that can also rewrite workflows and read
+  trace payloads. The port is published on the Service and on a second
+  containerPort, with opt-in `metrics.serviceMonitor` and `metrics.podMonitor`
+  templates (Prometheus Operator CRDs) and `metrics.prometheusAnnotations` for
+  annotation-based discovery. The listener is unauthenticated by design, so it
+  is deliberately not routed by the Ingress. A `metrics.port` colliding with
+  `server.port` now fails at render time instead of at boot.
+
+- **Chart housekeeping: `values.schema.json`, `.helmignore`, `helm test` hooks,
+  and Chart.yaml maintainers (P9).** Every required value on this chart is a
+  string, so `--set cluster.enabld=true` silently no-opped; the schema rejects
+  it at render time. `helm test` now runs two hooks — `test-connectivity` (the
+  binary's own subcommand: opens the storage pool, counts pending migrations,
+  probes Kafka when enabled) and `test-api` (`/health`, `/readyz`, and that the
+  metrics port serves Prometheus exposition without a credential).
+
 - **`server.max_admin_body_size`** (default 8 MB) bounds admin request bodies
   independently of the data plane. The limit was a single global layer set
   from `ingest.max_payload_size` — a name that says *data plane* — so raising

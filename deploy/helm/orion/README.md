@@ -84,9 +84,59 @@ open http://localhost:8080/docs
 | `topologySpreadConstraints` | `[]` | Rendered verbatim when set |
 | `persistence.enabled` | `false` | PVC at `/app/data` for single-node SQLite installs |
 | `extraEnv` | `[]` | Additional `ORION_*` overrides |
+| `metrics.enabled` | `true` | Prometheus metrics on a dedicated listener |
+| `metrics.port` | `9090` | Metrics container/Service port; must differ from `server.port` |
+| `metrics.serviceMonitor.enabled` | `false` | Prometheus Operator `ServiceMonitor` (needs the CRD) |
+| `metrics.podMonitor.enabled` | `false` | `PodMonitor` alternative; works without the Service port |
+| `metrics.prometheusAnnotations` | `false` | `prometheus.io/*` pod annotations for annotation-based discovery |
+| `tests.enabled` | `true` | Render the `helm test` hooks |
 
 `terminationGracePeriodSeconds` is derived as drain + force timeout + 10 so
 SIGTERM always completes the graceful sequence.
+
+## Metrics
+
+Metrics are served by a **dedicated listener** on `metrics.port`, not on the
+main HTTP port. On the main listener `/metrics` sits behind admin auth, so a
+scraper would need an admin API key — a credential that can also rewrite
+workflows and read trace payloads. Setting a dedicated address makes the main
+listener stop serving `/metrics` entirely, and the scraper needs no
+credential.
+
+That listener is unauthenticated and plain HTTP (`server.tls` covers the main
+listener only), so it is deliberately **not** routed by the Ingress, which
+backends the named `http` port. Keep it reachable only from inside the
+cluster, or turn it off with `metrics.enabled=false`.
+
+With the Prometheus Operator installed:
+
+```bash
+helm upgrade orion ./deploy/helm/orion --reuse-values \
+  --set metrics.serviceMonitor.enabled=true \
+  --set metrics.serviceMonitor.labels.release=kube-prometheus-stack
+```
+
+The `labels` must match your Prometheus `serviceMonitorSelector`. Without the
+Operator, use `metrics.prometheusAnnotations=true` for annotation-based
+discovery. To keep the metrics port off the Service entirely, combine
+`metrics.service.enabled=false` with `metrics.podMonitor.enabled=true`.
+
+## Testing an install
+
+```bash
+helm test orion
+```
+
+Runs two hooks: `test-connectivity` (the binary's own subcommand — opens the
+storage pool, counts pending migrations, probes Kafka when enabled) and
+`test-api` (checks `/health` and `/readyz`, and that the metrics port serves
+Prometheus exposition text without a credential).
+
+## Values schema
+
+`values.schema.json` is enforced on every `install`/`upgrade`/`template`.
+Every required value on this chart is a string, so without it a misspelled key
+(`--set cluster.enabld=true`) would silently no-op; it now fails the render.
 
 The root filesystem is read-only: `/tmp` is an emptyDir and
 `persistence.mountPath` (default `/app/data`) is the only durable writable

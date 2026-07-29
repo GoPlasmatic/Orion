@@ -1,0 +1,53 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+{{- if not .Values.metrics.service.enabled }}
+{{- fail "metrics.serviceMonitor.enabled requires metrics.service.enabled=true: a ServiceMonitor scrapes Service endpoints, and with the metrics port off the Service there is nothing for it to target. Use metrics.podMonitor.enabled instead to scrape pods directly." }}
+{{- end }}
+# Requires the Prometheus Operator CRDs (monitoring.coreos.com/v1). Off by
+# default — on a cluster without them, rendering this fails the install.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "orion.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+    {{- with .Values.metrics.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.metrics.serviceMonitor.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  jobLabel: app.kubernetes.io/instance
+  namespaceSelector:
+    matchNames:
+      - {{ .Release.Namespace }}
+  selector:
+    matchLabels:
+      {{- include "orion.selectorLabels" . | nindent 6 }}
+      # Without this the selector would also match the devStack postgres and
+      # redis Services, which carry the same name/instance labels.
+      app.kubernetes.io/component: server
+  endpoints:
+    # The dedicated listener is plain HTTP and unauthenticated by design:
+    # server.tls covers the main listener only, and /metrics on that listener
+    # sits behind admin auth.
+    - port: metrics
+      path: /metrics
+      scheme: http
+      interval: {{ .Values.metrics.serviceMonitor.interval }}
+      {{- with .Values.metrics.serviceMonitor.scrapeTimeout }}
+      scrapeTimeout: {{ . }}
+      {{- end }}
+      honorLabels: {{ .Values.metrics.serviceMonitor.honorLabels }}
+      {{- with .Values.metrics.serviceMonitor.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metrics.serviceMonitor.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

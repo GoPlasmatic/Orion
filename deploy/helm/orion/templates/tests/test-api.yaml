@@ -1,0 +1,58 @@
+{{- if .Values.tests.enabled }}
+# `helm test` hook: proves the deployed Service actually answers. The
+# operational endpoints are unauthenticated by design (the container's own
+# HEALTHCHECK curls /health), so this needs no admin credential.
+#
+# When metrics are on it also scrapes the dedicated metrics port with no
+# credential — the property that makes the ServiceMonitor work. On the main
+# listener /metrics sits behind admin auth, so a scrape there would 401.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "orion.fullname" . }}-test-api
+  labels:
+    {{- include "orion.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-weight": "1"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  enableServiceLinks: false
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.podSecurityContext }}
+  securityContext:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: test-api
+      # The runtime image carries curl (it backs the Dockerfile HEALTHCHECK),
+      # so the test needs no extra image to pull.
+      image: {{ include "orion.image" . }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      {{- with .Values.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      command: ["/bin/sh", "-e", "-c"]
+      args:
+        - |
+          host="{{ include "orion.fullname" . }}"
+          echo "--> GET http://${host}:{{ .Values.service.port }}/health"
+          curl -fsS --max-time 10 "http://${host}:{{ .Values.service.port }}/health"
+          echo
+          echo "--> GET http://${host}:{{ .Values.service.port }}/readyz"
+          curl -fsS --max-time 10 "http://${host}:{{ .Values.service.port }}/readyz"
+          echo
+          {{- if and .Values.metrics.enabled .Values.metrics.service.enabled }}
+          echo "--> GET http://${host}:{{ .Values.metrics.port }}/metrics (no credential)"
+          curl -fsS --max-time 10 "http://${host}:{{ .Values.metrics.port }}/metrics" \
+            | grep -q '^# HELP' \
+            || { echo "metrics endpoint returned no Prometheus exposition text" >&2; exit 1; }
+          echo "    OK — Prometheus exposition served unauthenticated"
+          {{- end }}
+{{- end }}
