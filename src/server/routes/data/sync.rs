@@ -8,7 +8,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use serde_json::{Value, json};
 
-use crate::channel::guards::{self, CacheLookup, CacheStoreCtx};
+use crate::channel::guards::{Admission, CacheStoreCtx};
 use crate::channel::registry::EffectiveTraceConfig;
 use crate::config::TraceStorageMode;
 use crate::errors::OrionError;
@@ -209,12 +209,19 @@ fn sanitize_errors(errors: &[dataflow_rs::ErrorInfo]) -> Vec<Value> {
         .collect()
 }
 
+/// Serve a response-cache hit: the cached body is already the client-facing
+/// serialization, so it goes out verbatim with no work at all.
+pub(super) fn cached_response(body: String) -> Response {
+    json_response(StatusCode::OK, body)
+}
+
 /// Core sync processing logic shared between simple HTTP and REST routes.
-/// CORS, validation, and dedup have already been applied by the caller
-/// (`dynamic_handler`) before the sync/async split.
+/// Every ingress guard — origin allow-list, rate limit, validation, dedup,
+/// response-cache lookup, backpressure — has already run in the caller's
+/// `apply_guards` call, before the sync/async split; what arrives here is the
+/// resulting [`Admission`].
 ///
-/// Returns a pre-serialized `Response` so the JSON is serialized exactly once
-/// (or zero times on cache hit).
+/// Returns a pre-serialized `Response` so the JSON is serialized exactly once.
 pub(super) async fn process_sync_for_channel(
     state: &AppState,
     channel: &str,
@@ -222,8 +229,19 @@ pub(super) async fn process_sync_for_channel(
     metadata: Value,
     channel_config: Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
     profile_requested: bool,
+    admission: Admission,
 ) -> Result<Response, OrionError> {
     let profile = profile_requested.then(crate::engine::profile::ProfileCollector::new);
+    let Admission {
+        backpressure_permit: _backpressure_permit,
+        cache_store: cache_context,
+        timeout_ms,
+        // Nothing redelivers an HTTP request, so the claim is left standing
+        // for the rest of the window: a replay of the same idempotency key is
+        // a second delivery and belongs in the `409` branch, whatever this
+        // one's outcome turns out to be.
+        dedup_claim: _dedup_claim,
+    } = admission;
 
     // O1: only registry-confirmed channels may appear as metric labels.
     // The single-segment route fallback accepts arbitrary path segments, so
@@ -235,15 +253,6 @@ pub(super) async fn process_sync_for_channel(
         "_unknown"
     };
 
-    // Response cache check — return early on cache hit (zero serialization)
-    let cache_context =
-        match guards::check_response_cache(channel, &data, &metadata, &channel_config).await {
-            CacheLookup::Hit(cached) => return Ok(json_response(StatusCode::OK, cached)),
-            CacheLookup::Miss(ctx) => ctx,
-        };
-
-    let _backpressure_permit = guards::acquire_backpressure(channel, &channel_config)?;
-
     let start = Instant::now();
     let engine = crate::engine::acquire_engine_read(&state.engine).await;
     let mut message = dataflow_rs::Message::from_value(&data);
@@ -253,10 +262,6 @@ pub(super) async fn process_sync_for_channel(
         &state.config.engine.rollout_sticky_header,
     );
     inject_rollout_bucket(&mut message, sticky_identity);
-
-    let timeout_ms = channel_config
-        .as_ref()
-        .and_then(|c| c.parsed_config.timeout_ms);
 
     // A2: when the channel opted in via `config.tracing.task_details = true`,
     // use the with-trace engine entry point so per-step inputs/outputs are

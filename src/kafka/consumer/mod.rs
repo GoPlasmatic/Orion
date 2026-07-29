@@ -1,11 +1,15 @@
 //! Kafka ingestion consumer.
 //!
 //! Delivery guarantee: **at-least-once**. A message's offset is committed
-//! only after the message was either processed successfully or its payload
-//! was confirmed written to the DLQ. On any other outcome (processing
-//! failure with the DLQ disabled, or a failed DLQ write) the offset stays
-//! uncommitted and the consumer retries the same message in place with
-//! capped exponential backoff. The in-place window is bounded to stay
+//! only after the message was processed successfully, recognised as a
+//! duplicate by the channel's deduplication window (N16 — an earlier
+//! delivery already did the work), or had its payload confirmed written to
+//! the DLQ. On any other outcome (processing failure with the DLQ disabled,
+//! a failed DLQ write, or a channel guard deferring the message because it
+//! is over its rate limit or at capacity) the offset stays uncommitted and
+//! the consumer retries the same message in place with capped exponential
+//! backoff — which is also how a rate-limited channel throttles its topic
+//! rather than discarding it. The in-place window is bounded to stay
 //! safely below `max.poll.interval.ms` — 80% of it, 240s against
 //! librdkafka's 300s default — because retrying blocks polling, and a
 //! consumer that stops polling for that long is evicted from the group.

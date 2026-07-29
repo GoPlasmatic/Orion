@@ -99,6 +99,32 @@ fn extract_path_from_serde_message(msg: &str) -> Option<String> {
     None
 }
 
+/// The direct peer's socket address, when the serve layer supplied one.
+///
+/// `ConnectInfo<SocketAddr>` itself is a fallible extractor and axum 0.8 has
+/// no `Option` impl for it, so a handler that wants "the peer if there is
+/// one" — the data plane, which is also driven by `tower::oneshot` in tests
+/// where no peer exists — needs this. Never a rejection: absence is a valid
+/// answer, and the callers fall back to forwarded headers exactly as the
+/// rate-limit middleware does.
+pub struct PeerAddr(pub Option<std::net::SocketAddr>);
+
+impl<S> FromRequestParts<S> for PeerAddr
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(PeerAddr(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|ci| ci.0),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

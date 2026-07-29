@@ -195,7 +195,7 @@ use crate::common::post_with_idempotency_key;
 /// twice should return 200 then 409.
 #[tokio::test]
 #[ignore = "needs Docker; run with: cargo test --test integration -- --ignored connector_redis_test"]
-async fn test_redis_dedup_via_check_and_insert() {
+async fn test_redis_dedup_rejects_a_replayed_idempotency_key() {
     let app = common::test_app().await;
     let (_redis, redis_url) = redis_container().await;
 
@@ -254,4 +254,79 @@ async fn test_redis_dedup_via_check_and_insert() {
         "Expected error message to contain 'Duplicate', got: {}",
         body["error"]["message"]
     );
+}
+
+/// N16: the same idempotency claim, exercised against the backend the guard
+/// actually uses in production.
+///
+/// The guard's unit tests run against in-memory stubs, so nothing checked
+/// that Redis implements the contract the claim depends on. That contract is
+/// no longer "is this key new?" — a bare boolean cannot distinguish a second
+/// delivery from a redelivery of the *same* one, and treating the latter as a
+/// duplicate is how a Kafka record gets committed without ever running. So
+/// `claim_dedup_key` reports **who** holds the key, and `remove` hands it
+/// back; `SET NX EX` + `GET` and `DEL` are what implement that here.
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test integration -- --ignored connector_redis_test"]
+async fn test_redis_dedup_claim_reports_the_holder_and_can_be_released() {
+    use orion::connector::cache_backend::{CacheBackend, RedisCacheBackend};
+
+    let (_redis, redis_url) = redis_container().await;
+    let client = redis::Client::open(redis_url.as_str()).expect("redis client");
+    let conn = client
+        .get_connection_manager()
+        .await
+        .expect("redis connection");
+    let backend = RedisCacheBackend::new(conn);
+
+    let key = "dedup:orders:ORD-77";
+
+    // A free key is claimed, and the claim is silent about any holder.
+    assert_eq!(
+        backend
+            .claim_dedup_key(key, "kafka:orders/0/7", 300)
+            .await
+            .expect("claim"),
+        None
+    );
+
+    // A *different* delivery presenting the same key is told who holds it, so
+    // the guard can see the holder is not itself and refuse with 409.
+    assert_eq!(
+        backend
+            .claim_dedup_key(key, "kafka:orders/0/12", 300)
+            .await
+            .expect("claim"),
+        Some("kafka:orders/0/7".to_string()),
+        "a held key must name its holder, not merely report 'taken'"
+    );
+
+    // The *same* delivery coming back — an in-place retry, or a redelivery of
+    // an offset that was never committed — reads its own token and proceeds.
+    assert_eq!(
+        backend
+            .claim_dedup_key(key, "kafka:orders/0/7", 300)
+            .await
+            .expect("claim"),
+        Some("kafka:orders/0/7".to_string()),
+        "a redelivery must be able to recognise its own unsettled claim"
+    );
+
+    // Releasing an unsettled delivery frees the key for whoever comes next.
+    backend.remove(key).await.expect("release");
+    assert_eq!(
+        backend
+            .claim_dedup_key(key, "kafka:orders/0/12", 300)
+            .await
+            .expect("claim"),
+        None,
+        "a released key must be claimable again"
+    );
+
+    // Releasing a key nobody holds is not an error — the settle path runs on
+    // every outcome, including ones that never claimed anything.
+    backend
+        .remove("dedup:orders:never-claimed")
+        .await
+        .expect("remove absent key");
 }

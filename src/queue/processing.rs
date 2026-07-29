@@ -224,6 +224,24 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // O1: unregistered channel names (arbitrary path segments on the async
     // route) must not become Prometheus label values.
     let channel_registered = channel_runtime.is_some();
+    // N16: the channel's own `timeout_ms` governs here too. This worker used
+    // to apply `trace_queue.processing_timeout_ms` unconditionally, so a
+    // channel declaring `timeout_ms = 2000` timed out at 2 s over HTTP and at
+    // the global 60 s over `/async` — the same channel, two contracts.
+    // Re-resolved here rather than carried through the queue, so a config
+    // change between submission and dequeue applies.
+    //
+    // Clamped to `trace_queue.processing_timeout_ms`, which is an operator's
+    // cap on how long one of a fixed number of queue workers may be occupied,
+    // not a default a channel may raise: a channel declaring `timeout_ms`
+    // above it would otherwise hold a worker past the ceiling and starve
+    // every other channel's queued work.
+    let timeout_ms = crate::channel::guards::effective_timeout_ms(
+        &channel_runtime,
+        Some(ctx.processing_timeout_ms),
+        Some(ctx.processing_timeout_ms),
+    )
+    .unwrap_or(ctx.processing_timeout_ms);
     let effective_trace = channel_runtime
         .map(|c| c.trace_storage)
         .unwrap_or_else(|| {
@@ -280,7 +298,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // `config.tracing.task_details = true`. Both arms resolve to the same
     // `(Result, Option<ExecutionTrace>)` shape so the timeout handling is shared.
     let capture_trace = effective_trace.task_details;
-    let processing_timeout_ms = ctx.processing_timeout_ms;
+    let processing_timeout_ms = timeout_ms;
     let workflow_start = Instant::now();
     let timeout_outcome = crate::engine::run_for_channel(
         &engine_ref,

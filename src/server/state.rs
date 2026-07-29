@@ -88,6 +88,12 @@ pub struct AppStateInner {
     /// deployment behind an ingress or load balancer, every audit row
     /// recorded the proxy's address and there was no way to change that short
     /// of turning on rate limiting.
+    ///
+    /// The per-channel `rate_limit` keys on it too: the ingress guards enforce
+    /// that limit with `[rate_limit] enabled = false`, so hanging the trust
+    /// list off the limiter meant that in exactly the configuration the
+    /// per-channel limit exists for, every client behind a proxy collapsed
+    /// into one bucket (S15).
     pub trusted_proxies: Arc<Vec<ipnet::IpNet>>,
 }
 

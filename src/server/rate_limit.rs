@@ -1,3 +1,13 @@
+//! Platform-level rate limiting middleware.
+//!
+//! S15/N16: the **per-channel** limiter used to live here too, which is why
+//! it applied to HTTP ingress and nothing else — this middleware pulls
+//! `AppState` and resolves the target channel from the URI, neither of which
+//! a Kafka record or an in-process `channel_call` has. It moved to
+//! `channel::guards`, where [`crate::channel::guards::apply_guards`] runs it
+//! on every transport. What is left here is the platform budget
+//! (`[rate_limit]`), keyed by client IP and applied per route group.
+
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
@@ -5,20 +15,24 @@ use axum::extract::{ConnectInfo, MatchedPath, Request, State};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use ipnet::IpNet;
-use serde_json::{Value, json};
 
 use crate::channel::{KeyedLimiter, build_keyed_limiter};
 use crate::config::RateLimitConfig;
 use crate::metrics;
-use crate::server::AppState;
 
 /// Holds platform-level rate limiters (global defaults + endpoint-level).
-/// Per-channel rate limiters live in `ChannelRegistry` and are built from DB config.
+/// Per-channel rate limiters live in `ChannelRegistry` and are applied by the
+/// ingress guards, not here.
+///
+/// `trusted_proxies` deliberately does **not** live here even though the key
+/// is spelled `rate_limit.trusted_proxies`: it decides whether a forwarded
+/// header may name the client, which the per-channel limit asks with the
+/// platform limiter off. It is on `AppState`
+/// ([`crate::server::state::AppStateInner::trusted_proxies`]).
 pub struct RateLimitState {
     default_limiter: Arc<KeyedLimiter>,
     admin_limiter: Option<Arc<KeyedLimiter>>,
     data_limiter: Option<Arc<KeyedLimiter>>,
-    pub(crate) trusted_proxies: Vec<IpNet>,
 }
 
 impl RateLimitState {
@@ -43,7 +57,6 @@ impl RateLimitState {
             default_limiter,
             admin_limiter,
             data_limiter,
-            trusted_proxies: config.parsed_trusted_proxies(),
         }
     }
 }
@@ -56,18 +69,30 @@ impl RateLimitState {
 /// spoofing `X-Forwarded-For`. When no `ConnectInfo` is present (e.g.
 /// `tower::oneshot` in tests), falls back to the header-only behavior.
 pub(crate) fn extract_client_ip(req: &Request, trusted_proxies: &[IpNet]) -> String {
-    // to_canonical: a server bound on `[::]` sees IPv4 peers as v4-mapped
-    // IPv6 (`::ffff:1.2.3.4`), which would never match an IPv4 CIDR.
     let peer = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip().to_canonical());
-    match peer {
+        .map(|ci| ci.0);
+    client_ip_from_parts(peer.as_ref(), req.headers(), trusted_proxies)
+}
+
+/// [`extract_client_ip`] against a peer address and header map rather than a
+/// whole `Request`, so the data-plane handler — which has already consumed
+/// the body — can identify the caller for its channel's rate limit the same
+/// way the middleware does for the platform's (S15).
+pub(crate) fn client_ip_from_parts(
+    peer: Option<&SocketAddr>,
+    headers: &axum::http::HeaderMap,
+    trusted_proxies: &[IpNet],
+) -> String {
+    // to_canonical: a server bound on `[::]` sees IPv4 peers as v4-mapped
+    // IPv6 (`::ffff:1.2.3.4`), which would never match an IPv4 CIDR.
+    match peer.map(|p| p.ip().to_canonical()) {
         Some(ip) if peer_is_trusted(&ip, trusted_proxies) => {
-            forwarded_client_ip(req).unwrap_or_else(|| ip.to_string())
+            forwarded_client_ip(headers).unwrap_or_else(|| ip.to_string())
         }
         Some(ip) => ip.to_string(),
-        None => forwarded_client_ip(req).unwrap_or_else(|| "unknown".to_string()),
+        None => forwarded_client_ip(headers).unwrap_or_else(|| "unknown".to_string()),
     }
 }
 
@@ -78,53 +103,11 @@ fn peer_is_trusted(peer: &IpAddr, trusted_proxies: &[IpNet]) -> bool {
 /// Client IP claimed by proxy headers: first `X-Forwarded-For` hop, else
 /// `X-Real-IP` (shared policy in `engine::utils`). Only meaningful when the
 /// direct peer is a trusted proxy.
-fn forwarded_client_ip(req: &Request) -> Option<String> {
+fn forwarded_client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
     crate::engine::utils::first_forwarded_value(|name| {
-        req.headers().get(name).and_then(|v| v.to_str().ok())
+        headers.get(name).and_then(|v| v.to_str().ok())
     })
     .map(str::to_string)
-}
-
-/// Normalise a data-plane URI to the route path `dynamic_handler` resolves
-/// against: the `/api/v1/data/` prefix and any `/async` suffix removed.
-///
-/// Every path under `/api/v1/data/` is a channel now. This used to exclude
-/// `traces` and `traces/*`, which sat here as static routes and shadowed any
-/// channel of that name; they moved to `/api/v1/admin/traces*` in 1.0 (R8).
-fn data_route_path(uri_path: &str) -> Option<&str> {
-    let path = uri_path.strip_prefix("/api/v1/data/")?;
-    let path = path.strip_suffix("/async").unwrap_or(path);
-    let path = path.trim_matches('/').trim();
-    if path.is_empty() {
-        return None;
-    }
-    Some(path)
-}
-
-/// Resolve which channel a data request targets, by the same two rules
-/// `dynamic_handler` uses: the REST route table first, then a bare channel
-/// name.
-///
-/// S9: this used to take the first path segment and look it up by name. For a
-/// REST-routed channel that segment is the route prefix (`orders` in
-/// `GET /orders/{id}`), not the channel name, so the lookup missed, the
-/// per-channel limiter was never found, and the channel silently fell through
-/// to the platform-wide limiter — the configured limit simply did not apply.
-async fn resolve_data_channel(state: &AppState, method: &str, uri_path: &str) -> Option<String> {
-    let route_path = data_route_path(uri_path)?;
-    // N10: an invalid percent-sequence (`Err`) resolves to no channel here —
-    // the request falls to the platform limiter and `dynamic_handler`
-    // answers the 400.
-    if let Ok(Some(matched)) = state.channel_registry.match_route(method, route_path) {
-        return Some(matched.channel_name);
-    }
-    // Backward-compatible single-segment channel name, decoded once exactly
-    // as in `dynamic_handler` (None on an invalid sequence — the handler
-    // answers the 400; no channel limiter applies).
-    if !route_path.contains('/') {
-        return crate::channel::routing::percent_decode_segment(route_path);
-    }
-    None
 }
 
 /// Determine the route group from the matched path.
@@ -155,10 +138,13 @@ fn classify_route(path: &str) -> RouteGroup {
     }
 }
 
-/// Rate limiting middleware.
+/// Platform rate limiting middleware.
 ///
-/// Per-channel limits are read from the `ChannelRegistry` (DB-driven, hot-reloaded).
-/// Platform-level defaults (global, admin, data endpoint) come from `RateLimitState` (config file).
+/// Applies the config-file budget (`[rate_limit]`) keyed by client IP, per
+/// route group. Per-channel limits are enforced by the ingress guards, on
+/// every transport rather than only this one (S15) — a data request is
+/// therefore metered twice: once here against the platform budget, once in
+/// `apply_guards` against its channel's own limit.
 pub async fn rate_limit_middleware(
     State(state): State<crate::server::state::AppState>,
     matched_path: Option<MatchedPath>,
@@ -170,74 +156,13 @@ pub async fn rate_limit_middleware(
         None => return next.run(req).await,
     };
 
-    let client_ip = extract_client_ip(&req, &rate_limit_state.trusted_proxies);
+    let client_ip = extract_client_ip(&req, state.trusted_proxies());
     let path = matched_path
         .as_ref()
         .map(|m: &MatchedPath| m.as_str())
         .unwrap_or(req.uri().path());
     let route_group = classify_route(path);
 
-    // For data routes, check per-channel limiter from ChannelRegistry first
-    if let RouteGroup::Data = &route_group {
-        let uri_path = req.uri().path().to_string();
-        let method = req.method().as_str().to_string();
-        if let Some(channel) = resolve_data_channel(&state, &method, &uri_path).await
-            && let Some(channel_config) = state.channel_registry.get_by_name(&channel)
-            && let Some(ref limiter) = channel_config.rate_limiter
-        {
-            let channel = channel.as_str();
-            // Compute rate limit key from key_logic or default to client_ip
-            let key = if let Some(ref compiled) = channel_config.rate_limit_key_logic {
-                let context = build_rate_limit_context(&client_ip, channel, &req);
-                match state
-                    .datalogic
-                    .session()
-                    .eval_into::<serde_json::Value, _>(compiled, &context)
-                {
-                    Ok(val) => val.as_str().map(|s| s.to_string()).unwrap_or_else(|| {
-                        serde_json::to_string(&val).unwrap_or_else(|_| client_ip.clone())
-                    }),
-                    // N5: falling back to client_ip here would silently
-                    // re-dimension the limit mid-flight. The key is part of
-                    // the control, so a request whose key cannot be computed
-                    // is rejected rather than counted in the wrong bucket.
-                    Err(e) => {
-                        tracing::warn!(
-                            channel = %channel,
-                            error = %e,
-                            "rate_limit.key_logic evaluation failed; rejecting request"
-                        );
-                        metrics::record_rate_limit_rejected(channel);
-                        return rate_limited_response();
-                    }
-                }
-            } else {
-                client_ip.clone()
-            };
-
-            let policy = channel_config
-                .parsed_config
-                .rate_limit
-                .as_ref()
-                .map(|rl| rl.on_backend_error)
-                .unwrap_or_default();
-            match check_channel_rate_limit(limiter.as_ref(), policy, channel, key).await {
-                // Channel-specific limiter passed; skip the group/default limiter
-                Ok(true) => return next.run(req).await,
-                Ok(false) => {
-                    // Registry-confirmed channel name — bounded cardinality (O1)
-                    metrics::record_rate_limit_rejected(channel);
-                    return rate_limited_response();
-                }
-                Err(refusal) => {
-                    metrics::record_rate_limit_rejected(channel);
-                    return refusal.into_response();
-                }
-            }
-        }
-    }
-
-    // Fall through to platform-level limiter
     let limiter = match route_group {
         RouteGroup::Admin => rate_limit_state
             .admin_limiter
@@ -258,91 +183,12 @@ pub async fn rate_limit_middleware(
     next.run(req).await
 }
 
-/// Run a per-channel rate-limit check, resolving backend failures through
-/// the channel's `on_backend_error` policy (N7).
-///
-/// `Ok(true)` = allowed; `Ok(false)` = over limit (429); `Err` = the backend
-/// could not answer and the channel is configured to fail closed (503 —
-/// deliberately not 429: the caller is not over any limit, the control is
-/// unavailable). The default `allow` keeps the historical fail-open
-/// behaviour: availability wins unless the operator opts into enforcement.
-async fn check_channel_rate_limit(
-    limiter: &dyn crate::channel::RateLimitBackend,
-    policy: crate::channel::BackendErrorPolicy,
-    channel: &str,
-    key: String,
-) -> Result<bool, crate::errors::OrionError> {
-    match limiter.check(key).await {
-        Ok(allowed) => Ok(allowed),
-        Err(e) => {
-            metrics::record_error("rate_limit_backend");
-            match policy {
-                crate::channel::BackendErrorPolicy::Allow => {
-                    tracing::warn!(
-                        channel = %channel,
-                        error = %e,
-                        "Rate-limit backend error; failing open (request allowed)"
-                    );
-                    Ok(true)
-                }
-                crate::channel::BackendErrorPolicy::Deny => {
-                    tracing::warn!(
-                        channel = %channel,
-                        error = %e,
-                        "Rate-limit backend error; failing closed (request refused)"
-                    );
-                    Err(crate::errors::OrionError::ServiceUnavailable(format!(
-                        "Channel '{channel}' cannot check its rate limit: the backend is \
-                         unavailable and the channel is configured to fail closed"
-                    )))
-                }
-            }
-        }
-    }
-}
-
-/// Build the context object available to rate limit `key_logic` expressions.
-///
-/// Headers are included lazily — only allocated when key_logic actually uses them.
-/// For simple key_logic that only references `client_ip` or `channel`, this
-/// avoids O(n) header allocations per request.
-fn build_rate_limit_context(client_ip: &str, channel: &str, req: &Request) -> Value {
-    // Build headers lazily only if the request has them (always true, but
-    // we keep only the common ones to reduce allocations).
-    let mut headers = serde_json::Map::with_capacity(8);
-    // Only serialize well-known headers that key_logic is likely to use
-    const COMMON_HEADERS: &[&str] = &[
-        "authorization",
-        "x-api-key",
-        "x-forwarded-for",
-        "x-real-ip",
-        "user-agent",
-        "content-type",
-        "origin",
-        "x-tenant-id",
-    ];
-    for &name in COMMON_HEADERS {
-        if let Some(value) = req.headers().get(name)
-            && let Ok(v) = value.to_str()
-        {
-            headers.insert(name.to_string(), Value::String(v.to_string()));
-        }
-    }
-    json!({
-        "client_ip": client_ip,
-        "channel": channel,
-        "headers": headers,
-    })
-}
-
+/// The 429 every limiter answers with: the standard error envelope
+/// (`request_id` included) plus `retry-after`, both supplied by
+/// `OrionError::into_response` so the guard-side 429 and this one are the
+/// same response.
 fn rate_limited_response() -> Response {
-    // Route through OrionError so the 429 carries the same envelope
-    // (request_id included) as every other error, then add retry-after.
-    let mut resp =
-        crate::errors::OrionError::RateLimited("Too many requests".to_string()).into_response();
-    resp.headers_mut()
-        .insert("retry-after", axum::http::HeaderValue::from_static("1"));
-    resp
+    crate::errors::OrionError::RateLimited("Too many requests".to_string()).into_response()
 }
 
 #[cfg(test)]
@@ -494,65 +340,6 @@ mod tests {
     }
 
     #[test]
-    fn test_data_route_path_valid() {
-        assert_eq!(data_route_path("/api/v1/data/orders"), Some("orders"));
-    }
-
-    /// The `/async` suffix is stripped, not treated as a second segment —
-    /// otherwise `orders/async` would never match the `orders` route (S9).
-    #[test]
-    fn test_data_route_path_strips_async_suffix() {
-        assert_eq!(data_route_path("/api/v1/data/orders/async"), Some("orders"));
-        assert_eq!(
-            data_route_path("/api/v1/data/orders/42/async"),
-            Some("orders/42")
-        );
-    }
-
-    /// S9: the multi-segment path is kept whole so the route table can match
-    /// it. The old helper returned just `"orders"` here, which is the route
-    /// prefix rather than the channel name.
-    #[test]
-    fn test_data_route_path_keeps_rest_segments() {
-        assert_eq!(
-            data_route_path("/api/v1/data/orders/ORD-1"),
-            Some("orders/ORD-1")
-        );
-    }
-
-    /// R8: `traces` used to be excluded here because two static routes sat on
-    /// the data plane and shadowed any channel of that name. They moved to
-    /// `/api/v1/admin/traces*`, so the name is an ordinary channel now and must
-    /// resolve like one — the special case is gone, not merely unreachable.
-    #[test]
-    fn test_data_route_path_treats_traces_as_a_channel() {
-        assert_eq!(data_route_path("/api/v1/data/traces"), Some("traces"));
-        assert_eq!(
-            data_route_path("/api/v1/data/traces/abc123"),
-            Some("traces/abc123")
-        );
-    }
-
-    #[test]
-    fn test_data_route_path_wrong_prefix() {
-        assert_eq!(data_route_path("/api/v1/admin/workflows"), None);
-    }
-
-    #[test]
-    fn test_data_route_path_empty_channel() {
-        assert_eq!(data_route_path("/api/v1/data/"), None);
-    }
-
-    /// `/api/v1/data/async` is a channel *named* `async`, not an async
-    /// submission with no channel — only a `/async` suffix on a non-empty
-    /// path is a submission. Mirrors `dynamic_handler`, whose `strip_suffix`
-    /// does not match a bare `"async"` either.
-    #[test]
-    fn test_data_route_path_bare_async_is_a_channel_name() {
-        assert_eq!(data_route_path("/api/v1/data/async"), Some("async"));
-    }
-
-    #[test]
     fn test_classify_route_admin() {
         assert!(matches!(
             classify_route("/api/v1/admin/workflows"),
@@ -627,83 +414,18 @@ mod tests {
         assert!(state.data_limiter.is_some());
     }
 
+    /// S15: the trust list is parsed from `[rate_limit]` but is *not* gated on
+    /// `rate_limit.enabled`, because the per-channel limit keys on the same
+    /// client identity and applies with the platform limiter off. Parsing it
+    /// off a disabled config must still yield the CIDRs.
     #[test]
-    fn test_from_config_parses_trusted_proxies() {
+    fn trusted_proxies_parse_with_the_platform_limiter_disabled() {
         let config = RateLimitConfig {
-            enabled: true,
+            enabled: false,
             trusted_proxies: vec!["10.0.0.0/8".to_string(), "192.168.1.1".to_string()],
             ..Default::default()
         };
-        let state = RateLimitState::from_config(&config);
-        assert_eq!(state.trusted_proxies.len(), 2);
-    }
-
-    // -- N7: on_backend_error policy against a failing backend --
-
-    /// Trait-level stub whose backing store never answers — the failure mode
-    /// a Redis blip produces, minus the Redis.
-    struct FailingBackend;
-
-    #[async_trait::async_trait]
-    impl crate::channel::RateLimitBackend for FailingBackend {
-        async fn check(&self, _key: String) -> Result<bool, crate::errors::OrionError> {
-            Err(crate::errors::OrionError::Internal(
-                "backend down".to_string(),
-            ))
-        }
-    }
-
-    #[tokio::test]
-    async fn test_backend_error_fails_open_under_allow() {
-        let allowed = check_channel_rate_limit(
-            &FailingBackend,
-            crate::channel::BackendErrorPolicy::Allow,
-            "orders",
-            "k".to_string(),
-        )
-        .await;
-        assert!(
-            matches!(allowed, Ok(true)),
-            "allow must fail open: {allowed:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_backend_error_fails_closed_under_deny() {
-        let refused = check_channel_rate_limit(
-            &FailingBackend,
-            crate::channel::BackendErrorPolicy::Deny,
-            "orders",
-            "k".to_string(),
-        )
-        .await;
-        assert!(
-            matches!(
-                refused,
-                Err(crate::errors::OrionError::ServiceUnavailable(_))
-            ),
-            "deny must refuse with 503, not 429: {refused:?}"
-        );
-    }
-
-    /// The policy only governs backend *errors* — a healthy backend's
-    /// verdicts pass through untouched under either policy.
-    #[tokio::test]
-    async fn test_policy_is_inert_for_healthy_backend() {
-        let limiter = crate::channel::LocalRateLimitBackend::new(1, 1);
-        for policy in [
-            crate::channel::BackendErrorPolicy::Allow,
-            crate::channel::BackendErrorPolicy::Deny,
-        ] {
-            let key = format!("k-{policy:?}");
-            let first = check_channel_rate_limit(&limiter, policy, "orders", key.clone()).await;
-            assert!(matches!(first, Ok(true)), "{first:?}");
-            let second = check_channel_rate_limit(&limiter, policy, "orders", key).await;
-            assert!(
-                matches!(second, Ok(false)),
-                "over-limit stays a plain 429 verdict: {second:?}"
-            );
-        }
+        assert_eq!(config.parsed_trusted_proxies().len(), 2);
     }
 
     #[test]

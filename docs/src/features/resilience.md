@@ -70,6 +70,19 @@ Timeouts are enforced at multiple levels to prevent runaway requests:
 
 If the workflow exceeds this limit, the request returns `504 Gateway Timeout`.
 
+The channel's `timeout_ms` governs **every** ingress: a synchronous request, an `/async` submission, a Kafka record, and an in-process `channel_call` are all bounded by it. Where a channel declares none, each ingress falls back to its own default — no deadline at all on the synchronous path, `trace_queue.processing_timeout_ms` for `/async`, `kafka.processing_timeout_ms` for Kafka, and `engine.default_channel_call_timeout_ms` for `channel_call`. A `channel_call` task may still override with its own `timeout_ms`, which outranks the target channel's.
+
+**On two of those ingresses the channel may only shorten the deadline, never lengthen it.** `kafka.processing_timeout_ms` and `trace_queue.processing_timeout_ms` are not merely defaults: they are ceilings, and the channel value is clamped to them.
+
+| Ingress | Channel declares none | Channel declares more than the transport allows |
+|---|---|---|
+| synchronous HTTP | runs to completion | honoured — nothing else waits on it |
+| `/async` | `trace_queue.processing_timeout_ms` | clamped to `trace_queue.processing_timeout_ms` |
+| Kafka | `kafka.processing_timeout_ms` | clamped to `kafka.processing_timeout_ms` |
+| `channel_call` | `engine.default_channel_call_timeout_ms` | honoured — the task's own `timeout_ms` outranks it anyway |
+
+The reason is that on those two paths the deadline protects something shared. A Kafka dispatch blocks the consumer's poll loop, so a channel asking for ten minutes on a topic would take the consumer past librdkafka's `max.poll.interval.ms` (300 s by default) and get it evicted from its group mid-record. An `/async` dispatch occupies one of a fixed number of queue workers, so an over-long channel deadline starves every other channel's queued work. `timeout_ms` is channel configuration and is not validated against either ceiling, so the clamp is what keeps a config change from becoming an outage. Raise the transport setting if a channel genuinely needs longer there.
+
 **Per-connector query timeout:** for database connectors:
 
 ```json

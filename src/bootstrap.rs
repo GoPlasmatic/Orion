@@ -681,9 +681,11 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         mongo_pool_cache,
         kafka_producer,
     } = components;
-    // Parsed once, and independent of `rate_limit.enabled`: the audit trail
-    // and the failed-auth backoff resolve the caller's address with this list
-    // too. See `AppStateInner::trusted_proxies`.
+    // Parsed once, unconditionally — not from `rate_limit_state`. Three
+    // callers need it whether or not the platform limiter is enabled: the
+    // audit trail (O7), the failed-auth backoff, and the per-channel rate
+    // limit, which applies with the platform limiter off (S15) and keys on
+    // the same client identity. See `AppStateInner::trusted_proxies`.
     let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         engine,

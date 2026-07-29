@@ -21,10 +21,23 @@ use super::dlq::{FailureReport, report_failure_and_dlq};
 pub(super) enum MsgOutcome {
     /// Processed successfully.
     Processed,
+    /// The channel's deduplication window holds this message's idempotency
+    /// key under a *settled* claim, so an earlier delivery ran it to a
+    /// committed outcome (N16). Nothing to run and nothing to preserve — the
+    /// redelivery is the at-least-once transport doing its job, and skipping
+    /// it is the point of configuring dedup on a Kafka channel.
+    ///
+    /// This never fires for a record's own unfinished attempts: the claim
+    /// carries the record's coordinates as its owner, so a retry or a
+    /// redelivery of an offset that was never committed recognises its own
+    /// claim and processes the message (see `check_deduplication` in
+    /// [`crate::channel::guards`]).
+    Deduplicated,
     /// Processing failed but the payload was confirmed written to the DLQ.
     DeadLettered,
     /// Processing failed and the payload is not preserved anywhere (DLQ
-    /// disabled, or the DLQ write itself failed).
+    /// disabled, the DLQ write itself failed, or a guard deferred the
+    /// message). Left uncommitted for redelivery.
     Failed,
 }
 
@@ -33,19 +46,68 @@ impl MsgOutcome {
     /// implicitly commits every earlier offset on the partition, so this
     /// must be true only when the message no longer needs redelivery.
     fn commits_offset(self) -> bool {
-        matches!(self, MsgOutcome::Processed | MsgOutcome::DeadLettered)
+        matches!(
+            self,
+            MsgOutcome::Processed | MsgOutcome::Deduplicated | MsgOutcome::DeadLettered
+        )
+    }
+}
+
+/// What a guard refusal means for a Kafka message.
+///
+/// N16 gives the Kafka ingress the same guards as HTTP, but a Kafka record
+/// cannot be answered with a status code — it can only be committed, dead
+/// lettered, or left for redelivery. The three dispositions are exactly that
+/// choice, and which one a refusal gets depends on whether the message is
+/// wrong (terminal), already handled (duplicate), or merely unwelcome right
+/// now (deferred).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuardDisposition {
+    /// The message will never be accepted: `validation_logic` rejected it.
+    /// Dead letter it and commit — redelivering it forever is head-of-line
+    /// blocking on a poison message.
+    Terminal,
+    /// A previous delivery of this key was already processed. Commit; do not
+    /// dead letter, because nothing failed.
+    Duplicate,
+    /// The channel is over its rate limit or at capacity, or a guard backend
+    /// is down and the channel fails closed. The message is fine and the
+    /// condition is transient, so leave the offset uncommitted: the retry
+    /// loop's capped backoff *is* the throttle, and the partition is rewound
+    /// for redelivery when the budget runs out. Dead lettering a message for
+    /// arriving during a busy second would be data loss dressed as a policy.
+    Deferred,
+}
+
+/// Classify a guard refusal for the Kafka ingress.
+///
+/// `RateLimitKeyUnavailable` is deliberately *not* grouped with
+/// `RateLimited`: being over a limit clears with time, but a
+/// `rate_limit.key_logic` that cannot be evaluated against this record will
+/// fail against every redelivery of it, so deferring it would block the
+/// partition for as long as the channel keeps that expression. It is as
+/// terminal as a `validation_logic` rejection and is dead-lettered the same
+/// way.
+pub(super) fn classify_guard_refusal(error: &crate::errors::OrionError) -> GuardDisposition {
+    use crate::errors::OrionError;
+    match error {
+        OrionError::Conflict(_) => GuardDisposition::Duplicate,
+        OrionError::RateLimited(_) | OrionError::ServiceUnavailable(_) => {
+            GuardDisposition::Deferred
+        }
+        _ => GuardDisposition::Terminal,
     }
 }
 
 /// Decode + parse + dispatch a single Kafka message. Wraps the entire
 /// per-message lifecycle: topic → channel lookup, payload UTF-8 decode,
-/// JSON parse, W3C trace context extraction, channel validation_logic,
-/// engine dispatch with timeout, and the match on the processing outcome
-/// (timeout / engine error / workflow errors / success). Every failure
-/// branch routes through
-/// [`report_failure_and_dlq`]. The outer `consume_loop` is responsible
-/// for backpressure, shutdown, retries, and offset commit after this
-/// returns.
+/// JSON parse, W3C trace context extraction, the channel's ingress guards,
+/// engine dispatch with the channel's deadline, and the match on the
+/// processing outcome (timeout / engine error / workflow errors / success).
+/// Every failure branch routes through [`report_failure_and_dlq`] or, for a
+/// guard refusal, through [`classify_guard_refusal`]. The outer
+/// `consume_loop` is responsible for shutdown, retries, and the offset
+/// commit after this returns.
 async fn process_one_kafka_message(
     ctx: &ConsumeLoopContext,
     msg: &rdkafka::message::BorrowedMessage<'_>,
@@ -130,16 +192,19 @@ async fn process_one_kafka_message(
         }
     };
 
+    // Record headers, read once and shared by trace-context propagation and
+    // the ingress guards below.
+    let headers = kafka_headers_map(msg);
+
     // Extract W3C trace context from Kafka message headers and attach it as
     // parent of the current tracing span (held for the rest of this scope).
-    let _parent_cx = extract_kafka_trace_context(msg);
+    let _parent_cx = crate::server::trace_context::set_parent_from_map(&headers);
 
-    // S1: apply the target channel's validation_logic before dispatch,
-    // mirroring the HTTP ingress path. CORS / dedup / response cache are
-    // HTTP-transport concerns and don't apply here. Failures are not
-    // silently dropped — they record metrics, log, route to the DLQ when
-    // one is configured, and commit the offset only on a confirmed DLQ
-    // write (same outcome model as every other failure class).
+    // S1/N16: apply the target channel's ingress guards before dispatch,
+    // through the same function every other transport uses — which guards
+    // run is `Transport::Kafka`'s row of the matrix. Failures are not
+    // silently dropped: they record metrics, log, and are committed, dead
+    // lettered or left for redelivery per `classify_guard_refusal`.
     let metadata = kafka_metadata_value(&channel, &topic, msg);
     // F35: a quarantined channel is refused here too. Routed to the DLQ
     // rather than dropped, so the messages are replayable once the operator
@@ -163,28 +228,110 @@ async fn process_one_kafka_message(
             .await;
         }
     };
-    if let Err(e) = crate::channel::guards::validate_input(
-        &channel,
-        &channel_runtime,
-        &data,
-        &metadata,
-        &ctx.datalogic,
-    ) {
-        return report_failure_and_dlq(
-            ctx,
-            FailureReport {
-                channel: &channel,
-                topic: &topic,
-                payload: payload.as_bytes(),
-                message_status: "error",
-                error_kind: "kafka_validation",
-                log_msg: "Kafka message rejected by channel validation_logic",
-                dlq_reason: &format!("Validation failed: {e}"),
-            },
-            count_outcome,
-        )
-        .await;
-    }
+    let header_lookup = |name: &str| headers.get(&name.to_ascii_lowercase()).cloned();
+    // The record key is the natural idempotency key on an at-least-once
+    // transport, used when the channel's dedup header is not among the
+    // record headers.
+    let record_key = msg.key().and_then(|k| std::str::from_utf8(k).ok());
+    // The record's coordinates identify this *physical* delivery: every
+    // redelivery of an offset that was never committed — an in-place retry, a
+    // rewind after the retry budget, a restart — presents the same token, and
+    // the dedup guard recognises its own unsettled claim instead of refusing
+    // the message as a duplicate of itself.
+    let dedup_owner = format!("kafka:{topic}/{}/{}", msg.partition(), msg.offset());
+    let guard_result = crate::channel::guards::apply_guards(crate::channel::guards::GuardRequest {
+        transport: crate::channel::guards::Transport::Kafka,
+        channel: &channel,
+        runtime: &channel_runtime,
+        data: &data,
+        metadata: &metadata,
+        datalogic: &ctx.datalogic,
+        origin: None,
+        // A Kafka channel consumes one topic, so the topic is a stable,
+        // bounded identity: a channel's limit is a throughput cap on its
+        // topic unless `key_logic` says otherwise.
+        caller_identity: &topic,
+        header: &header_lookup,
+        dedup_key_fallback: record_key,
+        dedup_owner: Some(&dedup_owner),
+        default_timeout_ms: Some(ctx.processing_timeout_ms),
+        // K8: the dispatch blocks the poll loop, so the channel may shorten
+        // this deadline but never lengthen it — see `process_until_committed`
+        // for what the poll gap has to stay under.
+        max_timeout_ms: Some(ctx.processing_timeout_ms),
+    })
+    .await;
+
+    let admission = match guard_result {
+        Ok(crate::channel::guards::GuardVerdict::Admitted(admission)) => admission,
+        // `Transport::Kafka` does not enable the response cache, so a hit is
+        // unreachable; treat it as a refusal rather than asserting.
+        Ok(crate::channel::guards::GuardVerdict::CacheHit(_)) => {
+            return report_failure_and_dlq(
+                ctx,
+                FailureReport {
+                    channel: &channel,
+                    topic: &topic,
+                    payload: payload.as_bytes(),
+                    message_status: "error",
+                    error_kind: "kafka_validation",
+                    log_msg: "Kafka ingress produced a cached response",
+                    dlq_reason: "Response cache is not applicable to Kafka ingress",
+                },
+                count_outcome,
+            )
+            .await;
+        }
+        Err(e) => match classify_guard_refusal(&e) {
+            GuardDisposition::Duplicate => {
+                if count_outcome {
+                    metrics::record_message(&channel, "duplicate");
+                }
+                tracing::debug!(
+                    topic = %topic,
+                    channel = %channel,
+                    "Kafka message suppressed by the channel's deduplication window"
+                );
+                return MsgOutcome::Deduplicated;
+            }
+            GuardDisposition::Deferred => {
+                metrics::record_error("kafka_guard_deferred");
+                tracing::warn!(
+                    topic = %topic,
+                    channel = %channel,
+                    error = %e,
+                    "Kafka message deferred by a channel guard; offset not committed, will retry"
+                );
+                return MsgOutcome::Failed;
+            }
+            GuardDisposition::Terminal => {
+                return report_failure_and_dlq(
+                    ctx,
+                    FailureReport {
+                        channel: &channel,
+                        topic: &topic,
+                        payload: payload.as_bytes(),
+                        message_status: "error",
+                        error_kind: "kafka_validation",
+                        log_msg: "Kafka message rejected by a channel ingress guard",
+                        dlq_reason: &format!("Validation failed: {e}"),
+                    },
+                    count_outcome,
+                )
+                .await;
+            }
+        },
+    };
+    // Held for the whole dispatch, so `max_concurrent_per_node` bounds Kafka
+    // work alongside HTTP and `channel_call` work rather than around it.
+    let _backpressure_permit = admission.backpressure_permit;
+    // Settled below, once the outcome is known: an offset that will be
+    // committed confirms the claim, and one that will not releases it, so a
+    // redelivery is processed rather than mistaken for a completed delivery.
+    let dedup_claim = admission.dedup_claim;
+    // Clamped by the guard chain to `kafka.processing_timeout_ms` (K8), so a
+    // channel's own `timeout_ms` can only shorten the poll gap.
+    let processing_timeout_ms = admission.timeout_ms.unwrap_or(ctx.processing_timeout_ms);
 
     let start = Instant::now();
     let mut message = dataflow_rs::Message::from_value(&data);
@@ -196,13 +343,13 @@ async fn process_one_kafka_message(
         &engine_ref,
         &channel,
         &mut message,
-        Some(ctx.processing_timeout_ms),
+        Some(processing_timeout_ms),
         None,
         false,
     )
     .await;
 
-    match process_result {
+    let outcome = match process_result {
         Err(_) => {
             report_failure_and_dlq(
                 ctx,
@@ -213,10 +360,7 @@ async fn process_one_kafka_message(
                     message_status: "timeout",
                     error_kind: "kafka_timeout",
                     log_msg: "Kafka message processing timed out",
-                    dlq_reason: &format!(
-                        "Processing timed out after {}ms",
-                        ctx.processing_timeout_ms
-                    ),
+                    dlq_reason: &format!("Processing timed out after {processing_timeout_ms}ms"),
                 },
                 count_outcome,
             )
@@ -273,15 +417,49 @@ async fn process_one_kafka_message(
             );
             MsgOutcome::Processed
         }
+    };
+    settle_dedup_claim(dedup_claim, outcome).await;
+    outcome
+}
+
+/// Settle the idempotency key this delivery claimed at admission (N16).
+///
+/// The claim is taken *before* the workflow runs — that is the only point at
+/// which the check is atomic against a concurrent delivery — so every path
+/// out of the dispatch has to say what became of it:
+///
+/// * the offset will be committed (processed, or preserved in the DLQ), so
+///   the key is **confirmed**: any further record carrying it, including a
+///   replay of this one whose commit was lost, is a duplicate of work that
+///   was done;
+/// * the offset will not be committed, so the record is coming back and the
+///   key is **released**. Leaving it claimed is how a message gets committed
+///   without ever running: the retry reads the key its own previous attempt
+///   wrote, `apply_guards` answers `409`, and the ingress reads that as
+///   "already handled".
+async fn settle_dedup_claim(
+    claim: Option<crate::channel::guards::DedupClaim>,
+    outcome: MsgOutcome,
+) {
+    let Some(claim) = claim else {
+        return;
+    };
+    if outcome.commits_offset() {
+        claim.confirm().await;
+    } else {
+        claim.release().await;
     }
 }
 
-/// Extract a W3C trace context from a Kafka message's headers and attach
-/// it as the parent of the current tracing span. Returns the propagated
-/// `opentelemetry::Context` so the caller can keep it in scope.
-fn extract_kafka_trace_context(
-    msg: &rdkafka::message::BorrowedMessage<'_>,
-) -> opentelemetry::Context {
+/// A Kafka record's headers as a lookup map.
+///
+/// Keys are lowercased so a channel's configured header name resolves the
+/// same way it does over HTTP: HTTP header names are case-insensitive and
+/// Kafka's are not, so a producer spelling `Idempotency-Key` must still
+/// satisfy a channel configured with `idempotency-key`. Read once per
+/// message and shared by W3C trace-context propagation (whose keys are
+/// lowercase by specification) and by the ingress guards.
+fn kafka_headers_map(msg: &rdkafka::message::BorrowedMessage<'_>) -> HashMap<String, String> {
     use rdkafka::message::Headers;
 
     let mut header_map = HashMap::new();
@@ -290,11 +468,11 @@ fn extract_kafka_trace_context(
             if let Ok(header) = headers.get_as::<str>(idx)
                 && let Some(value) = header.value
             {
-                header_map.insert(header.key.to_string(), value.to_string());
+                header_map.insert(header.key.to_ascii_lowercase(), value.to_string());
             }
         }
     }
-    crate::server::trace_context::set_parent_from_map(&header_map)
+    header_map
 }
 
 /// Initial delay between in-place retries of an uncommittable message.
@@ -382,9 +560,13 @@ pub(super) async fn process_until_committed(
         // Would the next sleep plus a worst-case attempt overrun the retry
         // budget? Stop retrying in place before that can happen, so the
         // total time away from the poll loop stays safely below
-        // max.poll.interval.ms. (`processing_timeout_ms` bounds the engine
-        // dispatch — the dominant cost of an attempt — so it is the
-        // projection used for "worst case".)
+        // max.poll.interval.ms. (`kafka.processing_timeout_ms` bounds the
+        // engine dispatch — the dominant cost of an attempt — so it is the
+        // projection used for "worst case". A channel's own `timeout_ms` is
+        // honoured on this path but *clamped* to that value by the guard
+        // chain, precisely so this projection stays an upper bound: an
+        // unclamped channel value would let one dispatch outlast the whole
+        // budget and get the consumer evicted mid-message.)
         let projected_ms = backoff_ms.saturating_add(ctx.processing_timeout_ms);
         if Instant::now() + std::time::Duration::from_millis(projected_ms) >= deadline {
             seek_back_for_redelivery(ctx, msg, attempt);
@@ -517,10 +699,91 @@ mod tests {
 
     #[test]
     fn test_outcome_commit_decision() {
-        // Only a successful run or a confirmed DLQ write may advance the
-        // offset — anything else must leave the message for redelivery.
+        // A successful run, a suppressed duplicate, or a confirmed DLQ write
+        // may advance the offset — anything else must leave the message for
+        // redelivery.
         assert!(MsgOutcome::Processed.commits_offset());
+        assert!(MsgOutcome::Deduplicated.commits_offset());
         assert!(MsgOutcome::DeadLettered.commits_offset());
+        assert!(!MsgOutcome::Failed.commits_offset());
+    }
+
+    /// N16: the Kafka ingress applies the same guards as HTTP, but it cannot
+    /// answer with a status code — a refusal has to become a commit
+    /// decision. This is that translation, and getting it wrong is either
+    /// data loss (dead lettering a rate-limited message) or an infinite
+    /// redelivery loop (retrying a message validation will never accept).
+    #[test]
+    fn guard_refusals_map_to_the_right_commit_decision() {
+        use crate::errors::OrionError;
+
+        // Validation rejected the payload: it will never be accepted, so
+        // dead letter it rather than block the partition forever.
+        assert_eq!(
+            classify_guard_refusal(&OrionError::BadRequest("Input validation failed".into())),
+            GuardDisposition::Terminal
+        );
+
+        // The dedup window already holds this key: an earlier delivery did
+        // the work. Commit, and do not dead letter — nothing failed.
+        assert_eq!(
+            classify_guard_refusal(&OrionError::Conflict("Duplicate request".into())),
+            GuardDisposition::Duplicate
+        );
+
+        // Over the channel's rate limit, or at its concurrency cap, or a
+        // guard backend is down on a fail-closed channel. The message is
+        // fine; only the moment is wrong. Leave it uncommitted so the retry
+        // backoff throttles the consumer instead of discarding traffic.
+        assert_eq!(
+            classify_guard_refusal(&OrionError::RateLimited("Too many requests".into())),
+            GuardDisposition::Deferred
+        );
+        assert_eq!(
+            classify_guard_refusal(&OrionError::ServiceUnavailable("at capacity".into())),
+            GuardDisposition::Deferred
+        );
+
+        // A `rate_limit.key_logic` that cannot be evaluated is not "over a
+        // limit": the expression fails on this record and on every copy of
+        // it, so deferring would head-of-line block the partition for as long
+        // as the channel keeps the expression. As terminal as a
+        // `validation_logic` rejection, and dead-lettered the same way.
+        assert_eq!(
+            classify_guard_refusal(&OrionError::RateLimitKeyUnavailable(
+                "Too many requests".into()
+            )),
+            GuardDisposition::Terminal
+        );
+    }
+
+    /// The dedup claim is settled by the *commit* decision, not by success:
+    /// anything that advances the offset confirms the key, anything that
+    /// leaves the record for redelivery hands it back. Getting this backwards
+    /// is exactly the message-loss bug the claim exists to prevent — a
+    /// retried record reading the key its own previous attempt wrote,
+    /// answered `409`, committed, and dropped.
+    #[test]
+    fn the_dedup_claim_is_settled_by_the_commit_decision() {
+        for outcome in [MsgOutcome::Processed, MsgOutcome::DeadLettered] {
+            assert!(
+                outcome.commits_offset(),
+                "{outcome:?} advances the offset, so its key is confirmed"
+            );
+        }
+        assert!(
+            !MsgOutcome::Failed.commits_offset(),
+            "a failed delivery is coming back, so its key must be released"
+        );
+        // A duplicate never claimed anything — `apply_guards` refused before
+        // returning an admission — so there is nothing to settle.
+        assert!(MsgOutcome::Deduplicated.commits_offset());
+    }
+
+    /// A deferred message is retried, not committed and not dead lettered —
+    /// which is what makes the retry loop's capped backoff the throttle.
+    #[test]
+    fn a_deferred_guard_refusal_leaves_the_offset_uncommitted() {
         assert!(!MsgOutcome::Failed.commits_offset());
     }
 

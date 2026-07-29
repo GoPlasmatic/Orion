@@ -31,9 +31,28 @@ pub trait CacheBackend: Send + Sync {
     async fn set(&self, key: &str, value: &str) -> Result<(), OrionError>;
     async fn set_ex(&self, key: &str, value: &str, ttl_secs: u64) -> Result<(), OrionError>;
 
-    /// Deduplication check-and-insert. Returns `true` if the key is **new**
-    /// (not a duplicate), `false` if a duplicate within `window_secs`.
-    async fn check_and_insert(&self, key: &str, window_secs: u64) -> Result<bool, OrionError>;
+    /// Delete `key`. Deleting a key that is not present is not an error.
+    async fn remove(&self, key: &str) -> Result<(), OrionError>;
+
+    /// Atomically claim a deduplication key on behalf of `owner`.
+    ///
+    /// * `Ok(None)` — the key was free (or its window had expired) and is now
+    ///   held by `owner` for `window_secs`.
+    /// * `Ok(Some(holder))` — the key is already held, and `holder` is the
+    ///   `owner` string the current holder claimed it with.
+    ///
+    /// Returning the holder rather than a bare "is duplicate" boolean is what
+    /// lets a redelivering transport tell *its own unfinished claim* from a
+    /// genuinely earlier delivery: a Kafka record replayed because its offset
+    /// never committed claims with the same owner token it used last time,
+    /// and must be processed, not skipped (see `check_deduplication` in
+    /// [`crate::channel::guards`]).
+    async fn claim_dedup_key(
+        &self,
+        key: &str,
+        owner: &str,
+        window_secs: u64,
+    ) -> Result<Option<String>, OrionError>;
 }
 
 // ============================================================
@@ -200,34 +219,44 @@ impl CacheBackend for MemoryCacheBackend {
         Ok(())
     }
 
-    async fn check_and_insert(&self, key: &str, window_secs: u64) -> Result<bool, OrionError> {
+    async fn remove(&self, key: &str) -> Result<(), OrionError> {
+        self.entries.remove(key);
+        Ok(())
+    }
+
+    async fn claim_dedup_key(
+        &self,
+        key: &str,
+        owner: &str,
+        window_secs: u64,
+    ) -> Result<Option<String>, OrionError> {
         use dashmap::mapref::entry::Entry;
 
         let now = Instant::now();
         let expires_at = now + Duration::from_secs(window_secs);
 
-        let inserted = match self.entries.entry(key.to_string()) {
+        let holder = match self.entries.entry(key.to_string()) {
             Entry::Vacant(vacant) => {
-                vacant.insert(self.new_entry("1", Some(expires_at)));
-                true // new key
+                vacant.insert(self.new_entry(owner, Some(expires_at)));
+                None // claimed
             }
             Entry::Occupied(mut occupied) => {
                 // Check if existing entry has expired
                 if let Some(exp) = occupied.get().expires_at
                     && now >= exp
                 {
-                    // Expired — treat as new
-                    occupied.insert(self.new_entry("1", Some(expires_at)));
-                    true
+                    // Expired — the window has passed, so the key is free
+                    occupied.insert(self.new_entry(owner, Some(expires_at)));
+                    None
                 } else {
-                    false // duplicate
+                    Some(occupied.get().value.clone())
                 }
             }
         };
-        if inserted {
+        if holder.is_none() {
             self.enforce_bound();
         }
-        Ok(inserted)
+        Ok(holder)
     }
 }
 
@@ -278,23 +307,66 @@ impl CacheBackend for RedisCacheBackend {
             })
     }
 
-    async fn check_and_insert(&self, key: &str, window_secs: u64) -> Result<bool, OrionError> {
+    async fn remove(&self, key: &str) -> Result<(), OrionError> {
+        use redis::AsyncCommands;
         let mut conn = self.conn.clone();
-        // SET key "1" NX EX window_secs — atomic check-and-insert
-        let result: Option<String> = redis::cmd("SET")
-            .arg(key)
-            .arg("1")
-            .arg("NX")
-            .arg("EX")
-            .arg(window_secs)
-            .query_async(&mut conn)
+        conn.del::<_, ()>(key)
             .await
             .map_err(|e| OrionError::InternalSource {
-                context: format!("Redis SET NX EX failed for key '{key}'"),
+                context: format!("Redis DEL failed for key '{key}'"),
                 source: Box::new(e),
-            })?;
-        // Redis returns "OK" if SET succeeded (key was new), nil if key existed
-        Ok(result.is_some())
+            })
+    }
+
+    async fn claim_dedup_key(
+        &self,
+        key: &str,
+        owner: &str,
+        window_secs: u64,
+    ) -> Result<Option<String>, OrionError> {
+        use redis::AsyncCommands;
+        let mut conn = self.conn.clone();
+        // Two rounds, because SET NX and GET are two commands and the key can
+        // expire between them: a failed SET followed by a nil GET means the
+        // holder's window ended in that gap, i.e. nobody holds the key and the
+        // claim should simply be retried. Two rounds is enough in practice;
+        // losing both is treated as "claimed", because processing a message
+        // twice is the transport's documented guarantee while skipping one is
+        // silent loss.
+        for _ in 0..2 {
+            // SET key owner NX EX window_secs — atomic claim
+            let claimed: Option<String> = redis::cmd("SET")
+                .arg(key)
+                .arg(owner)
+                .arg("NX")
+                .arg("EX")
+                .arg(window_secs)
+                .query_async(&mut conn)
+                .await
+                .map_err(|e| OrionError::InternalSource {
+                    context: format!("Redis SET NX EX failed for key '{key}'"),
+                    source: Box::new(e),
+                })?;
+            // Redis returns "OK" if SET succeeded (key was free), nil if held
+            if claimed.is_some() {
+                return Ok(None);
+            }
+            let holder: Option<String> =
+                conn.get(key)
+                    .await
+                    .map_err(|e| OrionError::InternalSource {
+                        context: format!("Redis GET failed for key '{key}'"),
+                        source: Box::new(e),
+                    })?;
+            if let Some(holder) = holder {
+                return Ok(Some(holder));
+            }
+        }
+        tracing::warn!(
+            key = %key,
+            "Deduplication key expired between claim attempts twice; treating the message as new"
+        );
+        Ok(None)
     }
 }
 
@@ -459,40 +531,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_memory_check_and_insert_new() {
+    async fn test_memory_claim_dedup_key_new() {
         let backend = MemoryCacheBackend::new(60, 0);
-        assert!(
+        assert_eq!(
             backend
-                .check_and_insert("dedup-1", 300)
+                .claim_dedup_key("dedup-1", "owner-a", 300)
                 .await
-                .expect("test")
+                .expect("test"),
+            None
+        );
+    }
+
+    /// A second claimant is told **who** holds the key, not merely that
+    /// somebody does: that is what lets a redelivering transport recognise
+    /// its own unfinished claim instead of refusing its own message.
+    #[tokio::test]
+    async fn test_memory_claim_dedup_key_reports_the_holder() {
+        let backend = MemoryCacheBackend::new(60, 0);
+        assert_eq!(
+            backend
+                .claim_dedup_key("dedup-1", "owner-a", 300)
+                .await
+                .expect("test"),
+            None
+        );
+        assert_eq!(
+            backend
+                .claim_dedup_key("dedup-1", "owner-b", 300)
+                .await
+                .expect("test"),
+            Some("owner-a".to_string())
         );
     }
 
     #[tokio::test]
-    async fn test_memory_check_and_insert_duplicate() {
+    async fn test_memory_remove_frees_a_claim() {
         let backend = MemoryCacheBackend::new(60, 0);
-        assert!(
+        backend
+            .claim_dedup_key("dedup-1", "owner-a", 300)
+            .await
+            .expect("test");
+        backend.remove("dedup-1").await.expect("test");
+        assert_eq!(
             backend
-                .check_and_insert("dedup-1", 300)
+                .claim_dedup_key("dedup-1", "owner-b", 300)
                 .await
-                .expect("test")
-        );
-        assert!(
-            !backend
-                .check_and_insert("dedup-1", 300)
-                .await
-                .expect("test")
+                .expect("test"),
+            None,
+            "a released key must be claimable again"
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_memory_check_and_insert_expired() {
+    async fn test_memory_claim_dedup_key_expired() {
         let backend = MemoryCacheBackend::new(60, 0);
-        assert!(backend.check_and_insert("k", 1).await.expect("test"));
+        assert_eq!(
+            backend
+                .claim_dedup_key("k", "owner-a", 1)
+                .await
+                .expect("test"),
+            None
+        );
         tokio::time::advance(Duration::from_secs(2)).await;
-        // After expiry, key is treated as new
-        assert!(backend.check_and_insert("k", 1).await.expect("test"));
+        // After expiry, key is free again
+        assert_eq!(
+            backend
+                .claim_dedup_key("k", "owner-b", 1)
+                .await
+                .expect("test"),
+            None
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -548,11 +656,11 @@ mod tests {
 
     /// Dedup keys are the other unbounded source (one per idempotency key).
     #[tokio::test]
-    async fn test_memory_check_and_insert_is_bounded() {
+    async fn test_memory_claim_dedup_key_is_bounded() {
         let backend = MemoryCacheBackend::new(60, 64);
         for i in 0..5_000 {
             backend
-                .check_and_insert(&format!("dedup-{i}"), 3600)
+                .claim_dedup_key(&format!("dedup-{i}"), "owner", 3600)
                 .await
                 .expect("test");
         }
@@ -634,11 +742,12 @@ mod tests {
             .expect("test");
 
         let dedup = pool.default_memory(CachePurpose::Dedup);
-        assert!(
+        assert_eq!(
             dedup
-                .check_and_insert("dedup:orders:token-1", 300)
+                .claim_dedup_key("dedup:orders:token-1", "owner", 300)
                 .await
                 .expect("test"),
+            None,
             "a workflow-written key must not read as a duplicate in the dedup store"
         );
     }
@@ -703,11 +812,12 @@ mod tests {
     async fn lru_budgets_are_per_namespace() {
         let pool = CachePool::new(4, 60, 10);
         let dedup = pool.default_memory(CachePurpose::Dedup);
-        assert!(
+        assert_eq!(
             dedup
-                .check_and_insert("dedup:ch:tok", 300)
+                .claim_dedup_key("dedup:ch:tok", "owner", 300)
                 .await
-                .expect("test")
+                .expect("test"),
+            None
         );
 
         let workflow = pool
@@ -718,11 +828,12 @@ mod tests {
             workflow.set(&format!("k{i}"), "v").await.expect("test");
         }
 
-        assert!(
-            !dedup
-                .check_and_insert("dedup:ch:tok", 300)
+        assert_eq!(
+            dedup
+                .claim_dedup_key("dedup:ch:tok", "owner", 300)
                 .await
                 .expect("test"),
+            Some("owner".to_string()),
             "a hot workflow cache must not evict dedup entries"
         );
     }

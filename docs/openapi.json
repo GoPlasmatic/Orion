@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Orion — Declarative Services Runtime API",
-    "description": "Declarative services runtime platform.\n\n**Authentication.** The admin API (`/api/v1/admin/*`), the Prometheus endpoint (`/metrics`), and the trace read endpoints (`/api/v1/admin/traces*`) require an admin API key when `admin_auth.enabled` is true — the default in the shipped Helm chart and HA compose files. Operations that need it carry a `security` block; see the `admin_bearer` / `admin_api_key` schemes for how the key is presented and for the `admin_auth.header` config key that selects between them.\n\nThe data plane (`/api/v1/data/{channel}`) and the health probes are deliberately unauthenticated: channel-level access control is expressed through each channel's `validation_logic` and CORS configuration.\n\n**Errors.** Every non-2xx response uses the `ErrorResponse` envelope: `{\"error\": {\"code\", \"message\", \"request_id\"}}`, plus `details` on validation failures.",
+    "description": "Declarative services runtime platform.\n\n**Authentication.** The admin API (`/api/v1/admin/*`), the Prometheus endpoint (`/metrics`), and the trace read endpoints (`/api/v1/admin/traces*`) require an admin API key when `admin_auth.enabled` is true — the default in the shipped Helm chart and HA compose files. Operations that need it carry a `security` block; see the `admin_bearer` / `admin_api_key` schemes for how the key is presented and for the `admin_auth.header` config key that selects between them.\n\nThe data plane (`/api/v1/data/{channel}`) and the health probes are deliberately unauthenticated: channel-level access control is expressed through each channel's `validation_logic` and `origin_allow_list`.\n\n**Errors.** Every non-2xx response uses the `ErrorResponse` envelope: `{\"error\": {\"code\", \"message\", \"request_id\"}}`, plus `details` on validation failures.",
     "license": {
       "name": "Apache-2.0"
     },
@@ -3162,7 +3162,7 @@
           "Data"
         ],
         "summary": "Invoke a channel synchronously",
-        "description": "Invoke a channel's workflow synchronously.\n\nThis is a **templated** path, not a static one. Orion serves the whole data plane from a single catch-all route (`/api/v1/data/{*path}`) and resolves the target channel at request time, so no per-channel path exists in this document:\n\n* **Simple HTTP channels** — a single path segment matched against the channel `name`, e.g. `POST /api/v1/data/order-intake`.\n* **REST channels** — each active channel registers its own method and path pattern (`config.rest.routes`) at engine-reload time; those patterns may span several segments and declare their own path parameters, which arrive in the workflow as `metadata.params`, percent-decoded exactly once (`a%2Fb` becomes `a/b`). Static segments match byte-exact — the path is case-sensitive per RFC 3986. Any HTTP method is accepted — `GET`, `PUT`, `PATCH` and `DELETE` behave identically to the `POST` documented here, with the verb exposed as `metadata.http_method`. Query the admin channel API for the routes a given deployment actually serves.\n\nAppend `/async` to submit to the queue instead — see `POST /api/v1/data/{channel}/async`.\n\nThis endpoint is unauthenticated: admin auth does not cover the data plane. Per-channel access control is expressed through `validation_logic` and CORS configuration.",
+        "description": "Invoke a channel's workflow synchronously.\n\nThis is a **templated** path, not a static one. Orion serves the whole data plane from a single catch-all route (`/api/v1/data/{*path}`) and resolves the target channel at request time, so no per-channel path exists in this document:\n\n* **Simple HTTP channels** — a single path segment matched against the channel `name`, e.g. `POST /api/v1/data/order-intake`.\n* **REST channels** — each active channel registers its own method and path pattern (`config.rest.routes`) at engine-reload time; those patterns may span several segments and declare their own path parameters, which arrive in the workflow as `metadata.params`, percent-decoded exactly once (`a%2Fb` becomes `a/b`). Static segments match byte-exact — the path is case-sensitive per RFC 3986. Any HTTP method is accepted — `GET`, `PUT`, `PATCH` and `DELETE` behave identically to the `POST` documented here, with the verb exposed as `metadata.http_method`. Query the admin channel API for the routes a given deployment actually serves.\n\nAppend `/async` to submit to the queue instead — see `POST /api/v1/data/{channel}/async`.\n\nThis endpoint is unauthenticated: admin auth does not cover the data plane. Per-channel access control is expressed through `validation_logic` and the channel's `origin_allow_list`.",
         "operationId": "process_channel_request",
         "parameters": [
           {
@@ -3217,7 +3217,7 @@
             }
           },
           "403": {
-            "description": "Origin not allowed by the channel's CORS configuration",
+            "description": "`Origin` header not in the channel's `origin_allow_list`",
             "content": {
               "application/json": {
                 "schema": {
@@ -3315,7 +3315,7 @@
           "Data"
         ],
         "summary": "Submit to a channel asynchronously",
-        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v1/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: CORS, `validation_logic`, deduplication, and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v1/admin/traces/{id}` with the returned `trace_id` for the result, presenting the returned `trace_token` via the `x-trace-token` header or `?token=` query parameter. The token scopes the poll to this submission (R12); an admin credential also works.\n\n`trace_id` is always present. Async submission is a request for a result to be fetched later, so the trace row is written before the 202 is sent even when `trace_storage.mode` is `off` — that setting still applies in full to the synchronous endpoint, where the caller already has the answer.",
+        "description": "Queue a channel's workflow for background execution and return immediately.\n\nAccepts the same body and resolves the channel exactly as `POST /api/v1/data/{channel}` (including REST route patterns — append `/async` to any of them). All ingress guards still apply before the queue hand-off: the origin allow-list, the rate limit, `validation_logic`, deduplication and backpressure. The response cache is sync-only, so an async submission never returns a cached body.\n\nPoll `GET /api/v1/admin/traces/{id}` with the returned `trace_id` for the result, presenting the returned `trace_token` via the `x-trace-token` header or `?token=` query parameter. The token scopes the poll to this submission (R12); an admin credential also works.\n\n`trace_id` is always present. Async submission is a request for a result to be fetched later, so the trace row is written before the 202 is sent even when `trace_storage.mode` is `off` — that setting still applies in full to the synchronous endpoint, where the caller already has the answer.",
         "operationId": "submit_channel_request_async",
         "parameters": [
           {
@@ -3361,7 +3361,7 @@
             }
           },
           "403": {
-            "description": "Origin not allowed by the channel's CORS configuration",
+            "description": "`Origin` header not in the channel's `origin_allow_list`",
             "content": {
               "application/json": {
                 "schema": {

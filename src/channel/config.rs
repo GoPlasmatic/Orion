@@ -20,8 +20,18 @@ pub struct ChannelConfig {
     #[serde(default)]
     pub cache: Option<ChannelCacheConfig>,
 
-    /// CORS configuration for this channel.
-    #[serde(default)]
+    /// Server-side allow-list of `Origin` header values for this channel.
+    /// A request whose `Origin` is present and unlisted is refused `403`;
+    /// `"*"` in the list allows any origin, and an absent list checks
+    /// nothing. See [`ChannelConfig::allowed_origins`] for why this is not
+    /// spelled `cors` any more.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_allow_list: Option<Vec<String>>,
+
+    /// Deprecated spelling of [`ChannelConfig::origin_allow_list`]:
+    /// `{"cors": {"allowed_origins": [...]}}`. Still parsed so channels
+    /// stored before 1.0 keep working; prefer the new key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cors: Option<ChannelCorsConfig>,
 
     /// Backpressure / load-shedding configuration.
@@ -44,6 +54,29 @@ pub struct ChannelConfig {
     /// optional; unset fields fall back to the global setting.
     #[serde(default)]
     pub tracing: Option<ChannelTracingConfig>,
+}
+
+impl ChannelConfig {
+    /// The effective origin allow-list: [`ChannelConfig::origin_allow_list`],
+    /// falling back to the deprecated `cors.allowed_origins` spelling.
+    ///
+    /// N24: the old key promised CORS and delivered a rejection check. It set
+    /// no `Access-Control-Allow-Origin` and answered no preflight — the
+    /// router's platform CORS layer short-circuits a genuine preflight
+    /// (`OPTIONS` carrying `Access-Control-Request-Method`) before a channel
+    /// is even resolved. The control is real and worth keeping: it is the
+    /// only *server-side* origin check, and it runs on every request that
+    /// reaches the handler, since `[cors]` leaves a non-preflighted
+    /// cross-origin request to run and merely omits the response header, and
+    /// does nothing at all for a non-browser caller. Only the name was a lie,
+    /// so the name is what changed.
+    pub fn allowed_origins(&self) -> Option<&[String]> {
+        self.origin_allow_list.as_deref().or_else(|| {
+            self.cors
+                .as_ref()
+                .and_then(|c| c.allowed_origins.as_deref())
+        })
+    }
 }
 
 /// Per-channel override for the trace-storage policy. Each field overrides
@@ -119,11 +152,11 @@ pub struct ChannelCacheConfig {
     pub connector: Option<String>,
 }
 
+/// Deprecated `cors` block, kept so channels stored before 1.0 still parse.
+/// Read through [`ChannelConfig::allowed_origins`], never directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelCorsConfig {
-    /// Allowed origins. Empty or absent means use platform default.
-    /// (Methods/headers stay platform-level: per-channel preflight is not
-    /// implemented, so a per-channel list here would be a silent no-op.)
+    /// Allowed origins. Absent means the channel checks nothing.
     #[serde(default)]
     pub allowed_origins: Option<Vec<String>>,
 }
@@ -232,6 +265,45 @@ mod tests {
             .is_err(),
             "unknown policy values must be rejected, not defaulted"
         );
+    }
+
+    /// N24: `origin_allow_list` is the key now, and the pre-1.0
+    /// `cors.allowed_origins` spelling still resolves to it — a rename that
+    /// silently dropped the check on every stored channel would be a
+    /// security regression, not a documentation change.
+    #[test]
+    fn test_origin_allow_list_accepts_both_spellings() {
+        let new_key: ChannelConfig =
+            serde_json::from_str(r#"{"origin_allow_list": ["https://app.example.com"]}"#)
+                .expect("test");
+        assert_eq!(
+            new_key.allowed_origins(),
+            Some(["https://app.example.com".to_string()].as_slice())
+        );
+
+        let old_key: ChannelConfig =
+            serde_json::from_str(r#"{"cors": {"allowed_origins": ["https://old.example.com"]}}"#)
+                .expect("test");
+        assert_eq!(
+            old_key.allowed_origins(),
+            Some(["https://old.example.com".to_string()].as_slice())
+        );
+
+        // The new key wins when a config carries both.
+        let both: ChannelConfig = serde_json::from_str(
+            r#"{"origin_allow_list": ["https://new.example.com"],
+                "cors": {"allowed_origins": ["https://old.example.com"]}}"#,
+        )
+        .expect("test");
+        assert_eq!(
+            both.allowed_origins(),
+            Some(["https://new.example.com".to_string()].as_slice())
+        );
+
+        // No list at all means the channel checks nothing.
+        assert!(ChannelConfig::default().allowed_origins().is_none());
+        let empty_cors: ChannelConfig = serde_json::from_str(r#"{"cors": {}}"#).expect("test");
+        assert!(empty_cors.allowed_origins().is_none());
     }
 
     #[test]

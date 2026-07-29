@@ -79,6 +79,22 @@ pub enum OrionError {
     #[error("Rate limited: {0}")]
     RateLimited(String),
 
+    /// A channel's `rate_limit.key_logic` could not be evaluated, so the
+    /// request cannot be metered into any bucket (N5 refuses rather than
+    /// counting it in the wrong one).
+    ///
+    /// Answers `429` like [`OrionError::RateLimited`], because a caller that
+    /// cannot be metered must be told to back off and there is nothing
+    /// actionable to disclose about a channel's own logic. It is a separate
+    /// variant because the *condition* is not the same: being over a limit is
+    /// transient and clears with time, while a key expression that fails on
+    /// this payload will fail on every redelivery of it. The Kafka ingress
+    /// reads that difference — an over-limit record is retried, an
+    /// unevaluable-key record is dead-lettered instead of blocking its
+    /// partition forever.
+    #[error("Rate limit key unavailable: {0}")]
+    RateLimitKeyUnavailable(String),
+
     #[error("Response too large: {0}")]
     ResponseTooLarge(String),
 
@@ -194,7 +210,7 @@ impl OrionError {
                 "SERVICE_UNAVAILABLE",
                 msg.clone(),
             ),
-            OrionError::RateLimited(msg) => {
+            OrionError::RateLimited(msg) | OrionError::RateLimitKeyUnavailable(msg) => {
                 (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", msg.clone())
             }
             OrionError::Timeout {
@@ -325,7 +341,18 @@ impl IntoResponse for OrionError {
 
         let body = json!({ "error": Value::Object(error_obj) });
 
-        (status, axum::Json(body)).into_response()
+        let mut response = (status, axum::Json(body)).into_response();
+        // A 429 always carries `retry-after`. It used to be added by the rate
+        // limit middleware, which was the only producer; the per-channel limit
+        // now refuses from the ingress guards (S15), so the header belongs to
+        // the error rather than to one of its two call sites.
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            response.headers_mut().insert(
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            );
+        }
+        response
     }
 }
 
@@ -347,6 +374,30 @@ pub const CIRCUIT_OPEN_MARKER: &str = "orion.circuit_open: ";
 /// in full. Same mechanism as [`CIRCUIT_OPEN_MARKER`]; the prefix is stripped
 /// from anything that does get surfaced.
 pub const CONNECTOR_DETAIL_MARKER: &str = "orion.connector_detail: ";
+
+/// Prefix marking a `DataflowError::Http` produced when a **target channel's
+/// own ingress guards** refused an in-process `channel_call` (N16).
+///
+/// Same mechanism, and the same reason, as [`CIRCUIT_OPEN_MARKER`]: a handler
+/// can only return a `DataflowError`, and `Http { status }` is the one
+/// variant that carries a status through serialization into `message.errors`
+/// and trace rows. Without it, a target that is over its rate limit or at its
+/// concurrency cap reached the caller as a generic `500` — a server bug,
+/// reported for a condition the caller can simply retry.
+pub const CHANNEL_REFUSED_MARKER: &str = "orion.channel_refused: ";
+
+/// Build the error a `channel_call` returns when the target channel's guards
+/// refused it, preserving the refusal's own status (`429` over limit, `503`
+/// at capacity or fail-closed).
+pub fn channel_refused_dataflow_error(
+    status: StatusCode,
+    message: String,
+) -> dataflow_rs::DataflowError {
+    dataflow_rs::DataflowError::Http {
+        status: status.as_u16(),
+        message: format!("{CHANNEL_REFUSED_MARKER}{message}"),
+    }
+}
 
 /// Build the error an open breaker returns from a function handler.
 pub fn circuit_open_dataflow_error(connector: &str, channel: &str) -> dataflow_rs::DataflowError {
@@ -394,6 +445,26 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
                 .unwrap_or(message)
                 .to_string(),
         ),
+        // N16: a target channel refused an in-process `channel_call` at its
+        // own ingress guards. The refusal keeps its status — the caller is
+        // over a limit or the target is at capacity, neither of which is a
+        // server fault. Same shape as the breaker arm above.
+        DataflowError::Http { status, message } if message.starts_with(CHANNEL_REFUSED_MARKER) => {
+            let detail = message
+                .strip_prefix(CHANNEL_REFUSED_MARKER)
+                .unwrap_or(message)
+                .to_string();
+            match status {
+                429 => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", detail),
+                403 => (StatusCode::FORBIDDEN, "FORBIDDEN", detail),
+                409 => (StatusCode::CONFLICT, "CONFLICT", detail),
+                _ => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "SERVICE_UNAVAILABLE",
+                    detail,
+                ),
+            }
+        }
         other => {
             // Surface unhandled DataflowError variants so a dataflow-rs upgrade
             // that adds new variants doesn't silently degrade them to a generic
@@ -774,6 +845,44 @@ mod tests {
             "the internal marker must not reach the client: {message}"
         );
         assert!(message.contains("orders-api") && message.contains("orders"));
+    }
+
+    /// N16: a target channel's guard refusal keeps its own status through the
+    /// engine. Before, `channel_call` reported "the target is over its rate
+    /// limit" as a `500 ENGINE_ERROR` — a server bug, for a condition the
+    /// caller can retry and no code can act on.
+    #[tokio::test]
+    async fn test_channel_refusal_keeps_the_guards_status() {
+        for (status, code) in [
+            (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED"),
+            (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),
+            (StatusCode::FORBIDDEN, "FORBIDDEN"),
+            (StatusCode::CONFLICT, "CONFLICT"),
+        ] {
+            let err = OrionError::Engine(channel_refused_dataflow_error(
+                status,
+                "channel_call to 'billing': refused".to_string(),
+            ));
+            let response = err.into_response();
+            assert_eq!(response.status(), status);
+            let body = body_to_value(response).await;
+            assert_eq!(body["error"]["code"], code, "{body}");
+            let message = body["error"]["message"].as_str().expect("test");
+            assert!(
+                !message.contains(CHANNEL_REFUSED_MARKER),
+                "the internal marker must not reach the client: {message}"
+            );
+        }
+    }
+
+    /// An unmarked `Http` error from a downstream call keeps the generic
+    /// engine mapping — the marker, not the status, is what identifies an
+    /// Orion-side channel refusal.
+    #[tokio::test]
+    async fn test_downstream_429_is_not_reported_as_a_channel_refusal() {
+        let err = OrionError::Engine(dataflow_rs::DataflowError::http(429, "Too Many Requests"));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]

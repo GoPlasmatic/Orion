@@ -120,21 +120,34 @@ curl -H "X-API-Key: your-secret-key" \
   http://localhost:8080/api/v1/admin/workflows
 ```
 
-**Per-channel CORS:** configure allowed origins per channel in `config_json`:
+**Per-channel origin allow-list:** restrict which `Origin` values a channel accepts, in its `config_json`:
 
 ```json
 {
-  "cors": {
-    "allowed_origins": ["https://app.example.com", "https://admin.example.com"]
-  }
+  "origin_allow_list": ["https://app.example.com", "https://admin.example.com"]
 }
 ```
 
-Global CORS defaults are configured in the server config:
+A request whose `Origin` header is present and unlisted is refused `403`. `"*"` allows any origin; omitting the key checks nothing.
+
+**This is not CORS**, and it was called `cors.allowed_origins` until 1.0, which is why it needed renaming. It performs no handshake: it sets no `Access-Control-Allow-Origin` and takes no part in a preflight. The browser handshake is the platform CORS layer's job, configured in the `[cors]` section:
 
 ```toml
 [cors]
-allowed_origins = ["*"]    # Global default
+allowed_origins = ["*"]    # Browser CORS policy, all routes
+```
+
+The two are complementary, and it is worth being exact about which one enforces what:
+
+- **`[cors] allowed_origins` governs the browser handshake.** A genuine *preflight* (`OPTIONS` carrying `Access-Control-Request-Method`) from an unlisted origin is answered by the layer and never reaches a channel. But a non-preflighted cross-origin request — a simple `GET`, or a `POST` a browser sends without asking first — is *not* short-circuited: the layer simply omits `Access-Control-Allow-Origin`, the workflow runs server-side, and only the browser discards the response. And a non-browser client (curl, a server-to-server caller, anything setting `Origin` by hand) is unaffected by `[cors]` altogether.
+- **`origin_allow_list` is the server-side check.** It runs in the ingress guards on every request that reaches the handler, browser or not, and refuses `403` before the workflow executes.
+
+So if the point is to keep a workflow from *running* for an unlisted origin, `origin_allow_list` is the control that does it; `[cors]` alone is a browser-side courtesy. Note that neither is authentication: `Origin` is a client-supplied header and any non-browser caller can set it to anything, or omit it — a request with no `Origin` is not checked at all. Use `validation_logic` or a gateway in front of Orion for access control that has to hold against a hostile client.
+
+The pre-1.0 spelling still parses, so stored channels keep their check:
+
+```json
+{ "cors": { "allowed_origins": ["https://app.example.com"] } }
 ```
 
 ## Data Safety

@@ -234,7 +234,7 @@ presented and for the `admin_auth.header` config key that selects between them.
 
 The data plane (`/api/v1/data/{channel}`) and the health probes are \
 deliberately unauthenticated: channel-level access control is expressed \
-through each channel's `validation_logic` and CORS configuration.
+through each channel's `validation_logic` and `origin_allow_list`.
 
 **Errors.** Every non-2xx response uses the `ErrorResponse` envelope: \
 `{\"error\": {\"code\", \"message\", \"request_id\"}}`, plus `details` on \

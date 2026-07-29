@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::channel::guards;
 use crate::errors::OrionError;
-use crate::server::extract::OrionQuery;
+use crate::server::extract::{OrionQuery, PeerAddr};
 // Referenced by the `#[utoipa::path]` `body = ErrorResponse` annotations below.
 use crate::server::routes::openapi::ErrorResponse;
 use crate::server::state::AppState;
@@ -76,8 +76,8 @@ Append `/async` to submit to the queue instead — see \
 `POST /api/v1/data/{channel}/async`.
 
 This endpoint is unauthenticated: admin auth does not cover the data plane. \
-Per-channel access control is expressed through `validation_logic` and CORS \
-configuration.",
+Per-channel access control is expressed through `validation_logic` and the \
+channel's `origin_allow_list`.",
     params(
         ("channel" = String, Path, description = "Channel name, or the first segment of a REST channel's registered route pattern."),
         ("profile" = Option<bool>, Query, description = "Set to `1`/`true` to append `_orion.profile` timings to the response. Requires `tracing.debug_profile_enabled = true`; the `X-Orion-Profile` header does the same."),
@@ -94,7 +94,7 @@ the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`
     responses(
         (status = 200, description = "Workflow completed. `errors` is empty on success; when tasks failed it carries sanitized `{code, message, task_id}` entries and the envelope gains a `request_id` for correlation with the persisted trace.", body = ProcessResponse),
         (status = 400, description = "Malformed JSON body, empty channel segment, an invalid percent-sequence in the request path, or a channel `validation_logic` rejection (`VALIDATION_ERROR`, with per-field `details`)", body = ErrorResponse),
-        (status = 403, description = "Origin not allowed by the channel's CORS configuration", body = ErrorResponse),
+        (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
         (status = 404, description = "No REST route matches the requested method and path. Note that a single-segment path is *not* checked against the channel registry: an unknown name is accepted and the engine returns a `200` envelope with the input echoed back and no errors.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
@@ -105,7 +105,7 @@ the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`
     )
 )]
 #[tracing::instrument(
-    skip(state, uri, headers, query_params, body),
+    skip(state, uri, headers, peer, query_params, body),
     fields(path = %uri.path())
 )]
 pub(crate) async fn dynamic_handler(
@@ -113,6 +113,7 @@ pub(crate) async fn dynamic_handler(
     method: axum::http::Method,
     uri: axum::http::Uri,
     headers: axum::http::HeaderMap,
+    PeerAddr(peer): PeerAddr,
     OrionQuery(query_params): OrionQuery<std::collections::HashMap<String, String>>,
     body: axum::body::Bytes,
 ) -> Result<impl IntoResponse, OrionError> {
@@ -125,8 +126,9 @@ pub(crate) async fn dynamic_handler(
     // split first on raw `/`, then decode each segment exactly once.
     //
     // Leading slashes are trimmed before the `/async` check so a bare
-    // `/async` path stays a channel *named* `async`, exactly as the
-    // middleware's `data_route_path` treats it.
+    // `/async` path stays a channel *named* `async` rather than a submission
+    // with no channel: only a `/async` suffix on a non-empty path is a
+    // submission.
     let path = uri.path().trim_start_matches('/').to_string();
 
     // Strip trailing /async suffix
@@ -205,9 +207,9 @@ pub(crate) async fn dynamic_handler(
     );
 
     // Per-channel ingress guards apply before the sync/async split (S1):
-    // appending `/async` must not bypass CORS, validation_logic,
-    // deduplication, or backpressure. The response cache stays sync-only —
-    // async submissions always return 202.
+    // appending `/async` must not bypass the origin allow-list,
+    // validation_logic, the rate limit, deduplication or backpressure. Which
+    // guards run is the transport's `GuardSet`, not a decision made here.
     // F35: a channel that failed to load is quarantined, not silently
     // config-less — serving it here would apply none of its guards.
     let channel_runtime = state.channel_registry.require_serviceable(&channel)?;
@@ -221,25 +223,57 @@ pub(crate) async fn dynamic_handler(
             "Channel '{channel}' not found or not active"
         )));
     }
-    guards::check_cors_origin(
-        &channel,
-        &channel_runtime,
-        headers.get("origin").and_then(|v| v.to_str().ok()),
-    )?;
-    guards::validate_input(
-        &channel,
-        &channel_runtime,
-        &req.data,
-        &metadata,
-        &state.datalogic,
-    )?;
-    guards::check_deduplication(&channel, &channel_runtime, |name| {
+
+    let header_lookup = |name: &str| {
         headers
             .get(name)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
+    };
+    // S8: the same trusted-proxy-gated identity the platform limiter uses, so
+    // a channel's limit cannot be side-stepped with a spoofed
+    // `X-Forwarded-For` that the platform limiter would have ignored.
+    let client_ip = crate::server::rate_limit::client_ip_from_parts(
+        peer.as_ref(),
+        &headers,
+        state.trusted_proxies(),
+    );
+    let transport = if is_async {
+        guards::Transport::HttpAsync
+    } else {
+        guards::Transport::HttpSync
+    };
+    let admission = match guards::apply_guards(guards::GuardRequest {
+        transport,
+        channel: &channel,
+        runtime: &channel_runtime,
+        data: &req.data,
+        metadata: &metadata,
+        datalogic: &state.datalogic,
+        origin: headers.get("origin").and_then(|v| v.to_str().ok()),
+        caller_identity: &client_ip,
+        header: &header_lookup,
+        dedup_key_fallback: None,
+        // One HTTP request is one delivery: nothing redelivers it, so the
+        // claim gets a token nothing can present again and a replay of the
+        // key is the `409` it should be.
+        dedup_owner: None,
+        // The synchronous path has no deadline of its own: a channel that
+        // declares no `timeout_ms` runs to completion. The `/async`
+        // submission leaves it to the worker, which re-resolves at dequeue
+        // time against the config as it stands then.
+        default_timeout_ms: None,
+        // Neither HTTP path has a ceiling to protect: the deadline is the
+        // caller's patience, not a shared resource.
+        max_timeout_ms: None,
     })
-    .await?;
+    .await?
+    {
+        guards::GuardVerdict::CacheHit(body) => {
+            return Ok(sync::cached_response(body));
+        }
+        guards::GuardVerdict::Admitted(admission) => admission,
+    };
 
     if is_async {
         return submit_async(
@@ -249,6 +283,7 @@ pub(crate) async fn dynamic_handler(
             metadata,
             channel_runtime,
             profile_requested,
+            admission,
         )
         .await;
     }
@@ -260,6 +295,7 @@ pub(crate) async fn dynamic_handler(
         metadata,
         channel_runtime,
         profile_requested,
+        admission,
     )
     .await
 }
@@ -313,9 +349,9 @@ fn build_request_metadata(
     metadata
 }
 
-/// The async-submission branch of [`dynamic_handler`]: acquire backpressure,
-/// create the pending trace (or a synthetic id in `off` mode), enqueue the
-/// message, and answer 202.
+/// The async-submission branch of [`dynamic_handler`]: create the pending
+/// trace (or a synthetic id in `off` mode), enqueue the message, and answer
+/// 202.
 async fn submit_async(
     state: &AppState,
     channel: String,
@@ -323,12 +359,22 @@ async fn submit_async(
     metadata: Value,
     channel_runtime: Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
     profile_requested: bool,
+    admission: guards::Admission,
 ) -> Result<Response, OrionError> {
-    // Acquired before the pending trace is created so rejected requests
-    // leave no trace row. The permit rides inside the queued message and
-    // is held by the worker for the duration of processing, so a channel's
-    // `max_concurrent_per_node` bounds sync and async work together.
-    let backpressure_permit = guards::acquire_backpressure(&channel, &channel_runtime)?;
+    // The permit was acquired by the guard chain before the pending trace is
+    // created, so a shed request leaves no trace row. It rides inside the
+    // queued message and is held by the worker for the duration of
+    // processing, so a channel's `max_concurrent_per_node` bounds sync and
+    // async work together. `admission.timeout_ms` is deliberately not carried
+    // through the queue: the worker re-resolves it at dequeue time, against
+    // the config as it stands then.
+    //
+    // `admission.dedup_claim` is dropped here rather than settled. Nothing
+    // redelivers an HTTP submission — the caller holds a `trace_id` and polls
+    // it — so the claim standing for the rest of the window is exactly the
+    // `409` a second submission of the same key should get, whatever the
+    // queued work turns out to do.
+    let backpressure_permit = admission.backpressure_permit;
 
     let trace_headers = {
         let mut h = std::collections::HashMap::new();
@@ -405,8 +451,9 @@ Queue a channel's workflow for background execution and return immediately.
 Accepts the same body and resolves the channel exactly as \
 `POST /api/v1/data/{channel}` (including REST route patterns — append `/async` \
 to any of them). All ingress guards still apply before the queue hand-off: \
-CORS, `validation_logic`, deduplication, and backpressure. The response cache \
-is sync-only, so an async submission never returns a cached body.
+the origin allow-list, the rate limit, `validation_logic`, deduplication and \
+backpressure. The response cache is sync-only, so an async submission never \
+returns a cached body.
 
 Poll `GET /api/v1/admin/traces/{id}` with the returned `trace_id` for the \
 result, presenting the returned `trace_token` via the `x-trace-token` header \
@@ -432,7 +479,7 @@ synchronous endpoint, where the caller already has the answer.",
             body = AsyncSubmitResponse,
         ),
         (status = 400, description = "Malformed JSON body, empty channel segment, an invalid percent-sequence in the request path, or a `validation_logic` rejection", body = ErrorResponse),
-        (status = 403, description = "Origin not allowed by the channel's CORS configuration", body = ErrorResponse),
+        (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
         (status = 404, description = "No REST route matches the requested method and path. Note that a single-segment path is *not* checked against the channel registry: an unknown name is accepted and the engine returns a `200` envelope with the input echoed back and no errors.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),

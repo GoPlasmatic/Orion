@@ -72,10 +72,10 @@ from the main one. See
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `orion_build_info` | Gauge | `version`, `git_hash`, `build_timestamp` | Always `1`. Join against it to see which build each replica runs. |
-| `orion_messages_total` | Counter | `channel`, `status` | Messages processed per channel, by outcome (`ok`, `error`, `timeout`, …). `sum by (channel)` is the per-channel invocation rate. |
+| `orion_messages_total` | Counter | `channel`, `status` | Messages processed per channel, by outcome: `ok`, `error`, `timeout`, or `duplicate` (a Kafka record suppressed by the channel's deduplication window — counted once, on first delivery, not once per retry). `sum by (channel)` is the per-channel invocation rate. |
 | `orion_message_duration_seconds` | Histogram | `channel` | Processing latency |
 | `orion_active_workflows` | Gauge | — | Workflows loaded in engine |
-| `orion_errors_total` | Counter | `reason` | Errors encountered, by cause (`engine`, `timeout`, `panic`, `kafka_retry`, …) |
+| `orion_errors_total` | Counter | `reason` | Errors encountered, by cause (`engine`, `timeout`, `panic`, …). Kafka ingest contributes `kafka_retry`, `kafka_retry_budget_exhausted`, `kafka_partition_revoked`, and `kafka_guard_deferred` (a record refused by the channel's rate limit or backpressure — its offset is left uncommitted and it is retried, so a sustained rate here means the topic is being throttled, not that records are being lost). |
 | `orion_admin_auth_failures_total` | Counter | `reason` | Rejected admin credentials (`missing_or_malformed`, `invalid_key`, `locked_out`) |
 | `orion_http_requests_total` | Counter | `method`, `path`, `status` | HTTP requests served |
 | `orion_http_request_duration_seconds` | Histogram | `method`, `path`, `status` | HTTP request latency |

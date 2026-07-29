@@ -32,6 +32,24 @@ data_rps = 200
 
 Rate limiting uses the **token bucket algorithm**: tokens replenish at the configured rate, and burst allows short spikes above the steady-state limit. When the bucket is empty, requests receive `429 Too Many Requests`.
 
+**Per-channel limits apply on every ingress**, not only HTTP: a synchronous request, an `/async` submission, a Kafka record, and an in-process `channel_call` all meter against the channel's limiter, whether or not the platform limiter (`[rate_limit] enabled`) is on.
+
+They do not, by default, share a *bucket*. The bucket key is the caller identity the transport has — the client IP over HTTP, the topic for Kafka, the calling channel for `channel_call` — which `key_logic` reads as `client_ip` on all four. So `requests_per_second: 100` with no `key_logic` admits 100/s per HTTP client **plus** 100/s from the channel's Kafka topic **plus** 100/s per calling channel: it is a per-caller rate, not a throughput cap on the channel. To get one shared bucket, give `key_logic` an expression that returns the same value on every ingress — `{"var": "channel"}` is the simplest:
+
+```json
+{
+  "rate_limit": {
+    "requests_per_second": 100,
+    "burst": 20,
+    "key_logic": { "var": "channel" }
+  }
+}
+```
+
+A Kafka record refused by the limit is *not* dead-lettered: the offset is left uncommitted and the consumer's capped retry backoff becomes the throttle, so throughput is shaped rather than traffic discarded. The one exception is a `key_logic` that cannot be evaluated against the record at all — that is a defect in the expression and will fail identically on every redelivery, so the record is dead-lettered rather than left to block its partition. (Over HTTP both answer `429`.)
+
+Behind a proxy, load balancer, or ingress, set `rate_limit.trusted_proxies` even if you never enable the platform limiter: it is what decides whether `X-Forwarded-For` may name the client, and with it unset every client behind the proxy keys on the proxy's own address and collapses into one bucket. See [`trusted_proxies`](../configuration/reference.md#rate-limiting).
+
 **Per-client keying:** use JSONLogic to compute rate limit keys from request data, enabling per-user or per-tenant limits:
 
 ```json
@@ -82,6 +100,8 @@ Semaphore-based concurrency limits prevent any single channel from overwhelming 
 When all semaphore permits are taken, additional requests receive `503 Service Unavailable` immediately. This is load shedding. The system sheds excess load rather than queuing unboundedly, which protects latency for requests that are admitted.
 
 Each channel has its own independent backpressure semaphore, so a spike in one channel doesn't affect others. The semaphore is per process — the field is named for that: N replicas admit up to N× `max_concurrent_per_node` in-flight requests in total. (The pre-1.0 name `max_concurrent` is accepted as an alias for one release.)
+
+The permit is per **channel**, not per ingress: synchronous requests, queued `/async` work, Kafka records and in-process `channel_call`s all draw from the same semaphore, so `max_concurrent_per_node` bounds the channel's total in-flight work. A Kafka record that cannot get a permit is left uncommitted for redelivery rather than shed, since the transport can wait and the caller cannot be told to.
 
 ## Async Processing
 

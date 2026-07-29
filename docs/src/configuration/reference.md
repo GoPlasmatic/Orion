@@ -359,7 +359,7 @@ Platform-level limits, applied per client identity. Per-channel limits are separ
 | `rate_limit.enabled` | `false` | `ORION_RATE_LIMIT__ENABLED` | Enable on any internet-facing instance. |
 | `rate_limit.default_rps` | `100` | `ORION_RATE_LIMIT__DEFAULT_RPS` | Sustained requests per second per client. |
 | `rate_limit.default_burst` | `50` | `ORION_RATE_LIMIT__DEFAULT_BURST` | Burst allowance above the sustained rate. |
-| `rate_limit.trusted_proxies` | `[]` | `ORION_RATE_LIMIT__TRUSTED_PROXIES` | **Set this if Orion sits behind a load balancer** — see below. |
+| `rate_limit.trusted_proxies` | `[]` | `ORION_RATE_LIMIT__TRUSTED_PROXIES` | **Set this if Orion sits behind a load balancer**, whether or not `rate_limit.enabled` is on — see below. |
 | `rate_limit.endpoints.admin_rps` | `20` | `ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS` | Separate limit for the admin API. Set the variable to an empty string to clear it, which makes the admin plane use `default_rps`. |
 | `rate_limit.endpoints.data_rps` | — | `ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS` | Separate limit for the data plane; unset means it uses `default_rps`. Set the variable to an empty string to clear it. |
 
@@ -370,7 +370,7 @@ The consequence in both directions:
 - **Behind a load balancer with this unset**, every request appears to come from the balancer, so all clients share a single rate-limit bucket and the limit effectively applies to your whole fleet at once. List the balancer's subnet — `trusted_proxies = ["10.0.0.0/8"]` — to get per-client limiting back.
 - **List a network you do not control** and clients on it can spoof `X-Forwarded-For` to mint a fresh bucket per request, which is exactly no rate limiting at all. List only the addresses of proxies you operate.
 
-**It applies even with `rate_limit.enabled = false`.** The setting lives in this section, but three things resolve the caller's address with it: the rate limiter, the failed-admin-auth backoff, and the `details.client_ip` of every audit row. So on a proxied deployment that has rate limiting off — the default — leaving this empty means every audit row records the load balancer's address rather than the caller's.
+**It applies even with `rate_limit.enabled = false`.** The key is spelled under `[rate_limit]`, but what it configures is "may a forwarded header name the client" — and four things resolve the caller's address with it: the platform rate limiter, the failed-admin-auth backoff, the `details.client_ip` of every audit row, and, since 1.0, a channel's own `rate_limit` block, which the channel guards enforce on every ingress whether or not the platform limiter is running. So on a proxied deployment with rate limiting off — the default — leaving this empty means every audit row records the load balancer's address rather than the caller's, and every client behind the proxy shares one per-channel bucket.
 
 Both endpoint limits are optional, so their environment variables are three-state: unset leaves the config-file value alone, a number sets the limit, and an empty string clears it back to "use `default_rps`".
 

@@ -183,7 +183,7 @@ Same channel definitions work in any topology: run everything in one instance, s
 ```
 
 1. **Route Resolution:** REST pattern matching finds the channel, or falls back to name lookup
-2. **Channel Registry:** enforces deduplication, rate limits, input validation, backpressure, and checks the response cache
+2. **Ingress guards:** one function (`channel::guards::apply_guards`) enforces the channel's declared contract — rate limit, origin allow-list, `validation_logic`, deduplication, response cache, backpressure and `timeout_ms` — against runtime state held in the channel registry. Which guards run is a per-transport `GuardSet`, so an `/async` submission, a Kafka record and an in-process `channel_call` get the same contract as a synchronous request, minus only what their transport cannot have (no origin on Kafka, no cached body for a `202`).
 3. **Engine:** the workflow engine sits behind a double-Arc (`Arc<RwLock<Arc<Engine>>>`) allowing zero-downtime swaps
 4. **Workflow Matcher:** evaluates JSONLogic conditions and rollout percentages to pick the right workflow
 5. **Task Pipeline:** executes functions in order (parse, map, filter, http_call, db_read, etc.)

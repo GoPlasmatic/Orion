@@ -1281,3 +1281,530 @@ async fn publish_kafka_with_a_non_kafka_connector_cannot_activate() {
         "must say what type was required: {msg}"
     );
 }
+
+// ============================================================
+// N16: the Kafka ingress runs the channel's guards
+// ============================================================
+//
+// The unit tests in `channel::guards` and `kafka::consumer::process` pin the
+// guard matrix and the refusal→commit translation as pure functions. What
+// only a broker can show is what that translation does to an *offset*: a
+// refusal that leaves the offset uncommitted has to end with the record
+// processed, and one that commits must not also dead-letter. So these tests
+// assert on committed offsets and DLQ contents, which is where a lost message
+// shows up.
+//
+// Each one is written to fail against the code it guards: deleting the
+// `apply_guards` call from `process_one_kafka_message` (or restoring the
+// pre-N16 `validate_input`-only call) breaks all five, because without a
+// guard every record simply commits.
+
+/// Build a test config whose channel is guarded, with the DLQ toggled.
+fn guarded_kafka_config(
+    brokers: &str,
+    topic: &str,
+    channel: &str,
+    group_id: &str,
+    dlq_enabled: bool,
+) -> KafkaIngestConfig {
+    KafkaIngestConfig {
+        group_id: group_id.to_string(),
+        dlq: DlqConfig {
+            enabled: dlq_enabled,
+            topic: format!("{topic}-dlq"),
+        },
+        ..test_kafka_config(brokers, topic, channel)
+    }
+}
+
+/// Produce one keyed record.
+async fn produce(brokers: &str, topic: &str, key: &str, payload: &str) {
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", brokers)
+        .set("message.timeout.ms", "10000")
+        .create()
+        .unwrap();
+    producer
+        .send(
+            FutureRecord::to(topic).key(key).payload(payload),
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("produce failed");
+}
+
+/// Count the DLQ envelopes that land on `dlq_topic` within `window_secs`.
+///
+/// Unlike [`wait_for_dlq_message`] this always waits the whole window: the
+/// assertions below are about a record *not* being dead-lettered, and an
+/// early return could not tell "none yet" from "none at all".
+async fn count_dlq_messages(brokers: &str, dlq_topic: &str, window_secs: u64) -> usize {
+    let dlq_consumer: StreamConsumer = ClientConfig::new()
+        .set("bootstrap.servers", brokers)
+        .set("group.id", format!("dlq-counter-{}", uuid::Uuid::new_v4()))
+        .set("auto.offset.reset", "earliest")
+        .set("fetch.wait.max.ms", "500")
+        .create()
+        .unwrap();
+    dlq_consumer.subscribe(&[dlq_topic]).unwrap();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(window_secs);
+    let mut count = 0;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_secs(2), dlq_consumer.recv()).await {
+            Ok(Ok(_)) => count += 1,
+            Ok(Err(_)) => tokio::time::sleep(Duration::from_millis(200)).await,
+            Err(_) => {}
+        }
+    }
+    count
+}
+
+/// Poll for `secs` and fail the moment any offset is committed.
+///
+/// The positive form of this — "nothing was committed" after a single sleep —
+/// would pass against a consumer that committed and then crashed, so the
+/// check runs continuously. A broker read error yields `-1`; that is a probe
+/// failure, not a commit, so it is retried rather than asserted on.
+async fn assert_no_commits_within(brokers: &str, group_id: &str, topic: &str, secs: u64) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    while tokio::time::Instant::now() < deadline {
+        let committed = committed_total(brokers, group_id, topic, 1).await;
+        assert!(
+            committed <= 0,
+            "group '{group_id}' committed {committed} offsets on '{topic}' — a record that \
+             was never processed had its offset advanced, which is silent message loss"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
+/// Stand up a full `AppState` + router so channels can be created through the
+/// real admin API, and hand back the pieces `start_consumer` needs. The
+/// registry (and with it the channel's in-process dedup store) outlives any
+/// number of consumers started from it, which is what lets a test restart the
+/// consumer without resetting the guard state under test.
+async fn guarded_consumer_app() -> (
+    axum::Router,
+    Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    Arc<orion::channel::ChannelRegistry>,
+    Arc<datalogic_rs::Engine>,
+) {
+    let state =
+        crate::common::test_state_with_kafka(orion::config::AppConfig::default(), "127.0.0.1:1")
+            .await;
+    let engine = state.engine.clone();
+    let registry = state.channel_registry.clone();
+    let datalogic = state.datalogic.clone();
+    (
+        orion::server::build_router(state),
+        engine,
+        registry,
+        datalogic,
+    )
+}
+
+/// An HTTP connector pointing at a closed port, so every workflow that runs
+/// fails and produces exactly one DLQ envelope. Counting envelopes is then a
+/// count of records that actually reached the engine.
+async fn dead_upstream_connector(app: &axum::Router, id: &str) {
+    crate::common::create_connector(
+        app,
+        serde_json::json!({
+            "id": id,
+            "name": id,
+            "connector_type": "http",
+            "config": {
+                "type": "http",
+                "url": "http://127.0.0.1:1",
+                "retry": {"max_retries": 0, "retry_delay_ms": 10},
+                "allow_private_urls": true
+            }
+        }),
+    )
+    .await;
+}
+
+/// A one-task workflow whose only call is doomed.
+fn doomed_workflow(name: &str, connector: &str) -> serde_json::Value {
+    crate::common::workflow_with_tasks(
+        name,
+        serde_json::json!([{
+            "id": "t1",
+            "name": "Doomed call",
+            "function": {
+                "name": "http_call",
+                "input": {
+                    "connector": connector,
+                    "method": "POST",
+                    "path": "/",
+                    "body": {"x": 1},
+                    "output": "data.response"
+                }
+            }
+        }]),
+    )
+}
+
+/// **The message-loss regression.** A guard claims the channel's idempotency
+/// key before the workflow runs — that is the only moment the check is atomic
+/// against a concurrent delivery. If the claim is never revisited, every
+/// record the transport has to retry is destroyed: attempt 0 registers the
+/// key, the attempt fails without committing its offset, and the retry reads
+/// the key its own previous attempt wrote. `apply_guards` answers `409`, the
+/// ingress reads that as "already handled", commits, and the record is gone —
+/// never processed, never dead-lettered, and (per-message counters being
+/// emitted on the first attempt only) not even counted.
+///
+/// Phase 1 runs a dedup-configured channel whose workflow always fails, with
+/// the DLQ off, so no attempt may ever commit. Against the unfixed guard the
+/// second attempt commits within a couple of seconds. Phase 2 restarts the
+/// consumer against the *same* registry — so the same dedup store, with
+/// whatever phase 1 left in it — with the DLQ on, and the record must be
+/// redelivered and dead-lettered rather than silently skipped.
+#[tokio::test]
+#[ignore]
+async fn a_deduplicated_record_survives_attempts_that_never_committed() {
+    let (_container, brokers) = start_kafka().await;
+
+    let topic = "test-dedup-retry";
+    let dlq_topic = format!("{topic}-dlq");
+    let channel = "n16-dedup-retry-ch";
+    let group_id = format!("n16-dedup-retry-{}", uuid::Uuid::new_v4());
+
+    let (app, engine, registry, datalogic) = guarded_consumer_app().await;
+    dead_upstream_connector(&app, "n16-dead-retry").await;
+    crate::common::create_and_activate_channel_with_config(
+        &app,
+        channel,
+        doomed_workflow("N16 Dedup Retry", "n16-dead-retry"),
+        serde_json::json!({
+            "deduplication": { "header": "idempotency-key", "window_secs": 300 }
+        }),
+    )
+    .await;
+
+    // Phase 1: no DLQ, so a failed record can only be retried in place.
+    let config = guarded_kafka_config(&brokers, topic, channel, &group_id, false);
+    let handle = consumer::start_consumer(
+        &config,
+        engine.clone(),
+        registry.clone(),
+        datalogic.clone(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    produce(&brokers, topic, "ORD-1", r#"{"data":{"id":1}}"#).await;
+
+    // Several retry cycles (1s/2s/4s backoff) fit in this window, and every
+    // one of them re-presents the same idempotency key.
+    assert_no_commits_within(&brokers, &group_id, topic, 8).await;
+    shutdown_within(handle, 10).await;
+
+    // Phase 2: same registry, same dedup store, DLQ on. The record is
+    // redelivered because its offset never advanced, and must be preserved.
+    let config2 = guarded_kafka_config(&brokers, topic, channel, &group_id, true);
+    let dlq_producer = Arc::new(plain_producer(&brokers));
+    let handle2 = consumer::start_consumer(
+        &config2,
+        engine,
+        registry,
+        datalogic,
+        Some(dlq_producer),
+        Some(dlq_topic.clone()),
+        None,
+    )
+    .unwrap();
+
+    let dlq_payload = wait_for_dlq_message(&brokers, &dlq_topic, 45)
+        .await
+        .expect("the record must be redelivered, not skipped as a duplicate of itself");
+    assert_eq!(dlq_payload["source_topic"], topic);
+    wait_for_committed(&brokers, &group_id, topic, 1, 1, 30).await;
+    shutdown_within(handle2, 10).await;
+}
+
+/// A record over the channel's rate limit is *throttled*, not discarded: the
+/// offset is left uncommitted, the retry loop's capped backoff becomes the
+/// throttle, and every record eventually lands. Dead-lettering a record for
+/// arriving during a busy second would be data loss dressed as a policy, so
+/// the DLQ must stay empty.
+///
+/// The elapsed-time floor is what makes this a test of the guard rather than
+/// of the consumer: three records against a 1/s bucket cannot all commit in
+/// under two seconds, and without the limit they commit in milliseconds.
+#[tokio::test]
+#[ignore]
+async fn a_rate_limited_record_is_throttled_not_discarded() {
+    let (_container, brokers) = start_kafka().await;
+
+    let topic = "test-kafka-ratelimit";
+    let dlq_topic = format!("{topic}-dlq");
+    let channel = "n16-kafka-rl-ch";
+    let group_id = format!("n16-kafka-rl-{}", uuid::Uuid::new_v4());
+
+    let (app, engine, registry, datalogic) = guarded_consumer_app().await;
+    crate::common::create_and_activate_channel_with_config(
+        &app,
+        channel,
+        crate::common::simple_log_workflow("N16 Kafka RL"),
+        serde_json::json!({ "rate_limit": { "requests_per_second": 1, "burst": 1 } }),
+    )
+    .await;
+
+    let config = guarded_kafka_config(&brokers, topic, channel, &group_id, true);
+    let dlq_producer = Arc::new(plain_producer(&brokers));
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        registry,
+        datalogic,
+        Some(dlq_producer),
+        Some(dlq_topic.clone()),
+        None,
+    )
+    .unwrap();
+
+    for i in 0..3 {
+        produce(
+            &brokers,
+            topic,
+            &format!("ORD-{i}"),
+            &format!(r#"{{"data":{{"id":{i}}}}}"#),
+        )
+        .await;
+    }
+
+    let started = tokio::time::Instant::now();
+    wait_for_committed(&brokers, &group_id, topic, 1, 3, 90).await;
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "three records against a 1/s bucket cannot all commit at once — the channel's \
+         rate limit is not being applied to the Kafka ingress"
+    );
+    assert_eq!(
+        count_dlq_messages(&brokers, &dlq_topic, 5).await,
+        0,
+        "a rate-limited record must be retried, never dead-lettered"
+    );
+    shutdown_within(handle, 10).await;
+}
+
+/// A record that cannot get a backpressure permit is shed the way the
+/// transport can absorb: the offset stays uncommitted so Kafka redelivers it,
+/// and nothing is dead-lettered. `max_concurrent_per_node = 0` makes the
+/// condition permanent, which is the only way to observe "shed" without
+/// racing a release — and it is what distinguishes an applied permit from an
+/// absent one, since without the guard the record commits immediately.
+#[tokio::test]
+#[ignore]
+async fn a_record_shed_by_backpressure_is_neither_committed_nor_dead_lettered() {
+    let (_container, brokers) = start_kafka().await;
+
+    let topic = "test-kafka-backpressure";
+    let dlq_topic = format!("{topic}-dlq");
+    let channel = "n16-kafka-bp-ch";
+    let group_id = format!("n16-kafka-bp-{}", uuid::Uuid::new_v4());
+
+    let (app, engine, registry, datalogic) = guarded_consumer_app().await;
+    crate::common::create_and_activate_channel_with_config(
+        &app,
+        channel,
+        crate::common::simple_log_workflow("N16 Kafka BP"),
+        serde_json::json!({ "backpressure": { "max_concurrent_per_node": 0 } }),
+    )
+    .await;
+
+    let config = guarded_kafka_config(&brokers, topic, channel, &group_id, true);
+    let dlq_producer = Arc::new(plain_producer(&brokers));
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        registry,
+        datalogic,
+        Some(dlq_producer),
+        Some(dlq_topic.clone()),
+        None,
+    )
+    .unwrap();
+
+    produce(&brokers, topic, "ORD-BP", r#"{"data":{"id":1}}"#).await;
+
+    assert_no_commits_within(&brokers, &group_id, topic, 8).await;
+    assert_eq!(
+        count_dlq_messages(&brokers, &dlq_topic, 5).await,
+        0,
+        "a shed record waits for capacity; dead-lettering it would discard traffic the \
+         transport was willing to redeliver"
+    );
+    shutdown_within(handle, 10).await;
+}
+
+/// A record whose idempotency key was already *settled* by an earlier
+/// delivery is skipped and its offset committed, with no DLQ write — nothing
+/// failed. The doomed workflow is what makes this discriminating: every
+/// record that actually reaches the engine produces exactly one DLQ envelope,
+/// so "two offsets committed, one envelope" says the second record was
+/// suppressed rather than run again.
+#[tokio::test]
+#[ignore]
+async fn a_duplicate_record_commits_without_a_dlq_write() {
+    let (_container, brokers) = start_kafka().await;
+
+    let topic = "test-kafka-duplicate";
+    let dlq_topic = format!("{topic}-dlq");
+    let channel = "n16-kafka-dup-ch";
+    let group_id = format!("n16-kafka-dup-{}", uuid::Uuid::new_v4());
+
+    let (app, engine, registry, datalogic) = guarded_consumer_app().await;
+    dead_upstream_connector(&app, "n16-dead-dup").await;
+    crate::common::create_and_activate_channel_with_config(
+        &app,
+        channel,
+        doomed_workflow("N16 Kafka Dup", "n16-dead-dup"),
+        serde_json::json!({
+            "deduplication": { "header": "idempotency-key", "window_secs": 300 }
+        }),
+    )
+    .await;
+
+    let config = guarded_kafka_config(&brokers, topic, channel, &group_id, true);
+    let dlq_producer = Arc::new(plain_producer(&brokers));
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        registry,
+        datalogic,
+        Some(dlq_producer),
+        Some(dlq_topic.clone()),
+        None,
+    )
+    .unwrap();
+
+    // The same record key twice — a producer retry, or a mirrored partition.
+    produce(&brokers, topic, "ORD-DUP", r#"{"data":{"id":1}}"#).await;
+    produce(&brokers, topic, "ORD-DUP", r#"{"data":{"id":1}}"#).await;
+
+    wait_for_committed(&brokers, &group_id, topic, 1, 2, 60).await;
+    assert_eq!(
+        count_dlq_messages(&brokers, &dlq_topic, 8).await,
+        1,
+        "the duplicate must be skipped, not run again and dead-lettered a second time"
+    );
+    shutdown_within(handle, 10).await;
+}
+
+/// The channel's `timeout_ms` governs the Kafka dispatch, and the DLQ reports
+/// the value the channel declared — not `kafka.processing_timeout_ms`, which
+/// is 5 s here against a 1.5 s upstream, so nothing would be dead-lettered at
+/// all if the channel value were ignored.
+///
+/// Only the shortening direction is observable here. The clamp in the other
+/// direction is unit-tested in `channel::guards`: a channel asking for longer
+/// than `kafka.processing_timeout_ms` would block this poll loop past
+/// `max.poll.interval.ms`, and there is nothing to observe afterwards but an
+/// evicted consumer.
+#[tokio::test]
+#[ignore]
+async fn a_channel_timeout_shorter_than_the_kafka_ceiling_is_what_the_dlq_reports() {
+    let (_container, brokers) = start_kafka().await;
+
+    // An upstream slower than the channel's deadline but well inside the
+    // transport's, so only the channel value can stop it.
+    let mock_app = axum::Router::new().route(
+        "/slow",
+        axum::routing::post(|| async {
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
+            axum::Json(serde_json::json!({"result": "done"}))
+        }),
+    );
+    let mock_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mock_addr = mock_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(mock_listener, mock_app).await.unwrap();
+    });
+
+    let topic = "test-kafka-timeout";
+    let dlq_topic = format!("{topic}-dlq");
+    let channel = "n16-kafka-timeout-ch";
+    let group_id = format!("n16-kafka-timeout-{}", uuid::Uuid::new_v4());
+
+    let (app, engine, registry, datalogic) = guarded_consumer_app().await;
+    crate::common::create_connector(
+        &app,
+        serde_json::json!({
+            "id": "n16-slow-api-kafka",
+            "name": "n16-slow-api-kafka",
+            "connector_type": "http",
+            "config": {
+                "type": "http",
+                "url": format!("http://{mock_addr}"),
+                "retry": {"max_retries": 0, "retry_delay_ms": 10},
+                "allow_private_urls": true
+            }
+        }),
+    )
+    .await;
+    crate::common::create_and_activate_channel_with_config(
+        &app,
+        channel,
+        crate::common::workflow_with_tasks(
+            "N16 Kafka Timeout",
+            serde_json::json!([{
+                "id": "t1",
+                "name": "Slow call",
+                "function": {
+                    "name": "http_call",
+                    "input": {
+                        "connector": "n16-slow-api-kafka",
+                        "method": "POST",
+                        "path": "/slow",
+                        "body": {"x": 1},
+                        "output": "data.response",
+                        "timeout_ms": 5000
+                    }
+                }
+            }]),
+        ),
+        serde_json::json!({ "timeout_ms": 100 }),
+    )
+    .await;
+
+    // `test_kafka_config` sets `processing_timeout_ms: 5_000`; the channel
+    // asks for 100 ms, and the upstream takes 1.5 s.
+    let config = guarded_kafka_config(&brokers, topic, channel, &group_id, true);
+    assert_eq!(config.processing_timeout_ms, 5_000);
+    let dlq_producer = Arc::new(plain_producer(&brokers));
+    let handle = consumer::start_consumer(
+        &config,
+        engine,
+        registry,
+        datalogic,
+        Some(dlq_producer),
+        Some(dlq_topic.clone()),
+        None,
+    )
+    .unwrap();
+
+    produce(&brokers, topic, "ORD-SLOW", r#"{"data":{"id":1}}"#).await;
+
+    let dlq_payload = wait_for_dlq_message(&brokers, &dlq_topic, 45)
+        .await
+        .expect("the channel's 100ms deadline must stop a 1.5s workflow on the Kafka path too");
+    let error = dlq_payload["error"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        error.contains("100ms"),
+        "the DLQ must report the channel's deadline, not the transport's: {error}"
+    );
+    assert!(
+        !error.contains("5000ms"),
+        "kafka.processing_timeout_ms must not be what stopped it: {error}"
+    );
+    shutdown_within(handle, 10).await;
+}

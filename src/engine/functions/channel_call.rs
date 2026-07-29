@@ -143,6 +143,15 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             if !child_meta.is_object() {
                 child_meta = serde_json::json!({});
             }
+            // The calling channel, read before the override below replaces
+            // it: it is this call's caller identity, so a target's rate limit
+            // buckets per calling channel rather than lumping every
+            // in-process caller together (N16).
+            let calling_channel = child_meta
+                .get("channel")
+                .and_then(Value::as_str)
+                .unwrap_or("channel_call")
+                .to_string();
             // F4: the child runs as the target channel — override the
             // parent's "channel" so connector metrics and circuit-breaker
             // keys attribute to the channel actually executing.
@@ -150,10 +159,10 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             child_meta[META_CALL_DEPTH] = serde_json::json!(child_depth);
             child_meta[META_CALL_CHAIN] = serde_json::json!(child_chain);
 
-            // F14: enforce the target channel's ingress contract for
-            // in-process calls — validation_logic, backpressure, and
-            // timeout_ms. CORS, dedup, and the response cache are
-            // HTTP-transport concerns and don't apply here.
+            // F14/N16: enforce the target channel's ingress contract for
+            // in-process calls. Which guards that means is
+            // `Transport::ChannelCall`'s row of the matrix, not a decision
+            // taken here.
             // F35: refuse a quarantined target rather than calling it with
             // none of its guards.
             let target_runtime = self
@@ -176,24 +185,51 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                     None,
                 ));
             }
-            crate::channel::guards::validate_input(
-                &target_channel,
-                &target_runtime,
-                &call_data,
-                &child_meta,
-                ctx.datalogic(),
-            )
-            .map_err(|e| {
-                DataflowError::Validation(format!("channel_call to '{target_channel}': {e}"))
-            })?;
-            let _backpressure_permit =
-                crate::channel::guards::acquire_backpressure(&target_channel, &target_runtime)
-                    .map_err(|e| {
-                        DataflowError::function_execution(
-                            format!("channel_call to '{target_channel}': {e}"),
-                            None,
-                        )
-                    })?;
+            // The header view is the metadata inherited from the originating
+            // request, so a target whose `rate_limit.key_logic` reads a
+            // header still resolves one on this path. Credential headers
+            // arrive masked (S10), which narrows those buckets rather than
+            // widening them.
+            let header_lookup = |name: &str| {
+                child_meta
+                    .get("headers")
+                    .and_then(|h| h.get(name))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            };
+            let admission =
+                crate::channel::guards::apply_guards(crate::channel::guards::GuardRequest {
+                    transport: crate::channel::guards::Transport::ChannelCall,
+                    channel: &target_channel,
+                    runtime: &target_runtime,
+                    data: &call_data,
+                    metadata: &child_meta,
+                    datalogic: ctx.datalogic(),
+                    origin: None,
+                    caller_identity: &calling_channel,
+                    header: &header_lookup,
+                    dedup_key_fallback: None,
+                    // `Transport::ChannelCall` does not deduplicate, so no
+                    // claim is taken and the owner is moot.
+                    dedup_owner: None,
+                    default_timeout_ms: Some(self.default_timeout_ms),
+                    // `engine.default_channel_call_timeout_ms` is a default,
+                    // not a ceiling: an in-process call blocks only its own
+                    // caller, and the task's explicit `timeout_ms` outranks
+                    // both anyway.
+                    max_timeout_ms: None,
+                })
+                .await
+                .map_err(|e| guard_refusal(&target_channel, e))?;
+            let crate::channel::guards::GuardVerdict::Admitted(admission) = admission else {
+                // `Transport::ChannelCall` does not enable the response
+                // cache, so `apply_guards` cannot answer with a cache hit.
+                return Err(DataflowError::function_execution(
+                    format!("channel_call to '{target_channel}': unexpected cached response"),
+                    None,
+                ));
+            };
+            let _backpressure_permit = admission.backpressure_permit;
 
             // Build a child message for the target channel.
             let mut child_message = Message::from_value(&call_data);
@@ -201,15 +237,12 @@ impl AsyncFunctionHandler for ChannelCallHandler {
 
             // Get current engine snapshot and process with timeout.
             // Timeout precedence: explicit input > target channel's
-            // timeout_ms > engine default.
+            // timeout_ms > engine default (the last two resolved by the
+            // guard chain, so every transport agrees on them).
             let engine = crate::engine::acquire_engine_read(&self.engine).await;
             let timeout_ms = input
                 .timeout_ms
-                .or_else(|| {
-                    target_runtime
-                        .as_ref()
-                        .and_then(|c| c.parsed_config.timeout_ms)
-                })
+                .or(admission.timeout_ms)
                 .unwrap_or(self.default_timeout_ms);
             let timeout = Duration::from_millis(timeout_ms);
 
@@ -273,6 +306,26 @@ fn resolve_target(ctx: &TaskContext<'_>, input: &ChannelCallInput) -> dataflow_r
         ));
     }
     Ok(target)
+}
+
+/// Map a target channel's guard refusal onto the error the calling workflow
+/// sees.
+///
+/// A `validation_logic` rejection stays a `Validation` — the caller sent data
+/// the target refuses, which the envelope reports as `400`. Every other
+/// refusal (over the target's rate limit, at its concurrency cap, a
+/// fail-closed dedup/rate-limit backend) keeps the status the guard chose,
+/// so the caller sees `429`/`503` rather than the generic `500` a plain
+/// function-execution error would have produced for a condition that is
+/// nobody's bug and is worth retrying.
+fn guard_refusal(target: &str, e: crate::errors::OrionError) -> DataflowError {
+    let (status, _code, detail) = e.response_parts();
+    let message = format!("channel_call to '{target}': {detail}");
+    if status == axum::http::StatusCode::BAD_REQUEST {
+        DataflowError::Validation(message)
+    } else {
+        crate::errors::channel_refused_dataflow_error(status, message)
+    }
 }
 
 /// Format a call chain for error messages: "A -> B -> C"
