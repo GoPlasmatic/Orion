@@ -654,6 +654,21 @@ Migrations run at boot unless `storage.auto_migrate = false`, in which case run
 | PostgreSQL | `004`–`013` (bigint columns, active immutability, cluster coordination, trace access token, recreated current views, DLQ/audit indexes, `010`–`012` for the trace pagination indexes, and `013` for the JSON column suffixes) | See below |
 | MySQL | `001` rewritten; `004`–`012` added | No 0.3.0 deployment can exist — start fresh |
 
+> **Migration numbers are per-backend and are not comparable.** Each backend
+> has its own migration directory and its own version sequence, so the same
+> number means different things: `004` is `cluster_coordination` on SQLite,
+> `bigint_columns` on PostgreSQL and `active_immutability` on MySQL. There is
+> no shared version space, and a number alone never identifies a change.
+>
+> **Refer to a migration by name.** `orion-server migrate --dry-run` prints the
+> backend, the number and the name together, which is the unambiguous form:
+>
+> ```text
+> Pending migrations on postgres (2):
+>   postgres 012 — drop trace created at index
+>   postgres 013 — json column suffixes
+> ```
+
 **PostgreSQL: `004_bigint_columns` needs care.** It drops the
 `current_workflows` and `current_channels` views, widens `integer` columns to
 `bigint` on `workflows`, `channels`, and `trace_dlq`, then recreates the views.

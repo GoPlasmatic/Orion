@@ -323,3 +323,89 @@ fn test_connectivity_reports_ok_for_in_memory_sqlite() {
         "stdout should report storage OK, got: {stdout}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D13: migration numbers are per-backend, so the number alone never says which
+// change is pending. The dry-run output has to name the backend and the
+// migration, and say so. (Also closes the `migrate` half of T7: the subcommand
+// had no test through the binary at all, though it is the documented deploy
+// step for every cluster deployment.)
+// ---------------------------------------------------------------------------
+
+/// Path to a scratch SQLite file that does not exist yet, plus a cleanup guard.
+fn temp_db_url() -> (String, String) {
+    let mut path = std::env::temp_dir();
+    path.push(format!("orion-cli-migrate-{}.db", uuid::Uuid::new_v4()));
+    let p = path.to_string_lossy().into_owned();
+    (format!("sqlite:{p}?mode=rwc"), p)
+}
+
+fn run_migrate(url: &str, extra: &[&str]) -> (bool, String) {
+    let mut args = vec!["migrate"];
+    args.extend_from_slice(extra);
+    let out = Command::new(orion_bin())
+        .args(&args)
+        .env("ORION_STORAGE__URL", url)
+        .output()
+        .expect("invoke orion-server migrate");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    (out.status.success(), combined)
+}
+
+#[test]
+fn migrate_dry_run_names_the_backend_and_each_migration() {
+    let (url, path) = temp_db_url();
+
+    let (ok, out) = run_migrate(&url, &["--dry-run"]);
+    assert!(ok, "dry-run must exit zero: {out}");
+    assert!(
+        out.contains("Pending migrations on sqlite"),
+        "output must name the backend: {out}"
+    );
+    // The number alone is ambiguous across backends; the name is what
+    // identifies the change, so both must be present and paired.
+    assert!(
+        out.contains("sqlite 001 — initial"),
+        "each row must carry backend, number and name: {out}"
+    );
+    assert!(
+        out.contains("not comparable across"),
+        "the output must say the numbering is per-backend: {out}"
+    );
+    // --dry-run must not actually apply anything.
+    let (ok, out2) = run_migrate(&url, &["--dry-run"]);
+    assert!(ok, "{out2}");
+    assert!(
+        out2.contains("Pending migrations on sqlite"),
+        "dry-run must not have applied the migrations: {out2}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn migrate_applies_then_reports_nothing_pending() {
+    let (url, path) = temp_db_url();
+
+    let (ok, out) = run_migrate(&url, &[]);
+    assert!(ok, "migrate must exit zero: {out}");
+    assert!(
+        out.contains("on sqlite") && out.contains("Migrations applied successfully"),
+        "{out}"
+    );
+
+    // Idempotent: a second run is a no-op that still names the backend, and
+    // still exits zero — the Helm pre-upgrade Job runs on every upgrade.
+    let (ok, out) = run_migrate(&url, &[]);
+    assert!(ok, "re-running migrate must exit zero: {out}");
+    assert!(
+        out.contains("No pending migrations (sqlite)"),
+        "a settled database must say so, and name the backend: {out}"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}

@@ -1470,6 +1470,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`migrate` output names the backend and every pending migration (D13).**
+  Migration version numbers are per-backend and are not comparable: `004` is
+  `cluster_coordination` on SQLite, `bigint_columns` on PostgreSQL and
+  `active_immutability` on MySQL. `--dry-run` printed `4 — cluster_coordination`,
+  so reading it correctly meant already knowing which backend you were on.
+  Both `migrate` and `migrate --dry-run` now print the backend in the header
+  and on every row (`postgres 013 — json column suffixes`), and the dry run
+  states outright that the numbering does not line up across backends. The
+  apply path lists what it is about to run rather than only a count.
+
+  A single backend-agnostic version space was considered and rejected: it would
+  have forced every existing deployment through a hand-run `_sqlx_migrations`
+  rewrite, where a mistake stops the database from starting — a large one-way
+  risk to fix a labelling problem. Referring to migrations by name solves the
+  same thing. `CONTRIBUTING.md` and the upgrade guide now say so explicitly.
+  (The `migrate` subcommand also gained its first tests through the binary.)
+
 - **The last two JSON columns got the suffix every sibling has.**
   `workflows.tags` is now `workflows.tags_json` and `channels.methods` is now
   `channels.methods_json`. They were the only two columns holding a serialized
