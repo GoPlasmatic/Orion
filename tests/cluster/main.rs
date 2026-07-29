@@ -907,7 +907,9 @@ async fn breaker_reset_fans_out_across_nodes() {
         body_json(resp).await
     };
     let breaker_state = |body: &serde_json::Value, connector: &str| {
-        body["breakers"]
+        // R17/R18 wrapped every admin 2xx body in `data`; this reader was not
+        // updated, and cluster tests are container-gated, so it went unnoticed.
+        body["data"]["breakers"]
             .as_object()
             .and_then(|m| m.iter().find(|(k, _)| k.contains(connector)))
             .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
@@ -1021,11 +1023,11 @@ async fn breaker_reset_fans_out_across_nodes() {
     // together.
     let body = breakers_on(h.node_b.clone()).await;
     assert_eq!(
-        body["breakers"][&key2].as_str(),
+        body["data"]["breakers"][&key2].as_str(),
         Some("closed"),
         "the last reset key must be applied: {body}"
     );
-    let key1_state = body["breakers"][&key].as_str().unwrap_or_default();
+    let key1_state = body["data"]["breakers"][&key].as_str().unwrap_or_default();
     assert_eq!(
         key1_state, "open",
         "the coalesced (first) reset is lost — documented last-write-wins: {body}"
