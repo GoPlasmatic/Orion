@@ -1,0 +1,24 @@
+-- Give `traces.access_token_hash` its real width on MySQL (proposal D26).
+--
+-- The column holds one thing: the hex encoding of a SHA-256 digest (R12), so
+-- it is 64 characters or NULL — never anything else, on any row Orion has ever
+-- written. 006 declared it `TEXT` to match the sqlite and postgres sets, where
+-- `text` is the right answer and a width would be noise.
+--
+-- On MySQL it is not noise. `TEXT` is stored off-page and, more to the point,
+-- cannot be indexed without a prefix length: `CREATE INDEX ... (access_token_hash)`
+-- is a syntax error there, and `(access_token_hash(64))` is a prefix index with
+-- different uniqueness semantics. Today nothing indexes this column — async
+-- trace reads look the row up by primary key and compare the hash in Rust — but
+-- "the type forbids the obvious index" is a trap to leave lying in a schema,
+-- and `char(64)` is simply the honest declaration of a fixed-width digest.
+--
+-- Narrowing is lossless here and the parity test agrees: `schema_parity.rs`
+-- folds `char`, `varchar` and `text` into one logical `text` kind precisely
+-- because MySQL's identifier columns are already `varchar(n)` where the other
+-- two are `text`, so this does not fork the schema across backends.
+--
+-- `MODIFY` to a type the column already has is a no-op, so unlike 011 this
+-- file is safe to re-run.
+
+ALTER TABLE `traces` MODIFY COLUMN `access_token_hash` char(64) NULL;

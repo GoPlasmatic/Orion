@@ -47,10 +47,10 @@ pub fn validate_update_channel(
     if let Some(ref desc) = req.description {
         validate_description(desc).map_err(|e| remap_to_field(e, "channel.description"))?;
     }
-    // Stored `methods` is a JSON-encoded array column; a stored row that
+    // Stored `methods_json` is a JSON-encoded array column; a stored row that
     // fails to parse contributes no methods, so the request must supply them.
     let stored_methods: Option<Vec<String>> = stored
-        .methods
+        .methods_json
         .as_deref()
         .and_then(|m| serde_json::from_str(m).ok());
     // A stored protocol outside the known set (corrupt row) skips the
@@ -490,7 +490,7 @@ mod tests {
             status: "draft".to_string(),
             channel_type: "sync".to_string(),
             protocol: ChannelProtocol::Rest.as_str().to_string(),
-            methods: Some(r#"["GET"]"#.to_string()),
+            methods_json: Some(r#"["GET"]"#.to_string()),
             workflow_id: None,
             topic: None,
             consumer_group: None,
@@ -659,7 +659,7 @@ mod tests {
             description: None,
             channel_type: "sync".to_string(),
             protocol: "rest".to_string(),
-            methods: Some("[\"POST\"]".to_string()),
+            methods_json: Some("[\"POST\"]".to_string()),
             route_pattern: Some("/orders".to_string()),
             topic: None,
             consumer_group: None,
@@ -722,7 +722,7 @@ mod tests {
     fn test_update_emptying_topic_rejected_for_kafka() {
         let stored = Channel {
             protocol: "kafka".to_string(),
-            methods: None,
+            methods_json: None,
             route_pattern: None,
             topic: Some("orders-topic".to_string()),
             ..stored_rest_channel()

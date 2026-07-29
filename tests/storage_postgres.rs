@@ -227,12 +227,20 @@ async fn postgres_dlq_record_retry_and_mark_exhausted_persist() {
 /// Migrations 001–003 are exactly the schema 0.3.0 shipped (they are
 /// checksum-frozen), so applying only those and seeding rows reproduces a
 /// real 0.3.0 Postgres database. 1.0 startup must then apply the remaining
-/// migrations — including `004_bigint_columns`, the INT4→BIGINT widening
-/// with its non-idempotent view drop/recreate that the upgrade guide singles
-/// out — over the existing rows, and the repositories must decode them
-/// afterwards. That read is precisely what 0.3.0 could not do (sqlx-postgres
-/// refuses INT4 → i64), and until this test the migration had only ever run
-/// against empty tables.
+/// migrations over the existing rows, and the repositories must decode them
+/// afterwards. Two of those migrations had only ever run against empty
+/// tables before this test:
+///
+/// * `004_bigint_columns` — the INT4→BIGINT widening with its non-idempotent
+///   view drop/recreate that the upgrade guide singles out. That read is
+///   precisely what 0.3.0 could not do (sqlx-postgres refuses INT4 → i64).
+/// * `013_json_column_suffixes` — `tags` → `tags_json` and `methods` →
+///   `methods_json` (D26). A rename is the one migration shape where "the
+///   rows survived" and "everything that reads them survived" are different
+///   questions: Postgres leaves a dependent view publishing the *old* column
+///   name and leaves a plpgsql trigger body naming a field that no longer
+///   exists, and neither failure appears at migration time. Both are asserted
+///   below, over seeded rows.
 #[tokio::test]
 #[ignore = "needs Docker; run with: cargo test --test storage_postgres -- --ignored"]
 async fn upgrade_from_0_3_0_schema_with_data_preserves_rows() {
@@ -264,12 +272,17 @@ async fn upgrade_from_0_3_0_schema_with_data_preserves_rows() {
     // an active channel referencing it, and a partially retried DLQ entry.
     // (INT4 columns cannot hold anything a 0.3.0 deployment couldn't; the
     // 0.3.0 failure was in decoding, which the repository reads below hit.)
+    //
+    // `tags` and `methods` are spelled the *old* way here on purpose: this is
+    // the 0.3.0 schema, before `013_json_column_suffixes` renamed them. The
+    // values are distinctive so the D26 assertions can tell "the column moved"
+    // from "the column moved and took the data with it".
     sqlx::query(
         "INSERT INTO workflows \
-           (workflow_id, version, name, priority, status, rollout_percentage, condition_json, tasks_json) \
+           (workflow_id, version, name, priority, status, rollout_percentage, condition_json, tasks_json, tags) \
          VALUES \
-           ('wf-legacy', 1, 'Legacy workflow', 5, 'archived', 100, 'true', '[]'), \
-           ('wf-legacy', 2, 'Legacy workflow', 5, 'active', 100, 'true', '[{\"id\":\"t1\"}]')",
+           ('wf-legacy', 1, 'Legacy workflow', 5, 'archived', 100, 'true', '[]', '[\"v1\"]'), \
+           ('wf-legacy', 2, 'Legacy workflow', 5, 'active', 100, 'true', '[{\"id\":\"t1\"}]', '[\"legacy\",\"kept\"]')",
     )
     .execute(&raw)
     .await
@@ -377,6 +390,110 @@ async fn upgrade_from_0_3_0_schema_with_data_preserves_rows() {
     assert_eq!(claimed[0].id, "dlq-legacy");
     assert_eq!(claimed[0].retry_count, 3);
     assert_eq!(claimed[0].max_retries, 5);
+
+    // -- D26: the rename, over the rows that were already there --
+
+    // 1. The columns moved and kept their values.
+    let (tags,): (String,) = sqlx::query_as(
+        "SELECT tags_json FROM workflows WHERE workflow_id = 'wf-legacy' AND version = 2",
+    )
+    .fetch_one(pg)
+    .await
+    .expect("tags_json must exist after 013 and hold the seeded value");
+    assert_eq!(tags, r#"["legacy","kept"]"#);
+    let (methods,): (Option<String>,) =
+        sqlx::query_as("SELECT methods_json FROM channels WHERE channel_id = 'ch-legacy'")
+            .fetch_one(pg)
+            .await
+            .expect("methods_json must exist after 013 and hold the seeded value");
+    assert_eq!(methods.as_deref(), Some(r#"["POST"]"#));
+
+    // 2. The views were rebuilt. `RENAME COLUMN` alone leaves a Postgres view
+    //    publishing the name it was created with, so `current_workflows` would
+    //    still say `tags` while the table says `tags_json` — silently, until a
+    //    `SELECT *` decodes into a row struct that no longer has that field.
+    for (view, gone, present) in [
+        ("current_workflows", "tags", "tags_json"),
+        ("current_channels", "methods", "methods_json"),
+    ] {
+        let columns: Vec<(String,)> = sqlx::query_as(
+            "SELECT column_name::text FROM information_schema.columns WHERE table_name = $1",
+        )
+        .bind(view)
+        .fetch_all(pg)
+        .await
+        .unwrap_or_else(|e| panic!("introspect {view}: {e}"));
+        let columns: Vec<String> = columns.into_iter().map(|(c,)| c).collect();
+        assert!(
+            columns.iter().any(|c| c == present),
+            "{view} must publish `{present}` after 013, has {columns:?}"
+        );
+        assert!(
+            !columns.iter().any(|c| c == gone),
+            "{view} still publishes the pre-rename `{gone}` — 013 dropped and \
+             recreated it precisely because CREATE OR REPLACE VIEW cannot change a \
+             view column's name: {columns:?}"
+        );
+    }
+    // And it still resolves the latest version over the seeded pair.
+    let (view_version, view_tags): (i64, String) = sqlx::query_as(
+        "SELECT version, tags_json FROM current_workflows WHERE workflow_id = 'wf-legacy'",
+    )
+    .fetch_one(pg)
+    .await
+    .expect("the rebuilt view must still serve the seeded rows");
+    assert_eq!(view_version, 2);
+    assert_eq!(view_tags, r#"["legacy","kept"]"#);
+
+    // 3. The active-immutability triggers still fire. Their plpgsql bodies are
+    //    stored as text, so before 013 replaced them the next UPDATE of an
+    //    active row raised `record "old" has no field "tags"` — the guard
+    //    turning into an unconditional error rather than a guard.
+    let err = sqlx::query(
+        "UPDATE workflows SET tasks_json = '[{\"tampered\":true}]' \
+         WHERE workflow_id = 'wf-legacy' AND status = 'active'",
+    )
+    .execute(pg)
+    .await
+    .expect_err("active content update must be blocked after the rename");
+    assert!(
+        err.to_string()
+            .contains("Cannot modify content of active workflows"),
+        "the workflows trigger must still reject content changes by name, not fail \
+         on a missing field: {err}"
+    );
+    let err = sqlx::query(
+        "UPDATE channels SET config_json = '{\"tampered\":true}' \
+         WHERE channel_id = 'ch-legacy' AND status = 'active'",
+    )
+    .execute(pg)
+    .await
+    .expect_err("active channel content update must be blocked after the rename");
+    assert!(
+        err.to_string()
+            .contains("Cannot modify content of active channels"),
+        "the channels trigger must still reject content changes: {err}"
+    );
+    // The renamed column is itself still guarded — the predicate reads it.
+    let err = sqlx::query(
+        "UPDATE workflows SET tags_json = '[\"tampered\"]' \
+         WHERE workflow_id = 'wf-legacy' AND status = 'active'",
+    )
+    .execute(pg)
+    .await
+    .expect_err("tags_json must still be part of the immutable content set");
+    assert!(
+        err.to_string()
+            .contains("Cannot modify content of active workflows"),
+        "unexpected error: {err}"
+    );
+
+    // 4. A legitimate transition is still allowed — the trigger did not become
+    //    a blanket refusal.
+    wf_repo
+        .archive("wf-legacy")
+        .await
+        .expect("archiving an active workflow must still work");
 }
 
 /// D8 keyset pagination, on the backend whose `timestamp` type the cursor

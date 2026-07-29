@@ -57,7 +57,10 @@ impl TryFrom<&Workflow> for WorkflowResponse {
                 "condition_json",
             )?,
             tasks: parse_json_field(&workflow.tasks_json, "workflow", id, "tasks_json")?,
-            tags: parse_json_field(&workflow.tags, "workflow", id, "tags")?,
+            // Wire name `tags`, column name `tags_json` (D26); the label is
+            // the column, because that is what an operator staring at a
+            // corrupt row has to go and look at.
+            tags: parse_json_field(&workflow.tags_json, "workflow", id, "tags_json")?,
             continue_on_error: workflow.continue_on_error,
             created_at: workflow.created_at,
             updated_at: workflow.updated_at,
@@ -95,10 +98,11 @@ impl TryFrom<&Channel> for ChannelResponse {
 
     fn try_from(channel: &Channel) -> Result<Self, Self::Error> {
         let id = &channel.channel_id;
+        // Wire name `methods`, column name `methods_json` (D26).
         let methods = channel
-            .methods
+            .methods_json
             .as_ref()
-            .map(|m| parse_json_field(m, "channel", id, "methods"))
+            .map(|m| parse_json_field(m, "channel", id, "methods_json"))
             .transpose()?;
 
         Ok(Self {
@@ -261,6 +265,94 @@ mod tests {
     use crate::storage::models::{ChannelProtocol, EntityStatus};
     use chrono::NaiveDate;
 
+    /// Every column decoded as JSON is named `*_json` (D26).
+    ///
+    /// `parse_json_field` is the single door a stored column goes through to
+    /// become a `serde_json::Value`, and its fourth argument is the column the
+    /// caller is decoding — the label an operator sees when a row turns out to
+    /// hold something that is not JSON. So the set of columns that are JSON is
+    /// exactly the set of labels passed here, and the suffix rule can be
+    /// checked against them rather than against a hand-kept list that drifts.
+    ///
+    /// `workflows.tags` and `channels.methods` were the two columns that
+    /// failed this until 1.0.0; they are now `tags_json` and `methods_json`.
+    /// A source scan, not a type-level rule, for the same reason
+    /// `row_structs_are_not_wire_types` is one: nothing in the type system
+    /// says "this `String` is really a JSON document".
+    #[test]
+    fn json_columns_carry_the_json_suffix() {
+        const SOURCE: &str = include_str!("dto.rs");
+        const CALL: &str = "parse_json_field(";
+
+        let mut labels = Vec::new();
+        // Skip the `const CALL` declaration itself, and this test's own body,
+        // by only scanning up to the `mod tests` boundary.
+        let code = SOURCE
+            .split_once("\n#[cfg(test)]\n")
+            .map(|(before, _)| before)
+            .unwrap_or(SOURCE);
+
+        let mut rest = code;
+        while let Some(start) = rest.find(CALL) {
+            rest = &rest[start + CALL.len()..];
+            // Walk to the matching close paren, splitting the top-level args.
+            let mut depth = 0usize;
+            let mut args = vec![String::new()];
+            let mut end = rest.len();
+            for (i, ch) in rest.char_indices() {
+                match ch {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' if depth == 0 => {
+                        end = i;
+                        break;
+                    }
+                    ')' | ']' => depth -= 1,
+                    ',' if depth == 0 => {
+                        args.push(String::new());
+                        continue;
+                    }
+                    _ => {}
+                }
+                args.last_mut().expect("at least one arg").push(ch);
+            }
+            // A rustfmt-wrapped call ends `column,\n)`, leaving a blank arg.
+            args.retain(|a| !a.trim().is_empty());
+            assert_eq!(
+                args.len(),
+                4,
+                "parse_json_field takes (value, entity, id, column); found {} args in \
+                 `{}`",
+                args.len(),
+                &rest[..end.min(120)]
+            );
+            labels.push(args[3].trim().trim_matches('"').to_string());
+            rest = &rest[end..];
+        }
+
+        assert!(
+            labels.len() >= 6,
+            "the scan found only {} parse_json_field call(s) — it has stopped \
+             matching the source and is no longer checking anything: {labels:?}",
+            labels.len()
+        );
+        for label in &labels {
+            assert!(
+                label.ends_with("_json"),
+                "`{label}` is decoded as a JSON document but its column is not named \
+                 `*_json` (D26). The suffix is the only signal a reader gets that the \
+                 value has to go through serde_json before it means anything — every \
+                 other column in the schema is used as-is."
+            );
+        }
+        // The two D26 moved must be in there, under their new names.
+        for expected in ["tags_json", "methods_json"] {
+            assert!(
+                labels.iter().any(|l| l == expected),
+                "expected `{expected}` among the decoded columns: {labels:?}"
+            );
+        }
+    }
+
     fn sample_datetime() -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2025, 1, 1)
             .expect("test")
@@ -279,7 +371,7 @@ mod tests {
             rollout_percentage: 100,
             condition_json: r#"{"==": [1, 1]}"#.to_string(),
             tasks_json: r#"[{"id": "t1", "function": "http_call"}]"#.to_string(),
-            tags: r#"["test"]"#.to_string(),
+            tags_json: r#"["test"]"#.to_string(),
             continue_on_error: false,
             created_at: sample_datetime(),
             updated_at: sample_datetime(),
@@ -294,7 +386,7 @@ mod tests {
             description: Some("Order processing channel".to_string()),
             channel_type: CHANNEL_TYPE_SYNC.to_string(),
             protocol: ChannelProtocol::Rest.as_str().to_string(),
-            methods: Some(r#"["POST"]"#.to_string()),
+            methods_json: Some(r#"["POST"]"#.to_string()),
             route_pattern: Some("/orders".to_string()),
             topic: None,
             consumer_group: None,
@@ -346,7 +438,7 @@ mod tests {
     #[test]
     fn test_workflow_response_try_from_invalid_tags_json() {
         let mut workflow = sample_workflow();
-        workflow.tags = "not json".to_string();
+        workflow.tags_json = "not json".to_string();
         let result = WorkflowResponse::try_from(&workflow);
         assert!(result.is_err());
     }
@@ -379,7 +471,7 @@ mod tests {
         let mut channel = sample_channel();
         channel.channel_type = CHANNEL_TYPE_ASYNC.to_string();
         channel.protocol = ChannelProtocol::Kafka.as_str().to_string();
-        channel.methods = None;
+        channel.methods_json = None;
         channel.route_pattern = None;
         channel.topic = Some("order.placed".to_string());
         channel.consumer_group = Some("orion".to_string());

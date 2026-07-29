@@ -36,7 +36,10 @@ pub struct Workflow {
     pub rollout_percentage: i64,
     pub condition_json: String,
     pub tasks_json: String,
-    pub tags: String,
+    /// JSON array of tag strings. Named for the column (D26), not for the
+    /// `tags` field the admin API publishes — that lives on
+    /// [`super::dto::WorkflowResponse`] and is a `Value`, already decoded.
+    pub tags_json: String,
     pub continue_on_error: bool,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
@@ -54,7 +57,10 @@ pub struct Channel {
     pub description: Option<String>,
     pub channel_type: String,
     pub protocol: String,
-    pub methods: Option<String>,
+    /// JSON array of HTTP method names, `None` for non-REST channels. Named
+    /// for the column (D26); the admin API's `methods` field lives on
+    /// [`super::dto::ChannelResponse`].
+    pub methods_json: Option<String>,
     pub route_pattern: Option<String>,
     pub topic: Option<String>,
     pub consumer_group: Option<String>,

@@ -192,7 +192,7 @@ fn build_workflow_insert(row: WorkflowInsertRow<'_>) -> (String, sea_query_binde
             Workflows::RolloutPercentage,
             Workflows::ConditionJson,
             Workflows::TasksJson,
-            Workflows::Tags,
+            Workflows::TagsJson,
             Workflows::ContinueOnError,
         ])
         .values_panic([
@@ -311,7 +311,7 @@ fn build_condition(filter: &WorkflowFilter) -> Condition {
             .replace('\\', "\\\\")
             .replace('%', "\\%")
             .replace('_', "\\_");
-        cond = cond.add(Expr::col(Workflows::Tags).like(format!("%\"{escaped}\"%")));
+        cond = cond.add(Expr::col(Workflows::TagsJson).like(format!("%\"{escaped}\"%")));
     }
     cond
 }
@@ -452,7 +452,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             };
             let tags_json = match &req.tags {
                 Some(t) => serde_json::to_string(t)?,
-                None => existing.tags.clone(),
+                None => existing.tags_json.clone(),
             };
 
             let description_val = optional_string_value(description);
@@ -465,7 +465,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .value(Workflows::Priority, priority)
                     .value(Workflows::ConditionJson, condition_json.as_str())
                     .value(Workflows::TasksJson, tasks_json.as_str())
-                    .value(Workflows::Tags, tags_json.as_str())
+                    .value(Workflows::TagsJson, tags_json.as_str())
                     .value(Workflows::ContinueOnError, continue_on_error)
                     .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
                     .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str())),
@@ -648,7 +648,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 rollout_pct: 100,
                 condition_json: latest.condition_json.as_str(),
                 tasks_json: latest.tasks_json.as_str(),
-                tags_json: latest.tags.as_str(),
+                tags_json: latest.tags_json.as_str(),
                 continue_on_error: latest.continue_on_error,
             });
 
@@ -695,7 +695,7 @@ pub fn synthetic_workflow(
         rollout_percentage: 100,
         condition_json: serde_json::to_string(&req.condition)?,
         tasks_json: serde_json::to_string(&req.tasks)?,
-        tags: serde_json::to_string(&req.tags)?,
+        tags_json: serde_json::to_string(&req.tags)?,
         continue_on_error: req.continue_on_error,
         created_at: now,
         updated_at: now,
@@ -746,7 +746,7 @@ pub fn workflow_to_dataflow(
     let mut tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
     normalize_http_call_output(&mut tasks);
     let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
-    let tags: Vec<String> = serde_json::from_str(&workflow.tags)?;
+    let tags: Vec<String> = serde_json::from_str(&workflow.tags_json)?;
 
     let workflow_json = serde_json::json!({
         "id": workflow.workflow_id,
@@ -777,7 +777,7 @@ pub fn workflow_to_dataflow_with_rollout(
     let mut tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
     normalize_http_call_output(&mut tasks);
     let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
-    let tags: Vec<String> = serde_json::from_str(&workflow.tags)?;
+    let tags: Vec<String> = serde_json::from_str(&workflow.tags_json)?;
 
     // Wrap condition with bucket range check
     let wrapped_condition = serde_json::json!({
@@ -822,7 +822,7 @@ mod tests {
             rollout_percentage: 100,
             condition_json: "true".to_string(),
             tasks_json: r#"[{"id":"log_task","name":"Log","function":{"name":"log","input":{"message":"hello"}}}]"#.to_string(),
-            tags: "[]".to_string(),
+            tags_json: "[]".to_string(),
             continue_on_error: false,
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),
@@ -848,7 +848,7 @@ mod tests {
             condition_json: r#"{"==": [{"var": "type"}, "order"]}"#.to_string(),
             tasks_json: r#"[{"id":"t1","name":"Process","function":{"name":"log","input":{"message":"test"}}}]"#
                 .to_string(),
-            tags: r#"["orders"]"#.to_string(),
+            tags_json: r#"["orders"]"#.to_string(),
             continue_on_error: true,
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),
@@ -872,7 +872,7 @@ mod tests {
             condition_json: "true".to_string(),
             tasks_json: r#"[{"id":"t1","name":"Noop","function":{"name":"log","input":{"message":"test"}}}]"#
                 .to_string(),
-            tags: "[]".to_string(),
+            tags_json: "[]".to_string(),
             continue_on_error: false,
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),

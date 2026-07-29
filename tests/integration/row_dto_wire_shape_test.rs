@@ -249,3 +249,188 @@ async fn trace_listing_carries_neither_payloads_nor_the_token_hash() {
         "the trace listing carried the submitted payload: {serialized}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// D26 — `workflows.tags` → `tags_json`, `channels.methods` → `methods_json`
+// ---------------------------------------------------------------------------
+
+/// The two renamed columns are physical only: the wire keeps `tags` and
+/// `methods` (D26).
+///
+/// This is the assertion the rename is worth nothing without. `tags_json` and
+/// `methods_json` are storage names, chosen so `_json` means one thing across
+/// the whole schema; the admin API's field names are a public contract and did
+/// not move. The two halves are checked against each other in one test on
+/// purpose — a response that still says `tags` proves nothing on its own if
+/// the column underneath never moved, and a moved column proves nothing if it
+/// took the wire name with it.
+#[tokio::test]
+async fn wire_names_survive_the_column_rename() {
+    let state = common::test_state_with_config(AppConfig::default()).await;
+    let app = orion::server::build_router(state.clone());
+
+    // -- workflow: `tags` on the wire --
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "D26 wire shape",
+                "tags": ["production", "d26"],
+                "tasks": [{"id":"t1","name":"Log",
+                           "function":{"name":"log","input":{"message":"x"}}}],
+            })),
+        ))
+        .await
+        .expect("create workflow");
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let created = common::body_json(resp).await;
+    let workflow_id = created["data"]["workflow_id"]
+        .as_str()
+        .expect("workflow_id")
+        .to_string();
+
+    let fetched = get(&app, &format!("/api/v1/admin/workflows/{workflow_id}")).await;
+    for (what, body) in [("create", &created), ("read", &fetched)] {
+        assert_eq!(
+            keys(&body["data"], "workflow"),
+            [
+                "condition",
+                "continue_on_error",
+                "created_at",
+                "description",
+                "name",
+                "priority",
+                "rollout_percentage",
+                "status",
+                "tags",
+                "tasks",
+                "updated_at",
+                "version",
+                "workflow_id",
+            ],
+            "the {what} response must publish `tags`, never `tags_json`"
+        );
+        assert_eq!(body["data"]["tags"], json!(["production", "d26"]));
+        assert!(body["data"].get("tags_json").is_none());
+    }
+
+    // -- channel: `methods` on the wire --
+    let channel_id = common::create_rest_channel(
+        &app,
+        "d26-wire-shape",
+        "/d26-wire-shape",
+        vec!["GET", "POST"],
+        &workflow_id,
+    )
+    .await;
+
+    let fetched = get(&app, &format!("/api/v1/admin/channels/{channel_id}")).await;
+    assert_eq!(
+        keys(&fetched["data"], "channel"),
+        [
+            "channel_id",
+            "channel_type",
+            "config",
+            "consumer_group",
+            "created_at",
+            "description",
+            "methods",
+            "name",
+            "priority",
+            "protocol",
+            "route_pattern",
+            "status",
+            "topic",
+            "transport_config",
+            "updated_at",
+            "version",
+            "workflow_id",
+        ],
+        "the channel response must publish `methods`, never `methods_json`"
+    );
+    assert_eq!(fetched["data"]["methods"], json!(["GET", "POST"]));
+    assert!(fetched["data"].get("methods_json").is_none());
+
+    // -- and underneath, the columns really did move --
+    let orion::storage::DbPool::Sqlite(db) = &state.db_pool else {
+        panic!("the integration binary pins SQLite");
+    };
+
+    for (object, gone, present) in [
+        ("workflows", "tags", "tags_json"),
+        ("current_workflows", "tags", "tags_json"),
+        ("channels", "methods", "methods_json"),
+        ("current_channels", "methods", "methods_json"),
+    ] {
+        let columns: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_table_info(?)")
+            .bind(object)
+            .fetch_all(db)
+            .await
+            .unwrap_or_else(|e| panic!("introspect {object}: {e}"));
+        let columns: Vec<String> = columns.into_iter().map(|(c,)| c).collect();
+        assert!(
+            columns.iter().any(|c| c == present),
+            "{object} must expose `{present}`, has {columns:?}"
+        );
+        assert!(
+            !columns.iter().any(|c| c == gone),
+            "{object} still exposes the old `{gone}` — on Postgres and MySQL a view \
+             keeps the pre-rename name unless it is dropped and recreated, which is \
+             the whole point of migrations postgres/013 and mysql/011: {columns:?}"
+        );
+    }
+
+    // The values landed in the renamed columns, not merely near them.
+    let (tags,): (String,) =
+        sqlx::query_as("SELECT tags_json FROM current_workflows WHERE workflow_id = ?")
+            .bind(&workflow_id)
+            .fetch_one(db)
+            .await
+            .expect("read tags_json");
+    assert_eq!(tags, r#"["production","d26"]"#);
+
+    let (methods,): (Option<String>,) =
+        sqlx::query_as("SELECT methods_json FROM current_channels WHERE channel_id = ?")
+            .bind(&channel_id)
+            .fetch_one(db)
+            .await
+            .expect("read methods_json");
+    assert_eq!(methods.as_deref(), Some(r#"["GET","POST"]"#));
+}
+
+/// Filtering by tag still reaches the renamed column (D26).
+///
+/// `?tag=` builds a `LIKE` over the column directly rather than going through
+/// a row struct, so it is the one read path a field rename alone would not
+/// have fixed — and on SQLite a `LIKE` against a column that does not exist is
+/// an error, not an empty page, so this fails loudly if the predicate is left
+/// pointing at `tags`.
+#[tokio::test]
+async fn tag_filtering_reaches_the_renamed_column() {
+    let app = common::test_app().await;
+
+    for (name, tag) in [("D26 tagged A", "d26-keep"), ("D26 tagged B", "d26-drop")] {
+        let resp = app
+            .clone()
+            .oneshot(common::json_request(
+                "POST",
+                "/api/v1/admin/workflows",
+                Some(json!({
+                    "name": name,
+                    "tags": [tag],
+                    "tasks": [{"id":"t1","name":"Log",
+                               "function":{"name":"log","input":{"message":"x"}}}],
+                })),
+            ))
+            .await
+            .expect("create workflow");
+        assert_eq!(resp.status(), StatusCode::CREATED);
+    }
+
+    let body = get(&app, "/api/v1/admin/workflows?tag=d26-keep").await;
+    let rows = body["data"].as_array().expect("data array");
+    assert_eq!(rows.len(), 1, "exactly the tagged workflow: {body}");
+    assert_eq!(rows[0]["tags"], json!(["d26-keep"]));
+}

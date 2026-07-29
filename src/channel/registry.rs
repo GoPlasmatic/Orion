@@ -869,7 +869,7 @@ mod tests {
             description: None,
             channel_type: "sync".to_string(),
             protocol: "http".to_string(),
-            methods: None,
+            methods_json: None,
             route_pattern: None,
             topic: None,
             consumer_group: None,

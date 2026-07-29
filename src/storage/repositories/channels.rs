@@ -163,7 +163,7 @@ struct ChannelInsertRow<'a> {
     description: sea_query::Value,
     channel_type: &'a str,
     protocol: &'a str,
-    methods: sea_query::Value,
+    methods_json: sea_query::Value,
     route_pattern: sea_query::Value,
     topic: sea_query::Value,
     consumer_group: sea_query::Value,
@@ -185,7 +185,7 @@ fn build_channel_insert(row: ChannelInsertRow<'_>) -> (String, sea_query_binder:
             Channels::Description,
             Channels::ChannelType,
             Channels::Protocol,
-            Channels::Methods,
+            Channels::MethodsJson,
             Channels::RoutePattern,
             Channels::Topic,
             Channels::ConsumerGroup,
@@ -202,7 +202,7 @@ fn build_channel_insert(row: ChannelInsertRow<'_>) -> (String, sea_query_binder:
             Expr::val(row.description).into(),
             Expr::val(row.channel_type).into(),
             Expr::val(row.protocol).into(),
-            Expr::val(row.methods).into(),
+            Expr::val(row.methods_json).into(),
             Expr::val(row.route_pattern).into(),
             Expr::val(row.topic).into(),
             Expr::val(row.consumer_group).into(),
@@ -259,7 +259,7 @@ impl ChannelRepository for SqlChannelRepository {
                 description: description_val,
                 channel_type: req.channel_type.as_str(),
                 protocol: req.protocol.as_str(),
-                methods: methods_val,
+                methods_json: methods_val,
                 route_pattern: route_pattern_val,
                 topic: topic_val,
                 consumer_group: consumer_group_val,
@@ -346,7 +346,7 @@ impl ChannelRepository for SqlChannelRepository {
 
             let methods_json = match &req.methods {
                 Some(m) => Some(serde_json::to_string(m)?),
-                None => existing.methods.clone(),
+                None => existing.methods_json.clone(),
             };
             let route_pattern = req
                 .route_pattern
@@ -382,7 +382,7 @@ impl ChannelRepository for SqlChannelRepository {
                     .table(Channels::Table)
                     .value(Channels::Name, name)
                     .value(Channels::Description, description_val)
-                    .value(Channels::Methods, methods_val)
+                    .value(Channels::MethodsJson, methods_val)
                     .value(Channels::RoutePattern, route_pattern_val)
                     .value(Channels::Topic, topic_val)
                     .value(Channels::ConsumerGroup, consumer_group_val)
@@ -468,7 +468,7 @@ impl ChannelRepository for SqlChannelRepository {
             let new_version = latest.version + 1;
 
             let description_val = optional_string_value(latest.description.as_deref());
-            let methods_val = optional_string_value(latest.methods.as_deref());
+            let methods_val = optional_string_value(latest.methods_json.as_deref());
             let route_pattern_val = optional_string_value(latest.route_pattern.as_deref());
             let topic_val = optional_string_value(latest.topic.as_deref());
             let consumer_group_val = optional_string_value(latest.consumer_group.as_deref());
@@ -481,7 +481,7 @@ impl ChannelRepository for SqlChannelRepository {
                 description: description_val,
                 channel_type: latest.channel_type.as_str(),
                 protocol: latest.protocol.as_str(),
-                methods: methods_val,
+                methods_json: methods_val,
                 route_pattern: route_pattern_val,
                 topic: topic_val,
                 consumer_group: consumer_group_val,

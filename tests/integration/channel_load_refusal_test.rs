@@ -293,9 +293,11 @@ async fn a_quarantined_channel_is_absent_from_the_route_table() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
 
-    // Raw insert with a REST route pattern and an unparseable config.
+    // Raw insert with a REST route pattern and an unparseable config. The
+    // column is `methods_json` since D26 — this SQL bypasses the repository,
+    // so it is one of the few places that names a physical column directly.
     let sql = "INSERT INTO channels (channel_id, version, name, channel_type, protocol, \
-               methods, route_pattern, transport_config_json, config_json, status, priority) \
+               methods_json, route_pattern, transport_config_json, config_json, status, priority) \
                VALUES ('ch_route', 1, 'route-ch', 'sync', 'rest', '[\"GET\"]', \
                '/quarantined/{id}', '{}', '{ not json', 'active', 0)";
     state

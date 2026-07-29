@@ -199,7 +199,7 @@ fn declared_route(channel: &crate::storage::models::Channel) -> Option<(String, 
     }
     let pattern = channel.route_pattern.as_deref()?;
     let methods: Vec<String> = channel
-        .methods
+        .methods_json
         .as_deref()
         .and_then(|m| serde_json::from_str::<Vec<String>>(m).ok())
         .unwrap_or_default();

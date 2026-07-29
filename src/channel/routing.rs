@@ -202,7 +202,7 @@ impl RouteTable {
                 let pattern = ch.route_pattern.as_deref()?;
                 let segments = parse_route_pattern(pattern);
                 let methods: Vec<String> = ch
-                    .methods
+                    .methods_json
                     .as_deref()
                     .and_then(|m| serde_json::from_str::<Vec<String>>(m).ok())
                     .unwrap_or_default()

@@ -344,7 +344,7 @@ mod tests {
             protocol: crate::storage::models::ChannelProtocol::Http
                 .as_str()
                 .to_string(),
-            methods: Some("POST".to_string()),
+            methods_json: Some("POST".to_string()),
             workflow_id: None,
             topic: None,
             consumer_group: None,
@@ -371,7 +371,7 @@ mod tests {
             tasks_json:
                 r#"[{"id":"t1","name":"log","function":{"name":"log","input":{"message":"x"}}}]"#
                     .to_string(),
-            tags: "[]".to_string(),
+            tags_json: "[]".to_string(),
             continue_on_error: false,
             created_at: chrono::NaiveDateTime::default(),
             updated_at: chrono::NaiveDateTime::default(),
