@@ -1,9 +1,9 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
-use sea_query::{Asterisk, Condition, Expr, Query};
+use sea_query::{Asterisk, Condition, Expr, IntoIden, Query};
 use serde::Deserialize;
 
-use super::helpers::PaginatedResult;
+use super::helpers::{Page, PaginatedResult, Projection};
 use crate::errors::OrionError;
 use crate::storage::models::{self, Trace, TraceListRow};
 use crate::storage::{build_sqlx, schema::Traces};
@@ -110,6 +110,47 @@ fn list_columns() -> [Traces; 11] {
         Traces::CreatedAt,
         Traces::UpdatedAt,
     ]
+}
+
+/// The page `list_paginated` reads: filter, sort and the [`list_columns`]
+/// projection. A function, not an inline block, so a test can assert the
+/// exact SQL the repository runs rather than a re-typed copy of it.
+fn list_page(filter: &TraceFilter) -> Page {
+    let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
+
+    let mut cond = Condition::all();
+    if let Some(ref status) = filter.status {
+        cond = cond.add(Expr::col(Traces::Status).eq(status.as_str()));
+    }
+    if let Some(ref channel) = filter.channel {
+        cond = cond.add(Expr::col(Traces::Channel).eq(channel.as_str()));
+    }
+    if let Some(ref mode) = filter.mode {
+        cond = cond.add(Expr::col(Traces::Mode).eq(mode.as_str()));
+    }
+
+    let sort = match filter.sort_by.as_deref() {
+        Some("updated_at") => Traces::UpdatedAt,
+        Some("status") => Traces::Status,
+        Some("channel") => Traces::Channel,
+        Some("mode") => Traces::Mode,
+        _ => Traces::CreatedAt,
+    };
+
+    Page {
+        from: Traces::Table.into_iden(),
+        projection: Projection::Columns(
+            list_columns()
+                .into_iter()
+                .map(IntoIden::into_iden)
+                .collect(),
+        ),
+        cond,
+        sort: sort.into_iden(),
+        order: super::helpers::parse_sort_order(filter.sort_order.as_deref()),
+        limit,
+        offset,
+    }
 }
 
 /// The UPDATE both result-write paths share, for the same reason.
@@ -445,52 +486,7 @@ impl TraceRepository for SqlTraceRepository {
         filter: &TraceFilter,
     ) -> Result<PaginatedResult<TraceListRow>, OrionError> {
         crate::metrics::timed_db_op("traces.list_paginated", async {
-            let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
-
-            let mut cond = Condition::all();
-            if let Some(ref status) = filter.status {
-                cond = cond.add(Expr::col(Traces::Status).eq(status.as_str()));
-            }
-            if let Some(ref channel) = filter.channel {
-                cond = cond.add(Expr::col(Traces::Channel).eq(channel.as_str()));
-            }
-            if let Some(ref mode) = filter.mode {
-                cond = cond.add(Expr::col(Traces::Mode).eq(mode.as_str()));
-            }
-
-            let total =
-                super::helpers::count_where(&self.pool, Traces::Table, cond.clone()).await?;
-
-            // Sort column mapping
-            let sort_iden = match filter.sort_by.as_deref() {
-                Some("updated_at") => Traces::UpdatedAt,
-                Some("status") => Traces::Status,
-                Some("channel") => Traces::Channel,
-                Some("mode") => Traces::Mode,
-                _ => Traces::CreatedAt,
-            };
-            let order = super::helpers::parse_sort_order(filter.sort_order.as_deref());
-
-            // DATA query. D27: the columns are named, not `*` — the omitted
-            // ones are `input_json`, `result_json`, `task_trace_json` and
-            // `access_token_hash`.
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .columns(list_columns())
-                    .from(Traces::Table)
-                    .cond_where(cond)
-                    .order_by(sort_iden, order)
-                    .limit(limit as u64)
-                    .offset(offset as u64),
-            );
-            let data = self.pool.fetch_all_as::<TraceListRow>(&sql, values).await?;
-
-            Ok(PaginatedResult {
-                data,
-                total,
-                limit,
-                offset,
-            })
+            super::helpers::paginate(&self.pool, list_page(filter)).await
         })
         .await
     }
@@ -569,12 +565,9 @@ mod tests {
         assert_eq!(page.data[0].id, trace.id);
         assert_eq!(page.data[0].channel, "orders");
 
-        let (sql, _values) = build_sqlx(
-            Query::select()
-                .columns(list_columns())
-                .from(Traces::Table)
-                .cond_where(Condition::all()),
-        );
+        // The exact statement `list_paginated` runs, not a re-typed copy.
+        let sql = super::super::helpers::page_select(&list_page(&TraceFilter::default()))
+            .to_string(sea_query::SqliteQueryBuilder);
         for withheld in [
             "input_json",
             "result_json",

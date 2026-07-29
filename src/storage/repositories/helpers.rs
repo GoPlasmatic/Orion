@@ -1,7 +1,8 @@
+use sea_query::{Asterisk, Condition, DynIden, Order, Query};
 use serde::Serialize;
 
 use crate::errors::OrionError;
-use crate::storage::{DbPool, DbTransaction};
+use crate::storage::{DbPool, DbRow, DbTransaction};
 
 /// One page of repository results plus the paging bookkeeping every admin
 /// list endpoint returns. Shared by all repositories.
@@ -74,17 +75,12 @@ pub fn sql_now_plus_secs(backend: crate::storage::DbBackend, secs: u64) -> Strin
 /// `OrionError` returned by `err`. Replaces the
 /// `.fetch_optional_as(...).await?.ok_or_else(...)` pattern repeated across
 /// repository read paths.
-pub async fn fetch_required<T>(
+pub async fn fetch_required<T: DbRow>(
     pool: &DbPool,
     sql: &str,
     values: sea_query_binder::SqlxValues,
     err: impl FnOnce() -> OrionError,
-) -> Result<T, OrionError>
-where
-    T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
-    T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
-    T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
-{
+) -> Result<T, OrionError> {
     pool.fetch_optional_as::<T>(sql, values)
         .await?
         .ok_or_else(err)
@@ -112,20 +108,93 @@ where
     Ok(total)
 }
 
+/// What a paginated read selects.
+///
+/// An explicit choice rather than an "empty means everything" convention: a
+/// narrow projection is always deliberate, and saying so at the call site is
+/// what keeps a withheld column withheld.
+pub enum Projection {
+    /// Every column — the row type's fields and the table's columns match.
+    All,
+    /// A named subset, for a row type deliberately narrower than its table.
+    /// `traces` and `trace_dlq` both use this to keep request payloads — and,
+    /// for traces, a capability-token hash — out of a list page (D27).
+    Columns(Vec<DynIden>),
+}
+
+/// One page of a list query: which rows, in what order, and how many.
+///
+/// A struct rather than seven positional parameters, three of which are
+/// `DynIden` and would transpose silently.
+pub struct Page {
+    /// Table or current-version view to read.
+    pub from: DynIden,
+    pub projection: Projection,
+    /// Filter, applied identically to the count and the page.
+    pub cond: Condition,
+    pub sort: DynIden,
+    pub order: Order,
+    /// Already clamped by the caller — [`clamp_pagination`] for the filter
+    /// DTOs that default an absent page size, or an explicit `clamp` where
+    /// the values are not optional.
+    pub limit: i64,
+    pub offset: i64,
+}
+
+/// Count matching rows, then read one page of them.
+///
+/// The single implementation of count-then-page (D18). Seven call sites —
+/// workflows, channels, version history, traces, the trace DLQ, audit logs and
+/// connectors — each used to spell it out, so every pagination fix had to land
+/// six more times than it should have. It lives here and not in `versioned`
+/// because it never had anything to do with versioned entities.
+///
+/// `total` counts the rows matching `cond` across the whole table, ignoring
+/// `limit` and `offset`, which is what the paginated envelope's `total` means.
+pub async fn paginate<T: DbRow>(
+    pool: &DbPool,
+    page: Page,
+) -> Result<PaginatedResult<T>, OrionError> {
+    let total = count_where(pool, page.from.clone(), page.cond.clone()).await?;
+
+    let (sql, values) = crate::storage::build_sqlx(&mut page_select(&page));
+    let data = pool.fetch_all_as::<T>(&sql, values).await?;
+
+    Ok(PaginatedResult {
+        data,
+        total,
+        limit: page.limit,
+        offset: page.offset,
+    })
+}
+
+/// The `SELECT` half of [`paginate`], split out so a projection can be
+/// asserted without a database — see `traces` and `trace_dlq`, whose list
+/// queries must provably name no payload column.
+pub(crate) fn page_select(page: &Page) -> sea_query::SelectStatement {
+    let mut select = Query::select();
+    match &page.projection {
+        Projection::All => select.column(Asterisk),
+        Projection::Columns(columns) => select.columns(columns.iter().cloned()),
+    };
+    select
+        .from(page.from.clone())
+        .cond_where(page.cond.clone())
+        .order_by(page.sort.clone(), page.order.clone())
+        .limit(page.limit as u64)
+        .offset(page.offset as u64)
+        .to_owned()
+}
+
 /// Ensure no row matches the given query; returns the `OrionError` from `err`
 /// if a row is found. The inverse of [`fetch_required`] — used by
 /// `create_new_version` paths to reject duplicate drafts.
-pub async fn ensure_absent<T>(
+pub async fn ensure_absent<T: DbRow>(
     pool: &DbPool,
     sql: &str,
     values: sea_query_binder::SqlxValues,
     err: impl FnOnce() -> OrionError,
-) -> Result<(), OrionError>
-where
-    T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
-    T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
-    T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
-{
+) -> Result<(), OrionError> {
     if pool.fetch_optional_as::<T>(sql, values).await?.is_some() {
         return Err(err());
     }
@@ -133,17 +202,12 @@ where
 }
 
 /// Transaction-scoped variant of [`fetch_required`].
-pub async fn fetch_required_tx<T>(
+pub async fn fetch_required_tx<T: DbRow>(
     tx: &mut DbTransaction,
     sql: &str,
     values: sea_query_binder::SqlxValues,
     err: impl FnOnce() -> OrionError,
-) -> Result<T, OrionError>
-where
-    T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
-    T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
-    T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
-{
+) -> Result<T, OrionError> {
     tx.fetch_optional_as::<T>(sql, values)
         .await?
         .ok_or_else(err)
@@ -370,5 +434,61 @@ mod tests {
     #[test]
     fn sort_order_none_defaults_desc() {
         assert!(matches!(parse_sort_order(None), sea_query::Order::Desc));
+    }
+
+    // -- D18: the one count-then-page shape --
+
+    fn sample_page(projection: Projection) -> Page {
+        use sea_query::IntoIden;
+        Page {
+            from: crate::storage::schema::Traces::Table.into_iden(),
+            projection,
+            cond: sea_query::Condition::all(),
+            sort: crate::storage::schema::Traces::CreatedAt.into_iden(),
+            order: Order::Desc,
+            limit: 25,
+            offset: 50,
+        }
+    }
+
+    fn rendered(page: &Page) -> String {
+        super::page_select(page).to_string(sea_query::SqliteQueryBuilder)
+    }
+
+    #[test]
+    fn projection_all_selects_every_column() {
+        let sql = rendered(&sample_page(Projection::All));
+        assert!(sql.contains("SELECT *"), "{sql}");
+    }
+
+    /// The seam D27 turns on: a named projection must render exactly its
+    /// columns, so a withheld one cannot travel from the database.
+    #[test]
+    fn projection_columns_names_only_what_it_was_given() {
+        use sea_query::IntoIden;
+        let sql = rendered(&sample_page(Projection::Columns(vec![
+            crate::storage::schema::Traces::Id.into_iden(),
+            crate::storage::schema::Traces::Status.into_iden(),
+        ])));
+        assert!(sql.contains(r#"SELECT "id", "status""#), "{sql}");
+        assert!(!sql.contains('*'), "{sql}");
+        assert!(!sql.contains("access_token_hash"), "{sql}");
+    }
+
+    /// Page bounds reach the statement, and an empty filter constrains
+    /// nothing — the shape `connectors.list_paginated` relies on, having no
+    /// filter at all.
+    #[test]
+    fn page_bounds_and_empty_filter_render_as_expected() {
+        let sql = rendered(&sample_page(Projection::All));
+        assert!(sql.contains("LIMIT 25"), "{sql}");
+        assert!(sql.contains("OFFSET 50"), "{sql}");
+        assert!(sql.contains(r#"ORDER BY "created_at" DESC"#), "{sql}");
+        // sea-query renders an empty `Condition::all()` as no predicate; what
+        // matters is that it names no column.
+        assert!(
+            !sql.contains(r#"WHERE "#) || sql.contains("WHERE TRUE"),
+            "{sql}"
+        );
     }
 }

@@ -12,8 +12,8 @@ use crate::storage::{
 };
 
 use super::helpers::{
-    clamp_pagination, ensure_absent, fetch_required, fetch_required_tx, map_duplicate,
-    optional_string_value, parse_sort_order,
+    Page, Projection, clamp_pagination, ensure_absent, fetch_required, fetch_required_tx,
+    map_duplicate, optional_string_value, paginate, parse_sort_order,
 };
 
 pub use super::helpers::PaginatedResult;
@@ -405,14 +405,17 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 _ => Workflows::Priority,
             };
             let order = parse_sort_order(filter.sort_order.as_deref());
-            versioned::paginate(
+            paginate(
                 &self.pool,
-                CurrentWorkflows::Table.into_iden(),
-                cond,
-                sort_iden.into_iden(),
-                order,
-                limit,
-                offset,
+                Page {
+                    from: CurrentWorkflows::Table.into_iden(),
+                    projection: Projection::All,
+                    cond,
+                    sort: sort_iden.into_iden(),
+                    order,
+                    limit,
+                    offset,
+                },
             )
             .await
         })

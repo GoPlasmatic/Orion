@@ -1,9 +1,9 @@
 use crate::storage::DbPool;
 use async_trait::async_trait;
-use sea_query::{Asterisk, Expr, Order, Query};
+use sea_query::{Asterisk, Expr, IntoIden, Order, Query};
 use serde::Deserialize;
 
-use super::helpers::PaginatedResult;
+use super::helpers::{Page, PaginatedResult, Projection};
 use crate::errors::OrionError;
 use crate::storage::models::Connector;
 use crate::storage::{build_sqlx, schema::Connectors};
@@ -134,30 +134,22 @@ impl ConnectorRepository for SqlConnectorRepository {
         crate::metrics::timed_db_op("connectors.list_paginated", async {
             let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
 
-            let total = super::helpers::count_where(
+            super::helpers::paginate(
                 &self.pool,
-                Connectors::Table,
-                sea_query::Condition::all(),
+                Page {
+                    from: Connectors::Table.into_iden(),
+                    projection: Projection::All,
+                    // Connectors are unversioned and unfiltered — the filter
+                    // DTO carries page bounds only. An empty `Condition::all()`
+                    // renders no `WHERE` clause.
+                    cond: sea_query::Condition::all(),
+                    sort: Connectors::Name.into_iden(),
+                    order: Order::Asc,
+                    limit,
+                    offset,
+                },
             )
-            .await?;
-
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Connectors::Table)
-                    .order_by(Connectors::Name, Order::Asc)
-                    .limit(limit as u64)
-                    .offset(offset as u64),
-            );
-
-            let data = self.pool.fetch_all_as::<Connector>(&sql, values).await?;
-
-            Ok(PaginatedResult {
-                data,
-                total,
-                limit,
-                offset,
-            })
+            .await
         })
         .await
     }

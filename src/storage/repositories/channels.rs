@@ -13,8 +13,8 @@ use crate::storage::{
 
 use super::helpers::PaginatedResult;
 use super::helpers::{
-    clamp_pagination, fetch_required, fetch_required_tx, map_duplicate, optional_string_value,
-    parse_sort_order,
+    Page, Projection, clamp_pagination, fetch_required, fetch_required_tx, map_duplicate,
+    optional_string_value, paginate, parse_sort_order,
 };
 use super::versioned::{self, VersionedSpec};
 
@@ -308,14 +308,17 @@ impl ChannelRepository for SqlChannelRepository {
                 _ => Channels::Priority,
             };
             let order = parse_sort_order(filter.sort_order.as_deref());
-            versioned::paginate(
+            paginate(
                 &self.pool,
-                CurrentChannels::Table.into_iden(),
-                cond,
-                sort_iden.into_iden(),
-                order,
-                limit,
-                offset,
+                Page {
+                    from: CurrentChannels::Table.into_iden(),
+                    projection: Projection::All,
+                    cond,
+                    sort: sort_iden.into_iden(),
+                    order,
+                    limit,
+                    offset,
+                },
             )
             .await
         })

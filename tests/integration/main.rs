@@ -49,6 +49,7 @@ mod mongodb_test;
 mod mysql_test;
 mod openapi_test;
 mod output_field_test;
+mod pagination_contract_test;
 mod pipeline_test;
 mod pool_exhaustion_test;
 mod postgres_test;

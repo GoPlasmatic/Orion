@@ -9,9 +9,9 @@ use sea_query::{Asterisk, Condition, DynIden, Expr, Order, Query};
 
 use crate::errors::OrionError;
 use crate::storage::models::EntityStatus;
-use crate::storage::{DbPool, build_sqlx};
+use crate::storage::{DbPool, DbRow, build_sqlx};
 
-use super::helpers::{PaginatedResult, count_where, fetch_required};
+use super::helpers::{Page, PaginatedResult, Projection, fetch_required, paginate};
 
 /// Idens and error wording for one versioned entity.
 pub(crate) struct VersionedSpec {
@@ -26,26 +26,8 @@ pub(crate) struct VersionedSpec {
     pub noun: &'static str,
 }
 
-/// The row bounds `DbPool`'s typed fetches need on all three backends.
-pub(crate) trait VersionedRow:
-    for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>
-    + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>
-    + for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>
-    + Send
-    + Unpin
-{
-}
-impl<T> VersionedRow for T where
-    T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>
-        + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>
-        + for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>
-        + Send
-        + Unpin
-{
-}
-
 /// Fetch one specific `(id, version)` row.
-pub(crate) async fn get_version<T: VersionedRow>(
+pub(crate) async fn get_version<T: DbRow>(
     pool: &DbPool,
     spec: &VersionedSpec,
     id: &str,
@@ -66,7 +48,7 @@ pub(crate) async fn get_version<T: VersionedRow>(
 }
 
 /// Fetch the latest version of an entity (any status).
-pub(crate) async fn get_latest<T: VersionedRow>(
+pub(crate) async fn get_latest<T: DbRow>(
     pool: &DbPool,
     spec: &VersionedSpec,
     id: &str,
@@ -106,7 +88,7 @@ pub(crate) async fn delete_all_versions(
 
 /// All active versions across entities, highest priority first (engine load
 /// order).
-pub(crate) async fn list_active<T: VersionedRow>(
+pub(crate) async fn list_active<T: DbRow>(
     pool: &DbPool,
     spec: &VersionedSpec,
 ) -> Result<Vec<T>, OrionError> {
@@ -121,40 +103,30 @@ pub(crate) async fn list_active<T: VersionedRow>(
 }
 
 /// One page of an entity's version history, newest first.
-pub(crate) async fn list_versions<T: VersionedRow>(
+///
+/// `limit`/`offset` arrive already resolved (the route layer supplies the
+/// version-page defaults), so they are clamped here rather than through
+/// `clamp_pagination`, which exists to default an *absent* page size.
+pub(crate) async fn list_versions<T: DbRow>(
     pool: &DbPool,
     spec: &VersionedSpec,
     id: &str,
     limit: i64,
     offset: i64,
 ) -> Result<PaginatedResult<T>, OrionError> {
-    let limit = limit.clamp(1, 1000);
-    let offset = offset.max(0);
-
-    let total = count_where(
+    paginate(
         pool,
-        spec.table.clone(),
-        Condition::all().add(Expr::col(spec.id_col.clone()).eq(id)),
+        Page {
+            from: spec.table.clone(),
+            projection: Projection::All,
+            cond: Condition::all().add(Expr::col(spec.id_col.clone()).eq(id)),
+            sort: spec.version_col.clone(),
+            order: Order::Desc,
+            limit: limit.clamp(1, 1000),
+            offset: offset.max(0),
+        },
     )
-    .await?;
-
-    let (sql, values) = build_sqlx(
-        Query::select()
-            .column(Asterisk)
-            .from(spec.table.clone())
-            .and_where(Expr::col(spec.id_col.clone()).eq(id))
-            .order_by(spec.version_col.clone(), Order::Desc)
-            .limit(limit as u64)
-            .offset(offset as u64),
-    );
-    let data = pool.fetch_all_as::<T>(&sql, values).await?;
-
-    Ok(PaginatedResult {
-        data,
-        total,
-        limit,
-        offset,
-    })
+    .await
 }
 
 /// The `SELECT * WHERE id = ? AND status = 'draft'` both draft-consuming
@@ -179,7 +151,7 @@ pub(crate) fn no_draft_err(spec: &VersionedSpec, id: &str) -> OrionError {
 
 /// Reject `create_new_version` when a draft already exists (the single-draft
 /// invariant the DB triggers also enforce — this gives the friendly error).
-pub(crate) async fn ensure_no_draft<T: VersionedRow>(
+pub(crate) async fn ensure_no_draft<T: DbRow>(
     pool: &DbPool,
     spec: &VersionedSpec,
     id: &str,
@@ -212,7 +184,7 @@ pub(crate) fn archive_actives_query(
 
 /// Archive an entity: find the latest active version (BadRequest when none),
 /// archive every active version, and return the newly archived row.
-pub(crate) async fn archive_latest_active<T: VersionedRow + HasVersion>(
+pub(crate) async fn archive_latest_active<T: DbRow + HasVersion>(
     pool: &DbPool,
     spec: &VersionedSpec,
     id: &str,
@@ -245,35 +217,6 @@ pub(crate) trait HasVersion {
     fn version(&self) -> i64;
 }
 
-/// Count + page over `from` (a current-version view or the base table) with
-/// the caller's filter condition and sort — the skeleton both
-/// `list_paginated` impls shared.
-pub(crate) async fn paginate<T: VersionedRow>(
-    pool: &DbPool,
-    from: DynIden,
-    cond: Condition,
-    sort: DynIden,
-    order: Order,
-    limit: i64,
-    offset: i64,
-) -> Result<PaginatedResult<T>, OrionError> {
-    let total = count_where(pool, from.clone(), cond.clone()).await?;
-
-    let (sql, values) = build_sqlx(
-        Query::select()
-            .column(Asterisk)
-            .from(from)
-            .cond_where(cond)
-            .order_by(sort, order)
-            .limit(limit as u64)
-            .offset(offset as u64),
-    );
-    let data = pool.fetch_all_as::<T>(&sql, values).await?;
-
-    Ok(PaginatedResult {
-        data,
-        total,
-        limit,
-        offset,
-    })
-}
+// D18: `paginate` used to live here despite having nothing to do with
+// versioned entities, and five of the seven list paths could not reach it. It
+// is now `helpers::paginate`.

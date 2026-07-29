@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use chrono::NaiveDateTime;
-use sea_query::{Asterisk, Condition, Expr, Order, Query, SimpleExpr};
+use sea_query::{Condition, Expr, IntoIden, Order, Query, SimpleExpr};
 
-use super::helpers::PaginatedResult;
+use super::helpers::{Page, PaginatedResult, Projection};
 use crate::errors::OrionError;
 use crate::storage::models::AuditLogEntry;
 use crate::storage::schema::AuditLogs;
@@ -133,34 +133,23 @@ impl AuditLogRepository for SqlAuditLogRepository {
                 cond = cond.add(Expr::col(AuditLogs::CreatedAt).lt(end));
             }
 
-            let total =
-                super::helpers::count_where(&self.pool, AuditLogs::Table, cond.clone()).await?;
-
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(AuditLogs::Table)
-                    .cond_where(cond)
-                    .order_by(AuditLogs::CreatedAt, Order::Desc)
-                    .offset(offset as u64)
-                    .limit(limit as u64),
-            );
-
-            let data = self
-                .pool
-                .fetch_all_as::<AuditLogEntry>(&sql, values)
-                .await
-                .map_err(|e| OrionError::InternalSource {
-                    context: "Failed to list audit logs".to_string(),
-                    source: Box::new(e),
-                })?;
-
-            Ok(PaginatedResult {
-                data,
-                total,
-                limit,
-                offset,
-            })
+            // D18: one shared count-then-page. A driver error on the data read
+            // used to be wrapped as `InternalSource` here while the count half
+            // of the same method returned `Storage`; both are now `Storage`,
+            // like every other list path.
+            super::helpers::paginate(
+                &self.pool,
+                Page {
+                    from: AuditLogs::Table.into_iden(),
+                    projection: Projection::All,
+                    cond,
+                    sort: AuditLogs::CreatedAt.into_iden(),
+                    order: Order::Desc,
+                    limit,
+                    offset,
+                },
+            )
+            .await
         })
         .await
     }

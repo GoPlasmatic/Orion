@@ -94,6 +94,33 @@ pub fn set_backend_for_test(backend: DbBackend) {
 // DbPool — enum wrapping concrete pool types
 // ============================================================
 
+/// A type [`DbPool`] and [`DbTransaction`] can decode a row into on any of the
+/// three backends.
+///
+/// `DbPool` dispatches over three concrete sqlx pools, so every typed fetch
+/// needs `FromRow` for all three row types plus `Send + Unpin`. Spelled out,
+/// that is a five-line `where` clause; it was repeated in eight signatures
+/// across this file and `repositories/helpers.rs` (D19). The blanket impl
+/// below means nothing has to implement this explicitly — deriving
+/// `sqlx::FromRow` on a struct in `models::rows` is enough.
+pub trait DbRow:
+    for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>
+    + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>
+    + for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>
+    + Send
+    + Unpin
+{
+}
+
+impl<T> DbRow for T where
+    T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow>
+        + for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>
+        + for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>
+        + Send
+        + Unpin
+{
+}
+
 /// Database connection pool that wraps the concrete sqlx pool type,
 /// selected at runtime based on the connection URL.
 #[derive(Clone)]
@@ -127,42 +154,27 @@ impl DbPool {
         dispatch_pool!(self, p => p.num_idle())
     }
 
-    pub async fn fetch_all_as<T>(
+    pub async fn fetch_all_as<T: DbRow>(
         &self,
         sql: &str,
         values: sea_query_binder::SqlxValues,
-    ) -> Result<Vec<T>, sqlx::Error>
-    where
-        T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
-        T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
-    {
+    ) -> Result<Vec<T>, sqlx::Error> {
         dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(sql, values).fetch_all(p).await)
     }
 
-    pub async fn fetch_one_as<T>(
+    pub async fn fetch_one_as<T: DbRow>(
         &self,
         sql: &str,
         values: sea_query_binder::SqlxValues,
-    ) -> Result<T, sqlx::Error>
-    where
-        T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
-        T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
-    {
+    ) -> Result<T, sqlx::Error> {
         dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(sql, values).fetch_one(p).await)
     }
 
-    pub async fn fetch_optional_as<T>(
+    pub async fn fetch_optional_as<T: DbRow>(
         &self,
         sql: &str,
         values: sea_query_binder::SqlxValues,
-    ) -> Result<Option<T>, sqlx::Error>
-    where
-        T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
-        T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
-    {
+    ) -> Result<Option<T>, sqlx::Error> {
         dispatch_pool!(self, p => sqlx::query_as_with::<_, T, _>(sql, values).fetch_optional(p).await)
     }
 
@@ -232,29 +244,19 @@ impl DbTransaction {
         }
     }
 
-    pub async fn fetch_all_as<T>(
+    pub async fn fetch_all_as<T: DbRow>(
         &mut self,
         sql: &str,
         values: sea_query_binder::SqlxValues,
-    ) -> Result<Vec<T>, sqlx::Error>
-    where
-        T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
-        T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
-    {
+    ) -> Result<Vec<T>, sqlx::Error> {
         dispatch_tx!(self, tx => sqlx::query_as_with::<_, T, _>(sql, values).fetch_all(&mut **tx).await)
     }
 
-    pub async fn fetch_optional_as<T>(
+    pub async fn fetch_optional_as<T: DbRow>(
         &mut self,
         sql: &str,
         values: sea_query_binder::SqlxValues,
-    ) -> Result<Option<T>, sqlx::Error>
-    where
-        T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
-        T: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
-        T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow>,
-    {
+    ) -> Result<Option<T>, sqlx::Error> {
         dispatch_tx!(self, tx => sqlx::query_as_with::<_, T, _>(sql, values).fetch_optional(&mut **tx).await)
     }
 

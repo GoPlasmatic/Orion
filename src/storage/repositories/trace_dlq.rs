@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use sea_query::{Asterisk, Condition, Expr, Query, SimpleExpr};
+use sea_query::{Asterisk, Condition, Expr, IntoIden, Query, SimpleExpr};
 
 use crate::errors::OrionError;
 // D28: both row shapes this repository reads — `TraceDlqEntry` and the
@@ -9,7 +9,7 @@ use crate::storage::models::{TraceDlqEntry, TraceDlqSummary};
 use crate::storage::schema::TraceDlq;
 use crate::storage::{DbBackend, DbPool, build_sqlx};
 
-use super::helpers::PaginatedResult;
+use super::helpers::{Page, PaginatedResult, Projection};
 
 // -- Request DTOs --
 
@@ -31,6 +31,44 @@ fn exhausted() -> SimpleExpr {
 }
 fn not_exhausted() -> SimpleExpr {
     Expr::col(TraceDlq::RetryCount).lt(Expr::col(TraceDlq::MaxRetries))
+}
+
+/// The 9 columns a DLQ *listing* reads, in
+/// [`crate::storage::models::TraceDlqSummary`] order.
+fn summary_columns() -> [TraceDlq; 9] {
+    [
+        TraceDlq::Id,
+        TraceDlq::TraceId,
+        TraceDlq::Channel,
+        TraceDlq::ErrorMessage,
+        TraceDlq::RetryCount,
+        TraceDlq::MaxRetries,
+        TraceDlq::NextRetryAt,
+        TraceDlq::CreatedAt,
+        TraceDlq::UpdatedAt,
+    ]
+}
+
+/// The page `list_paginated` reads. A function, not an inline block, so a test
+/// can assert the exact SQL the repository runs.
+fn list_page(filter: &TraceDlqFilter) -> Page {
+    let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
+    Page {
+        from: TraceDlq::Table.into_iden(),
+        // Narrower than the table on purpose: no `payload_json`, no
+        // `metadata_json`. See `models::rows::TraceDlqSummary`.
+        projection: Projection::Columns(
+            summary_columns()
+                .into_iter()
+                .map(IntoIden::into_iden)
+                .collect(),
+        ),
+        cond: filter.condition(),
+        sort: TraceDlq::CreatedAt.into_iden(),
+        order: sea_query::Order::Desc,
+        limit,
+        offset,
+    }
 }
 
 impl TraceDlqFilter {
@@ -415,42 +453,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         filter: &TraceDlqFilter,
     ) -> Result<PaginatedResult<TraceDlqSummary>, OrionError> {
         crate::metrics::timed_db_op("trace_dlq.list_paginated", async {
-            let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
-            let cond = filter.condition();
-
-            let total =
-                super::helpers::count_where(&self.pool, TraceDlq::Table, cond.clone()).await?;
-
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .columns([
-                        TraceDlq::Id,
-                        TraceDlq::TraceId,
-                        TraceDlq::Channel,
-                        TraceDlq::ErrorMessage,
-                        TraceDlq::RetryCount,
-                        TraceDlq::MaxRetries,
-                        TraceDlq::NextRetryAt,
-                        TraceDlq::CreatedAt,
-                        TraceDlq::UpdatedAt,
-                    ])
-                    .from(TraceDlq::Table)
-                    .cond_where(cond)
-                    .order_by(TraceDlq::CreatedAt, sea_query::Order::Desc)
-                    .limit(limit as u64)
-                    .offset(offset as u64),
-            );
-            let data = self
-                .pool
-                .fetch_all_as::<TraceDlqSummary>(&sql, values)
-                .await?;
-
-            Ok(PaginatedResult {
-                data,
-                total,
-                limit,
-                offset,
-            })
+            super::helpers::paginate(&self.pool, list_page(filter)).await
         })
         .await
     }
@@ -534,6 +537,23 @@ mod tests {
 
     async fn test_repo() -> SqlTraceDlqRepository {
         SqlTraceDlqRepository::new(crate::storage::test_sqlite_pool().await)
+    }
+
+    /// The listing must never read the failed request's body. Asserted against
+    /// the statement `list_paginated` actually runs, because `TraceDlqSummary`
+    /// would decode a `SELECT *` just as happily — sqlx ignores extra columns.
+    #[test]
+    fn list_projection_never_reads_the_payload_columns() {
+        crate::storage::set_backend_for_test(crate::storage::DbBackend::Sqlite);
+        let sql = super::super::helpers::page_select(&list_page(&TraceDlqFilter::default()))
+            .to_string(sea_query::SqliteQueryBuilder);
+        for withheld in ["payload_json", "metadata_json"] {
+            assert!(
+                !sql.contains(withheld),
+                "the DLQ listing projection names `{withheld}`: {sql}"
+            );
+        }
+        assert!(!sql.contains('*'), "{sql}");
     }
 
     /// Entries become due 1s after enqueue — backdate to now-2s.
