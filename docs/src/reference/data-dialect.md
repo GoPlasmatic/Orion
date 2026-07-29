@@ -401,6 +401,12 @@ raw SQL cannot be classified per-statement, `db_write` has its own `raw_write`
 gate — to make a connector fully delete-proof, disable both `delete` and
 `raw_write`.
 
+The gates above are the `db` / `es` set, which is what the portable dialect
+runs through. The other connector types carry the gates their own operations
+need — `read` / `write` on `cache`, `publish` on `kafka`, a method allow-list
+on `http` — documented with each type in
+[Connectors](../features/extensibility.md#operation-gates).
+
 ### Schema guards
 
 `operations` answers *which verbs*; the `dialect` block answers *which tables

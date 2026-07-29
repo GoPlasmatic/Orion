@@ -43,7 +43,11 @@ impl ConnectorConfig {
         matches!(self, ConnectorConfig::Db(c) if is_mongo_url(&c.connection_string))
     }
 
-    /// The operation gates for connectors that carry them (db, es).
+    /// The db/es operation gates. The other three connector types carry gates
+    /// of their own shape — [`CacheOperationGates`], [`KafkaOperationGates`]
+    /// and [`HttpOperationGates`] — reached through their typed configs,
+    /// because a `publish` flag on a database or a `raw_write` flag on a cache
+    /// would be a field nothing reads (the defect F22 closed).
     pub fn operation_gates(&self) -> Option<&OperationGates> {
         match self {
             ConnectorConfig::Db(c) => Some(&c.operations),
@@ -155,6 +159,106 @@ impl OperationGates {
     }
 }
 
+/// Cache-connector operation gates (F22e). Everything defaults to allowed;
+/// disabling an operation turns the corresponding handler call into a located
+/// validation error, so a cache connector can be made read-only in its config
+/// without touching workflows.
+///
+/// - `read` gates `cache_read`.
+/// - `write` gates `cache_write`.
+///
+/// There is deliberately no `delete`: the `CacheBackend` trait exposes
+/// get / set / set_ex only, no workflow function deletes a key, and a gate
+/// over an operation that cannot be performed would be exactly the kind of
+/// accepted-but-never-read field F22 removed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CacheOperationGates {
+    pub read: bool,
+    pub write: bool,
+}
+
+impl Default for CacheOperationGates {
+    fn default() -> Self {
+        Self {
+            read: true,
+            write: true,
+        }
+    }
+}
+
+impl CacheOperationGates {
+    /// Whether the named operation is enabled. Unknown names are denied
+    /// (defensive — callers pass the fixed set above).
+    pub fn allows(&self, op: &str) -> bool {
+        match op {
+            "read" => self.read,
+            "write" => self.write,
+            _ => false,
+        }
+    }
+}
+
+/// Kafka-connector operation gates (F22e). The connector is producer-only, so
+/// `publish` — gating `publish_kafka` — is the whole surface. Ingest consumers
+/// are configured under `[kafka]` in the server config, not here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KafkaOperationGates {
+    pub publish: bool,
+}
+
+impl Default for KafkaOperationGates {
+    fn default() -> Self {
+        Self { publish: true }
+    }
+}
+
+impl KafkaOperationGates {
+    /// Whether the named operation is enabled. Unknown names are denied.
+    pub fn allows(&self, op: &str) -> bool {
+        match op {
+            "publish" => self.publish,
+            _ => false,
+        }
+    }
+}
+
+/// HTTP-connector method allow-list (F22e).
+///
+/// The db/es gates are booleans because their operation set is fixed; an HTTP
+/// connector's is its method, so the gate is a list. Empty — the default —
+/// means every method `http_call` can issue is allowed, which is what every
+/// connector authored before this existed keeps meaning. Naming even one
+/// method makes the list exhaustive: a connector pointed at a read-only
+/// upstream can be `["GET"]` and no workflow can POST through it.
+///
+/// Matching is case-insensitive; entries are validated against the methods
+/// `http_call` supports when the connector is created or updated, so a typo is
+/// a 400 rather than a connector that refuses every call at request time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HttpOperationGates {
+    pub methods: Vec<String>,
+}
+
+impl HttpOperationGates {
+    /// Whether `method` is allowed. An empty list allows everything.
+    pub fn allows_method(&self, method: &str) -> bool {
+        self.methods.is_empty()
+            || self
+                .methods
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(method))
+    }
+}
+
+/// The methods `http_call` can issue — the vocabulary an
+/// [`HttpOperationGates`] allow-list is validated against. Anything else in
+/// the list would silently never match, because `HttpCallConfig` cannot
+/// produce it.
+pub const VALID_HTTP_METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpConnectorConfig {
     pub url: String,
@@ -178,6 +282,9 @@ pub struct HttpConnectorConfig {
     /// Allow requests to private/internal IP addresses. Default false (SSRF protection).
     #[serde(default)]
     pub allow_private_urls: bool,
+    /// Which HTTP methods workflows may issue through this connector.
+    #[serde(default)]
+    pub operations: HttpOperationGates,
 }
 
 fn default_max_response_size() -> usize {
@@ -226,6 +333,9 @@ impl Default for RetryConfig {
 pub struct KafkaConnectorConfig {
     pub brokers: Vec<String>,
     pub topic: String,
+    /// Whether workflows may publish through this connector.
+    #[serde(default)]
+    pub operations: KafkaOperationGates,
 }
 
 /// SQL or MongoDB connector. The backend is selected by the
@@ -272,6 +382,9 @@ pub struct CacheConnectorConfig {
     /// Carries credentials when Redis needs them: `redis://user:pass@host:6379`.
     #[serde(default)]
     pub url: Option<String>,
+    /// Which operations workflows may run through this connector.
+    #[serde(default)]
+    pub operations: CacheOperationGates,
 }
 
 /// Elasticsearch connector: a REST endpoint queried by the `data_query` handler
@@ -344,6 +457,28 @@ impl ConnectorType {
             Self::Es => "es",
         }
     }
+
+    /// The keys this type's `operations` object may carry — the gate
+    /// vocabulary its handlers actually read.
+    ///
+    /// Connector configs deliberately do not use `deny_unknown_fields` (a
+    /// 0.3.x row carrying a since-removed field has to keep loading — see
+    /// `legacy_configs_with_removed_fields_still_load`), and every gate struct
+    /// is `#[serde(default)]`. So `{"operations": {"writes": false}}` on a
+    /// cache would deserialize into a *fully open* gate: accepted, stored, and
+    /// silently doing nothing. For a control whose promise is "regardless of
+    /// what any workflow asks for", that is the worst possible failure mode,
+    /// so `validation::connectors` checks the keys against this list at the
+    /// admin door. Stored configs are never re-validated, so nothing that
+    /// already loads stops loading.
+    pub fn operation_gate_keys(self) -> &'static [&'static str] {
+        match self {
+            Self::Db | Self::Es => &["read", "insert", "update", "delete", "upsert", "raw_write"],
+            Self::Cache => &["read", "write"],
+            Self::Kafka => &["publish"],
+            Self::Http => &["methods"],
+        }
+    }
 }
 
 impl std::fmt::Display for ConnectorType {
@@ -372,6 +507,50 @@ impl<'de> serde::Deserialize<'de> for ConnectorType {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The vocabulary the admin door validates against must be exactly the
+    /// fields the gate structs carry. A gate added to a struct but forgotten
+    /// here would be refused as an unknown key; one left here after being
+    /// removed would be accepted and ignored — the silent no-op the key check
+    /// exists to prevent.
+    #[test]
+    fn operation_gate_keys_match_the_gate_structs() {
+        fn fields<T: Serialize>(value: &T) -> std::collections::BTreeSet<String> {
+            serde_json::to_value(value)
+                .expect("gates serialize")
+                .as_object()
+                .expect("gates are a JSON object")
+                .keys()
+                .cloned()
+                .collect()
+        }
+        fn declared(t: ConnectorType) -> std::collections::BTreeSet<String> {
+            t.operation_gate_keys()
+                .iter()
+                .map(|k| (*k).to_string())
+                .collect()
+        }
+
+        for connector_type in [ConnectorType::Db, ConnectorType::Es] {
+            assert_eq!(
+                fields(&OperationGates::default()),
+                declared(connector_type),
+                "{connector_type}"
+            );
+        }
+        assert_eq!(
+            fields(&CacheOperationGates::default()),
+            declared(ConnectorType::Cache)
+        );
+        assert_eq!(
+            fields(&KafkaOperationGates::default()),
+            declared(ConnectorType::Kafka)
+        );
+        assert_eq!(
+            fields(&HttpOperationGates::default()),
+            declared(ConnectorType::Http)
+        );
+    }
 
     #[test]
     fn test_valid_connector_types() {
@@ -692,11 +871,100 @@ mod tests {
         }
     }
 
+    /// The db/es gate struct stays db/es-only: the other three types carry
+    /// gates of their own shape, so `operation_gates()` must not start
+    /// answering for them (a `raw_write` flag on a cache reads as meaningful
+    /// and is not — the F22 defect).
     #[test]
     fn test_operation_gates_absent_on_http() {
         let json = r#"{"type":"http","url":"https://example.com"}"#;
         let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         assert!(config.operation_gates().is_none());
+    }
+
+    // ---- F22e: gates on the other three connector types ----
+
+    /// Additive with an all-allowed default: every connector authored before
+    /// the gates existed keeps behaving exactly as it did.
+    #[test]
+    fn every_connector_type_defaults_to_fully_open() {
+        let cache: ConnectorConfig =
+            serde_json::from_str(r#"{"type":"cache","backend":"memory"}"#).expect("test");
+        match cache {
+            ConnectorConfig::Cache(c) => {
+                assert!(c.operations.allows("read"));
+                assert!(c.operations.allows("write"));
+                assert!(!c.operations.allows("raw_write"), "unknown ops are denied");
+            }
+            _ => unreachable!("Expected Cache config"),
+        }
+
+        let kafka: ConnectorConfig =
+            serde_json::from_str(r#"{"type":"kafka","brokers":["b:9092"],"topic":"t"}"#)
+                .expect("test");
+        match kafka {
+            ConnectorConfig::Kafka(k) => {
+                assert!(k.operations.allows("publish"));
+                assert!(!k.operations.allows("read"), "unknown ops are denied");
+            }
+            _ => unreachable!("Expected Kafka config"),
+        }
+
+        let http: ConnectorConfig =
+            serde_json::from_str(r#"{"type":"http","url":"https://example.com"}"#).expect("test");
+        match http {
+            ConnectorConfig::Http(h) => {
+                assert!(h.operations.methods.is_empty());
+                for method in VALID_HTTP_METHODS {
+                    assert!(h.operations.allows_method(method), "{method} must be open");
+                }
+            }
+            _ => unreachable!("Expected Http config"),
+        }
+    }
+
+    /// A read-only cache connector: `cache_write` is refused, `cache_read` is
+    /// not. Partial overrides leave the other gate alone.
+    #[test]
+    fn a_cache_connector_can_be_made_read_only() {
+        let json = r#"{"type":"cache","backend":"memory","operations":{"write":false}}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        match config {
+            ConnectorConfig::Cache(c) => {
+                assert!(!c.operations.allows("write"));
+                assert!(c.operations.allows("read"));
+            }
+            _ => unreachable!("Expected Cache config"),
+        }
+    }
+
+    #[test]
+    fn a_kafka_connector_can_be_made_publish_proof() {
+        let json =
+            r#"{"type":"kafka","brokers":["b:9092"],"topic":"t","operations":{"publish":false}}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        match config {
+            ConnectorConfig::Kafka(k) => assert!(!k.operations.allows("publish")),
+            _ => unreachable!("Expected Kafka config"),
+        }
+    }
+
+    /// Naming one method makes the list exhaustive, and matching ignores case
+    /// so `["get"]` is not a connector that refuses every call.
+    #[test]
+    fn an_http_method_allow_list_is_exhaustive_and_case_insensitive() {
+        let json = r#"{"type":"http","url":"https://example.com",
+                       "operations":{"methods":["get","POST"]}}"#;
+        let config: ConnectorConfig = serde_json::from_str(json).expect("test");
+        match config {
+            ConnectorConfig::Http(h) => {
+                assert!(h.operations.allows_method("GET"));
+                assert!(h.operations.allows_method("post"));
+                assert!(!h.operations.allows_method("DELETE"));
+                assert!(!h.operations.allows_method("PUT"));
+            }
+            _ => unreachable!("Expected Http config"),
+        }
     }
 
     #[test]

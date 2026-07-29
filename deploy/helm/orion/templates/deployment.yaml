@@ -36,6 +36,14 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      # Off, because the kubelet's Docker-link variables are named after the
+      # *Service*: with this Service called `orion`, every replica would be
+      # handed ORION_SERVICE_HOST, ORION_PORT, ORION_PORT_8080_TCP_ADDR and
+      # the rest — names sitting in Orion's own prefix that nothing here
+      # reads. The server ignores them either way (an override is recognised
+      # by its `__` separator, which no service link has); not injecting them
+      # is the cleaner posture.
+      enableServiceLinks: false
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}

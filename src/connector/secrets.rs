@@ -36,6 +36,12 @@ pub trait SecretResolver: Send + Sync {
 /// Reads secrets from the process environment.
 ///
 /// `env://DB_PASSWORD` → `std::env::var("DB_PASSWORD")`.
+///
+/// The variable can be named anything, with one caveat: connectors live in
+/// the database, so the C4d unknown-variable guard cannot know which names
+/// they reference and refuses any `ORION_*` name that is not a setting. A
+/// secret that has to sit in the `ORION_` namespace therefore needs the
+/// reserved [`crate::config::RESERVED_ENV_PREFIX`] — `env://ORION_SECRET_…`.
 pub struct EnvSecretResolver;
 
 impl SecretResolver for EnvSecretResolver {

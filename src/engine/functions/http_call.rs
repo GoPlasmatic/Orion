@@ -48,11 +48,22 @@ impl AsyncFunctionHandler for HttpCallHandler {
                     &input.connector,
                 )?;
 
+                // F22e: the connector's method allow-list, empty by default.
+                // A connector pointed at a read-only upstream can be `["GET"]`
+                // and no workflow can POST through it. Checked ahead of the
+                // path logic, which is the only message-dependent step here:
+                // a refusal that no property of the message can change should
+                // not be reported after one that can (F58).
+                let method = super::to_reqwest_method(&input.method);
+                super::connector_helpers::require_method_allowed(
+                    &http_config.operations,
+                    method.as_str(),
+                    &input.connector,
+                )?;
+
                 let path =
                     super::resolve_path(&input.path, input.compiled_path_logic.as_deref(), ctx)?;
                 let url = build_url(&http_config.url, path.as_deref());
-
-                let method = super::to_reqwest_method(&input.method);
 
                 let body = resolve_body(&input.body, input.compiled_body_logic.as_deref(), ctx)?;
 

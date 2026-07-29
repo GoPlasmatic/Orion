@@ -7,8 +7,8 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use serde_json::Value;
 
 use super::connector_helpers::{
-    ConnectorCall, apply_output, require_cache_connector, resolve_required_str, to_connect_error,
-    to_exec_error,
+    ConnectorCall, apply_output, require_cache_connector, require_op, resolve_required_str,
+    to_connect_error, to_exec_error,
 };
 use super::schema::{FieldKind, FieldSchema};
 use crate::connector::ConnectorRegistry;
@@ -44,6 +44,8 @@ impl AsyncFunctionHandler for CacheReadHandler {
         call.run(&self.registry, async {
             let connector_config = call.resolve(&self.registry, None).await?;
             let cache_config = require_cache_connector(&connector_config, call.connector)?;
+            // F22e: a cache connector can be made write-only in its config.
+            require_op(cache_config.operations.read, "read", call.connector)?;
 
             // Workflow-purpose namespace (S19) — the mirror of `cache_write`,
             // so a workflow reads exactly what workflows wrote and never the

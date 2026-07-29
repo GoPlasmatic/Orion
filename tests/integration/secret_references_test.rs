@@ -16,12 +16,18 @@ use tower::ServiceExt;
 /// runtime threads (which is why `std::env::set_var` is `unsafe` in Rust 2024).
 /// The var is uniquely named, read-only thereafter, and lives for the process
 /// lifetime; no cleanup is needed or attempted.
+///
+/// It sits in the reserved `ORION_SECRET_*` namespace (C4d) because it is set
+/// for the whole test binary, including the tests that call `load_config` —
+/// and every other `ORION_*` name is now refused at startup as a misspelled
+/// override. That is exactly the convention an operator follows for an
+/// `env://` secret they want to keep in the ORION namespace.
 #[ctor::ctor]
 fn install_b5_env_fixture() {
     // SAFETY: runs pre-main on the sole thread of the process; no concurrent
     // reader of the environment can exist yet.
     unsafe {
-        std::env::set_var("ORION_B5_TEST_TOKEN", "resolved-secret-value");
+        std::env::set_var("ORION_SECRET_B5_TEST_TOKEN", "resolved-secret-value");
     }
 }
 
@@ -42,7 +48,7 @@ async fn connector_with_env_reference_resolves_at_engine_load() {
                 "config": {
                     "url": "https://example.com/api",
                     "method": "POST",
-                    "auth": { "type": "bearer", "token": "env://ORION_B5_TEST_TOKEN" }
+                    "auth": { "type": "bearer", "token": "env://ORION_SECRET_B5_TEST_TOKEN" }
                 }
             })),
         ))

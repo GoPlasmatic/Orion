@@ -23,6 +23,9 @@ spec:
         {{- include "orion.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: dev-postgres
     spec:
+      # Neither dev pod reads service links, and leaving them on would put
+      # ORION_* names into an image that is not Orion's.
+      enableServiceLinks: false
       # Restricted-profile contexts so a devStack install passes PodSecurity
       # `restricted` namespaces. UID/GID 70 is the `postgres` user pinned in
       # the postgres alpine images (the default devStack.postgres.image);
@@ -90,6 +93,7 @@ spec:
         {{- include "orion.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: dev-redis
     spec:
+      enableServiceLinks: false
       # UID 999 / GID 1000 is the `redis` user pinned in the redis alpine
       # images (the default devStack.redis.image; alpine reserves GID 999,
       # so upstream allocates the group at 1000). Started non-root, the

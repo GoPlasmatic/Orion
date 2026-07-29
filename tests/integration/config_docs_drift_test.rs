@@ -210,12 +210,322 @@ fn env_override_names() -> BTreeSet<String> {
     names
 }
 
+/// C4d: the names the scraper finds in the source must be exactly the names
+/// the overrides consult at runtime.
+///
+/// `known_env_override_keys()` is the allowlist the unknown-variable guard
+/// refuses against, and it is derived by *running* the overrides with a
+/// recording reader. That is only equivalent to reading the source if every
+/// override consults its variable unconditionally — an override moved behind
+/// an `if` would drop out of the allowlist and turn a legitimate deployment
+/// variable into a startup error. This is the assertion that catches it.
+#[test]
+fn the_runtime_override_set_matches_the_source() {
+    let scraped = env_override_names();
+    let runtime = orion::config::known_env_override_keys();
+    let missing: Vec<&String> = scraped.difference(&runtime).collect();
+    let extra: Vec<&String> = runtime.difference(&scraped).collect();
+    assert!(
+        missing.is_empty(),
+        "src/config/env_overrides.rs declares {} override(s) that are not \
+         consulted at runtime, so the C4d guard would refuse them: {missing:?}",
+        missing.len()
+    );
+    assert!(
+        extra.is_empty(),
+        "{} variable(s) are consulted at runtime but invisible to the docs \
+         scraper, so the reference page cannot be checked against them: {extra:?}",
+        extra.len()
+    );
+}
+
 /// The env var that overrides a setting: `ORION_SECTION__KEY`, uppercased with
 /// `__` between levels. No exceptions since C22 retired the `ORION_ENV` alias
 /// — retired names live in `src/config/retired_env.rs`, out of the scraper's
 /// reach, and are refused at startup rather than ignored.
 fn expected_env_name(path: &str) -> String {
     format!("ORION_{}", path.to_uppercase().replace('.', "__"))
+}
+
+// ---------------------------------------------------------------------------
+// Every ORION_* name this repository writes down (C4d)
+// ---------------------------------------------------------------------------
+
+/// Directories walked for `ORION_*` tokens, plus the loose files at the root.
+///
+/// `.github` is in scope because a mistyped variable in a workflow fails the
+/// same way a mistyped one in a manifest does, only less visibly. `CHANGELOG.md`
+/// and `proposal.md` are deliberately out: both are historical records that
+/// quote names precisely because they were wrong or have since been renamed,
+/// and rewriting history to satisfy a lint would defeat the point of keeping it.
+const PROSE_DIRS: &[&str] = &["docs", "examples", "deploy", ".github"];
+const PROSE_FILES: &[&str] = &[
+    "README.md",
+    "CONTRIBUTING.md",
+    "CLAUDE.md",
+    "config.toml.example",
+    "docker-compose.yml",
+    "docker-compose.ha.yml",
+    "docker-compose.ha.build.yml",
+    "Dockerfile",
+];
+
+/// File extensions worth scanning: prose, manifests and scripts. Recordings
+/// (`.cast`, `.gif`, `.webm`, `.png`) are excluded — they are generated.
+const PROSE_EXTENSIONS: &[&str] = &[
+    "md", "sh", "yml", "yaml", "toml", "tpl", "example", "mjs", "json", "conf", "txt",
+];
+
+/// `ORION_*` tokens this repository writes down that read as settings and
+/// deliberately are not: `(name, only_in, reason)`. Everything that reads as a
+/// setting must be a live override or a retired name.
+///
+/// "Reads as a setting" is [`looks_like_a_setting`]. Names outside it need no
+/// entry, because neither the server nor a reader can mistake them for
+/// settings: `ORION_VERSION` in a Compose file, `orion-cli`'s
+/// `ORION_SERVER_URL`, the kubelet's `ORION_SERVICE_HOST`, `ORION_DIR` in a
+/// shell script.
+///
+/// `only_in` scopes the excuse to one path when the name is a deliberate
+/// *counter*-example — a wrong name a page quotes on purpose. Those must not
+/// buy an exemption anywhere else, which is precisely the hole this test was
+/// added to close: `ORION_ADMIN_AUTH__API_KEY` (singular) sat in two pages, one
+/// quoting it as the mistake and one telling readers to set it.
+const NOT_A_SERVER_SETTING: &[(&str, &str, &str)] = &[
+    (
+        "ORION_SECTION__KEY",
+        "",
+        "the naming rule itself, written as a placeholder wherever it is quoted",
+    ),
+    (
+        "ORION_SERVER__PORTT",
+        "docs/src/configuration/reference.md",
+        "the worked example of the misspelling C4d refuses",
+    ),
+    (
+        "ORION_ENVIRONMEN",
+        "docs/src/configuration/reference.md",
+        "the worked example of the top-level near-miss C4d also refuses",
+    ),
+    (
+        "ORION_SERVER_PORT",
+        "docs/src/configuration/reference.md",
+        "the worked example of the one shape C4d cannot refuse — a setting typed \
+         with a single underscore, which is also exactly the service link a \
+         Service named `orion-server` produces",
+    ),
+    (
+        "ORION_ADMIN_AUTH__API_KEY",
+        "docs/src/features/deployability.md",
+        "the name this page shipped wrong until 1.0, now quoted as the mistake",
+    ),
+    (
+        "ORION_CORS_ALLOWED_ORIGINS",
+        "",
+        "compose interpolation, resolved by `docker compose` in the operator's \
+         shell; the container's environment block spells out the real \
+         ORION_CORS__ALLOWED_ORIGINS it fills",
+    ),
+];
+
+/// Whether `token` is excused in the file at repository-relative `path`.
+fn is_excused(token: &str, path: &str) -> bool {
+    NOT_A_SERVER_SETTING
+        .iter()
+        .any(|(name, only_in, _)| *name == token && (only_in.is_empty() || *only_in == path))
+}
+
+/// Whether `token`, printed on a page, reads as an Orion setting. Two classes,
+/// and the difference between them is the point:
+///
+/// * The server would **refuse** it at startup. That is
+///   `config::looks_like_env_override` — the guard's own predicate, shared
+///   rather than restated, so this test cannot drift from the rule it enforces.
+///   A page printing one of these in a copy-pasteable block ships a server that
+///   will not boot.
+/// * It is a real override with its `__` collapsed to a single `_`:
+///   `ORION_SERVER_PORT` for `ORION_SERVER__PORT`. The server *cannot* refuse
+///   these — the section separator is the only thing telling a setting apart
+///   from a Kubernetes service link, so single-underscore names have to be let
+///   through — which leaves this test as the only thing between a reader and a
+///   variable that silently does nothing.
+fn looks_like_a_setting(token: &str, known: &BTreeSet<String>) -> bool {
+    orion::config::looks_like_env_override(token, known)
+        || known.iter().any(|key| key.replace("__", "_") == token)
+}
+
+/// Collect every file under `PROSE_DIRS`/`PROSE_FILES` worth scanning.
+fn prose_files() -> Vec<std::path::PathBuf> {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if !matches!(
+                    path.file_name().and_then(|n| n.to_str()),
+                    Some("node_modules" | "out" | "target" | "casts" | "videos" | "images")
+                ) {
+                    walk(&path, out);
+                }
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| PROSE_EXTENSIONS.contains(&ext))
+            {
+                out.push(path);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut out = Vec::new();
+    for dir in PROSE_DIRS {
+        walk(&root.join(dir), &mut out);
+    }
+    for file in PROSE_FILES {
+        let path = root.join(file);
+        if path.is_file() {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Every `ORION_*` token in `text`, as `(token, line number)`.
+///
+/// Two shapes are skipped. A token ending in `_` is a prefix written in prose
+/// (*"`ORION_QUEUE__*` -> `ORION_TRACE_QUEUE__*`"*), not a name. A token
+/// immediately preceded by `${` is a substitution placeholder — the config
+/// file's `${VAR}` grammar, a Compose interpolation, or a shell expansion —
+/// and those name variables the *reader* chooses.
+fn orion_tokens(text: &str) -> Vec<(String, usize)> {
+    let mut found = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let bytes = line.as_bytes();
+        let mut at = 0;
+        while let Some(offset) = line[at..].find("ORION_") {
+            let start = at + offset;
+            let end = start
+                + line[start..]
+                    .find(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+                    .unwrap_or(line.len() - start);
+            at = end.max(start + 1);
+            if start >= 2 && &bytes[start - 2..start] == b"${" {
+                continue;
+            }
+            let token = &line[start..end];
+            if token.ends_with('_') {
+                continue;
+            }
+            found.push((token.to_string(), index + 1));
+        }
+    }
+    found
+}
+
+/// No page, manifest or script in this repository may print an `ORION_*` name
+/// that reads as a setting without being one.
+///
+/// The reference page's tables are checked above; this is the rest of the
+/// documentation, where the mistyped `ORION_ADMIN_AUTH__API_KEY` lived — in two
+/// pages, of which the sweep that noticed fixed one. Since C4d a name like that
+/// in the server's environment stops the boot, so a page shipping it in a
+/// copy-pasteable block ships a server that will not start; and a real override
+/// typed with a single underscore is worse, because the server has no way to
+/// object. [`looks_like_a_setting`] covers both.
+#[test]
+fn every_documented_env_name_is_real() {
+    let known = orion::config::known_env_override_keys();
+    let retired = orion::config::retired_env_names();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    let mut files = 0usize;
+    let mut problems = Vec::new();
+    for path in prose_files() {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        files += 1;
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for (token, line) in orion_tokens(&text) {
+            if known.contains(&token)
+                || retired.contains(&token)
+                || !looks_like_a_setting(&token, &known)
+                || is_excused(&token, &relative)
+            {
+                continue;
+            }
+            problems.push(format!(
+                "{relative}:{line} writes `{token}`, which reads as an Orion setting \
+                 without being one. A name following the override grammar stops the \
+                 server at startup (C4d); a real override typed with a single \
+                 underscore is ignored instead, which is quieter and no better. Fix \
+                 the name, or add it to NOT_A_SERVER_SETTING with the reason it is \
+                 written that way."
+            ));
+        }
+    }
+
+    assert!(
+        files > 50,
+        "only {files} files scanned — the walker is broken, not the docs"
+    );
+    assert!(problems.is_empty(), "{}", problems.join("\n  "));
+}
+
+/// The excuse list must not outlive its entries: a name that became a real
+/// setting, that no page mentions any more, or whose page moved, is stale.
+#[test]
+fn every_excused_env_name_is_still_needed() {
+    let known = orion::config::known_env_override_keys();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut mentioned: BTreeSet<(String, String)> = BTreeSet::new();
+    for path in prose_files() {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        for (token, _) in orion_tokens(&text) {
+            mentioned.insert((token, relative.clone()));
+        }
+    }
+
+    let mut problems = Vec::new();
+    for (name, only_in, reason) in NOT_A_SERVER_SETTING {
+        assert!(!reason.is_empty(), "{name} needs a reason");
+        if known.contains(*name) {
+            problems.push(format!("{name} is a real override now — drop the excuse"));
+            continue;
+        }
+        if !looks_like_a_setting(name, &known) {
+            problems.push(format!(
+                "{name} no longer reads as a setting, so the scan would not flag it \
+                 — drop the excuse"
+            ));
+            continue;
+        }
+        let still_written = mentioned
+            .iter()
+            .any(|(token, path)| token == name && (only_in.is_empty() || path == only_in));
+        if !still_written {
+            problems.push(if only_in.is_empty() {
+                format!("{name} is not written down anywhere any more")
+            } else {
+                format!("{name} is no longer in {only_in} — the excuse points at nothing")
+            });
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n  "));
 }
 
 // ---------------------------------------------------------------------------

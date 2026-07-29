@@ -51,6 +51,8 @@ Any string field inside a connector's `config` may use an `env://VAR_NAME` refer
 
 If `STRIPE_API_KEY` is not set in the process environment, startup (or the create/update call) fails with a structured error pointing at the field — production credentials never have to be POSTed into the admin API or stored in the database. The same `env://` scheme works on every string field in every connector type.
 
+Name these variables anything you like, with one restriction: Orion refuses to start on an `ORION_*` variable that is not one of its own settings ([why](../configuration/reference.md#misspellings-are-startup-errors-not-silent-no-ops)), so a secret that must live in the `ORION_` namespace needs the reserved `ORION_SECRET_` prefix — `env://ORION_SECRET_STRIPE_API_KEY`. The same applies to a `${VAR}` placeholder inside a connector's `config_json`: unlike a placeholder in the config file, Orion cannot see it while the config is loading (connectors live in the database), so an `ORION_*` name there has to be `ORION_SECRET_*` too.
+
 ### HTTP Connector
 
 REST API calls, webhooks, and external service integration:
@@ -81,6 +83,30 @@ REST API calls, webhooks, and external service integration:
 | `retry_non_idempotent` | `false` | Also retry POST/PATCH. A timed-out POST may already have been applied — enable only when the endpoint honours an idempotency key |
 | `max_response_size` | 10 MB | Maximum response body size to prevent OOM |
 | `allow_private_urls` | `false` | Allow requests to private/internal IPs (SSRF protection) |
+| `operations.methods` | `[]` (all) | Method allow-list — see below |
+
+An HTTP connector's [operation gate](#operation-gates) is a method allow-list,
+because its operation *is* the method. Empty — the default — allows everything
+`http_call` can issue. Name even one method and the list becomes exhaustive, so
+a connector pointed at an upstream you must not mutate can be locked to reads
+without trusting every workflow that references it:
+
+```json
+{
+  "name": "partner-api-readonly",
+  "connector_type": "http",
+  "config": {
+    "type": "http",
+    "url": "https://partner.example.com/v1",
+    "operations": { "methods": ["GET"] }
+  }
+}
+```
+
+A `POST` through that connector is refused with a validation error before any
+request is made. Matching ignores case, and a method `http_call` cannot issue
+(anything outside `GET`, `POST`, `PUT`, `PATCH`, `DELETE`) is rejected when the
+connector is created rather than silently never matching.
 
 ### Kafka Connector
 
@@ -97,6 +123,15 @@ Produce to Kafka topics:
   }
 }
 ```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `brokers` | required | Broker list for this connector's cluster |
+| `topic` | required | Default topic |
+| `operations.publish` | `true` | [Operation gate](#operation-gates) — set `false` to make the connector publish-proof |
+
+The connector is producer-only, so `publish` is its whole gate surface;
+consumers are configured under `[kafka]` in the server config.
 
 Use the `publish_kafka` task function with optional JSONLogic for dynamic keys and values:
 
@@ -220,9 +255,12 @@ Two ways to talk to it:
 
 ### Operation Gates
 
-`db` and `es` connectors carry per-operation gates — everything defaults to
+**Every** connector type carries per-operation gates — everything defaults to
 allowed, and disabling an operation rejects the call with a validation error
-naming the op and connector, regardless of what a workflow asks for:
+naming the op and connector, regardless of what a workflow asks for. The gates
+a connector has are the operations it can perform, so the shape differs by
+type; this section is the `db` / `es` set, and the [cache](#cache-connector),
+[Kafka](#kafka-connector) and [HTTP](#http-connector) sections cover theirs.
 
 ```json
 {
@@ -244,6 +282,12 @@ naming the op and connector, regardless of what a workflow asks for:
 
 To make a connector fully delete-proof, disable both `delete` and `raw_write`.
 
+A gate key that the connector's type does not have is a 400 on create and
+update, naming the key and listing the ones that exist. Connector configs
+otherwise ignore fields they do not know — a row written by an older Orion has
+to keep loading — and a gate silently ignored would read as a control while
+allowing the operation, so the keys are checked at the door instead.
+
 ### Cache Connector
 
 In-memory or Redis cache for lookups, session state, and temporary storage:
@@ -264,9 +308,40 @@ In-memory or Redis cache for lookups, session state, and temporary storage:
 |-------|---------|-------------|
 | `backend` | required | `"redis"` or `"memory"` |
 | `url` | required (redis) | Redis connection URL, including credentials when needed: `redis://user:pass@host:6379` |
+| `operations` | all allowed | [Operation gates](#operation-gates) — `read` gates `cache_read`, `write` gates `cache_write` and any channel store backed by the connector |
 
 TTL is set per write, via `cache_write`'s `ttl_secs` — there is no
 connector-level default.
+
+A cache connector shared with something else — a Redis holding another
+system's keys — can be made read-only in its config, so nothing in Orion
+writes through it whatever any workflow or channel asks for:
+
+```json
+{
+  "name": "shared-redis-readonly",
+  "connector_type": "cache",
+  "config": {
+    "type": "cache",
+    "backend": "redis",
+    "url": "redis://localhost:6379",
+    "operations": { "write": false }
+  }
+}
+```
+
+`write` covers more than `cache_write`: a channel's deduplication store and
+response cache may also name a cache connector, and both write through it, so
+a write-gated connector is refused for those too — in cluster mode the channel
+fails to load and says why; on a single node it falls back to process memory
+with a warning, exactly as an unreachable connector does. `read` is not
+applied to them, because the only key either store reads back is one Orion
+itself wrote.
+
+There is no `delete` gate: the `CacheBackend` trait exposes get / set / set_ex
+and the dedup check only, no workflow function deletes a key, and a gate over
+an operation that cannot be performed would be a setting that reads as
+meaningful and is not.
 
 Use `cache_read` and `cache_write` in workflows:
 

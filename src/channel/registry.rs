@@ -435,7 +435,21 @@ impl ChannelRegistry {
         let resolved = match connector_registry.get(connector_name).await {
             Some(cfg) => match cfg.as_ref() {
                 ConnectorConfig::Cache(cache_cfg) => {
-                    if strict && cache_cfg.backend == "memory" {
+                    if !cache_cfg.operations.write {
+                        // A dedup store and a response cache both *write*
+                        // through the connector, so a write-gated one cannot
+                        // back either — the gate means "nothing in Orion
+                        // writes here", not "no workflow function does"
+                        // (F22e). `read` is deliberately not checked: both
+                        // stores only ever read back a key Orion itself
+                        // wrote, so a `read: false` connector — "no workflow
+                        // pulls this system's data into a payload" — is not
+                        // violated by one.
+                        Err(format!(
+                            "connector '{connector_name}' has operations.write = false, \
+                             and {purpose} writes through it"
+                        ))
+                    } else if strict && cache_cfg.backend == "memory" {
                         Err(format!(
                             "connector '{connector_name}' uses the in-memory backend — \
                              per-node state in cluster mode is a silent correctness loss"
@@ -963,6 +977,107 @@ mod tests {
         assert!(registry.quarantined().is_empty());
         let runtime = registry.get_by_name("shared-ch").expect("loaded");
         assert!(runtime.dedup_store.is_some());
+    }
+
+    /// A connector registry holding one memory-backed cache connector with
+    /// its `write` gate set either way (F22e).
+    async fn registry_with_cache(name: &str, write: bool) -> ConnectorRegistry {
+        let registry =
+            ConnectorRegistry::new(crate::config::EngineConfig::default().circuit_breaker);
+        let config: crate::connector::ConnectorConfig = serde_json::from_value(serde_json::json!({
+            "type": "cache",
+            "backend": "memory",
+            "operations": { "write": write }
+        }))
+        .expect("a cache connector config");
+        registry.insert_for_test(name, config).await;
+        registry
+    }
+
+    /// F22e: a dedup store *writes* through its connector, so a cache
+    /// connector gated `write: false` cannot back one. Without this the gate
+    /// would cover `cache_write` only, and a channel pointing its dedup store
+    /// at a shared Redis would keep writing to it — which is exactly what the
+    /// gate exists to prevent.
+    #[tokio::test]
+    async fn test_write_gated_connector_cannot_back_a_dedup_store() {
+        let registry = ChannelRegistry::with_cluster(cluster_backends());
+        let channel = test_channel(
+            "gated-dedup-ch",
+            r#"{"deduplication": {"header": "idem", "connector": "ro-cache"}}"#,
+        );
+        registry
+            .reload(
+                &[channel],
+                &registry_with_cache("ro-cache", false).await,
+                &CachePool::new(4, 60, 1000),
+                &DatalogicEngine::new(),
+                &TraceStorageConfig::default(),
+                Vec::new(),
+            )
+            .await;
+        // N21: `reload` no longer returns the issues it also records.
+        let issues = registry.quarantined();
+        assert_eq!(issues.len(), 1, "issues = {issues:?}");
+        assert!(
+            issues[0].reason.contains("operations.write"),
+            "the reason must name the gate, got: {}",
+            issues[0].reason
+        );
+        assert!(registry.get_by_name("gated-dedup-ch").is_none());
+    }
+
+    /// The control: the same connector with the gate open is accepted, so the
+    /// refusal above is the gate and not the connector.
+    #[tokio::test]
+    async fn test_ungated_connector_still_backs_a_dedup_store() {
+        let registry = ChannelRegistry::new();
+        let channel = test_channel(
+            "open-dedup-ch",
+            r#"{"deduplication": {"header": "idem", "connector": "rw-cache"}}"#,
+        );
+        registry
+            .reload(
+                &[channel],
+                &registry_with_cache("rw-cache", true).await,
+                &CachePool::new(4, 60, 1000),
+                &DatalogicEngine::new(),
+                &TraceStorageConfig::default(),
+                Vec::new(),
+            )
+            .await;
+        // N21: `reload` no longer returns the issues it also records.
+        let issues = registry.quarantined();
+        assert!(issues.is_empty(), "issues = {issues:?}");
+        let runtime = registry.get_by_name("open-dedup-ch").expect("loaded");
+        assert!(runtime.dedup_store.is_some());
+    }
+
+    /// On a single node a write-gated connector degrades the way an
+    /// unreachable one does — a warning and the in-memory store — rather than
+    /// taking the channel out of service. What it must not do is keep writing
+    /// through the gated connector.
+    #[tokio::test]
+    async fn test_single_node_write_gated_connector_falls_back() {
+        let registry = ChannelRegistry::new();
+        let channel = test_channel(
+            "gated-fallback-ch",
+            r#"{"deduplication": {"header": "idem", "connector": "ro-cache"}}"#,
+        );
+        registry
+            .reload(
+                &[channel],
+                &registry_with_cache("ro-cache", false).await,
+                &CachePool::new(4, 60, 1000),
+                &DatalogicEngine::new(),
+                &TraceStorageConfig::default(),
+                Vec::new(),
+            )
+            .await;
+        // N21: `reload` no longer returns the issues it also records.
+        let issues = registry.quarantined();
+        assert!(issues.is_empty(), "issues = {issues:?}");
+        assert!(registry.get_by_name("gated-fallback-ch").is_some());
     }
 
     #[tokio::test]

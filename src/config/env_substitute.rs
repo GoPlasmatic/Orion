@@ -18,6 +18,28 @@ pub fn substitute(input: &str, source_label: &str) -> Result<String, OrionError>
     substitute_with(input, source_label, |k| std::env::var(k).ok())
 }
 
+/// Every variable name `input` references through `${VAR}` or
+/// `${VAR:-default}`.
+///
+/// The unknown-`ORION_*`-variable guard (C4d) needs these: substitution reads
+/// arbitrary names out of the config file, so a file saying
+/// `url = "${ORION_DB_URL}"` makes that variable one Orion genuinely reads,
+/// even though no override is named after it.
+///
+/// Implemented by running the real scanner with a resolver that records what
+/// it is asked for, so the `${…}` grammar lives in exactly one place. Every
+/// reference resolves to the empty string, so the substituted text is
+/// discarded and a missing required variable cannot fail here — the real
+/// [`substitute`] call reports that.
+pub fn referenced_vars(input: &str) -> std::collections::BTreeSet<String> {
+    let seen = std::cell::RefCell::new(std::collections::BTreeSet::new());
+    let _ = substitute_with(input, "referenced_vars", |name| {
+        seen.borrow_mut().insert(name.to_string());
+        Some(String::new())
+    });
+    seen.into_inner()
+}
+
 /// Substitute `${VAR}` / `${VAR:-default}` in `input` using `lookup` as
 /// the variable resolver. Used by tests to avoid touching the real env.
 pub fn substitute_with<F>(input: &str, source_label: &str, lookup: F) -> Result<String, OrionError>
@@ -214,6 +236,30 @@ mod tests {
         )
         .expect("test");
         assert_eq!(out, "v = literal-${B}");
+    }
+
+    /// C4d: the names a config file references are the names Orion reads from
+    /// the environment on its behalf, so the unknown-variable guard has to see
+    /// them. Both grammar forms count, and a `$$`-escaped dollar does not.
+    #[test]
+    fn referenced_vars_reports_every_placeholder() {
+        let found = referenced_vars(
+            "url = \"${ORION_DB_URL}\"\nport = ${PORT:-8080}\nprice = $$5\nplain = 1\n",
+        );
+        assert_eq!(
+            found,
+            ["ORION_DB_URL".to_string(), "PORT".to_string()]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    /// A required-but-unset variable must not fail this scan — `substitute`
+    /// owns that error, and it runs afterwards with the real environment.
+    #[test]
+    fn referenced_vars_does_not_require_the_variables_to_be_set() {
+        let found = referenced_vars("v = ${DEFINITELY_NOT_SET_ANYWHERE}");
+        assert!(found.contains("DEFINITELY_NOT_SET_ANYWHERE"));
     }
 
     #[test]

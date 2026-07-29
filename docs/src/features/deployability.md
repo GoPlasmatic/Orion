@@ -84,10 +84,10 @@ ORION_STORAGE__URL="postgres://user:pass@localhost/orion"
 ORION_KAFKA__ENABLED=true
 ORION_LOGGING__FORMAT=json
 ORION_ADMIN_AUTH__ENABLED=true
-ORION_ADMIN_AUTH__API_KEY="your-secret-key"
+ORION_ADMIN_AUTH__API_KEYS="your-secret-key,another-key"
 ```
 
-Environment variables take precedence over the config file, making it easy to customize per environment without changing files.
+Environment variables take precedence over the config file, making it easy to customize per environment without changing files. A name that is not a setting — `ORION_ADMIN_AUTH__API_KEY`, say, which this page got wrong until 1.0 — is refused at startup with the nearest real key, instead of being ignored.
 
 **Runtime configuration:** channels carry their own runtime config (rate limits, timeouts, CORS, validation) via `config_json`, changeable through the admin API without restarts.
 

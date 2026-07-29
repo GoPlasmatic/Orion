@@ -41,6 +41,18 @@ Migrations run as a `pre-install`/`pre-upgrade` Job; replicas boot with
 Keep migrations expand/contract compatible across one release (see
 CONTRIBUTING.md).
 
+Setting `storage.autoMigrate=true` on a production cluster install is refused
+at startup — replicas would race each other at boot. The dev/demo install
+below is exempt: it runs as `development` and has no migrate Job, because its
+database is created by the same release.
+
+Every pod spec sets `enableServiceLinks: false`. Nothing here reads the
+kubelet's Docker-style service variables, and with a Service named `orion` they
+would otherwise fill each container's environment with `ORION_`-prefixed names
+that are not Orion settings. This is hygiene, not a requirement: the server
+only treats a name as a setting when it carries the `__` section separator, and
+no service link does, so a hand-written manifest without the flag boots fine.
+
 ## Dev / demo install
 
 Runs a throwaway in-namespace Postgres + Redis (no persistence guarantees):

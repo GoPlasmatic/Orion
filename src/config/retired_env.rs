@@ -116,6 +116,27 @@ const RETIRED_ENV_VARS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Every retired variable name.
+///
+/// Exposed for `config_docs_drift_test`, which checks that every `ORION_*`
+/// token written down anywhere in the repository is a name Orion accounts for
+/// — a live override, a retired one, or explicitly not a server setting.
+pub fn retired_env_names() -> std::collections::BTreeSet<String> {
+    RETIRED_ENV_VARS
+        .iter()
+        .map(|(old, _)| (*old).to_string())
+        .collect()
+}
+
+/// Whether `name` is a retired variable.
+///
+/// The unknown-variable scan (C4d) skips these so [`reject_retired_env_vars`]
+/// keeps ownership of them: *"`ORION_QUEUE__WORKERS` -> `ORION_TRACE_QUEUE__WORKERS`"*
+/// tells an operator what to do, and a generic "unknown variable" would not.
+pub(super) fn is_retired(name: &str) -> bool {
+    RETIRED_ENV_VARS.iter().any(|(old, _)| *old == name)
+}
+
 /// Refuse to start when a retired `ORION_*` name is still set. Reports every
 /// offender at once so one restart fixes the whole deployment manifest.
 pub(super) fn reject_retired_env_vars<F>(env_var: F) -> Result<(), OrionError>
@@ -152,6 +173,15 @@ mod tests {
                 .map(|v| v.to_string())
                 .ok_or(std::env::VarError::NotPresent)
         }
+    }
+
+    #[test]
+    fn is_retired_answers_for_the_whole_table() {
+        for (old, _) in RETIRED_ENV_VARS {
+            assert!(is_retired(old), "{old} is in the table");
+        }
+        assert!(!is_retired("ORION_SERVER__PORT"));
+        assert!(!is_retired("ORION_QUEUE__WORKERS_TYPO"));
     }
 
     #[test]

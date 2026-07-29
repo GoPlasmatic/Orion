@@ -59,7 +59,10 @@ storage:
   # Name of an existing Secret with a `storage-url` key, if you prefer not
   # to put the URL in values. Takes precedence over storage.url.
   existingSecret: ""
-  # Replicas never migrate at boot; the pre-upgrade Job below does.
+  # Replicas never migrate at boot; the pre-upgrade Job below does. Orion
+  # refuses to start if this is true on a production cluster install — every
+  # replica would race the others. (devStack installs run as `development`
+  # and migrate at boot, since they have no Job.)
   autoMigrate: false
 
 # Pre-install/pre-upgrade `orion-server migrate` Job (expand/contract

@@ -31,6 +31,8 @@ pub fn validate_connector_config(
         ))
     })?;
 
+    validate_operation_gate_keys(connector_type, config)?;
+
     // For HTTP connectors, validate the URL scheme
     if let ConnectorConfig::Http(http_config) = &parsed
         && !http_config.url.is_empty()
@@ -61,6 +63,25 @@ pub fn validate_connector_config(
         )));
     }
 
+    // F22e: an HTTP connector's operation gate is a method allow-list, so a
+    // typo in it would not fail closed loudly — it would refuse every call at
+    // request time, one workflow at a time. Check it at the door instead,
+    // against the methods `http_call` can actually issue.
+    if let ConnectorConfig::Http(c) = &parsed {
+        for method in &c.operations.methods {
+            if !crate::connector::VALID_HTTP_METHODS
+                .iter()
+                .any(|valid| valid.eq_ignore_ascii_case(method))
+            {
+                return Err(OrionError::BadRequest(format!(
+                    "Invalid HTTP method '{method}' in operations.methods. Must be \
+                     one of: {}",
+                    crate::connector::VALID_HTTP_METHODS.join(", ")
+                )));
+            }
+        }
+    }
+
     // For Cache connectors, validate backend and url requirement
     if let ConnectorConfig::Cache(cache_config) = &parsed {
         if !crate::connector::VALID_CACHE_BACKENDS.contains(&cache_config.backend.as_str()) {
@@ -83,6 +104,46 @@ pub fn validate_connector_config(
     }
 
     Ok(())
+}
+
+/// F22e: refuse an `operations` object carrying a key this connector type does
+/// not read.
+///
+/// The gate structs are `#[serde(default)]` and connector configs do not use
+/// `deny_unknown_fields` (legacy rows must keep loading), so a misspelled gate
+/// key deserializes into a fully open gate — `{"operations": {"writes": false}}`
+/// on a cache would answer 201 and gate nothing. The values are already
+/// checked here for the HTTP method allow-list; this is the same door for the
+/// keys, for every type.
+fn validate_operation_gate_keys(
+    connector_type: ConnectorType,
+    config: &serde_json::Value,
+) -> Result<(), OrionError> {
+    let Some(operations) = config.get("operations") else {
+        return Ok(());
+    };
+    let Some(object) = operations.as_object() else {
+        return Err(OrionError::BadRequest(format!(
+            "Connector 'operations' must be a JSON object of operation gates, one of: {}",
+            connector_type.operation_gate_keys().join(", ")
+        )));
+    };
+    let allowed = connector_type.operation_gate_keys();
+    let unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !allowed.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(OrionError::BadRequest(format!(
+        "Unknown operation gate(s) {:?} for connector type '{connector_type}'. A gate \
+         that is not read leaves the operation allowed, so this would be a silent \
+         no-op — must be one of: {}",
+        unknown,
+        allowed.join(", ")
+    )))
 }
 
 pub fn validate_create_connector(req: &CreateConnectorRequest) -> Result<(), OrionError> {
@@ -297,6 +358,29 @@ mod tests {
     fn test_connector_config_db_valid() {
         let config = json!({"connection_string": "sqlite::memory:"});
         assert!(validate_connector_config(ConnectorType::Db, &config).is_ok());
+    }
+
+    /// F22e: a method allow-list is only useful if a typo in it is caught
+    /// here. `"GTE"` would otherwise persist happily and refuse every call
+    /// through the connector at request time.
+    #[test]
+    fn http_method_allow_list_rejects_a_method_http_call_cannot_issue() {
+        let config = json!({
+            "url": "https://example.com",
+            "operations": { "methods": ["GET", "GTE"] }
+        });
+        let err = validate_connector_config(ConnectorType::Http, &config)
+            .expect_err("a misspelled method must not be persisted");
+        assert!(err.to_string().contains("GTE"), "{err}");
+    }
+
+    #[test]
+    fn http_method_allow_list_accepts_the_supported_methods_in_any_case() {
+        let config = json!({
+            "url": "https://example.com",
+            "operations": { "methods": ["get", "POST", "Put", "PATCH", "delete"] }
+        });
+        assert!(validate_connector_config(ConnectorType::Http, &config).is_ok());
     }
 
     #[test]

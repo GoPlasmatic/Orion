@@ -12,6 +12,7 @@ mod retired_env;
 mod server;
 mod storage;
 mod trace_queue;
+mod unknown_env;
 pub(super) mod validation;
 mod write;
 
@@ -19,6 +20,7 @@ mod write;
 pub use admin_auth::AdminAuthConfig;
 pub use cluster::ClusterConfig;
 pub use engine::EngineConfig;
+pub use env_overrides::known_env_override_keys;
 pub use kafka::{DlqConfig, KafkaAuthConfig, KafkaIngestConfig, TopicMapping};
 pub use logging::{LogFormat, LoggingConfig};
 pub use observability::{
@@ -26,9 +28,11 @@ pub use observability::{
 };
 pub use query::QueryConfig;
 pub use rate_limit::{EndpointRateLimits, RateLimitConfig};
+pub use retired_env::retired_env_names;
 pub use server::{CompressionConfig, DocsConfig, IngestConfig, ServerConfig, TlsConfig};
 pub use storage::StorageConfig;
 pub use trace_queue::TraceQueueConfig;
+pub use unknown_env::{RESERVED_PREFIX as RESERVED_ENV_PREFIX, looks_like_env_override};
 pub use write::WriteConfig;
 
 use serde::{Deserialize, Serialize};
@@ -189,13 +193,19 @@ impl AuditConfig {
 /// lets secrets stay out of the config file without forcing every value
 /// to be redeclared as an `ORION_*` env var. See `env_substitute` for
 /// the full grammar (including the `$$` literal-dollar escape).
+///
+/// The names those placeholders resolve are carried into the override step:
+/// they are variables Orion reads on the file's behalf, so the
+/// unknown-`ORION_*`-variable guard (C4d) must not refuse them.
 pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
+    let mut referenced_by_config_file = std::collections::BTreeSet::new();
     let mut config = if let Some(p) = path {
         let raw =
             std::fs::read_to_string(Path::new(p)).map_err(|e| OrionError::InternalSource {
                 context: format!("Failed to read config file '{p}'"),
                 source: Box::new(e),
             })?;
+        referenced_by_config_file = env_substitute::referenced_vars(&raw);
         let content = env_substitute::substitute(&raw, p)?;
         toml::from_str::<AppConfig>(&content).map_err(|e| OrionError::InternalSource {
             context: format!("Failed to parse config file '{p}'"),
@@ -205,7 +215,7 @@ pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
         AppConfig::default()
     };
 
-    env_overrides::apply_env_overrides(&mut config)?;
+    env_overrides::apply_env_overrides(&mut config, &referenced_by_config_file)?;
     validation::validate_config(&config)?;
 
     Ok(config)
@@ -214,6 +224,18 @@ pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serialises the tests that touch the process environment.
+    ///
+    /// `load_config` now *scans* the environment (C4d), so a test that sets an
+    /// `ORION_*` variable is visible to any other test loading a config at the
+    /// same moment — and `std::env::set_var` is `unsafe` in Rust 2024 for the
+    /// same reason. Every test below that either sets a variable or calls
+    /// `load_config` takes this lock first.
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn test_default_config() {
@@ -231,6 +253,7 @@ mod tests {
 
     #[test]
     fn test_load_config_no_file() {
+        let _guard = env_guard();
         let config = load_config(None).expect("test");
         // Port may be overridden by env vars in parallel tests, just check it loaded
         assert!(config.server.port > 0);
@@ -260,8 +283,46 @@ format = "json"
 
     #[test]
     fn test_load_config_nonexistent_file() {
+        let _guard = env_guard();
         let result = load_config(Some("/nonexistent/path/config.toml"));
         assert!(result.is_err());
+    }
+
+    // -- C4d: unknown keys are a hard error in the *environment* too --
+    //
+    // C4b covered the file. Overrides are matched by name, so nothing
+    // deserialises them and a misspelled variable was simply never asked for:
+    // `ORION_SERVER__PORTT=3000` did nothing, silently. The mechanism is unit
+    // tested in `unknown_env`; these two go through the real entry point,
+    // which is where the process environment is actually scanned.
+
+    /// A typo'd override refuses the whole load rather than being ignored.
+    #[test]
+    fn load_config_refuses_a_misspelled_override() {
+        let _guard = env_guard();
+        // SAFETY: the env lock is held, so no other test in this binary is
+        // reading or writing the environment concurrently.
+        unsafe { std::env::set_var("ORION_SERVER__PORTT", "3000") };
+        let result = load_config(None);
+        unsafe { std::env::remove_var("ORION_SERVER__PORTT") };
+
+        let err = result
+            .expect_err("a misspelled ORION_* variable must not be silently ignored")
+            .to_string();
+        assert!(err.contains("ORION_SERVER__PORTT"), "{err}");
+        assert!(err.contains("ORION_SERVER__PORT"), "{err}");
+    }
+
+    /// The reserved namespace is the escape hatch for variables Orion cannot
+    /// enumerate — `env://` connector secrets live in the database.
+    #[test]
+    fn load_config_ignores_the_reserved_namespace() {
+        let _guard = env_guard();
+        // SAFETY: as above — the env lock is held for the whole test.
+        unsafe { std::env::set_var("ORION_SECRET_SOME_TOKEN", "s3cret") };
+        let result = load_config(None);
+        unsafe { std::env::remove_var("ORION_SECRET_SOME_TOKEN") };
+        result.expect("ORION_SECRET_* is never interpreted as configuration");
     }
 
     // -- C4b: unknown keys are a hard error, not a silent default --
@@ -350,12 +411,15 @@ admin_rps = 20
         path.to_string_lossy().into_owned()
     }
 
+    /// Doubles as the C4d case for placeholders: `ORION_TEST_SUBST_DB_URL` is
+    /// an `ORION_*` name that is not an override, and the load succeeds only
+    /// because the config file references it.
     #[test]
     fn test_load_config_substitutes_env_vars() {
-        // SAFETY: this test sets a unique env var per invocation and only
-        // reads it back from this same test — no shared state with other tests.
+        let _guard = env_guard();
         let var_name = "ORION_TEST_SUBST_DB_URL";
-        // SAFETY: single-threaded inside this test, no parallel reader of this var.
+        // SAFETY: the env lock is held, so no other test in this binary is
+        // reading or writing the environment concurrently.
         unsafe {
             std::env::set_var(var_name, "postgres://test-host/db");
         }
@@ -379,6 +443,7 @@ url = "${{{var_name}}}"
 
     #[test]
     fn test_load_config_uses_default_when_var_missing() {
+        let _guard = env_guard();
         let toml = r#"
 [server]
 port = 8080
@@ -394,6 +459,7 @@ url = "${ORION_TEST_NEVER_SET_VAR:-sqlite:fallback.db}"
 
     #[test]
     fn test_load_config_fails_on_missing_required_var() {
+        let _guard = env_guard();
         let toml = r#"
 [storage]
 url = "${ORION_TEST_REQUIRED_BUT_UNSET_xyz}"

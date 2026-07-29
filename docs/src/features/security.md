@@ -195,12 +195,18 @@ unless the call carries `"all": true` **and** the server enables
 `write.allow_unfiltered` — a double opt-in against accidental table truncation.
 Bulk inserts over `write.max_rows` are rejected, never silently truncated.
 
-**Per-connector operation gates:** a `db` or `es` connector's config can
-disable operation types outright — `operations: { "read", "insert", "update",
-"delete", "upsert", "raw_write" }`, all defaulting to allowed. A gated call
-fails with a validation error naming the op and connector, so a connector can
-be made read-only (or insert-only, delete-proof, …) in configuration,
-regardless of what any workflow asks for:
+**Per-connector operation gates:** every connector type's config can disable
+operation types outright, all defaulting to allowed. A gated call fails with a
+validation error naming the op and connector, so a connector can be made
+read-only (or insert-only, delete-proof, …) in configuration, regardless of
+what any workflow asks for:
+
+| Type | Gates |
+|------|-------|
+| `db`, `es` | `read`, `insert`, `update`, `delete`, `upsert`, `raw_write` |
+| `cache` | `read`, `write` |
+| `kafka` | `publish` |
+| `http` | `methods` — an allow-list; empty allows every method |
 
 ```json
 {
@@ -213,6 +219,18 @@ regardless of what any workflow asks for:
   }
 }
 ```
+
+```json
+{
+  "name": "partner-api-readonly",
+  "connector_type": "http",
+  "config": { "type": "http", "url": "https://partner.example.com/v1", "operations": { "methods": ["GET"] } }
+}
+```
+
+A gate key the type does not have — `{"writes": false}` on a cache — is a 400,
+not a 201 with an open gate; and `cache`'s `write` covers every write through
+the connector, including a channel dedup store or response cache backed by it.
 
 **URL validation:** connector URLs are validated at creation time. Combined with SSRF protection, this prevents workflows from making requests to unexpected destinations.
 

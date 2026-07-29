@@ -20,16 +20,24 @@
 #      so secrets stay out of the database:
 #         [storage]
 #         url = "${ORION_DB_URL:-sqlite:orion.db}"
+#      A placeholder in *this* file may name any variable — Orion sees the
+#      file and knows it reads it. A placeholder in a connector `config_json`
+#      cannot be seen while the config loads, so if you point one at a name
+#      shaped like a setting (`ORION_` with a `__` in it), use the reserved
+#      `ORION_SECRET_*` namespace (`$${ORION_SECRET_DB_PASSWORD}`) — a name
+#      that looks like a setting and is not one stops the boot.
 #
 # Convention in this file: a comment indented two or more spaces past the `#`
 # is an illustrative example, not a default.
 #
 # START HERE if you are going to production: set `environment = "production"`
-# below. It turns two footguns into startup errors — see the next section.
+# below. It turns three footguns into startup errors — see the next section.
 
 # Deployment environment. Any value starting with "prod" (case-insensitive)
-# is a production environment, which makes two checks fatal instead of a
-# warning: admin auth must be enabled, and CORS may not be the "*" wildcard.
+# is a production environment, which makes three checks fatal instead of a
+# warning: admin auth must be enabled, CORS may not be the "*" wildcard, and
+# a cluster may not migrate at boot (cluster.enabled with
+# storage.auto_migrate — every replica would race the others).
 # Overridden by ORION_ENVIRONMENT.
 # environment = "development"
 

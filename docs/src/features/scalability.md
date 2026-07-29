@@ -212,4 +212,4 @@ This enables microservice-style deployment where each instance handles a subset 
 | **PostgreSQL** | Supported | Recommended | Full multi-connection support. Use connection pooling (PgBouncer) for many instances. |
 | **MySQL** | Supported | Supported | Ensure `READ-COMMITTED` isolation for best concurrency. |
 
-For cluster deployments, use PostgreSQL with connection pooling (PgBouncer) and set `storage.auto_migrate = false` — run `orion-server migrate` as a deploy step (init container, Helm pre-upgrade hook, or the one-shot `migrate` service in `docker-compose.ha.yml`) so replicas never race migrations at boot.
+For cluster deployments, use PostgreSQL with connection pooling (PgBouncer) and set `storage.auto_migrate = false` — run `orion-server migrate` as a deploy step (init container, Helm pre-upgrade hook, or the one-shot `migrate` service in `docker-compose.ha.yml`) so replicas never race migrations at boot. A production cluster left on `auto_migrate = true` is refused at startup rather than allowed to race.

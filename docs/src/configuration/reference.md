@@ -31,6 +31,26 @@ Three layers, in increasing precedence:
 
 Run `orion-server validate-config` to see the merged result without starting: it prints the full effective config — every section, serialized from the same structs the server runs on — as TOML (`--format json` and `--format summary` also exist). Secrets are masked with the same policy as the connector API: values under secret-looking keys are replaced with `******`, and passwords embedded in URL-shaped values such as `storage.url` are struck out in place. Configuration is validated at startup too, and an invalid value stops the boot rather than being silently ignored.
 
+### Misspellings are startup errors, not silent no-ops
+
+A key the config file does not have fails to parse and names itself — `[server] wrokers = 4` stops the boot. The environment is held to the same standard: Orion scans the process environment at startup and refuses any variable that follows the override grammar without being one of the overrides on this page, naming the offender and the nearest real key.
+
+```
+Error: Configuration error: these ORION_* environment variables are not Orion
+settings and would be silently ignored:
+  ORION_SERVER__PORTT (did you mean ORION_SERVER__PORT?)
+```
+
+**What the scan looks at is the `__`, not the `ORION_`.** Every override is `ORION_` + the field path with a double underscore between levels, so a name without one — `ORION_PORT`, `ORION_SERVER_URL` — cannot be a misspelling of a setting and is left alone. That matters because the prefix is not Orion's to claim: Kubernetes hands every pod a Docker-style block named after each Service in the namespace unless the PodSpec sets `enableServiceLinks: false`, so a Service called `orion` puts `ORION_SERVICE_HOST`, `ORION_PORT` and `ORION_PORT_8080_TCP_ADDR` into every container, written by the kubelet rather than by any manifest you can edit. `orion-cli` reads `ORION_SERVER_URL` and `ORION_API_KEY`, and a shell that exports those for the CLI passes them to a server started from the same shell. None of those can collide, and none needs a workaround. (The shipped Helm chart sets `enableServiceLinks: false` regardless — nothing here reads the link variables.)
+
+The price is the single-underscore near-miss: `ORION_SERVER_PORT` is exactly the link a Service named `orion-server` would produce, so it is ignored rather than reported. Type the separator and the guard has your back.
+
+Three exemptions cover names that *do* carry the separator, or would:
+
+- **Names the config file references.** A file containing `url = "${ORION_DB_URL}"` makes `ORION_DB_URL` legitimate, even though no setting is named after it. The same `${VAR}` substitution also runs over connector `config_json` blobs — those live in the database and cannot be enumerated while the config is loading, so name them under `ORION_SECRET_*`.
+- **The reserved `ORION_SECRET_*` namespace**, which Orion never interprets as configuration. Use it for values you reference yourself and cannot declare up front — an `env://ORION_SECRET_DB_PASSWORD` connector secret, for instance, since connectors live in the database rather than the config.
+- **`ORION_ENVIRONMENT`**, the one setting that lives at the top level of the config and so has no separator of its own. It is checked by proximity instead: `ORION_ENVIRONMEN` is refused with a suggestion, because a silently ignored `environment` would leave the instance in `development` with the production checks downgraded to warnings.
+
 ## Deployment Environment
 
 One setting changes how strictly everything else is validated.
@@ -39,10 +59,11 @@ One setting changes how strictly everything else is validated.
 |---|---|---|---|
 | `environment` | `"development"` | `ORION_ENVIRONMENT` | Set to `"production"` before exposing an instance to anything you care about. |
 
-Any value starting with `prod` (case-insensitive) is a production environment, which turns two warnings into startup errors:
+Any value starting with `prod` (case-insensitive) is a production environment, which turns three warnings into startup errors:
 
 - **Admin auth must be enabled.** `admin_auth.enabled = false` becomes a fatal config error instead of a log line nobody reads.
 - **CORS may not be `["*"]`.** The wildcard is rejected; list explicit origins.
+- **A cluster may not migrate at boot.** `cluster.enabled = true` with `storage.auto_migrate = true` is refused — see [`auto_migrate` in a cluster](#storage).
 
 That is the whole mechanism — it does not change any other default. Everything else on this page is still yours to set, and the [Production Checklist](#production-checklist) is the list worth walking.
 
@@ -127,12 +148,16 @@ Both endpoints are unauthenticated and the spec publishes the complete admin API
 | `storage.idle_timeout_secs` | `300` | `ORION_STORAGE__IDLE_TIMEOUT_SECS` | Lower it when a proxy (PgBouncer, RDS Proxy) closes idle connections sooner; `0` never closes them. |
 | `storage.backup_dir` | `"./backups"` | `ORION_STORAGE__BACKUP_DIR` | Where `POST /api/v1/admin/backups` writes. SQLite only. |
 | `storage.backup_retention_count` | — | `ORION_STORAGE__BACKUP_RETENTION_COUNT` | Keep only the newest N backups, pruning older ones after each successful backup. Unset keeps every backup — they accumulate on the same disk as the live database. Set the variable to an empty string to clear it. |
-| `storage.auto_migrate` | `true` | `ORION_STORAGE__AUTO_MIGRATE` | **Set `false` for multi-replica deployments** and run `orion-server migrate` as a deploy step. |
+| `storage.auto_migrate` | `true` | `ORION_STORAGE__AUTO_MIGRATE` | **Set `false` for multi-replica deployments** and run `orion-server migrate` as a deploy step — required in a production cluster. |
 | `storage.connect_retry_secs` | `60` | `ORION_STORAGE__CONNECT_RETRY_SECS` | How long startup keeps retrying an unreachable database before giving up (`0` = fail fast). Sized so a pod rides out a Postgres/MySQL failover instead of crash-looping through it. Ignored for SQLite, whose connect failures are not transient; the `auto_migrate = false` pending-migration check stays fail-fast regardless. |
 
 **Sizing the pool.** `max_connections` is per process. With N replicas, N × `max_connections` must stay below the server's own `max_connections` (PostgreSQL's default is 100, and superuser slots and other clients come out of that budget) or replicas will fail to connect under load. The default of 50 suits a single node against a dedicated database; three replicas against a stock Postgres want roughly 25 each, less whatever else connects.
 
-**`auto_migrate` in a cluster.** With `auto_migrate = true`, every replica tries to migrate at boot and they race. The race is safe — migrations take a lock — but it is noisy and slow, so Orion logs a warning when `cluster.enabled` and `auto_migrate` are both on. The intended shape is `auto_migrate = false` plus `orion-server migrate` as a pre-deploy job; startup then fails fast if migrations are still pending, instead of serving against a schema it does not understand.
+**`auto_migrate` in a cluster.** With `auto_migrate = true`, every replica tries to migrate at boot and they race. The intended shape is `auto_migrate = false` plus `orion-server migrate` as a pre-deploy job; startup then fails fast if migrations are still pending, instead of serving against a schema it does not understand.
+
+`cluster.enabled = true` with `auto_migrate = true` is **a startup error in production** — a guardrail that fires after the race is no guardrail. Outside production it stays a warning, which is what lets a throwaway cluster (the Helm chart's `devStack`, whose database is created by the same release and so cannot be migrated by a pre-install hook) boot without a migrate step. A single-node install is unaffected either way: `cluster.enabled` is `false` by default, and migrating at boot is what makes `orion-server` a single-binary install.
+
+The migrate step already exists in both reference deployments: the Helm chart runs a pre-install/pre-upgrade `orion-server migrate` Job, and `docker-compose.ha.yml` a one-shot `migrate` service the replicas depend on.
 
 ## Cluster (HA)
 

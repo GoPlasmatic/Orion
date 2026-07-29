@@ -406,6 +406,18 @@ impl ConnectorRegistry {
         Ok(count)
     }
 
+    /// Insert an already-parsed connector under `name`.
+    ///
+    /// Test-only: production loads go through [`Self::load_from_repo`], which
+    /// does `${VAR}` substitution and `env://` secret resolution first.
+    #[cfg(test)]
+    pub(crate) async fn insert_for_test(&self, name: &str, config: ConnectorConfig) {
+        self.configs
+            .write()
+            .await
+            .insert(name.to_string(), Arc::new(config));
+    }
+
     /// Get a connector config by name.
     pub async fn get(&self, name: &str) -> Option<Arc<ConnectorConfig>> {
         self.configs.read().await.get(name).cloned()

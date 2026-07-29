@@ -347,6 +347,7 @@ mod tests {
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
             allow_private_urls: true, // Tests use localhost
+            operations: Default::default(),
         };
 
         let result = execute_request(
@@ -397,6 +398,7 @@ mod tests {
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
             allow_private_urls: true, // Tests use localhost
+            operations: Default::default(),
         };
 
         let body = serde_json::json!({"data": "payload"});
@@ -439,6 +441,7 @@ mod tests {
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
             allow_private_urls: true, // Tests use localhost
+            operations: Default::default(),
         };
 
         let result = execute_request(
@@ -481,6 +484,7 @@ mod tests {
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
             allow_private_urls: true, // Tests use localhost
+            operations: Default::default(),
         };
 
         let result = execute_request(
@@ -525,6 +529,7 @@ mod tests {
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10,    // Very small limit
             allow_private_urls: true, // Tests use localhost
+            operations: Default::default(),
         };
 
         let result = execute_request(
@@ -569,6 +574,7 @@ mod tests {
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
             allow_private_urls: true, // Tests use localhost
+            operations: Default::default(),
         };
 
         let result = execute_request(
@@ -598,6 +604,7 @@ mod tests {
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
             allow_private_urls: true, // Tests use localhost
+            operations: Default::default(),
         };
 
         let result = execute_request(
@@ -634,6 +641,7 @@ mod tests {
             retry: crate::connector::RetryConfig::default(),
             max_response_size: 10 * 1024 * 1024,
             allow_private_urls: true, // Tests use localhost
+            operations: Default::default(),
         }
     }
 

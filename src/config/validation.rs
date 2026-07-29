@@ -54,6 +54,34 @@ pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
                 .to_string(),
         });
     }
+    // Cross-section (C7): a production cluster must not migrate at boot.
+    //
+    // Every replica would try, they race, and the guardrail used to be a log
+    // line emitted *after* the race it warns about — so the safe shape of the
+    // flagship feature was neither the default nor enforced. The correct shape
+    // already exists everywhere it is needed: the Helm chart runs a
+    // pre-install/pre-upgrade `orion-server migrate` Job, and
+    // `docker-compose.ha.yml` a one-shot `migrate` service.
+    //
+    // Scoped to production for the same reason `admin_auth` and the CORS
+    // wildcard are: a single-node install never trips it (cluster mode is off
+    // by default), and a throwaway development cluster — the Helm `devStack`,
+    // which deliberately has no migrate Job because its database is a release
+    // resource — keeps the warning `main.rs` logs. Production cluster installs
+    // are the only place a racing migration meets data worth protecting.
+    if is_prod && config.cluster.enabled && config.storage.auto_migrate {
+        return Err(OrionError::Config {
+            message: "cluster.enabled = true with storage.auto_migrate = true in \
+                      production: every replica would migrate at boot and race the \
+                      others. Set storage.auto_migrate = false \
+                      (ORION_STORAGE__AUTO_MIGRATE=false) and run `orion-server \
+                      migrate` as a deploy step — the Helm chart ships a pre-upgrade \
+                      Job and docker-compose.ha.yml a one-shot migrate service. \
+                      Startup then fails fast on a pending migration instead of \
+                      serving against a schema it does not understand."
+                .to_string(),
+        });
+    }
     Ok(())
 }
 
@@ -339,6 +367,73 @@ mod tests {
         let config = AppConfig::default();
         // Non-production + disabled admin auth should be fine (just warns)
         assert!(validate_config(&config).is_ok());
+    }
+
+    // ---- C7: a production cluster must not migrate at boot ----
+
+    /// A production cluster config with everything else in order, so only the
+    /// `auto_migrate`/`cluster` pair can fail it.
+    fn production_cluster_config(auto_migrate: bool) -> AppConfig {
+        let mut config = AppConfig {
+            environment: "production".to_string(),
+            admin_auth: AdminAuthConfig {
+                enabled: true,
+                api_keys: vec!["secret-key-12345-secret-key-12345".to_string()],
+                ..AppConfig::default().admin_auth
+            },
+            cors: CorsConfig {
+                allowed_origins: vec!["https://example.com".to_string()],
+            },
+            ..AppConfig::default()
+        };
+        // Cluster mode requires a networked backend and shared Redis.
+        config.storage.url = "postgres://orion:orion@db:5432/orion".to_string();
+        config.cluster.enabled = true;
+        config.cluster.redis_url = "redis://redis:6379".to_string();
+        config.storage.auto_migrate = auto_migrate;
+        config
+    }
+
+    /// The defect C7 names: the warning fired *after* the replicas had already
+    /// raced. It is a startup refusal now, and the message has to name both
+    /// settings and the deploy step that replaces them.
+    #[test]
+    fn production_cluster_refuses_auto_migrate() {
+        let err = validate_config(&production_cluster_config(true))
+            .expect_err("racing migrations must not be a mere warning");
+        let message = err.to_string();
+        assert!(message.contains("storage.auto_migrate"), "{message}");
+        assert!(message.contains("cluster.enabled"), "{message}");
+        assert!(message.contains("orion-server migrate"), "{message}");
+    }
+
+    /// The shape the Helm chart and `docker-compose.ha.yml` already deploy.
+    #[test]
+    fn production_cluster_accepts_the_migrate_job_shape() {
+        validate_config(&production_cluster_config(false))
+            .expect("auto_migrate = false plus a migrate deploy step is the intended shape");
+    }
+
+    /// A single-node install is untouched: cluster mode is off by default and
+    /// `auto_migrate` stays on, which is what makes `orion-server` a
+    /// single-binary install.
+    #[test]
+    fn a_single_node_install_still_migrates_at_boot() {
+        let config = AppConfig::default();
+        assert!(config.storage.auto_migrate, "default must stay true");
+        assert!(!config.cluster.enabled, "default must stay single-node");
+        validate_config(&config).expect("the default install is unaffected");
+    }
+
+    /// Development clusters keep the warning: the Helm `devStack` install runs
+    /// cluster mode with no migrate Job, because its database is a release
+    /// resource that does not exist when a pre-install hook would run.
+    #[test]
+    fn a_development_cluster_still_migrates_at_boot() {
+        let mut config = production_cluster_config(true);
+        config.environment = "development".to_string();
+        validate_config(&config)
+            .expect("a throwaway development cluster is not refused, only warned");
     }
 
     #[test]

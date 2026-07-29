@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::connector::{
     CacheConnectorConfig, ConnectorConfig, ConnectorRegistry, DbConnectorConfig, EsConnectorConfig,
-    OperationGates,
+    HttpOperationGates, OperationGates,
 };
 use crate::query::EntityRegistry;
 
@@ -51,10 +51,37 @@ pub fn require_op_allowed(
     op: &str,
     connector_name: &str,
 ) -> Result<(), DataflowError> {
-    if !gates.allows(op) {
+    require_op(gates.allows(op), op, connector_name)
+}
+
+/// [`require_op_allowed`] for the gates that are not the db/es set: the cache
+/// (`read` / `write`) and Kafka (`publish`) gates each have their own struct,
+/// because a `raw_write` flag on a cache would be a field nothing reads (F22e).
+/// The refusal is worded identically whatever the connector type.
+pub fn require_op(allowed: bool, op: &str, connector_name: &str) -> Result<(), DataflowError> {
+    if !allowed {
         return Err(DataflowError::Validation(format!(
             "{}operation '{op}' is disabled on connector '{connector_name}'",
             crate::errors::CONNECTOR_DETAIL_MARKER
+        )));
+    }
+    Ok(())
+}
+
+/// Reject the call when an HTTP connector's method allow-list excludes
+/// `method` (F22e). An empty list allows everything, which is what a connector
+/// authored before the gate existed keeps meaning.
+pub fn require_method_allowed(
+    gates: &HttpOperationGates,
+    method: &str,
+    connector_name: &str,
+) -> Result<(), DataflowError> {
+    if !gates.allows_method(method) {
+        return Err(DataflowError::Validation(format!(
+            "{}HTTP method '{method}' is not allowed on connector \
+             '{connector_name}' (allowed: {})",
+            crate::errors::CONNECTOR_DETAIL_MARKER,
+            gates.methods.join(", ")
         )));
     }
     Ok(())

@@ -49,6 +49,10 @@ spec:
         app.kubernetes.io/component: migrate
     spec:
       restartPolicy: Never
+      # Same reason as the Deployment: on upgrades the `orion` Service already
+      # exists, so the kubelet would inject an ORION_*-named service-link block
+      # into this Job too.
+      enableServiceLinks: false
       {{- with .Values.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}

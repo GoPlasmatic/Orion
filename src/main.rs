@@ -173,11 +173,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // against pending migrations; `orion-server migrate` is the deploy step.
     let pool = orion::storage::init_pool_for_startup(&config.storage).await?;
     tracing::info!(path = %config.storage.url, "Database initialized");
+    // C7: in production this pairing is refused by `validate_config` before
+    // anything opens a connection, so only a development cluster reaches here
+    // — the Helm `devStack` shape, whose database is a release resource and so
+    // has no pre-install migrate Job to run instead.
     if config.cluster.enabled && config.storage.auto_migrate {
         tracing::warn!(
-            "cluster.enabled with storage.auto_migrate = true: replicas will race \
-             migrations at boot (safe but noisy) — prefer auto_migrate = false plus \
-             an `orion-server migrate` deploy step"
+            "cluster.enabled with storage.auto_migrate = true: replicas race \
+             migrations at boot. Tolerated outside production and refused in it — \
+             use auto_migrate = false plus an `orion-server migrate` deploy step"
         );
     }
 

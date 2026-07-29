@@ -92,7 +92,7 @@ ORION_STORAGE__URL="postgres://user:pass@localhost/orion" orion-server
 
 # Enable admin authentication
 ORION_ADMIN_AUTH__ENABLED=true \
-ORION_ADMIN_AUTH__API_KEY="your-secret-key" \
+ORION_ADMIN_AUTH__API_KEYS="your-secret-key" \
 orion-server
 
 # Enable metrics and tracing

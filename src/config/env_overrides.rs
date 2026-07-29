@@ -1,3 +1,6 @@
+use std::cell::RefCell;
+use std::collections::BTreeSet;
+
 use crate::config::{AppConfig, LogFormat};
 use crate::errors::OrionError;
 
@@ -27,9 +30,52 @@ fn env_key(path: &[&str]) -> String {
     key
 }
 
+/// Every `ORION_*` variable the overrides below consult, in one set.
+///
+/// Derived by *running* them against a reader that records each name and
+/// reports it unset, rather than by listing the names a second time: an
+/// override that reads a variable has to ask this reader for it, so the set
+/// cannot drift from the macros the way a hand-maintained list would. Nothing
+/// is applied — every lookup returns `NotPresent` — so the throwaway config is
+/// discarded untouched.
+///
+/// The one rule this relies on: an override must consult its variable
+/// *unconditionally*. Every `ov*!` expansion does (`if let Ok(v) =
+/// env_var(&key)`), as do the hand-written enum/list/pair cases.
+///
+/// `config_docs_drift_test` asserts this set equals the one its scraper finds
+/// in this file's source, which is what would catch a conditional lookup.
+pub fn known_env_override_keys() -> BTreeSet<String> {
+    let seen = RefCell::new(BTreeSet::new());
+    let mut scratch = AppConfig::default();
+    // Cannot fail: every lookup reports "unset", so no value is ever parsed.
+    let _ = apply_env_overrides_with(&mut scratch, |key| {
+        seen.borrow_mut().insert(key.to_string());
+        Err(std::env::VarError::NotPresent)
+    });
+    seen.into_inner()
+}
+
 /// Apply ORION_* environment variable overrides.
-pub(super) fn apply_env_overrides(config: &mut AppConfig) -> Result<(), OrionError> {
+///
+/// Three passes, in this order: retired names are refused with their
+/// replacement (C22), `ORION_*` names that are not overrides at all are
+/// refused with the nearest valid key (C4d), and only then is anything
+/// applied. `referenced_by_config_file` carries the names the config file's
+/// `${VAR}` placeholders resolved, which are Orion's to read even though no
+/// override names them.
+pub(super) fn apply_env_overrides(
+    config: &mut AppConfig,
+    referenced_by_config_file: &BTreeSet<String>,
+) -> Result<(), OrionError> {
     crate::config::retired_env::reject_retired_env_vars(|key| std::env::var(key))?;
+    crate::config::unknown_env::reject_unknown_env_vars(
+        // `vars_os` rather than `vars`: a non-UTF-8 name elsewhere in the
+        // environment must not panic the server at startup.
+        std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()),
+        &known_env_override_keys(),
+        referenced_by_config_file,
+    )?;
     apply_env_overrides_with(config, |key| std::env::var(key))
 }
 
@@ -331,6 +377,71 @@ mod tests {
                 .map(|v: &&str| v.to_string())
                 .ok_or(std::env::VarError::NotPresent)
         }
+    }
+
+    /// C4d: the allowlist the unknown-variable guard works from is derived by
+    /// running the overrides, so it must contain one entry per override —
+    /// including the hand-written enum / list / pair shapes, which no `ov*!`
+    /// macro produces.
+    #[test]
+    fn known_keys_cover_every_override_shape() {
+        let keys = known_env_override_keys();
+        for expected in [
+            // `ov!`, at three nesting depths.
+            "ORION_ENVIRONMENT",
+            "ORION_SERVER__PORT",
+            "ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD",
+            // `ov_opt!` / `ov_opt_str!` / `ov_list!`.
+            "ORION_SERVER__DOCS__ENABLED",
+            "ORION_KAFKA__AUTH__SASL_PASSWORD",
+            "ORION_CORS__ALLOWED_ORIGINS",
+            // Hand-written: enum, enum, list, pair grammar.
+            "ORION_LOGGING__FORMAT",
+            "ORION_TRACE_STORAGE__MODE",
+            "ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW",
+            "ORION_KAFKA__BROKERS",
+            "ORION_KAFKA__TOPICS",
+        ] {
+            assert!(keys.contains(expected), "{expected} is not in the key set");
+        }
+        assert!(
+            keys.len() > 90,
+            "only {} keys derived — the recording reader is not seeing the \
+             overrides, which would make the guard reject real settings",
+            keys.len()
+        );
+        // `env_key` builds its name from the bare prefix upwards; only the
+        // finished names may reach the set.
+        assert!(!keys.contains("ORION_"), "the bare prefix is not a key");
+    }
+
+    /// Probing for the key set must leave the config exactly as it found it.
+    ///
+    /// The recording reader answers `NotPresent` to everything, so nothing can
+    /// be applied — but that is a property of the reader, and the assertion has
+    /// to be made against the config the derivation actually walks. Driving
+    /// `apply_env_overrides_with` here rather than calling
+    /// `known_env_override_keys` (which mutates a scratch config it then drops)
+    /// is what makes this test able to fail: swap the reader for one that
+    /// returns values and it does.
+    #[test]
+    fn deriving_the_key_set_applies_nothing() {
+        let seen = RefCell::new(BTreeSet::new());
+        let mut scratch = AppConfig::default();
+        apply_env_overrides_with(&mut scratch, |key| {
+            seen.borrow_mut().insert(key.to_string());
+            Err(std::env::VarError::NotPresent)
+        })
+        .expect("a reader that reports everything unset cannot fail");
+
+        let untouched = AppConfig::default();
+        assert_eq!(
+            toml::Value::try_from(&scratch).expect("config serializes"),
+            toml::Value::try_from(&untouched).expect("config serializes"),
+            "the key-set derivation modified the config it walked"
+        );
+        // …and it did walk it: the same reader is what produces the allowlist.
+        assert_eq!(seen.into_inner(), known_env_override_keys());
     }
 
     #[test]

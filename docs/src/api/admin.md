@@ -64,7 +64,7 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 | GET | `/api/v1/admin/connectors/circuit-breakers` | List circuit breaker states |
 | POST | `/api/v1/admin/connectors/circuit-breakers/{key}` | Reset a circuit breaker |
 
-Connector types: `http`, `kafka`, `db` (PostgreSQL/MySQL/SQLite/MongoDB), `cache`, `storage`, `es` (Elasticsearch). `db` and `es` connector configs accept an optional `operations` block that en/disables operation types per connector (read / insert / update / delete / upsert / raw_write) — see [Operation Gates](../features/extensibility.md#operation-gates).
+Connector types: `http`, `kafka`, `db` (PostgreSQL/MySQL/SQLite/MongoDB), `cache`, `es` (Elasticsearch). Every connector config accepts an optional `operations` block that en/disables operation types per connector — `read` / `insert` / `update` / `delete` / `upsert` / `raw_write` on `db` and `es`, `read` / `write` on `cache`, `publish` on `kafka`, and a `methods` allow-list on `http`. See [Operation Gates](../features/extensibility.md#operation-gates).
 
 ## Engine
 
