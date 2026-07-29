@@ -1418,6 +1418,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The last two JSON columns got the suffix every sibling has.**
+  `workflows.tags` is now `workflows.tags_json` and `channels.methods` is now
+  `channels.methods_json`. They were the only two columns holding a serialized
+  JSON document without the `_json` that `condition_json`, `tasks_json`,
+  `config_json`, `input_json`, `result_json` and the rest all carry — and since
+  the storage type is `text` either way, the suffix is the only signal a reader
+  gets that a value has to go through `serde_json` before it means anything.
+
+  **The HTTP API is unchanged.** `tags` and `methods` are still the field names
+  every workflow and channel endpoint publishes; `docs/openapi.json` is
+  byte-identical. The renames are physical, and the DTOs that reach the network
+  name their own fields. What breaks is anything reading Orion's tables
+  directly — a dashboard, an ETL job, a hand-maintained view.
+
+  The rename is not one migration three times. SQLite rewrites the stored SQL
+  of dependent views and triggers, so its migration is two `ALTER` statements.
+  PostgreSQL and MySQL store view target lists and trigger bodies as resolved
+  text, and **neither fails at rename time**: Postgres would leave
+  `current_workflows` publishing a column called `tags` over a table whose
+  column is `tags_json`, then raise `record "old" has no field "tags"` from the
+  active-immutability guard on the next update of an active row; MySQL's views
+  would go *invalid* rather than stale — gone from `information_schema`, taking
+  every latest-version read with them — and its triggers would fail
+  `Unknown column 'tags' in 'OLD'`. Both migrations therefore drop and recreate
+  both views and both immutability triggers around the rename, and both upgrade
+  paths are exercised over seeded rows rather than empty tables (D26).
+- **`traces.access_token_hash` is `char(64)` on MySQL** (`text` elsewhere,
+  which is already the right answer there). It holds one thing — the hex
+  encoding of a SHA-256 digest — and MySQL is the only backend that cannot
+  index a `TEXT` column without a prefix length, so the declared type quietly
+  forbade the obvious index. Nothing indexes the column today; this removes the
+  trap rather than adding an index (D26).
 - CI and CodeQL now run on `release/**` and `v*` branches. The release
   workflows require a successful CI run at the tag SHA, which no commit on a
   release branch could previously have.

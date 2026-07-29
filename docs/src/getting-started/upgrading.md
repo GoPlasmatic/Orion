@@ -25,6 +25,7 @@ Work through this list. Each row links to the section with the detail.
 | 5 | [Size every ingress against the channel's guards](#every-ingress-applies-the-channels-rate-limit-dedup-and-backpressure) | Any channel declaring `rate_limit`, `deduplication`, `backpressure` or `timeout_ms` is reached over Kafka, `/async`, or `channel_call` — **this one silently throttles or suppresses live traffic** |
 | 6 | [Supply admin API keys](#5-deployment-defaults-helm-and-ha-compose-now-require-admin-keys) | You deploy via the Helm chart or `docker-compose.ha.yml` |
 | 7 | [Back up before migrating](#6-database-migrations) | You are on PostgreSQL |
+| 7b | [Re-point anything reading `workflows.tags` or `channels.methods`](#two-json-columns-were-renamed) | You query Orion's tables directly — dashboards, ETL, reporting views, hand-maintained restores |
 | 8 | [Stop migrating at boot in a production cluster](#a-production-cluster-may-not-migrate-at-boot) | `environment` starts `prod` **and** `cluster.enabled = true` **and** `storage.auto_migrate = true` — refused at startup now |
 | 9 | [Pass `trace_token` when polling async traces](#polling-an-async-trace-now-requires-the-token-returned-with-the-202) | You submit to `/async` and poll `GET /traces/{id}` without an admin key |
 | 10 | [Rename the renamed config keys](#7-config-keys-four-sections-renamed) | You set `[queue]`, `[channels]`, `[tracing.storage]`, or `ORION_ENV` |
@@ -648,9 +649,9 @@ Migrations run at boot unless `storage.auto_migrate = false`, in which case run
 
 | Backend | New since 0.3.0 | Notes |
 |---------|-----------------|-------|
-| SQLite | `004`–`008` (cluster coordination, trace access token, single-draft-on-update, DLQ/audit indexes, trace pagination indexes) | Additive; `008` is the slow one — see below |
-| PostgreSQL | `004`–`012` (bigint columns, active immutability, cluster coordination, trace access token, recreated current views, DLQ/audit indexes, and `010`–`012` for the trace pagination indexes) | See below |
-| MySQL | `001` rewritten; `004`–`010` added | No 0.3.0 deployment can exist — start fresh |
+| SQLite | `004`–`009` (cluster coordination, trace access token, single-draft-on-update, DLQ/audit indexes, trace pagination indexes, JSON column suffixes) | Additive; `008` is the slow one — see below |
+| PostgreSQL | `004`–`013` (bigint columns, active immutability, cluster coordination, trace access token, recreated current views, DLQ/audit indexes, `010`–`012` for the trace pagination indexes, and `013` for the JSON column suffixes) | See below |
+| MySQL | `001` rewritten; `004`–`012` added | No 0.3.0 deployment can exist — start fresh |
 
 **PostgreSQL: `004_bigint_columns` needs care.** It drops the
 `current_workflows` and `current_channels` views, widens `integer` columns to
@@ -706,6 +707,62 @@ dominate the whole 1.0 migration. Run it in a maintenance window if your
 > part-way failure needs whichever of the two new indexes exists dropped before
 > the re-run. **SQLite** has no online build and needs none: it is single-node
 > and the migration runs before the listener binds.
+
+#### Two JSON columns were renamed
+
+`workflows.tags` is now `workflows.tags_json`, and `channels.methods` is now
+`channels.methods_json`. On MySQL, `traces.access_token_hash` narrows from
+`TEXT` to `char(64)`.
+
+**You won't notice through the API.** `tags` and `methods` are still the field
+names every workflow and channel endpoint accepts and returns, and the OpenAPI
+document is unchanged. You will notice if anything reads Orion's tables
+directly: a Grafana panel over `workflows`, an ETL job, a reporting view, a
+restore into a schema you maintain by hand. Those fail with "column does not
+exist" the first time they run after the upgrade. Query the new names.
+
+| Backend | Migration | What it does |
+|---------|-----------|--------------|
+| SQLite | `009_json_column_suffixes` | Two `ALTER TABLE … RENAME COLUMN`. SQLite rewrites dependent triggers and views itself. |
+| PostgreSQL | `013_json_column_suffixes` | Drops and recreates `current_workflows` / `current_channels`, renames the two columns, replaces both `enforce_*_active_immutable()` bodies. |
+| MySQL | `011_json_column_suffixes` | The same shape, plus dropping and recreating the two `trg_*_active_immutable` triggers. |
+| MySQL | `012_narrow_access_token_hash` | `traces.access_token_hash` → `char(64)`. |
+
+The extra work on PostgreSQL and MySQL is not defensive. Both store view target
+lists and trigger bodies as resolved text, and a bare rename leaves them broken
+**without failing the migration**: PostgreSQL's `current_workflows` would keep
+publishing a column called `tags` while the table underneath has `tags_json`,
+and its immutability trigger would start raising
+`record "old" has no field "tags"` on every update of an active row; MySQL's
+views would stop resolving at all and its triggers would fail with
+`Unknown column 'tags' in 'OLD'`.
+
+**How long it locks.** On PostgreSQL a column rename is a catalog update — it
+does not rewrite the table, so the cost does not scale with row count; what can
+hurt is *acquiring* the `ACCESS EXCLUSIVE` lock behind a long-running
+transaction on `workflows` or `channels`. The whole file runs in one
+transaction, so it lands whole or not at all. On MySQL the rename is
+metadata-only, but `TEXT` → `char(64)` requires `ALGORITHM=COPY`: a full
+rebuild of `traces` with writes blocked for the duration. On a 1.0.0 install
+`traces` is empty and this is immediate; against a large trace backlog, size
+the window or trim it first with `trace_queue.retention_hours`.
+
+**If it fails.** Take a backup first — the same advice this section already
+gives for `004_bigint_columns`. On PostgreSQL, DDL is transactional and the
+file carries no `-- no-transaction` marker, so a failed run leaves the schema
+untouched and no ledger row: fix what blocked it and start again. On MySQL,
+every DDL statement commits implicitly, so an interrupted `011` can leave the
+columns renamed with the views and triggers not yet recreated and nothing
+recorded; put the two columns back and let it re-run from the top —
+
+```sql
+ALTER TABLE `workflows` RENAME COLUMN `tags_json` TO `tags`;
+ALTER TABLE `channels`  RENAME COLUMN `methods_json` TO `methods`;
+```
+
+— every other statement in the file is `IF EXISTS`-guarded or a `CREATE` after
+a matching `DROP`, so once the columns are back the migration is re-runnable.
+`012` is a no-op on re-run. On SQLite, restore the file from your backup.
 
 #### A production cluster may not migrate at boot
 
