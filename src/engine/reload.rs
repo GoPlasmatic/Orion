@@ -75,9 +75,10 @@ pub async fn reload_engine_with_opts(
         // which meant one unparseable `config_json` failed every activate,
         // archive, delete and rollout with a 500, and stopped the cluster
         // epoch watcher resyncing all nodes.
-        // The issue list is recorded on the registry itself (and reported via
-        // `/health`), so it is deliberately not propagated as an error here.
-        let _quarantined = state
+        // The quarantine set is recorded on the registry itself and read back
+        // with `ChannelRegistry::quarantined` (reported via `/health`), so it
+        // is deliberately not propagated as an error here.
+        state
             .channel_registry
             .reload(
                 &channels,

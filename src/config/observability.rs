@@ -128,7 +128,9 @@ pub enum AsyncOnOverflow {
     Block,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// `PartialEq` is load-bearing: `ChannelRegistry` keys its per-channel runtime
+// cache on the global trace-storage config these values resolve against (N17).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct TraceStorageConfig {
     /// Persistence policy. Applies to `store_completed` (sync result write)

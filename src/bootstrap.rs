@@ -342,7 +342,7 @@ impl EngineComponents {
         let active_workflows = repos.workflows.list_active().await?;
         let (workflows, engine_issues) =
             crate::engine::build_engine_workflows(&channels, &active_workflows);
-        let load_issues = channel_registry
+        channel_registry
             .reload(
                 &channels,
                 &serving.connector_registry,
@@ -352,21 +352,23 @@ impl EngineComponents {
                 engine_issues,
             )
             .await;
-        if !load_issues.is_empty() {
-            // A channel whose stored config or validation_logic no longer loads
-            // (any mode), or whose shared backend cannot be built (cluster mode),
-            // must never be served unguarded. It is quarantined: absent from the
-            // registry and the route table, and refused at every ingress with a
-            // 503. Booting anyway is the F35 change — the alternative was that one
-            // broken row stopped the whole instance, including every channel that
-            // is fine.
-            for issue in &load_issues {
-                tracing::error!(
-                    channel = %issue.channel,
-                    reason = %issue.reason,
-                    "Channel quarantined: it will be refused at every ingress until fixed"
-                );
-            }
+        // A channel whose stored config or validation_logic no longer loads
+        // (any mode), or whose shared backend cannot be built (cluster mode),
+        // must never be served unguarded. It is quarantined: absent from the
+        // registry and the route table, and refused at every ingress with a
+        // 503. Booting anyway is the F35 change — the alternative was that one
+        // broken row stopped the whole instance, including every channel that
+        // is fine.
+        //
+        // N21: read from the registry rather than from a return value.
+        // `reload` used to hand the same list back, so the quarantine set had
+        // two representations and `/health` and this log could disagree.
+        for issue in channel_registry.quarantined() {
+            tracing::error!(
+                channel = %issue.channel,
+                reason = %issue.reason,
+                "Channel quarantined: it will be refused at every ingress until fixed"
+            );
         }
 
         let channel_names: std::collections::HashSet<&str> =

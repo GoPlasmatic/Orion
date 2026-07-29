@@ -21,6 +21,11 @@ pub use masking::{
     find_masked_value, mask_connector, mask_secrets, redact_url_secrets, unmask_config,
 };
 pub use registry::ConnectorRegistry;
+/// A stub `ConnectorRepository` shared by the connector and channel registry
+/// tests — the channel registry's reuse cache is keyed on the connector
+/// token, so testing it takes a connector *load*.
+#[cfg(test)]
+pub(crate) use registry::test_support;
 
 mod pool_access_counter {
     use std::sync::atomic::AtomicU64;

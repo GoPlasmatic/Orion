@@ -12,6 +12,12 @@ use super::config::ConnectorConfig;
 /// Monotonic counter for LRU tracking of circuit breaker access.
 static BREAKER_ACCESS_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Process-wide source of [`ConnectorRegistry::config_generation`] tokens.
+/// Drawn on construction and on every load that *changed* the connector set,
+/// so a token is unique across registry *instances* as well as across the
+/// changes of one instance.
+static CONNECTOR_GENERATION: AtomicU64 = AtomicU64::new(0);
+
 /// A circuit breaker entry with LRU tracking.
 struct BreakerEntry {
     breaker: Arc<CircuitBreaker>,
@@ -40,6 +46,8 @@ pub struct ConnectorRegistry {
     circuit_breakers: RwLock<HashMap<String, BreakerEntry>>,
     cb_config: CircuitBreakerConfig,
     load_issues: RwLock<Vec<ConnectorLoadIssue>>,
+    /// See [`ConnectorRegistry::config_generation`].
+    generation: AtomicU64,
 }
 
 /// An enabled connector that could not be loaded into the registry (F16).
@@ -73,7 +81,32 @@ impl ConnectorRegistry {
             circuit_breakers: RwLock::new(HashMap::new()),
             cb_config,
             load_issues: RwLock::new(Vec::new()),
+            generation: AtomicU64::new(CONNECTOR_GENERATION.fetch_add(1, Ordering::Relaxed)),
         }
+    }
+
+    /// A token identifying *this registry instance and the connector set it
+    /// currently holds*. It is drawn on construction, and again on any load
+    /// that changed the set; two equal tokens mean the same instance holding
+    /// configs that compare equal, and no two instances ever share one.
+    ///
+    /// N17: [`crate::channel::ChannelRegistry`] caches a whole
+    /// `ChannelRuntimeConfig` across reloads, and that struct embeds dedup and
+    /// response-cache backends resolved *through this registry*. The cache is
+    /// only sound while the connector set behind those backends is unchanged,
+    /// so this token is part of its key. Every production path that changes a
+    /// connector — create, update, delete, import, and the epoch-driven
+    /// resync — goes through [`Self::reload`], which is what keeps the token
+    /// honest; a future path that mutates `configs` without loading would have
+    /// to advance it too.
+    ///
+    /// "On change" rather than "on load" is the whole point on a remote node:
+    /// `resync_from_db` reloads the connector registry on every epoch tick
+    /// regardless of what the originating mutation touched, so a token that
+    /// moved per load would leave every node but the mutating one rebuilding
+    /// every channel on every admin operation in the cluster.
+    pub fn config_generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     /// The connectors that failed to load on the most recent load (F16).
@@ -182,6 +215,10 @@ impl ConnectorRegistry {
     /// Connectors that fail to load are skipped, as before, but are now also
     /// recorded as [`ConnectorLoadIssue`]s so the degraded set is reportable
     /// (F16) rather than existing only as a log line.
+    ///
+    /// A load that produces the same connector set leaves both the stored map
+    /// and [`Self::config_generation`] untouched — see that method for why the
+    /// distinction between "loaded" and "changed" matters.
     pub async fn load_from_repo(
         &self,
         repo: &dyn ConnectorRepository,
@@ -323,9 +360,39 @@ impl ConnectorRegistry {
             }
         }
 
-        // Minimal write lock — just swap
+        // Minimal write lock — compare, then swap only if this load actually
+        // changed something.
+        //
+        // The comparison is inside the lock, not before it: the token is a
+        // read-modify-write of the config map, and two concurrent loads that
+        // both compared against the same outgoing map could each conclude
+        // "unchanged" while the map they wrote differed from it.
         let count = new_configs.len();
-        *self.configs.write().await = new_configs;
+        let changed = {
+            let mut configs = self.configs.write().await;
+            let changed = *configs != new_configs;
+            if changed {
+                *configs = new_configs;
+            }
+            changed
+        };
+        // N17: the token is [`crate::channel::ChannelRegistry`]'s cache key,
+        // so it must move when the effective connector set moves and stay put
+        // when it does not. Advancing it on every *load* rather than every
+        // *change* would be sound but useless: `resync_from_db` reloads
+        // connectors unconditionally on every epoch tick, so any admin
+        // mutation anywhere in the cluster — a channel edit, a workflow
+        // activation — would invalidate every channel's cached runtime on
+        // every other node, which is exactly the cost N17 exists to remove.
+        //
+        // Advanced *after* the swap, so anything that reads the token and
+        // then the configs cannot pair a new token with old configs.
+        if changed {
+            self.generation.store(
+                CONNECTOR_GENERATION.fetch_add(1, Ordering::Relaxed),
+                Ordering::Release,
+            );
+        }
         if !issues.is_empty() {
             tracing::error!(
                 degraded = issues.len(),
@@ -350,8 +417,88 @@ impl ConnectorRegistry {
     }
 }
 
+/// A repository that returns whatever connector rows a test hands it.
+///
+/// Lives outside `mod tests` because the channel registry's tests need it too:
+/// its per-channel cache is keyed on
+/// [`ConnectorRegistry::config_generation`], and the thing worth pinning is
+/// what happens to that key when a *load* of an unchanged set runs — which
+/// takes a repository.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::storage::models::Connector;
+    use crate::storage::repositories::connectors::{
+        ConnectorFilter, CreateConnectorRequest, UpdateConnectorRequest,
+    };
+    use crate::storage::repositories::helpers::PaginatedResult;
+
+    pub(crate) struct StubConnectorRepo {
+        rows: std::sync::Mutex<Vec<Connector>>,
+    }
+
+    impl StubConnectorRepo {
+        /// Rows as `(name, connector_type, config_json)`.
+        pub(crate) fn with(rows: Vec<(&str, &str, &str)>) -> Self {
+            Self {
+                rows: std::sync::Mutex::new(rows.into_iter().map(row).collect()),
+            }
+        }
+
+        pub(crate) fn set(&self, rows: Vec<(&str, &str, &str)>) {
+            *self.rows.lock().expect("test") = rows.into_iter().map(row).collect();
+        }
+    }
+
+    fn row((name, connector_type, config_json): (&str, &str, &str)) -> Connector {
+        let now = chrono::Utc::now().naive_utc();
+        Connector {
+            id: format!("con_{name}"),
+            name: name.to_string(),
+            connector_type: connector_type.to_string(),
+            config_json: config_json.to_string(),
+            enabled: true,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ConnectorRepository for StubConnectorRepo {
+        async fn list_enabled(&self) -> Result<Vec<Connector>, OrionError> {
+            Ok(self.rows.lock().expect("test").clone())
+        }
+        async fn create(&self, _req: &CreateConnectorRequest) -> Result<Connector, OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
+        async fn get_by_id(&self, _id: &str) -> Result<Connector, OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
+        async fn list_paginated(
+            &self,
+            _filter: &ConnectorFilter,
+        ) -> Result<PaginatedResult<Connector>, OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
+        async fn update(
+            &self,
+            _id: &str,
+            _req: &UpdateConnectorRequest,
+        ) -> Result<Connector, OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
+        async fn delete(&self, _id: &str) -> Result<(), OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
+        async fn exists_by_name(&self, _name: &str) -> Result<bool, OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::StubConnectorRepo;
     use super::*;
 
     #[tokio::test]
@@ -463,5 +610,119 @@ mod tests {
         assert!(states.contains_key("key2"));
         assert!(states.contains_key("key3"));
         assert!(states.contains_key("key4"));
+    }
+
+    // ---- N17: the generation token tracks changes, not loads --------------
+
+    /// The one that matters in a cluster. `resync_from_db` reloads the
+    /// connector registry on *every* epoch tick, whatever the originating
+    /// mutation touched — so if the token moved per load, every remote node
+    /// would rebuild every channel's runtime config on every admin operation
+    /// anywhere in the cluster, and N17's whole saving would be confined to
+    /// the node that made the change.
+    #[tokio::test]
+    async fn reloading_an_unchanged_connector_set_does_not_move_the_token() {
+        let repo = StubConnectorRepo::with(vec![(
+            "cache-1",
+            "cache",
+            r#"{"backend":"redis","url":"redis://localhost:6379"}"#,
+        )]);
+        let registry = ConnectorRegistry::default();
+        assert_eq!(registry.reload(&repo).await.expect("loads"), 1);
+        let after_first = registry.config_generation();
+
+        for _ in 0..5 {
+            assert_eq!(registry.reload(&repo).await.expect("loads"), 1);
+            assert_eq!(
+                registry.config_generation(),
+                after_first,
+                "an epoch resync that changed no connector must leave the \
+                 channel registry's cache key alone"
+            );
+        }
+    }
+
+    /// The counterpart: a real edit has to move it, or a channel could stay
+    /// pinned to a dedup/response-cache backend the operator has replaced.
+    #[tokio::test]
+    async fn changing_a_connector_moves_the_token() {
+        let repo = StubConnectorRepo::with(vec![(
+            "cache-1",
+            "cache",
+            r#"{"backend":"redis","url":"redis://old:6379"}"#,
+        )]);
+        let registry = ConnectorRegistry::default();
+        registry.reload(&repo).await.expect("loads");
+        let before = registry.config_generation();
+
+        // Same connector, new URL — the case the token exists for.
+        repo.set(vec![(
+            "cache-1",
+            "cache",
+            r#"{"backend":"redis","url":"redis://new:6379"}"#,
+        )]);
+        registry.reload(&repo).await.expect("loads");
+        let after_edit = registry.config_generation();
+        assert_ne!(
+            before, after_edit,
+            "an edited connector must move the token"
+        );
+
+        // Adding one moves it too.
+        repo.set(vec![
+            (
+                "cache-1",
+                "cache",
+                r#"{"backend":"redis","url":"redis://new:6379"}"#,
+            ),
+            ("cache-2", "cache", r#"{"backend":"memory"}"#),
+        ]);
+        registry.reload(&repo).await.expect("loads");
+        let after_add = registry.config_generation();
+        assert_ne!(after_edit, after_add, "a new connector must move the token");
+
+        // And so does removing one.
+        repo.set(vec![(
+            "cache-1",
+            "cache",
+            r#"{"backend":"redis","url":"redis://new:6379"}"#,
+        )]);
+        registry.reload(&repo).await.expect("loads");
+        assert_ne!(
+            after_add,
+            registry.config_generation(),
+            "a deleted connector must move the token"
+        );
+    }
+
+    /// A load that changes nothing must not disturb the stored `Arc`s either:
+    /// holders keep the exact config they had, which is what makes "the token
+    /// did not move" mean "nothing behind it moved".
+    #[tokio::test]
+    async fn an_unchanged_reload_keeps_the_stored_config_arcs() {
+        let repo =
+            StubConnectorRepo::with(vec![("http-1", "http", r#"{"url":"https://example.com"}"#)]);
+        let registry = ConnectorRegistry::default();
+        registry.reload(&repo).await.expect("loads");
+        let first = registry.get("http-1").await.expect("loaded");
+
+        registry.reload(&repo).await.expect("loads");
+        let second = registry.get("http-1").await.expect("loaded");
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    /// Two registry instances holding identical configs must still be
+    /// distinguishable: the token names the instance as well as its contents,
+    /// because a `ChannelRuntimeConfig` cached against one registry says
+    /// nothing about backends resolved through another.
+    #[tokio::test]
+    async fn identical_configs_in_two_registries_do_not_share_a_token() {
+        let repo =
+            StubConnectorRepo::with(vec![("http-1", "http", r#"{"url":"https://example.com"}"#)]);
+        let a = ConnectorRegistry::default();
+        let b = ConnectorRegistry::default();
+        a.reload(&repo).await.expect("loads");
+        b.reload(&repo).await.expect("loads");
+        assert_ne!(a.config_generation(), b.config_generation());
     }
 }

@@ -1,7 +1,17 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A parsed connector configuration.
+///
+/// `PartialEq` runs the whole tree and is load-bearing, not a convenience:
+/// [`crate::connector::ConnectorRegistry::load_from_repo`] compares the map it
+/// just built against the one it holds and only advances
+/// `config_generation` when they differ, which is what keeps an epoch resync
+/// that touched no connector from invalidating every channel's cached runtime
+/// (N17). Every field of every variant therefore has to take part — a field
+/// left out of the comparison would be a config change the channel registry
+/// never notices.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ConnectorConfig {
     Http(HttpConnectorConfig),
@@ -105,7 +115,7 @@ impl DialectGuards {
 /// - `insert` / `update` / `delete` / `upsert` gate the matching `data_write` op.
 /// - `raw_write` gates the raw-SQL `db_write` escape hatch, which cannot be
 ///   classified per-op (hand-written SQL may contain any statement).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OperationGates {
     pub read: bool,
@@ -145,7 +155,7 @@ impl OperationGates {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HttpConnectorConfig {
     pub url: String,
     #[serde(default)]
@@ -174,7 +184,7 @@ fn default_max_response_size() -> usize {
     10 * 1024 * 1024 // 10 MB
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum AuthConfig {
     Bearer { token: String },
@@ -184,7 +194,7 @@ pub enum AuthConfig {
 
 /// Retry policy for `http_call`. Lives on [`HttpConnectorConfig`] alone —
 /// F7 removed the copies on the db and es connectors, which nothing read.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RetryConfig {
     #[serde(default = "default_max_retries")]
     pub max_retries: u32,
@@ -212,7 +222,7 @@ impl Default for RetryConfig {
 /// Kafka connector. Producer-only: `publish_kafka` writes to `topic`.
 /// Ingest consumers are configured under `[kafka]` in the server config, not
 /// here — which is why there is no `group_id` (proposal F22).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KafkaConnectorConfig {
     pub brokers: Vec<String>,
     pub topic: String,
@@ -233,7 +243,7 @@ pub struct KafkaConnectorConfig {
 /// the pool's own `connect_timeout_ms` already bounds connection setup, so
 /// there was nothing safe left for the field to mean. Timeouts and pool sizing
 /// are the knobs that exist.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DbConnectorConfig {
     pub connection_string: String,
     #[serde(default)]
@@ -254,7 +264,7 @@ pub struct DbConnectorConfig {
 /// were accepted here until 1.0 and never read (proposal F22): TTL comes from
 /// each `cache_write` task, Redis credentials go in the `url`, and the
 /// connection manager has neither a pool size nor a retry policy to configure.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheConnectorConfig {
     /// Cache backend: `"redis"` or `"memory"`. Required — no default.
     pub backend: String,
@@ -271,7 +281,7 @@ pub struct CacheConnectorConfig {
 /// dialect drives `_bulk` / `_update_by_query` / `_delete_by_query` through
 /// this connector as well as `_search`, and none of those are safe to re-send
 /// blind on a timeout — see the note on [`DbConnectorConfig`].
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EsConnectorConfig {
     /// Base URL, e.g. `http://localhost:9200`.
     pub url: String,

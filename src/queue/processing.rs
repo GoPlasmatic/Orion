@@ -220,7 +220,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // upgrades `Off` to `Sync` here, matching the pending row the submission
     // path already wrote. Dropping the result while the row exists would leave
     // the trace stuck at `pending` forever.
-    let channel_runtime = ctx.channel_registry.get_by_name(&msg.channel).await;
+    let channel_runtime = ctx.channel_registry.get_by_name(&msg.channel);
     // O1: unregistered channel names (arbitrary path segments on the async
     // route) must not become Prometheus label values.
     let channel_registered = channel_runtime.is_some();

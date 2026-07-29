@@ -159,7 +159,6 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             let target_runtime = self
                 .channel_registry
                 .require_serviceable(&target_channel)
-                .await
                 .map_err(|e| {
                     DataflowError::function_execution(
                         format!("channel_call to '{target_channel}': {e}"),

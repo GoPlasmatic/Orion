@@ -83,17 +83,12 @@ async fn assert_refused(config_json: &str, bad_channel: &str, reason_fragment: &
 
     // The broken channel must not be reachable...
     assert!(
-        state
-            .channel_registry
-            .get_by_name(bad_channel)
-            .await
-            .is_none(),
+        state.channel_registry.get_by_name(bad_channel).is_none(),
         "quarantined channel must not be in the registry"
     );
     let reason = state
         .channel_registry
         .quarantine_reason(bad_channel)
-        .await
         .expect("the broken channel must be quarantined, not merely absent");
     assert!(
         reason.contains(reason_fragment),
@@ -126,11 +121,7 @@ async fn assert_refused(config_json: &str, bad_channel: &str, reason_fragment: &
 
     // The quarantine must be confined to the broken row.
     assert!(
-        state
-            .channel_registry
-            .get_by_name("keep-ch")
-            .await
-            .is_some(),
+        state.channel_registry.get_by_name("keep-ch").is_some(),
         "quarantining one channel must leave the others loaded"
     );
     assert!(serves_ok(&app, "keep-ch").await);
@@ -291,7 +282,6 @@ async fn a_broken_channel_does_not_wedge_admin_mutations() {
         state
             .channel_registry
             .quarantine_reason("wedge-ch")
-            .await
             .is_some()
     );
 }
@@ -320,7 +310,6 @@ async fn a_quarantined_channel_is_absent_from_the_route_table() {
         state
             .channel_registry
             .match_route("GET", "quarantined/42")
-            .await
             .expect("valid path")
             .is_none(),
         "a quarantined channel must not own a route"

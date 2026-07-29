@@ -148,8 +148,7 @@ pub(crate) async fn dynamic_handler(
     // resolution; matched params arrive percent-decoded exactly once.
     let (channel, route_params) = if let Some(rm) = state
         .channel_registry
-        .match_route(method.as_str(), route_path)
-        .await?
+        .match_route(method.as_str(), route_path)?
     {
         (rm.channel_name, rm.params)
     } else if !route_path.contains('/') {
@@ -211,7 +210,7 @@ pub(crate) async fn dynamic_handler(
     // async submissions always return 202.
     // F35: a channel that failed to load is quarantined, not silently
     // config-less — serving it here would apply none of its guards.
-    let channel_runtime = state.channel_registry.require_serviceable(&channel).await?;
+    let channel_runtime = state.channel_registry.require_serviceable(&channel)?;
     // A name that is not in the registry is not an active channel. Without
     // this check the single-segment fallback above accepted ANY name and ran
     // the engine against an empty workflow set — a 200 "ok" for channels

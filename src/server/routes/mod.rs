@@ -109,7 +109,7 @@ pub(crate) async fn health_check(
     // F35: channels that failed to load are quarantined — refused at every
     // ingress — while the rest of the instance serves normally. This is the
     // only signal that they are not being served.
-    let quarantined_channels = state.channel_registry.quarantined().await;
+    let quarantined_channels = state.channel_registry.quarantined();
 
     // O10/K7: dead Kafka ingestion is otherwise silent — HTTP keeps serving
     // 200s while no message is consumed. Absent entirely when Kafka is off.

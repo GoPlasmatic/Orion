@@ -144,7 +144,7 @@ async fn process_one_kafka_message(
     // F35: a quarantined channel is refused here too. Routed to the DLQ
     // rather than dropped, so the messages are replayable once the operator
     // fixes the channel's stored config.
-    let channel_runtime = match ctx.channel_registry.require_serviceable(&channel).await {
+    let channel_runtime = match ctx.channel_registry.require_serviceable(&channel) {
         Ok(runtime) => runtime,
         Err(e) => {
             return report_failure_and_dlq(

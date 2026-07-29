@@ -109,7 +109,6 @@ pub fn start_dlq_retry(
                 // (NULL when the channel is no longer active — honest).
                 let channel_id = channel_registry
                     .get_by_name(&entry.channel)
-                    .await
                     .map(|c| c.channel.channel_id.clone());
                 let new_trace = match trace_repo
                     .create_pending(

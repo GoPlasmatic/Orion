@@ -115,7 +115,7 @@ async fn resolve_data_channel(state: &AppState, method: &str, uri_path: &str) ->
     // N10: an invalid percent-sequence (`Err`) resolves to no channel here —
     // the request falls to the platform limiter and `dynamic_handler`
     // answers the 400.
-    if let Ok(Some(matched)) = state.channel_registry.match_route(method, route_path).await {
+    if let Ok(Some(matched)) = state.channel_registry.match_route(method, route_path) {
         return Some(matched.channel_name);
     }
     // Backward-compatible single-segment channel name, decoded once exactly
@@ -182,7 +182,7 @@ pub async fn rate_limit_middleware(
         let uri_path = req.uri().path().to_string();
         let method = req.method().as_str().to_string();
         if let Some(channel) = resolve_data_channel(&state, &method, &uri_path).await
-            && let Some(channel_config) = state.channel_registry.get_by_name(&channel).await
+            && let Some(channel_config) = state.channel_registry.get_by_name(&channel)
             && let Some(ref limiter) = channel_config.rate_limiter
         {
             let channel = channel.as_str();

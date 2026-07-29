@@ -202,13 +202,7 @@ async fn epoch_propagates_channel_activation_across_nodes() {
     );
 
     // Sanity: node B's registry (not just routing fallbacks) has it.
-    assert!(
-        h.state_b
-            .channel_registry
-            .get_by_name("prop-ch")
-            .await
-            .is_some()
-    );
+    assert!(h.state_b.channel_registry.get_by_name("prop-ch").is_some());
 }
 
 /// A6: with no cache connector named, dedup uses the shared cluster Redis —
@@ -356,7 +350,6 @@ async fn rate_limit_holds_across_nodes_combined() {
         h.state_b
             .channel_registry
             .get_by_name("rl-cluster-ch")
-            .await
             .is_some()
     })
     .await;
@@ -855,7 +848,6 @@ async fn three_node_activation_propagates() {
                 .state
                 .channel_registry
                 .get_by_name("tri-ch")
-                .await
                 .is_some(),
             "node {i}'s registry (not just routing fallback) must have the channel"
         );

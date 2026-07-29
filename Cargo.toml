@@ -83,6 +83,9 @@ hex = "0.4"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
 dashmap = "6"
+# Wait-free publication of the ChannelRegistry snapshot: every data-plane
+# request reads it, and the only writer stores a finished value (N17).
+arc-swap = "1"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 # ssl-vendored statically links OpenSSL into librdkafka so TLS / SASL_SSL /
 # SCRAM work without a system OpenSSL at runtime (kafka.auth support).
