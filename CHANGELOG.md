@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   applies a per-client exponential backoff (5 free attempts, then 500 ms
   doubling to a 30 s cap, cleared on success). Failures are counted by the new
   `admin_auth_failures_total{reason}` metric instead of the shared
-  `errors_total{type="auth_failure"}`.
+  `orion_errors_total{reason="auth_failure"}`.
 - **`fields` and `sort` no longer bypass the schema entirely.** `resolve_field`
   had exactly one call site — the filter lowerer — so the projection and sort
   keys reached SQL, MongoDB and Elasticsearch as **raw logical strings**. Three
@@ -36,6 +36,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Relation join keys resolve too (renames and identifier rules, deliberately
   not the caller-facing allowlist: they are operator-declared structure, not
   caller input), which fixes include grouping against a renamed key column.
+
+- **Any workflow author could reach every table the connector's database user
+  could see (breaking).** `UnmappedPolicy::Identity` was the default and both
+  dialect handlers fell back to an empty registry when a task declared no
+  `schema`, so every logical name in `data_query`/`data_write` resolved
+  straight through to a physical one — read *and* write. The safe mode existed
+  but was opt-in **per task**, so one forgotten `schema` key reopened the whole
+  connector. **The default is now `reject`, and every 0.x dialect task fails at
+  its first request** — nothing fails at startup, and stored workflows keep
+  loading and activating, so this surfaces on live traffic. The error names
+  both routes forward:
+
+  ```json
+  "schema": { "entities": { "orders": { "columns": { "id": {}, "total": {} } } } }
+  ```
+
+  declaring the entities and columns that task uses, **or** the one-line
+  pass-through that restores pre-1.0 behaviour exactly:
+
+  ```json
+  "schema": { "unmapped": "identity" }
+  ```
+
+  Two further gaps closed with it. `reject` bounded only *columns*, so a query
+  naming no fields at all — `{"source": "secrets"}`, which renders `SELECT *`
+  and resolves nothing — reached any table even in allowlist mode, because no
+  field resolution ever ran; an undeclared entity is now refused before any
+  backend sees it. And nothing at the connector could stop a task opting itself
+  back into identity mode, which `dialect.require_schema` now can (see Added).
+
+  A relation's `to` target is deliberately exempt from the declaration
+  requirement — like a relation's join keys, it is structure the schema's
+  author wrote rather than caller input — but naming one of its columns is not.
+  Combined with F27 below, that means an `include` over an **undeclared** target
+  cannot plan at all under the default policy: the `sort` key it is now obliged
+  to name is a column the allowlist refuses. Declare the target entity to use
+  an `include` (F24, F27).
+
+- **A read that named no `fields` bypassed the column allowlist entirely.**
+  `fields: []` renders `SELECT *` — and no `_source` on Elasticsearch, no
+  projection document on MongoDB — while name resolution only ever walked the
+  columns a caller named. So with `{"password_hash": {"queryable": false}}`
+  declared, `{"source": "users"}` still returned it: `queryable` meant "you may
+  not *name* this column", not "you may not read it". This is the third and
+  last place `queryable: false` was not hiding a column. A field-less read is
+  now projected to the entity's declared queryable columns. An entity that
+  declares no columns at all (relation-only or write-only) has no allowlist to
+  apply and still reads every column; one that declares columns and marks every
+  one non-queryable is refused rather than widened back to `SELECT *` (F24).
 
 - **`returning` no longer bypasses the read allowlist.** `data_write`'s
   `returning` resolved through a helper that fell through to the raw column
@@ -138,6 +187,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no-op. Redis backends are deliberately *not* partitioned: they are external,
   shared across nodes, and legitimately read keys other systems wrote — use
   separate Redis databases where you need isolation (S19, N11).
+
+- **The audit log could not tell two admin keys apart, and lost the last
+  mutation before every restart (breaking).** The actor was the first eight
+  characters of the presented key (or of its `sha256:` digest), so any
+  generator with a fixed leader (`orion_sk_…`) collapsed every key into one
+  indistinguishable actor — while, for a plaintext key, leaking eight literal
+  characters of a live credential into a database table and every log sink
+  downstream. Rows carried no IP, no user-agent and no
+  request id, so a mutation could not be tied to the session that made it. And
+  the write was a detached `tokio::spawn` that nothing awaited: a mutation
+  accepted moments before `SIGTERM` was answered `200` and then never recorded
+  — the last thing an operator did before a rolling restart is exactly the row
+  an investigation wants.
+
+  Audit v2 replaces all three. `audit_logs.principal` is now a derived,
+  non-reversible `key-<16 hex>` — `SHA-256("orion:audit:key-id:v1" ‖
+  SHA-256(key))` truncated to 8 bytes — stable across the plaintext and
+  `sha256:` config forms. **Existing rows keep their old 8-character values, so
+  a saved `?principal=` filter matches the old rows and nothing new**;
+  recompute the id from your configured keys to map them back. `details` now
+  carries `request_id`, `client_ip` (resolved with the
+  `rate_limit.trusted_proxies` policy, so a forged `X-Forwarded-For` cannot
+  dictate it) and a truncated `user_agent`. And the write goes onto a bounded
+  queue (`audit.max_pending`) that one in-order writer drains at shutdown
+  (`audit.drain_timeout_secs`, bounded so a stalled database cannot hold the
+  process open). Any row that still does not make it is counted in
+  `orion_audit_events_dropped_total{reason}` and logged at `error` — alert on
+  that counter existing at all, not on a threshold (O7).
+
+- **`POST /admin/workflows/{id}/test` now writes an audit event.** It reads as
+  a harmless dry run and is not one: it executes the workflow's tasks against
+  **live connectors**, so it will POST to real webhooks, write to real
+  databases and publish to real topics. It emitted no audit event at all,
+  making the most side-effecting call on the admin plane the one operation the
+  trail could not show. The event (`action: "test"`) is recorded before
+  execution, so the attempt is on the record even when the run itself fails.
+  Audit-volume alerts will see traffic from this endpoint for the first
+  time (O7).
 
 ### Breaking
 
@@ -298,7 +385,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **One response envelope across the admin plane.** Every admin 2xx body now
   carries its payload under a top-level `data` key; list endpoints add `total`,
-  `limit` and `offset` alongside it and nothing else. Three envelopes used to
+  `limit` and `offset` alongside it and nothing else — bar the trace list, whose
+  deviation is the next entry. Three envelopes used to
   coexist, and ten handlers returned their fields bare at the top level:
 
   | Endpoint | Was | Now |
@@ -314,9 +402,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `GET /admin/traces/{id}` | bare trace object | `{"data": {…}}` |
 
   `POST /admin/backups` and `GET /admin/functions` hand-rolled the `{"data": …}`
-  wrapper and are unchanged on the wire; `GET /admin/traces` hand-rolled the
-  pagination envelope and is likewise unchanged. All three now go through the
-  shared helpers, so they cannot drift again.
+  wrapper and are unchanged on the wire. `GET /admin/traces` hand-rolled the
+  pagination envelope and keeps its shape, but **not its fields** — see "The
+  trace list drops `total` unless you ask for it" below. All three now go
+  through the shared helpers, so they cannot drift again.
+
+- **The trace list drops `total` unless you ask for it, and offers a cursor.**
+  `GET /api/v1/admin/traces` returned `{data, total, limit, offset}` on every
+  page, and `total` cost a `COUNT(*)` over the whole filtered set — a full scan
+  on PostgreSQL and InnoDB, paid per page on the largest table in the schema
+  whether or not the caller read the number. **`total` is now absent from the
+  body unless the request carries `?include_total=true`**; anything doing
+  `.total` gets a missing key, and nothing errors. `data`, `limit` and `offset`
+  are exactly where they were.
+
+  A page in the default `created_at` ordering also carries `next_cursor`; pass
+  it back as `?cursor=` to fetch the next page with no `OFFSET` for the
+  database to count past, so page 500 costs what page 1 costs. Its absence is
+  how you know you have reached the end, and its value is **opaque** — the
+  encoding is not part of the contract. `cursor` is refused with a `400`
+  alongside a non-zero `offset` (two paging modes, pass one) or with `sort_by`
+  set to anything but `created_at` — `updated_at` is rewritten in place by
+  every status change, so a cursor over it would silently skip rows. `?offset=`
+  still works exactly as before for every sort column.
+
+  **This is the one list endpoint that deviates from the shared pagination
+  contract**; every other one still returns `total` unconditionally (D8).
 
 - **Bulk import returns the same four fields whether or not it is a dry run.**
   `?dry_run=true` used to answer with six fields for two facts —
@@ -378,10 +489,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   defaults and no way to notice. All 24 structs now carry
   `deny_unknown_fields`, and the error names the offending key.
 
-  This covers the **config file only**. A misspelled `ORION_*` environment
-  variable is still ignored silently: overrides are read by name rather than
-  deserialized, so there is nothing for serde to reject. Check spelling against
-  `docs/src/configuration/reference.md`.
+  The environment is now held to the same standard — see the next entry.
+- **A misspelled environment override is now a startup error.** Overrides are
+  matched by name rather than deserialized, so `ORION_SERVER__PORTT=3000` did
+  exactly nothing and the mistake surfaced as a port number in a log line.
+  Startup scans the process environment and refuses any variable that follows
+  the override grammar without being one, naming every offender and the nearest
+  real key in a single message —
+  `ORION_SERVER__PORTT (did you mean ORION_SERVER__PORT?)`. The allowlist is
+  derived by running the overrides themselves, so it cannot drift from the
+  code.
+
+  **The grammar is what is checked, not the prefix.** An override is `ORION_`
+  plus the config field path with `__` between levels, so a name without a
+  `__` cannot be a misspelling of a setting and is ignored. That is
+  deliberate: `ORION_` is not Orion's to claim. Kubernetes injects
+  `ORION_SERVICE_HOST`, `ORION_PORT` and friends into every pod whose namespace
+  holds a Service called `orion` unless the PodSpec sets
+  `enableServiceLinks: false`, and `orion-cli` reads `ORION_SERVER_URL` and
+  `ORION_API_KEY`. The cost is that a setting typed with a single underscore
+  (`ORION_SERVER_PORT`) is indistinguishable from a service link and is still
+  ignored. `ORION_ENVIRONMENT` is the one setting with no separator of its own
+  and is checked by proximity instead.
+
+  Three things stay accepted: retired names, which keep their own more specific
+  "renamed to X" error; names the config file references through `${VAR}`
+  substitution; and the reserved `ORION_SECRET_*` namespace, which Orion never
+  interprets — use it for `env://` connector secrets and any other
+  operator-owned value that must live under `ORION_`, since connectors live in
+  the database and cannot be enumerated while the config is loading. Run
+  `env | grep -oE '^ORION_[A-Z0-9_]+' | grep '__'` against your deployment and
+  check each name against `docs/src/configuration/reference.md` (C4d).
+
+  Relatedly: **`ORION_ADMIN_AUTH__API_KEY` never existed.** The deployability
+  page documented the singular name; the override is
+  `ORION_ADMIN_AUTH__API_KEYS`. Anyone who copied it enabled admin auth with no
+  keys loaded. The page is fixed, and the singular name is now refused at
+  startup instead of ignored.
+- **A production cluster may no longer migrate at boot.**
+  `cluster.enabled = true` with `storage.auto_migrate = true` used to warn —
+  from a log line emitted *after* the migration it warns about, so the
+  guardrail fired after the race it existed to prevent. With `environment`
+  starting `prod` it is now a config error raised during validation, before
+  anything opens a connection, so `orion-server validate-config` catches it at
+  review time. Set `storage.auto_migrate = false` and run `orion-server
+  migrate` as a deploy step — the Helm chart already ships a
+  pre-install/pre-upgrade Job and `docker-compose.ha.yml` a one-shot `migrate`
+  service, so both reference topologies are already in the safe shape.
+  Single-node installs are untouched (cluster mode is off by default, and
+  migrating at boot is what makes the single binary self-installing), and
+  non-production clusters keep the warning, which is what lets the chart's
+  throwaway `devStack` boot without a migrate step (C7).
 - **One output-field name across every function: `output`.** `http_call` and
   `channel_call` called their destination path `response_path` while the other
   eight handlers called it `output` — two names for one concept, and the
@@ -397,7 +555,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The differing defaults are deliberate and unchanged in this release.
 - **Every metric is renamed with an `orion_` prefix** — `messages_total` is now
-  `orion_messages_total`, and so on for all 33 families. The bare names were
+  `orion_messages_total`, and so on for the whole set bar one the pass missed,
+  which O14 below finishes. The bare names were
   generic enough to collide in a shared registry (`errors_total`,
   `active_workflows`, `db_pool_size`). **Update dashboards and alert rules
   before upgrading.**
@@ -410,6 +569,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **In cluster mode every metric carries an `instance` label** identifying the
   replica. Recording rules that aggregate without `by`/`without` may need
   updating.
+- **Three more metric families changed name or labels — rewrite these
+  selectors before upgrading.** The failure mode is the silent one: PromQL
+  returns an empty result for a name or label that does not exist, so a panel
+  renders blank and an alert built on it **stops firing** instead of erroring.
+
+  | Before | After |
+  |---|---|
+  | `orion_channel_executions_total{channel}` | *removed* — use `sum by (channel) (orion_messages_total)` |
+  | `orion_errors_total{type="…"}` | `orion_errors_total{reason="…"}` |
+  | `kafka_consumer_lag{topic, partition}` | `orion_kafka_consumer_lag_messages{topic, partition}` |
+
+  `orion_channel_executions_total` was incremented immediately next to the
+  `status="ok"` arm of `orion_messages_total`, so it was that counter minus the
+  label that says how the message ended — strictly less information under a
+  second name — and it was never called from the Kafka ingest or DLQ paths, so
+  it undercounted on any deployment using them. The replacement is a
+  **superset**, not an identity. `type` was the only error-classification label
+  not named `reason`; its *values* are unchanged. `kafka_consumer_lag` was the one family carrying neither the
+  `orion_` prefix — so it could collide with any other exporter's gauge of that
+  name in a shared registry, the exact collision the convention exists to
+  prevent — nor a unit; its labels are unchanged.
+
+  A new drift guard parses every `counter!` / `gauge!` / `histogram!`
+  invocation in `src/metrics/mod.rs` and asserts the observability page lists
+  exactly those names with exactly those labels, and that every name carries
+  the prefix. The page was documenting fewer than half of them and still
+  carried the pre-1.0 `client` label on `orion_rate_limit_rejections_total`; it
+  now covers all 38 (O14).
+- **`/metrics` is registered only when metrics are collected.**
+  `metrics.enabled = false` used to answer `200` with an empty body rendered
+  from an orphan recorder, so a deployment with metrics switched off was
+  indistinguishable from a working scrape target that happened to have no
+  series. The path now `404`s like any other unknown route — including when
+  `admin_auth.enabled = true`, where an unregistered path falls through to the
+  404 fallback rather than answering `401`, matching the `/docs` gate (S17). If
+  a scrape job goes red on upgrade, that is the misconfiguration becoming
+  visible: set `metrics.enabled = true`, or point the job at the new
+  `metrics.bind_addr` listener. Setting `bind_addr` also removes `/metrics`
+  from the main listener — it is a move, not a copy (O12).
 - **Plaintext `admin_auth.api_keys` entries must be at least 32 characters.**
   Previously `api_keys = ["a"]` was a valid production credential. Shorter keys
   are a hard config error when `environment` starts with `prod`, and a warning
@@ -461,6 +659,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `query.max_skip` (default `10000`) rejects — never clamps — a larger offset
   on all three. Raise it (or `ORION_QUERY__MAX_SKIP`) if you genuinely page
   deeper (W12).
+- **An `include` selection must state a `sort`, and its page is bounded per
+  parent.** The child query emitted no `LIMIT` and no `ORDER BY`: the handler
+  fetched every child of every parent on the page and truncated in memory, so
+  1000 parents × 10 000 children materialised ten million rows to return five
+  apiece — and with nothing ordering them, `include.limit` returned an
+  *arbitrary* subset that could differ run to run. The per-parent page is now
+  cut in SQL with `ROW_NUMBER() OVER (PARTITION BY <fk> ORDER BY <sort>)`, so
+  the envelope has to name an order key, and `include.limit` follows the
+  envelope's own page policy applied **per parent**: absent means
+  `query.default_limit` (100), and a value above `query.max_limit` (1000) is
+  rejected rather than clamped. Hydration is bounded by `parents × limit`.
+
+  **Stored workflows using `include` without a `sort` fail at request time** —
+  activation does not validate the dialect envelope, so this surfaces on live
+  traffic, not on deploy. Add a `sort` to every selection
+  (`"sort": [{"id": "asc"}]` is the usual choice); it may name a column
+  `fields` does not, because it is projected into the windowed sub-select for
+  the outer `ORDER BY` and then stripped, so nested children still carry
+  exactly the requested `fields`. The requirement is the SQL planner's, not the
+  envelope parser's: MongoDB and Elasticsearch cannot answer an `include` at
+  all, so a doc-store caller still gets `FeatureUnsupportedByTarget` — the
+  error that says `include` is SQL-only — rather than being asked for a sort
+  key that would not have helped (F27).
+- **Null ordering is inverted on SQL and Elasticsearch: a null now sorts as the
+  smallest value** — nulls first on `asc`, last on `desc`. SQL emulated "nulls
+  last on `asc`" (with an `IS NULL` prefix sort key on MySQL) and Elasticsearch
+  set `"missing": "_last"`, while MongoDB's `find` cannot express that rule at
+  all — so the same envelope paged differently on Mongo, silently, against a
+  documented promise of deterministic null ordering across backends. The shared
+  rule is now the one every backend states natively, so the other four move to
+  meet Mongo and MySQL's emulated prefix sort key is gone. Nothing errors: a
+  page ordered by a nullable column simply comes back the other way round. If
+  the position of nulls matters, filter them out
+  (`{"!=": [{"field": "col"}, null]}`) or sort on a non-nullable column
+  first (W8).
+- **MongoDB no longer maps a logical `id` onto `_id` implicitly.** Any physical
+  name equal to `id` — in filters, projections, sorts, inserted documents,
+  `set` clauses and `on_conflict` targets — was silently rewritten to `_id`, so
+  a schema deliberately mapping a key onto `id` meant `_id`, and a collection
+  carrying a genuine non-key `id` field was unqueryable. The Elasticsearch
+  renderer two files away documented the opposite rule, so one dialect had two
+  contradictory answers to "what is `id`?". Both document stores now pass names
+  through exactly as the schema resolved them. **A Mongo filter on `id` no
+  longer finds documents written before the upgrade**, whose key is in `_id`;
+  declare the rename — `{"columns": {"id": {"name": "_id"}}}` — which is the
+  declaration Elasticsearch already required. Without it, `id` is an ordinary
+  field on every backend (W10).
+- **A bulk `data_write` that applied only some of its items no longer aborts
+  the workflow, and every result carries a `status`.** One row count covered
+  three genuinely different failure models: SQL is atomic, MongoDB
+  `insert_many` is ordered so a mid-array failure commits the prefix and never
+  attempts the rest, and Elasticsearch `_bulk` applies each action
+  independently so any subset can land. Both doc stores surfaced one opaque
+  error over half-written state — ES returned a single `first_error` and
+  discarded `items`, Mongo's error carried no index — and failed the call, so
+  the applied documents stayed in place, unnamed.
+
+  Both now return a per-item outcome array carrying the caller's own `values`
+  indices, distinguishing applied, rejected and never-attempted items. A call
+  that applied some but not all of them is `"status": "partial"` and reports
+  audit status **207** rather than aborting, so the applied prefix is named
+  instead of lost; a bulk where nothing landed stays a hard error. The SQL
+  write now runs inside an explicit transaction, making its all-or-nothing
+  guarantee a property of the handler rather than of the renderer's shape.
+
+  **Two things to do.** Anything asserting on the exact result object sees one
+  extra key — `status` is `"ok"` on every non-partial write, SQL included.
+  And a workflow that relied on a failed bulk erroring to halt the pipeline
+  must now branch on `status` and compensate; the `items` array names exactly
+  which indices to retry or roll back (F28).
 - **REST route matching is byte-exact and percent-decodes path parameters
   exactly once.** Static segments matched case-insensitively, and the data
   plane matched a path axum had already percent-decoded — so `%2F` acted as a
@@ -488,6 +756,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   difference. The old key is accepted as a deserialization alias for one
   release, so stored configs keep working; rename it the next time you edit the
   channel (N9).
+- **A channel's ingress guards apply on every transport, not the subset each
+  one happened to implement.** Kafka — the highest-volume path — applied no
+  rate limit, no deduplication and no backpressure, so `max_concurrent_per_node`
+  bounded every path except the one that needed it and an at-least-once
+  redelivery ran the workflow twice; `channel_call` applied no rate limit; and
+  a channel's `timeout_ms` was honoured on two paths of four, so the same
+  channel timed out at its configured value over HTTP, at
+  `kafka.processing_timeout_ms` over Kafka, and at
+  `trace_queue.processing_timeout_ms` over `/async`. One `GuardSet`
+  per transport, applied by one `apply_guards`, now decides which guards run,
+  so the remaining exclusions — no origin allow-list off HTTP, no dedup on
+  `channel_call`, response cache on synchronous HTTP only — are data carrying a
+  reason rather than comments spread over four call sites.
+
+  Four things to check before upgrading. **Kafka rate limit and backpressure:**
+  a refused record is *not* dead-lettered — the offset is left uncommitted and
+  the consumer's existing capped retry backoff throttles the topic, so expect
+  consumer lag rather than errors, counted as
+  `orion_errors_total{reason="kafka_guard_deferred"}`. Size
+  `requests_per_second` / `max_concurrent_per_node` against the topic's real
+  throughput first. **Kafka deduplication:** the idempotency key is the record
+  header named by `deduplication.header`, or, absent that, the **record key** —
+  which is usually a partition key, so if yours identifies an *entity* rather
+  than an *event*, every record after the first inside `window_secs` is
+  suppressed (`orion_messages_total{status="duplicate"}`). Set the header on
+  the producer, or drop `deduplication` from channels fed by such a topic.
+  **`timeout_ms` on Kafka and `/async` is clamped** to
+  `kafka.processing_timeout_ms` and `trace_queue.processing_timeout_ms`
+  respectively: those are ceilings, not defaults, because a Kafka dispatch
+  blocks the consumer's poll loop and an `/async` dispatch occupies one of a
+  fixed number of queue workers. A channel may shorten its deadline anywhere
+  and lengthen it only where nothing shared depends on it — raise the transport
+  setting if a channel genuinely needs longer. **`channel_call` now spends the
+  target channel's rate-limit budget** (bucket key: the calling channel, unless
+  `key_logic` says otherwise), so a fan-out calling one channel N times per
+  request needs headroom for N.
+
+  A ✅ in the rate-limit row means *the same limiter is consulted*, not that the
+  four ingresses share one bucket: the key defaults to whatever caller identity
+  the transport has — client IP over HTTP, topic on Kafka, calling channel for
+  `channel_call` — so only a `key_logic` returning a transport-independent
+  value makes it one shared throughput cap (N16).
+- **A channel's `rate_limit` applies whether or not the platform limiter is
+  on.** It was enforced inside the rate-limit middleware, which pulls
+  `AppState` and re-resolves the target channel from the URI — neither of which
+  a Kafka record or an in-process call has, and which is also why the limit
+  silently did nothing unless `[rate_limit] enabled` happened to be true. The
+  limiter moved into the channel guards, where every transport runs it; the
+  middleware keeps only the platform budget, and the data plane stops matching
+  the route table twice per request. Two consequences: **if you relied on
+  `[rate_limit] enabled = false` to disable all throttling, remove the
+  `rate_limit` blocks from the channels too**, and a data request is now
+  metered twice — once against `data_rps`/`default_rps`, once against its
+  channel's own limit — so a channel whose `requests_per_second` exceeds the
+  platform budget is capped by the platform budget as well (S15).
+- **`config.cors.allowed_origins` on a channel is now `origin_allow_list`.** It
+  set no `Access-Control-Allow-Origin` and never saw a preflight — the platform
+  CORS layer short-circuits every `OPTIONS` before a channel is resolved — so
+  the list could only ever narrow the platform policy, never authorize an
+  origin, and a channel naming an origin the server config omitted stayed
+  unreachable from it with nothing to say so. The control is real and worth
+  keeping; only the name was a lie. The key is flattened as well as renamed —
+  `{"cors": {"allowed_origins": [...]}}` becomes
+  `{"origin_allow_list": [...]}` — and the old spelling is still parsed, so
+  stored channels keep their check and no migration is required. If per-channel
+  origins are not taking effect in a browser, set `[cors] allowed_origins` to
+  the union of what your channels accept and narrow from there (N24).
+- **`CacheBackend::check_and_insert` is gone,** replaced by
+  `claim_dedup_key(key, owner, window_secs) -> Option<holder>` and
+  `remove(key)`. A bare "is this key new?" boolean cannot tell a second
+  delivery from a redelivery of the same one, and treating the latter as a
+  duplicate committed Kafka records that had never run. Only relevant if you
+  implement the trait out of tree.
 - **Async trace results are never sampled away.** `trace_storage.sample_rate`
   on the async path dropped the *result* while the pending/running/completed
   status rows were still written — the caller polled a `completed` trace with
@@ -525,6 +866,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   masked). Under `toml` and `json` the validity note moves to stderr so stdout
   stays machine-parseable; `--format summary` keeps it on stdout. Exit codes are
   unchanged — `validate-config || exit 1` needs no edit (O15).
+- **Five OpenAPI response schemas are renamed.** Only the last one's body
+  changed; for the other four the JSON field sets are identical, so only
+  clients generated from the spec, which take their type names from component
+  names, are affected. Regenerate and rename the referenced types.
+
+  | Before | After |
+  |---|---|
+  | `Connector` | `ConnectorResponse` |
+  | `AuditLogEntry` | `AuditLogEntryResponse` |
+  | `TraceDlqEntry` | `TraceDlqEntryResponse` |
+  | `PaginatedEnvelope_TraceDlqEntry` | `PaginatedEnvelope_TraceDlqSummaryResponse` |
+  | `PaginatedEnvelope_TraceListItem` | `TracePageEnvelope` |
+
+  The trace-list envelope is the exception: it was renamed because its shape
+  changed rather than its row type — `total` is now conditional and
+  `next_cursor` is new (see the trace-pagination entry above).
+
+  The generic envelope names follow (`DataEnvelope_Connector` →
+  `DataEnvelope_ConnectorResponse`, and so on). The names now match the
+  `WorkflowResponse` / `ChannelResponse` convention already in use and say what
+  they are: the DTO the endpoint returns, not the storage row it is built from
+  — which those rows can no longer be, since they no longer derive `Serialize`
+  at all (D28).
 
 ### Added
 
@@ -585,9 +949,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that information existed only in `--version`, one boot log line, and the
   admin-gated `/health` body, none of which a scrape can join against.
 - **`orion_admin_auth_failures_total{reason}`** — rejected admin credentials,
-  split out from the shared `errors_total{type="auth_failure"}` so credential
+  split out from the shared `orion_errors_total{reason="auth_failure"}` so credential
   guessing can be alerted on without also matching `panic`, `dedup_backend`
   and a dozen other unrelated call sites.
+
+- **`metrics.bind_addr`** — an optional dedicated listener serving only
+  `GET /metrics`. The endpoint lived only on the main listener, so with
+  `admin_auth.enabled = true` every Prometheus scraper had to hold an admin API
+  key — a credential that can also rewrite workflows and read trace payloads,
+  for an endpoint that needs neither. The second listener is plain HTTP
+  (`server.tls` governs the main one only) and **unauthenticated**: the address
+  is the access control, so point it at a loopback interface, a pod IP or a
+  private Compose network. Startup warns if it is not loopback, refuses if it
+  collides with `server.host`/`server.port`, and binds it before the main
+  server starts — a clash or a permission problem is a startup failure, not a
+  silently missing scrape target. It joins the graceful-shutdown path, so the
+  last scrape of a draining node still succeeds. Requires
+  `metrics.enabled = true`; set alone it warns and raises no listener. Setting
+  it removes `/metrics` from the main listener, so update the scrape config in
+  the same change (O12).
+
+- **`audit.max_pending`** (default `1000`) and **`audit.drain_timeout_secs`**
+  (default `5`) — the audit write moved from a detached task onto a bounded
+  queue drained at shutdown, so a mutation accepted moments before `SIGTERM` is
+  still recorded. Both are refused at `0`. Raise `max_pending` when a bursty
+  admin plane (large `/import` batches) overruns the writer, and
+  `drain_timeout_secs` when shutdown reports abandoned rows on a slow database.
+  Anything not recorded is counted in
+  `orion_audit_events_dropped_total{reason}` (`queue_full`, `write_failed`,
+  `drain_timeout`, `writer_stopped`) and shown live by
+  `orion_audit_queue_depth` (O7).
+
+- **`storage.connect_retry_secs`** (default `60`, `0` restores fail-fast) — a
+  database that was briefly unreachable at startup used to be a hard exit.
+  `.connect()` is eager on all three backends and `min_connections = 5` means
+  five live connections must exist before boot succeeds, so every replica
+  crash-looped for the duration of any PostgreSQL or MySQL failover and the
+  container restart backoff outlived the outage it was reacting to. The
+  readiness probe already keeps traffic off a pod that has not finished
+  booting, so failing fast bought nothing. The initial connect is now retried
+  with a 250 ms → 5 s exponential backoff bounded by this window, one `WARN`
+  line per attempt. **A genuinely wrong `storage.url` now takes up to ~60 s to
+  fail instead of ~3 s** — set `0` where a fast exit is the point (pre-flight
+  smoke tests, CI health gates, connectivity-checking init containers). Two
+  things stay fail-fast on purpose: SQLite, whose failures — bad path, bad
+  permissions, corrupt file — do not heal on their own, and the
+  pending-migration check under `auto_migrate = false`, which is about schema
+  state rather than reachability (D14).
+
+- **Per-operation gates on every connector type, not just `db` and `es`.**
+  A cache connector could not be made read-only, a Kafka connector could not be
+  made publish-proof, and an HTTP connector — the one handler that can mutate
+  an upstream nobody else in the deployment controls — had no method
+  allow-list at all. Each type now carries the gates its own operations need:
+  `operations: { read, write }` on `cache`, `operations: { publish }` on
+  `kafka`, and `operations: { methods: ["GET"] }` on `http`, an allow-list that
+  is exhaustive once non-empty and makes a connector read-only regardless of
+  what any workflow asks for. Everything defaults to allowed, so no stored
+  connector changes behaviour, and each gate is enforced by the handler that
+  performs the operation with the same validation error the `db`/`es` gates
+  produce. A method the allow-list names is checked against the methods
+  `http_call` can issue when the connector is saved, so a typo is a `400`
+  rather than a connector that refuses every call at request time; so is a gate
+  key the type does not have. A `cache` connector's `write` gate covers every
+  write through it, including a channel dedup store or response cache backed by
+  it — which is a channel load failure, not a silent downgrade. There is
+  deliberately no cache `delete` gate: the backend trait has no delete, and a
+  gate over an operation that cannot be performed is a setting that reads as
+  meaningful and is not (F22e).
+
+- **`dialect.require_schema` and `dialect.allowed_entities` on `db` and `es`
+  connectors**, both defaulting to off. `require_schema` refuses a call that
+  declared no entities or asked for `"unmapped": "identity"`, closing the
+  per-task opt-out so one forgotten key cannot reopen the connector.
+  `allowed_entities` is a physical table/collection/index allow-list matched
+  **after** schema renames — because the allow-list is the connector owner's
+  and the schema is authored per task, so a rename onto a forbidden table must
+  not step around it — covering the envelope's `source`/`target`, relation
+  targets and many-to-many junction tables. Both bound `data_query`/`data_write`
+  only: `db_read`, `db_write` and `mongo_read` name no entity and are gated by
+  `operations` alone. Unknown keys inside `dialect` are rejected rather than
+  silently leaving the guard off. Set these on connectors whose workflows you
+  do not author (F24).
+
+- **The dialect's central claim — one envelope, one answer on every backend —
+  is now executable.** Cross-backend coverage was a single CRUD round-trip
+  exercising `>`, `==`, one sort and one projection, and the per-backend unit
+  tests are goldens that assert *shape*, never agreement; every silent
+  divergence in this release was invisible to the suite by construction.
+  `tests/integration/data_parity_test.rs` is a table: one fixture dataset, 35
+  envelopes, the same ordered row set asserted on all five backends, and an
+  `expected_error` column for the capability-gated combinations. SQLite runs by
+  default; PostgreSQL/MySQL/MongoDB/Elasticsearch stay behind the container
+  gate. The parity table in the data-dialect reference is that table (W21).
+
+- **A cross-backend schema-parity test.** Nothing compared the three migration
+  sets, which is why a migration added to two of three backends stayed
+  invisible until a container test happened to touch the column — the only
+  introspection anywhere checked three widened columns on PostgreSQL.
+  `cargo test --test schema_parity -- --ignored` migrates SQLite, PostgreSQL
+  and MySQL from scratch and asserts the three agree on every table, every
+  column's normalised type and nullability, every `idx_*` index **with its
+  ordered column list**, and the columns each view exposes. The normaliser is
+  deliberately loose — `varchar(255)` and `text` are one type, so are
+  `datetime` and `timestamp`, and SQLite's width-free `integer` matches any
+  declared width — but an int4-vs-int8 mismatch between two backends that both
+  declare widths still fails, which is the shape of the 0.3.0 incident. Seven
+  objects are allow-listed by name with a written reason. Only the SQLite half
+  runs without Docker; the cross-backend comparison is `#[ignore]`d and wired
+  into CI, so every failure names the table, the column and both types (D10).
 
 ### Fixed
 
@@ -827,7 +1297,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partitions, records revoked partitions in shared state the message loop
   checks before working a message and again before committing it (abandoning it
   uncommitted for its new owner), and surfaces async commit failures through
-  `commit_callback` with an `orion_errors_total{type="kafka_commit"}` count
+  `commit_callback` with an `orion_errors_total{reason="kafka_commit"}` count
   instead of silence (K8).
 
 - **A failing Kafka message no longer retries its consumer out of the group.**
@@ -841,7 +1311,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — neither committed nor dropped, at-least-once intact — rebalance callbacks
   fire, and group membership is kept. Head-of-line blocking on a poison message
   is unchanged: enabling `[kafka.dlq]` remains the fix. Each expiry counts
-  `orion_errors_total{type="kafka_retry_budget_exhausted"}` alongside the
+  `orion_errors_total{reason="kafka_retry_budget_exhausted"}` alongside the
   existing `kafka_retry` counter (K8).
 
 - `default_resolvers()` is built once per connector reload instead of once per
@@ -877,6 +1347,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   recursion depth and cycle guards are now covered by tests.
 - TTL stores and circuit-breaker cooldowns use a monotonic, pausable clock, so
   a wall-clock step no longer extends or shortens either.
+
+- **`include` grouping compared join keys by their JSON text, so a key column
+  typed differently on the two sides produced silently empty child arrays.** A
+  parent key read back as `"7"` from a `TEXT` column never matched a child
+  foreign key read back as `7` from a `BIGINT` one — the parents came back with
+  `[]`, no error and no warning anywhere. Grouping now goes through a typed key
+  that normalises integral values however the driver rendered them (`7`, `7.0`,
+  `"7"`), while `"007"` and `" 7"` keep their own identity (W14).
+
+- **Kafka deduplication no longer destroys a record that needs a retry.** The
+  idempotency key is claimed before the workflow runs and settled by the commit
+  decision. A redelivery of an offset that was never committed presents the
+  record's own coordinates, is recognised as the same delivery, and runs; only
+  a delivery arriving after the key was settled is skipped. A backpressure
+  refusal releases the key it claimed, and only a deterministic refusal —
+  `validation_logic`, or a `rate_limit.key_logic` that cannot be evaluated — is
+  dead-lettered (N16).
+
+- **A per-channel rate limit refused by `channel_call` reaches the caller as
+  its own `429`/`503`** instead of a generic `500 ENGINE_ERROR`. Clients
+  matching on `ENGINE_ERROR` for these conditions need updating (S15).
+
+- **`rate_limit.trusted_proxies` now applies with `rate_limit.enabled =
+  false`.** It was reachable only through the platform limiter's state, which
+  is absent in exactly the configuration per-channel limits exist for — so
+  behind any proxy every client keyed on the proxy's address and shared one
+  bucket. It is read from config now, so the per-channel limit, the audit
+  trail's `details.client_ip` and the failed-auth backoff all resolve the
+  caller honestly on a proxied deployment that has rate limiting off (the
+  default). Previously the last two recorded the load balancer's address
+  (S15, O7).
+
+- **Every whitelisted trace sort column is now indexed, and the index migration
+  does not block writes.** `sort_by=updated_at` had been in the sort whitelist
+  since 0.1 with no index behind it on any backend, so each page full-scanned
+  and filesorted the hottest table in the schema. New migrations add
+  `idx_traces_updated_at` and replace `idx_traces_created_at` with
+  `(created_at, id)` — a strict superset that also serves the retention
+  delete's `created_at < cutoff` and turns the keyset predicate into one index
+  range scan. On PostgreSQL the work is done `CONCURRENTLY` across three
+  single-statement migrations — `010` and `011` build, `012` drops the
+  superseded index: a plain `CREATE INDEX` takes a
+  `SHARE` lock that blocks every insert and update for the length of the build,
+  which on a large `traces` table is a write outage. MySQL states
+  `ALGORITHM=INPLACE LOCK=NONE` so an engine that cannot build online fails the
+  migration rather than locking the table silently. SQLite has no online build
+  and needs none — it is single-node and the migration runs before the listener
+  binds (D8).
+
+- **A channel broken in two ways at once could panic the reload's log line.**
+  Such a channel contributes two entries to the issue list and one to the
+  quarantine map, so the "some channels failed to load" message's
+  `channels.len() - issues.len()` could underflow. Both counts are now taken
+  from the published maps (N17).
+
+- **`GET /api/v1/admin/trace-dlq` advertised `payload_json` and `metadata_json`
+  in its OpenAPI schema and has never returned either** — it selects a
+  payload-free projection so one request cannot dump every failed request's
+  body, but the published schema claimed both fields because the row struct
+  that *did* have them was also the wire type. The listing's response body is
+  unchanged; the document now describes it, via a `TraceDlqSummaryResponse`
+  schema distinct from the single-entry `TraceDlqEntryResponse`. Fetch a single
+  entry for the payload (D28).
+
+- **A driver error on the audit-log listing's data read reported
+  `INTERNAL_ERROR` while the count half of the same query reported
+  `STORAGE_ERROR`.** Both now report `STORAGE_ERROR`, matching every other list
+  endpoint. Still a 500 (D18).
 
 ### Changed
 
@@ -943,6 +1481,115 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaving them to the `data_write` handler — the function documented as doing
   "the whole backend-neutral transformation" was unsafe to call alone.
   Handler-visible behaviour is identical (W15).
+
+- **The channel registry rebuilds only what changed, and publishes one
+  snapshot.** `ChannelRegistry::reload` re-deserialised every channel's
+  `config_json`, recompiled two datalogic programs, re-resolved two cache
+  backends and cloned the `Channel` row twice — for every channel, on every
+  admin mutation, and in cluster mode on every epoch tick on every node — then
+  rebuilt the whole route table, whose conflict scan is quadratic in
+  route-bearing channels. So the price of a reload scaled with the number of
+  channels rather than the number of changed ones. A channel whose stored row
+  (`channel_id`, `version`, `updated_at`) and dependency fingerprint are
+  unchanged now keeps the exact runtime configuration it already had, and an
+  unchanged serviceable set keeps the built route table. The saving reaches
+  remote nodes because `ConnectorRegistry`'s config generation now advances
+  only when a load actually changed the connector set: the epoch resync reloads
+  connectors on every tick whatever the mutation touched, so a per-load token
+  would have invalidated every channel on every node but the mutating one.
+  Rate limiters and backpressure semaphores continue to carry their state
+  across reloads.
+
+  `by_name`, the route table and the quarantine map were also three locks
+  swapped one after another, so a request landing mid-reload could pair a new
+  serving map with an old route table — and a channel that reload had just
+  quarantined read as neither serving nor quarantined, which the data plane
+  answers `404 unknown channel` instead of `503`. They are one immutable
+  snapshot published in a single atomic store, so every read sees one
+  self-consistent generation and the registry's five read paths are wait-free.
+
+  **Two log lines change cadence as a result:** `RouteTable`'s conflict warning
+  is not re-emitted while the serviceable set is unchanged, and a channel
+  running on the in-memory fallback because its cache connector is unavailable
+  does not re-log that on every reload. Both are still reported on the reload
+  that introduces or changes the condition, and both remain visible in the
+  state they describe. Alert on a first occurrence or on state, not on
+  recurrence (N17).
+
+- **The set of quarantined channels has one representation.**
+  `ChannelRegistry::reload` returned a list of load issues that duplicated the
+  map it had just written — the boot path read the list, the engine-reload path
+  discarded it, and `/health` read the map, so two sources could disagree about
+  a channel broken in both the engine build and its own config. `reload` now
+  returns nothing and every caller reads the map (N21).
+
+- **Text-match case sensitivity is stated per backend instead of hidden in a
+  code comment.** `starts_with` / `ends_with` / substring `in` behave five
+  different ways — PostgreSQL `LIKE` is case-sensitive, SQLite's folds ASCII
+  only, MySQL follows the column's collation, MongoDB `$regex` is
+  case-sensitive, and Elasticsearch depends on the field's analyzer — and the
+  only record of any of it was a parenthetical about MySQL in the SQL renderer.
+  It is a property of the stored data rather than of the query, and no
+  query-time flag can make an analyzed Elasticsearch `text` field
+  case-sensitive again, so the parity table now carries the per-backend truth
+  and each renderer points at it rather than half-normalising. No code
+  behaviour changed (W13).
+
+- **A trace's `access_token_hash` — a credential verifier — rode on a struct
+  that was `Serialize + ToSchema`, kept off the wire by one `skip_serializing`
+  attribute, and the trace listing read it out of the database for every row on
+  every page via `SELECT *`.** Row structs no longer derive `Serialize` or
+  `ToSchema` at all, so "does this column leave the process?" is a property of
+  the type rather than of an attribute someone remembered; the trace listing
+  now names its eleven columns and decodes into a narrower row, leaving the
+  token hash and all three payload columns in the database (D27).
+
+- **`models.rs` mixed row structs, response DTOs, domain enums, wire constants,
+  a handler helper and 213 lines of tests, while two more row structs lived in
+  the repositories that read them — so there was no answer to where a new type
+  belongs.** Split into `models/{rows,dto,enums}.rs`, one rule per file, with
+  `TraceDlqSummary` moved in alongside the other rows and `StatusAction` moved
+  out to the admin route module that is its only caller. The rule "a row struct
+  never derives `Serialize` or `ToSchema`" is compiler- and test-enforced: a
+  scan of `rows.rs`'s own derives, plus an OpenAPI check that rejects every
+  row-struct name in the published document instead of exempting three of them.
+  Connectors, audit logs and the two DLQ reads now serve `*Response` DTOs;
+  field sets are unchanged and pinned by tests (D28).
+
+- **`versioned::paginate` served two of seven list paths; traces, the trace
+  DLQ, audit logs, connectors and version history each re-implemented
+  count-then-page, so every pagination fix had to land six more times than it
+  should have.** It is now `helpers::paginate`, taking a `Page` with an
+  explicit `Projection` for the two lists that read a deliberately narrow
+  column set. Six call it directly; the trace list composes the same halves
+  (`page_select` + `count_where`) because its `total` is conditional and it
+  appends a cursor — it shares the `Page` and the contract, not the call. A
+  contract test asserts one paging
+  behaviour — `total` ignores `limit`/`offset`, `limit` clamps to `[1, 1000]`,
+  `offset` skips, an absent `limit` means 50 — against every one of them (D18).
+
+- **The three-backend `FromRow` bound was written out in eight signatures
+  across `storage/mod.rs` and `helpers.rs`, though the collapsing trait already
+  existed** — `pub(crate)`, and named `VersionedRow` after the one module that
+  did not need it. Renamed `DbRow`, moved next to the `DbPool` fetches that
+  define it, and applied to all eight (D19).
+
+- **If you embed Orion as a crate rather than running the binary,** four
+  signatures moved with the above: `storage::models::{Workflow, Channel,
+  Connector, Trace, TraceDlqEntry, TraceDlqSummary, AuditLogEntry}` no longer
+  implement `Serialize` (nor `ToSchema` for `Connector`, `TraceDlqEntry` and
+  `AuditLogEntry`, the three that had it) — convert to the
+  matching type in `storage::models::dto` first, and for connectors use
+  `connector::mask_connector`, now the only constructor of `ConnectorResponse`
+  and the one that masks secrets on the way;
+  `TraceRepository::list_paginated` returns `TracePage` (with
+  `total: Option<i64>` and `next_cursor`) rather than `PaginatedResult<Trace>`,
+  so custom implementations and test doubles need the new return type;
+  `storage::models::TraceDlqSummary` replaces
+  `storage::repositories::trace_dlq::TraceDlqSummary`; and
+  `storage::repositories::versioned::{paginate, VersionedRow}` are gone — use
+  `storage::repositories::helpers::paginate` with a `Page`, and
+  `storage::DbRow` for the row bound (D8, D18, D19, D27, D28).
 
 ### Removed
 

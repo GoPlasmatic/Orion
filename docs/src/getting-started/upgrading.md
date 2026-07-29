@@ -18,20 +18,24 @@ Work through this list. Each row links to the section with the detail.
 
 | # | Check | Applies to you if |
 |---|-------|-------------------|
-| 1 | [Set `rate_limit.trusted_proxies`](#1-rate-limiting-behind-a-proxy-or-load-balancer) | `rate_limit.enabled = true` **and** you run behind a proxy, LB, or ingress |
-| 2 | [Update dashboards and alerts](#2-metrics-dashboards-and-alerts-will-break) | You scrape `/metrics` |
+| 1 | [Set `rate_limit.trusted_proxies`](#1-rate-limiting-behind-a-proxy-or-load-balancer) | You run behind a proxy, LB, or ingress — **whether or not** `rate_limit.enabled` is set, if any channel declares a `rate_limit` block |
+| 2 | [Update dashboards and alerts](#2-metrics-dashboards-and-alerts-will-break) | You scrape `/metrics` — three families changed name or labels, and `/metrics` now 404s when metrics are off |
 | 3 | [Audit stored channel configs](#3-channels-with-broken-stored-config-now-refuse-to-load) | Always — this one can stop the server from booting |
 | 4 | [Enable the Kafka DLQ](#4-kafka-delivery-is-now-at-least-once) | `kafka.enabled = true` |
-| 5 | [Supply admin API keys](#5-deployment-defaults-helm-and-ha-compose-now-require-admin-keys) | You deploy via the Helm chart or `docker-compose.ha.yml` |
-| 6 | [Back up before migrating](#6-database-migrations) | You are on PostgreSQL |
-| 7 | [Pass `trace_token` when polling async traces](#polling-an-async-trace-now-requires-the-token-returned-with-the-202) | You submit to `/async` and poll `GET /traces/{id}` without an admin key |
-| 8 | [Rename the renamed config keys](#7-config-keys-four-sections-renamed) | You set `[queue]`, `[channels]`, `[tracing.storage]`, or `ORION_ENV` |
-| 9 | [Delete `kafka.max_inflight`](#7-config-keys-four-sections-renamed) | You set `kafka.max_inflight` in the config file or `ORION_KAFKA__MAX_INFLIGHT` in the environment — Kafka enabled or not |
-| 10 | [Check client URL casing](#rest-routes-match-byte-exactly-and-decode-parameters-once) | You call data-plane REST routes with casing that differs from the channel's `route_pattern` |
-| 11 | [Re-check `data_query` / `data_write` envelopes](#the-data-dialect-rejects-what-it-used-to-ignore) | Any workflow uses the portable data dialect |
-| 12 | [Re-point anything scraping `/docs`](#docs-and-the-openapi-spec-are-off-in-production) | You fetch `/docs` or `/api/v1/openapi.json` and run with `environment = "production"` |
-| 13 | [`chown` existing data volumes](#the-charts-pod-defaults-are-hardened-and-the-images-are-pinned) | You upgrade a Docker or compose deployment with an existing `/app/data` mount |
-| 14 | [Review the smaller changes](#8-smaller-behaviour-changes) | Always |
+| 5 | [Size every ingress against the channel's guards](#every-ingress-applies-the-channels-rate-limit-dedup-and-backpressure) | Any channel declaring `rate_limit`, `deduplication`, `backpressure` or `timeout_ms` is reached over Kafka, `/async`, or `channel_call` — **this one silently throttles or suppresses live traffic** |
+| 6 | [Supply admin API keys](#5-deployment-defaults-helm-and-ha-compose-now-require-admin-keys) | You deploy via the Helm chart or `docker-compose.ha.yml` |
+| 7 | [Back up before migrating](#6-database-migrations) | You are on PostgreSQL |
+| 8 | [Stop migrating at boot in a production cluster](#a-production-cluster-may-not-migrate-at-boot) | `environment` starts `prod` **and** `cluster.enabled = true` **and** `storage.auto_migrate = true` — refused at startup now |
+| 9 | [Pass `trace_token` when polling async traces](#polling-an-async-trace-now-requires-the-token-returned-with-the-202) | You submit to `/async` and poll `GET /traces/{id}` without an admin key |
+| 10 | [Rename the renamed config keys](#7-config-keys-four-sections-renamed) | You set `[queue]`, `[channels]`, `[tracing.storage]`, or `ORION_ENV` |
+| 11 | [Delete `kafka.max_inflight`](#7-config-keys-four-sections-renamed) | You set `kafka.max_inflight` in the config file or `ORION_KAFKA__MAX_INFLIGHT` in the environment — Kafka enabled or not |
+| 12 | [Audit your `ORION_*` environment](#misspelled-environment-overrides-now-stop-the-boot) | You set any `ORION_*` variable containing `__` that is not on the config reference page |
+| 13 | [Check client URL casing](#rest-routes-match-byte-exactly-and-decode-parameters-once) | You call data-plane REST routes with casing that differs from the channel's `route_pattern` |
+| 14 | [Declare a `schema` on every `data_query` / `data_write`](#the-data-dialect-rejects-what-it-used-to-ignore) | Any workflow uses the portable data dialect — **this one breaks every 0.x dialect task at its first request** |
+| 15 | [Stop reading `total` from the trace list](#the-trace-list-no-longer-returns-total-by-default) | You page `GET /api/v1/admin/traces` |
+| 16 | [Re-point anything scraping `/docs`](#docs-and-the-openapi-spec-are-off-in-production) | You fetch `/docs` or `/api/v1/openapi.json` and run with `environment = "production"` |
+| 17 | [`chown` existing data volumes](#the-charts-pod-defaults-are-hardened-and-the-images-are-pinned) | You upgrade a Docker or compose deployment with an existing `/app/data` mount |
+| 18 | [Review the smaller changes](#8-smaller-behaviour-changes) | Always |
 
 **Take a database backup before upgrading.** Migrations run automatically at
 boot unless you set `storage.auto_migrate = false`.
@@ -108,6 +112,15 @@ Two things to know:
   key expression references `{"var": "client_ip"}` now receives the peer
   address under the same rules.
 
+> **It is no longer gated on `rate_limit.enabled`.** A channel's own
+> `rate_limit` block is enforced on every ingress by the channel guards, keyed
+> on the same trusted-proxy-gated client identity, whether or not the platform
+> limiter is running — and the audit trail's `details.client_ip` and the
+> failed-auth backoff read it too. If you deliberately left
+> `[rate_limit] enabled = false` and rely on per-channel limits, you still need
+> `trusted_proxies` set; otherwise every client behind the proxy keys on the
+> proxy's own address and the whole fleet shares one bucket.
+
 > **Not changed:** sticky rollout bucketing still reads forwarded headers
 > directly and does not consult `trusted_proxies`. See
 > [Sticky rollouts](#sticky-canary-rollouts-are-now-caller-stable).
@@ -134,11 +147,10 @@ cardinality. `scope` takes one of a small, bounded set of values:
 a request names a channel that is not in the channel registry, the `channel`
 label is the literal string `_unknown` (leading underscore) instead of the
 caller-supplied name — otherwise anyone could inflate the metric cardinality by
-POSTing to arbitrary paths. Three metrics are capped:
+POSTing to arbitrary paths. Two metrics are capped:
 
 - `orion_messages_total{channel, status}`
 - `orion_message_duration_seconds{channel}`
-- `orion_channel_executions_total{channel}`
 
 The cap applies to the HTTP and async-queue paths. Kafka ingest is deliberately
 exempt — its channel set comes from operator configuration and is already
@@ -179,11 +191,91 @@ there:
 | Metric | Type | Why you want it |
 |--------|------|-----------------|
 | `orion_trace_queue_rejected_total{reason}` | counter | `reason="full"` or `"memory"` — async submissions being shed with a `503`. See [Queue-full](#queue-full-now-returns-503-instead-of-hanging) |
-| `orion_trace_dlq_depth` | gauge | Backlog of failed traces. **Only refreshed by the DLQ retry loop, so it stops updating when `queue.dlq_retry_enabled = false`** — exactly the setting that lets the backlog grow |
+| `orion_trace_dlq_depth` | gauge | Backlog of failed traces. **Only refreshed by the DLQ retry loop, so it stops updating when `trace_queue.dlq_retry_enabled = false`** — exactly the setting that lets the backlog grow |
 | `orion_trace_dlq_retries_total{outcome}` | counter | `retried` / `exhausted` / `failed` |
 | `orion_trace_persistence_failures_total` | counter | The only signal that trace writes are being dropped |
 
-No metrics were renamed or removed.
+**Three metric families changed name or labels.** Rewrite these selectors
+before upgrading. The failure mode is the same silent one described above: a
+PromQL selector on a name or label that no longer exists returns an empty
+result rather than an error, so a panel renders blank and an alert built on it
+**stops firing** instead of erroring.
+
+| Before | After |
+|---|---|
+| `orion_channel_executions_total{channel}` | *removed* — use `sum by (channel) (orion_messages_total)` |
+| `orion_errors_total{type="…"}` | `orion_errors_total{reason="…"}` |
+| `kafka_consumer_lag{topic, partition}` | `orion_kafka_consumer_lag_messages{topic, partition}` |
+
+```promql
+# before
+sum by (channel) (rate(orion_channel_executions_total[5m]))
+# after — a superset, not an identity: the removed counter had two call sites,
+# both on the HTTP path, and never saw the Kafka ingest or DLQ paths
+sum by (channel) (rate(orion_messages_total[5m]))
+# ...or, for what it actually counted:
+sum by (channel) (rate(orion_messages_total{status="ok"}[5m]))
+
+# before
+sum by (type) (rate(orion_errors_total[5m]))
+# after — the label *values* are unchanged, only the key moved
+sum by (reason) (rate(orion_errors_total[5m]))
+
+# before
+max by (topic, partition) (kafka_consumer_lag)
+# after
+max by (topic, partition) (orion_kafka_consumer_lag_messages)
+```
+
+Find them — note `kafka_consumer_lag` is a substring of its own replacement, so
+check each hit rather than blanket-replacing:
+
+```bash
+grep -rn 'channel_executions_total\|errors_total{type\|by (type)\|kafka_consumer_lag' \
+  grafana/ dashboards/ prometheus/ *.rules.yml
+```
+
+**`/metrics` is no longer registered when `metrics.enabled = false`.** It used
+to answer `200` with an empty body rendered from an orphan recorder, so a
+deployment with metrics off looked like a working scrape target that simply
+never had any series. It now returns `404` with the standard error envelope —
+including when `admin_auth.enabled = true`, where an unregistered path falls
+through to the 404 fallback rather than answering `401`. If a scrape job goes
+red on upgrade, that is the misconfiguration becoming visible. Set
+`metrics.enabled = true`, or point the job at the new `metrics.bind_addr`
+listener described below.
+
+**Two new audit metrics** worth adding while you are here:
+`orion_audit_events_dropped_total{reason}` — alert on the counter existing at
+all, not on a threshold, because any non-zero value is a hole in the audit
+trail — and `orion_audit_queue_depth`. See
+[Audit log](#audit-log-new-actor-format-new-fields-two-new-settings).
+
+### Give Prometheus its own listener (optional, recommended)
+
+`/metrics` is guarded by `admin_auth` along with the rest of the admin plane,
+so until now every scraper had to hold an admin API key — a credential that can
+also rewrite workflows and read trace payloads. `metrics.bind_addr` moves the
+endpoint onto its own listener and removes it from the main one:
+
+```toml
+[metrics]
+enabled = true
+bind_addr = "127.0.0.1:9090"    # or a pod IP, or a private Compose network
+```
+
+That listener is plain HTTP (`server.tls` governs the main listener only) and
+has **no authentication** — the address is the access control, so bind it
+somewhere only your scrapers can reach. Startup logs a warning if it is not a
+loopback address, refuses to start if it overlaps `server.host`/`server.port`,
+and binds it before the main server, so a clash or a permission problem is a
+startup failure rather than a silently missing scrape target. It requires
+`metrics.enabled = true`; set alone it warns and raises no listener.
+
+It is a move, not a copy: once `bind_addr` is set the main listener returns
+`404` for `/metrics`. Update the scrape config in the same change. The listener
+joins the same graceful-shutdown path as the main one, so the last scrape of a
+node being drained still succeeds.
 
 ---
 
@@ -209,7 +301,7 @@ single-node and cluster mode.
   and updates do not reload, so you can still edit your way out.)
 - **In cluster mode**, the epoch watcher logs
   `Epoch watcher: resync failed; will retry`, increments
-  `orion_errors_total{type="epoch_watcher"}`, and stops advancing — nodes quietly
+  `orion_errors_total{reason="epoch_watcher"}`, and stops advancing — nodes quietly
   stop picking up *any* config change.
 
 Log lines to grep for:
@@ -227,7 +319,7 @@ refused to load N channel(s): <channel>: config_json does not parse: <serde erro
 ```
 
 **What to do — before you upgrade.** Only rows with `status = 'active'` are
-parsed, and only those surviving your `engine.channels.include` / `exclude`
+parsed, and only those surviving your `channel_filter.include` / `exclude`
 patterns. Start by listing exactly what the server will try to load:
 
 ```sql
@@ -287,7 +379,7 @@ simply lost. Offsets now advance only on **successful processing** or a
 decode failure, JSON parse failure, unmapped topic, empty payload, timeout,
 engine error, workflow errors) leaves the offset uncommitted and retries the
 same message in place, with backoff starting at 1s and doubling to a 60s cap.
-Each retry cycle increments `orion_errors_total{type="kafka_retry"}`.
+Each retry cycle increments `orion_errors_total{reason="kafka_retry"}`.
 
 **How you'll notice.** With `kafka.dlq.enabled = false` — which is still the
 default — a permanently-poison message **stalls the consumer indefinitely**.
@@ -306,8 +398,8 @@ topic** on that instance, not just the poison message's partition. Restarting
 does not help — the offset was never committed, so the same message is
 redelivered.
 
-Symptoms: consumer lag climbing on all partitions, `orion_errors_total{type="kafka_retry"}`
-incrementing on a ~60s cadence, `orion_errors_total{type="kafka_retry_budget_exhausted"}`
+Symptoms: consumer lag climbing on all partitions, `orion_errors_total{reason="kafka_retry"}`
+incrementing on a ~60s cadence, `orion_errors_total{reason="kafka_retry_budget_exhausted"}`
 incrementing once per budget expiry, and the same message logged repeatedly.
 
 **What to do.** Enable the dead-letter queue. This is the recommended action
@@ -339,8 +431,74 @@ does **not** help; unmapped topics take the same failure path.
 > is applied last and would override the manual-commit setting this guarantee
 > depends on.
 >
-> **`kafka.dlq.*` is unrelated to `queue.dlq_*`.** The latter is the trace DLQ
+> **`kafka.dlq.*` is unrelated to `trace_queue.dlq_*`.** The latter is the trace DLQ
 > — a database table for failed trace persistence, with its own retry loop.
+
+### Every ingress applies the channel's rate limit, dedup and backpressure
+
+**What changed.** The Kafka ingress applied only `validation_logic`. It now
+runs the same guard set as HTTP: `rate_limit`, `deduplication`, `backpressure`
+and `timeout_ms` as well. `channel_call` and `/async` were similarly partial
+and are now complete too. Audit any active channel that declares one of these
+blocks **and** is reached by any ingress other than synchronous HTTP —
+a Kafka topic, a `/async` submission, or a `channel_call` target:
+
+```sql
+SELECT name, config_json FROM current_channels
+WHERE status = 'active'
+  AND (config_json LIKE '%rate_limit%'
+    OR config_json LIKE '%deduplication%'
+    OR config_json LIKE '%backpressure%'
+    OR config_json LIKE '%timeout_ms%');
+```
+
+**How you'll notice.**
+
+- **Rate limit and backpressure throttle the topic.** A record refused because
+  the channel is over its limit or at capacity is **not** dead-lettered: the
+  offset is left uncommitted and the consumer retries in place with its
+  existing capped backoff, then rewinds the partition when the retry budget
+  expires. That backoff is the throttle. Expect consumer lag rather than
+  errors, and watch `orion_errors_total{reason="kafka_guard_deferred"}` — a
+  sustained rate means the topic is being throttled, not that records are being
+  lost. Size `requests_per_second` / `max_concurrent_per_node` against the
+  topic's real throughput before upgrading.
+- **Deduplication suppresses records.** The idempotency key is the record
+  header named by `deduplication.header`; if the record carries no such header,
+  the **record key** is used. Record keys are usually partition keys, so if
+  yours is an *entity* id (a customer, an account) rather than an *event* id,
+  every record after the first inside `window_secs` is suppressed and counted
+  as `orion_messages_total{status="duplicate"}`. Either set the header on the
+  producer, or drop `deduplication` from channels fed by such a topic. A record
+  identified as a duplicate is skipped and its offset committed — nothing is
+  dead-lettered, because nothing failed. A redelivery of an offset that was
+  never committed is recognised as the *same* delivery and runs, so
+  at-least-once is intact.
+- **`timeout_ms` is clamped, not adopted.** Kafka caps the channel value at
+  `kafka.processing_timeout_ms` and `/async` at
+  `trace_queue.processing_timeout_ms`. Those two settings are ceilings, not
+  defaults: a Kafka dispatch blocks the consumer's poll loop and an `/async`
+  dispatch occupies one of a fixed number of queue workers. A channel may
+  shorten its deadline anywhere and lengthen it only where nothing shared
+  depends on it. Previously these ingresses ignored `timeout_ms` entirely, so a
+  channel with a short one and slow background work will now time out where it
+  used to complete — raise the channel value if the HTTP deadline was only ever
+  meant to bound the synchronous path, and raise the *transport* setting rather
+  than the channel's if you need longer there.
+- **`channel_call` spends the target channel's rate-limit budget** (bucket key:
+  the calling channel, unless `key_logic` says otherwise), so a fan-out that
+  calls one channel N times per request needs headroom for N. A refused call
+  now surfaces as `429` or `503` instead of `500 ENGINE_ERROR`; clients
+  matching on `ENGINE_ERROR` for these conditions need updating. Deduplication
+  is deliberately **not** applied to `channel_call` — it would inherit the
+  originating request's idempotency key and reject the second call of a
+  legitimate fan-out.
+
+**What to do.** Nothing is required. If a Kafka channel carries a `rate_limit`
+intended as an HTTP-only control, either remove it or give it a `key_logic`
+that distinguishes the ingress: the default bucket key is the topic on Kafka
+and the client IP over HTTP, so the same limit is a per-caller rate on each
+ingress rather than one shared cap.
 
 ---
 
@@ -490,9 +648,9 @@ Migrations run at boot unless `storage.auto_migrate = false`, in which case run
 
 | Backend | New since 0.3.0 | Notes |
 |---------|-----------------|-------|
-| SQLite | `004_cluster_coordination` | Additive, fast |
-| PostgreSQL | `004_bigint_columns`, `005_active_immutability`, `006_cluster_coordination` | See below |
-| MySQL | `001` rewritten; `004`, `005` added | No 0.3.0 deployment can exist — start fresh |
+| SQLite | `004`–`008` (cluster coordination, trace access token, single-draft-on-update, DLQ/audit indexes, trace pagination indexes) | Additive; `008` is the slow one — see below |
+| PostgreSQL | `004`–`012` (bigint columns, active immutability, cluster coordination, trace access token, recreated current views, DLQ/audit indexes, and `010`–`012` for the trace pagination indexes) | See below |
+| MySQL | `001` rewritten; `004`–`010` added | No 0.3.0 deployment can exist — start fresh |
 
 **PostgreSQL: `004_bigint_columns` needs care.** It drops the
 `current_workflows` and `current_channels` views, widens `integer` columns to
@@ -508,6 +666,78 @@ two views, and sqlx will not re-run version 004 because it is already recorded.
 **Take a backup first.** To recover manually, recreate the two views using the
 `CREATE VIEW` statements at the bottom of
 `migrations/postgres/004_bigint_columns.sql`.
+
+**All backends: the trace pagination indexes are the slow part.** They add
+`idx_traces_updated_at` and `idx_traces_created_at_id`, then drop
+`idx_traces_created_at` — the composite is a strict superset for every query
+that used it, including the retention delete's `created_at < cutoff`. On a
+`traces` table with millions of rows these two `CREATE INDEX` statements
+dominate the whole 1.0 migration. Run it in a maintenance window if your
+`traces` table is large, or trim it first with `trace_queue.retention_hours`.
+
+> **PostgreSQL: `010`–`012` run outside a transaction, on purpose.** Each file
+> begins with a `-- no-transaction` marker and works `CONCURRENTLY` — `010`
+> and `011` `CREATE INDEX CONCURRENTLY`, `012` `DROP INDEX CONCURRENTLY` the
+> index they supersede — so they do **not** lock `traces` against writes
+> while the indexes build — a plain `CREATE INDEX` holds a `SHARE` lock for the
+> whole build, which on a large trace table is a write outage. Two consequences:
+>
+> - They are **three separate migration versions**, not one, because
+>   `CONCURRENTLY` also refuses the implicit transaction PostgreSQL wraps a
+>   multi-statement simple query in. `orion-server migrate --dry-run` lists all
+>   three; a failure part-way leaves the earlier ones applied and recorded,
+>   which is correct — just re-run.
+> - A `CONCURRENTLY` build that dies (connection drop, cancellation) leaves an
+>   **`INVALID` index** behind: unused by the planner, still maintained on every
+>   write. The migrations are `IF NOT EXISTS`, so a re-run skips an invalid
+>   leftover rather than repairing it. Check for one before re-running:
+>
+>   ```sql
+>   SELECT c.relname FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+>   WHERE NOT i.indisvalid AND c.relname LIKE 'idx_traces%';
+>   ```
+>
+>   Clear it with `REINDEX INDEX CONCURRENTLY <name>;` (PostgreSQL 12+) or
+>   `DROP INDEX CONCURRENTLY <name>;` and re-run the migration.
+>
+> **MySQL** states `ALGORITHM=INPLACE LOCK=NONE`, so it fails loudly rather
+> than locking the table if the engine cannot build the index online — but its
+> DDL is not transactional, and it has no `CREATE INDEX IF NOT EXISTS`, so a
+> part-way failure needs whichever of the two new indexes exists dropped before
+> the re-run. **SQLite** has no online build and needs none: it is single-node
+> and the migration runs before the listener binds.
+
+#### A production cluster may not migrate at boot
+
+This is now enforced, not advised. With `environment` starting `prod`,
+`cluster.enabled = true` together with `storage.auto_migrate = true` is a
+config error and the server refuses to start:
+
+```
+Error: Configuration error: cluster.enabled = true with storage.auto_migrate = true
+in production: every replica would migrate at boot and race the others. Set
+storage.auto_migrate = false (ORION_STORAGE__AUTO_MIGRATE=false) and run
+`orion-server migrate` as a deploy step …
+```
+
+It is raised during config validation, before anything opens a connection, so
+`orion-server validate-config` reports it before a rollout. Previously this
+pairing only warned — from a log line emitted *after* the migration it warns
+about, so the guardrail fired after the race it existed to prevent.
+
+Set `storage.auto_migrate = false` and run `orion-server migrate` as a deploy
+step. The Helm chart already ships a pre-install/pre-upgrade Job
+(`migrateJob.enabled`, on by default) and `docker-compose.ha.yml` a one-shot
+`migrate` service, so both reference topologies are already in the safe shape
+and need no change. With `auto_migrate = false`, a replica whose schema is
+behind refuses to start rather than serving against a schema it does not
+understand.
+
+**Unaffected:** single-node installs (cluster mode is off by default, and
+migrating at boot is what makes the single binary self-installing), and
+non-production clusters, which keep the warning. That exemption is what lets
+the chart's `devStack` demo run cluster mode without a migrate Job, since its
+database is created by the same release.
 
 Preview what will run before committing:
 
@@ -604,6 +834,72 @@ first.
 you had tuned `queue.trace_cleanup_interval_secs` to control *both* jobs, set
 both new keys to that value to preserve the old behaviour.
 
+### Misspelled environment overrides now stop the boot
+
+A misspelled override used to be ignored in silence — overrides are matched by
+name rather than deserialized, so `ORION_SERVER__PORTT=3000` did exactly
+nothing and you found out from a port number in a log line. It is now a startup
+error naming every offender at once and suggesting the nearest real key:
+
+```
+Error: Configuration error: these ORION_* environment variables are not Orion
+settings and would be silently ignored:
+  ORION_SERVER__PORTT (did you mean ORION_SERVER__PORT?)
+```
+
+**What is affected is narrow.** Only names carrying the `__` section separator
+are checked, plus near-misses of `ORION_ENVIRONMENT` (the one setting whose
+path has a single segment). A name without a `__` is not a setting name and is
+left alone, because `ORION_` is not Orion's to claim. So this does **not**
+affect:
+
+- Kubernetes service links. A namespace with a Service called `orion` gives
+  every pod `ORION_SERVICE_HOST`, `ORION_PORT`, `ORION_PORT_8080_TCP_ADDR` and
+  more unless the PodSpec sets `enableServiceLinks: false`. The chart now sets
+  it, but you do not need it: nothing in that block can be refused.
+- `orion-cli`'s `ORION_SERVER_URL` / `ORION_API_KEY`, even exported in the
+  shell you start the server from.
+- Compose interpolation such as `${ORION_VERSION}`, which `docker compose`
+  resolves in your shell — it never reaches the server.
+
+Before upgrading, list the `__`-carrying `ORION_*` names in your deployment
+manifests — a Deployment's `env:`/`envFrom:`, a Compose `environment:` block, a
+systemd unit, the shell you launch the binary from — and check each against
+`docs/src/configuration/reference.md`:
+
+```bash
+env | grep -oE '^ORION_[A-Z0-9_]+' | grep '__'
+```
+
+Two escape hatches for names Orion should not interpret:
+
+- Reference them from your config file with `${VAR}` — substitution reads them
+  on Orion's behalf, so they are allowed.
+- Or put them under `ORION_SECRET_*`, which is never read as configuration.
+  This is the namespace for `env://` connector secrets and for `${VAR}` inside
+  a connector `config_json`, since connectors live in the database and cannot
+  be enumerated while the config loads. Only a name that
+  *could* be a misspelled override needs moving — that is, one carrying the
+  `SECTION__KEY` separator. A connector holding
+  `"token": "env://ORION_DB__PASSWORD"` needs that variable renamed to
+  `ORION_SECRET_DB_PASSWORD` (or out of the prefix entirely) and its `env://`
+  reference updated to match; a single-underscore name like
+  `ORION_API_TOKEN` is left alone and needs no change.
+
+Everything is reported in one pass, so a single restart confirms a whole
+manifest.
+
+One caveat worth knowing: a setting typed with a *single* underscore
+(`ORION_SERVER_PORT` for `ORION_SERVER__PORT`) is byte-for-byte the shape of a
+service link, so it is ignored rather than reported. Type the double
+underscore.
+
+**If you copied `ORION_ADMIN_AUTH__API_KEY` from the deployability page,** the
+correct name is `ORION_ADMIN_AUTH__API_KEYS` (plural, comma-separated). The
+singular form was never read, so admin auth was enabled with no keys loaded.
+The page is fixed, and the singular name is now a startup error rather than a
+silent one.
+
 ---
 
 ## 8. Smaller behaviour changes
@@ -614,7 +910,8 @@ both new keys to that value to preserve the old behaviour.
 `{"data": …}`, the paginated `{data, total, limit, offset}`, and — from ten
 handlers — the fields bare at the top level. Now there is one. Every admin 2xx
 body puts its payload under `data`; list endpoints add the three pagination
-counters alongside it and nothing else.
+counters alongside it and nothing else — bar the trace list, whose deviation is
+described immediately below.
 
 **How you'll notice.** Ten endpoints return a body one level deeper than before:
 
@@ -631,8 +928,12 @@ counters alongside it and nothing else.
 | `GET /admin/traces/{id}` | bare trace object | `{"data": {…}}` |
 
 Everything already returning `{"data": …}` — all CRUD reads and writes, every
-list endpoint, `GET /admin/functions`, `POST`/`GET /admin/backups`,
-`GET /admin/traces` — is byte-identical. Only the ten rows above changed.
+list endpoint, `GET /admin/functions`, `POST`/`GET /admin/backups` — is
+byte-identical. Only the ten rows above changed *shape*.
+
+**One exception: `GET /admin/traces`.** Its envelope is unchanged, but its
+*fields* are not: `total` is now conditional and `next_cursor` is new. See
+[the next section](#the-trace-list-no-longer-returns-total-by-default).
 
 **What to do.** Add `.data` to the affected call sites:
 
@@ -651,6 +952,61 @@ is unaffected too: `POST /api/v1/data/…` still answers
 The `orion-server dry-run` CLI subcommand prints the **unwrapped** shape
 (`{matched, trace, output, errors}`) — it writes JSON to stdout for `jq`, not
 an HTTP response, so it gains nothing from an envelope.
+
+### The trace list no longer returns `total` by default
+
+**What changed.** `GET /api/v1/admin/traces` used to answer
+`{data, total, limit, offset}` on every page. `total` is now **omitted** unless
+the request asks for it with `?include_total=true`. Two fields are new:
+`next_cursor` on the response, and `cursor` on the request. This is the one
+list endpoint that deviates from the shared pagination contract; every other
+one still returns `total` unconditionally.
+
+**Why.** `total` was a `COUNT(*)` over the whole filtered set — a full scan on
+PostgreSQL and InnoDB — recomputed on *every* page of the largest table Orion
+writes to. Most callers page through the list and never read the number. Deep
+`offset` paging has the same shape of problem: the database counts past every
+skipped row. Keyset (`cursor`) paging skips nothing and counts past nothing, so
+page 500 costs what page 1 costs.
+
+**How you'll notice.** Anything doing `.total` on the trace list gets `null`
+(jq) or a missing-key error (typed clients). Nothing errors, and nothing else
+moved: `data`, `limit` and `offset` are exactly where they were.
+
+**What to do.** Add `include_total=true` where you genuinely need the count,
+or — better for anything that walks the list — switch to the cursor:
+
+```bash
+# before
+curl -s "http://orion:8080/api/v1/admin/traces?limit=100" | jq '.total'
+
+# after: ask for the count explicitly
+curl -s "http://orion:8080/api/v1/admin/traces?limit=100&include_total=true" | jq '.total'
+
+# after: page without a count and without an OFFSET
+page=$(curl -s "http://orion:8080/api/v1/admin/traces?limit=100")
+cursor=$(jq -r '.next_cursor // empty' <<<"$page")
+curl -s "http://orion:8080/api/v1/admin/traces?limit=100&cursor=$cursor"
+```
+
+`next_cursor` is present only while a further page may exist — its absence is
+how you know you have reached the end. Treat the value as **opaque**; its
+encoding is not part of the API contract.
+
+**Three request combinations are now `400` rather than silently wrong:**
+
+| Request | Why |
+|---|---|
+| `?cursor=…&offset=10` | Two different paging modes; pass one |
+| `?cursor=…&sort_by=updated_at` (or `status`, `channel`, `mode`) | `updated_at` is rewritten in place by every status change, so a cursor over it would skip rows. Keyset paging is offered only for the default `created_at` ordering |
+| a `cursor` value you did not get from a `next_cursor` | Malformed cursor |
+
+`?offset=` still works exactly as before for every sort column, including
+`updated_at`; nothing forces you onto the cursor.
+
+If you embed Orion as a library, `TraceRepository::list_paginated` now returns
+`TracePage` (with `total: Option<i64>` and `next_cursor`) rather than
+`PaginatedResult<Trace>`. The other six repositories are unchanged.
 
 ### Bulk import reports dry runs in the same fields as real runs
 
@@ -925,7 +1281,7 @@ waiting for capacity — an unbounded hang under load. It now sheds immediately.
 `orion_trace_queue_rejected_total{reason="full"|"memory"}`.
 
 **What to do.** Make async clients retry on `503`. Size the queue with
-`queue.buffer_size` (default `1000`) and `queue.max_queue_memory_bytes`
+`trace_queue.buffer_size` (default `1000`) and `trace_queue.max_queue_memory_bytes`
 (default `104857600`, 100 MB). Sync requests never touch this queue.
 
 ### Trace read endpoints require admin auth
@@ -1144,9 +1500,52 @@ your own tooling.
 ### The data dialect rejects what it used to ignore
 
 **What changed.** `data_query`/`data_write` no longer approximate silently.
-Five changes can turn a previously "working" workflow into an explicit error —
-in every case the old behaviour was silently returning wrong or incomplete
-data.
+Ten changes can turn a previously "working" workflow into an explicit error or
+a differently-ordered page — in every case the old behaviour was silently
+returning wrong or incomplete data. The first fires unconditionally.
+
+- **A task with no `schema` now reaches nothing.** `unmapped` defaulted to
+  `identity` — every name passing straight through to the physical one — so a
+  dialect task without a `schema` reached every table the connector's database
+  user could see, read *and* write. The default is now `reject`. *How you'll
+  notice:* **every** `data_query`/`data_write` that declares no `schema` fails
+  at its first request. Workflows already stored keep loading and activating;
+  nothing fails at startup, so this surfaces on live traffic. The error reads
+  `entity '<name>' is not declared in the task's schema: add "schema": … or add
+  "unmapped": "identity" …`, and it is the one you get whatever else the query
+  mentions, because the entity resolves before the filter, projection and sort.
+  *What to do:* one of two things per task —
+
+  ```json
+  "schema": { "entities": { "orders": { "columns": { "id": {}, "total": {} } } } }
+  ```
+
+  declaring the entities and columns that task uses (the allowlist, and what
+  you want long-term), **or** the one-line pass-through that restores 0.x
+  behaviour exactly:
+
+  ```json
+  "schema": { "unmapped": "identity" }
+  ```
+
+  Declare every column the task names in `fields`, `sort`, `filter`, `values`,
+  `set`, `returning` and `include.<relation>.fields` — the last resolve against
+  the *related* entity, so declare its columns too. A bare `{}` is a valid
+  declaration when you want no rename or type hint.
+
+  Three things to know once you declare columns. A read that names no `fields`
+  now returns exactly the declared **queryable** columns rather than `SELECT *`,
+  so `queryable: false` finally hides a column from a field-less read too — an
+  entity declaring *no* columns still reads all of them, and one declaring
+  columns with every single one non-queryable is refused rather than widened
+  back. A relation's `to` target needs no declaration for the relation itself
+  to resolve, but does as soon as you name one of its columns — and because an
+  `include` must now name a `sort` key, which is a column on that target, **an
+  `include` over an undeclared entity cannot plan at all**. And a connector
+  owner can refuse the `identity` escape hatch outright with
+  `dialect.require_schema`, and bound physical names with
+  `dialect.allowed_entities` — see the
+  [dialect reference](../reference/data-dialect.md#schema-guards).
 
 - **Unknown envelope keys are rejected.** Stray or misspelled keys in the
   `query` envelope, the `write` envelope, an `include` selection, `on_conflict`
@@ -1174,6 +1573,109 @@ data.
   A deeper offset is rejected, never clamped — SQL and MongoDB previously
   accepted any depth. Raise `query.max_skip` (or `ORION_QUERY__MAX_SKIP`) if
   you genuinely page deeper.
+- **`include` now requires a `sort`, and its page is per parent.** An `include`
+  selection without an order key is rejected: the per-parent page is cut inside
+  the database (`ROW_NUMBER() OVER (PARTITION BY <fk> ORDER BY <sort>)`), so
+  "the first 5 orders" has no defined answer without one — it used to be
+  whichever rows the plan emitted, and a different set on the next run.
+  **This fails at request time, not at activation:** the dialect envelope is
+  not validated when a workflow is activated, so a stored workflow using
+  `include` without a `sort` keeps activating and starts failing on live
+  traffic. *How you'll notice:* a task fails with `include.<relation> requires
+  a 'sort' — the per-parent page needs a deterministic order key`. *What to
+  do:* grep your workflows for `"include"` before upgrading and add a `sort` to
+  each selection (`"sort": [{"id": "asc"}]` is stable and unsurprising). The
+  `sort` may name a column your `fields` does not — it is used for ordering
+  only and does not appear in the nested objects. The window function is
+  supported by every SQL backend Orion renders for (SQLite ≥ 3.25,
+  PostgreSQL ≥ 8.4, MySQL ≥ 8.0), so a MySQL 5.7 server cannot run an
+  `include`.
+
+  On MongoDB and Elasticsearch nothing changes: `include` was already rejected
+  there with `FeatureUnsupportedByTarget`, and it still is — the sort
+  requirement is the SQL planner's, so a doc-store caller still gets the
+  capability error that tells them `include` is SQL-only.
+- **`include.limit` is bounded by `query.default_limit` / `query.max_limit`,
+  per parent.** An `include` with no `limit` used to fetch *every* child of
+  every parent on the page and truncate in memory; it now fetches
+  `default_limit` (100) children **for each parent row**. A `limit` above
+  `query.max_limit` (1000) is rejected with a limit-exceeded error, never
+  clamped — the same rule the envelope's own `limit` has always had. *How
+  you'll notice:* a task fails with `requested limit N exceeds the configured
+  maximum M`, or a nested array that used to be complete now stops at 100
+  entries. *What to do:* set an explicit `include.limit`, or raise
+  `query.max_limit` (`ORION_QUERY__MAX_LIMIT`). The page is now bounded at
+  `parents × include.limit` rows overall, which is the point.
+- **Null ordering is inverted on SQL and Elasticsearch: a null sorts as the
+  *smallest* value.** Nulls come first on `asc` and last on `desc`. SQL
+  emulated "nulls last on `asc`" (with an `IS NULL` prefix sort key on MySQL)
+  and Elasticsearch set `"missing": "_last"`, while MongoDB's `find` cannot
+  express that rule at all — so the same envelope paged differently on Mongo,
+  silently, against a documented promise of deterministic ordering. The shared
+  rule is now the one every backend states natively, so the other four move to
+  meet Mongo. *How you'll notice:* nothing errors — pages sorted on a nullable
+  column come back in a different order, and `skip`-based paging over such a
+  column visits rows in a different sequence. *What to do:* if the position of
+  nulls matters, filter them out (`{"!=": [{"field": "col"}, null]}`) or sort
+  on a non-nullable column first.
+- **MongoDB no longer maps `id` to `_id` for you.** Any physical name equal to
+  `id` — in filters, projections, sorts, inserted documents, `set` clauses and
+  `on_conflict` targets — used to be rewritten to `_id`, so a schema
+  deliberately mapping a key onto `id` meant `_id`, and a collection with a
+  genuine non-key `id` field was unqueryable. Elasticsearch documented the
+  opposite rule two files away; both document stores now pass names through
+  exactly as the schema resolved them. *How you'll notice:* a Mongo filter or
+  projection on `id` matches nothing where it used to hit the document key —
+  documents written before the upgrade carry theirs in `_id`. *What to do:*
+  declare the rename, which is what Elasticsearch already required and is also
+  what makes inserts carry the id and upsert-on-`id` legal:
+
+  ```jsonc
+  "schema": { "entities": { "users": { "columns": { "id": { "name": "_id" } } } } }
+  ```
+
+  Without it, `id` is an ordinary field on every backend. If your collection
+  genuinely has an ordinary `id` field beside `_id`, do nothing — it is
+  queryable now, which it was not before.
+- **Every `data_write` result carries a `status`, and a partial bulk is no
+  longer an error.** Results gained `"status": "ok"`, so anything asserting on
+  the exact result object (`{"rows_affected": 1}`) sees one extra key. A bulk
+  `insert` means three different things underneath:
+
+  | Backend | Model | On failure |
+  |---|---|---|
+  | SQL | **Atomic** | Every row or none — now in an explicit transaction rather than by accident of the renderer's shape |
+  | MongoDB | **Prefix-applied** | `insert_many` is ordered: it stops at the first rejected document, commits everything before it, and never attempts the rest |
+  | Elasticsearch | **Arbitrary-applied** | `_bulk` attempts every action independently, so any subset can land |
+
+  All three used to return one row count or one opaque error, so documents had
+  been written and the caller could not tell which. On MongoDB and
+  Elasticsearch a bulk that applied *some* of its rows now returns
+  `"status": "partial"` with a per-item array indexed by your `values` array,
+  and the task reports audit status **207** instead of failing:
+
+  ```json
+  {
+    "status": "partial",
+    "inserted": 2, "failed": 1, "skipped": 2,
+    "ids": ["a", "c"],
+    "items": [
+      { "index": 0, "status": "ok", "id": "a" },
+      { "index": 1, "status": "ok", "id": "c" },
+      { "index": 2, "status": "error", "error": { "code": 11000, "message": "duplicate key" } },
+      { "index": 3, "status": "skipped" },
+      { "index": 4, "status": "skipped" }
+    ]
+  }
+  ```
+
+  `failed`, `skipped` and `items` appear only when there is something to
+  report, so a clean bulk keeps the shape it had plus `status`. `skipped` means
+  the backend never attempted the item, which only ordered MongoDB produces.
+  *What to do:* a workflow that previously relied on the task erroring to halt
+  the pipeline now continues — branch on `status` and compensate, using `items`
+  to name exactly which indices to retry or roll back. A bulk where *nothing*
+  landed is still a hard error, and SQL connectors are unaffected.
 
 ### `/docs` and the OpenAPI spec are off in production
 
@@ -1265,6 +1767,192 @@ in the same config block and *are* cluster-shared.
 keep working, as it is a deserialization alias for this release. Update the key
 the next time you edit the channel; the alias is scheduled for removal in the
 following release.
+
+### A channel's `cors` is now `origin_allow_list`
+
+**What changed.** The per-channel key is renamed and flattened:
+
+```json
+{ "cors": { "allowed_origins": ["https://app.example.com"] } }
+```
+
+becomes
+
+```json
+{ "origin_allow_list": ["https://app.example.com"] }
+```
+
+The old spelling is still parsed, so stored channels keep their check and no
+migration is required. Find them with:
+
+```sql
+SELECT name FROM current_channels WHERE config_json LIKE '%"cors"%';
+```
+
+**Why it is not cosmetic.** This is a **server-side allow-list**, not CORS: it
+sets no `Access-Control-*` header and takes no part in the preflight handshake,
+which the platform `[cors]` layer performs for every route *before* a channel
+is resolved. The consequence is that a channel's list can only narrow the
+platform policy, never widen it — an origin `[cors] allowed_origins` rejects
+fails the preflight and never reaches the channel, so listing it on the channel
+does nothing. If per-channel origins are not taking effect in a browser, set
+`[cors] allowed_origins` to the union of what your channels accept and narrow
+from there.
+
+### Audit log: new actor format, new fields, two new settings
+
+**The `principal` column changes format for authenticated callers.** It was the
+first eight characters of the presented API key (or of its `sha256:` digest);
+it is now a derived `key-<16 hex>` — `SHA-256("orion:audit:key-id:v1" ‖
+SHA-256(key))` truncated to 8 bytes. Three things that buys you:
+
+- Two keys sharing a prefix are now two actors. Any generator with a fixed
+  leader (`orion_sk_…`) previously collapsed every key into one.
+- The audit log no longer contains eight literal characters of a live
+  credential.
+- The id is the same whether a key is configured in plaintext or `sha256:`
+  form, so rotating an operator between the two does not rename them in the
+  trail.
+
+Hold the config and you can recompute the id for each key you issued and map a
+row back to it; nobody else can go in either direction. **Rows written before
+the upgrade keep their old values,** so a saved `?principal=` filter matches
+those rows and matches nothing new.
+
+**`details` now carries request context** as a JSON object: `request_id` (the
+same value as the `x-request-id` header and the `error.request_id` the client
+was handed), `client_ip` (resolved with the `rate_limit.trusted_proxies`
+policy, so a forged `X-Forwarded-For` cannot dictate it — and note that policy
+now applies even with `rate_limit.enabled = false`, so a proxied deployment
+records the caller rather than the load balancer) and `user_agent` (truncated
+to 256 bytes). Unavailable fields are omitted rather than recorded empty. It
+previously held `{"request_id": …}` at most.
+
+**Mutations immediately before a restart are now recorded.** The write was a
+detached task nothing awaited, so a mutation accepted moments before `SIGTERM`
+was answered `200` and then lost — the row an investigation of a bad deploy
+most wants. It now goes onto a bounded queue drained at shutdown. Two new
+settings, both with working defaults:
+
+| Setting | Default | Raise it when |
+|---|---|---|
+| `audit.max_pending` | `1000` | A bursty admin plane (large `/import` batches) overruns the writer |
+| `audit.drain_timeout_secs` | `5` | Shutdown reports abandoned rows on a slow database |
+
+Both are refused at `0`. Anything that still does not make it is counted in
+`orion_audit_events_dropped_total{reason}` (`queue_full`, `write_failed`,
+`drain_timeout`, `writer_stopped`) and logged at `error`. **Alert on that
+counter existing at all, not on a threshold** — any non-zero value is a hole in
+the audit trail.
+
+**`POST /admin/workflows/{id}/test` now writes an `action: "test"` row.** It
+reads as a dry run and is not one: it executes the workflow's tasks against
+live connectors. If you have an audit-volume alert, expect it to see traffic
+from this endpoint for the first time.
+
+### Startup retries an unreachable database instead of exiting
+
+**What changed.** A database that was down or mid-failover at boot used to be a
+hard exit: `.connect()` is eager and `min_connections = 5` requires five live
+connections before boot succeeds, so every replica crash-looped for the whole
+failover and the container restart backoff outlived it. Startup now retries the
+initial connection with a 250 ms → 5 s exponential backoff, bounded by the new
+`storage.connect_retry_secs` (default `60`).
+
+**How you'll notice.** A genuinely wrong `storage.url` or an unreachable host
+now takes up to ~60 s to fail instead of ~3 s, with one `WARN` line per attempt
+naming the error and the next backoff.
+
+**What to do.** Usually nothing — the readiness probe already keeps traffic off
+a pod that has not finished booting, and the default window is sized to ride
+out a typical PostgreSQL failover. Set `storage.connect_retry_secs = 0` to
+restore fail-fast where a fast exit is the point: pre-flight smoke tests, CI
+health gates, init containers that only check connectivity. Two things are
+unaffected: SQLite is never retried (a bad path, bad permissions or a corrupt
+file does not heal on its own), and the pending-migration refusal under
+`auto_migrate = false` is still immediate — it is about schema state, not
+reachability.
+
+### Two reload warnings no longer repeat while the condition persists
+
+The channel registry now carries unchanged channels and an unchanged route
+table across a reload instead of rebuilding them. Two warnings were emitted as
+a side effect of that rebuild and therefore repeated on every reload:
+
+- `Two active channels claim the same route …` from the route-table build
+  (fields `route`, `shadowed_channel`, `serving_channel`), now skipped when the
+  serviceable channel set is unchanged.
+- `<purpose> connector unavailable, falling back to in-memory` for a channel
+  whose dedup or response-cache connector could not be resolved (single-node
+  mode only — cluster mode quarantines instead), now not re-logged for a
+  channel that was carried over.
+
+Both conditions are still logged on the reload that introduces or changes them,
+and both remain visible in the state they describe (`/health` for quarantined
+channels, the admin API's validation for route conflicts). If you alert on the
+*recurrence* of either line rather than on its first appearance, switch to a
+first-occurrence or state-based alert.
+
+### Connector operation gates now cover every connector type
+
+Additive and fully backward compatible — existing connectors behave exactly as
+before, since every gate defaults to allowed. If you want the new locks:
+
+```json
+{ "type": "cache", "backend": "redis", "url": "redis://…", "operations": { "write": false } }
+{ "type": "kafka", "brokers": ["…"], "topic": "t", "operations": { "publish": false } }
+{ "type": "http",  "url": "https://partner.example.com/v1", "operations": { "methods": ["GET"] } }
+```
+
+The HTTP allow-list is exhaustive once non-empty and matches
+case-insensitively; a method outside `GET`, `POST`, `PUT`, `PATCH`, `DELETE` is
+rejected with a `400` when the connector is created or updated, as is a gate
+key the type does not have. A gated call fails with the same validation error
+the `db`/`es` gates produce.
+
+One interaction worth knowing: a `cache` connector's `write` gate covers every
+write through it, **including a channel dedup store or response cache backed by
+it** — so gating a shared Redis read-only makes any channel pointing its dedup
+store at that connector fail to load, rather than silently downgrading. There
+is no `delete` gate on `cache`: the backend trait has no delete.
+
+### OpenAPI schema components renamed
+
+Five response schemas in `docs/openapi.json` changed name. For the first four
+**no response body changed** — the JSON field sets are identical — so only
+clients generated from the spec, which take their type names from component
+names, are affected:
+
+| Before | After |
+| --- | --- |
+| `Connector` | `ConnectorResponse` |
+| `AuditLogEntry` | `AuditLogEntryResponse` |
+| `TraceDlqEntry` | `TraceDlqEntryResponse` |
+| `PaginatedEnvelope_TraceDlqEntry` | `PaginatedEnvelope_TraceDlqSummaryResponse` |
+| `PaginatedEnvelope_TraceListItem` | `TracePageEnvelope` |
+
+The fifth is different: the trace-list envelope was renamed because its
+*shape* changed, not its row type. `total` is now conditional and
+`next_cursor` is new — see
+[the trace-list section](#the-trace-list-no-longer-returns-total-by-default).
+
+The generic envelope names follow (`DataEnvelope_Connector` →
+`DataEnvelope_ConnectorResponse`, and so on). Regenerate your client and rename
+the referenced types; no field access changes.
+
+The last row is a correction rather than a rename. `GET /api/v1/admin/trace-dlq`
+has never returned `payload_json` or `metadata_json` — it selects a
+payload-free projection so one request cannot dump every failed request's body
+— but the published schema claimed both fields, because the row struct that
+*did* have them was also the wire type. If you generated a client that modelled
+DLQ list rows as carrying payloads, those fields were always absent at runtime.
+Fetch a single entry with `GET /api/v1/admin/trace-dlq/{id}` for the payload.
+
+**One error code changed with it:** a database failure while listing audit logs
+now returns `{"error": {"code": "STORAGE_ERROR"}}` instead of
+`INTERNAL_ERROR`. The status is still 500. That is what every other list
+endpoint already returned — and what the *count* half of this same query
+already returned.
 
 ### Async submissions are exempt from trace sampling
 
@@ -1395,12 +2083,12 @@ entry fails config validation with
 
 Two consequences to plan for:
 
-- **Audit `principal` values change shape for hashed keys.** A plaintext key
-  logs the first 8 characters of the presented token plus `...`
-  (`my-secre...`); a hashed entry logs `sha256:` plus the first 8 hex
-  characters of the digest plus `...` (`sha256:1a2b3c4d...`). The
-  `?principal=` audit filter is an exact match, so saved queries against the
-  old prefix stop matching.
+- **Hashing does not change the audit `principal`,** and that is the point: the
+  actor is a `key-<16 hex>` derived from the key, identical whether the entry
+  is configured in plaintext or `sha256:` form, so rotating an operator between
+  the two does not rename them in the trail. See
+  [Audit log](#audit-log-new-actor-format-new-fields-two-new-settings) for the
+  format change itself, which does break saved `?principal=` filters.
 - **A plaintext key whose literal text starts with `sha256:`** is now
   interpreted as the hash-at-rest form and will fail config validation. Rotate
   it first.
@@ -1411,7 +2099,9 @@ endpoints, and therefore the full-detail error payloads.
 **Enable the Kafka DLQ** — see [section 4](#4-kafka-delivery-is-now-at-least-once).
 
 **Set `storage.auto_migrate = false`** in any multi-replica deployment and run
-`orion-server migrate` as a deploy step.
+`orion-server migrate` as a deploy step. In a *production* cluster this is no
+longer advice — see
+[A production cluster may not migrate at boot](#a-production-cluster-may-not-migrate-at-boot).
 
 ---
 
