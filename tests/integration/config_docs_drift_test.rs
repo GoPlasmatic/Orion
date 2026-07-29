@@ -326,6 +326,34 @@ const NOT_A_SERVER_SETTING: &[(&str, &str, &str)] = &[
          shell; the container's environment block spells out the real \
          ORION_CORS__ALLOWED_ORIGINS it fills",
     ),
+    // The upgrade guide teaches the same rule the reference page does, so it
+    // quotes the same counter-examples. Scoped per path rather than blanket,
+    // for the reason the doc comment above gives.
+    (
+        "ORION_SERVER__PORTT",
+        "docs/src/getting-started/upgrading.md",
+        "the misspelling C4d refuses, quoted in the error message the section \
+         shows an operator",
+    ),
+    (
+        "ORION_SERVER_PORT",
+        "docs/src/getting-started/upgrading.md",
+        "the one shape C4d cannot refuse, quoted as the caveat: a setting typed \
+         with a single underscore is indistinguishable from a service link",
+    ),
+    (
+        "ORION_ADMIN_AUTH__API_KEY",
+        "docs/src/getting-started/upgrading.md",
+        "quoted as the mistake, telling readers who copied it that the real \
+         name is the plural ORION_ADMIN_AUTH__API_KEYS",
+    ),
+    (
+        "ORION_DB__PASSWORD",
+        "docs/src/getting-started/upgrading.md",
+        "a connector's `env://` secret, not a setting — the example of the one \
+         class of name that has to move under ORION_SECRET_* because it \
+         follows the override grammar",
+    ),
 ];
 
 /// Whether `token` is excused in the file at repository-relative `path`.
