@@ -450,7 +450,9 @@ mod tests {
             &self,
             _filter: &crate::storage::repositories::traces::TraceFilter,
         ) -> Result<
-            crate::storage::repositories::helpers::PaginatedResult<crate::storage::models::Trace>,
+            crate::storage::repositories::helpers::PaginatedResult<
+                crate::storage::models::TraceListRow,
+            >,
             crate::errors::OrionError,
         > {
             unimplemented!("not used by trace cleanup")

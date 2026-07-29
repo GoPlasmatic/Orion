@@ -304,12 +304,14 @@ validation failures.",
     ),
     components(
         schemas(
-            // R22: only shapes an endpoint actually returns. The `Workflow`,
-            // `Channel` and `Trace` row structs were registered here and
-            // `$ref`d by nothing — they described `condition_json`/`tasks_json`
-            // as strings, which no response carries. `Connector` stays: the
-            // masked row *is* the wire shape for a single connector.
-            crate::storage::models::Connector,
+            // R22/D28: only shapes an endpoint actually returns, and never a
+            // row struct. Row structs were registered here and `$ref`d by
+            // nothing — they described `condition_json` / `tasks_json` as
+            // strings, which no response carries. `ConnectorResponse` is the
+            // masked wire shape for a single connector; the `Connector` row it
+            // is built from carries the unmasked config and cannot be
+            // serialized at all.
+            crate::storage::models::ConnectorResponse,
             crate::storage::repositories::workflows::CreateWorkflowRequest,
             crate::storage::repositories::workflows::UpdateWorkflowRequest,
             crate::storage::repositories::workflows::StatusChangeRequest,
@@ -451,12 +453,31 @@ mod tests {
         );
     }
 
-    /// The row structs describe storage, not the wire. Registering one
-    /// publishes `condition_json` / `tasks_json` as opaque strings on a shape
-    /// no client ever receives (R22, D17). `Connector`, `TraceDlqEntry` and
-    /// `AuditLogEntry` are the exceptions: their handlers return them verbatim.
+    /// No row struct's name may reach the published document (R22, D17, D28).
+    ///
+    /// A row struct describes storage, not the wire: publishing one advertises
+    /// `condition_json` / `tasks_json` as opaque strings on a shape no client
+    /// receives, and — the reason this is a security rule and not a tidiness
+    /// one — it advertises columns like `Trace::access_token_hash` that exist
+    /// to be compared, never shown. There are no longer any exceptions:
+    /// `Connector`, `TraceDlqEntry` and `AuditLogEntry` each publish a
+    /// `*Response` DTO now, and none of the rows can derive `Serialize` at all.
+    ///
+    /// The generic envelopes inline their type parameter into the component
+    /// name (`DataEnvelope_ConnectorResponse`), so a row leaking in through a
+    /// `body =` annotation is caught by the substring check too.
     #[test]
     fn no_storage_row_struct_is_published_unless_it_is_the_wire_shape() {
+        const ROW_STRUCTS: &[&str] = &[
+            "Workflow",
+            "Channel",
+            "Connector",
+            "Trace",
+            "TraceListRow",
+            "TraceDlqEntry",
+            "TraceDlqSummary",
+            "AuditLogEntry",
+        ];
         let spec = spec();
         let schemas = spec
             .components
@@ -466,12 +487,17 @@ mod tests {
             .keys()
             .cloned()
             .collect::<Vec<_>>();
-        for lying in ["Workflow", "Channel", "Trace"] {
-            assert!(
-                !schemas.contains(&lying.to_string()),
-                "`{lying}` is a storage row and no endpoint returns it — \
-                 publish the DTO ({lying}Response) instead"
-            );
+        for row in ROW_STRUCTS {
+            for name in &schemas {
+                // `ConnectorResponse` legitimately starts with `Connector`;
+                // only a whole `_`-separated segment is a row leaking through.
+                let leaks = name.split('_').any(|segment| segment == *row);
+                assert!(
+                    !leaks,
+                    "`{name}` publishes the `{row}` storage row — no endpoint \
+                     returns it. Publish the DTO from storage::models::dto instead."
+                );
+            }
         }
     }
 
@@ -592,9 +618,9 @@ pub(crate) struct PaginatedEnvelope<T> {
 /// One row of `GET /api/v1/admin/connectors`: the stored connector with
 /// secrets masked, plus the registry's view of whether it actually loaded.
 ///
-/// Declared separately from [`crate::storage::models::Connector`] because
-/// `PaginatedEnvelope<Connector>` would under-describe the row by exactly the
-/// three fields an operator reads the list for.
+/// Declared separately from [`crate::storage::models::ConnectorResponse`]
+/// because `PaginatedEnvelope<ConnectorResponse>` would under-describe the row
+/// by exactly the three fields an operator reads the list for.
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct ConnectorListItem {

@@ -9,7 +9,7 @@ use crate::server::extract::{OrionJson, OrionQuery};
 use crate::server::routes::openapi::{DataEnvelope, DlqPurgeResult, PaginatedEnvelope};
 use crate::server::routes::response_helpers::{data_response, paginated_response};
 use crate::server::state::AppState;
-use crate::storage::models::TraceDlqEntry;
+use crate::storage::models::{TraceDlqEntryResponse, TraceDlqSummaryResponse};
 use crate::storage::repositories::trace_dlq::TraceDlqFilter;
 
 use super::audit_log;
@@ -52,7 +52,10 @@ pub(crate) struct PurgeTraceDlqRequest {
         ("limit" = Option<i64>, Query, description = "Page size, clamped to [1, 1000] (default 50)"),
     ),
     responses(
-        (status = 200, description = "Paginated DLQ entries without payloads — fetch one by id for the payload", body = PaginatedEnvelope<TraceDlqEntry>),
+        // D28: the summary, not the full entry. The listing has never carried
+        // `payload_json` / `metadata_json`, but the spec advertised them here
+        // because the row struct that *did* have them was also the wire type.
+        (status = 200, description = "Paginated DLQ entries without payloads — fetch one by id for the payload", body = PaginatedEnvelope<TraceDlqSummaryResponse>),
     )
 )]
 #[tracing::instrument(skip(state))]
@@ -70,8 +73,13 @@ pub(crate) async fn list_trace_dlq(
         })
         .await?;
 
+    let rows: Vec<TraceDlqSummaryResponse> = result
+        .data
+        .iter()
+        .map(TraceDlqSummaryResponse::from)
+        .collect();
     Ok(paginated_response(
-        result.data,
+        rows,
         result.total,
         result.limit,
         result.offset,
@@ -84,7 +92,7 @@ pub(crate) async fn list_trace_dlq(
     tag = "Trace DLQ",
     params(("id" = String, Path, description = "DLQ entry id")),
     responses(
-        (status = 200, description = "DLQ entry including the failed payload and metadata", body = DataEnvelope<TraceDlqEntry>),
+        (status = 200, description = "DLQ entry including the failed payload and metadata", body = DataEnvelope<TraceDlqEntryResponse>),
         (status = 404, description = "No such DLQ entry", body = crate::server::routes::openapi::ErrorResponse),
     )
 )]
@@ -93,7 +101,8 @@ pub(crate) async fn get_trace_dlq_entry(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
-    Ok(data_response(state.trace_dlq_repo.get_by_id(&id).await?))
+    let entry = state.trace_dlq_repo.get_by_id(&id).await?;
+    Ok(data_response(TraceDlqEntryResponse::from(&entry)))
 }
 
 #[utoipa::path(
@@ -102,7 +111,7 @@ pub(crate) async fn get_trace_dlq_entry(
     tag = "Trace DLQ",
     params(("id" = String, Path, description = "DLQ entry id")),
     responses(
-        (status = 200, description = "Entry reset to retry_count = 0 and scheduled for immediate retry", body = DataEnvelope<TraceDlqEntry>),
+        (status = 200, description = "Entry reset to retry_count = 0 and scheduled for immediate retry", body = DataEnvelope<TraceDlqEntryResponse>),
         (status = 404, description = "No such DLQ entry", body = crate::server::routes::openapi::ErrorResponse),
     )
 )]
@@ -120,7 +129,7 @@ pub(crate) async fn requeue_trace_dlq_entry(
         "trace_dlq",
         &id,
     );
-    Ok(data_response(entry))
+    Ok(data_response(TraceDlqEntryResponse::from(&entry)))
 }
 
 #[utoipa::path(

@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use super::helpers::PaginatedResult;
 use crate::errors::OrionError;
-use crate::storage::models::{self, Trace};
+use crate::storage::models::{self, Trace, TraceListRow};
 use crate::storage::{build_sqlx, schema::Traces};
 
 #[derive(Debug, Default, Deserialize)]
@@ -87,6 +87,28 @@ fn completed_values(
         Expr::val(now).into(),
         Expr::val(now).into(),
         Expr::val(task_trace_val).into(),
+    ]
+}
+
+/// The 11 columns a trace *listing* reads, in
+/// [`crate::storage::models::TraceListRow`] order (D27).
+///
+/// Named explicitly so the four columns that are not here — `input_json`,
+/// `result_json`, `task_trace_json` and `access_token_hash` — cannot come back
+/// by way of someone reaching for `SELECT *`.
+fn list_columns() -> [Traces; 11] {
+    [
+        Traces::Id,
+        Traces::Channel,
+        Traces::ChannelId,
+        Traces::Mode,
+        Traces::Status,
+        Traces::ErrorMessage,
+        Traces::DurationMs,
+        Traces::StartedAt,
+        Traces::CompletedAt,
+        Traces::CreatedAt,
+        Traces::UpdatedAt,
     ]
 }
 
@@ -181,10 +203,16 @@ pub trait TraceRepository: Send + Sync {
         Ok(())
     }
 
+    /// One page of the trace listing, payload- and credential-free.
+    ///
+    /// Returns [`TraceListRow`], not [`Trace`] (D27): the list used to be a
+    /// `SELECT *`, which read every caller's request body, the full engine
+    /// message and one `access_token_hash` per row out of the database for a
+    /// response that shows none of them.
     async fn list_paginated(
         &self,
         filter: &TraceFilter,
-    ) -> Result<PaginatedResult<Trace>, OrionError>;
+    ) -> Result<PaginatedResult<TraceListRow>, OrionError>;
     /// Delete traces older than the given number of hours. Returns the count deleted.
     async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError>;
 }
@@ -415,7 +443,7 @@ impl TraceRepository for SqlTraceRepository {
     async fn list_paginated(
         &self,
         filter: &TraceFilter,
-    ) -> Result<PaginatedResult<Trace>, OrionError> {
+    ) -> Result<PaginatedResult<TraceListRow>, OrionError> {
         crate::metrics::timed_db_op("traces.list_paginated", async {
             let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
 
@@ -443,17 +471,19 @@ impl TraceRepository for SqlTraceRepository {
             };
             let order = super::helpers::parse_sort_order(filter.sort_order.as_deref());
 
-            // DATA query
+            // DATA query. D27: the columns are named, not `*` — the omitted
+            // ones are `input_json`, `result_json`, `task_trace_json` and
+            // `access_token_hash`.
             let (sql, values) = build_sqlx(
                 Query::select()
-                    .column(Asterisk)
+                    .columns(list_columns())
                     .from(Traces::Table)
                     .cond_where(cond)
                     .order_by(sort_iden, order)
                     .limit(limit as u64)
                     .offset(offset as u64),
             );
-            let data = self.pool.fetch_all_as::<Trace>(&sql, values).await?;
+            let data = self.pool.fetch_all_as::<TraceListRow>(&sql, values).await?;
 
             Ok(PaginatedResult {
                 data,
@@ -508,6 +538,58 @@ mod tests {
 
     async fn test_pool() -> crate::storage::DbPool {
         crate::storage::test_sqlite_pool().await
+    }
+
+    /// D27: the listing must never read the payload columns or the capability
+    /// -token hash. `TraceListRow` cannot hold them, but sqlx ignores extra
+    /// columns — so a revert to `SELECT *` would still decode, and would still
+    /// pull one credential verifier per row across the wire from the database.
+    /// The projection itself is therefore what is asserted.
+    #[tokio::test]
+    async fn test_list_paginated_reads_a_narrow_projection() {
+        let pool = test_pool().await;
+        let repo = SqlTraceRepository::new(pool.clone());
+
+        let trace = repo
+            .create_pending(
+                "orders",
+                Some("ch_orders"),
+                "async",
+                Some(r#"{"card":"4111111111111111"}"#),
+                Some("sha256-of-the-capability-token"),
+            )
+            .await
+            .expect("test");
+
+        let page = repo
+            .list_paginated(&TraceFilter::default())
+            .await
+            .expect("test");
+        assert_eq!(page.total, 1);
+        assert_eq!(page.data[0].id, trace.id);
+        assert_eq!(page.data[0].channel, "orders");
+
+        let (sql, _values) = build_sqlx(
+            Query::select()
+                .columns(list_columns())
+                .from(Traces::Table)
+                .cond_where(Condition::all()),
+        );
+        for withheld in [
+            "input_json",
+            "result_json",
+            "task_trace_json",
+            "access_token_hash",
+        ] {
+            assert!(
+                !sql.contains(withheld),
+                "the trace listing projection names `{withheld}`: {sql}"
+            );
+        }
+        assert!(
+            !sql.contains('*'),
+            "the trace listing must name its columns, not `SELECT *`: {sql}"
+        );
     }
 
     #[tokio::test]

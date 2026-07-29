@@ -58,6 +58,7 @@ mod queue_durability_test;
 mod rate_limit_test;
 mod readiness_test;
 mod rest_routing_test;
+mod row_dto_wire_shape_test;
 mod scenario_api_gateway_test;
 mod scenario_ecommerce_test;
 mod scenario_webhook_test;

@@ -1,0 +1,535 @@
+//! Response DTOs: exactly what the HTTP API serves for a stored row.
+//!
+//! Every type here is `Serialize + ToSchema` and is reached from a row in
+//! [`super::rows`] through a `From` or `TryFrom`. That conversion is the only
+//! door between the database and a response body, which is what makes "which
+//! columns are public?" answerable by reading one file (D27, D28).
+//!
+//! Two shapes exist for the same table where the list view is deliberately
+//! narrower than the single-item view — see [`TraceDlqSummaryResponse`].
+
+use chrono::NaiveDateTime;
+use serde::Serialize;
+use serde_json::Value;
+
+use super::enums::parse_json_field;
+use super::rows::{AuditLogEntry, Channel, Connector, TraceDlqEntry, TraceDlqSummary, Workflow};
+use crate::errors::OrionError;
+
+/// API-friendly representation of a Workflow with parsed JSON fields.
+///
+/// This — not the `Workflow` row struct — is what every workflow endpoint
+/// returns, so it is what the OpenAPI document describes (R22).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct WorkflowResponse {
+    pub workflow_id: String,
+    pub version: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub priority: i64,
+    pub status: String,
+    pub rollout_percentage: i64,
+    pub condition: Value,
+    pub tasks: Value,
+    pub tags: Value,
+    pub continue_on_error: bool,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+impl TryFrom<&Workflow> for WorkflowResponse {
+    type Error = OrionError;
+
+    fn try_from(workflow: &Workflow) -> Result<Self, Self::Error> {
+        let id = &workflow.workflow_id;
+        Ok(Self {
+            workflow_id: workflow.workflow_id.clone(),
+            version: workflow.version,
+            name: workflow.name.clone(),
+            description: workflow.description.clone(),
+            priority: workflow.priority,
+            status: workflow.status.clone(),
+            rollout_percentage: workflow.rollout_percentage,
+            condition: parse_json_field(
+                &workflow.condition_json,
+                "workflow",
+                id,
+                "condition_json",
+            )?,
+            tasks: parse_json_field(&workflow.tasks_json, "workflow", id, "tasks_json")?,
+            tags: parse_json_field(&workflow.tags, "workflow", id, "tags")?,
+            continue_on_error: workflow.continue_on_error,
+            created_at: workflow.created_at,
+            updated_at: workflow.updated_at,
+        })
+    }
+}
+
+/// API-friendly representation of a Channel with parsed JSON fields.
+///
+/// This — not the `Channel` row struct — is what every channel endpoint
+/// returns, so it is what the OpenAPI document describes (R22).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct ChannelResponse {
+    pub channel_id: String,
+    pub version: i64,
+    pub name: String,
+    pub description: Option<String>,
+    pub channel_type: String,
+    pub protocol: String,
+    pub methods: Option<Value>,
+    pub route_pattern: Option<String>,
+    pub topic: Option<String>,
+    pub consumer_group: Option<String>,
+    pub transport_config: Value,
+    pub workflow_id: Option<String>,
+    pub config: Value,
+    pub status: String,
+    pub priority: i64,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+impl TryFrom<&Channel> for ChannelResponse {
+    type Error = OrionError;
+
+    fn try_from(channel: &Channel) -> Result<Self, Self::Error> {
+        let id = &channel.channel_id;
+        let methods = channel
+            .methods
+            .as_ref()
+            .map(|m| parse_json_field(m, "channel", id, "methods"))
+            .transpose()?;
+
+        Ok(Self {
+            channel_id: channel.channel_id.clone(),
+            version: channel.version,
+            name: channel.name.clone(),
+            description: channel.description.clone(),
+            channel_type: channel.channel_type.clone(),
+            protocol: channel.protocol.clone(),
+            methods,
+            route_pattern: channel.route_pattern.clone(),
+            topic: channel.topic.clone(),
+            consumer_group: channel.consumer_group.clone(),
+            transport_config: parse_json_field(
+                &channel.transport_config_json,
+                "channel",
+                id,
+                "transport_config_json",
+            )?,
+            workflow_id: channel.workflow_id.clone(),
+            config: parse_json_field(&channel.config_json, "channel", id, "config_json")?,
+            status: channel.status.clone(),
+            priority: channel.priority,
+            created_at: channel.created_at,
+            updated_at: channel.updated_at,
+        })
+    }
+}
+
+/// A connector as the admin API shows it.
+///
+/// `config_json` stays a string — it is the stored document verbatim — but the
+/// only supported way to build one is [`crate::connector::mask_connector`],
+/// which replaces every secret with `******` first. The row struct it is built
+/// from carries the *unmasked* config, and cannot be serialized (D27), so a
+/// handler that forgets to mask no longer compiles.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct ConnectorResponse {
+    pub id: String,
+    pub name: String,
+    pub connector_type: String,
+    /// Connector config with every secret replaced by `******`.
+    pub config_json: String,
+    pub enabled: bool,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+impl From<&Connector> for ConnectorResponse {
+    fn from(connector: &Connector) -> Self {
+        Self {
+            id: connector.id.clone(),
+            name: connector.name.clone(),
+            connector_type: connector.connector_type.clone(),
+            config_json: connector.config_json.clone(),
+            enabled: connector.enabled,
+            created_at: connector.created_at,
+            updated_at: connector.updated_at,
+        }
+    }
+}
+
+/// One DLQ entry with its failed payload — `GET`/`requeue` on a single id.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct TraceDlqEntryResponse {
+    pub id: String,
+    pub trace_id: String,
+    pub channel: String,
+    pub payload_json: String,
+    pub metadata_json: String,
+    pub error_message: String,
+    pub retry_count: i64,
+    pub max_retries: i64,
+    pub next_retry_at: NaiveDateTime,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+impl From<&TraceDlqEntry> for TraceDlqEntryResponse {
+    fn from(entry: &TraceDlqEntry) -> Self {
+        Self {
+            id: entry.id.clone(),
+            trace_id: entry.trace_id.clone(),
+            channel: entry.channel.clone(),
+            payload_json: entry.payload_json.clone(),
+            metadata_json: entry.metadata_json.clone(),
+            error_message: entry.error_message.clone(),
+            retry_count: entry.retry_count,
+            max_retries: entry.max_retries,
+            next_retry_at: entry.next_retry_at,
+            created_at: entry.created_at,
+            updated_at: entry.updated_at,
+        }
+    }
+}
+
+/// One row of the DLQ listing: [`TraceDlqEntryResponse`] minus the payloads.
+///
+/// The two differ on purpose — a listing that carried `payload_json` would
+/// return every failed request's body in one response.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct TraceDlqSummaryResponse {
+    pub id: String,
+    pub trace_id: String,
+    pub channel: String,
+    pub error_message: String,
+    pub retry_count: i64,
+    pub max_retries: i64,
+    pub next_retry_at: NaiveDateTime,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+impl From<&TraceDlqSummary> for TraceDlqSummaryResponse {
+    fn from(entry: &TraceDlqSummary) -> Self {
+        Self {
+            id: entry.id.clone(),
+            trace_id: entry.trace_id.clone(),
+            channel: entry.channel.clone(),
+            error_message: entry.error_message.clone(),
+            retry_count: entry.retry_count,
+            max_retries: entry.max_retries,
+            next_retry_at: entry.next_retry_at,
+            created_at: entry.created_at,
+            updated_at: entry.updated_at,
+        }
+    }
+}
+
+/// One row of `GET /api/v1/admin/audit-logs`.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct AuditLogEntryResponse {
+    pub id: String,
+    pub principal: String,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: String,
+    pub details: Option<String>,
+    pub created_at: NaiveDateTime,
+}
+
+impl From<&AuditLogEntry> for AuditLogEntryResponse {
+    fn from(entry: &AuditLogEntry) -> Self {
+        Self {
+            id: entry.id.clone(),
+            principal: entry.principal.clone(),
+            action: entry.action.clone(),
+            resource_type: entry.resource_type.clone(),
+            resource_id: entry.resource_id.clone(),
+            details: entry.details.clone(),
+            created_at: entry.created_at,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::models::enums::{CHANNEL_TYPE_ASYNC, CHANNEL_TYPE_SYNC};
+    use crate::storage::models::{ChannelProtocol, EntityStatus};
+    use chrono::NaiveDate;
+
+    fn sample_datetime() -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(2025, 1, 1)
+            .expect("test")
+            .and_hms_opt(0, 0, 0)
+            .expect("test")
+    }
+
+    fn sample_workflow() -> Workflow {
+        Workflow {
+            workflow_id: "wf-1".to_string(),
+            name: "Test Workflow".to_string(),
+            description: Some("A test workflow".to_string()),
+            priority: 10,
+            version: 1,
+            status: EntityStatus::Active.as_str().to_string(),
+            rollout_percentage: 100,
+            condition_json: r#"{"==": [1, 1]}"#.to_string(),
+            tasks_json: r#"[{"id": "t1", "function": "http_call"}]"#.to_string(),
+            tags: r#"["test"]"#.to_string(),
+            continue_on_error: false,
+            created_at: sample_datetime(),
+            updated_at: sample_datetime(),
+        }
+    }
+
+    fn sample_channel() -> Channel {
+        Channel {
+            channel_id: "ch-1".to_string(),
+            version: 1,
+            name: "orders".to_string(),
+            description: Some("Order processing channel".to_string()),
+            channel_type: CHANNEL_TYPE_SYNC.to_string(),
+            protocol: ChannelProtocol::Rest.as_str().to_string(),
+            methods: Some(r#"["POST"]"#.to_string()),
+            route_pattern: Some("/orders".to_string()),
+            topic: None,
+            consumer_group: None,
+            transport_config_json: "{}".to_string(),
+            workflow_id: Some("wf-1".to_string()),
+            config_json: r#"{"timeout_ms": 5000}"#.to_string(),
+            status: EntityStatus::Active.as_str().to_string(),
+            priority: 0,
+            created_at: sample_datetime(),
+            updated_at: sample_datetime(),
+        }
+    }
+
+    #[test]
+    fn test_workflow_response_try_from_valid() {
+        let workflow = sample_workflow();
+        let response = WorkflowResponse::try_from(&workflow).expect("test");
+        assert_eq!(response.workflow_id, "wf-1");
+        assert_eq!(response.name, "Test Workflow");
+        assert_eq!(response.priority, 10);
+        assert_eq!(response.version, 1);
+        assert_eq!(response.status, EntityStatus::Active.as_str());
+        assert_eq!(response.rollout_percentage, 100);
+        assert_eq!(response.condition, serde_json::json!({"==": [1, 1]}));
+        assert_eq!(
+            response.tasks,
+            serde_json::json!([{"id": "t1", "function": "http_call"}])
+        );
+        assert_eq!(response.tags, serde_json::json!(["test"]));
+        assert!(!response.continue_on_error);
+    }
+
+    #[test]
+    fn test_workflow_response_try_from_invalid_condition_json() {
+        let mut workflow = sample_workflow();
+        workflow.condition_json = "not valid json {{{".to_string();
+        let result = WorkflowResponse::try_from(&workflow);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_workflow_response_try_from_invalid_tasks_json() {
+        let mut workflow = sample_workflow();
+        workflow.tasks_json = "invalid".to_string();
+        let result = WorkflowResponse::try_from(&workflow);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_workflow_response_try_from_invalid_tags_json() {
+        let mut workflow = sample_workflow();
+        workflow.tags = "not json".to_string();
+        let result = WorkflowResponse::try_from(&workflow);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_workflow_response_try_from_no_description() {
+        let mut workflow = sample_workflow();
+        workflow.description = None;
+        let response = WorkflowResponse::try_from(&workflow).expect("test");
+        assert!(response.description.is_none());
+    }
+
+    #[test]
+    fn test_channel_response_try_from_valid() {
+        let channel = sample_channel();
+        let response = ChannelResponse::try_from(&channel).expect("test");
+        assert_eq!(response.channel_id, "ch-1");
+        assert_eq!(response.name, "orders");
+        assert_eq!(response.channel_type, CHANNEL_TYPE_SYNC);
+        assert_eq!(response.protocol, ChannelProtocol::Rest.as_str());
+        assert_eq!(response.methods, Some(serde_json::json!(["POST"])));
+        assert_eq!(response.route_pattern, Some("/orders".to_string()));
+        assert!(response.topic.is_none());
+        assert_eq!(response.workflow_id, Some("wf-1".to_string()));
+        assert_eq!(response.config, serde_json::json!({"timeout_ms": 5000}));
+    }
+
+    #[test]
+    fn test_channel_response_try_from_async() {
+        let mut channel = sample_channel();
+        channel.channel_type = CHANNEL_TYPE_ASYNC.to_string();
+        channel.protocol = ChannelProtocol::Kafka.as_str().to_string();
+        channel.methods = None;
+        channel.route_pattern = None;
+        channel.topic = Some("order.placed".to_string());
+        channel.consumer_group = Some("orion".to_string());
+        let response = ChannelResponse::try_from(&channel).expect("test");
+        assert_eq!(response.channel_type, CHANNEL_TYPE_ASYNC);
+        assert_eq!(response.protocol, ChannelProtocol::Kafka.as_str());
+        assert!(response.methods.is_none());
+        assert_eq!(response.topic, Some("order.placed".to_string()));
+    }
+
+    #[test]
+    fn test_channel_response_try_from_invalid_config_json() {
+        let mut channel = sample_channel();
+        channel.config_json = "bad json".to_string();
+        let result = ChannelResponse::try_from(&channel);
+        assert!(result.is_err());
+    }
+
+    // -- D27/D28: the conversions must reproduce the pre-split wire shape
+    // exactly. These pin the field sets that `Connector`, `AuditLogEntry`,
+    // `TraceDlqEntry` and `TraceDlqSummary` published when they were row
+    // structs that derived `Serialize` themselves.
+
+    fn field_names(value: &serde_json::Value) -> Vec<String> {
+        value
+            .as_object()
+            .expect("DTO serializes to an object")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn connector_response_keeps_the_row_wire_shape() {
+        let row = Connector {
+            id: "c-1".to_string(),
+            name: "pg".to_string(),
+            connector_type: "db".to_string(),
+            config_json: r#"{"password":"******"}"#.to_string(),
+            enabled: true,
+            created_at: sample_datetime(),
+            updated_at: sample_datetime(),
+        };
+        let value = serde_json::to_value(ConnectorResponse::from(&row)).expect("test");
+        assert_eq!(
+            field_names(&value),
+            [
+                "id",
+                "name",
+                "connector_type",
+                "config_json",
+                "enabled",
+                "created_at",
+                "updated_at"
+            ]
+        );
+        assert_eq!(value["config_json"], r#"{"password":"******"}"#);
+        assert_eq!(value["created_at"], "2025-01-01T00:00:00");
+    }
+
+    #[test]
+    fn audit_log_response_keeps_the_row_wire_shape() {
+        let row = AuditLogEntry {
+            id: "a-1".to_string(),
+            principal: "admin...".to_string(),
+            action: "activate".to_string(),
+            resource_type: "workflow".to_string(),
+            resource_id: "wf-1".to_string(),
+            details: None,
+            created_at: sample_datetime(),
+        };
+        let value = serde_json::to_value(AuditLogEntryResponse::from(&row)).expect("test");
+        assert_eq!(
+            field_names(&value),
+            [
+                "id",
+                "principal",
+                "action",
+                "resource_type",
+                "resource_id",
+                "details",
+                "created_at"
+            ]
+        );
+        // `details: None` stayed a present `null` before the split — no
+        // `skip_serializing_if` was involved.
+        assert!(value["details"].is_null());
+    }
+
+    #[test]
+    fn trace_dlq_responses_keep_the_row_wire_shapes() {
+        let entry = TraceDlqEntry {
+            id: "d-1".to_string(),
+            trace_id: "t-1".to_string(),
+            channel: "orders".to_string(),
+            payload_json: r#"{"a":1}"#.to_string(),
+            metadata_json: "{}".to_string(),
+            error_message: "boom".to_string(),
+            retry_count: 1,
+            max_retries: 3,
+            next_retry_at: sample_datetime(),
+            created_at: sample_datetime(),
+            updated_at: sample_datetime(),
+        };
+        let value = serde_json::to_value(TraceDlqEntryResponse::from(&entry)).expect("test");
+        assert_eq!(
+            field_names(&value),
+            [
+                "id",
+                "trace_id",
+                "channel",
+                "payload_json",
+                "metadata_json",
+                "error_message",
+                "retry_count",
+                "max_retries",
+                "next_retry_at",
+                "created_at",
+                "updated_at"
+            ]
+        );
+
+        let summary = TraceDlqSummary {
+            id: "d-1".to_string(),
+            trace_id: "t-1".to_string(),
+            channel: "orders".to_string(),
+            error_message: "boom".to_string(),
+            retry_count: 1,
+            max_retries: 3,
+            next_retry_at: sample_datetime(),
+            created_at: sample_datetime(),
+            updated_at: sample_datetime(),
+        };
+        let value = serde_json::to_value(TraceDlqSummaryResponse::from(&summary)).expect("test");
+        assert_eq!(
+            field_names(&value),
+            [
+                "id",
+                "trace_id",
+                "channel",
+                "error_message",
+                "retry_count",
+                "max_retries",
+                "next_retry_at",
+                "created_at",
+                "updated_at"
+            ]
+        );
+        // The listing shape must stay payload-free.
+        assert!(value.get("payload_json").is_none());
+        assert!(value.get("metadata_json").is_none());
+    }
+}

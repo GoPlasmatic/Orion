@@ -97,7 +97,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PaginatedEnvelope_AuditLogEntry"
+                  "$ref": "#/components/schemas/PaginatedEnvelope_AuditLogEntryResponse"
                 }
               }
             }
@@ -1044,7 +1044,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DataEnvelope_Connector"
+                  "$ref": "#/components/schemas/DataEnvelope_ConnectorResponse"
                 }
               }
             }
@@ -1302,7 +1302,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DataEnvelope_Connector"
+                  "$ref": "#/components/schemas/DataEnvelope_ConnectorResponse"
                 }
               }
             }
@@ -1379,7 +1379,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DataEnvelope_Connector"
+                  "$ref": "#/components/schemas/DataEnvelope_ConnectorResponse"
                 }
               }
             }
@@ -1691,7 +1691,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PaginatedEnvelope_TraceDlqEntry"
+                  "$ref": "#/components/schemas/PaginatedEnvelope_TraceDlqSummaryResponse"
                 }
               }
             }
@@ -1818,7 +1818,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DataEnvelope_TraceDlqEntry"
+                  "$ref": "#/components/schemas/DataEnvelope_TraceDlqEntryResponse"
                 }
               }
             }
@@ -1887,7 +1887,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DataEnvelope_TraceDlqEntry"
+                  "$ref": "#/components/schemas/DataEnvelope_TraceDlqEntryResponse"
                 }
               }
             }
@@ -3586,8 +3586,9 @@
           }
         }
       },
-      "AuditLogEntry": {
+      "AuditLogEntryResponse": {
         "type": "object",
+        "description": "One row of `GET /api/v1/admin/audit-logs`.",
         "required": [
           "id",
           "principal",
@@ -3837,46 +3838,9 @@
           }
         }
       },
-      "Connector": {
-        "type": "object",
-        "required": [
-          "id",
-          "name",
-          "connector_type",
-          "config_json",
-          "enabled",
-          "created_at",
-          "updated_at"
-        ],
-        "properties": {
-          "config_json": {
-            "type": "string"
-          },
-          "connector_type": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time"
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "id": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "updated_at": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
       "ConnectorListItem": {
         "type": "object",
-        "description": "One row of `GET /api/v1/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::Connector`] because\n`PaginatedEnvelope<Connector>` would under-describe the row by exactly the\nthree fields an operator reads the list for.",
+        "description": "One row of `GET /api/v1/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause `PaginatedEnvelope<ConnectorResponse>` would under-describe the row\nby exactly the three fields an operator reads the list for.",
         "required": [
           "id",
           "name",
@@ -3928,6 +3892,45 @@
           },
           "updated_at": {
             "type": "string"
+          }
+        }
+      },
+      "ConnectorResponse": {
+        "type": "object",
+        "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but the\nonly supported way to build one is [`crate::connector::mask_connector`],\nwhich replaces every secret with `******` first. The row struct it is built\nfrom carries the *unmasked* config, and cannot be serialized (D27), so a\nhandler that forgets to mask no longer compiles.",
+        "required": [
+          "id",
+          "name",
+          "connector_type",
+          "config_json",
+          "enabled",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "config_json": {
+            "type": "string",
+            "description": "Connector config with every secret replaced by `******`."
+          },
+          "connector_type": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
           }
         }
       },
@@ -4274,7 +4277,7 @@
           }
         }
       },
-      "DataEnvelope_Connector": {
+      "DataEnvelope_ConnectorResponse": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
@@ -4283,6 +4286,7 @@
         "properties": {
           "data": {
             "type": "object",
+            "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but the\nonly supported way to build one is [`crate::connector::mask_connector`],\nwhich replaces every secret with `******` first. The row struct it is built\nfrom carries the *unmasked* config, and cannot be serialized (D27), so a\nhandler that forgets to mask no longer compiles.",
             "required": [
               "id",
               "name",
@@ -4294,7 +4298,8 @@
             ],
             "properties": {
               "config_json": {
-                "type": "string"
+                "type": "string",
+                "description": "Connector config with every secret replaced by `******`."
               },
               "connector_type": {
                 "type": "string"
@@ -4540,7 +4545,7 @@
           }
         }
       },
-      "DataEnvelope_TraceDlqEntry": {
+      "DataEnvelope_TraceDlqEntryResponse": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
         "required": [
@@ -4549,6 +4554,7 @@
         "properties": {
           "data": {
             "type": "object",
+            "description": "One DLQ entry with its failed payload — `GET`/`requeue` on a single id.",
             "required": [
               "id",
               "trace_id",
@@ -5102,7 +5108,7 @@
           }
         }
       },
-      "PaginatedEnvelope_AuditLogEntry": {
+      "PaginatedEnvelope_AuditLogEntryResponse": {
         "type": "object",
         "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
         "required": [
@@ -5116,6 +5122,7 @@
             "type": "array",
             "items": {
               "type": "object",
+              "description": "One row of `GET /api/v1/admin/audit-logs`.",
               "required": [
                 "id",
                 "principal",
@@ -5293,7 +5300,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "One row of `GET /api/v1/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::Connector`] because\n`PaginatedEnvelope<Connector>` would under-describe the row by exactly the\nthree fields an operator reads the list for.",
+              "description": "One row of `GET /api/v1/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause `PaginatedEnvelope<ConnectorResponse>` would under-describe the row\nby exactly the three fields an operator reads the list for.",
               "required": [
                 "id",
                 "name",
@@ -5364,7 +5371,7 @@
           }
         }
       },
-      "PaginatedEnvelope_TraceDlqEntry": {
+      "PaginatedEnvelope_TraceDlqSummaryResponse": {
         "type": "object",
         "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
         "required": [
@@ -5378,12 +5385,11 @@
             "type": "array",
             "items": {
               "type": "object",
+              "description": "One row of the DLQ listing: [`TraceDlqEntryResponse`] minus the payloads.\n\nThe two differ on purpose — a listing that carried `payload_json` would\nreturn every failed request's body in one response.",
               "required": [
                 "id",
                 "trace_id",
                 "channel",
-                "payload_json",
-                "metadata_json",
                 "error_message",
                 "retry_count",
                 "max_retries",
@@ -5409,15 +5415,9 @@
                   "type": "integer",
                   "format": "int64"
                 },
-                "metadata_json": {
-                  "type": "string"
-                },
                 "next_retry_at": {
                   "type": "string",
                   "format": "date-time"
-                },
-                "payload_json": {
-                  "type": "string"
                 },
                 "retry_count": {
                   "type": "integer",
@@ -5827,8 +5827,9 @@
           }
         }
       },
-      "TraceDlqEntry": {
+      "TraceDlqEntryResponse": {
         "type": "object",
+        "description": "One DLQ entry with its failed payload — `GET`/`requeue` on a single id.",
         "required": [
           "id",
           "trace_id",
@@ -5869,6 +5870,55 @@
           },
           "payload_json": {
             "type": "string"
+          },
+          "retry_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "trace_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "TraceDlqSummaryResponse": {
+        "type": "object",
+        "description": "One row of the DLQ listing: [`TraceDlqEntryResponse`] minus the payloads.\n\nThe two differ on purpose — a listing that carried `payload_json` would\nreturn every failed request's body in one response.",
+        "required": [
+          "id",
+          "trace_id",
+          "channel",
+          "error_message",
+          "retry_count",
+          "max_retries",
+          "next_retry_at",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "channel": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "error_message": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "max_retries": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "next_retry_at": {
+            "type": "string",
+            "format": "date-time"
           },
           "retry_count": {
             "type": "integer",

@@ -13,12 +13,13 @@ use crate::server::routes::openapi::{
 };
 use crate::server::routes::response_helpers::{created_response, data_response, paginated_into};
 use crate::server::state::AppState;
-use crate::storage::models::{StatusAction, WorkflowResponse};
+use crate::storage::models::WorkflowResponse;
 use crate::storage::repositories::workflows::{
     CreateWorkflowRequest, RolloutUpdateRequest, StatusChangeRequest, UpdateWorkflowRequest,
     WorkflowFilter,
 };
 
+use super::StatusAction;
 use super::VersionFilter;
 use super::audit_and_reload;
 use super::audit_log_draft_only;

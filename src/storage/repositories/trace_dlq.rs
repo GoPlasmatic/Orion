@@ -2,30 +2,16 @@ use async_trait::async_trait;
 use sea_query::{Asterisk, Condition, Expr, Query, SimpleExpr};
 
 use crate::errors::OrionError;
-use crate::storage::models::TraceDlqEntry;
+// D28: both row shapes this repository reads — `TraceDlqEntry` and the
+// payload-free `TraceDlqSummary` — live in `storage::models::rows`, like every
+// other row struct. Only the request-side filter is defined here.
+use crate::storage::models::{TraceDlqEntry, TraceDlqSummary};
 use crate::storage::schema::TraceDlq;
 use crate::storage::{DbBackend, DbPool, build_sqlx};
 
 use super::helpers::PaginatedResult;
 
-// -- DTOs --
-
-/// List-view projection. Deliberately omits `payload_json` / `metadata_json`:
-/// a DLQ listing would otherwise dump every failed request's body (and, until
-/// S10 lands, its headers) into one response. Payloads are served one at a
-/// time by `get_by_id`.
-#[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
-pub struct TraceDlqSummary {
-    pub id: String,
-    pub trace_id: String,
-    pub channel: String,
-    pub error_message: String,
-    pub retry_count: i64,
-    pub max_retries: i64,
-    pub next_retry_at: chrono::NaiveDateTime,
-    pub created_at: chrono::NaiveDateTime,
-    pub updated_at: chrono::NaiveDateTime,
-}
+// -- Request DTOs --
 
 #[derive(Debug, Clone, Default)]
 pub struct TraceDlqFilter {

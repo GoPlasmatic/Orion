@@ -25,6 +25,8 @@
 use serde_json::Value;
 use std::collections::HashMap;
 
+use crate::storage::models::ConnectorResponse;
+
 pub(crate) const MASK: &str = "******";
 
 /// Substrings that make a key a secret wherever it appears in the tree.
@@ -375,11 +377,14 @@ pub fn mask_connector_secrets(config_json: &str) -> String {
     serde_json::to_string(&val).unwrap_or_else(|_| config_json.to_string())
 }
 
-/// Return a connector model with secrets masked.
-pub fn mask_connector(
-    connector: &crate::storage::models::Connector,
-) -> crate::storage::models::Connector {
-    let mut masked = connector.clone();
+/// Convert a stored connector row into the shape the admin API serves, with
+/// every secret in `config_json` replaced by `******`.
+///
+/// This is the only constructor of [`ConnectorResponse`], and the row it reads
+/// from cannot be serialized (D27) — so masking is not a step a handler can
+/// skip, it is the only way to get a connector onto the wire at all.
+pub fn mask_connector(connector: &crate::storage::models::Connector) -> ConnectorResponse {
+    let mut masked = ConnectorResponse::from(connector);
     masked.config_json = mask_connector_secrets(&masked.config_json);
     masked
 }

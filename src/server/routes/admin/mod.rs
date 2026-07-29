@@ -20,6 +20,34 @@ use crate::server::admin_auth::AdminPrincipal;
 use crate::server::state::AppState;
 use crate::storage::repositories::audit_logs::AuditLogRepository;
 
+/// A status-change request narrowed to the two transitions the API offers,
+/// so the handler's `match` is exhaustive over what can actually happen.
+///
+/// Lives here rather than in `storage::models` (D28): nothing below the route
+/// layer has an opinion about which transitions an operator may request —
+/// `EntityStatus` is the domain vocabulary, this is the handler's reading of a
+/// request body.
+#[derive(Debug)]
+pub(crate) enum StatusAction {
+    Activate,
+    Archive,
+}
+
+impl StatusAction {
+    pub(crate) fn parse(
+        status: crate::storage::models::EntityStatus,
+    ) -> Result<Self, crate::errors::OrionError> {
+        use crate::storage::models::EntityStatus;
+        match status {
+            EntityStatus::Active => Ok(Self::Activate),
+            EntityStatus::Archived => Ok(Self::Archive),
+            EntityStatus::Draft => Err(crate::errors::OrionError::BadRequest(
+                "Invalid status transition to 'draft'. Use 'active' or 'archived'".to_string(),
+            )),
+        }
+    }
+}
+
 /// Largest batch any `/import` endpoint accepts.
 ///
 /// Each item is a separate in-request DB round-trip holding a connection, plus

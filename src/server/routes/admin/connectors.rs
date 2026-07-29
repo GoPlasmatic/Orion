@@ -15,7 +15,7 @@ use crate::server::routes::response_helpers::{
     created_response, data_response, paginated_response,
 };
 use crate::server::state::AppState;
-use crate::storage::models::Connector;
+use crate::storage::models::ConnectorResponse;
 use crate::storage::repositories::connectors::{
     ConnectorFilter, CreateConnectorRequest, UpdateConnectorRequest,
 };
@@ -135,7 +135,7 @@ pub(crate) async fn list_connectors(
     tag = "Connectors",
     request_body = CreateConnectorRequest,
     responses(
-        (status = 201, description = "Connector created", body = DataEnvelope<Connector>),
+        (status = 201, description = "Connector created", body = DataEnvelope<ConnectorResponse>),
         (status = 409, description = "Connector name conflict"),
     )
 )]
@@ -165,7 +165,7 @@ pub(crate) async fn create_connector(
     tag = "Connectors",
     params(("id" = String, Path, description = "Connector ID")),
     responses(
-        (status = 200, description = "Connector details", body = DataEnvelope<Connector>),
+        (status = 200, description = "Connector details", body = DataEnvelope<ConnectorResponse>),
         (status = 404, description = "Connector not found"),
     )
 )]
@@ -186,7 +186,7 @@ pub(crate) async fn get_connector(
     params(("id" = String, Path, description = "Connector ID")),
     request_body = UpdateConnectorRequest,
     responses(
-        (status = 200, description = "Connector updated", body = DataEnvelope<Connector>),
+        (status = 200, description = "Connector updated", body = DataEnvelope<ConnectorResponse>),
         (status = 404, description = "Connector not found"),
         (status = 400, description = "Rename refused: an active workflow references the old name"),
     )

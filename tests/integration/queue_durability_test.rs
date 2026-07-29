@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use orion::errors::OrionError;
-use orion::storage::models::Trace;
+use orion::storage::models::{Trace, TraceListRow};
 use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqFilter};
 use orion::storage::repositories::traces::{
     SqlTraceRepository, TraceCompletedRow, TraceFilter, TraceRepository, TraceResultRow,
@@ -96,7 +96,7 @@ impl TraceRepository for FailFirstRunningWrite {
     async fn list_paginated(
         &self,
         filter: &TraceFilter,
-    ) -> Result<PaginatedResult<Trace>, OrionError> {
+    ) -> Result<PaginatedResult<TraceListRow>, OrionError> {
         self.inner.list_paginated(filter).await
     }
     async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError> {
@@ -270,7 +270,7 @@ impl TraceRepository for FailAllResultWrites {
     async fn list_paginated(
         &self,
         filter: &TraceFilter,
-    ) -> Result<PaginatedResult<Trace>, OrionError> {
+    ) -> Result<PaginatedResult<TraceListRow>, OrionError> {
         self.inner.list_paginated(filter).await
     }
     async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError> {
@@ -494,7 +494,7 @@ impl TraceRepository for ConcurrencyProbeRepo {
     async fn list_paginated(
         &self,
         _filter: &TraceFilter,
-    ) -> Result<PaginatedResult<Trace>, OrionError> {
+    ) -> Result<PaginatedResult<TraceListRow>, OrionError> {
         unimplemented!()
     }
     async fn delete_older_than(&self, _hours: u64) -> Result<u64, OrionError> {
@@ -606,7 +606,7 @@ impl TraceRepository for FlakyUpdateStatusRepo {
     async fn list_paginated(
         &self,
         _filter: &TraceFilter,
-    ) -> Result<PaginatedResult<Trace>, OrionError> {
+    ) -> Result<PaginatedResult<TraceListRow>, OrionError> {
         unimplemented!()
     }
     async fn delete_older_than(&self, _hours: u64) -> Result<u64, OrionError> {

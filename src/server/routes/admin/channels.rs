@@ -9,11 +9,12 @@ use crate::server::extract::{OrionJson, OrionQuery};
 use crate::server::routes::openapi::{DataEnvelope, ImportResult, PaginatedEnvelope};
 use crate::server::routes::response_helpers::{created_response, data_response, paginated_into};
 use crate::server::state::AppState;
-use crate::storage::models::{ChannelResponse, StatusAction};
+use crate::storage::models::ChannelResponse;
 use crate::storage::repositories::channels::{
     ChannelFilter, ChannelStatusChangeRequest, CreateChannelRequest, UpdateChannelRequest,
 };
 
+use super::StatusAction;
 use super::VersionFilter;
 use super::audit_and_reload;
 use super::audit_log_draft_only;

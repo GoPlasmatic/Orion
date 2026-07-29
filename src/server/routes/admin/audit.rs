@@ -8,7 +8,7 @@ use crate::server::extract::OrionQuery;
 use crate::server::routes::openapi::PaginatedEnvelope;
 use crate::server::routes::response_helpers::paginated_response;
 use crate::server::state::AppState;
-use crate::storage::models::AuditLogEntry;
+use crate::storage::models::AuditLogEntryResponse;
 use crate::storage::repositories::audit_logs::AuditLogFilter;
 
 // ============================================================
@@ -72,7 +72,7 @@ fn parse_timestamp(field: &str, raw: &str) -> Result<chrono::NaiveDateTime, Orio
         ("end_time" = Option<String>, Query, description = "Exclusive upper bound on `created_at`, RFC 3339"),
     ),
     responses(
-        (status = 200, description = "Paginated audit log entries", body = PaginatedEnvelope<AuditLogEntry>),
+        (status = 200, description = "Paginated audit log entries", body = PaginatedEnvelope<AuditLogEntryResponse>),
         (status = 400, description = "Unknown query parameter or malformed timestamp"),
     )
 )]
@@ -101,9 +101,11 @@ pub(crate) async fn list_audit_logs(
     };
 
     let page = state.audit_log_repo.list_paginated(&filter).await?;
+    let rows: Vec<AuditLogEntryResponse> =
+        page.data.iter().map(AuditLogEntryResponse::from).collect();
 
     Ok(paginated_response(
-        page.data,
+        rows,
         page.total,
         page.limit,
         page.offset,
