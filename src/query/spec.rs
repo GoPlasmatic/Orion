@@ -21,14 +21,23 @@ pub struct QuerySpec {
     pub include: Vec<IncludeSpec>,
 }
 
-/// A related collection to nest in the result: `"orders": { "fields": [..], "limit": n }`.
+/// A related collection to nest in the result:
+/// `"orders": { "fields": [..], "sort": [{ "id": "asc" }], "limit": n }`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct IncludeSpec {
     /// Relation name (declared in the schema) and the output field name.
     pub relation: String,
     /// Child fields to return; empty means all.
     pub fields: Vec<String>,
-    /// Max related rows per parent.
+    /// Ordering of the children within each parent. Required by the SQL planner
+    /// (F27): the per-parent page is cut in SQL, so without an order key "the
+    /// first `n` children" is whatever the plan happened to emit. Left empty
+    /// here rather than refused, so a document store — which cannot answer an
+    /// include at all — reaches its capability gate first.
+    pub sort: Vec<SortKey>,
+    /// Max related rows per parent. Absent means `query.default_limit`, and a
+    /// value above `query.max_limit` is rejected — the same policy the
+    /// envelope's own `limit` gets.
     pub limit: Option<u64>,
 }
 
@@ -96,7 +105,7 @@ pub fn parse(query: &Json) -> Result<QuerySpec, QueryError> {
         Some(_) => return Err(invalid("'fields' must be an array of strings")),
     };
 
-    let sort = parse_sort(obj.get("sort"))?;
+    let sort = parse_sort(obj.get("sort"), "sort")?;
     let limit = parse_u64(obj.get("limit"), "limit")?;
     let skip = parse_u64(obj.get("skip"), "skip")?;
     let include = parse_include(obj.get("include"))?;
@@ -129,10 +138,10 @@ fn parse_include(v: Option<&Json>) -> Result<Vec<IncludeSpec>, QueryError> {
             .ok_or_else(|| invalid(format!("include.{relation} must be an object")))?;
         if let Some(unknown) = sel
             .keys()
-            .find(|k| !matches!(k.as_str(), "fields" | "limit"))
+            .find(|k| !matches!(k.as_str(), "fields" | "sort" | "limit"))
         {
             return Err(invalid(format!(
-                "unknown key '{unknown}' in include.{relation} (expected fields/limit)"
+                "unknown key '{unknown}' in include.{relation} (expected fields/sort/limit)"
             )));
         }
         let fields = match sel.get("fields") {
@@ -153,31 +162,42 @@ fn parse_include(v: Option<&Json>) -> Result<Vec<IncludeSpec>, QueryError> {
                 )));
             }
         };
+        let sort = parse_sort(sel.get("sort"), &format!("include.{relation}.sort"))?;
         let limit = parse_u64(sel.get("limit"), &format!("include.{relation}.limit"))?;
+        // The "an include must state a sort" rule (F27) is *not* checked here.
+        // It is a property of the SQL renderer — the per-parent page is cut with
+        // `ROW_NUMBER() OVER (PARTITION BY …)`, which needs an order key — and
+        // this function runs for every backend. Enforcing it at parse time made
+        // a MongoDB or Elasticsearch caller fail with "include.orders requires a
+        // 'sort'" instead of the capability error that tells them the real
+        // answer (include is SQL-only). See `query::plan_sql`.
         out.push(IncludeSpec {
             relation: relation.clone(),
             fields,
+            sort,
             limit,
         });
     }
     Ok(out)
 }
 
-fn parse_sort(v: Option<&Json>) -> Result<Vec<SortKey>, QueryError> {
+/// Parse a sort array. `at` names the location for error messages (`sort` at the
+/// envelope root, `include.<rel>.sort` for a nested collection).
+fn parse_sort(v: Option<&Json>, at: &str) -> Result<Vec<SortKey>, QueryError> {
     let arr = match v {
         None | Some(Json::Null) => return Ok(Vec::new()),
         Some(Json::Array(a)) => a,
-        Some(_) => return Err(invalid("'sort' must be an array")),
+        Some(_) => return Err(invalid(format!("'{at}' must be an array"))),
     };
     let mut out = Vec::with_capacity(arr.len());
     for (i, entry) in arr.iter().enumerate() {
         let obj = entry.as_object().ok_or_else(|| {
             invalid(format!(
-                "sort[{i}] must be an object like {{\"field\":\"asc\"}}"
+                "{at}[{i}] must be an object like {{\"field\":\"asc\"}}"
             ))
         })?;
         if obj.len() != 1 {
-            return Err(invalid(format!("sort[{i}] must have exactly one key")));
+            return Err(invalid(format!("{at}[{i}] must have exactly one key")));
         }
         let (field, dirv) = obj.iter().next().expect("map has exactly one entry");
         let dir = match dirv.as_str() {
@@ -185,7 +205,7 @@ fn parse_sort(v: Option<&Json>) -> Result<Vec<SortKey>, QueryError> {
             Some("desc") => SortDir::Desc,
             _ => {
                 return Err(invalid(format!(
-                    "sort[{i}].{field} must be \"asc\" or \"desc\""
+                    "{at}[{i}].{field} must be \"asc\" or \"desc\""
                 )));
             }
         };
@@ -237,8 +257,8 @@ impl QuerySpec {
                 .resolve_field(&self.source, &key.field, &format!("sort[{i}]"))?
                 .physical;
         }
-        // `include.fields` name columns on the *related* entity, so they
-        // resolve against the relation's target, not the root.
+        // `include.fields` and `include.sort` name columns on the *related*
+        // entity, so they resolve against the relation's target, not the root.
         for inc in out.include.iter_mut() {
             let target = reg
                 .resolve_relation(&self.source, &inc.relation, "include")?
@@ -249,6 +269,15 @@ impl QuerySpec {
                         &target,
                         field,
                         &format!("include.{}.fields[{i}]", inc.relation),
+                    )?
+                    .physical;
+            }
+            for (i, key) in inc.sort.iter_mut().enumerate() {
+                key.field = reg
+                    .resolve_field(
+                        &target,
+                        &key.field,
+                        &format!("include.{}.sort[{i}]", inc.relation),
                     )?
                     .physical;
             }
@@ -290,6 +319,21 @@ mod tests {
         assert!(err.to_string().contains("include.orders"), "{err}");
     }
 
+    /// F27's "an include must state a sort" is the SQL planner's rule, not the
+    /// envelope's: parsing accepts an unordered include so that the document
+    /// stores — which cannot answer *any* include — still reach their capability
+    /// gate and say so. `query::plan_sql` rejects it (see
+    /// `backend::sql::tests::test_include_without_sort_is_rejected`).
+    #[test]
+    fn an_unordered_include_parses_and_is_left_to_the_backend() {
+        let spec = parse(&json!({
+            "source": "users",
+            "include": { "orders": { "fields": ["id"], "limit": 5 } }
+        }))
+        .expect("parsing is backend-neutral");
+        assert!(spec.include[0].sort.is_empty());
+    }
+
     #[test]
     fn the_full_envelope_still_parses() {
         let spec = parse(&json!({
@@ -299,7 +343,7 @@ mod tests {
             "sort": [{ "name": "asc" }],
             "limit": 10,
             "skip": 20,
-            "include": { "orders": { "fields": ["total"], "limit": 5 } }
+            "include": { "orders": { "fields": ["total"], "sort": [{ "id": "asc" }], "limit": 5 } }
         }))
         .expect("every documented key must be known");
         assert_eq!(spec.source, "users");

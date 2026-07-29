@@ -431,7 +431,9 @@ async fn test_data_query_include_nested() {
                     "source": "users",
                     "fields": ["id", "name"],
                     "sort": [{ "id": "asc" }],
-                    "include": { "orders": { "fields": ["id", "total"], "limit": 5 } }
+                    "include": { "orders": {
+                        "fields": ["id", "total"], "sort": [{ "id": "asc" }], "limit": 5
+                    } }
                 },
                 "schema": { "entities": { "users": { "relations": {
                     "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
@@ -463,6 +465,94 @@ async fn test_data_query_include_nested() {
     // u2 (Bob) has one nested order.
     assert_eq!(rows[1]["id"], "u2");
     assert_eq!(rows[1]["orders"].as_array().expect("orders array").len(), 1);
+}
+
+/// W14: the parent key and the child foreign key come out of two different
+/// columns, and a driver renders a column's value from its SQL *type*. Here
+/// `users.id` is `INTEGER` and `orders.user_id` is `TEXT`, so the same join key
+/// arrives as `1` on the parent side and `"1"` on the child side. Grouping on
+/// the value's `serde_json` text therefore matched nothing: every child array
+/// came back empty, with no error and no warning.
+///
+/// SQLite's comparison affinity still makes the child query itself match — a
+/// `TEXT` column compared against a bound integer has TEXT affinity applied to
+/// the parameter, so `WHERE user_id IN (1, 2)` finds the rows stored as `'1'`
+/// and `'2'`. The rows are fetched; it was the in-memory join that dropped them.
+/// Grouping now goes through `GroupKey`, which normalises integral values
+/// however the driver rendered them.
+#[tokio::test]
+async fn test_data_query_include_joins_keys_the_driver_rendered_differently() {
+    let app = common::test_app().await;
+    let conn = "dq-inc-mixed";
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite(conn, "sqlite:file:dq_inc_mixed?mode=memory&cache=shared"),
+    )
+    .await;
+
+    let tasks = json!([
+        // The whole point: INTEGER on the parent, TEXT on the child.
+        ddl(conn, "t_cu", "CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)"),
+        ddl(conn, "t_co", "CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, user_id TEXT, total INTEGER)"),
+        ddl(conn, "t_u1", "INSERT INTO users (id, name) VALUES (1, 'Alice')"),
+        ddl(conn, "t_u2", "INSERT INTO users (id, name) VALUES (2, 'Bob')"),
+        ddl(conn, "t_o1", "INSERT INTO orders (id, user_id, total) VALUES ('o1', '1', 150)"),
+        ddl(conn, "t_o2", "INSERT INTO orders (id, user_id, total) VALUES ('o2', '1', 50)"),
+        ddl(conn, "t_o3", "INSERT INTO orders (id, user_id, total) VALUES ('o3', '2', 10)"),
+        {
+            "id": "t_q", "name": "query",
+            "function": { "name": "data_query", "input": {
+                "connector": conn,
+                "query": {
+                    "source": "users",
+                    "fields": ["id", "name"],
+                    "sort": [{ "id": "asc" }],
+                    "include": { "orders": {
+                        "fields": ["total"], "sort": [{ "id": "asc" }], "limit": 5
+                    } }
+                },
+                "schema": { "entities": { "users": { "relations": {
+                    "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
+                } } } },
+                "output": "data.result"
+            } }
+        }
+    ]);
+    common::create_and_activate_channel(
+        &app,
+        "ch-dq-inc-mixed",
+        common::workflow_with_tasks("dq", tasks),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dq-inc-mixed", json!({ "data": {} })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "ok", "body = {body}");
+    let rows = body["data"]["result"].as_array().expect("array");
+    assert_eq!(rows.len(), 2, "body = {body}");
+
+    // The renderings really do differ — if they ever stop differing this test
+    // has stopped testing anything.
+    assert_eq!(
+        rows[0]["id"],
+        json!(1),
+        "parent key must be a number: {body}"
+    );
+
+    let alice: Vec<i64> = rows[0]["orders"]
+        .as_array()
+        .expect("orders array")
+        .iter()
+        .map(|o| o["total"].as_i64().expect("total"))
+        .collect();
+    assert_eq!(alice, vec![150, 50], "body = {body}");
+    let bob: Vec<i64> = rows[1]["orders"]
+        .as_array()
+        .expect("orders array")
+        .iter()
+        .map(|o| o["total"].as_i64().expect("total"))
+        .collect();
+    assert_eq!(bob, vec![10], "body = {body}");
 }
 
 // ---------------------------------------------------------------------------

@@ -331,7 +331,7 @@ jobs:
       # on the full module::test path — every module with #[ignore] tests must
       # appear here by module name, or its tests never run anywhere.
       - name: Run container-backed integration tests
-        run: cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test
+        run: cargo test --test integration -- --ignored data_parity_test data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test
 
       # Kafka gets its own step: each test starts its own broker container, and
       # sharing one invocation with the Postgres/MySQL/Mongo/ES containers

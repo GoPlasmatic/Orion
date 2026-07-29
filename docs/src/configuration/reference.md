@@ -253,6 +253,8 @@ Safety bounds for the portable `data_query` / `data_write` handlers. Requests ov
 | `write.max_rows` | `1000` | `ORION_WRITE__MAX_ROWS` | Hard cap on rows per bulk insert or upsert. |
 | `write.allow_unfiltered` | `false` | `ORION_WRITE__ALLOW_UNFILTERED` | Leave `false` unless a workflow genuinely needs unfiltered `update`/`delete` — which still also requires `"all": true` on the call itself. |
 
+**`include` pages too.** `query.default_limit` and `query.max_limit` govern an `include`'s nested page as well, applied **per parent**: an `include` with no `limit` fetches `default_limit` children *for each parent row*, and one above `max_limit` is rejected. A page of 100 parents with an unbounded-looking `include` is therefore bounded at `100 × default_limit` child rows — size the two together.
+
 ## Kafka
 
 Consumer and producer are compiled into every binary and gated at runtime by `kafka.enabled`.

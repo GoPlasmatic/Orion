@@ -105,7 +105,7 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows \
           "query": {
             "source": "customers",
             "filter": { "==": [{ "field": "id" }, { "param": "customer_id" }] },
-            "include": { "orders": { "fields": ["id", "item", "total"], "limit": 10 } }
+            "include": { "orders": { "fields": ["id", "item", "total"], "sort": [{ "id": "desc" }], "limit": 10 } }
           },
           "params": { "customer_id": { "var": "data.req.customer_id" } },
           "schema": {
@@ -137,6 +137,9 @@ How the pieces fit:
   is what powers `"include": { "orders": … }` (and `some`/`all`/`none`
   filters over related records). Without a schema the dialect runs in
   identity mode — names pass through as-is.
+- **An `include` states its own `sort`.** The per-customer page is cut inside
+  the database, so "the latest 10 orders" needs an order key; without one the
+  ten you get would not be a defined answer.
 - **`"returning": ["id"]`** captures the generated key from the insert.
 
 ## 4. Expose it as a service

@@ -7,18 +7,27 @@
 //! injection-safe and quoted per dialect.
 
 use sea_query::{
-    Alias, Asterisk, Condition, Expr, LikeExpr, MysqlQueryBuilder, NullOrdering, OnConflict, Order,
-    PostgresQueryBuilder, Query, SelectStatement, SimpleExpr, SqliteQueryBuilder,
-    Value as SeaValue,
+    Alias, Asterisk, Condition, Expr, Func, LikeExpr, MysqlQueryBuilder, NullOrdering, OnConflict,
+    Order, OrderedStatement, PostgresQueryBuilder, Query, SelectStatement, SimpleExpr,
+    SqliteQueryBuilder, Value as SeaValue, WindowStatement,
 };
 use sea_query_binder::{SqlxBinder, SqlxValues};
 
 use crate::config::QueryConfig;
+use crate::query::IncludePlan;
 use crate::query::backend::SqlDialect;
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, FieldRef, Quant, RelRef, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir, SortKey};
 use crate::query::write::{ConflictAction, ResolvedWrite, WriteError, WriteOp};
+
+/// Column the include's window function writes its per-parent row number into.
+/// Prefixed so it cannot collide with a real column; stripped from the output.
+pub const INCLUDE_RANK_COLUMN: &str = "__orion_include_rank";
+
+/// Alias for the include's inner (windowed) sub-select. A window function is not
+/// usable in `WHERE`, so the rank is computed in a subquery and filtered outside.
+const INCLUDE_SUBQUERY_ALIAS: &str = "__orion_include";
 
 /// Build a `SelectStatement` from the envelope and lowered condition, enforcing
 /// the page bounds (`LimitExceeded` / `SkipExceeded` when over the configured
@@ -48,7 +57,7 @@ pub fn render(
     if !matches!(cond, Cond::True) {
         stmt.cond_where(render_expr(cond, root_table)?);
     }
-    apply_sort(&mut stmt, &spec.sort, dialect);
+    apply_sort_keys(&mut stmt, &spec.sort, dialect);
     stmt.limit(limit);
     if let Some(skip) = skip {
         stmt.offset(skip);
@@ -67,31 +76,75 @@ pub fn build_for(dialect: SqlDialect, stmt: &SelectStatement) -> (String, SqlxVa
     }
 }
 
-/// Build the child query for an `include`: `SELECT <fields>, <foreign> FROM
-/// <target> WHERE <foreign> IN (<keys>)`. The foreign key is always selected so
-/// results can be grouped back to their parents. Callers must skip this when
-/// `keys` is empty (an empty `IN` is not built here).
+/// Build the child query for an `include`, with the per-parent page cut **in
+/// SQL** (F27):
+///
+/// ```sql
+/// SELECT <projection> FROM (
+///   SELECT <projection>,
+///          ROW_NUMBER() OVER (PARTITION BY <foreign> ORDER BY <sort>) AS <rank>
+///   FROM <target> WHERE <foreign> IN (<keys>)
+/// ) AS <alias>
+/// WHERE <rank> <= <limit>
+/// ORDER BY <sort>
+/// ```
+///
+/// This used to be a bare `SELECT … WHERE fk IN (…)` with no `LIMIT` and no
+/// `ORDER BY`, and the handler truncated afterwards: 1000 parents × 10 000
+/// children materialised 10M rows to return 5 each, and because nothing ordered
+/// them, `include.limit` returned an *arbitrary* subset that could differ run to
+/// run. The window function is supported by every backend the dialect renders
+/// for (SQLite ≥ 3.25 — the bundled build is far newer, PostgreSQL ≥ 8.4,
+/// MySQL ≥ 8.0).
+///
+/// `<projection>` is [`IncludePlan::projection`] on **both** levels: the
+/// requested fields plus the foreign key (for grouping) plus the sort keys,
+/// because the outer `ORDER BY` can only name columns the sub-select emits. The
+/// handler drops the extras again ([`IncludePlan::strip`]). Callers must skip
+/// this when `keys` is empty (an empty `IN` is not built here).
 pub fn build_include_select(
-    target_table: &str,
-    foreign: &str,
-    fields: &[String],
+    inc: &IncludePlan,
     keys: &[SeaValue],
     dialect: SqlDialect,
 ) -> (String, SqlxValues) {
+    let foreign = inc.foreign.as_str();
+    let projection = inc.projection();
+
+    // Inner: the child rows for this parent page, ranked within each parent.
+    let mut inner = Query::select();
+    project_child(&mut inner, &projection);
+    let mut window = WindowStatement::partition_by(Alias::new(foreign));
+    apply_sort_keys(&mut window, &inc.sort, dialect);
+    inner.expr_window_as(
+        Func::cust(Alias::new("ROW_NUMBER")),
+        window,
+        Alias::new(INCLUDE_RANK_COLUMN),
+    );
+    inner.from(Alias::new(inc.target_table.as_str()));
+    inner.cond_where(Expr::col(Alias::new(foreign)).is_in(keys.to_vec()));
+
+    // Outer: keep the first `limit` per parent, in the requested order.
     let mut stmt = Query::select();
-    if fields.is_empty() {
-        stmt.column(Asterisk);
-    } else {
-        for f in fields {
-            stmt.column(Alias::new(f.as_str()));
-        }
-        if !fields.iter().any(|f| f == foreign) {
-            stmt.column(Alias::new(foreign));
-        }
-    }
-    stmt.from(Alias::new(target_table));
-    stmt.cond_where(Expr::col(Alias::new(foreign)).is_in(keys.to_vec()));
+    project_child(&mut stmt, &projection);
+    stmt.from_subquery(inner, Alias::new(INCLUDE_SUBQUERY_ALIAS));
+    // Bound as `i64`: the `sqlx-any` binder converts a `BigUnsigned` with an
+    // unchecked `try_from`, which panics above `i64::MAX`.
+    let cap = i64::try_from(inc.limit).unwrap_or(i64::MAX);
+    stmt.cond_where(Expr::col(Alias::new(INCLUDE_RANK_COLUMN)).lte(cap));
+    apply_sort_keys(&mut stmt, &inc.sort, dialect);
     build_for(dialect, &stmt)
+}
+
+/// Project a child row from [`IncludePlan::projection`]. An empty projection is
+/// the unprojected case (`include` with no `fields`) and means every column.
+fn project_child(stmt: &mut SelectStatement, projection: &[String]) {
+    if projection.is_empty() {
+        stmt.column(Asterisk);
+        return;
+    }
+    for f in projection {
+        stmt.column(Alias::new(f.as_str()));
+    }
 }
 
 /// Convert a JSON scalar (a parent key value) into a bound `sea_query::Value` for
@@ -312,8 +365,15 @@ fn text_expr(field: &FieldRef, op: TextOp, pattern: &str) -> SimpleExpr {
         TextOp::EndsWith => format!("%{escaped}"),
         TextOp::Contains => format!("%{escaped}%"),
     };
-    // Case-sensitive LIKE in Phase 1; the escaped user text uses `\` as the
-    // escape char (note: MySQL's default collation is case-insensitive — §5.4).
+    // W13: `LIKE` with `\` as the escape character. Case sensitivity is the one
+    // thing the dialect does **not** normalise: it is a property of the stored
+    // data (a SQL collation, an ES analyzer), not of the query, and no query-time
+    // flag can restore case-sensitive matching against an Elasticsearch `text`
+    // field whose analyzer already folded the tokens. So the per-backend truth is
+    // stated in the parity table of `docs/src/reference/data-dialect.md`
+    // ("Text-match case sensitivity") rather than papered over here: PostgreSQL
+    // `LIKE` is case-sensitive, SQLite's folds ASCII, MySQL's follows the
+    // column's collation (`_ci` by default).
     col_expr(field).like(LikeExpr::new(like).escape('\\'))
 }
 
@@ -325,19 +385,31 @@ fn escape_like(pattern: &str) -> String {
         .replace('_', "\\_")
 }
 
-fn apply_sort(stmt: &mut SelectStatement, sort: &[SortKey], dialect: SqlDialect) {
+/// Apply the dialect's ordering rule to anything that takes an `ORDER BY` — the
+/// statement itself, or the `OVER (…)` clause of the include's window (F27).
+///
+/// **The rule (W8): a null sorts as the smallest value** — nulls first on `asc`,
+/// nulls last on `desc`. That is already the native ordering of SQLite, MySQL
+/// and MongoDB; PostgreSQL (which sorts nulls as the largest value) and
+/// Elasticsearch have to be told. Of the three that agree natively, only MySQL
+/// is special-cased here, because it has no `NULLS FIRST`/`NULLS LAST` syntax at
+/// all; SQLite accepts the clause and so gets it, redundantly but harmlessly —
+/// one rendering path rather than a second exception to keep in step.
+///
+/// This replaced "nulls last on asc", which needed an emulated `IS NULL` prefix
+/// key on MySQL and which MongoDB's `find` could not express at all — so the
+/// same envelope ordered its page differently on Mongo than on SQL and ES,
+/// silently.
+fn apply_sort_keys<S: OrderedStatement>(stmt: &mut S, sort: &[SortKey], dialect: SqlDialect) {
     for k in sort {
         let (order, nulls) = match k.dir {
-            // Documented default: nulls last on asc, nulls first on desc (§5.7).
-            SortDir::Asc => (Order::Asc, NullOrdering::Last),
-            SortDir::Desc => (Order::Desc, NullOrdering::First),
+            SortDir::Asc => (Order::Asc, NullOrdering::First),
+            SortDir::Desc => (Order::Desc, NullOrdering::Last),
         };
         match dialect {
+            // MySQL has no NULLS FIRST/LAST clause, and needs none: its native
+            // ordering already places nulls first on ASC and last on DESC.
             SqlDialect::Mysql => {
-                // MySQL has no NULLS FIRST/LAST; emulate with an `IS NULL` prefix
-                // key that preserves the same default ordering.
-                let is_null = Expr::col(Alias::new(k.field.as_str())).is_null();
-                stmt.order_by_expr(is_null, order.clone());
                 stmt.order_by(Alias::new(k.field.as_str()), order);
             }
             _ => {
@@ -695,7 +767,30 @@ mod tests {
         }));
         assert_eq!(
             sql,
-            r#"SELECT * FROM "t" ORDER BY "created_at" DESC NULLS FIRST LIMIT 20 OFFSET 40"#
+            r#"SELECT * FROM "t" ORDER BY "created_at" DESC NULLS LAST LIMIT 20 OFFSET 40"#
+        );
+    }
+
+    /// W8: the shared rule is "a null sorts as the smallest value" — nulls
+    /// first on `asc`, last on `desc`. It used to be the inverse, which no
+    /// MongoDB `find` can express, so Mongo silently disagreed with SQL and ES
+    /// on the ordering of every page containing a null.
+    #[test]
+    fn test_null_ordering_is_nulls_smallest() {
+        assert_eq!(
+            sqlite(json!({ "source": "t", "sort": [ { "name": "asc" } ] })),
+            r#"SELECT * FROM "t" ORDER BY "name" ASC NULLS FIRST LIMIT 100"#
+        );
+        let stmt = translate_sql(
+            &json!({ "source": "t", "sort": [ { "name": "asc" } ] }),
+            &serde_json::Map::new(),
+            SqlDialect::Postgres,
+            &limits(),
+        )
+        .expect("ok");
+        assert_eq!(
+            stmt.to_string(PostgresQueryBuilder),
+            r#"SELECT * FROM "t" ORDER BY "name" ASC NULLS FIRST LIMIT 100"#
         );
     }
 
@@ -714,8 +809,12 @@ mod tests {
         assert_eq!(sql, r#"SELECT * FROM "users" WHERE "id" = $1 LIMIT $2"#);
     }
 
+    /// W8: MySQL has no `NULLS FIRST/LAST` clause and now needs none — its
+    /// native ordering already puts nulls first on `ASC` and last on `DESC`,
+    /// which is the rule. The `IS NULL` prefix key this replaced was a second,
+    /// invisible sort key emitted to emulate the old inverse rule.
     #[test]
-    fn test_mysql_null_ordering_emulation() {
+    fn test_mysql_needs_no_null_ordering_emulation() {
         let stmt = translate_sql(
             &json!({ "source": "t", "sort": [ { "name": "asc" } ] }),
             &serde_json::Map::new(),
@@ -723,11 +822,9 @@ mod tests {
             &limits(),
         )
         .expect("ok");
-        let sql = stmt.to_string(MysqlQueryBuilder);
-        // nulls-last on asc via an `IS NULL` prefix key.
         assert_eq!(
-            sql,
-            "SELECT * FROM `t` ORDER BY `name` IS NULL ASC, `name` ASC LIMIT 100"
+            stmt.to_string(MysqlQueryBuilder),
+            "SELECT * FROM `t` ORDER BY `name` ASC LIMIT 100"
         );
     }
 
@@ -859,17 +956,29 @@ mod tests {
 
     // ---- Phase 4: include planning ----
 
-    #[test]
-    fn test_plan_sql_augments_parent_key_and_plans_include() {
-        let plan = crate::query::plan_sql(
+    /// Plan an include with the given selection, in identity mode over
+    /// [`rel_schema`].
+    fn plan_include(
+        selection: Json,
+        limits: &QueryConfig,
+    ) -> Result<crate::query::SqlPlan, QueryError> {
+        crate::query::plan_sql(
             &json!({
                 "source": "users",
                 "fields": ["name"],
-                "include": { "orders": { "fields": ["total"], "limit": 5 } }
+                "include": { "orders": selection }
             }),
             &serde_json::Map::new(),
             &rel_schema(),
             SqlDialect::Sqlite,
+            limits,
+        )
+    }
+
+    #[test]
+    fn test_plan_sql_augments_parent_key_and_plans_include() {
+        let plan = plan_include(
+            json!({ "fields": ["total"], "sort": [{ "id": "asc" }], "limit": 5 }),
             &limits(),
         )
         .expect("plan");
@@ -887,30 +996,165 @@ mod tests {
         assert_eq!(inc.target_table, "orders");
         assert_eq!(inc.local, "id");
         assert_eq!(inc.foreign, "user_id");
-        assert_eq!(inc.limit, Some(5));
+        assert_eq!(inc.limit, 5);
+        assert_eq!(inc.sort.len(), 1);
     }
 
+    /// F27: an include without a `limit` used to fetch *every* child of every
+    /// parent on the page. It now takes the envelope's own page policy —
+    /// `default_limit` per parent.
     #[test]
-    fn test_include_child_query_selects_foreign_key() {
-        let keys = vec![SeaValue::from("u1"), SeaValue::from("u2")];
-        let (sql, _v) = build_include_select(
-            "orders",
-            "user_id",
-            &["total".to_string()],
-            &keys,
-            SqlDialect::Sqlite,
-        );
-        // `user_id` is appended so children can be grouped by parent.
+    fn test_include_without_limit_takes_the_default_page_size() {
+        let plan = plan_include(json!({ "sort": [{ "id": "asc" }] }), &limits()).expect("plan");
+        assert_eq!(plan.includes[0].limit, 100);
+    }
+
+    /// F27: and one over the cap is rejected, never clamped — the same rule the
+    /// envelope's own `limit` gets.
+    #[test]
+    fn test_include_limit_over_the_cap_is_rejected() {
+        let err = plan_include(
+            json!({ "sort": [{ "id": "asc" }], "limit": 5000 }),
+            &limits(),
+        )
+        .expect_err("over the cap");
         assert!(
-            sql.starts_with(r#"SELECT "total", "user_id" FROM "orders" WHERE "user_id" IN ("#),
+            matches!(
+                err,
+                QueryError::LimitExceeded {
+                    requested: 5000,
+                    max: 1000
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    /// F27: the per-parent page is cut in SQL by a partitioned `ROW_NUMBER()`,
+    /// with the requested order key. The old query had neither `LIMIT` nor
+    /// `ORDER BY`: it materialised every child of the whole parent page and the
+    /// handler truncated an arbitrary — and run-to-run unstable — prefix.
+    #[test]
+    fn test_include_child_query_pages_per_parent_in_sql() {
+        let plan = plan_include(
+            json!({ "fields": ["total"], "sort": [{ "total": "desc" }], "limit": 2 }),
+            &limits(),
+        )
+        .expect("plan");
+        let keys = vec![SeaValue::from("u1"), SeaValue::from("u2")];
+        let (sql, _v) = build_include_select(&plan.includes[0], &keys, SqlDialect::Sqlite);
+        assert_eq!(
+            sql,
+            concat!(
+                r#"SELECT "total", "user_id" FROM (SELECT "total", "user_id", "#,
+                r#"ROW_NUMBER() OVER ( PARTITION BY "user_id" ORDER BY "total" DESC NULLS LAST ) "#,
+                r#"AS "__orion_include_rank" FROM "orders" WHERE "user_id" IN (?, ?)) "#,
+                r#"AS "__orion_include" WHERE "__orion_include_rank" <= ? "#,
+                r#"ORDER BY "total" DESC NULLS LAST"#
+            ),
             "sql = {sql}"
         );
+    }
+
+    /// The outer `ORDER BY` names columns of the *sub-select's output*, so a
+    /// sort key that is not in `fields` has to be projected anyway — and then
+    /// dropped from the response. Projecting only `fields` + the foreign key
+    /// produced `ORDER BY "created_at"` over a subquery that emits neither:
+    /// PostgreSQL `column "created_at" does not exist`, MySQL `Unknown column
+    /// 'created_at' in 'order clause'`, and on SQLite no error at all — the
+    /// quoted name degrades to a string literal, so the clause is a constant and
+    /// the children come back in window order. That is the undefined per-parent
+    /// ordering F27 removes, reintroduced on the backend the default job runs.
+    #[test]
+    fn test_include_projects_a_sort_key_it_was_not_asked_for() {
+        let plan = plan_include(
+            json!({ "fields": ["total"], "sort": [{ "created_at": "desc" }], "limit": 5 }),
+            &limits(),
+        )
+        .expect("plan");
+        let inc = &plan.includes[0];
+        assert_eq!(inc.projection(), ["total", "user_id", "created_at"]);
+        // …and both plumbing columns come back out of the nested object.
+        assert_eq!(inc.strip(), ["user_id", "created_at"]);
+
+        let keys = vec![SeaValue::from("u1")];
+        let (sql, _v) = build_include_select(inc, &keys, SqlDialect::Sqlite);
+        assert_eq!(
+            sql,
+            concat!(
+                r#"SELECT "total", "user_id", "created_at" FROM "#,
+                r#"(SELECT "total", "user_id", "created_at", "#,
+                r#"ROW_NUMBER() OVER ( PARTITION BY "user_id" ORDER BY "created_at" DESC NULLS LAST ) "#,
+                r#"AS "__orion_include_rank" FROM "orders" WHERE "user_id" IN (?)) "#,
+                r#"AS "__orion_include" WHERE "__orion_include_rank" <= ? "#,
+                r#"ORDER BY "created_at" DESC NULLS LAST"#
+            ),
+            "sql = {sql}"
+        );
+    }
+
+    /// A sort key that *is* projected is not duplicated, and the foreign key
+    /// named in `fields` stays in the output.
+    #[test]
+    fn test_include_projection_does_not_duplicate_or_over_strip() {
+        let plan = plan_include(
+            json!({ "fields": ["total", "user_id"], "sort": [{ "total": "asc" }] }),
+            &limits(),
+        )
+        .expect("plan");
+        let inc = &plan.includes[0];
+        assert_eq!(inc.projection(), ["total", "user_id"]);
+        assert!(inc.strip().is_empty(), "strip = {:?}", inc.strip());
+    }
+
+    /// With no `fields` the sub-select is `SELECT *`, which already carries the
+    /// foreign key and every sort key — nothing extra to project or strip.
+    #[test]
+    fn test_include_without_fields_projects_everything() {
+        let plan =
+            plan_include(json!({ "sort": [{ "created_at": "desc" }] }), &limits()).expect("plan");
+        let inc = &plan.includes[0];
+        assert!(inc.projection().is_empty());
+        assert!(inc.strip().is_empty());
+        let keys = vec![SeaValue::from("u1")];
+        let (sql, _v) = build_include_select(inc, &keys, SqlDialect::Sqlite);
+        assert!(
+            sql.starts_with(r#"SELECT * FROM (SELECT *, ROW_NUMBER() OVER ("#),
+            "sql = {sql}"
+        );
+    }
+
+    /// MySQL cannot take a `NULLS …` clause anywhere, including inside `OVER`.
+    #[test]
+    fn test_include_child_query_renders_for_mysql() {
+        let plan = plan_include(
+            json!({ "fields": ["total"], "sort": [{ "total": "asc" }], "limit": 2 }),
+            &limits(),
+        )
+        .expect("plan");
+        let keys = vec![SeaValue::from("u1")];
+        let (sql, _v) = build_include_select(&plan.includes[0], &keys, SqlDialect::Mysql);
+        assert!(!sql.contains("NULLS"), "sql = {sql}");
+        assert!(
+            sql.contains("ROW_NUMBER() OVER ( PARTITION BY `user_id` ORDER BY `total` ASC )"),
+            "sql = {sql}"
+        );
+    }
+
+    /// F27: without an order key "the first `n` children" is not a defined
+    /// answer, so the envelope must name one.
+    #[test]
+    fn test_include_without_sort_is_rejected() {
+        let err = plan_include(json!({ "limit": 5 }), &limits()).expect_err("no order key");
+        assert!(matches!(err, QueryError::InvalidEnvelope(_)), "{err}");
+        assert!(err.to_string().contains("include.orders"), "{err}");
+        assert!(err.to_string().contains("sort"), "{err}");
     }
 
     #[test]
     fn test_m2m_include_rejected() {
         let err = crate::query::plan_sql(
-            &json!({ "source": "users", "include": { "tags": {} } }),
+            &json!({ "source": "users", "include": { "tags": { "sort": [{ "id": "asc" }] } } }),
             &serde_json::Map::new(),
             &rel_schema(),
             SqlDialect::Sqlite,

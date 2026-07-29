@@ -6,8 +6,13 @@
 //! (§4.1); embedded relations render as `$elemMatch` (§4.2). Referenced relations
 //! (`$lookup`) raise a capability error for now.
 //!
-//! `id` maps to `_id` so the common Mongo key works in identity mode; other
-//! logical→physical names come from the schema during lowering.
+//! **Names pass through exactly as the schema resolved them (W10).** There is no
+//! implicit `id` → `_id` rewrite: `_id` is Mongo's document key, and a collection
+//! may legitimately carry an ordinary `id` field beside it. Targeting the
+//! document key is an explicit schema decision — `{"columns": {"id": {"name":
+//! "_id"}}}` — exactly as it already was for Elasticsearch. The implicit rewrite
+//! made a schema that deliberately mapped `key → id` mean something else, and
+//! made a genuine non-key `id` field unqueryable, in both cases silently.
 
 use mongodb::bson::{Bson, Document};
 
@@ -59,7 +64,7 @@ pub fn render(
     } else {
         let mut p = Document::new();
         for f in &spec.fields {
-            p.insert(mongo_name(f.as_str()), 1_i32);
+            p.insert(f.as_str(), 1_i32);
         }
         // W9: Mongo returns `_id` by default even when not projected, while
         // SQL/ES return exactly the requested fields. Suppress it unless it
@@ -70,6 +75,11 @@ pub fn render(
         Some(p)
     };
 
+    // W8: a bare `1`/`-1` is exactly the shared null-ordering rule — BSON sorts
+    // null (and a missing field) below every other value, so `asc` yields nulls
+    // first and `desc` nulls last, matching SQL and ES. Under the old rule
+    // ("nulls last on asc") Mongo silently disagreed with both, because `find`
+    // has no way to express it.
     let sort = if spec.sort.is_empty() {
         None
     } else {
@@ -79,7 +89,7 @@ pub fn render(
                 SortDir::Asc => 1_i32,
                 SortDir::Desc => -1_i32,
             };
-            s.insert(mongo_name(k.field.as_str()), dir);
+            s.insert(k.field.as_str(), dir);
         }
         Some(s)
     };
@@ -130,7 +140,7 @@ fn match_doc(cond: &Cond) -> Result<Document, QueryError> {
             let mut inner = Document::new();
             inner.insert(if *low_incl { "$gte" } else { "$gt" }, to_bson(low));
             inner.insert(if *high_incl { "$lte" } else { "$lt" }, to_bson(high));
-            let d = doc_kv(mongo_name(field), Bson::Document(inner));
+            let d = doc_kv(field.physical.as_str(), Bson::Document(inner));
             if *negated {
                 doc_kv("$nor", Bson::Array(vec![Bson::Document(d)]))
             } else {
@@ -143,6 +153,10 @@ fn match_doc(cond: &Cond) -> Result<Document, QueryError> {
             pattern,
             ci,
         } => {
+            // W13: `$regex` is case-sensitive unless `$options: "i"` is set —
+            // one of the four behaviours the dialect deliberately does not
+            // normalise. See the parity table in
+            // `docs/src/reference/data-dialect.md`.
             let escaped = regex_escape(pattern);
             let regex = match op {
                 TextOp::StartsWith => format!("^{escaped}"),
@@ -154,7 +168,7 @@ fn match_doc(cond: &Cond) -> Result<Document, QueryError> {
             if *ci {
                 inner.insert("$options", Bson::String("i".to_string()));
             }
-            doc_kv(mongo_name(field), Bson::Document(inner))
+            doc_kv(field.physical.as_str(), Bson::Document(inner))
         }
         Cond::Rel { quant, rel, cond } => {
             // W11: a many-to-many relation needs a junction join, which a
@@ -232,7 +246,7 @@ fn bson_docs(cs: &[Cond]) -> Result<Bson, QueryError> {
 
 /// `{ field: { op: value } }`.
 fn field_op(field: &FieldRef, op: &str, value: Bson) -> Document {
-    doc_kv(mongo_name(field), Bson::Document(doc_kv(op, value)))
+    doc_kv(field.physical.as_str(), Bson::Document(doc_kv(op, value)))
 }
 
 fn doc_kv(key: impl Into<String>, value: Bson) -> Document {
@@ -263,30 +277,6 @@ fn to_bson(v: &Value) -> Bson {
     }
 }
 
-/// The common `id` key maps to Mongo's `_id`; other names pass through.
-trait MongoName {
-    fn mongo(&self) -> &str;
-}
-impl MongoName for FieldRef {
-    fn mongo(&self) -> &str {
-        &self.physical
-    }
-}
-impl MongoName for str {
-    fn mongo(&self) -> &str {
-        self
-    }
-}
-
-fn mongo_name<T: MongoName + ?Sized>(f: &T) -> String {
-    let n = f.mongo();
-    if n == "id" {
-        "_id".to_string()
-    } else {
-        n.to_string()
-    }
-}
-
 // ---- Write rendering (insert / update / delete / upsert) ----
 
 /// A rendered MongoDB write, ready for the driver call the handler makes.
@@ -313,7 +303,9 @@ pub enum MongoWrite {
 
 /// Render a resolved mutation into a [`MongoWrite`]. The `filter` of an
 /// update/delete reuses the query dialect's [`match_doc`]; values become BSON via
-/// the same [`to_bson`] the read path uses. `id` maps to `_id`.
+/// the same [`to_bson`] the read path uses. Column names pass through as the
+/// schema resolved them — declare `{"columns": {"id": {"name": "_id"}}}` to
+/// write the document key (W10).
 pub fn render_write(w: &ResolvedWrite) -> Result<MongoWrite, WriteError> {
     Ok(match w.op {
         WriteOp::Insert => MongoWrite::Insert {
@@ -361,7 +353,7 @@ fn render_upsert(w: &ResolvedWrite) -> Result<MongoWrite, WriteError> {
                 "on_conflict target '{t}' must be one of the inserted columns"
             ))
         })?;
-        filter.insert(mongo_name(t.as_str()), to_bson(&row[idx]));
+        filter.insert(t.as_str(), to_bson(&row[idx]));
     }
 
     let mut set = Document::new();
@@ -372,17 +364,17 @@ fn render_upsert(w: &ResolvedWrite) -> Result<MongoWrite, WriteError> {
                 // Overwrite every non-target column on conflict.
                 for (col, v) in w.columns.iter().zip(row) {
                     if !conflict.targets.contains(col) {
-                        set.insert(mongo_name(col.as_str()), to_bson(v));
+                        set.insert(col.as_str(), to_bson(v));
                     }
                 }
             } else {
                 for (col, v) in &w.set {
-                    set.insert(mongo_name(col.as_str()), to_bson(v));
+                    set.insert(col.as_str(), to_bson(v));
                 }
                 // Inserted columns not in `set` (and not targets) apply only on insert.
                 for (col, v) in w.columns.iter().zip(row) {
                     if !conflict.targets.contains(col) && !w.set.iter().any(|(c, _)| c == col) {
-                        set_on_insert.insert(mongo_name(col.as_str()), to_bson(v));
+                        set_on_insert.insert(col.as_str(), to_bson(v));
                     }
                 }
             }
@@ -391,7 +383,7 @@ fn render_upsert(w: &ResolvedWrite) -> Result<MongoWrite, WriteError> {
             // Insert the row if absent; leave an existing row untouched.
             for (col, v) in w.columns.iter().zip(row) {
                 if !conflict.targets.contains(col) {
-                    set_on_insert.insert(mongo_name(col.as_str()), to_bson(v));
+                    set_on_insert.insert(col.as_str(), to_bson(v));
                 }
             }
         }
@@ -414,7 +406,7 @@ fn render_upsert(w: &ResolvedWrite) -> Result<MongoWrite, WriteError> {
                 .iter()
                 .position(|c| c == t)
                 .expect("target present");
-            soi.insert(mongo_name(t.as_str()), to_bson(&row[idx]));
+            soi.insert(t.as_str(), to_bson(&row[idx]));
         }
         update.insert("$setOnInsert", Bson::Document(soi));
     }
@@ -434,7 +426,7 @@ fn build_docs(columns: &[String], rows: &[Vec<Value>]) -> Vec<Document> {
         .map(|row| {
             let mut d = Document::new();
             for (col, v) in columns.iter().zip(row) {
-                d.insert(mongo_name(col.as_str()), to_bson(v));
+                d.insert(col.as_str(), to_bson(v));
             }
             d
         })
@@ -444,7 +436,7 @@ fn build_docs(columns: &[String], rows: &[Vec<Value>]) -> Vec<Document> {
 fn set_to_doc(set: &[(String, Value)]) -> Document {
     let mut d = Document::new();
     for (col, v) in set {
-        d.insert(mongo_name(col.as_str()), to_bson(v));
+        d.insert(col.as_str(), to_bson(v));
     }
     d
 }
@@ -515,9 +507,24 @@ mod tests {
         assert_eq!(q.limit, 100);
     }
 
+    /// W10: `id` used to be silently rewritten to `_id` here, while the
+    /// Elasticsearch renderer two files away documented the opposite. A
+    /// collection with a genuine non-key `id` field was therefore unqueryable,
+    /// and a schema deliberately mapping some key to `id` meant `_id` instead.
     #[test]
-    fn test_id_maps_to_underscore_id() {
+    fn test_id_is_not_silently_rewritten_to_underscore_id() {
         let q = mongo(json!({ "source": "users", "filter": { "==": [{"field": "id"}, "u1"] } }));
+        assert_eq!(q.filter, doc! { "id": { "$eq": "u1" } });
+    }
+
+    /// …and the document key is reached the same way Elasticsearch reaches it:
+    /// an explicit schema rename.
+    #[test]
+    fn test_the_document_key_is_an_explicit_schema_rename() {
+        let q = mongo_schema(
+            json!({ "source": "users", "filter": { "==": [{"field": "id"}, "u1"] } }),
+            json!({ "entities": { "users": { "columns": { "id": { "name": "_id" } } } } }),
+        );
         assert_eq!(q.filter, doc! { "_id": { "$eq": "u1" } });
     }
 
@@ -553,14 +560,26 @@ mod tests {
 
     #[test]
     fn test_projection_and_sort() {
-        let q = mongo(json!({
-            "source": "users",
-            "fields": ["id", "name"],
-            "sort": [{ "name": "asc" }, { "age": "desc" }]
-        }));
-        // `id` maps to `_id`, which is explicitly projected — no suppression.
+        let q = mongo_schema(
+            json!({
+                "source": "users",
+                "fields": ["id", "name"],
+                "sort": [{ "name": "asc" }, { "age": "desc" }]
+            }),
+            json!({ "entities": { "users": { "columns": { "id": { "name": "_id" } } } } }),
+        );
+        // `_id` is explicitly projected (via the rename) — no suppression.
         assert_eq!(q.projection, Some(doc! { "_id": 1_i32, "name": 1_i32 }));
         assert_eq!(q.sort, Some(doc! { "name": 1_i32, "age": -1_i32 }));
+    }
+
+    /// W8: the shared rule is "a null sorts as the smallest value", which is
+    /// exactly what BSON's own ordering does for a bare `1`/`-1` — so Mongo now
+    /// agrees with SQL and ES instead of silently inverting them on `asc`.
+    #[test]
+    fn test_sort_null_ordering_matches_the_other_backends() {
+        let q = mongo(json!({ "source": "t", "sort": [{ "a": "asc" }, { "b": "desc" }] }));
+        assert_eq!(q.sort, Some(doc! { "a": 1_i32, "b": -1_i32 }));
     }
 
     /// W9: without `_id: 0`, Mongo returned `{_id, name}` where SQL/ES
@@ -639,23 +658,33 @@ mod tests {
 
     /// F26: `include` used to be silently dropped — parents with no children
     /// and no error.
+    ///
+    /// Both selection shapes must produce the *capability* error. The unsorted
+    /// one is the regression: F27's "an include needs a sort" is the SQL
+    /// renderer's rule, and enforcing it during envelope parsing told a MongoDB
+    /// caller to add a sort to something Mongo cannot answer at all.
     #[test]
     fn test_include_is_capability_error() {
-        let err = translate_mongo(
-            &json!({ "source": "users", "include": { "orders": { "limit": 5 } } }),
-            &serde_json::Map::new(),
-            &EntityRegistry::from_json(&json!({ "entities": { "users": { "relations": {
-                "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
-            } } } }))
-            .expect("schema"),
-            &limits(),
-        )
-        .expect_err("include must be gated on mongo");
-        assert!(
-            matches!(err, QueryError::FeatureUnsupportedByTarget { .. }),
-            "{err}"
-        );
-        assert!(err.to_string().contains("include 'orders'"), "{err}");
+        for selection in [
+            json!({ "sort": [{ "id": "asc" }], "limit": 5 }),
+            json!({ "limit": 5 }),
+        ] {
+            let err = translate_mongo(
+                &json!({ "source": "users", "include": { "orders": selection } }),
+                &serde_json::Map::new(),
+                &EntityRegistry::from_json(&json!({ "entities": { "users": { "relations": {
+                    "orders": { "to": "orders", "kind": "has_many", "local": "id", "foreign": "user_id" }
+                } } } }))
+                .expect("schema"),
+                &limits(),
+            )
+            .expect_err("include must be gated on mongo");
+            assert!(
+                matches!(err, QueryError::FeatureUnsupportedByTarget { .. }),
+                "{err}"
+            );
+            assert!(err.to_string().contains("include 'orders'"), "{err}");
+        }
     }
 
     #[test]
@@ -705,14 +734,14 @@ mod tests {
             "values": [ { "id": "u1", "name": "Ada" }, { "id": "u2", "name": "Bob" } ]
         })))
         .expect("render");
-        // `id` maps to `_id`.
+        // W10: names pass through — `id` is a field, not the document key.
         assert_eq!(
             mw,
             MongoWrite::Insert {
                 collection: "users".to_string(),
                 docs: vec![
-                    doc! { "_id": "u1", "name": "Ada" },
-                    doc! { "_id": "u2", "name": "Bob" },
+                    doc! { "id": "u1", "name": "Ada" },
+                    doc! { "id": "u2", "name": "Bob" },
                 ],
             }
         );
@@ -730,7 +759,7 @@ mod tests {
             mw,
             MongoWrite::Update {
                 collection: "users".to_string(),
-                filter: doc! { "_id": { "$eq": "u1" } },
+                filter: doc! { "id": { "$eq": "u1" } },
                 update: doc! { "$set": { "status": "inactive" } },
                 upsert: false,
                 multi: true,

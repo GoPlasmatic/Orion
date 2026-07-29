@@ -72,9 +72,15 @@ injection-safe by construction.
 | `source` | string | Logical entity → table / collection / index (schema-resolved) |
 | `filter` | JSONLogic | Condition from the operator vocabulary below; omit for "match all" |
 | `fields` | array | Projection; omit for all columns/fields |
-| `sort` | array | `[{ "age": "asc" }, { "name": "desc" }]` — deterministic null ordering across backends |
+| `sort` | array | `[{ "age": "asc" }, { "name": "desc" }]`. **A null (or missing field) sorts as the smallest value** — nulls first on `asc`, last on `desc` — on every backend |
 | `limit` / `skip` | number | Pagination. Missing `limit` gets `query.default_limit`; a `limit` above `query.max_limit` or a `skip` above `query.max_skip` is **rejected, never clamped** |
-| `include` | object | Relation name → `{ "fields": [..], "limit": n }`; nested related records, hydrated per relation (see [Relations](#relations-and-includes)) |
+| `include` | object | Relation name → `{ "fields": [..], "sort": [..], "limit": n }`; nested related records, hydrated per relation (see [Relations](#relations-and-includes)) |
+
+The null-ordering rule is the one every backend can state natively: it *is* the
+default order of SQLite, MySQL and MongoDB, and PostgreSQL and Elasticsearch are
+given an explicit `NULLS FIRST` / `missing` clause to match. Nothing is emulated
+with a hidden extra sort key, so a page containing nulls comes back in the same
+order wherever it runs.
 
 ### Operator vocabulary
 
@@ -84,7 +90,7 @@ injection-safe by construction.
 | `==`, `!=`, `<`, `<=`, `>`, `>=` | Comparisons (`===`/`!==` are aliases). `{"==": [x, null]}` is a null test |
 | `<`/`<=` (ternary) | Range: `{ "<=": [1, { "field": "x" }, 10] }` → BETWEEN |
 | `in` | Membership (list haystack) or substring containment (string haystack) |
-| `starts_with`, `ends_with` | Text anchors (rendered as `LIKE` / `$regex` / `prefix`+`wildcard`) |
+| `starts_with`, `ends_with` | Text anchors (rendered as `LIKE` / `$regex` / `prefix`+`wildcard`). Case sensitivity is **backend-defined** — see the parity table |
 | `missing` | Field(s) have no meaningful value |
 | `some`, `all`, `none` | Quantifiers over a declared relation |
 
@@ -171,25 +177,31 @@ a query's `WHERE` — including relation predicates (`some` → SQL `EXISTS`).
 
 The dialect's governing rule: **match the reference semantics where a backend
 can; raise a precise, located capability error where it cannot; never
-approximate silently.** The notable divergences:
+approximate silently.**
+
+Everything not listed below returns the **same row set on all five backends**,
+and that claim is executable: `tests/integration/data_parity_test.rs` runs one
+fixture dataset through a table of envelopes and asserts an identical result —
+or an identical capability error — on SQLite, PostgreSQL, MySQL, MongoDB and
+Elasticsearch. This table is that table.
 
 | Feature | Behavior |
 |---------|----------|
 | `returning` | Native on PostgreSQL/SQLite. On MySQL it is rejected (`FeatureUnsupportedByTarget`); single-row inserts report `last_insert_id` instead. On MongoDB inserts report generated `ids`. On Elasticsearch it is rejected; inserts report `ids` |
-| `include` | SQL connectors only. On MongoDB and Elasticsearch it is rejected (`FeatureUnsupportedByTarget`) rather than returning parents with silently empty children — fetch related documents with a second query, or model them embedded/nested and filter with `some` |
+| `include` | SQL connectors only. On MongoDB and Elasticsearch it is rejected (`FeatureUnsupportedByTarget`) rather than returning parents with silently empty children — fetch related documents with a second query, or model them embedded/nested and filter with `some`. On SQL it requires a `sort` and is bounded per parent (see [Relations](#relations-and-includes)) |
 | `some`/`all`/`none` over a `many_to_many` relation | SQL only (junction join). Rejected on MongoDB and Elasticsearch, whose filter languages cannot express the junction |
 | `all` over an ES relation | Rejected (not set-equivalent on nested documents) |
 | Deep ES pagination | `skip + limit` beyond `max_result_window` (10k) is rejected, not truncated |
 | Bulk upsert on Mongo/ES | Rejected — single-row upserts only |
+| The document key (`_id`) | **Explicit everywhere.** Neither MongoDB nor Elasticsearch maps a logical `id` to `_id` implicitly — declare it (`{"columns": {"id": {"name": "_id"}}}`). Without the rename, `id` is an ordinary field, which is what a collection carrying a genuine non-key `id` needs |
 | ES upsert conflict target | Must resolve to the document `_id` (declare a schema rename); anything else is rejected |
+| Text-match case sensitivity | **Backend-defined, and the one thing the dialect does not normalise.** PostgreSQL `LIKE` is case-sensitive; SQLite's `LIKE` folds ASCII (only); MySQL follows the column's collation (case-insensitive under the default `_ci` collations); MongoDB `$regex` is case-sensitive; Elasticsearch depends on the field mapping — `keyword` is exact, `text` matches against analyzer-folded tokens. It is a property of the stored data rather than of the query, and no query-time flag can make an analyzed ES field case-sensitive again, so it is stated here instead of being half-normalised. Use a `keyword` mapping / a binary collation when an exact match matters |
 
 ### Elasticsearch notes
 
-- **`_id` is explicit.** ES keys documents on the metadata `_id`, which lives
-  outside the document source. There is no implicit `id` → `_id` mapping —
-  declare it in the schema (`{"columns": {"id": {"name": "_id"}}}`). A physical
-  `_id` column is then lifted into the bulk action / URL path on insert and
-  upsert; mutating `_id` in `set` is rejected.
+- **`_id` lives outside `_source`.** With the rename declared, a physical `_id`
+  column is lifted into the bulk action / URL path on insert and upsert;
+  mutating `_id` in `set` is rejected.
 - **Read-your-writes.** Every ES write requests a refresh (`wait_for`, or
   `true` on the by-query endpoints), so a `data_query` later in the same
   pipeline sees the write — parity with SQL/Mongo visibility, at a throughput
@@ -234,7 +246,9 @@ the dialect runs in *identity mode*: names pass through as-is.
 ```
 
 - **Renames** — logical entity/column names map to physical tables/columns
-  (`id` → `user_id`, or `id` → `_id` for Elasticsearch).
+  (`id` → `user_id`, or `id` → `_id` on **both** document stores: neither
+  Elasticsearch nor MongoDB maps a logical `id` onto the document key
+  implicitly, so targeting it is always an explicit rename).
 - **Types** — drive value coercion where a backend needs the hint.
 - **Allowlist** — with `"unmapped": "reject"`, only declared entities/columns
   are usable; `queryable: false` hides a column from reads, `writable: false`
@@ -255,8 +269,22 @@ renders as a correlated `EXISTS` (SQL), `$elemMatch` over embedded documents
 themselves, hydrated with one child query per relation:
 
 ```json
-"include": { "orders": { "fields": ["id", "total"], "limit": 10 } }
+"include": { "orders": { "fields": ["id", "total"], "sort": [{ "total": "desc" }], "limit": 10 } }
 ```
+
+**`sort` is required.** The per-parent page is cut inside the database
+(`ROW_NUMBER() OVER (PARTITION BY <fk> ORDER BY <sort>)`), so without an order
+key "the first 10 orders" has no defined answer — it would be whichever ten rows
+the plan happened to emit, and a different ten on the next run. `limit` follows
+the envelope's own page policy: absent means `query.default_limit` **per
+parent**, and a value above `query.max_limit` is rejected rather than clamped.
+Hydration is therefore bounded by `parents × limit` rows, not by the whole child
+table.
+
+`sort` may name a column that `fields` does not: it is projected internally so
+the database can order by it, then removed again, so the nested objects carry
+exactly the `fields` that were asked for (and every column when `fields` is
+absent). The join key is handled the same way.
 
 ## Connector operation gates
 

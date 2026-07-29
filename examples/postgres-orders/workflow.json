@@ -43,7 +43,7 @@
           "query": {
             "source": "customers",
             "filter": { "==": [{ "field": "id" }, { "param": "customer_id" }] },
-            "include": { "orders": { "fields": ["id", "item", "total"], "limit": 10 } }
+            "include": { "orders": { "fields": ["id", "item", "total"], "sort": [{ "id": "desc" }], "limit": 10 } }
           },
           "params": { "customer_id": { "var": "data.req.customer_id" } },
           "schema": {

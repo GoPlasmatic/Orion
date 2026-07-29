@@ -83,7 +83,103 @@ pub struct IncludePlan {
     pub foreign: String,
     /// Child fields to select (physical); empty = all.
     pub fields: Vec<String>,
-    pub limit: Option<u64>,
+    /// Ordering within each parent's children (physical names). Never empty —
+    /// the per-parent page is cut in SQL, so it needs a deterministic key (F27);
+    /// [`plan_sql`] refuses an include that does not state one.
+    pub sort: Vec<spec::SortKey>,
+    /// Resolved per-parent row cap, already bounded by `query.max_limit`.
+    pub limit: u64,
+}
+
+impl IncludePlan {
+    /// Physical child columns the include's sub-select must project.
+    ///
+    /// The requested `fields`, **plus** the foreign key (the handler groups on
+    /// it) **plus** every sort key. The sort keys are not optional plumbing: the
+    /// per-parent page is cut by ranking rows inside a sub-select and filtering
+    /// the rank outside it, so the outer `ORDER BY` names columns of the
+    /// *subquery's output*. A sort key that was not projected does not exist
+    /// there — PostgreSQL says `column "…" does not exist`, MySQL says `Unknown
+    /// column '…' in 'order clause'`, and SQLite quietly reads the quoted name
+    /// as a string literal, making the whole `ORDER BY` a constant and handing
+    /// back rows in window order. That last one is exactly the undefined
+    /// per-parent ordering F27 exists to remove.
+    ///
+    /// Empty means "project everything" (`SELECT *`), which already has them.
+    pub fn projection(&self) -> Vec<String> {
+        if self.fields.is_empty() {
+            return Vec::new();
+        }
+        let mut cols = self.fields.clone();
+        for extra in std::iter::once(&self.foreign).chain(self.sort.iter().map(|k| &k.field)) {
+            if !cols.contains(extra) {
+                cols.push(extra.clone());
+            }
+        }
+        cols
+    }
+
+    /// The part of [`projection`](Self::projection) the caller did not ask for —
+    /// the grouping key and any sort-only column. Dropped from each nested child
+    /// object after grouping, the same way the window's rank column is.
+    pub fn strip(&self) -> Vec<String> {
+        self.projection()
+            .into_iter()
+            .filter(|c| !self.fields.contains(c))
+            .collect()
+    }
+}
+
+/// A parent/child join-key value, compared by *type and value* rather than by
+/// its `serde_json` text (W14).
+///
+/// Include hydration groups children by their foreign key and looks each parent
+/// up by its local key. Those two values arrive from two different queries and
+/// therefore two different columns, and the driver renders a column's value from
+/// its SQL type: a key stored `TEXT` on one side and `BIGINT` on the other came
+/// back as `"7"` and `7`, whose JSON text differs, so every child array silently
+/// came back empty. Normalising integral values — a JSON integer, an integral
+/// float, or a decimal string that round-trips — onto one variant makes the two
+/// renderings the same key, while anything else keeps its own identity.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GroupKey {
+    Bool(bool),
+    /// Any integral key, however the driver rendered it (`7`, `7.0`, `"7"`).
+    Int(i64),
+    /// A non-integral number, keyed on its bit pattern (JSON has no NaN).
+    Float(u64),
+    Str(String),
+}
+
+impl GroupKey {
+    /// The grouping key for a JSON scalar, or `None` for a value that cannot
+    /// join anything (null, array, object) — mirroring
+    /// [`backend::sql::json_key_to_sea`], which skips exactly those.
+    pub fn from_json(v: &Json) -> Option<Self> {
+        match v {
+            Json::Bool(b) => Some(GroupKey::Bool(*b)),
+            Json::Number(n) => match n.as_i64() {
+                Some(i) => Some(GroupKey::Int(i)),
+                None => n.as_f64().map(Self::from_f64),
+            },
+            // A key column read back as text still joins an integer key on the
+            // other side, but only when the text *is* that integer: "007" and
+            // " 7" are their own keys, because they are not what `7` renders as.
+            Json::String(s) => Some(match s.parse::<i64>() {
+                Ok(i) if i.to_string() == *s => GroupKey::Int(i),
+                _ => GroupKey::Str(s.clone()),
+            }),
+            _ => None,
+        }
+    }
+
+    fn from_f64(f: f64) -> Self {
+        if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+            GroupKey::Int(f as i64)
+        } else {
+            GroupKey::Float(f.to_bits())
+        }
+    }
 }
 
 /// Plan a SQL query with `include`s: render the main `SelectStatement` (with any
@@ -116,6 +212,21 @@ pub fn plan_sql(
                 target: "sql".to_string(),
             });
         }
+        // F27: the per-parent page is cut in SQL (`ROW_NUMBER() OVER (PARTITION
+        // BY …)`), so an unordered include is a request for an arbitrary subset.
+        // It used to fetch every child of every parent on the page and truncate
+        // in memory — unbounded, and a different subset run to run.
+        //
+        // Checked here rather than in `spec::parse`, which every backend shares:
+        // MongoDB and Elasticsearch cannot answer an include at all, and their
+        // capability error is the useful answer for a caller who wrote one.
+        if inc.sort.is_empty() {
+            return Err(QueryError::InvalidEnvelope(format!(
+                "include.{} requires a 'sort' — the per-parent page needs a \
+                 deterministic order key (e.g. \"sort\": [{{\"id\": \"asc\"}}])",
+                inc.relation
+            )));
+        }
         // Ensure the parent key is projected so children can be grouped back.
         if !main_spec.fields.is_empty() && !main_spec.fields.iter().any(|f| f == &rel.local) {
             main_spec.fields.push(rel.local.clone());
@@ -123,13 +234,19 @@ pub fn plan_sql(
                 strip.push(rel.local.clone());
             }
         }
+        // F27: the per-parent cap is the envelope's own page policy, applied per
+        // parent — default when absent, rejected (never clamped) when over the
+        // maximum. Hydration used to be unbounded: every child of every parent
+        // on the page was materialised and then truncated in memory.
+        let limit = backend::resolve_limit(inc.limit, limits)?;
         includes.push(IncludePlan {
             field: inc.relation.clone(),
             target_table: rel.target_table,
             local: rel.local,
             foreign: rel.foreign,
             fields: inc.fields.clone(),
-            limit: inc.limit,
+            sort: inc.sort.clone(),
+            limit,
         });
     }
 
@@ -182,4 +299,70 @@ pub fn translate_es(
     let spec = spec.resolve_names(reg)?;
     let index = reg.physical_table(&spec.source)?;
     backend::es::render(&spec, &cond, &index, limits)
+}
+
+#[cfg(test)]
+mod group_key_tests {
+    use super::GroupKey;
+    use serde_json::json;
+
+    /// W14: the parent's key and the child's foreign key come from two
+    /// different columns, and the driver renders a value from its SQL type.
+    /// Grouping by the key's `serde_json` *text* meant a `TEXT` key on one side
+    /// and a `BIGINT` key on the other never matched — every child array came
+    /// back empty, with no error anywhere.
+    #[test]
+    fn integral_keys_group_regardless_of_how_the_driver_rendered_them() {
+        let expected = Some(GroupKey::Int(7));
+        assert_eq!(GroupKey::from_json(&json!(7)), expected);
+        assert_eq!(GroupKey::from_json(&json!(7.0)), expected);
+        assert_eq!(GroupKey::from_json(&json!("7")), expected);
+        assert_eq!(GroupKey::from_json(&json!(-7)), Some(GroupKey::Int(-7)));
+        assert_eq!(GroupKey::from_json(&json!("-7")), Some(GroupKey::Int(-7)));
+    }
+
+    /// Only text that *is* the integer's rendering collapses onto it: a
+    /// zero-padded or space-padded key is a different key, not the same one.
+    #[test]
+    fn text_that_merely_parses_as_a_number_keeps_its_own_identity() {
+        assert_eq!(
+            GroupKey::from_json(&json!("007")),
+            Some(GroupKey::Str("007".into()))
+        );
+        assert_eq!(
+            GroupKey::from_json(&json!(" 7")),
+            Some(GroupKey::Str(" 7".into()))
+        );
+        assert_eq!(
+            GroupKey::from_json(&json!("+7")),
+            Some(GroupKey::Str("+7".into()))
+        );
+        assert_ne!(
+            GroupKey::from_json(&json!("u1")),
+            GroupKey::from_json(&json!("u2"))
+        );
+    }
+
+    #[test]
+    fn non_joinable_values_have_no_key() {
+        for v in [json!(null), json!([1]), json!({ "a": 1 })] {
+            assert_eq!(GroupKey::from_json(&v), None, "{v}");
+        }
+    }
+
+    #[test]
+    fn booleans_and_fractional_numbers_keep_their_own_variants() {
+        assert_eq!(
+            GroupKey::from_json(&json!(true)),
+            Some(GroupKey::Bool(true))
+        );
+        assert_ne!(
+            GroupKey::from_json(&json!(1.5)),
+            GroupKey::from_json(&json!(1))
+        );
+        assert_eq!(
+            GroupKey::from_json(&json!(1.5)),
+            GroupKey::from_json(&json!(1.5))
+        );
+    }
 }

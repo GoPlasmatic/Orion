@@ -20,7 +20,7 @@ use super::schema::{FieldKind, FieldSchema};
 use crate::connector::mongo_pool::MongoPoolCache;
 use crate::connector::pool_cache::SqlPoolCache;
 use crate::connector::{ConnectorConfig, ConnectorRegistry, EsConnectorConfig};
-use crate::query::{self, SqlDialect};
+use crate::query::{self, GroupKey, SqlDialect};
 use crate::storage::detect_backend;
 
 /// This handler's name in metrics, profiles and error messages (F48).
@@ -180,8 +180,19 @@ async fn run_es_search(
 
 /// Execute the main SQL query, then hydrate each `include` with a per-relation
 /// child query (`WHERE fk IN (parent keys)`), grouping children back to their
-/// parents in memory and applying the per-parent include limit. One extra query
-/// per include relation; no per-dialect JSON functions needed.
+/// parents in memory. One extra query per include relation; no per-dialect JSON
+/// functions needed.
+///
+/// The per-parent page is cut **in the child query** (`ROW_NUMBER() OVER
+/// (PARTITION BY fk ORDER BY …)`, see
+/// [`query::backend::sql::build_include_select`]), not here: this used to fetch
+/// every child of every parent on the page and truncate afterwards, so a
+/// thousand parents with ten thousand children each materialised ten million
+/// rows to return five apiece — in an order nothing defined (F27).
+///
+/// Grouping is by [`query::GroupKey`], not by the key's JSON text, so a parent
+/// key and a child foreign key that the driver rendered differently (`"7"` vs
+/// `7`) still join (W14).
 async fn run_sql_with_includes(
     pool: &sqlx::AnyPool,
     plan: &query::SqlPlan,
@@ -206,24 +217,22 @@ async fn run_sql_with_includes(
         let mut keys = Vec::new();
         for p in &parents {
             if let Some(k) = p.get(&inc.local)
+                && let Some(gk) = GroupKey::from_json(k)
                 && let Some(sv) = query::backend::sql::json_key_to_sea(k)
-                && seen.insert(k.to_string())
+                && seen.insert(gk)
             {
                 keys.push(sv);
             }
         }
 
-        // Fetch children and group them by their foreign-key value.
-        let keep_foreign = inc.fields.is_empty() || inc.fields.iter().any(|f| f == &inc.foreign);
-        let mut groups: HashMap<String, Vec<Value>> = HashMap::new();
+        // Fetch children and group them by their foreign-key value. `strip` is
+        // the part of the child projection the caller did not ask for: the
+        // grouping key, and any column projected only because the outer
+        // `ORDER BY` names it (see `IncludePlan::projection`).
+        let strip = inc.strip();
+        let mut groups: HashMap<GroupKey, Vec<Value>> = HashMap::new();
         if !keys.is_empty() {
-            let (csql, cvalues) = query::backend::sql::build_include_select(
-                &inc.target_table,
-                &inc.foreign,
-                &inc.fields,
-                &keys,
-                dialect,
-            );
+            let (csql, cvalues) = query::backend::sql::build_include_select(inc, &keys, dialect);
             let crows: Vec<AnyRow> = timed_query(
                 timeout_ms,
                 NAME,
@@ -235,23 +244,29 @@ async fn run_sql_with_includes(
                 _ => Vec::new(),
             };
             for mut child in children {
-                let Some(fk) = child.get(&inc.foreign).map(|v| v.to_string()) else {
+                let Some(fk) = child.get(&inc.foreign).and_then(GroupKey::from_json) else {
                     continue;
                 };
-                if !keep_foreign && let Value::Object(m) = &mut child {
-                    m.remove(&inc.foreign);
+                if let Value::Object(m) = &mut child {
+                    // The window's rank column exists only to cut the page; with
+                    // no projection it rides along in the child's `SELECT *`.
+                    m.remove(query::backend::sql::INCLUDE_RANK_COLUMN);
+                    for s in &strip {
+                        m.remove(s);
+                    }
                 }
                 groups.entry(fk).or_default().push(child);
             }
         }
 
-        // Attach the (limited) child list to each parent under the relation name.
+        // Attach the child list to each parent under the relation name. The list
+        // is already bounded and ordered by the child query.
         for p in &mut parents {
-            let key = p.get(&inc.local).map(|k| k.to_string()).unwrap_or_default();
-            let mut kids = groups.get(&key).cloned().unwrap_or_default();
-            if let Some(lim) = inc.limit {
-                kids.truncate(lim as usize);
-            }
+            let kids = p
+                .get(&inc.local)
+                .and_then(GroupKey::from_json)
+                .and_then(|k| groups.get(&k).cloned())
+                .unwrap_or_default();
             if let Value::Object(m) = p {
                 m.insert(inc.field.clone(), Value::Array(kids));
             }
@@ -290,7 +305,9 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
     },
     FieldSchema {
         name: "query",
-        description: "Backend-neutral query envelope: source/filter/fields/sort/limit/skip/include.",
+        description: "Backend-neutral query envelope: source/filter/fields/sort/limit/skip/include. \
+                      An include selection is {fields, sort, limit}; `sort` is required because \
+                      the per-parent page is cut in the database.",
         kind: FieldKind::Object,
         required: true,
         resolvable: false,

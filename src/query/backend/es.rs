@@ -71,10 +71,13 @@ pub fn render(
             .sort
             .iter()
             .map(|k| {
+                // W8: a null/missing value sorts as the smallest — first on
+                // `asc`, last on `desc`. ES defaults to `_last` on `asc`, so
+                // both directions are stated explicitly. See `apply_sort_keys`
+                // in `sql.rs` for why this is the shared rule.
                 let (order, missing) = match k.dir {
-                    // nulls last on asc, first on desc (§5.7).
-                    SortDir::Asc => ("asc", "_last"),
-                    SortDir::Desc => ("desc", "_first"),
+                    SortDir::Asc => ("asc", "_first"),
+                    SortDir::Desc => ("desc", "_last"),
                 };
                 json!({ &k.field: { "order": order, "missing": missing } })
             })
@@ -168,6 +171,11 @@ fn query_json(cond: &Cond, prefix: &str) -> Result<Json, QueryError> {
             pattern,
             ci,
         } => {
+            // W13: `case_insensitive` is emitted when the IR asks for it, but a
+            // `text` field's analyzer has already folded the indexed tokens, so
+            // ES cannot be made case-*sensitive* at query time at all. The
+            // per-backend truth is in the parity table of
+            // `docs/src/reference/data-dialect.md`.
             let f = fname(field, prefix);
             match op {
                 TextOp::StartsWith => {
@@ -715,19 +723,29 @@ mod tests {
 
     /// F26: `include` used to be silently dropped — parents with no children
     /// and no error.
+    ///
+    /// Both selection shapes must produce the *capability* error. The unsorted
+    /// one is the regression: F27's "an include needs a sort" is the SQL
+    /// renderer's rule, and enforcing it during envelope parsing told an
+    /// Elasticsearch caller to add a sort to something ES cannot answer at all.
     #[test]
     fn test_include_is_capability_error() {
-        let spec = crate::query::spec::parse(
-            &json!({ "source": "users", "include": { "orders": { "limit": 5 } } }),
-        )
-        .expect("spec");
-        let err = render(&spec, &crate::query::ir::Cond::True, "users", &limits())
-            .expect_err("include must be gated on ES");
-        assert!(
-            matches!(err, QueryError::FeatureUnsupportedByTarget { .. }),
-            "{err}"
-        );
-        assert!(err.to_string().contains("include 'orders'"), "{err}");
+        for selection in [
+            json!({ "sort": [{ "id": "asc" }], "limit": 5 }),
+            json!({ "limit": 5 }),
+        ] {
+            let spec = crate::query::spec::parse(
+                &json!({ "source": "users", "include": { "orders": selection } }),
+            )
+            .expect("spec");
+            let err = render(&spec, &crate::query::ir::Cond::True, "users", &limits())
+                .expect_err("include must be gated on ES");
+            assert!(
+                matches!(err, QueryError::FeatureUnsupportedByTarget { .. }),
+                "{err}"
+            );
+            assert!(err.to_string().contains("include 'orders'"), "{err}");
+        }
     }
 
     #[test]
@@ -761,7 +779,7 @@ mod tests {
         assert_eq!(q.body["_source"], json!(["id", "name"]));
         assert_eq!(
             q.body["sort"],
-            json!([{ "created_at": { "order": "desc", "missing": "_first" } }])
+            json!([{ "created_at": { "order": "desc", "missing": "_last" } }])
         );
         assert_eq!(q.body["size"], json!(20));
     }

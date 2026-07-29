@@ -14,9 +14,11 @@
 //!   index mapping via [`BackendHarness::prepare`] (dynamic mapping would make
 //!   `term` filters and sorts on text fields unreliable).
 //! - `database`: the Mongo path of both handlers requires a `database` field.
-//! - `_id`: Elasticsearch keys documents on metadata `_id`, so the envelopes
-//!   carry an inline schema renaming the logical `id` column
-//!   ([`BackendHarness::schema_json`]); Mongo maps `id` → `_id` implicitly.
+//! - `_id`: both document stores key documents on a metadata `_id` that sits
+//!   outside the source, and neither maps a logical `id` onto it implicitly
+//!   (W10) — so the round-trip declares the rename inline
+//!   ([`BackendHarness::schema_json`]). Without it `id` is an ordinary field,
+//!   which is what the parity matrix relies on.
 //! - Write-result shape: SQL returns `rows_affected`; the doc stores (Mongo,
 //!   ES) return `inserted` / `modified` / `deleted`.
 //! - `RETURNING`: supported on SQLite/Postgres, not MySQL/Mongo/ES.
@@ -137,14 +139,34 @@ impl BackendHarness {
     pub fn ddl_users(&self) -> Option<String> {
         let sql = match self.backend {
             Backend::Mysql => {
-                "CREATE TABLE IF NOT EXISTS users (id VARCHAR(64) PRIMARY KEY, name VARCHAR(255), age INT, status VARCHAR(64))"
+                "CREATE TABLE IF NOT EXISTS users (id VARCHAR(64) PRIMARY KEY, name VARCHAR(255), nickname VARCHAR(255), age INT, status VARCHAR(64))"
             }
             Backend::Sqlite | Backend::Postgres => {
-                "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT, age INTEGER, status TEXT)"
+                "CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT, nickname TEXT, age INTEGER, status TEXT)"
             }
             Backend::Mongo | Backend::Es => return None,
         };
         Some(sql.to_string())
+    }
+
+    /// `orders` and the `tags` / `user_tags` junction the relation rows of the
+    /// parity matrix need. SQL only: the document stores refuse every relation
+    /// case by capability before they touch data.
+    pub fn ddl_relations(&self) -> Vec<String> {
+        let (orders, tags, user_tags) = match self.backend {
+            Backend::Mysql => (
+                "CREATE TABLE IF NOT EXISTS orders (id VARCHAR(64) PRIMARY KEY, user_id VARCHAR(64), total INT)",
+                "CREATE TABLE IF NOT EXISTS tags (id VARCHAR(64) PRIMARY KEY, label VARCHAR(64))",
+                "CREATE TABLE IF NOT EXISTS user_tags (user_id VARCHAR(64), tag_id VARCHAR(64))",
+            ),
+            Backend::Sqlite | Backend::Postgres => (
+                "CREATE TABLE IF NOT EXISTS orders (id TEXT PRIMARY KEY, user_id TEXT, total INTEGER)",
+                "CREATE TABLE IF NOT EXISTS tags (id TEXT PRIMARY KEY, label TEXT)",
+                "CREATE TABLE IF NOT EXISTS user_tags (user_id TEXT, tag_id TEXT)",
+            ),
+            Backend::Mongo | Backend::Es => return Vec::new(),
+        };
+        vec![orders.to_string(), tags.to_string(), user_tags.to_string()]
     }
 
     /// Dialect-specific auto-increment `items` table (for the RETURNING /
@@ -170,14 +192,21 @@ impl BackendHarness {
     /// string fields as `text`, making `term` filters and sorts unreliable.
     /// (`items` relies on index auto-creation; its step only checks counts/ids.)
     /// A no-op elsewhere.
+    ///
+    /// `id` and `nickname` are mapped as `keyword` for the parity matrix: `id`
+    /// is an ordinary queryable field (there is no implicit `id` → `_id` on any
+    /// backend — W10), and `nickname` is the nullable column the null-ordering
+    /// rows sort on.
     pub async fn prepare(&self) {
         if self.backend.is_es() {
             reqwest::Client::new()
                 .put(format!("{}/users", self.connection_string))
                 .json(&json!({ "mappings": { "properties": {
-                    "name":   { "type": "keyword" },
-                    "age":    { "type": "integer" },
-                    "status": { "type": "keyword" }
+                    "id":       { "type": "keyword" },
+                    "name":     { "type": "keyword" },
+                    "nickname": { "type": "keyword" },
+                    "age":      { "type": "integer" },
+                    "status":   { "type": "keyword" }
                 } } }))
                 .send()
                 .await
@@ -187,11 +216,14 @@ impl BackendHarness {
         }
     }
 
-    /// Inline schema the envelopes need, if any. Elasticsearch keys documents on
-    /// the metadata `_id`, so the logical `id` column renames to `_id` — that
-    /// makes inserts carry the id in the bulk action and upsert-on-`id` legal.
+    /// Inline schema the envelopes need, if any. Both document stores key
+    /// documents on a metadata `_id` that sits outside the source, and neither
+    /// maps a logical `id` onto it implicitly (W10) — so the round-trip declares
+    /// the rename, which is what makes inserts carry the id and upsert-on-`id`
+    /// legal. Without it, `id` is an ordinary field; the parity matrix relies on
+    /// exactly that and passes no schema.
     pub fn schema_json(&self) -> Option<Value> {
-        self.backend.is_es().then(|| {
+        self.backend.is_doc_store().then(|| {
             json!({ "entities": { "users": {
                 "columns": { "id": { "name": "_id" } }
             } } })

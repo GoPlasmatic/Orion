@@ -261,7 +261,7 @@ are documented in the [Portable Data Dialect](./data-dialect.md) reference.
 | Field | Type | Required | Default | Description |
 |-------|------|:--------:|---------|-------------|
 | `connector` | string | yes | — | Name of a `db` or `es` connector |
-| `query` | object | yes | — | The query envelope: `source`, `filter`, `fields`, `sort`, `limit`, `skip`, `include` |
+| `query` | object | yes | — | The query envelope: `source`, `filter`, `fields`, `sort`, `limit`, `skip`, `include`. An `include` selection is `{ "fields": [..], "sort": [..], "limit": n }`, and its `sort` is required — the per-parent page is cut in the database |
 | `params` | object | no | `{}` | Named values referenced as `{ "param": "name" }` inside the filter; each value is JSONLogic resolved against the context |
 | `schema` | object | no | identity | Inline entity schema: renames, types, allowlist, relations |
 | `database` | string | MongoDB only | — | Database name (Mongo connectors) |
