@@ -77,8 +77,15 @@ pub struct ResolvedWrite {
     pub set: Vec<(String, ir::Value)>,
     /// Lowered `filter` for `update`/`delete` (`None` when no `filter` was given).
     pub cond: Option<Cond>,
+    pub conflict: Option<ResolvedConflict>,
+    /// Physical column names to return from mutated rows.
+    pub returning: Vec<String>,
+}
+
+impl ResolvedWrite {
     /// Whether the lowered filter actually restricts the affected rows — this,
-    /// not the mere presence of a `filter` key, drives the unfiltered guard.
+    /// not the mere presence of a `filter` key, is what [`resolve_write`]'s
+    /// unfiltered guard is keyed on.
     ///
     /// A filter that is satisfied by every row (`{"and": []}`, `{"!": {"or": []}}`,
     /// `{"and": [{"and": []}]}`, …) restricts nothing: the statement affects the
@@ -86,12 +93,9 @@ pub struct ResolvedWrite {
     /// tautology. Keying the guard on key *presence* let any of these skip both
     /// the `"all": true` acknowledgement and `write.allow_unfiltered`.
     /// See [`Cond::is_always_true`].
-    pub effective_filter: bool,
-    pub conflict: Option<ResolvedConflict>,
-    /// Physical column names to return from mutated rows.
-    pub returning: Vec<String>,
-    /// Explicit acknowledgement that an unfiltered `update`/`delete` is intended.
-    pub all: bool,
+    pub fn effective_filter(&self) -> bool {
+        self.cond.as_ref().is_some_and(|c| !c.is_always_true())
+    }
 }
 
 /// A located write-translation error. Filter errors reuse [`QueryError`] verbatim
@@ -238,7 +242,6 @@ pub fn resolve_write(
         Some(f) => Some(lower_with(f, params, reg, &target)?),
         None => None,
     };
-    let effective_filter = cond.as_ref().is_some_and(|c| !c.is_always_true());
 
     let conflict = parse_conflict(input.get("on_conflict"), reg, &target)?;
     let returning = parse_returning(input.get("returning"), reg, &target)?;
@@ -279,18 +282,29 @@ pub fn resolve_write(
         }
     }
 
+    let w = ResolvedWrite {
+        op,
+        table,
+        columns,
+        rows,
+        set,
+        cond,
+        conflict,
+        returning,
+    };
+
     // W15: the write-safety guards live in the resolution itself, so no caller
     // can obtain a `ResolvedWrite` that violates them. They used to be
     // enforced only by the `data_write` handler, making this function —
     // documented as the whole backend-neutral transformation — unsafe to call
     // alone.
-    if matches!(op, WriteOp::Insert | WriteOp::Upsert) && rows.len() as u64 > cfg.max_rows {
+    if matches!(op, WriteOp::Insert | WriteOp::Upsert) && w.rows.len() as u64 > cfg.max_rows {
         return Err(WriteError::TooManyRows {
-            requested: rows.len(),
+            requested: w.rows.len(),
             max: cfg.max_rows,
         });
     }
-    if matches!(op, WriteOp::Update | WriteOp::Delete) && !effective_filter {
+    if matches!(op, WriteOp::Update | WriteOp::Delete) && !w.effective_filter() {
         if !all {
             return Err(WriteError::UnfilteredMutation {
                 op: op.as_str().to_string(),
@@ -303,18 +317,7 @@ pub fn resolve_write(
         }
     }
 
-    Ok(ResolvedWrite {
-        op,
-        table,
-        columns,
-        rows,
-        set,
-        cond,
-        effective_filter,
-        conflict,
-        returning,
-        all,
-    })
+    Ok(w)
 }
 
 /// Parse `values` (a single row object or an array of them) into a shared column
@@ -743,8 +746,7 @@ mod tests {
     fn unfiltered_delete_with_both_opt_ins_resolves() {
         let resolved =
             resolve(json!({ "op": "delete", "target": "orders", "all": true })).expect("resolves");
-        assert!(resolved.all, "the 'all' acknowledgement must survive");
-        assert!(!resolved.effective_filter);
+        assert!(!resolved.effective_filter());
     }
 
     #[test]
@@ -807,7 +809,7 @@ mod tests {
             "filter": { "==": [{ "field": "status" }, "cancelled"] },
         }))
         .expect("resolves");
-        assert!(resolved.effective_filter);
+        assert!(resolved.effective_filter());
     }
 
     #[test]
@@ -820,6 +822,6 @@ mod tests {
             "filter": { "or": [] },
         }))
         .expect("resolves");
-        assert!(resolved.effective_filter);
+        assert!(resolved.effective_filter());
     }
 }

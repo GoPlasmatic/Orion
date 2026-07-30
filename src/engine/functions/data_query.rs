@@ -206,10 +206,7 @@ async fn run_sql_with_includes(
         sqlx::query_with(&sql, values).fetch_all(pool),
     )
     .await?;
-    let mut parents: Vec<Value> = match rows_to_json(&rows)? {
-        Value::Array(a) => a,
-        _ => Vec::new(),
-    };
+    let mut parents: Vec<Value> = rows_to_json(&rows)?;
 
     for inc in &plan.includes {
         // Distinct, non-null parent keys to fetch children for.
@@ -239,10 +236,7 @@ async fn run_sql_with_includes(
                 sqlx::query_with(&csql, cvalues).fetch_all(pool),
             )
             .await?;
-            let children = match rows_to_json(&crows)? {
-                Value::Array(a) => a,
-                _ => Vec::new(),
-            };
+            let children = rows_to_json(&crows)?;
             for mut child in children {
                 let Some(fk) = child.get(&inc.foreign).and_then(GroupKey::from_json) else {
                     continue;

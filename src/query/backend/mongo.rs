@@ -44,15 +44,7 @@ pub fn render(
     collection: &str,
     limits: &QueryConfig,
 ) -> Result<MongoQuery, QueryError> {
-    // F26: `include` hydration exists only on SQL. It used to be silently
-    // dropped here — parents came back with no children and no error, in
-    // direct violation of the never-approximate rule.
-    if let Some(inc) = spec.include.first() {
-        return Err(QueryError::FeatureUnsupportedByTarget {
-            feature: format!("include '{}'", inc.relation),
-            target: "mongodb".to_string(),
-        });
-    }
+    super::reject_include(spec, "mongodb")?;
 
     let limit = super::resolve_limit(spec.limit, limits)?;
     let skip = super::resolve_skip(spec.skip, limits)?;
@@ -174,16 +166,7 @@ fn match_doc(cond: &Cond) -> Result<Document, QueryError> {
             doc_kv(field.physical.as_str(), Bson::Document(inner))
         }
         Cond::Rel { quant, rel, cond } => {
-            // W11: a many-to-many relation needs a junction join, which a
-            // `find` filter cannot express. It used to render as a plain
-            // `$elemMatch` on the relation name — wrong results, no error —
-            // while include planning correctly gated m2m.
-            if rel.through.is_some() {
-                return Err(QueryError::FeatureUnsupportedByTarget {
-                    feature: format!("many-to-many relation '{}'", rel.name),
-                    target: "mongodb".to_string(),
-                });
-            }
+            super::reject_many_to_many(rel, "mongodb")?;
             rel_doc(*quant, &rel.name, rel.mongo, cond)?
         }
     })

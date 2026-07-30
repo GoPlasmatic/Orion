@@ -4,10 +4,11 @@ use utoipa::openapi::path::Operation;
 use utoipa::openapi::security::{
     ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme,
 };
-use utoipa::openapi::{ContentBuilder, Ref, RefOr, Response, ResponseBuilder};
+use utoipa::openapi::{Content, ContentBuilder, Ref, RefOr, Response, ResponseBuilder};
 use utoipa::{Modify, OpenApi};
 
 use crate::server::admin_auth::is_guarded_path;
+use crate::storage::models::TraceListItemResponse;
 
 /// The spec is generated without a config, so it has to pick one deployment
 /// shape to describe for the paths whose registration is config-dependent.
@@ -90,17 +91,21 @@ fn admin_security() -> Vec<SecurityRequirement> {
     ]
 }
 
+/// The `application/json` body every error response carries. Shared so the
+/// injected 401/500 and the annotation-declared 4xx/5xx cannot describe the
+/// same envelope differently.
+fn error_content() -> Content {
+    ContentBuilder::new()
+        .schema(Some(Ref::from_schema_name("ErrorResponse")))
+        .build()
+}
+
 /// A JSON response whose body is `#/components/schemas/ErrorResponse`.
 fn error_response(description: &str) -> RefOr<Response> {
     RefOr::T(
         ResponseBuilder::new()
             .description(description)
-            .content(
-                "application/json",
-                ContentBuilder::new()
-                    .schema(Some(Ref::from_schema_name("ErrorResponse")))
-                    .build(),
-            )
+            .content("application/json", error_content())
             .build(),
     )
 }
@@ -122,12 +127,9 @@ fn fill_error_content(operation: &mut Operation) {
         if let RefOr::T(response) = response
             && response.content.is_empty()
         {
-            response.content.insert(
-                "application/json".to_string(),
-                ContentBuilder::new()
-                    .schema(Some(Ref::from_schema_name("ErrorResponse")))
-                    .build(),
-            );
+            response
+                .content
+                .insert("application/json".to_string(), error_content());
         }
     }
 }
@@ -765,26 +767,6 @@ pub(crate) struct BackupListItem {
     modified_at: String,
 }
 
-/// One row of `GET /api/v1/admin/traces` — payload-free by design (S14).
-#[derive(serde::Serialize, utoipa::ToSchema)]
-#[allow(dead_code)]
-pub(crate) struct TraceListItem {
-    id: String,
-    /// Channel name as it was when the trace ran — a snapshot, not a key.
-    channel: String,
-    channel_id: Option<String>,
-    /// `sync` | `async`.
-    mode: String,
-    /// `pending` | `running` | `completed` | `failed`.
-    status: String,
-    error_message: Option<String>,
-    duration_ms: Option<i64>,
-    started_at: Option<String>,
-    completed_at: Option<String>,
-    created_at: String,
-    updated_at: String,
-}
-
 /// `GET /api/v1/admin/traces` — a page of trace rows.
 ///
 /// Not [`PaginatedEnvelope`] (D8): `total` is present only when the request
@@ -794,7 +776,7 @@ pub(crate) struct TraceListItem {
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct TracePageEnvelope {
-    data: Vec<TraceListItem>,
+    data: Vec<TraceListItemResponse>,
     /// Rows matching the filter, ignoring `limit`/`offset`. Present only with
     /// `include_total=true`.
     #[serde(skip_serializing_if = "Option::is_none")]

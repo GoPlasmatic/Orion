@@ -102,13 +102,7 @@ pub(super) fn reject_unknown_env_vars<I>(
 where
     I: IntoIterator<Item = String>,
 {
-    // Derived from `known` rather than listed a second time, so a setting
-    // added at the top level of the config joins it automatically.
-    let top_level: Vec<&str> = known
-        .iter()
-        .filter(|key| !key.contains(SECTION_SEPARATOR))
-        .map(String::as_str)
-        .collect();
+    let top_level = top_level_keys(known);
 
     let mut offenders: Vec<String> = present
         .into_iter()
@@ -153,12 +147,20 @@ pub fn looks_like_env_override(name: &str, known: &BTreeSet<String>) -> bool {
     if !name.starts_with(ORION_PREFIX) || name.starts_with(RESERVED_PREFIX) {
         return false;
     }
-    let top_level: Vec<&str> = known
+    could_be_a_misspelled_override(name, &top_level_keys(known))
+}
+
+/// The overrides whose config path is a single segment, and so carry no
+/// [`SECTION_SEPARATOR`] to be recognised by.
+///
+/// Derived from `known` rather than listed a second time, so a setting added
+/// at the top level of the config joins it automatically.
+fn top_level_keys(known: &BTreeSet<String>) -> Vec<&str> {
+    known
         .iter()
         .filter(|key| !key.contains(SECTION_SEPARATOR))
         .map(String::as_str)
-        .collect();
-    could_be_a_misspelled_override(name, &top_level)
+        .collect()
 }
 
 /// Whether `name` is shaped like an override, and so worth reporting when it

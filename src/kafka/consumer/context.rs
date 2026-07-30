@@ -135,9 +135,13 @@ impl RebalanceState {
     /// re-assigned. While true, no message on it may be processed further or
     /// committed — it belongs to another group member now.
     pub(crate) fn is_revoked(&self, topic: &str, partition: i32) -> bool {
+        // Scanned rather than looked up: the set is bounded by this
+        // consumer's assignment and empty in the steady state, so a scan is
+        // cheaper than allocating an owned key on the per-message path.
         self.lock()
             .revoked
-            .contains(&(topic.to_string(), partition))
+            .iter()
+            .any(|(t, p)| *p == partition && t.as_str() == topic)
     }
 }
 

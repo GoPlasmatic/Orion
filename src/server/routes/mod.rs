@@ -115,19 +115,9 @@ pub(crate) async fn health_check(
     let db_healthy = state.workflow_repo.ping().await.is_ok();
 
     // Check engine state — independently verify the engine lock is acquirable
-    let mut workflows_loaded = 0;
-    let engine_healthy = match tokio::time::timeout(
-        std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
-        crate::engine::acquire_engine_read(&state.engine),
-    )
-    .await
-    {
-        Ok(engine) => {
-            workflows_loaded = engine.workflows().len();
-            true
-        }
-        Err(_) => false,
-    };
+    let loaded = probe_engine(&state).await;
+    let engine_healthy = loaded.is_some();
+    let workflows_loaded = loaded.unwrap_or(0);
 
     // Collect circuit breaker states
     let cb_states = state.connector_registry.circuit_breaker_states().await;
@@ -289,6 +279,24 @@ async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
     )
 }
 
+/// Acquire the engine read lock under `engine.health_check_timeout_secs` and
+/// report how many workflows are loaded. `None` means the lock was not
+/// acquirable inside the window.
+///
+/// `/health` and `/readyz` both probe the engine, and each used to spell the
+/// timeout-and-acquire out for itself — two copies of one definition of "the
+/// engine is up", identical only by accident. The guard is released before
+/// returning.
+async fn probe_engine(state: &AppState) -> Option<usize> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
+        crate::engine::acquire_engine_read(&state.engine),
+    )
+    .await
+    .ok()
+    .map(|engine| engine.workflows().len())
+}
+
 /// Coarse state of the Kafka ingest consumer for `/health` and `/readyz`:
 /// `None` when Kafka is disabled, so non-Kafka deployments carry no `kafka`
 /// component at all (O10).
@@ -343,15 +351,19 @@ probes work without provisioning an admin key.",
 pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse {
     use std::sync::atomic::Ordering;
 
-    let db_healthy = state.workflow_repo.ping().await.is_ok();
-    let engine_healthy = tokio::time::timeout(
-        std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
-        crate::engine::acquire_engine_read(&state.engine),
-    )
-    .await
-    .is_ok();
     let initialized = state.ready.load(Ordering::Acquire);
-    let redis_healthy = cluster_redis_healthy(&state).await;
+    // The three dependency probes share no state and each carries its own
+    // `health_check_timeout_secs` window, so running them sequentially made a
+    // probe's worst case the *sum* of those windows — long past a typical
+    // `timeoutSeconds: 1`, reporting not-ready for a reason that is not the
+    // actual degradation.
+    let (db_ping, engine_loaded, redis_healthy) = tokio::join!(
+        state.workflow_repo.ping(),
+        probe_engine(&state),
+        cluster_redis_healthy(&state)
+    );
+    let db_healthy = db_ping.is_ok();
+    let engine_healthy = engine_loaded.is_some();
     let kafka_state = kafka_component(&state);
 
     let all_ready = db_healthy

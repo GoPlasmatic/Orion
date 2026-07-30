@@ -91,12 +91,15 @@ impl AsyncFunctionHandler for DataWriteHandler {
             let envelope = match input.get("write") {
                 Some(w) => w,
                 None => {
-                    const HANDLER_KEYS: [&str; 5] =
-                        ["connector", "schema", "params", "database", "output"];
+                    // The handler keys are read back off the schema table
+                    // below, so a sixth one cannot be declared there and
+                    // forgotten here.
                     legacy_flat = match input.as_object() {
                         Some(o) => Value::Object(
                             o.iter()
-                                .filter(|(k, _)| !HANDLER_KEYS.contains(&k.as_str()))
+                                .filter(|(k, _)| {
+                                    !DATA_WRITE_FIELDS.iter().any(|f| f.name == k.as_str())
+                                })
                                 .map(|(k, v)| (k.clone(), v.clone()))
                                 .collect(),
                         ),
@@ -237,10 +240,7 @@ where
             .run(NAME, sqlx::query_with(sql, values).fetch_all(executor))
             .await?;
         let returning = rows_to_json(&rows)?;
-        let count = match &returning {
-            Value::Array(a) => a.len(),
-            _ => 0,
-        };
+        let count = returning.len();
         Ok(json!({ "rows_affected": count, "returning": returning }))
     }
 }

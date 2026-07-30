@@ -147,6 +147,28 @@ where
         }};
     }
 
+    /// Enum override: a case-insensitive value out of a fixed set, with the
+    /// accepted values named back to the operator when it is not one of them.
+    /// The key is spelled out rather than derived from the field path, because
+    /// the docs drift test scrapes these literals out of the source.
+    macro_rules! ov_enum {
+        ($key:literal, $($path:ident).+, { $($lit:literal => $variant:expr),+ $(,)? }, $expected:literal) => {{
+            if let Ok(v) = env_var($key) {
+                config.$($path).+ = match v.to_lowercase().as_str() {
+                    $($lit => $variant,)+
+                    _ => {
+                        return Err(OrionError::Config {
+                            message: format!(
+                                "{}: invalid value '{}', expected {}",
+                                $key, v, $expected
+                            ),
+                        });
+                    }
+                };
+            }
+        }};
+    }
+
     // Deployment environment. `ORION_ENVIRONMENT`, derived by the rule above
     // — `ORION_ENV` was retired in 1.0 and is refused by
     // `reject_retired_env_vars` rather than silently ignored.
@@ -186,19 +208,15 @@ where
 
     // Logging
     ov!(logging.level: String);
-    if let Ok(v) = env_var("ORION_LOGGING__FORMAT") {
-        match v.to_lowercase().as_str() {
-            "json" => config.logging.format = LogFormat::Json,
-            "pretty" => config.logging.format = LogFormat::Pretty,
-            _ => {
-                return Err(OrionError::Config {
-                    message: format!(
-                        "ORION_LOGGING__FORMAT: invalid value '{v}', expected 'json' or 'pretty'"
-                    ),
-                });
-            }
-        }
-    }
+    ov_enum!(
+        "ORION_LOGGING__FORMAT",
+        logging.format,
+        {
+            "json" => LogFormat::Json,
+            "pretty" => LogFormat::Pretty,
+        },
+        "'json' or 'pretty'"
+    );
 
     // Ingest
     ov!(ingest.max_payload_size: usize);
@@ -251,38 +269,26 @@ where
     ov!(trace_storage.batch_size: usize);
     ov!(trace_storage.batch_flush_interval_ms: u64);
     ov!(trace_storage.batch_workers: usize);
-    if let Ok(v) = env_var("ORION_TRACE_STORAGE__MODE") {
-        match v.to_lowercase().as_str() {
-            "sync" => config.trace_storage.mode = crate::config::TraceStorageMode::Sync,
-            "async" => config.trace_storage.mode = crate::config::TraceStorageMode::Async,
-            "batch" => config.trace_storage.mode = crate::config::TraceStorageMode::Batch,
-            "off" => config.trace_storage.mode = crate::config::TraceStorageMode::Off,
-            _ => {
-                return Err(OrionError::Config {
-                    message: format!(
-                        "ORION_TRACE_STORAGE__MODE: invalid value '{v}', \
-                         expected 'sync', 'async', 'batch', or 'off'"
-                    ),
-                });
-            }
-        }
-    }
-    if let Ok(v) = env_var("ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW") {
-        match v.to_lowercase().as_str() {
-            "drop" => config.trace_storage.async_on_overflow = crate::config::AsyncOnOverflow::Drop,
-            "block" => {
-                config.trace_storage.async_on_overflow = crate::config::AsyncOnOverflow::Block
-            }
-            _ => {
-                return Err(OrionError::Config {
-                    message: format!(
-                        "ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW: invalid value '{v}', \
-                         expected 'drop' or 'block'"
-                    ),
-                });
-            }
-        }
-    }
+    ov_enum!(
+        "ORION_TRACE_STORAGE__MODE",
+        trace_storage.mode,
+        {
+            "sync" => crate::config::TraceStorageMode::Sync,
+            "async" => crate::config::TraceStorageMode::Async,
+            "batch" => crate::config::TraceStorageMode::Batch,
+            "off" => crate::config::TraceStorageMode::Off,
+        },
+        "'sync', 'async', 'batch', or 'off'"
+    );
+    ov_enum!(
+        "ORION_TRACE_STORAGE__ASYNC_ON_OVERFLOW",
+        trace_storage.async_on_overflow,
+        {
+            "drop" => crate::config::AsyncOnOverflow::Drop,
+            "block" => crate::config::AsyncOnOverflow::Block,
+        },
+        "'drop' or 'block'"
+    );
 
     // Engine
     ov!(engine.health_check_timeout_secs: u64);

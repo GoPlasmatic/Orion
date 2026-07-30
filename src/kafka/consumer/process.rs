@@ -115,15 +115,15 @@ async fn process_one_kafka_message(
     // emitted once rather than once per retry (K10).
     count_outcome: bool,
 ) -> MsgOutcome {
-    let topic = msg.topic().to_string();
-    let channel = match ctx.topic_map.get(&topic) {
-        Some(ch) => ch.clone(),
+    let topic: &str = msg.topic();
+    let channel: &str = match ctx.topic_map.get(topic) {
+        Some(ch) => ch.as_str(),
         None => {
             return report_failure_and_dlq(
                 ctx,
                 FailureReport {
                     channel: "unknown",
-                    topic: &topic,
+                    topic,
                     payload: msg.payload().unwrap_or_default(),
                     message_status: "error",
                     error_kind: "kafka_unmapped_topic",
@@ -142,8 +142,8 @@ async fn process_one_kafka_message(
             return report_failure_and_dlq(
                 ctx,
                 FailureReport {
-                    channel: &channel,
-                    topic: &topic,
+                    channel,
+                    topic,
                     payload: msg.payload().unwrap_or_default(),
                     message_status: "error",
                     error_kind: "kafka_decode",
@@ -158,8 +158,8 @@ async fn process_one_kafka_message(
             return report_failure_and_dlq(
                 ctx,
                 FailureReport {
-                    channel: &channel,
-                    topic: &topic,
+                    channel,
+                    topic,
                     payload: &[],
                     message_status: "error",
                     error_kind: "kafka_empty_payload",
@@ -172,21 +172,37 @@ async fn process_one_kafka_message(
         }
     };
 
+    // Every failure branch from here on reports the same message identity
+    // (channel / topic / payload) and the same counter policy, so a site only
+    // spells out the four labels that distinguish it.
+    let fail = async |message_status: &'static str,
+                      error_kind: &'static str,
+                      log_msg: &'static str,
+                      dlq_reason: String| {
+        report_failure_and_dlq(
+            ctx,
+            FailureReport {
+                channel,
+                topic,
+                payload: payload.as_bytes(),
+                message_status,
+                error_kind,
+                log_msg,
+                dlq_reason: &dlq_reason,
+            },
+            count_outcome,
+        )
+        .await
+    };
+
     let data: serde_json::Value = match serde_json::from_str(payload) {
         Ok(v) => v,
         Err(e) => {
-            return report_failure_and_dlq(
-                ctx,
-                FailureReport {
-                    channel: &channel,
-                    topic: &topic,
-                    payload: payload.as_bytes(),
-                    message_status: "error",
-                    error_kind: "kafka_parse",
-                    log_msg: "Failed to parse Kafka message as JSON",
-                    dlq_reason: &format!("JSON parse error: {e}"),
-                },
-                count_outcome,
+            return fail(
+                "error",
+                "kafka_parse",
+                "Failed to parse Kafka message as JSON",
+                format!("JSON parse error: {e}"),
             )
             .await;
         }
@@ -205,25 +221,18 @@ async fn process_one_kafka_message(
     // run is `Transport::Kafka`'s row of the matrix. Failures are not
     // silently dropped: they record metrics, log, and are committed, dead
     // lettered or left for redelivery per `classify_guard_refusal`.
-    let metadata = kafka_metadata_value(&channel, &topic, msg);
+    let metadata = kafka_metadata_value(channel, topic, msg);
     // F35: a quarantined channel is refused here too. Routed to the DLQ
     // rather than dropped, so the messages are replayable once the operator
     // fixes the channel's stored config.
-    let channel_runtime = match ctx.channel_registry.require_serviceable(&channel) {
+    let channel_runtime = match ctx.channel_registry.require_serviceable(channel) {
         Ok(runtime) => runtime,
         Err(e) => {
-            return report_failure_and_dlq(
-                ctx,
-                FailureReport {
-                    channel: &channel,
-                    topic: &topic,
-                    payload: payload.as_bytes(),
-                    message_status: "error",
-                    error_kind: "channel_quarantined",
-                    log_msg: "Kafka message for a channel that failed to load",
-                    dlq_reason: &e.to_string(),
-                },
-                count_outcome,
+            return fail(
+                "error",
+                "channel_quarantined",
+                "Kafka message for a channel that failed to load",
+                e.to_string(),
             )
             .await;
         }
@@ -239,9 +248,9 @@ async fn process_one_kafka_message(
     // the dedup guard recognises its own unsettled claim instead of refusing
     // the message as a duplicate of itself.
     let dedup_owner = format!("kafka:{topic}/{}/{}", msg.partition(), msg.offset());
-    let guard_result = crate::channel::guards::apply_guards(crate::channel::guards::GuardRequest {
+    let guard_result = crate::channel::guards::admit(crate::channel::guards::GuardRequest {
         transport: crate::channel::guards::Transport::Kafka,
-        channel: &channel,
+        channel,
         runtime: &channel_runtime,
         data: &data,
         metadata: &metadata,
@@ -250,7 +259,7 @@ async fn process_one_kafka_message(
         // A Kafka channel consumes one topic, so the topic is a stable,
         // bounded identity: a channel's limit is a throughput cap on its
         // topic unless `key_logic` says otherwise.
-        caller_identity: &topic,
+        caller_identity: topic,
         header: &header_lookup,
         dedup_key_fallback: record_key,
         dedup_owner: Some(&dedup_owner),
@@ -263,29 +272,11 @@ async fn process_one_kafka_message(
     .await;
 
     let admission = match guard_result {
-        Ok(crate::channel::guards::GuardVerdict::Admitted(admission)) => admission,
-        // `Transport::Kafka` does not enable the response cache, so a hit is
-        // unreachable; treat it as a refusal rather than asserting.
-        Ok(crate::channel::guards::GuardVerdict::CacheHit(_)) => {
-            return report_failure_and_dlq(
-                ctx,
-                FailureReport {
-                    channel: &channel,
-                    topic: &topic,
-                    payload: payload.as_bytes(),
-                    message_status: "error",
-                    error_kind: "kafka_validation",
-                    log_msg: "Kafka ingress produced a cached response",
-                    dlq_reason: "Response cache is not applicable to Kafka ingress",
-                },
-                count_outcome,
-            )
-            .await;
-        }
+        Ok(admission) => admission,
         Err(e) => match classify_guard_refusal(&e) {
             GuardDisposition::Duplicate => {
                 if count_outcome {
-                    metrics::record_message(&channel, "duplicate");
+                    metrics::record_message(channel, "duplicate");
                 }
                 tracing::debug!(
                     topic = %topic,
@@ -305,18 +296,11 @@ async fn process_one_kafka_message(
                 return MsgOutcome::Failed;
             }
             GuardDisposition::Terminal => {
-                return report_failure_and_dlq(
-                    ctx,
-                    FailureReport {
-                        channel: &channel,
-                        topic: &topic,
-                        payload: payload.as_bytes(),
-                        message_status: "error",
-                        error_kind: "kafka_validation",
-                        log_msg: "Kafka message rejected by a channel ingress guard",
-                        dlq_reason: &format!("Validation failed: {e}"),
-                    },
-                    count_outcome,
+                return fail(
+                    "error",
+                    "kafka_validation",
+                    "Kafka message rejected by a channel ingress guard",
+                    format!("Validation failed: {e}"),
                 )
                 .await;
             }
@@ -341,7 +325,7 @@ async fn process_one_kafka_message(
     let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
     let process_result = crate::engine::run_for_channel(
         &engine_ref,
-        &channel,
+        channel,
         &mut message,
         Some(processing_timeout_ms),
         None,
@@ -351,34 +335,20 @@ async fn process_one_kafka_message(
 
     let outcome = match process_result {
         Err(_) => {
-            report_failure_and_dlq(
-                ctx,
-                FailureReport {
-                    channel: &channel,
-                    topic: &topic,
-                    payload: payload.as_bytes(),
-                    message_status: "timeout",
-                    error_kind: "kafka_timeout",
-                    log_msg: "Kafka message processing timed out",
-                    dlq_reason: &format!("Processing timed out after {processing_timeout_ms}ms"),
-                },
-                count_outcome,
+            fail(
+                "timeout",
+                "kafka_timeout",
+                "Kafka message processing timed out",
+                format!("Processing timed out after {processing_timeout_ms}ms"),
             )
             .await
         }
         Ok((Err(e), _)) => {
-            report_failure_and_dlq(
-                ctx,
-                FailureReport {
-                    channel: &channel,
-                    topic: &topic,
-                    payload: payload.as_bytes(),
-                    message_status: "error",
-                    error_kind: "kafka_processing",
-                    log_msg: "Failed to process Kafka message",
-                    dlq_reason: &format!("Processing error: {e}"),
-                },
-                count_outcome,
+            fail(
+                "error",
+                "kafka_processing",
+                "Failed to process Kafka message",
+                format!("Processing error: {e}"),
             )
             .await
         }
@@ -391,25 +361,18 @@ async fn process_one_kafka_message(
                 .map(|e| format!("{}: {}", e.code, e.message))
                 .collect::<Vec<_>>()
                 .join("; ");
-            report_failure_and_dlq(
-                ctx,
-                FailureReport {
-                    channel: &channel,
-                    topic: &topic,
-                    payload: payload.as_bytes(),
-                    message_status: "error",
-                    error_kind: "kafka_processing",
-                    log_msg: "Kafka message processed with workflow errors",
-                    dlq_reason: &format!("Workflow errors: {summary}"),
-                },
-                count_outcome,
+            fail(
+                "error",
+                "kafka_processing",
+                "Kafka message processed with workflow errors",
+                format!("Workflow errors: {summary}"),
             )
             .await
         }
         Ok((Ok(()), _)) => {
             let duration = start.elapsed().as_secs_f64();
-            metrics::record_message(&channel, "ok");
-            metrics::record_message_duration(&channel, duration);
+            metrics::record_message(channel, "ok");
+            metrics::record_message_duration(channel, duration);
             tracing::debug!(
                 topic = %topic,
                 channel = %channel,
@@ -580,13 +543,8 @@ pub(super) async fn process_until_committed(
             backoff_ms,
             "Kafka message failed without a confirmed DLQ write; offset not committed, retrying in place"
         );
-        tokio::select! {
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    return false;
-                }
-            }
-            _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {}
+        if !super::sleep_or_shutdown(shutdown_rx, backoff_ms).await {
+            return false;
         }
         backoff_ms = next_backoff_ms(backoff_ms);
     }
@@ -679,8 +637,6 @@ fn kafka_metadata_value(
     topic: &str,
     msg: &rdkafka::message::BorrowedMessage<'_>,
 ) -> serde_json::Value {
-    use rdkafka::Message as KafkaMsg;
-
     let mut meta = serde_json::json!({
         "channel": channel,
         "kafka_topic": topic,

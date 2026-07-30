@@ -247,6 +247,18 @@ pub fn start_consumer(
     })
 }
 
+/// Sleep for `ms`, cut short by a shutdown signal. Returns `false` only when
+/// shutdown was actually signalled; a spurious `changed()` whose value is
+/// still `false` (or a dropped sender) returns `true` so the caller carries
+/// on. Shared by the consume loop's `recv()` backoff and the per-message
+/// retry backoff in `process::process_until_committed`.
+async fn sleep_or_shutdown(rx: &mut watch::Receiver<bool>, ms: u64) -> bool {
+    tokio::select! {
+        _ = tokio::time::sleep(std::time::Duration::from_millis(ms)) => true,
+        _ = rx.changed() => !*rx.borrow(),
+    }
+}
+
 async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<bool>) {
     // Spawn consumer lag monitoring task
     let lag_handle = if ctx.lag_poll_interval_secs > 0 {
@@ -307,14 +319,9 @@ async fn consume_loop(ctx: ConsumeLoopContext, mut shutdown_rx: watch::Receiver<
                             backoff_ms = wait,
                             "Kafka consumer error; backing off before the next poll"
                         );
-                        tokio::select! {
-                            _ = tokio::time::sleep(std::time::Duration::from_millis(wait)) => {}
-                            _ = shutdown_rx.changed() => {
-                                if *shutdown_rx.borrow() {
-                                    tracing::info!("Kafka consumer shutting down");
-                                    break;
-                                }
-                            }
+                        if !sleep_or_shutdown(&mut shutdown_rx, wait).await {
+                            tracing::info!("Kafka consumer shutting down");
+                            break;
                         }
                     }
                 }

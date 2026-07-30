@@ -13,6 +13,7 @@ use crate::server::routes::openapi::ErrorResponse;
 use crate::server::routes::openapi::{DataEnvelope, TraceDetail, TracePageEnvelope};
 use crate::server::routes::response_helpers::data_response;
 use crate::server::state::AppState;
+use crate::storage::models::TraceListItemResponse;
 use crate::storage::repositories::traces::TraceFilter;
 
 #[utoipa::path(
@@ -46,24 +47,10 @@ pub(crate) async fn list_traces(
     // list row is every caller's traffic in one response — including rows
     // persisted before S10 masked credential headers. Payloads are served
     // one trace at a time by `GET /traces/{id}`, mirroring the DLQ list.
-    let rows: Vec<Value> = result
+    let rows: Vec<TraceListItemResponse> = result
         .data
         .iter()
-        .map(|t| {
-            json!({
-                "id": t.id,
-                "channel": t.channel,
-                "channel_id": t.channel_id,
-                "mode": t.mode,
-                "status": t.status,
-                "error_message": t.error_message,
-                "duration_ms": t.duration_ms,
-                "started_at": t.started_at,
-                "completed_at": t.completed_at,
-                "created_at": t.created_at,
-                "updated_at": t.updated_at,
-            })
-        })
+        .map(TraceListItemResponse::from)
         .collect();
     // `total` and `next_cursor` are both conditional (D8), so this page is
     // assembled here rather than through `paginated_response`.

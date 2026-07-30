@@ -109,21 +109,13 @@ fn json_response(status: StatusCode, body: String) -> Response {
 /// (G1), while the persisted trace keeps `trace.response_json` full detail.
 async fn persist_trace_and_cache(
     state: &AppState,
-    channel_config: &Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
+    channel_config: &std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
     trace: &CompletedTrace<'_>,
     cache_body: &str,
     cache_context: &Option<CacheStoreCtx>,
     profile: Option<&std::sync::Arc<crate::engine::profile::ProfileCollector>>,
 ) {
-    let effective_trace = channel_config
-        .as_ref()
-        .map(|c| c.trace_storage)
-        .unwrap_or_else(|| {
-            crate::channel::registry::EffectiveTraceConfig::resolve(
-                &state.config.trace_storage,
-                None,
-            )
-        });
+    let effective_trace = channel_config.trace_storage;
     let trace_store_start = Instant::now();
     route_store_completed(
         &effective_trace,
@@ -185,6 +177,14 @@ pub(super) fn response_envelope(
     envelope
 }
 
+/// Serialize a response envelope, mapping the (unreachable in practice)
+/// serializer failure to the one `Internal` message every envelope site used
+/// to spell out for itself.
+fn serialize_envelope(envelope: &Value) -> Result<String, OrionError> {
+    serde_json::to_string(envelope)
+        .map_err(|e| OrionError::Internal(format!("Failed to serialize response: {e}")))
+}
+
 /// Generic replacement for engine error messages on the data plane (G1).
 const SANITIZED_ERROR_MESSAGE: &str =
     "Task processing failed; full detail is available in the trace";
@@ -227,7 +227,7 @@ pub(super) async fn process_sync_for_channel(
     channel: &str,
     data: Value,
     metadata: Value,
-    channel_config: Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
+    channel_config: std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
     profile_requested: bool,
     admission: Admission,
 ) -> Result<Response, OrionError> {
@@ -243,15 +243,10 @@ pub(super) async fn process_sync_for_channel(
         dedup_claim: _dedup_claim,
     } = admission;
 
-    // O1: only registry-confirmed channels may appear as metric labels.
-    // The single-segment route fallback accepts arbitrary path segments, so
-    // labelling on the raw name would let callers grow Prometheus label
-    // cardinality without bound.
-    let metrics_channel = if channel_config.is_some() {
-        channel
-    } else {
-        "_unknown"
-    };
+    // O1: `channel` is safe to use as a metric label below because the caller
+    // has already resolved it against the registry — an unknown name is a 404
+    // before it reaches here, so callers cannot grow Prometheus label
+    // cardinality by inventing path segments.
 
     let start = Instant::now();
     let engine = crate::engine::acquire_engine_read(&state.engine).await;
@@ -266,10 +261,7 @@ pub(super) async fn process_sync_for_channel(
     // A2: when the channel opted in via `config.tracing.task_details = true`,
     // use the with-trace engine entry point so per-step inputs/outputs are
     // captured for persistence.
-    let capture_trace = channel_config
-        .as_ref()
-        .map(|c| c.trace_storage.task_details)
-        .unwrap_or(false);
+    let capture_trace = channel_config.trace_storage.task_details;
 
     let workflow_start = Instant::now();
     let result = crate::engine::run_for_channel(
@@ -289,7 +281,7 @@ pub(super) async fn process_sync_for_channel(
         Ok(inner) => inner,
         Err(ms) => {
             remove_rollout_bucket(&mut message);
-            metrics::record_message(metrics_channel, "timeout");
+            metrics::record_message(channel, "timeout");
             metrics::record_error("timeout");
             return Err(OrionError::Timeout {
                 channel: channel.to_string(),
@@ -304,10 +296,10 @@ pub(super) async fn process_sync_for_channel(
             let duration = start.elapsed();
             let duration_secs = duration.as_secs_f64();
             let duration_ms = duration.as_secs_f64() * 1000.0;
-            metrics::record_message(metrics_channel, "ok");
-            metrics::record_message_duration(metrics_channel, duration_secs);
+            metrics::record_message(channel, "ok");
+            metrics::record_message_duration(channel, duration_secs);
 
-            let response = response_envelope(
+            let mut response = response_envelope(
                 message.id(),
                 crate::engine::utils::data_without_rollout_bucket(&message),
                 message
@@ -321,29 +313,24 @@ pub(super) async fn process_sync_for_channel(
             // Serialize the full-detail envelope exactly once — reused for the
             // size check, trace storage, and (on the error-free hot path) the
             // cache and HTTP body with no re-serialization by Axum.
-            let response_json = serde_json::to_string(&response)
-                .map_err(|e| OrionError::Internal(format!("Failed to serialize response: {e}")))?;
+            let response_json = serialize_envelope(&response)?;
 
             // G1: when workflow errors are present, the client-facing body
             // (and the cached copy) carry sanitized entries plus a
             // correlation id; the persisted trace keeps the full detail.
+            //
+            // The two envelopes differ only in `errors` and `request_id`, so
+            // the public one is made by overwriting those two keys in place —
+            // rebuilding it would deep-convert the whole workflow output a
+            // second time.
             let has_errors = message.has_errors();
-            let public_response = if has_errors {
-                let request_id = crate::server::request_context::request_id().unwrap_or_default();
-                Some(response_envelope(
-                    message.id(),
-                    crate::engine::utils::data_without_rollout_bucket(&message),
-                    sanitize_errors(message.errors()),
-                    Some(request_id),
-                ))
+            let public_json = if has_errors {
+                response["errors"] = Value::Array(sanitize_errors(message.errors()));
+                response["request_id"] =
+                    json!(crate::server::request_context::request_id().unwrap_or_default());
+                Some(serialize_envelope(&response)?)
             } else {
                 None
-            };
-            let public_json = match &public_response {
-                Some(v) => Some(serde_json::to_string(v).map_err(|e| {
-                    OrionError::Internal(format!("Failed to serialize response: {e}"))
-                })?),
-                None => None,
             };
 
             let max_result_size = state.config.trace_queue.max_result_size_bytes;
@@ -367,9 +354,7 @@ pub(super) async fn process_sync_for_channel(
                 &channel_config,
                 &CompletedTrace {
                     channel,
-                    channel_id: channel_config
-                        .as_ref()
-                        .map(|c| c.channel.channel_id.as_str()),
+                    channel_id: Some(channel_config.channel.channel_id.as_str()),
                     input_json: input_json.as_deref(),
                     response_json: &response_json,
                     duration_ms,
@@ -390,12 +375,12 @@ pub(super) async fn process_sync_for_channel(
             // `_orion.task_trace`) can be added without colliding with
             // workflow-level output keys that callers control.
             if let Some(ref p) = profile {
-                let mut response_with_profile = public_response.unwrap_or(response);
+                let mut response_with_profile = response;
                 response_with_profile["_orion"] = json!({ "profile": p.to_json() });
-                let body = serde_json::to_string(&response_with_profile).map_err(|e| {
-                    OrionError::Internal(format!("Failed to serialize response: {e}"))
-                })?;
-                return Ok(json_response(StatusCode::OK, body));
+                return Ok(json_response(
+                    StatusCode::OK,
+                    serialize_envelope(&response_with_profile)?,
+                ));
             }
 
             Ok(json_response(
@@ -405,7 +390,7 @@ pub(super) async fn process_sync_for_channel(
         }
         Err(e) => {
             remove_rollout_bucket(&mut message);
-            metrics::record_message(metrics_channel, "error");
+            metrics::record_message(channel, "error");
             metrics::record_error("engine");
             Err(OrionError::Engine(e))
         }

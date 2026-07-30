@@ -251,19 +251,17 @@ impl QuerySpec {
     ///
     /// Applied once per translation, before any backend sees the spec, so no
     /// renderer can receive a logical name.
-    pub fn resolve_names(&self, reg: &crate::query::EntityRegistry) -> Result<Self, QueryError> {
-        let mut out = self.clone();
-
-        if out.fields.is_empty() {
-            out.fields = reg.default_projection(&self.source, "fields")?;
+    pub fn resolve_names(mut self, reg: &crate::query::EntityRegistry) -> Result<Self, QueryError> {
+        if self.fields.is_empty() {
+            self.fields = reg.default_projection(&self.source, "fields")?;
         } else {
-            for (i, field) in out.fields.iter_mut().enumerate() {
+            for (i, field) in self.fields.iter_mut().enumerate() {
                 *field = reg
                     .resolve_field(&self.source, field, &format!("fields[{i}]"))?
                     .physical;
             }
         }
-        for (i, key) in out.sort.iter_mut().enumerate() {
+        for (i, key) in self.sort.iter_mut().enumerate() {
             key.field = reg
                 .resolve_field(&self.source, &key.field, &format!("sort[{i}]"))?
                 .physical;
@@ -272,7 +270,7 @@ impl QuerySpec {
         // entity, so they resolve against the relation's target, not the root
         // — including the field-less case, which takes the target's default
         // projection rather than selecting every column blind.
-        for inc in out.include.iter_mut() {
+        for inc in self.include.iter_mut() {
             let target = reg
                 .resolve_relation(&self.source, &inc.relation, "include")?
                 .1;
@@ -300,7 +298,7 @@ impl QuerySpec {
                     .physical;
             }
         }
-        Ok(out)
+        Ok(self)
     }
 }
 

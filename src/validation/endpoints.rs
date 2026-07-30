@@ -206,6 +206,27 @@ fn endpoint_of(conn: &str) -> Option<(String, u16)> {
     Some((host, port))
 }
 
+/// Shared body of the connection-string checks: honour the opt-out, skip
+/// connection strings with no network endpoint to judge, and refuse the rest
+/// when they target a private/internal address.
+async fn check_conn_endpoint(
+    kind: &str,
+    connector_name: &str,
+    conn: &str,
+    allow_private: bool,
+) -> Result<(), OrionError> {
+    if allow_private {
+        return Ok(());
+    }
+    let Some((host, port)) = endpoint_of(conn) else {
+        return Ok(());
+    };
+    validate_hostport_not_private(&host, port)
+        .await
+        .map_err(|msg| refused(kind, connector_name, &msg))?;
+    Ok(())
+}
+
 /// Private-address check for a `db` connector, on the pool-open path.
 ///
 /// Skips `sqlite:` (a file, not a socket) and `mongodb+srv:` (the hosts are
@@ -215,34 +236,27 @@ pub async fn check_db_endpoint(
     connector_name: &str,
     config: &DbConnectorConfig,
 ) -> Result<(), OrionError> {
-    if config.allow_private_urls {
-        return Ok(());
-    }
-    let Some((host, port)) = endpoint_of(&config.connection_string) else {
-        return Ok(());
-    };
-    validate_hostport_not_private(&host, port)
-        .await
-        .map_err(|msg| refused("db", connector_name, &msg))?;
-    Ok(())
+    check_conn_endpoint(
+        "db",
+        connector_name,
+        &config.connection_string,
+        config.allow_private_urls,
+    )
+    .await
 }
 
 /// Private-address check for a `cache` connector, on the pool-open path.
+///
+/// A `backend = "memory"` connector carries no URL and has nothing to judge;
+/// the redis pool refuses a missing one before it gets here.
 pub async fn check_cache_endpoint(
     connector_name: &str,
     config: &CacheConnectorConfig,
-    url: &str,
 ) -> Result<(), OrionError> {
-    if config.allow_private_urls {
-        return Ok(());
-    }
-    let Some((host, port)) = endpoint_of(url) else {
+    let Some(url) = config.url.as_deref() else {
         return Ok(());
     };
-    validate_hostport_not_private(&host, port)
-        .await
-        .map_err(|msg| refused("cache", connector_name, &msg))?;
-    Ok(())
+    check_conn_endpoint("cache", connector_name, url, config.allow_private_urls).await
 }
 
 /// Private-address check for Kafka brokers.
@@ -485,11 +499,7 @@ mod tests {
             allow_private_urls: false,
             operations: Default::default(),
         };
-        assert!(
-            check_cache_endpoint("meta", &cache, "redis://169.254.169.254:6379")
-                .await
-                .is_err()
-        );
+        assert!(check_cache_endpoint("meta", &cache).await.is_err());
     }
 
     /// sqlite opens a file, so there is no address to judge — it must pass the

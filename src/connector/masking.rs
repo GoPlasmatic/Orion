@@ -458,40 +458,30 @@ fn restore_in_place(incoming: &mut Value, stored: &Value, masked: &Value) {
 /// on create, where there is nothing to restore from, and on update for
 /// anything [`unmask_config`] could not match to a stored value.
 pub fn find_masked_value(value: &Value) -> Option<String> {
-    fn walk(value: &Value, path: &str, out: &mut Option<String>) {
-        if out.is_some() {
-            return;
-        }
+    fn walk(value: &Value, path: &str) -> Option<String> {
         match value {
-            Value::Object(map) => {
-                for (key, child) in map {
-                    let child_path = if path.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{path}.{key}")
-                    };
-                    walk(child, &child_path, out);
-                }
-            }
-            Value::Array(items) => {
-                for (i, item) in items.iter().enumerate() {
-                    walk(item, &format!("{path}[{i}]"), out);
-                }
-            }
+            Value::Object(map) => map.iter().find_map(|(key, child)| {
+                let child_path = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                walk(child, &child_path)
+            }),
+            Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .find_map(|(i, item)| walk(item, &format!("{path}[{i}]"))),
             // Either the whole value is the mask, or a maskable URL
             // position still reads as the mask after restoration — checked
             // per position, so one rotated secret cannot smuggle a second,
             // unrestorable sentinel through alongside it.
-            Value::String(s) if s == MASK || url_carries_mask(s) => {
-                *out = Some(path.to_string());
-            }
-            _ => {}
+            Value::String(s) if s == MASK || url_carries_mask(s) => Some(path.to_string()),
+            _ => None,
         }
     }
 
-    let mut found = None;
-    walk(value, "", &mut found);
-    found
+    walk(value, "")
 }
 
 #[cfg(test)]

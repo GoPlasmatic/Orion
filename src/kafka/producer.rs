@@ -6,6 +6,7 @@ use rdkafka::message::{Header, OwnedHeaders};
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use crate::config::KafkaAuthConfig;
+use crate::connector::lru_cache::LruCache;
 use crate::errors::OrionError;
 
 /// Thread-safe shared Kafka producer wrapping rdkafka's FutureProducer.
@@ -25,7 +26,10 @@ pub struct KafkaProducerCache {
     global: std::sync::Arc<KafkaProducer>,
     auth: KafkaAuthConfig,
     extra_config: HashMap<String, String>,
-    by_brokers: tokio::sync::RwLock<HashMap<String, std::sync::Arc<KafkaProducer>>>,
+    /// The same bounded LRU cache the SQL / Mongo / Redis pool caches use, so
+    /// per-cluster producers share their lazy-create, race-resolution and
+    /// capacity behaviour.
+    cache: LruCache<std::sync::Arc<KafkaProducer>>,
 }
 
 impl KafkaProducerCache {
@@ -34,13 +38,14 @@ impl KafkaProducerCache {
         global: std::sync::Arc<KafkaProducer>,
         auth: KafkaAuthConfig,
         extra_config: HashMap<String, String>,
+        max_entries: usize,
     ) -> Self {
         Self {
             global_brokers: normalize_brokers(&global_brokers),
             global,
             auth,
             extra_config,
-            by_brokers: tokio::sync::RwLock::new(HashMap::new()),
+            cache: LruCache::new(max_entries, "kafka_producer"),
         }
     }
 
@@ -57,15 +62,11 @@ impl KafkaProducerCache {
         if key == self.global_brokers {
             return Ok(self.global.clone());
         }
-        if let Some(p) = self.by_brokers.read().await.get(&key) {
-            return Ok(p.clone());
-        }
-        let producer =
-            std::sync::Arc::new(KafkaProducer::new(&key, &self.auth, &self.extra_config)?);
-        let mut map = self.by_brokers.write().await;
-        // Another task may have raced us here; prefer the stored one so a
-        // single producer per cluster stays the invariant.
-        Ok(map.entry(key).or_insert(producer).clone())
+        self.cache
+            .get_or_create(&key, || async {
+                KafkaProducer::new(&key, &self.auth, &self.extra_config).map(std::sync::Arc::new)
+            })
+            .await
     }
 }
 

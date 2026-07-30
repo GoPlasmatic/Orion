@@ -31,7 +31,7 @@ pub mod rows;
 
 pub use dto::{
     AuditLogEntryResponse, ChannelResponse, ConnectorResponse, TraceDlqEntryResponse,
-    TraceDlqSummaryResponse, WorkflowResponse,
+    TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
 };
 pub use enums::{
     CHANNEL_TYPE_ASYNC, CHANNEL_TYPE_SYNC, ChannelProtocol, ChannelType, EntityStatus,

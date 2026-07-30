@@ -23,27 +23,22 @@ impl RedisPoolCache {
         connector_name: &str,
         config: &CacheConnectorConfig,
     ) -> Result<ConnectionManager, OrionError> {
-        let url = config
-            .url
-            .as_deref()
-            .ok_or_else(|| {
-                OrionError::BadRequest(format!(
-                    "Cache connector '{connector_name}' with backend='redis' requires a 'url'"
-                ))
-            })?
-            .to_string();
-
-        // S6: refuse a private/internal target before dialling (see the note
-        // in `pool_cache.rs` on why this is create-path only).
-        crate::validation::check_cache_endpoint(connector_name, config, &url).await?;
+        let url = config.url.as_deref().ok_or_else(|| {
+            OrionError::BadRequest(format!(
+                "Cache connector '{connector_name}' with backend='redis' requires a 'url'"
+            ))
+        })?;
 
         self.cache
             .get_or_create(connector_name, || async move {
-                let client =
-                    redis::Client::open(url.as_str()).map_err(|e| OrionError::InternalSource {
-                        context: format!("Invalid Redis URL for '{connector_name}'"),
-                        source: Box::new(e),
-                    })?;
+                // S6: refuse a private/internal target before dialling (see the
+                // note in `pool_cache.rs` on why this is create-path only).
+                crate::validation::check_cache_endpoint(connector_name, config).await?;
+
+                let client = redis::Client::open(url).map_err(|e| OrionError::InternalSource {
+                    context: format!("Invalid Redis URL for '{connector_name}'"),
+                    source: Box::new(e),
+                })?;
                 client
                     .get_connection_manager()
                     .await

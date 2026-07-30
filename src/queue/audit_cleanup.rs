@@ -6,7 +6,6 @@
 //! `audit.retention_days`.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::storage::repositories::audit_logs::AuditLogRepository;
 
@@ -28,36 +27,31 @@ pub fn start_audit_cleanup(
         return None;
     }
 
-    let handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-        // Skip the first immediate tick
-        interval.tick().await;
-        let lease_ttl = interval_secs + 60;
-
-        loop {
-            interval.tick().await;
-            if let Some(ref gate) = lease_gate
-                && !gate.try_acquire("audit_cleanup", lease_ttl).await
-            {
-                continue;
-            }
-            match audit_repo.delete_older_than(retention_days).await {
-                Ok(count) => {
-                    crate::metrics::record_job_success("audit_cleanup");
-                    if count > 0 {
-                        tracing::info!(
-                            deleted = count,
-                            retention_days = retention_days,
-                            "Audit log cleanup completed"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Audit log cleanup failed");
+    let handle = super::start_retention_job(
+        "audit_cleanup",
+        interval_secs,
+        lease_gate,
+        // Cloned inside the closure: `async_trait` ties the returned future to
+        // `&self`, so the borrow has to live in the future, not the closure.
+        move || {
+            let repo = audit_repo.clone();
+            async move { repo.delete_older_than(retention_days).await }
+        },
+        move |outcome| match outcome {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(
+                        deleted = count,
+                        retention_days = retention_days,
+                        "Audit log cleanup completed"
+                    );
                 }
             }
-        }
-    });
+            Err(e) => {
+                tracing::error!(error = %e, "Audit log cleanup failed");
+            }
+        },
+    );
 
     tracing::info!(
         retention_days = retention_days,
@@ -79,6 +73,7 @@ mod tests {
     //! tests (`test_delete_older_than_removes_only_expired_rows`).
 
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
 
     use super::*;
     use crate::errors::OrionError;

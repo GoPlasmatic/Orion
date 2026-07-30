@@ -446,9 +446,17 @@ impl CachePool {
     }
 
     /// The in-memory instance for `namespace`, created on first use.
-    fn memory_namespace(&self, namespace: String) -> Arc<dyn CacheBackend> {
+    ///
+    /// Read-locked fast path: the namespace set is tiny and fully populated
+    /// after the first request per connector, and `entry` takes an exclusive
+    /// shard lock, which would serialize concurrent cache reads on what is
+    /// almost always a hit.
+    fn memory_namespace(&self, namespace: &str) -> Arc<dyn CacheBackend> {
+        if let Some(existing) = self.memory.get(namespace) {
+            return existing.value().clone() as Arc<dyn CacheBackend>;
+        }
         self.memory
-            .entry(namespace)
+            .entry(namespace.to_string())
             .or_insert_with(|| {
                 MemoryCacheBackend::new(self.cleanup_interval_secs, self.max_memory_cache_entries)
             })
@@ -471,7 +479,9 @@ impl CachePool {
         config: &CacheConnectorConfig,
     ) -> Result<Arc<dyn CacheBackend>, OrionError> {
         match config.backend.as_str() {
-            "memory" => Ok(self.memory_namespace(format!("{}:{connector_name}", purpose.as_str()))),
+            "memory" => {
+                Ok(self.memory_namespace(&format!("{}:{connector_name}", purpose.as_str())))
+            }
             "redis" => {
                 let conn = self.redis.get_conn(connector_name, config).await?;
                 Ok(Arc::new(RedisCacheBackend::new(conn)))
@@ -485,7 +495,7 @@ impl CachePool {
     /// The built-in in-memory backend for `purpose` — the default when a
     /// channel's dedup or response-cache config names no connector.
     pub fn default_memory(&self, purpose: CachePurpose) -> Arc<dyn CacheBackend> {
-        self.memory_namespace(purpose.as_str().to_string())
+        self.memory_namespace(purpose.as_str())
     }
 
     /// Evict a cached Redis connection pool for the named connector.

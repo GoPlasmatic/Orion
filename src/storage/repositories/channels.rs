@@ -13,8 +13,8 @@ use crate::storage::{
 
 use super::helpers::PaginatedResult;
 use super::helpers::{
-    Page, Projection, clamp_pagination, fetch_required, fetch_required_tx, map_duplicate,
-    optional_string_value, paginate, parse_sort_order,
+    Page, Projection, clamp_pagination, map_duplicate, optional_string_value, paginate,
+    parse_sort_order,
 };
 use super::versioned::{self, VersionedSpec};
 
@@ -331,11 +331,8 @@ impl ChannelRepository for SqlChannelRepository {
         req: &UpdateChannelRequest,
     ) -> Result<Channel, OrionError> {
         crate::metrics::timed_db_op("channels.update_draft", async {
-            let (draft_sql, draft_values) = versioned::draft_query(&spec(), channel_id);
-            let existing: Channel = fetch_required(&self.pool, &draft_sql, draft_values, || {
-                versioned::no_draft_err(&spec(), channel_id)
-            })
-            .await?;
+            let existing: Channel =
+                versioned::require_draft(&self.pool, &spec(), channel_id).await?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let description = req
@@ -422,11 +419,7 @@ impl ChannelRepository for SqlChannelRepository {
         crate::metrics::timed_db_op("channels.activate", async {
             let mut tx = self.pool.begin_tx().await?;
 
-            let (draft_sql, draft_values) = versioned::draft_query(&spec(), channel_id);
-            let draft: Channel = fetch_required_tx(&mut tx, &draft_sql, draft_values, || {
-                versioned::no_draft_err(&spec(), channel_id)
-            })
-            .await?;
+            let draft: Channel = versioned::require_draft_tx(&mut tx, &spec(), channel_id).await?;
 
             // Archive current active versions
             let (archive_sql, archive_values) =

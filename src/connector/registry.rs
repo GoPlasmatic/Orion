@@ -155,13 +155,10 @@ impl ConnectorRegistry {
             // is tripped, which is itself worth a log line.
             let victim = breakers
                 .iter()
-                .filter(|(_, e)| e.breaker.state_name() == "closed")
+                .filter(|(_, e)| e.breaker.is_closed())
                 .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
-                .map(|(k, _)| k.clone());
-
-            let victim = match victim {
-                Some(k) => Some(k),
-                None => {
+                .map(|(k, _)| k.clone())
+                .or_else(|| {
                     tracing::warn!(
                         max = max,
                         "Circuit breaker map is full and every breaker is tripped; \
@@ -171,8 +168,7 @@ impl ConnectorRegistry {
                         .iter()
                         .min_by_key(|(_, e)| e.last_access.load(Ordering::Relaxed))
                         .map(|(k, _)| k.clone())
-                }
-            };
+                });
 
             if let Some(key) = victim {
                 breakers.remove(&key);
@@ -232,6 +228,14 @@ impl ConnectorRegistry {
         // load, not once per connector inside the loop.
         let resolvers = super::secrets::default_resolvers();
         for connector in &connectors {
+            // Every issue below carries this connector's identity; only the
+            // stage and the reason differ.
+            let issue = |stage: &'static str, reason: String| ConnectorLoadIssue {
+                connector: connector.name.clone(),
+                connector_id: connector.id.clone(),
+                stage,
+                reason,
+            };
             // Resolve ${VAR} / ${VAR:-default} placeholders against the process
             // environment so connector configs can reference secrets without
             // storing them in the database. Substitution failures (missing
@@ -250,14 +254,12 @@ impl ConnectorRegistry {
                     "Connector type 'storage' was removed in 1.0; it never had a handler. \
                      Delete this connector, or disable it, to clear this issue."
                 );
-                issues.push(ConnectorLoadIssue {
-                    connector: connector.name.clone(),
-                    connector_id: connector.id.clone(),
-                    stage: "removed_type",
-                    reason: "connector type 'storage' was removed in 1.0 (it never had a \
-                             handler); delete or disable this connector"
+                issues.push(issue(
+                    "removed_type",
+                    "connector type 'storage' was removed in 1.0 (it never had a handler); \
+                     delete or disable this connector"
                         .to_string(),
-                });
+                ));
                 continue;
             }
             let source_label = format!("connector '{}' config_json", connector.name);
@@ -273,12 +275,7 @@ impl ConnectorRegistry {
                         error = %e,
                         "Failed to resolve env vars in connector config, skipping"
                     );
-                    issues.push(ConnectorLoadIssue {
-                        connector: connector.name.clone(),
-                        connector_id: connector.id.clone(),
-                        stage: "env_substitution",
-                        reason: e.to_string(),
-                    });
+                    issues.push(issue("env_substitution", e.to_string()));
                     continue;
                 }
             };
@@ -295,12 +292,7 @@ impl ConnectorRegistry {
                         error = %e,
                         "Failed to parse connector config JSON, skipping"
                     );
-                    issues.push(ConnectorLoadIssue {
-                        connector: connector.name.clone(),
-                        connector_id: connector.id.clone(),
-                        stage: "json_parse",
-                        reason: e.to_string(),
-                    });
+                    issues.push(issue("json_parse", e.to_string()));
                     continue;
                 }
             };
@@ -315,12 +307,7 @@ impl ConnectorRegistry {
                     error = %e,
                     "Failed to resolve secret reference in connector config, skipping"
                 );
-                issues.push(ConnectorLoadIssue {
-                    connector: connector.name.clone(),
-                    connector_id: connector.id.clone(),
-                    stage: "secret_resolution",
-                    reason: e.to_string(),
-                });
+                issues.push(issue("secret_resolution", e.to_string()));
                 continue;
             }
             // `ConnectorConfig` is internally tagged on `type`, but the type
@@ -350,12 +337,7 @@ impl ConnectorRegistry {
                         error = %e,
                         "Failed to parse connector config, skipping"
                     );
-                    issues.push(ConnectorLoadIssue {
-                        connector: connector.name.clone(),
-                        connector_id: connector.id.clone(),
-                        stage: "deserialize",
-                        reason: e.to_string(),
-                    });
+                    issues.push(issue("deserialize", e.to_string()));
                 }
             }
         }

@@ -14,15 +14,12 @@ pub mod db_write;
 pub mod mongo_read;
 
 use std::future::Future;
-use std::sync::Arc;
 use std::time::Duration;
 
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::message::Message;
 use dataflow_rs::engine::task_context::TaskContext;
 use serde_json::Value;
-
-use crate::connector::circuit_breaker::CircuitBreaker;
 
 /// Resolve a URL path from a static string or a pre-compiled JSONLogic expression.
 ///
@@ -77,57 +74,6 @@ pub fn extract_channel(message: &Message) -> &str {
         .get("channel")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
-}
-
-/// Execute an operation wrapped with circuit breaker + retry.
-pub async fn execute_with_circuit_breaker<F, Fut>(
-    breaker: &Arc<CircuitBreaker>,
-    connector: &str,
-    channel: &str,
-    policy: RetryPolicy,
-    label: &str,
-    operation: F,
-) -> dataflow_rs::Result<Value>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = dataflow_rs::Result<Value>>,
-{
-    if !breaker.check() {
-        crate::metrics::record_circuit_breaker_rejection(connector, channel);
-        // Carries through the engine to a 503 CIRCUIT_OPEN (see
-        // `crate::errors::CIRCUIT_OPEN_MARKER`); `function_execution` used to
-        // land in the catch-all and surface as a 500 ENGINE_ERROR.
-        return Err(crate::errors::circuit_open_dataflow_error(
-            connector, channel,
-        ));
-    }
-
-    let start = std::time::Instant::now();
-    let result = retry_with_policy(policy, label, operation).await;
-    let duration_secs = start.elapsed().as_secs_f64();
-
-    match &result {
-        Ok(_) => {
-            breaker.record_success();
-        }
-        Err(_) => {
-            if breaker.record_failure() {
-                tracing::warn!(
-                    connector = connector,
-                    channel = channel,
-                    "Circuit breaker tripped"
-                );
-                crate::metrics::record_circuit_breaker_trip(connector, channel);
-            }
-        }
-    }
-    // F40: request count and latency are recorded by `observed_handler`,
-    // which every connector handler calls unconditionally. Emitting them here
-    // too would double-count on the one path that has a breaker, and — more to
-    // the point — made them conditional on `circuit_breaker.enabled`.
-    let _ = duration_secs;
-
-    result
 }
 
 /// How a retry loop is bounded (F8).
@@ -202,7 +148,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connector::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
@@ -372,93 +318,5 @@ mod tests {
             "deadline must cut the attempt count, got {}",
             attempts.load(Ordering::SeqCst)
         );
-    }
-
-    #[tokio::test]
-    async fn test_execute_with_circuit_breaker_success() {
-        let config = CircuitBreakerConfig {
-            enabled: true,
-            failure_threshold: 5,
-            recovery_timeout_secs: 30,
-            ..Default::default()
-        };
-        let breaker = Arc::new(CircuitBreaker::new(config));
-
-        let result = execute_with_circuit_breaker(
-            &breaker,
-            "test-connector",
-            "test-channel",
-            RetryPolicy {
-                max_retries: 0,
-                retry_delay_ms: 1,
-                deadline: None,
-            },
-            "test",
-            || async { Ok(serde_json::json!({"result": "ok"})) },
-        )
-        .await;
-
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_execute_with_circuit_breaker_open_rejects() {
-        let config = CircuitBreakerConfig {
-            enabled: true,
-            failure_threshold: 1,
-            recovery_timeout_secs: 300,
-            ..Default::default()
-        };
-        let breaker = Arc::new(CircuitBreaker::new(config));
-
-        breaker.record_failure();
-
-        let result = execute_with_circuit_breaker(
-            &breaker,
-            "test-connector",
-            "test-channel",
-            RetryPolicy {
-                max_retries: 0,
-                retry_delay_ms: 1,
-                deadline: None,
-            },
-            "test",
-            || async { Ok(serde_json::json!({"should": "not reach"})) },
-        )
-        .await;
-
-        let err = result.expect_err("test");
-        assert!(err.to_string().contains("Circuit breaker open"));
-        // F5: the carrier must be retryable and recognisable as CIRCUIT_OPEN.
-        assert!(err.retryable(), "an open breaker is a retry-later signal");
-        assert!(matches!(err, DataflowError::Http { status: 503, .. },));
-    }
-
-    #[tokio::test]
-    async fn test_execute_with_circuit_breaker_records_failure() {
-        let config = CircuitBreakerConfig {
-            enabled: true,
-            failure_threshold: 5,
-            recovery_timeout_secs: 300,
-            ..Default::default()
-        };
-        let breaker = Arc::new(CircuitBreaker::new(config));
-
-        let result: Result<Value, _> = execute_with_circuit_breaker(
-            &breaker,
-            "test-connector",
-            "test-channel",
-            RetryPolicy {
-                max_retries: 0,
-                retry_delay_ms: 1,
-                deadline: None,
-            },
-            "test",
-            || async { Err(DataflowError::Io("network error".to_string())) },
-        )
-        .await;
-
-        assert!(result.is_err());
-        assert!(breaker.check());
     }
 }

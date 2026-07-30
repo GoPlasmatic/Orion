@@ -295,8 +295,9 @@ async fn run_batch_worker(
 const WRITE_RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(50), Duration::from_millis(250)];
 
 /// Run `op` with the bounded retry schedule. Returns `Err` only after every
-/// attempt failed.
-async fn with_write_retries<F, Fut>(mut op: F) -> Result<(), crate::errors::OrionError>
+/// attempt failed. `pub(super)` so the queue worker's inline sync-mode result
+/// write shares this schedule instead of keeping a second one.
+pub(super) async fn with_write_retries<F, Fut>(mut op: F) -> Result<(), crate::errors::OrionError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<(), crate::errors::OrionError>>,

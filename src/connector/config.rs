@@ -187,18 +187,6 @@ impl Default for CacheOperationGates {
     }
 }
 
-impl CacheOperationGates {
-    /// Whether the named operation is enabled. Unknown names are denied
-    /// (defensive — callers pass the fixed set above).
-    pub fn allows(&self, op: &str) -> bool {
-        match op {
-            "read" => self.read,
-            "write" => self.write,
-            _ => false,
-        }
-    }
-}
-
 /// Kafka-connector operation gates (F22e). The connector is producer-only, so
 /// `publish` — gating `publish_kafka` — is the whole surface. Ingest consumers
 /// are configured under `[kafka]` in the server config, not here.
@@ -211,16 +199,6 @@ pub struct KafkaOperationGates {
 impl Default for KafkaOperationGates {
     fn default() -> Self {
         Self { publish: true }
-    }
-}
-
-impl KafkaOperationGates {
-    /// Whether the named operation is enabled. Unknown names are denied.
-    pub fn allows(&self, op: &str) -> bool {
-        match op {
-            "publish" => self.publish,
-            _ => false,
-        }
     }
 }
 
@@ -911,9 +889,8 @@ mod tests {
             serde_json::from_str(r#"{"type":"cache","backend":"memory"}"#).expect("test");
         match cache {
             ConnectorConfig::Cache(c) => {
-                assert!(c.operations.allows("read"));
-                assert!(c.operations.allows("write"));
-                assert!(!c.operations.allows("raw_write"), "unknown ops are denied");
+                assert!(c.operations.read);
+                assert!(c.operations.write);
             }
             _ => unreachable!("Expected Cache config"),
         }
@@ -923,8 +900,7 @@ mod tests {
                 .expect("test");
         match kafka {
             ConnectorConfig::Kafka(k) => {
-                assert!(k.operations.allows("publish"));
-                assert!(!k.operations.allows("read"), "unknown ops are denied");
+                assert!(k.operations.publish);
             }
             _ => unreachable!("Expected Kafka config"),
         }
@@ -950,8 +926,8 @@ mod tests {
         let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
             ConnectorConfig::Cache(c) => {
-                assert!(!c.operations.allows("write"));
-                assert!(c.operations.allows("read"));
+                assert!(!c.operations.write);
+                assert!(c.operations.read);
             }
             _ => unreachable!("Expected Cache config"),
         }
@@ -963,7 +939,7 @@ mod tests {
             r#"{"type":"kafka","brokers":["b:9092"],"topic":"t","operations":{"publish":false}}"#;
         let config: ConnectorConfig = serde_json::from_str(json).expect("test");
         match config {
-            ConnectorConfig::Kafka(k) => assert!(!k.operations.allows("publish")),
+            ConnectorConfig::Kafka(k) => assert!(!k.operations.publish),
             _ => unreachable!("Expected Kafka config"),
         }
     }

@@ -128,7 +128,7 @@ impl reqwest::dns::Resolve for PinnedDnsResolver {
 }
 
 /// Validate that a URL does not target private/internal IP addresses (SSRF
-/// protection), returning the addresses that were vetted.
+/// protection).
 ///
 /// The scheme is checked first (S7): every caller is an HTTP egress path, so
 /// anything outside `http`/`https` — `gopher://`, `file://`, `ftp://` — is
@@ -141,7 +141,7 @@ impl reqwest::dns::Resolve for PinnedDnsResolver {
 /// to resolve is an error (never silently allowed through). Validated lookups
 /// are pinned so that a client built with [`PinnedDnsResolver`] connects to
 /// these exact addresses rather than re-resolving (DNS-rebinding protection).
-pub async fn validate_url_not_private(url: &str) -> Result<Vec<SocketAddr>, String> {
+pub async fn validate_url_not_private(url: &str) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL '{url}': {e}"))?;
 
     let scheme = parsed.scheme();
@@ -173,10 +173,7 @@ pub async fn validate_url_not_private(url: &str) -> Result<Vec<SocketAddr>, Stri
 /// — it is narrowed, not eliminated, which is why the private-IP check is a
 /// guard rather than the only control. Prefer network-level egress policy for
 /// the strong version.
-pub async fn validate_hostport_not_private(
-    host: &str,
-    port: u16,
-) -> Result<Vec<SocketAddr>, String> {
+pub async fn validate_hostport_not_private(host: &str, port: u16) -> Result<(), String> {
     let parsed = url::Host::parse(host).map_err(|e| format!("Invalid host '{host}': {e}"))?;
     let display = format!("host '{host}:{port}'");
     match parsed {
@@ -201,13 +198,13 @@ async fn check_host_not_private(
     port: u16,
     target: &str,
     pin: bool,
-) -> Result<Vec<SocketAddr>, String> {
+) -> Result<(), String> {
     // IP-literal targets involve no DNS at connect time, so no pinning is needed.
     let check_ip = |ip: IpAddr| {
         if is_private_ip(&ip) {
             Err(format!("{target} targets private/internal IP address {ip}"))
         } else {
-            Ok(vec![SocketAddr::new(ip, port)])
+            Ok(())
         }
     };
 
@@ -236,7 +233,7 @@ async fn check_host_not_private(
             if pin {
                 pin_validated(domain, &addrs);
             }
-            Ok(addrs)
+            Ok(())
         }
     }
 }
@@ -515,11 +512,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_url_returns_vetted_addrs_for_ip_literal() {
-        let addrs = validate_url_not_private("https://8.8.8.8/api")
+    async fn test_validate_url_accepts_public_ip_literal_over_https() {
+        validate_url_not_private("https://8.8.8.8/api")
             .await
             .expect("test");
-        assert_eq!(addrs, vec!["8.8.8.8:443".parse().expect("test")]);
     }
 
     #[test]

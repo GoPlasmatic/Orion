@@ -173,25 +173,27 @@ pub(crate) async fn handle_migrate(
     }
 
     if dry_run {
-        // D13: name the backend. Version numbers are per-backend — `004` is
-        // `cluster_coordination` on SQLite, `bigint_columns` on Postgres and
-        // `active_immutability` on MySQL — so a bare number never says which
-        // change is pending. The description always did; printing the backend
-        // alongside makes the pair unambiguous without a shared version space,
-        // and lets a runbook name migrations rather than number them.
         println!("Pending migrations on {backend} ({}):", pending.len());
-        for (version, description) in &pending {
-            println!("  {backend} {version:03} — {description}");
-        }
+    } else {
+        println!("Applying {} migration(s) on {backend}...", pending.len());
+    }
+
+    // D13: name the backend. Version numbers are per-backend — `004` is
+    // `cluster_coordination` on SQLite, `bigint_columns` on Postgres and
+    // `active_immutability` on MySQL — so a bare number never says which
+    // change is pending. The description always did; printing the backend
+    // alongside makes the pair unambiguous without a shared version space,
+    // and lets a runbook name migrations rather than number them.
+    for (version, description) in &pending {
+        println!("  {backend} {version:03} — {description}");
+    }
+
+    if dry_run {
         println!(
             "\nMigration numbers are per-backend and are not comparable across \
              sqlite/postgres/mysql. Refer to a migration by its name."
         );
     } else {
-        println!("Applying {} migration(s) on {backend}...", pending.len());
-        for (version, description) in &pending {
-            println!("  {backend} {version:03} — {description}");
-        }
         orion::storage::run_migrations(&pool).await?;
         println!("Migrations applied successfully.");
     }

@@ -188,24 +188,6 @@ pub(crate) async fn change_channel_status(
     Ok(data_response(ChannelResponse::try_from(&channel)?))
 }
 
-/// A channel's declared route, as the route table would see it.
-/// `None` for channels that register no route (Kafka, or no `route_pattern`).
-fn declared_route(channel: &crate::storage::models::Channel) -> Option<(String, Vec<String>)> {
-    use crate::storage::models::ChannelProtocol;
-    if channel.protocol != ChannelProtocol::Rest.as_str()
-        && channel.protocol != ChannelProtocol::Http.as_str()
-    {
-        return None;
-    }
-    let pattern = channel.route_pattern.as_deref()?;
-    let methods: Vec<String> = channel
-        .methods_json
-        .as_deref()
-        .and_then(|m| serde_json::from_str::<Vec<String>>(m).ok())
-        .unwrap_or_default();
-    Some((crate::channel::routing::canonical_route(pattern), methods))
-}
-
 /// R7: refuse to activate a channel whose (method × path) another **active**
 /// channel already claims.
 ///
@@ -215,10 +197,15 @@ fn declared_route(channel: &crate::storage::models::Channel) -> Option<(String, 
 /// could differ per node and change on any reload. The incumbent wins by
 /// construction here, which is why this is an activation gate rather than a
 /// reload-time quarantine — adding a channel must never take a running one down.
+///
+/// What counts as a declared route is `routing::declared_route` — the same
+/// projection `RouteTable::build` uses, so this gate cannot come to disagree
+/// with the table that serves the route.
 async fn ensure_route_is_unclaimed(
     state: &AppState,
     draft: &crate::storage::models::Channel,
 ) -> Result<(), OrionError> {
+    use crate::channel::routing::declared_route;
     let Some((route, methods)) = declared_route(draft) else {
         return Ok(());
     };

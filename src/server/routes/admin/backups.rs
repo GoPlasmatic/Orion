@@ -128,6 +128,17 @@ pub(crate) async fn create_backup(
     })))
 }
 
+/// Whether a directory entry is one of Orion's own backup files.
+///
+/// Shared by `prune_old_backups` and `list_backups` so the pruner can never
+/// disagree with the lister about what a backup is.
+fn is_backup_file(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "db")
+        && path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("orion_backup_"))
+}
+
 /// Delete the oldest `orion_backup_*.db` files in `backup_dir` so that at
 /// most `retain` remain, returning the filenames actually removed.
 ///
@@ -154,11 +165,7 @@ fn prune_old_backups(backup_dir: &str, retain: usize) -> Vec<String> {
         .flatten()
         .filter_map(|entry| {
             let path = entry.path();
-            let is_backup = path.extension().is_some_and(|ext| ext == "db")
-                && path
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("orion_backup_"));
-            is_backup.then(|| entry.file_name().to_string_lossy().into_owned())
+            is_backup_file(&path).then(|| entry.file_name().to_string_lossy().into_owned())
         })
         .collect();
     if names.len() <= retain {
@@ -216,10 +223,7 @@ pub(crate) async fn list_backups(State(state): State<AppState>) -> Result<Json<V
         let mut backups = Vec::new();
         for entry in dir.flatten() {
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "db")
-                && path
-                    .file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("orion_backup_"))
+            if is_backup_file(&path)
                 && let Ok(meta) = entry.metadata()
             {
                 let modified = meta

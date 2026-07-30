@@ -37,7 +37,6 @@ impl MongoPoolCache {
         let max_conns = config.max_connections;
         let connect_timeout = config.connect_timeout_ms;
         let allow_private = config.allow_private_urls;
-        let name = connector_name.to_string();
 
         self.cache
             .get_or_create(connector_name, || async move {
@@ -67,7 +66,7 @@ impl MongoPoolCache {
                         _ => None,
                     })
                     .collect();
-                crate::validation::check_mongo_hosts(&name, &hosts, allow_private).await?;
+                crate::validation::check_mongo_hosts(connector_name, &hosts, allow_private).await?;
                 if let Some(max) = max_conns {
                     opts.max_pool_size = Some(max);
                 }

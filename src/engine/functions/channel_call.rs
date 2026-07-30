@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use dataflow_rs::engine::error::DataflowError;
@@ -197,38 +196,29 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                     .and_then(Value::as_str)
                     .map(str::to_string)
             };
-            let admission =
-                crate::channel::guards::apply_guards(crate::channel::guards::GuardRequest {
-                    transport: crate::channel::guards::Transport::ChannelCall,
-                    channel: &target_channel,
-                    runtime: &target_runtime,
-                    data: &call_data,
-                    metadata: &child_meta,
-                    datalogic: ctx.datalogic(),
-                    origin: None,
-                    caller_identity: &calling_channel,
-                    header: &header_lookup,
-                    dedup_key_fallback: None,
-                    // `Transport::ChannelCall` does not deduplicate, so no
-                    // claim is taken and the owner is moot.
-                    dedup_owner: None,
-                    default_timeout_ms: Some(self.default_timeout_ms),
-                    // `engine.default_channel_call_timeout_ms` is a default,
-                    // not a ceiling: an in-process call blocks only its own
-                    // caller, and the task's explicit `timeout_ms` outranks
-                    // both anyway.
-                    max_timeout_ms: None,
-                })
-                .await
-                .map_err(|e| guard_refusal(&target_channel, e))?;
-            let crate::channel::guards::GuardVerdict::Admitted(admission) = admission else {
-                // `Transport::ChannelCall` does not enable the response
-                // cache, so `apply_guards` cannot answer with a cache hit.
-                return Err(DataflowError::function_execution(
-                    format!("channel_call to '{target_channel}': unexpected cached response"),
-                    None,
-                ));
-            };
+            let admission = crate::channel::guards::admit(crate::channel::guards::GuardRequest {
+                transport: crate::channel::guards::Transport::ChannelCall,
+                channel: &target_channel,
+                runtime: &target_runtime,
+                data: &call_data,
+                metadata: &child_meta,
+                datalogic: ctx.datalogic(),
+                origin: None,
+                caller_identity: &calling_channel,
+                header: &header_lookup,
+                dedup_key_fallback: None,
+                // `Transport::ChannelCall` does not deduplicate, so no
+                // claim is taken and the owner is moot.
+                dedup_owner: None,
+                default_timeout_ms: Some(self.default_timeout_ms),
+                // `engine.default_channel_call_timeout_ms` is a default,
+                // not a ceiling: an in-process call blocks only its own
+                // caller, and the task's explicit `timeout_ms` outranks
+                // both anyway.
+                max_timeout_ms: None,
+            })
+            .await
+            .map_err(|e| guard_refusal(&target_channel, e))?;
             let _backpressure_permit = admission.backpressure_permit;
 
             // Build a child message for the target channel.
@@ -244,25 +234,30 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                 .timeout_ms
                 .or(admission.timeout_ms)
                 .unwrap_or(self.default_timeout_ms);
-            let timeout = Duration::from_millis(timeout_ms);
 
-            let process_result = tokio::time::timeout(
-                timeout,
-                engine.process_message_for_channel(&target_channel, &mut child_message),
+            // F46: the shared runner owns the deadline arm, so the in-process
+            // call cannot drift from the sync HTTP, trace-queue and Kafka
+            // paths. No trace capture, and no profile scope — this call already
+            // runs inside the caller's.
+            match crate::engine::run_for_channel(
+                &engine,
+                &target_channel,
+                &mut child_message,
+                Some(timeout_ms),
+                None,
+                false,
             )
-            .await;
-
-            match process_result {
-                Ok(inner) => inner.map_err(|e| {
+            .await
+            {
+                Ok((inner, _)) => inner.map_err(|e| {
                     DataflowError::function_execution(
                         format!("channel_call to '{target_channel}' failed: {e}"),
                         None,
                     )
                 })?,
-                Err(_) => {
+                Err(ms) => {
                     return Err(DataflowError::Timeout(format!(
-                        "channel_call to '{target_channel}' timed out after {}ms",
-                        timeout.as_millis()
+                        "channel_call to '{target_channel}' timed out after {ms}ms"
                     )));
                 }
             }

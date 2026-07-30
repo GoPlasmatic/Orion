@@ -130,6 +130,7 @@ fn setup_kafka_producer(
     kafka_config: &config::KafkaIngestConfig,
     custom_functions: &mut std::collections::HashMap<String, dataflow_rs::BoxedFunctionHandler>,
     connector_registry: Arc<ConnectorRegistry>,
+    max_pool_cache_entries: usize,
 ) -> Result<Option<Arc<crate::kafka::producer::KafkaProducer>>, Box<dyn std::error::Error>> {
     if !kafka_config.enabled || kafka_config.brokers.is_empty() {
         return Ok(None);
@@ -146,6 +147,7 @@ fn setup_kafka_producer(
         producer.clone(),
         kafka_config.auth.clone(),
         kafka_config.extra_config.clone(),
+        max_pool_cache_entries,
     ));
     crate::engine::register_kafka_publisher(custom_functions, connector_registry, producers);
     tracing::info!("Kafka producer initialized");
@@ -278,6 +280,7 @@ pub async fn build_engine_components(
         &config.kafka,
         &mut custom_functions,
         connector_registry.clone(),
+        config.engine.max_pool_cache_entries,
     )?;
 
     Ok(EngineComponents {
@@ -440,6 +443,75 @@ pub fn start_kafka_ingest(
     );
 
     Ok(Some(handle))
+}
+
+/// O12: optional dedicated metrics listener. Bound *before* the main
+/// server starts, so an address clash or a permission problem is a startup
+/// failure rather than a silently missing scrape target. Its shutdown
+/// future is an independent `shutdown_signal()` — signal handlers fan out
+/// to every registered stream, so both listeners see the same SIGTERM.
+pub fn start_metrics_listener(
+    config: &Arc<config::AppConfig>,
+    state: &crate::server::state::AppState,
+) -> Result<
+    Option<tokio::task::JoinHandle<Result<(), crate::errors::OrionError>>>,
+    crate::errors::OrionError,
+> {
+    match config.metrics.dedicated_bind_addr() {
+        Some(addr) => {
+            let listener = crate::server::serve::create_tcp_listener(addr)?;
+            if !listener.local_addr().is_ok_and(|a| a.ip().is_loopback()) {
+                tracing::warn!(
+                    address = %addr,
+                    "metrics.bind_addr is not a loopback address and the metrics listener is \
+                     unauthenticated — make sure it is reachable only from your scrapers"
+                );
+            }
+            Ok(Some(tokio::spawn(crate::server::serve::serve_metrics(
+                listener,
+                config.clone(),
+                crate::server::metrics_router(state.clone()),
+                crate::server::shutdown_signal(),
+            ))))
+        }
+        None => {
+            // O12 in reverse. `bind_addr` set with collection off raises no
+            // listener *and* keeps `/metrics` off the main router, so the
+            // endpoint exists nowhere — a values file that sets the address
+            // but forgets `ORION_METRICS__ENABLED=true` (the default is
+            // `false`) yields a silently metric-less deployment. Not a config
+            // error: charts legitimately template the address and gate on
+            // `enabled`. But it must not be silent.
+            if let Some(addr) = config.metrics.bind_addr.as_deref() {
+                tracing::warn!(
+                    address = %addr,
+                    "metrics.bind_addr is set but metrics.enabled is false — no metrics \
+                     listener was started and /metrics is served nowhere. Set \
+                     metrics.enabled = true (ORION_METRICS__ENABLED=true), or remove \
+                     metrics.bind_addr"
+                );
+            }
+            Ok(None)
+        }
+    }
+}
+
+/// Join the metrics listener started by [`start_metrics_listener`].
+///
+/// The metrics listener drains on the same grace window, so by the time the
+/// main server has returned it is at most a scheduling hop behind. Bound
+/// the join anyway — a stuck scrape must not hold the process open.
+pub async fn join_metrics_listener(
+    handle: Option<tokio::task::JoinHandle<Result<(), crate::errors::OrionError>>>,
+) {
+    if let Some(handle) = handle {
+        match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
+            Ok(Ok(Err(e))) => tracing::warn!(error = %e, "Metrics listener exited with an error"),
+            Ok(Err(e)) => tracing::warn!(error = %e, "Metrics listener task panicked"),
+            Ok(Ok(Ok(()))) => tracing::info!("Metrics listener stopped"),
+            Err(_) => tracing::warn!("Metrics listener did not stop within 5s; abandoning it"),
+        }
+    }
 }
 
 /// Build rate limiter (if enabled).

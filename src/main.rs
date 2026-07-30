@@ -277,48 +277,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let router = orion::server::build_router(state.clone());
 
-    // O12: optional dedicated metrics listener. Bound *before* the main
-    // server starts, so an address clash or a permission problem is a startup
-    // failure rather than a silently missing scrape target. Its shutdown
-    // future is an independent `shutdown_signal()` — signal handlers fan out
-    // to every registered stream, so both listeners see the same SIGTERM.
-    let metrics_server = match config.metrics.dedicated_bind_addr() {
-        Some(addr) => {
-            let listener = orion::server::serve::create_tcp_listener(addr)?;
-            if !listener.local_addr().is_ok_and(|a| a.ip().is_loopback()) {
-                tracing::warn!(
-                    address = %addr,
-                    "metrics.bind_addr is not a loopback address and the metrics listener is \
-                     unauthenticated — make sure it is reachable only from your scrapers"
-                );
-            }
-            Some(tokio::spawn(orion::server::serve::serve_metrics(
-                listener,
-                config.clone(),
-                orion::server::metrics_router(state.clone()),
-                orion::server::shutdown_signal(),
-            )))
-        }
-        None => {
-            // O12 in reverse. `bind_addr` set with collection off raises no
-            // listener *and* keeps `/metrics` off the main router, so the
-            // endpoint exists nowhere — a values file that sets the address
-            // but forgets `ORION_METRICS__ENABLED=true` (the default is
-            // `false`) yields a silently metric-less deployment. Not a config
-            // error: charts legitimately template the address and gate on
-            // `enabled`. But it must not be silent.
-            if let Some(addr) = config.metrics.bind_addr.as_deref() {
-                tracing::warn!(
-                    address = %addr,
-                    "metrics.bind_addr is set but metrics.enabled is false — no metrics \
-                     listener was started and /metrics is served nowhere. Set \
-                     metrics.enabled = true (ORION_METRICS__ENABLED=true), or remove \
-                     metrics.bind_addr"
-                );
-            }
-            None
-        }
-    };
+    // Optional dedicated metrics listener (O12), bound before the main server
+    // starts (see `bootstrap::start_metrics_listener`).
+    let metrics_server = bootstrap::start_metrics_listener(&config, &state)?;
 
     if config.server.tls.enabled {
         let handle = axum_server::Handle::new();
@@ -343,17 +304,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     }
 
-    // The metrics listener drains on the same grace window, so by the time the
-    // main server has returned it is at most a scheduling hop behind. Bound
-    // the join anyway — a stuck scrape must not hold the process open.
-    if let Some(handle) = metrics_server {
-        match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
-            Ok(Ok(Err(e))) => tracing::warn!(error = %e, "Metrics listener exited with an error"),
-            Ok(Err(e)) => tracing::warn!(error = %e, "Metrics listener task panicked"),
-            Ok(Ok(Ok(()))) => tracing::info!("Metrics listener stopped"),
-            Err(_) => tracing::warn!("Metrics listener did not stop within 5s; abandoning it"),
-        }
-    }
+    bootstrap::join_metrics_listener(metrics_server).await;
 
     // Graceful shutdown
     if let Some(handle) = state.kafka_consumer_handle.lock().await.take() {

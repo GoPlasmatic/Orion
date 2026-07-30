@@ -19,6 +19,51 @@ pub use trace_persistence::{PersistenceWorkerHandle, TracePersistenceQueue, Trac
 
 pub use dlq_retry::{DlqRetryOptions, start_dlq_retry};
 
+/// The shared body of the periodic retention jobs (trace cleanup here, audit
+/// cleanup in [`audit_cleanup`]): skip the first immediate tick, single-flight
+/// each tick through the lease gate, run one pass, stamp the job health gauge.
+///
+/// `delete` runs one retention pass and reports how many rows it removed;
+/// `report` logs that outcome. Logging stays with the caller because tracing
+/// field names and messages must be literals and each job names its own
+/// retention unit.
+///
+/// `lease_gate` (cluster mode) single-flights the job: without it every
+/// replica issues the same DELETE every tick. `None` on a single node.
+fn start_retention_job<F, Fut, R>(
+    job: &'static str,
+    interval_secs: u64,
+    lease_gate: Option<Arc<crate::cluster::JobLeaseGate>>,
+    delete: F,
+    report: R,
+) -> tokio::task::JoinHandle<()>
+where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<u64, crate::errors::OrionError>> + Send + 'static,
+    R: Fn(Result<u64, crate::errors::OrionError>) + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
+        // Skip the first immediate tick
+        interval.tick().await;
+        let lease_ttl = interval_secs + 60;
+
+        loop {
+            interval.tick().await;
+            if let Some(ref gate) = lease_gate
+                && !gate.try_acquire(job, lease_ttl).await
+            {
+                continue;
+            }
+            let outcome = delete().await;
+            if outcome.is_ok() {
+                metrics::record_job_success(job);
+            }
+            report(outcome);
+        }
+    })
+}
+
 /// Start a background task that periodically deletes old traces.
 ///
 /// Returns a `JoinHandle` that can be aborted on shutdown.
@@ -37,36 +82,31 @@ pub fn start_trace_cleanup(
         return None;
     }
 
-    let handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs));
-        // Skip the first immediate tick
-        interval.tick().await;
-        let lease_ttl = interval_secs + 60;
-
-        loop {
-            interval.tick().await;
-            if let Some(ref gate) = lease_gate
-                && !gate.try_acquire("trace_cleanup", lease_ttl).await
-            {
-                continue;
-            }
-            match trace_repo.delete_older_than(retention_hours).await {
-                Ok(count) => {
-                    metrics::record_job_success("trace_cleanup");
-                    if count > 0 {
-                        tracing::info!(
-                            deleted = count,
-                            retention_hours = retention_hours,
-                            "Trace cleanup completed"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Trace cleanup failed");
+    let handle = start_retention_job(
+        "trace_cleanup",
+        interval_secs,
+        lease_gate,
+        // Cloned inside the closure: `async_trait` ties the returned future to
+        // `&self`, so the borrow has to live in the future, not the closure.
+        move || {
+            let repo = trace_repo.clone();
+            async move { repo.delete_older_than(retention_hours).await }
+        },
+        move |outcome| match outcome {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(
+                        deleted = count,
+                        retention_hours = retention_hours,
+                        "Trace cleanup completed"
+                    );
                 }
             }
-        }
-    });
+            Err(e) => {
+                tracing::error!(error = %e, "Trace cleanup failed");
+            }
+        },
+    );
 
     tracing::info!(
         retention_hours = retention_hours,
@@ -109,6 +149,10 @@ pub struct QueueMessage {
 pub(crate) struct QueuedItem {
     pub(crate) msg: QueueMessage,
     pub(crate) dlq_retry_count: i64,
+    /// Bytes reserved for this item by `enqueue`, carried so the dispatcher
+    /// releases exactly what was reserved instead of re-serializing the
+    /// payload to recompute it. Set by `enqueue`; submitters leave it 0.
+    pub(crate) payload_size: usize,
 }
 
 /// In-memory trace queue backed by a tokio mpsc channel.
@@ -140,6 +184,7 @@ impl TraceQueue {
         self.enqueue(QueuedItem {
             msg,
             dlq_retry_count: 0,
+            payload_size: 0,
         })
         .await
     }
@@ -155,6 +200,7 @@ impl TraceQueue {
         self.enqueue(QueuedItem {
             msg,
             dlq_retry_count,
+            payload_size: 0,
         })
         .await
     }
@@ -163,36 +209,35 @@ impl TraceQueue {
     /// waiting room: awaiting capacity here parks the calling HTTP handler for
     /// as long as the workers stay behind, turning saturation into unbounded
     /// request latency instead of the documented 503 (Q1).
-    async fn enqueue(&self, item: QueuedItem) -> Result<(), crate::errors::OrionError> {
+    async fn enqueue(&self, mut item: QueuedItem) -> Result<(), crate::errors::OrionError> {
         // Estimate payload memory (approximate — excludes struct overhead).
         let payload_size = item.msg.payload.to_string().len() + item.msg.metadata.to_string().len();
+        item.payload_size = payload_size;
 
         // Q2: reserve first, then validate. The previous shape was
         // load -> compare -> send -> fetch_add, so N concurrent submitters all
         // read the same pre-add value, all passed the check, and the accounted
         // total overshot the configured ceiling by up to N x payload_size.
         // Reserving up front makes the check authoritative; the reservation is
-        // released again on rejection.
-        if self.max_memory_bytes > 0 {
-            let prev = self.memory_bytes.fetch_add(payload_size, Ordering::AcqRel);
-            let total = prev + payload_size;
-            if total > self.max_memory_bytes {
-                self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
-                metrics::record_trace_queue_rejected("memory");
-                return Err(crate::errors::OrionError::ServiceUnavailable(format!(
-                    "Trace queue memory limit exceeded ({} + {} > {} bytes)",
-                    prev, payload_size, self.max_memory_bytes
-                )));
-            }
-            metrics::set_trace_queue_memory_bytes(total as f64);
+        // released again on rejection. The reservation is unconditional — the
+        // counter feeds the gauge even when no ceiling is configured, so only
+        // the ceiling test is gated on `max_memory_bytes`.
+        let prev = self.memory_bytes.fetch_add(payload_size, Ordering::AcqRel);
+        let total = prev + payload_size;
+        if self.max_memory_bytes > 0 && total > self.max_memory_bytes {
+            self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
+            metrics::record_trace_queue_rejected("memory");
+            return Err(crate::errors::OrionError::ServiceUnavailable(format!(
+                "Trace queue memory limit exceeded ({} + {} > {} bytes)",
+                prev, payload_size, self.max_memory_bytes
+            )));
         }
+        metrics::set_trace_queue_memory_bytes(total as f64);
 
         if let Err(err) = self.sender.try_send(item) {
             // Release the reservation taken above — the item never entered the
             // queue, so nothing downstream will subtract it.
-            if self.max_memory_bytes > 0 {
-                self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
-            }
+            self.memory_bytes.fetch_sub(payload_size, Ordering::AcqRel);
             return Err(match err {
                 // The rejected message is dropped here, releasing the
                 // backpressure permit it carried — a shed submission must not
@@ -212,13 +257,6 @@ impl TraceQueue {
 
         let pending = self.pending_count.fetch_add(1, Ordering::Relaxed) + 1;
         metrics::set_trace_queue_depth(pending as f64);
-
-        // When the limit is disabled the counter is still maintained for the
-        // gauge, but no reservation was taken above.
-        if self.max_memory_bytes == 0 {
-            let mem = self.memory_bytes.fetch_add(payload_size, Ordering::AcqRel) + payload_size;
-            metrics::set_trace_queue_memory_bytes(mem as f64);
-        }
 
         Ok(())
     }

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use crate::errors::OrionError;
@@ -19,21 +20,7 @@ struct RouteEntry {
 impl RouteEntry {
     /// This entry's match shape, parameter names erased (R7).
     fn canonical(&self) -> String {
-        let mut out = String::new();
-        for segment in &self.segments {
-            out.push('/');
-            match segment {
-                // N10: case is kept — matching is byte-exact per RFC 3986,
-                // so `/Orders` and `/orders` are two different routes and
-                // must not be reported as one.
-                RouteSegment::Static(s) => out.push_str(s),
-                RouteSegment::Param(_) => out.push_str("{}"),
-            }
-        }
-        if out.is_empty() {
-            out.push('/');
-        }
-        out
+        canonical_segments(&self.segments)
     }
 }
 
@@ -59,14 +46,23 @@ pub struct RouteMatch {
 /// part of the match. Comparing raw patterns would miss that. Canonicalising to
 /// `/orders/{}` is what makes "these two collide" decidable.
 pub fn canonical_route(pattern: &str) -> String {
-    let mut out = String::with_capacity(pattern.len());
-    for segment in parse_route_pattern(pattern) {
+    canonical_segments(&parse_route_pattern(pattern))
+}
+
+/// The one canonicalisation rule, shared by the activation gate
+/// ([`canonical_route`]) and the stored-collision warning
+/// ([`RouteEntry::canonical`]) — two copies could drift on what "same route"
+/// means.
+fn canonical_segments(segments: &[RouteSegment]) -> String {
+    let mut out = String::new();
+    for segment in segments {
         out.push('/');
         match segment {
             // N10: case-preserving, mirroring the byte-exact match — two
-            // patterns differing only in case are distinct routes now, and
-            // canonicalising them together would refuse a legal activation.
-            RouteSegment::Static(s) => out.push_str(&s),
+            // patterns differing only in case are distinct routes now, so
+            // canonicalising them together would refuse a legal activation
+            // and report `/Orders` and `/orders` as one route.
+            RouteSegment::Static(s) => out.push_str(s),
             RouteSegment::Param(_) => out.push_str("{}"),
         }
     }
@@ -74,6 +70,47 @@ pub fn canonical_route(pattern: &str) -> String {
         out.push('/');
     }
     out
+}
+
+/// A channel's declared route, as the route table would see it: the canonical
+/// match shape plus the methods it claims. `None` for channels that register
+/// no route (Kafka, or no `route_pattern`).
+///
+/// R7: the activation gate (`ensure_route_is_unclaimed`, in the admin channel
+/// routes) and the table that actually serves the route must agree on what
+/// "claims a route" means. The projection was written out in both, so the next
+/// change to route eligibility — [`RouteTable::build`] has already had one,
+/// F39 below — could land in only one of them, and activation would then be
+/// gated on a different notion of the route than the one being served.
+pub(crate) fn declared_route(ch: &Channel) -> Option<(String, Vec<String>)> {
+    let (segments, methods) = declared_segments(ch)?;
+    Some((canonical_segments(&segments), methods))
+}
+
+/// The same projection in the form [`RouteTable::build`] needs: parsed
+/// segments rather than the canonical string.
+///
+/// Methods come back **raw**. `build` uppercases them for matching, while the
+/// activation error prints them back to the operator in the spelling they
+/// wrote — folding the uppercase in here would change that message.
+fn declared_segments(ch: &Channel) -> Option<(Vec<RouteSegment>, Vec<String>)> {
+    // F39: REST/HTTP channels register their route whatever their
+    // channel_type. Filtering to `sync` here meant an async REST channel —
+    // which validation *requires* to declare a `route_pattern` — had that
+    // pattern silently ignored: the channel was reachable by name and its
+    // declared route 404'd forever. `dynamic_handler` strips a trailing
+    // `/async` before matching, so an async channel's pattern works at
+    // `/{pattern}/async` with no further change.
+    if ch.protocol != ChannelProtocol::Rest.as_str()
+        && ch.protocol != ChannelProtocol::Http.as_str()
+    {
+        return None;
+    }
+    let pattern = ch.route_pattern.as_deref()?;
+    Some((
+        parse_route_pattern(pattern),
+        ch.methods().unwrap_or_default(),
+    ))
 }
 
 /// Whether two declared method sets can be matched by one request.
@@ -109,9 +146,14 @@ fn parse_route_pattern(pattern: &str) -> Vec<RouteSegment> {
 /// with 400 by [`RouteTable::match_route`]. Also used by the data plane's
 /// single-segment channel-name fallback so an encoded name spelling reaches
 /// the same channel as its decoded one (N10).
-pub(crate) fn percent_decode_segment(segment: &str) -> Option<String> {
+///
+/// The no-`%` case — every static segment of every request — borrows rather
+/// than copying: `match_segments` only needs an owned value in the `Param`
+/// arm, so allocating one per segment on the data-plane path would be
+/// discarded after a single comparison.
+pub(crate) fn percent_decode_segment(segment: &str) -> Option<Cow<'_, str>> {
     if !segment.contains('%') {
-        return Some(segment.to_string());
+        return Some(Cow::Borrowed(segment));
     }
     let bytes = segment.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -127,13 +169,13 @@ pub(crate) fn percent_decode_segment(segment: &str) -> Option<String> {
             i += 1;
         }
     }
-    String::from_utf8(out).ok()
+    String::from_utf8(out).ok().map(Cow::Owned)
 }
 
 /// Split a request path on **raw** `/` separators, then percent-decode each
 /// segment once. Splitting before decoding is what lets `%2F` travel inside
 /// a parameter value without acting as a separator (N10).
-fn decode_path_parts(path: &str) -> Option<Vec<String>> {
+fn decode_path_parts(path: &str) -> Option<Vec<Cow<'_, str>>> {
     path.split('/')
         .filter(|s| !s.is_empty())
         .map(percent_decode_segment)
@@ -148,9 +190,9 @@ fn decode_path_parts(path: &str) -> Option<Vec<String>> {
 /// case-insensitivity for the scheme and host, never the path), while
 /// `/%6Frders/1` does (percent-encoding an unreserved character is
 /// equivalence, not difference). Captured params arrive already decoded.
-fn match_segments(
+fn match_segments<S: AsRef<str>>(
     segments: &[RouteSegment],
-    path_parts: &[String],
+    path_parts: &[S],
 ) -> Option<HashMap<String, String>> {
     if segments.len() != path_parts.len() {
         return None;
@@ -163,12 +205,12 @@ fn match_segments(
     for (seg, part) in segments.iter().zip(path_parts.iter()) {
         match seg {
             RouteSegment::Static(expected) => {
-                if expected != part {
+                if expected.as_str() != part.as_ref() {
                     return None;
                 }
             }
             RouteSegment::Param(name) => {
-                params.insert(name.clone(), part.clone());
+                params.insert(name.clone(), part.as_ref().to_string());
             }
         }
     }
@@ -182,33 +224,14 @@ pub struct RouteTable {
 }
 
 impl RouteTable {
-    pub(super) fn build(channels: &[Channel]) -> Self {
+    pub(super) fn build<'a>(channels: impl IntoIterator<Item = &'a Channel>) -> Self {
         let mut entries: Vec<RouteEntry> = channels
-            .iter()
-            // F39: REST/HTTP channels register their route whatever their
-            // channel_type. Filtering to `sync` here meant an async REST
-            // channel — which validation *requires* to declare a
-            // `route_pattern` — had that pattern silently ignored: the channel
-            // was reachable by name and its declared route 404'd forever.
-            // `dynamic_handler` strips a trailing `/async` before matching, so
-            // an async channel's pattern works at `/{pattern}/async` with no
-            // further change.
-            .filter(|ch| {
-                (ch.protocol == ChannelProtocol::Rest.as_str()
-                    || ch.protocol == ChannelProtocol::Http.as_str())
-                    && ch.route_pattern.is_some()
-            })
+            .into_iter()
             .filter_map(|ch| {
-                let pattern = ch.route_pattern.as_deref()?;
-                let segments = parse_route_pattern(pattern);
-                let methods: Vec<String> = ch
-                    .methods_json
-                    .as_deref()
-                    .and_then(|m| serde_json::from_str::<Vec<String>>(m).ok())
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|m| m.to_uppercase())
-                    .collect();
+                let (segments, methods) = declared_segments(ch)?;
+                // `RouteEntry::methods` is uppercase by contract; only the
+                // activation error wants the operator's own spelling back.
+                let methods: Vec<String> = methods.into_iter().map(|m| m.to_uppercase()).collect();
                 Some(RouteEntry {
                     channel_name: ch.name.clone(),
                     methods,

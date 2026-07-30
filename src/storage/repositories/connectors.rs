@@ -227,18 +227,16 @@ impl ConnectorRepository for SqlConnectorRepository {
 
     async fn exists_by_name(&self, name: &str) -> Result<bool, OrionError> {
         crate::metrics::timed_db_op("connectors.exists_by_name", async {
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Connectors::Table)
-                    .and_where(Expr::col(Connectors::Name).eq(name))
-                    .limit(1),
-            );
-            Ok(self
-                .pool
-                .fetch_optional_as::<Connector>(&sql, values)
-                .await?
-                .is_some())
+            // A COUNT, not a `SELECT *`: an existence check has no business
+            // materialising the row — least of all `config_json`, which carries
+            // the connector's unmasked secrets.
+            Ok(super::helpers::count_where(
+                &self.pool,
+                Connectors::Table,
+                sea_query::Condition::all().add(Expr::col(Connectors::Name).eq(name)),
+            )
+            .await?
+                > 0)
         })
         .await
     }

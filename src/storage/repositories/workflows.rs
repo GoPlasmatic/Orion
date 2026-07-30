@@ -12,8 +12,8 @@ use crate::storage::{
 };
 
 use super::helpers::{
-    Page, Projection, clamp_pagination, ensure_absent, fetch_required, fetch_required_tx,
-    map_duplicate, optional_string_value, paginate, parse_sort_order,
+    Page, Projection, clamp_pagination, map_duplicate, optional_string_value, paginate,
+    parse_sort_order,
 };
 
 pub use super::helpers::PaginatedResult;
@@ -428,11 +428,8 @@ impl WorkflowRepository for SqlWorkflowRepository {
         req: &UpdateWorkflowRequest,
     ) -> Result<Workflow, OrionError> {
         crate::metrics::timed_db_op("workflows.update_draft", async {
-            let (sql, values) = versioned::draft_query(&spec(), workflow_id);
-            let existing: Workflow = fetch_required(&self.pool, &sql, values, || {
-                versioned::no_draft_err(&spec(), workflow_id)
-            })
-            .await?;
+            let existing: Workflow =
+                versioned::require_draft(&self.pool, &spec(), workflow_id).await?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
             let description = req
@@ -502,11 +499,8 @@ impl WorkflowRepository for SqlWorkflowRepository {
         crate::metrics::timed_db_op("workflows.activate", async {
             let mut tx = self.pool.begin_tx().await?;
 
-            let (sql, values) = versioned::draft_query(&spec(), workflow_id);
-            let draft: Workflow = fetch_required_tx(&mut tx, &sql, values, || {
-                versioned::no_draft_err(&spec(), workflow_id)
-            })
-            .await?;
+            let draft: Workflow =
+                versioned::require_draft_tx(&mut tx, &spec(), workflow_id).await?;
 
             // Fetch active versions
             let (sql, values) = build_sqlx(
@@ -615,21 +609,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
     async fn create_new_version(&self, workflow_id: &str) -> Result<Workflow, OrionError> {
         crate::metrics::timed_db_op("workflows.create_new_version", async {
-            // Check no draft already exists
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Workflows::Table)
-                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                    .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str())),
-            );
-
-            ensure_absent::<Workflow>(&self.pool, &sql, values, || {
-                OrionError::Conflict(format!(
-                    "Workflow '{workflow_id}' already has a draft version"
-                ))
-            })
-            .await?;
+            versioned::ensure_no_draft::<Workflow>(&self.pool, &spec(), workflow_id).await?;
 
             // Find the latest version to copy from
             let latest = self.get_by_id(workflow_id).await?;

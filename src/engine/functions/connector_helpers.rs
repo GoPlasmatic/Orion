@@ -257,41 +257,6 @@ impl<'a> ConnectorCall<'a> {
     }
 }
 
-/// [`profile_handler`] plus the connector request/latency metrics (F40).
-///
-/// `connector_requests_total` and `connector_request_duration_seconds` used to
-/// be emitted from exactly one place — inside `execute_with_circuit_breaker` —
-/// which `http_call` reaches only when `engine.circuit_breaker.enabled` is
-/// true. That defaults to **false**, so a default install emitted **zero**
-/// connector-level counts or latencies for *any* of the ten handlers: every
-/// external dependency was dark in Prometheus until an operator flipped an
-/// unrelated resilience flag.
-///
-/// Observability is not conditional on resilience config, so every connector
-/// handler calls this unconditionally. The circuit breaker stays an inner,
-/// optional layer (F6 tracks extending it past `http_call`).
-///
-/// `channel` must be read from the message *before* the handler body takes
-/// `ctx` mutably.
-pub async fn observed_handler<F>(
-    fn_name: &'static str,
-    input: &Value,
-    channel: &str,
-    fut: F,
-) -> dataflow_rs::Result<TaskOutcome>
-where
-    F: std::future::Future<Output = dataflow_rs::Result<TaskOutcome>>,
-{
-    // The same peek `profile_handler` does. `unknown` rather than skipping the
-    // metric: a handler that failed before resolving its connector is exactly
-    // the case an operator needs to see.
-    let connector = input
-        .get("connector")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    observed_handler_named(fn_name, connector, channel, fut).await
-}
-
 /// [`observed_handler_named`] plus the circuit breaker (F6).
 ///
 /// The breaker used to wrap exactly one of the nine egress paths — `http_call`.
@@ -355,8 +320,23 @@ where
     result
 }
 
-/// [`observed_handler`] for the two handlers whose input is a typed struct
-/// rather than a `Value`, so the connector name is passed directly.
+/// The profile sample plus the connector request/latency metrics (F40) — the
+/// inner layer of the shell, reached through [`guarded_handler`].
+///
+/// `connector_requests_total` and `connector_request_duration_seconds` used to
+/// be emitted from exactly one place — inside the circuit breaker — which
+/// `http_call` reaches only when `engine.circuit_breaker.enabled` is true. That
+/// defaults to **false**, so a default install emitted **zero** connector-level
+/// counts or latencies for *any* of the ten handlers: every external dependency
+/// was dark in Prometheus until an operator flipped an unrelated resilience
+/// flag.
+///
+/// Observability is not conditional on resilience config, so every connector
+/// handler reaches this unconditionally; the breaker stays an inner, optional
+/// layer above it.
+///
+/// `channel` must be read from the message *before* the handler body takes
+/// `ctx` mutably.
 pub async fn observed_handler_named<F>(
     fn_name: &'static str,
     connector: &str,
@@ -844,9 +824,9 @@ mod observability_tests {
         for handler in HANDLERS {
             let src = handler_source(handler);
             // `guarded_handler` (F6) wraps `observed_handler_named`, and
-            // `ConnectorCall::run` (F48) wraps `guarded_handler`; any of the
-            // three means the handler is inside the shell.
-            if !["observed_handler", "guarded_handler", "call.run("]
+            // `ConnectorCall::run` (F48) wraps `guarded_handler`; either one
+            // means the handler is inside the shell.
+            if !["guarded_handler", "call.run("]
                 .iter()
                 .any(|w| src.contains(w))
             {

@@ -47,12 +47,9 @@ pub fn validate_update_channel(
     if let Some(ref desc) = req.description {
         validate_description(desc).map_err(|e| remap_to_field(e, "channel.description"))?;
     }
-    // Stored `methods_json` is a JSON-encoded array column; a stored row that
-    // fails to parse contributes no methods, so the request must supply them.
-    let stored_methods: Option<Vec<String>> = stored
-        .methods_json
-        .as_deref()
-        .and_then(|m| serde_json::from_str(m).ok());
+    // A stored row whose `methods_json` fails to parse contributes no methods
+    // (`Channel::methods` owns that rule), so the request must supply them.
+    let stored_methods = stored.methods();
     // A stored protocol outside the known set (corrupt row) skips the
     // protocol-conditional checks rather than blocking unrelated updates.
     let stored_protocol: Option<ChannelProtocol> =

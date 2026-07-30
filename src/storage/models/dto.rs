@@ -13,7 +13,9 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::enums::parse_json_field;
-use super::rows::{AuditLogEntry, Channel, Connector, TraceDlqEntry, TraceDlqSummary, Workflow};
+use super::rows::{
+    AuditLogEntry, Channel, Connector, TraceDlqEntry, TraceDlqSummary, TraceListRow, Workflow,
+};
 use crate::errors::OrionError;
 
 /// API-friendly representation of a Workflow with parsed JSON fields.
@@ -228,6 +230,57 @@ impl From<&TraceDlqSummary> for TraceDlqSummaryResponse {
             next_retry_at: entry.next_retry_at,
             created_at: entry.created_at,
             updated_at: entry.updated_at,
+        }
+    }
+}
+
+/// One row of `GET /api/v1/admin/traces` — payload-free by design (S14).
+///
+/// The narrower sibling of the single-trace read, for the same reason
+/// [`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a
+/// listing that carried `input_json`/`result_json` would return every caller's
+/// request body and the full engine message in one response. The row it
+/// converts from ([`TraceListRow`]) already omits those columns at the
+/// `SELECT`, so this type is the second half of that guarantee rather than a
+/// filter applied after the fact.
+///
+/// Published as `TraceListItem`, the name the spec has always used for this
+/// component: the Rust type gained the `…Response` suffix every dto here
+/// carries, but a component rename would break clients generated against the
+/// old spec — the upgrade guide tracks those as a compat surface.
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+#[schema(as = TraceListItem)]
+pub struct TraceListItemResponse {
+    pub id: String,
+    /// Channel name as it was when the trace ran — a snapshot, not a key.
+    pub channel: String,
+    pub channel_id: Option<String>,
+    /// `sync` | `async`.
+    pub mode: String,
+    /// `pending` | `running` | `completed` | `failed`.
+    pub status: String,
+    pub error_message: Option<String>,
+    pub duration_ms: Option<f64>,
+    pub started_at: Option<NaiveDateTime>,
+    pub completed_at: Option<NaiveDateTime>,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+impl From<&TraceListRow> for TraceListItemResponse {
+    fn from(trace: &TraceListRow) -> Self {
+        Self {
+            id: trace.id.clone(),
+            channel: trace.channel.clone(),
+            channel_id: trace.channel_id.clone(),
+            mode: trace.mode.clone(),
+            status: trace.status.clone(),
+            error_message: trace.error_message.clone(),
+            duration_ms: trace.duration_ms,
+            started_at: trace.started_at,
+            completed_at: trace.completed_at,
+            created_at: trace.created_at,
+            updated_at: trace.updated_at,
         }
     }
 }

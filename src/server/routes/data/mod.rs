@@ -129,13 +129,13 @@ pub(crate) async fn dynamic_handler(
     // `/async` path stays a channel *named* `async` rather than a submission
     // with no channel: only a `/async` suffix on a non-empty path is a
     // submission.
-    let path = uri.path().trim_start_matches('/').to_string();
+    let path = uri.path().trim_start_matches('/');
 
     // Strip trailing /async suffix
     let (route_path, is_async) = if let Some(stripped) = path.strip_suffix("/async") {
         (stripped, true)
     } else {
-        (path.as_str(), false)
+        (path, false)
     };
 
     let route_path = route_path.trim_matches('/').trim();
@@ -161,6 +161,7 @@ pub(crate) async fn dynamic_handler(
         // fire. A name that decodes to whitespace (`%20`) is as empty as a
         // literal blank — same 400 as the raw-path emptiness check above.
         let name = crate::channel::routing::percent_decode_segment(route_path)
+            .map(std::borrow::Cow::into_owned)
             .unwrap_or_else(|| route_path.to_string());
         let name = name.trim().to_string();
         if name.is_empty() {
@@ -218,11 +219,14 @@ pub(crate) async fn dynamic_handler(
     // the engine against an empty workflow set — a 200 "ok" for channels
     // that never existed or were just archived (the ingress-side twin of the
     // channel_call missing-target bug).
-    if channel_runtime.is_none() {
+    // The `Option` binding stays because `guards::GuardRequest` takes it by
+    // reference and is shared with the Kafka and channel_call ingresses; the
+    // clone below is the `Arc` every path past the gate is entitled to.
+    let Some(runtime) = channel_runtime.clone() else {
         return Err(OrionError::NotFound(format!(
             "Channel '{channel}' not found or not active"
         )));
-    }
+    };
 
     let header_lookup = |name: &str| {
         headers
@@ -281,7 +285,7 @@ pub(crate) async fn dynamic_handler(
             channel,
             req.data,
             metadata,
-            channel_runtime,
+            runtime,
             profile_requested,
             admission,
         )
@@ -293,7 +297,7 @@ pub(crate) async fn dynamic_handler(
         &channel,
         req.data,
         metadata,
-        channel_runtime,
+        runtime,
         profile_requested,
         admission,
     )
@@ -357,7 +361,7 @@ async fn submit_async(
     channel: String,
     data: Value,
     metadata: Value,
-    channel_runtime: Option<std::sync::Arc<crate::channel::ChannelRuntimeConfig>>,
+    channel_runtime: std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
     profile_requested: bool,
     admission: guards::Admission,
 ) -> Result<Response, OrionError> {
@@ -389,9 +393,7 @@ async fn submit_async(
     // a later result, so persistence is not optional on this path; the sync
     // path still honours `off` exactly (see `for_async_submission`).
     let input_json = serde_json::to_string(&data).ok();
-    let channel_id = channel_runtime
-        .as_ref()
-        .map(|c| c.channel.channel_id.as_str());
+    let channel_id = Some(channel_runtime.channel.channel_id.as_str());
     // R12: mint an opaque capability token for this submission. Only its hash
     // is stored; the plaintext exists once, in this 202. Polling requires it
     // (or an admin credential), so a caller can read its own async result but
@@ -563,17 +565,22 @@ impl ProcessRequest {
         let parsed: Value = serde_json::from_slice(body)
             .map_err(|e| OrionError::BadRequest(format!("Invalid JSON body: {e}")))?;
 
-        let is_envelope = parsed
-            .as_object()
-            .is_some_and(|o| o.contains_key("data") || o.contains_key("metadata"));
-        if !is_envelope {
-            return Ok(Self {
-                data: parsed,
+        // The envelope's two fields are `Value`, so they are taken straight
+        // out of the parsed map rather than re-deserialized — a second pass
+        // would rebuild every node of the payload on the hottest endpoint in
+        // the product, and could not fail.
+        match parsed {
+            Value::Object(mut obj) if obj.contains_key("data") || obj.contains_key("metadata") => {
+                Ok(Self {
+                    data: obj.remove("data").unwrap_or_else(empty_object),
+                    metadata: obj.remove("metadata").unwrap_or_else(empty_object),
+                })
+            }
+            other => Ok(Self {
+                data: other,
                 metadata: json!({}),
-            });
+            }),
         }
-        serde_json::from_value(parsed)
-            .map_err(|e| OrionError::BadRequest(format!("Invalid request body: {e}")))
     }
 }
 

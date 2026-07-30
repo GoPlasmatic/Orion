@@ -5869,7 +5869,7 @@
       },
       "TraceListItem": {
         "type": "object",
-        "description": "One row of `GET /api/v1/admin/traces` — payload-free by design (S14).",
+        "description": "One row of `GET /api/v1/admin/traces` — payload-free by design (S14).\n\nThe narrower sibling of the single-trace read, for the same reason\n[`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a\nlisting that carried `input_json`/`result_json` would return every caller's\nrequest body and the full engine message in one response. The row it\nconverts from ([`TraceListRow`]) already omits those columns at the\n`SELECT`, so this type is the second half of that guarantee rather than a\nfilter applied after the fact.\n\nPublished as `TraceListItem`, the name the spec has always used for this\ncomponent: the Rust type gained the `…Response` suffix every dto here\ncarries, but a component rename would break clients generated against the\nold spec — the upgrade guide tracks those as a compat surface.",
         "required": [
           "id",
           "channel",
@@ -5893,17 +5893,19 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "created_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "duration_ms": {
             "type": [
-              "integer",
+              "number",
               "null"
             ],
-            "format": "int64"
+            "format": "double"
           },
           "error_message": {
             "type": [
@@ -5922,14 +5924,16 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "format": "date-time"
           },
           "status": {
             "type": "string",
             "description": "`pending` | `running` | `completed` | `failed`."
           },
           "updated_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           }
         }
       },

@@ -753,8 +753,6 @@ impl ChannelRegistry {
         // engine-quarantined channels are removed from the serving map after
         // the loop.
         let mut issues: Vec<ChannelLoadIssue> = engine_issues;
-        let engine_quarantined: std::collections::HashSet<String> =
-            issues.iter().map(|i| i.channel.clone()).collect();
 
         let mut by_name: HashMap<String, Arc<ChannelRuntimeConfig>> =
             HashMap::with_capacity(channels.len());
@@ -780,34 +778,29 @@ impl ChannelRegistry {
             }
         }
 
+        let quarantined: HashMap<String, String> = issues
+            .iter()
+            .map(|i| (i.channel.clone(), i.reason.clone()))
+            .collect();
         // F33: a channel whose workflows failed to build must not serve even
-        // when its own config loaded fine.
-        for name in &engine_quarantined {
-            by_name.remove(name);
-        }
+        // when its own config loaded fine. The quarantine map is the one
+        // representation of the refused set (N21), so the serving map is
+        // filtered against it rather than against a second copy of the names.
+        by_name.retain(|name, _| !quarantined.contains_key(name));
 
         // Quarantined channels are excluded from the route table too, so
         // their REST routes 404 rather than resolving to a channel that will
         // then be refused — and so a broken channel cannot shadow the route
         // of a working one.
-        let quarantined: HashMap<String, String> = issues
-            .iter()
-            .map(|i| (i.channel.clone(), i.reason.clone()))
-            .collect();
-        let route_key: Vec<ChannelRow> = channels
+        let serviceable: Vec<&Channel> = channels
             .iter()
             .filter(|c| !quarantined.contains_key(&c.name))
-            .map(ChannelRow::of)
             .collect();
+        let route_key: Vec<ChannelRow> = serviceable.iter().copied().map(ChannelRow::of).collect();
         let route_table = if route_key == previous.route_key {
             previous.route_table.clone()
         } else {
-            let serviceable: Vec<Channel> = channels
-                .iter()
-                .filter(|c| !quarantined.contains_key(&c.name))
-                .cloned()
-                .collect();
-            Arc::new(RouteTable::build(&serviceable))
+            Arc::new(RouteTable::build(serviceable.iter().copied()))
         };
 
         // Counted off the published maps, not off `issues`: a channel broken

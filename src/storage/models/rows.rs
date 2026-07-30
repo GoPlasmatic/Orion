@@ -73,6 +73,23 @@ pub struct Channel {
     pub updated_at: NaiveDateTime,
 }
 
+impl Channel {
+    /// Tolerant decode of the [`Self::methods_json`] column: a corrupt value
+    /// contributes no methods.
+    ///
+    /// This is the rule the *runtime* wants — the route table and the
+    /// activation gate must keep working on a row they cannot parse, and the
+    /// update validator treats an undecodable column as "the request must
+    /// supply them". The admin response deliberately uses the strict decode in
+    /// [`super::dto::ChannelResponse`] instead, so a corrupt row is visible
+    /// rather than silently empty.
+    pub fn methods(&self) -> Option<Vec<String>> {
+        self.methods_json
+            .as_deref()
+            .and_then(|m| serde_json::from_str(m).ok())
+    }
+}
+
 // ============================================================
 // Connector
 // ============================================================

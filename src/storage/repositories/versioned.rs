@@ -9,9 +9,11 @@ use sea_query::{Asterisk, Condition, DynIden, Expr, Order, Query};
 
 use crate::errors::OrionError;
 use crate::storage::models::EntityStatus;
-use crate::storage::{DbPool, DbRow, build_sqlx};
+use crate::storage::{DbPool, DbRow, DbTransaction, build_sqlx};
 
-use super::helpers::{Page, PaginatedResult, Projection, fetch_required, paginate};
+use super::helpers::{
+    Page, PaginatedResult, Projection, fetch_required, fetch_required_tx, paginate,
+};
 
 /// Idens and error wording for one versioned entity.
 pub(crate) struct VersionedSpec {
@@ -40,11 +42,10 @@ pub(crate) async fn get_version<T: DbRow>(
             .and_where(Expr::col(spec.id_col.clone()).eq(id))
             .and_where(Expr::col(spec.version_col.clone()).eq(version)),
     );
-    pool.fetch_optional_as::<T>(&sql, values)
-        .await?
-        .ok_or_else(|| {
-            OrionError::NotFound(format!("{} '{id}' version {version} not found", spec.label))
-        })
+    fetch_required(pool, &sql, values, || {
+        OrionError::NotFound(format!("{} '{id}' version {version} not found", spec.label))
+    })
+    .await
 }
 
 /// Fetch the latest version of an entity (any status).
@@ -61,9 +62,10 @@ pub(crate) async fn get_latest<T: DbRow>(
             .order_by(spec.version_col.clone(), Order::Desc)
             .limit(1),
     );
-    pool.fetch_optional_as::<T>(&sql, values)
-        .await?
-        .ok_or_else(|| OrionError::NotFound(format!("{} '{id}' not found", spec.label)))
+    fetch_required(pool, &sql, values, || {
+        OrionError::NotFound(format!("{} '{id}' not found", spec.label))
+    })
+    .await
 }
 
 /// Delete every version of an entity; `NotFound` when none existed.
@@ -131,10 +133,7 @@ pub(crate) async fn list_versions<T: DbRow>(
 
 /// The `SELECT * WHERE id = ? AND status = 'draft'` both draft-consuming
 /// paths (update, activate) start from.
-pub(crate) fn draft_query(
-    spec: &VersionedSpec,
-    id: &str,
-) -> (String, sea_query_binder::SqlxValues) {
+fn draft_query(spec: &VersionedSpec, id: &str) -> (String, sea_query_binder::SqlxValues) {
     build_sqlx(
         Query::select()
             .column(Asterisk)
@@ -145,8 +144,32 @@ pub(crate) fn draft_query(
 }
 
 /// Uniform "no draft" wording for [`draft_query`] misses.
-pub(crate) fn no_draft_err(spec: &VersionedSpec, id: &str) -> OrionError {
+fn no_draft_err(spec: &VersionedSpec, id: &str) -> OrionError {
     OrionError::BadRequest(format!("No draft version found for {} '{id}'", spec.noun))
+}
+
+/// Fetch the draft version, `BadRequest` when there is none.
+///
+/// The query and its miss wording are paired here rather than left to the four
+/// draft-consuming call sites (update, activate, per entity) to combine
+/// correctly one at a time.
+pub(crate) async fn require_draft<T: DbRow>(
+    pool: &DbPool,
+    spec: &VersionedSpec,
+    id: &str,
+) -> Result<T, OrionError> {
+    let (sql, values) = draft_query(spec, id);
+    fetch_required(pool, &sql, values, || no_draft_err(spec, id)).await
+}
+
+/// Transaction-scoped variant of [`require_draft`], for the activate paths.
+pub(crate) async fn require_draft_tx<T: DbRow>(
+    tx: &mut DbTransaction,
+    spec: &VersionedSpec,
+    id: &str,
+) -> Result<T, OrionError> {
+    let (sql, values) = draft_query(spec, id);
+    fetch_required_tx(tx, &sql, values, || no_draft_err(spec, id)).await
 }
 
 /// Reject `create_new_version` when a draft already exists (the single-draft

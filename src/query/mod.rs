@@ -51,16 +51,7 @@ pub fn translate_sql_with_schema(
     dialect: SqlDialect,
     limits: &QueryConfig,
 ) -> Result<SelectStatement, QueryError> {
-    let spec = spec::parse(query)?;
-    // F24: the entity gate runs *first*. See [`plan_sql`].
-    let root_table = reg.physical_table(&spec.source)?;
-    let cond = match &spec.filter {
-        Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
-        None => Cond::True,
-    };
-    // W2: projection and sort go through the same allowlist / rename /
-    // identifier gate as the filter, before any backend sees the spec.
-    let spec = spec.resolve_names(reg)?;
+    let (spec, cond, root_table) = prepare(query, params, reg)?;
     backend::sql::render(&spec, &cond, &root_table, dialect, limits)
 }
 
@@ -184,6 +175,37 @@ impl GroupKey {
     }
 }
 
+/// The shared prologue of every translation: parse the envelope, resolve the
+/// entity, lower the filter, and resolve the remaining logical names. Returns the
+/// resolved spec, the lowered condition, and the physical table / collection /
+/// index.
+///
+/// The order is the point, and it is the same for every backend.
+///
+/// F24: the entity gate runs *first*, before the filter is lowered and before
+/// any field or relation is resolved. Every one of those steps also fails on an
+/// undeclared entity — with `invalid field reference 'age'` or `unknown relation
+/// 'orders'`, neither of which names the `schema` key that is actually missing.
+/// Resolving the table first means the one error a 0.x workflow hits is the one
+/// that says how to migrate it, whatever else the query happens to mention.
+///
+/// W2: projection and sort then go through the same allowlist / rename /
+/// identifier gate as the filter, before any backend sees the spec.
+fn prepare(
+    query: &Json,
+    params: &Params,
+    reg: &EntityRegistry,
+) -> Result<(spec::QuerySpec, Cond, String), QueryError> {
+    let spec = spec::parse(query)?;
+    let table = reg.physical_table(&spec.source)?;
+    let cond = match &spec.filter {
+        Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
+        None => Cond::True,
+    };
+    let spec = spec.resolve_names(reg)?;
+    Ok((spec, cond, table))
+}
+
 /// Plan a SQL query with `include`s: render the main `SelectStatement` (with any
 /// parent keys needed for grouping added) and resolve each include to an
 /// [`IncludePlan`] the handler hydrates with a per-relation child query.
@@ -194,27 +216,15 @@ pub fn plan_sql(
     dialect: SqlDialect,
     limits: &QueryConfig,
 ) -> Result<SqlPlan, QueryError> {
-    let spec = spec::parse(query)?;
-    // F24: the entity gate runs *first*, before the filter is lowered and
-    // before any field or relation is resolved. Every one of those steps also
-    // fails on an undeclared entity — with `invalid field reference 'age'` or
-    // `unknown relation 'orders'`, neither of which names the `schema` key that
-    // is actually missing. Resolving the table first means the one error a 0.x
-    // workflow hits is the one that says how to migrate it, whatever else the
-    // query happens to mention.
-    let root_table = reg.physical_table(&spec.source)?;
-    let cond = match &spec.filter {
-        Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
-        None => Cond::True,
-    };
-    // W2: projection and sort go through the same allowlist / rename /
-    // identifier gate as the filter, before any backend sees the spec.
-    let spec = spec.resolve_names(reg)?;
+    let (mut spec, cond, root_table) = prepare(query, params, reg)?;
 
-    let mut main_spec = spec.clone();
+    // Each `include` becomes an [`IncludePlan`] the handler hydrates separately;
+    // the SQL renderer never reads `include`, so take it out of the spec rather
+    // than copying the whole spec to render from.
+    let include_specs = std::mem::take(&mut spec.include);
     let mut includes = Vec::new();
     let mut strip: Vec<String> = Vec::new();
-    for inc in &spec.include {
+    for inc in &include_specs {
         let (rel, _target) = reg.resolve_relation(&spec.source, &inc.relation, "include")?;
         if rel.through.is_some() {
             return Err(QueryError::FeatureUnsupportedByTarget {
@@ -238,8 +248,8 @@ pub fn plan_sql(
             )));
         }
         // Ensure the parent key is projected so children can be grouped back.
-        if !main_spec.fields.is_empty() && !main_spec.fields.iter().any(|f| f == &rel.local) {
-            main_spec.fields.push(rel.local.clone());
+        if !spec.fields.is_empty() && !spec.fields.iter().any(|f| f == &rel.local) {
+            spec.fields.push(rel.local.clone());
             if !strip.contains(&rel.local) {
                 strip.push(rel.local.clone());
             }
@@ -260,7 +270,7 @@ pub fn plan_sql(
         });
     }
 
-    let main = backend::sql::render(&main_spec, &cond, &root_table, dialect, limits)?;
+    let main = backend::sql::render(&spec, &cond, &root_table, dialect, limits)?;
     Ok(SqlPlan {
         main,
         includes,
@@ -277,16 +287,7 @@ pub fn translate_mongo(
     reg: &EntityRegistry,
     limits: &QueryConfig,
 ) -> Result<backend::mongo::MongoQuery, QueryError> {
-    let spec = spec::parse(query)?;
-    // F24: the entity gate runs *first*. See [`plan_sql`].
-    let collection = reg.physical_table(&spec.source)?;
-    let cond = match &spec.filter {
-        Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
-        None => Cond::True,
-    };
-    // W2: projection and sort go through the same allowlist / rename /
-    // identifier gate as the filter, before any backend sees the spec.
-    let spec = spec.resolve_names(reg)?;
+    let (spec, cond, collection) = prepare(query, params, reg)?;
     backend::mongo::render(&spec, &cond, &collection, limits)
 }
 
@@ -299,16 +300,7 @@ pub fn translate_es(
     reg: &EntityRegistry,
     limits: &QueryConfig,
 ) -> Result<backend::es::EsQuery, QueryError> {
-    let spec = spec::parse(query)?;
-    // F24: the entity gate runs *first*. See [`plan_sql`].
-    let index = reg.physical_table(&spec.source)?;
-    let cond = match &spec.filter {
-        Some(f) => lower::lower_with(f, params, reg, &spec.source)?,
-        None => Cond::True,
-    };
-    // W2: projection and sort go through the same allowlist / rename /
-    // identifier gate as the filter, before any backend sees the spec.
-    let spec = spec.resolve_names(reg)?;
+    let (spec, cond, index) = prepare(query, params, reg)?;
     backend::es::render(&spec, &cond, &index, limits)
 }
 

@@ -186,6 +186,11 @@ impl CircuitBreaker {
         }
     }
 
+    /// Whether the breaker is currently closed (admitting traffic).
+    pub fn is_closed(&self) -> bool {
+        self.state.load(Ordering::Acquire) == STATE_CLOSED
+    }
+
     /// Human-readable state name.
     pub fn state_name(&self) -> &str {
         match self.state.load(Ordering::Acquire) {

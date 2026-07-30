@@ -41,9 +41,9 @@ pub type EngineCallResult = (dataflow_rs::Result<()>, Option<dataflow_rs::Execut
 
 /// Run the engine for `channel` with optional timeout, optional per-task
 /// trace capture, and optional profiling scope. The sync HTTP, async trace
-/// queue, and Kafka ingress paths all go through here so timeout and trace
-/// semantics cannot drift between them. `Err(ms)` means the call timed out
-/// after `ms` milliseconds.
+/// queue, Kafka ingress and in-process `channel_call` paths all go through
+/// here so timeout and trace semantics cannot drift between them. `Err(ms)`
+/// means the call timed out after `ms` milliseconds.
 pub async fn run_for_channel(
     engine: &Arc<dataflow_rs::Engine>,
     channel: &str,

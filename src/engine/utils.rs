@@ -146,9 +146,18 @@ pub fn remove_rollout_bucket(message: &mut dataflow_rs::Message) {
 pub fn data_without_rollout_bucket(message: &dataflow_rs::Message) -> Value {
     let mut data = serde_json::to_value(message.data()).unwrap_or(Value::Null);
     if let Some(obj) = data.as_object_mut() {
-        obj.remove(ROLLOUT_BUCKET_KEY);
+        strip_rollout_bucket(obj);
     }
     data
+}
+
+/// Drop the synthetic key from an already-serialized `data` object.
+///
+/// The async path serialises the whole message itself (`traces.result_json`)
+/// rather than going through [`data_without_rollout_bucket`], so it strips the
+/// key here instead of spelling it out a second time.
+pub(crate) fn strip_rollout_bucket(obj: &mut serde_json::Map<String, Value>) {
+    obj.remove(ROLLOUT_BUCKET_KEY);
 }
 
 #[cfg(test)]

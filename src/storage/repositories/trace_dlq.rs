@@ -33,6 +33,23 @@ fn not_exhausted() -> SimpleExpr {
     Expr::col(TraceDlq::RetryCount).lt(Expr::col(TraceDlq::MaxRetries))
 }
 
+/// Release the claim lease on an entry: the `claimed_by` / `claimed_until`
+/// pair every UPDATE that hands an entry back has to clear.
+///
+/// `claimed_until` is a timestamp: a NULL *string* param is a 42804 type
+/// mismatch on postgres (D1). Bind the chrono NULL, same as `next_retry_at`
+/// binds a chrono value.
+fn clear_lease(q: &mut sea_query::UpdateStatement) -> &mut sea_query::UpdateStatement {
+    q.value(
+        TraceDlq::ClaimedBy,
+        super::helpers::optional_string_value(None),
+    )
+    .value(
+        TraceDlq::ClaimedUntil,
+        sea_query::Value::ChronoDateTime(None),
+    )
+}
+
 /// The 9 columns a DLQ *listing* reads, in
 /// [`crate::storage::models::TraceDlqSummary`] order.
 fn summary_columns() -> [TraceDlq; 9] {
@@ -386,22 +403,13 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     ) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("trace_dlq.record_retry", async {
             let (sql, values) = build_sqlx(
-                Query::update()
-                    .table(TraceDlq::Table)
-                    .value(TraceDlq::RetryCount, Expr::col(TraceDlq::RetryCount).add(1))
-                    .value(TraceDlq::NextRetryAt, next_retry_at)
-                    .value(
-                        TraceDlq::ClaimedBy,
-                        super::helpers::optional_string_value(None),
-                    )
-                    // `claimed_until` is a timestamp: a NULL *string* param is
-                    // a 42804 type mismatch on postgres (D1). Bind the chrono
-                    // NULL, same as `next_retry_at` binds a chrono value.
-                    .value(
-                        TraceDlq::ClaimedUntil,
-                        sea_query::Value::ChronoDateTime(None),
-                    )
-                    .and_where(Expr::col(TraceDlq::Id).eq(id)),
+                clear_lease(
+                    Query::update()
+                        .table(TraceDlq::Table)
+                        .value(TraceDlq::RetryCount, Expr::col(TraceDlq::RetryCount).add(1))
+                        .value(TraceDlq::NextRetryAt, next_retry_at),
+                )
+                .and_where(Expr::col(TraceDlq::Id).eq(id)),
             );
 
             self.pool.execute_query(&sql, values).await?;
@@ -427,19 +435,12 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     async fn mark_exhausted(&self, id: &str) -> Result<(), OrionError> {
         crate::metrics::timed_db_op("trace_dlq.mark_exhausted", async {
             let (sql, values) = build_sqlx(
-                Query::update()
-                    .table(TraceDlq::Table)
-                    .value(TraceDlq::RetryCount, Expr::col(TraceDlq::MaxRetries))
-                    .value(
-                        TraceDlq::ClaimedBy,
-                        super::helpers::optional_string_value(None),
-                    )
-                    // See `record_retry`: chrono NULL, not a string NULL (D1).
-                    .value(
-                        TraceDlq::ClaimedUntil,
-                        sea_query::Value::ChronoDateTime(None),
-                    )
-                    .and_where(Expr::col(TraceDlq::Id).eq(id)),
+                clear_lease(
+                    Query::update()
+                        .table(TraceDlq::Table)
+                        .value(TraceDlq::RetryCount, Expr::col(TraceDlq::MaxRetries)),
+                )
+                .and_where(Expr::col(TraceDlq::Id).eq(id)),
             );
 
             self.pool.execute_query(&sql, values).await?;
@@ -485,20 +486,13 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
         crate::metrics::timed_db_op("trace_dlq.requeue", async {
             let now = chrono::Utc::now().naive_utc();
             let (sql, values) = build_sqlx(
-                Query::update()
-                    .table(TraceDlq::Table)
-                    .value(TraceDlq::RetryCount, 0i64)
-                    .value(TraceDlq::NextRetryAt, now)
-                    .value(
-                        TraceDlq::ClaimedBy,
-                        super::helpers::optional_string_value(None),
-                    )
-                    // See `record_retry`: chrono NULL, not a string NULL (D1).
-                    .value(
-                        TraceDlq::ClaimedUntil,
-                        sea_query::Value::ChronoDateTime(None),
-                    )
-                    .and_where(Expr::col(TraceDlq::Id).eq(id)),
+                clear_lease(
+                    Query::update()
+                        .table(TraceDlq::Table)
+                        .value(TraceDlq::RetryCount, 0i64)
+                        .value(TraceDlq::NextRetryAt, now),
+                )
+                .and_where(Expr::col(TraceDlq::Id).eq(id)),
             );
 
             if self.pool.execute_query(&sql, values).await? == 0 {

@@ -40,15 +40,7 @@ pub fn render(
     index: &str,
     limits: &QueryConfig,
 ) -> Result<EsQuery, QueryError> {
-    // F26: `include` hydration exists only on SQL. It used to be silently
-    // dropped here — parents came back with no children and no error, in
-    // direct violation of the never-approximate rule.
-    if let Some(inc) = spec.include.first() {
-        return Err(QueryError::FeatureUnsupportedByTarget {
-            feature: format!("include '{}'", inc.relation),
-            target: "elasticsearch".to_string(),
-        });
-    }
+    super::reject_include(spec, "elasticsearch")?;
 
     let size = super::resolve_limit(spec.limit, limits)?;
     let from = super::resolve_skip(spec.skip, limits)?.unwrap_or(0);
@@ -191,16 +183,7 @@ fn query_json(cond: &Cond, prefix: &str) -> Result<Json, QueryError> {
             }
         }
         Cond::Rel { quant, rel, cond } => {
-            // W11: a many-to-many relation needs a junction join, which the
-            // ES query DSL cannot express. It used to render as a plain
-            // `nested`/`has_child` on the relation name — wrong results, no
-            // error — while include planning correctly gated m2m.
-            if rel.through.is_some() {
-                return Err(QueryError::FeatureUnsupportedByTarget {
-                    feature: format!("many-to-many relation '{}'", rel.name),
-                    target: "elasticsearch".to_string(),
-                });
-            }
+            super::reject_many_to_many(rel, "elasticsearch")?;
             rel_json(*quant, &rel.name, rel.es, cond)?
         }
     })

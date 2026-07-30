@@ -129,7 +129,9 @@ pub struct Junction {
 impl EntityRegistry {
     /// Parse an inline schema JSON value into a registry.
     pub fn from_json(v: &serde_json::Value) -> Result<Self, QueryError> {
-        let reg: Self = serde_json::from_value(v.clone())
+        // Borrowed deserialisation: the schema is re-parsed per task execution,
+        // and `from_value` would deep-clone the whole document to do it.
+        let reg: Self = Self::deserialize(v)
             .map_err(|e| QueryError::InvalidEnvelope(format!("invalid schema: {e}")))?;
         for (entity, ent) in &reg.entities {
             for (name, rel) in &ent.relations {
@@ -289,16 +291,22 @@ impl EntityRegistry {
             .collect()
     }
 
-    /// Resolve a single-segment field on `entity` to a physical [`FieldRef`],
-    /// honouring renames, type hints, and the allowlist.
-    pub fn resolve_field(
+    /// Resolve a caller-named column on `entity` to its physical name and type,
+    /// honouring renames, the unmapped policy, and whichever per-column flag
+    /// (`queryable` / `writable`) `allowed` tests.
+    ///
+    /// One body for both directions on purpose (W4): the read and write paths
+    /// used to validate differently, which is exactly how a name that is not a
+    /// plain identifier reached a backend on one of them.
+    fn resolve_column(
         &self,
         entity: &str,
         name: &str,
         at: &str,
-    ) -> Result<FieldRef, QueryError> {
+        allowed: fn(&Column) -> bool,
+    ) -> Result<(String, FieldType), QueryError> {
         if let Some(col) = self.entities.get(entity).and_then(|e| e.columns.get(name)) {
-            if !col.queryable {
+            if !allowed(col) {
                 return Err(QueryError::InvalidField {
                     field: name.to_string(),
                     at: at.to_string(),
@@ -307,22 +315,34 @@ impl EntityRegistry {
             let physical = col.name.clone().unwrap_or_else(|| name.to_string());
             // W4: a rename target is operator-supplied too.
             validate_identifier(&physical, at)?;
-            return Ok(FieldRef {
-                path: vec![name.to_string()],
-                physical,
-                ty: col.ty,
-            });
+            return Ok((physical, col.ty));
         }
         match self.unmapped {
             UnmappedPolicy::Identity => {
                 validate_identifier(name, at)?;
-                Ok(FieldRef::identity(name))
+                Ok((name.to_string(), FieldType::Unknown))
             }
             UnmappedPolicy::Reject => Err(QueryError::InvalidField {
                 field: name.to_string(),
                 at: at.to_string(),
             }),
         }
+    }
+
+    /// Resolve a single-segment field on `entity` to a physical [`FieldRef`],
+    /// honouring renames, type hints, and the allowlist.
+    pub fn resolve_field(
+        &self,
+        entity: &str,
+        name: &str,
+        at: &str,
+    ) -> Result<FieldRef, QueryError> {
+        let (physical, ty) = self.resolve_column(entity, name, at, |c| c.queryable)?;
+        Ok(FieldRef {
+            path: vec![name.to_string()],
+            physical,
+            ty,
+        })
     }
 
     /// Resolve a column being written on `entity` to its physical name, honouring
@@ -335,27 +355,7 @@ impl EntityRegistry {
         name: &str,
         at: &str,
     ) -> Result<String, QueryError> {
-        if let Some(col) = self.entities.get(entity).and_then(|e| e.columns.get(name)) {
-            if !col.writable {
-                return Err(QueryError::InvalidField {
-                    field: name.to_string(),
-                    at: at.to_string(),
-                });
-            }
-            let physical = col.name.clone().unwrap_or_else(|| name.to_string());
-            validate_identifier(&physical, at)?;
-            return Ok(physical);
-        }
-        match self.unmapped {
-            UnmappedPolicy::Identity => {
-                validate_identifier(name, at)?;
-                Ok(name.to_string())
-            }
-            UnmappedPolicy::Reject => Err(QueryError::InvalidField {
-                field: name.to_string(),
-                at: at.to_string(),
-            }),
-        }
+        Ok(self.resolve_column(entity, name, at, |c| c.writable)?.0)
     }
 
     /// Physical name for a column named by the *schema itself* — a relation's

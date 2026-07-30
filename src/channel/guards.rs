@@ -312,7 +312,9 @@ pub enum GuardVerdict {
 ///
 /// The single enforcement point for N16's matrix: which guards run is read
 /// from [`Transport::guards`], so adding an ingress is adding a row, not
-/// remembering four call sites.
+/// remembering four call sites. Only a transport that caches calls this
+/// directly; the other three go through [`admit`], which is this function
+/// with the unreachable [`GuardVerdict::CacheHit`] already resolved.
 ///
 /// Order is deliberate. The rate limit is first so a refusal costs the least
 /// work and so rejected requests (a disallowed origin, a failing predicate)
@@ -395,6 +397,25 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
         timeout_ms: effective_timeout_ms(req.runtime, req.default_timeout_ms, req.max_timeout_ms),
         dedup_claim,
     }))
+}
+
+/// [`apply_guards`] for a transport whose row leaves `response_cache` off —
+/// every ingress but [`Transport::HttpSync`].
+///
+/// [`GuardVerdict`] spans the whole matrix, so its `CacheHit` variant is
+/// statically unreachable for those transports. Resolving that impossibility
+/// here is the same principle as the matrix itself: the exclusion is read
+/// from [`Transport::guards`] once instead of each call site hand-writing its
+/// own handling of a branch it can never take. A transport that does cache
+/// calls [`apply_guards`] and matches both variants.
+pub async fn admit(req: GuardRequest<'_>) -> Result<Admission, OrionError> {
+    let transport = req.transport;
+    match apply_guards(req).await? {
+        GuardVerdict::Admitted(admission) => Ok(admission),
+        GuardVerdict::CacheHit(_) => Err(OrionError::Internal(format!(
+            "{transport:?} does not enable the response cache"
+        ))),
+    }
 }
 
 /// The deadline for a message on this channel: the channel's declared
@@ -692,88 +713,94 @@ async fn check_deduplication(
     key_fallback: Option<&str>,
     owner: Option<&str>,
 ) -> Result<Option<DedupClaim>, OrionError> {
-    if let Some(cfg) = channel_config
-        && let Some(ref dedup) = cfg.parsed_config.deduplication
-        && let Some(ref store) = cfg.dedup_store
-        && let Some(key) = header(&dedup.header).or_else(|| key_fallback.map(str::to_string))
-    {
-        let window = dedup.window_secs.unwrap_or(300);
-        // Scope the key per channel (same format family as the response cache
-        // key at `compute_cache_key`) — raw tokens would collide across
-        // channels sharing a backend.
-        let scoped_key = format!("dedup:{channel}:{key}");
-        // A one-shot delivery gets a token nothing else can ever present, so
-        // the owner comparison below can only ever match a transport that
-        // deliberately supplied a stable one.
-        let one_shot;
-        let owner = match owner {
-            Some(owner) => owner,
-            None => {
-                one_shot = uuid::Uuid::new_v4().simple().to_string();
-                one_shot.as_str()
-            }
-        };
-        // N7: a backend error is resolved by the channel's `on_backend_error`
-        // policy. The default (`allow`) fails open — availability wins over
-        // strict idempotency. `deny` fails closed with 503, never 409: the
-        // request is not a known duplicate, it is *unverifiable*.
-        let holder = match store.claim_dedup_key(&scoped_key, owner, window).await {
-            Ok(holder) => holder,
-            Err(e) => {
-                metrics::record_error("dedup_backend");
-                match dedup.on_backend_error {
-                    crate::channel::BackendErrorPolicy::Allow => {
-                        tracing::warn!(
-                            channel = %channel,
-                            error = %e,
-                            header = %dedup.header,
-                            "Dedup backend error; failing open (request allowed without dedup check)"
-                        );
-                        // Nothing was stored, so there is nothing to settle.
-                        return Ok(None);
-                    }
-                    crate::channel::BackendErrorPolicy::Deny => {
-                        tracing::warn!(
-                            channel = %channel,
-                            error = %e,
-                            header = %dedup.header,
-                            "Dedup backend error; failing closed (request refused)"
-                        );
-                        return Err(OrionError::ServiceUnavailable(format!(
-                            "Channel '{channel}' cannot verify the idempotency key: the \
-                             deduplication backend is unavailable and the channel is \
-                             configured to fail closed"
-                        )));
-                    }
+    let Some(cfg) = channel_config else {
+        return Ok(None);
+    };
+    let Some(ref dedup) = cfg.parsed_config.deduplication else {
+        return Ok(None);
+    };
+    let Some(ref store) = cfg.dedup_store else {
+        return Ok(None);
+    };
+    let Some(key) = header(&dedup.header).or_else(|| key_fallback.map(str::to_string)) else {
+        return Ok(None);
+    };
+
+    let window = dedup.window_secs.unwrap_or(300);
+    // Scope the key per channel (same format family as the response cache
+    // key at `compute_cache_key`) — raw tokens would collide across
+    // channels sharing a backend.
+    let scoped_key = format!("dedup:{channel}:{key}");
+    // A one-shot delivery gets a token nothing else can ever present, so
+    // the owner comparison below can only ever match a transport that
+    // deliberately supplied a stable one.
+    let one_shot;
+    let owner = match owner {
+        Some(owner) => owner,
+        None => {
+            one_shot = uuid::Uuid::new_v4().simple().to_string();
+            one_shot.as_str()
+        }
+    };
+    // N7: a backend error is resolved by the channel's `on_backend_error`
+    // policy. The default (`allow`) fails open — availability wins over
+    // strict idempotency. `deny` fails closed with 503, never 409: the
+    // request is not a known duplicate, it is *unverifiable*.
+    let holder = match store.claim_dedup_key(&scoped_key, owner, window).await {
+        Ok(holder) => holder,
+        Err(e) => {
+            metrics::record_error("dedup_backend");
+            match dedup.on_backend_error {
+                crate::channel::BackendErrorPolicy::Allow => {
+                    tracing::warn!(
+                        channel = %channel,
+                        error = %e,
+                        header = %dedup.header,
+                        "Dedup backend error; failing open (request allowed without dedup check)"
+                    );
+                    // Nothing was stored, so there is nothing to settle.
+                    return Ok(None);
+                }
+                crate::channel::BackendErrorPolicy::Deny => {
+                    tracing::warn!(
+                        channel = %channel,
+                        error = %e,
+                        header = %dedup.header,
+                        "Dedup backend error; failing closed (request refused)"
+                    );
+                    return Err(OrionError::ServiceUnavailable(format!(
+                        "Channel '{channel}' cannot verify the idempotency key: the \
+                         deduplication backend is unavailable and the channel is \
+                         configured to fail closed"
+                    )));
                 }
             }
-        };
-        match holder {
-            // The key was free and is ours for the window.
-            None => {}
-            // Our own token: this is the same delivery arriving again because
-            // the last attempt never settled. Reprocess it — refusing here is
-            // how a message gets committed without ever running.
-            Some(ref held) if held == owner => {
-                tracing::debug!(
-                    channel = %channel,
-                    key = %key,
-                    "Redelivery of an unsettled message; the idempotency claim is its own"
-                );
-            }
-            Some(_) => {
-                return Err(OrionError::Conflict(format!(
-                    "Duplicate request: idempotency key '{key}' already seen"
-                )));
-            }
         }
-        return Ok(Some(DedupClaim {
-            store: store.clone(),
-            key: scoped_key,
-            window_secs: window,
-        }));
+    };
+    match holder {
+        // The key was free and is ours for the window.
+        None => {}
+        // Our own token: this is the same delivery arriving again because
+        // the last attempt never settled. Reprocess it — refusing here is
+        // how a message gets committed without ever running.
+        Some(ref held) if held == owner => {
+            tracing::debug!(
+                channel = %channel,
+                key = %key,
+                "Redelivery of an unsettled message; the idempotency claim is its own"
+            );
+        }
+        Some(_) => {
+            return Err(OrionError::Conflict(format!(
+                "Duplicate request: idempotency key '{key}' already seen"
+            )));
+        }
     }
-    Ok(None)
+    Ok(Some(DedupClaim {
+        store: store.clone(),
+        key: scoped_key,
+        window_secs: window,
+    }))
 }
 
 /// Acquire a per-channel backpressure permit. Returns `Err(ServiceUnavailable)`

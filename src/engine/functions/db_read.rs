@@ -85,9 +85,7 @@ impl AsyncFunctionHandler for DbReadHandler {
             })
             .await?;
 
-            let result = rows_to_json(&rows)?;
-
-            apply_output(ctx, call.output, result);
+            apply_output(ctx, call.output, Value::Array(rows_to_json(&rows)?));
             Ok(TaskOutcome::Success)
         })
         .await
@@ -102,9 +100,9 @@ impl AsyncFunctionHandler for DbReadHandler {
 /// Only a genuine SQL `NULL` becomes `Value::Null`. A value the driver cannot
 /// represent is an error, never a silent null — the two must stay
 /// distinguishable to the workflow reading the result.
-pub fn rows_to_json(rows: &[AnyRow]) -> Result<Value, DataflowError> {
+pub fn rows_to_json(rows: &[AnyRow]) -> Result<Vec<Value>, DataflowError> {
     if rows.is_empty() {
-        return Ok(Value::Array(Vec::new()));
+        return Ok(Vec::new());
     }
 
     let col_names: Vec<String> = rows[0]
@@ -121,7 +119,7 @@ pub fn rows_to_json(rows: &[AnyRow]) -> Result<Value, DataflowError> {
         }
         result.push(Value::Object(obj));
     }
-    Ok(Value::Array(result))
+    Ok(result)
 }
 
 /// Decode one column of one row into JSON, dispatching on the value's own type
