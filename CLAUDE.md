@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Orion is a declarative services runtime written in Rust. It exposes business logic management through channels (service endpoints) and workflows (task pipelines powered by dataflow-rs) via a REST API. Ships as a single binary with an embedded SQLite database.
 
 - **Rust Edition:** 2024. **MSRV: 1.88** (`rust-version` in Cargo.toml) — driven by let-chains (`if let Some(x) = a && let Some(y) = b`, stabilized in 1.88) and dependency requirements (`mongodb`, `serde_with`, `time`, `tonic`).
-- **Core dependencies:** `dataflow-rs` 3.0 (workflow engine), `datalogic-rs` 5 (JSONLogic), `axum` 0.8 (HTTP), `sqlx` 0.8 (database), `sea-query` 0.32 (portable SQL builder)
+- **Core dependencies:** `dataflow-rs` 3.1 (workflow engine), `axum` 0.8 (HTTP), `sqlx` 0.8 (database), `sea-query` 0.32 (portable SQL builder)
+- **`datalogic-rs` 5 (JSONLogic) and `datavalue` are reached through `dataflow-rs`**, not pinned directly. dataflow-rs's public API is written in terms of both — `TaskContext::datalogic()` returns `&Arc<datalogic_rs::Engine>`, the whole context/path surface is `datavalue::OwnedDataValue` — so a second pin would let their major versions skew from the ones dataflow-rs links. Add `use dataflow_rs::datalogic_rs;` (or `::datavalue`) to a module that needs them; a bare `datalogic_rs::` path will not resolve, and note that a file-level `use` does **not** reach an inner `#[cfg(test)] mod tests`. The trade-off: Orion cannot enable a datalogic feature on its own, so `ext-string` (`starts_with`, `upper`, `split`), `ext-array`, `ext-math` and the date operators are only available if dataflow-rs enables them.
 - **Single binary:** `orion-server` (server, `src/main.rs`)
 
 ## Build & Development Commands

@@ -123,6 +123,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "database",
@@ -130,6 +131,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "collection",
@@ -137,6 +139,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "filter",
@@ -144,6 +147,7 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: true,
+        alias: None,
     },
     FieldSchema {
         name: "output",
@@ -151,5 +155,6 @@ pub(super) const MONGO_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        alias: None,
     },
 ];

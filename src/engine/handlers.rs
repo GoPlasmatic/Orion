@@ -9,43 +9,57 @@ use tokio::sync::RwLock;
 use super::functions;
 use crate::connector::{ConnectorRegistry, ConnectorType};
 
-/// Every function name a workflow may reference: dataflow-rs built-ins plus
-/// Orion's own handlers.
+/// Whether a workflow may name `function`.
 ///
 /// This gates workflow **creation** (`validation/workflows.rs`), so a name
-/// missing here is not a warning — the workflow is rejected with
-/// `unknown_function` even though the engine would run it fine. `enrich` was
-/// missing for exactly that reason (F54).
+/// this rejects is not a warning — the workflow is refused outright. The rule
+/// is "would the engine Orion actually builds be able to run this task?", and
+/// dataflow-rs 3.1 splits its own built-ins by exactly that question:
 ///
-/// dataflow-rs keeps its own list `pub(crate)`, so this cannot be derived at
-/// compile time. `known_functions_covers_every_dataflow_builtin` derives it at
-/// *test* time out of the engine's own `FunctionNotFound` message, which
-/// enumerates the built-ins — so a dependency bump that adds or renames one
-/// fails the test instead of silently rejecting valid workflows.
-pub const KNOWN_FUNCTIONS: &[&str] = &[
-    "map",
-    // Upstream accepts both spellings, so Orion must too — dropping either
-    // would reject a workflow the engine runs.
-    "validation",
-    "validate",
-    "parse_json",
-    "parse_xml",
-    "publish_json",
-    "publish_xml",
-    "filter",
-    "log",
-    "http_call",
-    "enrich",
-    "publish_kafka",
-    "db_read",
-    "db_write",
-    "data_query",
-    "data_write",
-    "cache_read",
-    "cache_write",
-    "mongo_read",
-    "channel_call",
-];
+/// - [`BuiltinKind::SelfContained`] — `map`, `validate`, `filter`, `log`,
+///   `parse_*`, `publish_*`. The crate executes these itself; always runnable.
+/// - [`BuiltinKind::RequiresHandler`] — `http_call`, `enrich`,
+///   `publish_kafka`. These deserialize into a *typed built-in* variant, so
+///   `Engine::new` accepts them without complaint, and then dispatch to a
+///   handler registered under the same name. Orion registers `http_call` and
+///   `publish_kafka`; it does **not** register `enrich`.
+/// - Everything else lands in `FunctionConfig::Custom` and needs a handler
+///   too — that is [`CUSTOM_HANDLER_FUNCTIONS`].
+///
+/// So membership is the wrong test and `enrich` is why: it was added to a
+/// hand-copied name list to stop create rejecting it (F54), which made every
+/// `enrich` workflow activate cleanly and then fail its every request with
+/// `FunctionNotFound`. Keying on the kind makes that unexpressible — a
+/// `RequiresHandler` name is accepted only if Orion has the handler.
+///
+/// [`BuiltinKind`]: dataflow_rs::BuiltinKind
+/// [`CUSTOM_HANDLER_FUNCTIONS`]: super::CUSTOM_HANDLER_FUNCTIONS
+pub fn is_known_function(function: &str) -> bool {
+    match dataflow_rs::builtin_function_kind(function) {
+        Some(dataflow_rs::BuiltinKind::SelfContained) => true,
+        // `RequiresHandler` and `Custom` alike: only if Orion registered one.
+        _ => super::CUSTOM_HANDLER_FUNCTIONS.contains(&function),
+    }
+}
+
+/// Every function name a workflow may reference, for callers that need the set
+/// rather than a membership test — the `/admin/functions` catalogue and the
+/// coverage tests that iterate it as an enumeration domain.
+pub fn known_functions() -> impl Iterator<Item = &'static str> {
+    dataflow_rs::BUILTIN_FUNCTION_NAMES
+        .iter()
+        .copied()
+        .filter(|name| is_known_function(name))
+        .chain(
+            // `http_call` and `publish_kafka` are on both lists — an upstream
+            // built-in name that Orion also supplies the handler for — so take
+            // them from the built-in half only.
+            super::CUSTOM_HANDLER_FUNCTIONS
+                .iter()
+                .copied()
+                .filter(|name| !dataflow_rs::is_builtin_function(name)),
+        )
+}
 
 /// Function names that require a connector reference.
 pub const CONNECTOR_FUNCTIONS: &[&str] = &[
@@ -291,70 +305,76 @@ pub fn register_kafka_publisher(
 mod tests {
     use super::*;
     use crate::engine::loader::CUSTOM_HANDLER_FUNCTIONS;
+    use dataflow_rs::BuiltinKind;
 
-    /// F54: `KNOWN_FUNCTIONS` gates workflow *creation*, so a dataflow-rs
-    /// built-in missing from it is rejected with `unknown_function` even
-    /// though the engine runs it. `enrich` was missing exactly that way.
+    /// Every self-contained dataflow-rs built-in is accepted.
     ///
-    /// dataflow-rs keeps `BUILTIN_FUNCTION_NAMES` `pub(crate)`, so the list
-    /// cannot be imported — but `Engine::new` enumerates it in the
-    /// `FunctionNotFound` message raised for an unregistered name. Deriving it
-    /// from there means a dependency bump that adds or renames a built-in
-    /// fails here instead of silently rejecting valid workflows.
+    /// This used to build a probe engine, let it fail, and **string-parse the
+    /// built-in list out of the `FunctionNotFound` Display impl** — because the
+    /// crate kept `BUILTIN_FUNCTION_NAMES` `pub(crate)` and the error message
+    /// was the only public surface that enumerated it. 3.1 publishes the const
+    /// and a classifier, and documents that message as explicitly unpinned.
     #[test]
-    fn known_functions_covers_every_dataflow_builtin() {
-        let workflow = dataflow_rs::Workflow::from_json(
-            r#"{"id":"probe","name":"probe","priority":0,"condition":true,
-                "tasks":[{"id":"t","name":"t",
-                          "function":{"name":"__orion_probe__","input":{}}}]}"#,
-        )
-        .expect("probe workflow parses");
-        let built = dataflow_rs::Engine::new(vec![workflow], std::collections::HashMap::new());
-        assert!(
-            built.is_err(),
-            "an unregistered function must fail the engine build"
-        );
-        let err = built
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_else(|| unreachable!("asserted is_err above"));
+    fn every_self_contained_builtin_is_accepted() {
+        let mut checked = 0;
+        for name in dataflow_rs::BUILTIN_FUNCTION_NAMES {
+            if dataflow_rs::builtin_function_kind(name) == Some(BuiltinKind::SelfContained) {
+                assert!(
+                    is_known_function(name),
+                    "'{name}' runs with no registration, so rejecting it at create \
+                     refuses a workflow the engine would happily execute"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 8, "implausibly few self-contained built-ins");
+    }
 
-        let builtins = err
-            .split_once("built-ins: ")
-            .map(|(_, rest)| rest.trim_end_matches([')', '.', ' ']))
-            .unwrap_or_else(|| {
-                unreachable!("dataflow-rs no longer lists its built-ins in FunctionNotFound: {err}")
-            });
-        let builtins: Vec<&str> = builtins.split(", ").map(str::trim).collect();
+    /// A built-in that needs a handler is accepted only if Orion registered
+    /// one — and `enrich` is the case that proves it matters.
+    ///
+    /// `enrich` deserializes into a typed built-in variant, so `Engine::new`
+    /// accepts it and `check_custom_inputs` skips it by construction: it never
+    /// becomes `FunctionConfig::Custom`. It was added to the old hand-copied
+    /// name list to stop create rejecting it, which meant every `enrich`
+    /// workflow activated cleanly and then failed *every* request with
+    /// `FunctionNotFound`. Nothing registers a handler for it.
+    #[test]
+    fn a_builtin_needing_a_handler_is_accepted_only_when_one_is_registered() {
+        for name in dataflow_rs::BUILTIN_FUNCTION_NAMES {
+            if dataflow_rs::builtin_function_kind(name) != Some(BuiltinKind::RequiresHandler) {
+                continue;
+            }
+            assert_eq!(
+                is_known_function(name),
+                CUSTOM_HANDLER_FUNCTIONS.contains(name),
+                "'{name}' needs a registered handler; accepting it without one \
+                 green-lights a workflow that 500s on every request"
+            );
+        }
+        assert!(is_known_function("http_call"));
+        assert!(is_known_function("publish_kafka"));
         assert!(
-            builtins.len() >= 10,
-            "parsed an implausible built-in list from {err}: {builtins:?}"
-        );
-
-        let missing: Vec<&&str> = builtins
-            .iter()
-            .filter(|b| !KNOWN_FUNCTIONS.contains(b))
-            .collect();
-        assert!(
-            missing.is_empty(),
-            "dataflow-rs built-ins absent from KNOWN_FUNCTIONS: {missing:?} — \
-             workflows using them are rejected at create with `unknown_function`"
+            !is_known_function("enrich"),
+            "Orion registers no `enrich` handler, so the name must be refused \
+             at create rather than at every request"
         );
     }
 
     #[test]
-    fn known_functions_covers_every_registered_custom_handler() {
-        // A name registered as a handler but missing from KNOWN_FUNCTIONS is
-        // rejected by admin validation even though it would work; the reverse
-        // (in KNOWN_FUNCTIONS, unregistered, not a builtin) reaches the engine
-        // build and kills it. Both directions must hold.
+    fn every_registered_custom_handler_is_accepted() {
+        // A name registered as a handler but rejected by the gate refuses a
+        // workflow that would work; the reverse — accepted, unregistered, not
+        // a self-contained builtin — reaches the engine build and kills it.
+        // Both directions must hold.
         for name in CUSTOM_HANDLER_FUNCTIONS {
             assert!(
-                KNOWN_FUNCTIONS.contains(name),
-                "handler '{name}' is registered but absent from KNOWN_FUNCTIONS, \
-                 so workflows using it are rejected at activation"
+                is_known_function(name),
+                "handler '{name}' is registered but the gate rejects it, \
+                 so workflows using it are refused at create"
             );
         }
+        assert!(!is_known_function("__not_a_function__"));
     }
 
     /// F52: the type table and the "needs a connector" list are two views of
@@ -373,8 +393,8 @@ mod tests {
             );
         }
         // And nothing else claims one.
-        for f in KNOWN_FUNCTIONS {
-            if !CONNECTOR_FUNCTIONS.contains(f) {
+        for f in known_functions() {
+            if !CONNECTOR_FUNCTIONS.contains(&f) {
                 assert!(
                     required_connector_types(f).is_none(),
                     "'{f}' declares connector types but takes no connector"

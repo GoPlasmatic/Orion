@@ -2,6 +2,7 @@
 //! repository construction, and background-task lifecycle. `main.rs` stays
 //! the readable orchestration script and calls these phases in order.
 
+use dataflow_rs::datalogic_rs;
 use std::sync::Arc;
 
 use tokio::sync::RwLock;
@@ -383,8 +384,14 @@ impl EngineComponents {
             "Workflows loaded"
         );
 
-        // Populate the pre-created engine lock with the real engine
-        let built_engine = dataflow_rs::Engine::new(workflows, custom_functions)?;
+        // Populate the pre-created engine lock with the real engine.
+        //
+        // The observer is attached here rather than on the placeholder at
+        // startup because `Engine::new` builds a fresh engine; `with_new_workflows`
+        // carries it across every subsequent reload, so this is the only place
+        // it needs setting.
+        let built_engine = dataflow_rs::Engine::new(workflows, custom_functions)?
+            .with_observer(Arc::new(crate::engine::MetricsObserver));
         *crate::engine::acquire_engine_write(&serving.engine).await = Arc::new(built_engine);
 
         Ok((serving, channels, active_workflows.len()))

@@ -1,3 +1,4 @@
+use dataflow_rs::datalogic_rs;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 

@@ -1,19 +1,4 @@
-use dataflow_rs::engine::utils::set_nested_value;
-use datavalue::OwnedDataValue;
 use serde_json::Value;
-
-/// Merge metadata key-value pairs into a message's metadata.
-pub fn merge_metadata(message: &mut dataflow_rs::Message, metadata: &Value) {
-    if let Some(meta_obj) = metadata.as_object() {
-        for (k, v) in meta_obj {
-            set_nested_value(
-                &mut message.context,
-                &format!("metadata.{k}"),
-                OwnedDataValue::from(v),
-            );
-        }
-    }
-}
 
 /// FNV-1a 64-bit hash mixin. Unkeyed and deterministic — used wherever a
 /// value must hash identically on every replica and across restarts
@@ -101,72 +86,34 @@ pub fn serialize_task_trace_capped(
 /// version on every request and every replica. Without one (direct
 /// connection, no forwarding headers) it falls back to per-request random,
 /// which still honors the rollout percentages in aggregate.
-pub fn rollout_bucket_for_identity(identity: Option<&str>) -> i64 {
+///
+/// The bucket goes on the message as `MessageBuilder::routing_bucket`, which
+/// the engine matches against each workflow's own `rollout` range. It used to
+/// be written into `data._rollout_bucket` for a synthetic condition to read,
+/// which meant it was a caller-visible field that every response and trace
+/// boundary then had to strip back out — and, because dataflow-rs v3 had no
+/// `unset`, could only be nulled rather than removed. Four helpers and a const
+/// existed to hide that; none of them are needed now.
+pub fn rollout_bucket_for_identity(identity: Option<&str>) -> u8 {
     match identity {
-        Some(id) if !id.is_empty() => (fnv1a64(id.as_bytes()) % 100) as i64,
-        _ => (rand::random::<u32>() % 100) as i64,
+        Some(id) if !id.is_empty() => (fnv1a64(id.as_bytes()) % 100) as u8,
+        _ => (rand::random::<u32>() % 100) as u8,
     }
-}
-
-/// Inject `_rollout_bucket` (0–99) into the message data for rollout routing.
-pub fn inject_rollout_bucket(message: &mut dataflow_rs::Message, identity: Option<&str>) {
-    let bucket = rollout_bucket_for_identity(identity);
-    set_nested_value(
-        &mut message.context,
-        "data._rollout_bucket",
-        OwnedDataValue::from_i64(bucket),
-    );
-}
-
-/// Key injected for rollout routing and stripped again before the caller sees it.
-const ROLLOUT_BUCKET_KEY: &str = "_rollout_bucket";
-
-/// Remove the `_rollout_bucket` field from message data after processing.
-///
-/// dataflow-rs v3 has no `unset`, so this can only overwrite the key with
-/// `Null`. That is enough for workflow logic — which treats null as absent —
-/// but **not** for anything that serialises `data`: see
-/// [`data_without_rollout_bucket`], which every response and persistence path
-/// must use instead of `message.data()` directly.
-pub fn remove_rollout_bucket(message: &mut dataflow_rs::Message) {
-    set_nested_value(
-        &mut message.context,
-        "data._rollout_bucket",
-        OwnedDataValue::Null,
-    );
-}
-
-/// The message's `data` as JSON, with the synthetic `_rollout_bucket` key gone.
-///
-/// Because [`remove_rollout_bucket`] can only null the key rather than delete
-/// it, every success body used to carry `data._rollout_bucket: null` — a field
-/// the caller never sent — and it was persisted into `traces.result_json` too
-/// (proposal F31). Stripping happens here, at the serialisation boundary, so
-/// there is one place to keep correct.
-pub fn data_without_rollout_bucket(message: &dataflow_rs::Message) -> Value {
-    let mut data = serde_json::to_value(message.data()).unwrap_or(Value::Null);
-    if let Some(obj) = data.as_object_mut() {
-        strip_rollout_bucket(obj);
-    }
-    data
-}
-
-/// Drop the synthetic key from an already-serialized `data` object.
-///
-/// The async path serialises the whole message itself (`traces.result_json`)
-/// rather than going through [`data_without_rollout_bucket`], so it strips the
-/// key here instead of spelling it out a second time.
-pub(crate) fn strip_rollout_bucket(obj: &mut serde_json::Map<String, Value>) {
-    obj.remove(ROLLOUT_BUCKET_KEY);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dataflow_rs::Message;
     use serde_json::json;
 
-    fn make_message(data: Value) -> dataflow_rs::Message {
-        dataflow_rs::Message::from_value(&data)
+    /// A message shaped the way every ingress builds one.
+    fn ingress_message(payload: Value, metadata: Value, identity: Option<&str>) -> Message {
+        Message::builder()
+            .payload_json(&payload)
+            .metadata_json(&metadata)
+            .routing_bucket(rollout_bucket_for_identity(identity))
+            .build()
     }
 
     #[test]
@@ -181,35 +128,22 @@ mod tests {
         assert!(serialize_task_trace_capped(None, 1024, "t").is_none());
     }
 
+    /// The ingress seeds `context.metadata` through the builder rather than
+    /// one `set_nested_value("metadata.{k}")` per key. Note the keys are now
+    /// literal: a caller-supplied `"a.b"` stays one key instead of becoming
+    /// nested `metadata.a.b`.
     #[test]
-    fn test_merge_metadata() {
-        let mut msg = make_message(json!({}));
-        let metadata = json!({"source": "test", "version": 2});
-        merge_metadata(&mut msg, &metadata);
+    fn ingress_seeds_metadata_with_literal_keys() {
+        let msg = ingress_message(json!({}), json!({"source": "test", "a.b": 2}), None);
 
         assert_eq!(
             msg.metadata().get("source").and_then(|v| v.as_str()),
             Some("test")
         );
-        assert_eq!(
-            msg.metadata().get("version").and_then(|v| v.as_i64()),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn test_inject_rollout_bucket_in_range() {
-        let mut msg = make_message(json!({}));
-        inject_rollout_bucket(&mut msg, None);
-
-        let bucket = msg
-            .data()
-            .get("_rollout_bucket")
-            .and_then(|v| v.as_i64())
-            .expect("test");
+        assert_eq!(msg.metadata().get("a.b").and_then(|v| v.as_i64()), Some(2));
         assert!(
-            (0..100).contains(&bucket),
-            "bucket should be 0–99, got {bucket}"
+            msg.metadata().get("a").is_none(),
+            "a dotted metadata key must not be re-read as a path"
         );
     }
 
@@ -218,11 +152,11 @@ mod tests {
         let a1 = rollout_bucket_for_identity(Some("10.0.0.7"));
         let a2 = rollout_bucket_for_identity(Some("10.0.0.7"));
         assert_eq!(a1, a2, "same identity must map to the same bucket");
-        assert!((0..100).contains(&a1));
+        assert!(a1 < 100);
 
         // Distinct identities distribute (spot-check that not everything
         // collapses onto one bucket).
-        let buckets: std::collections::HashSet<i64> = (0..50)
+        let buckets: std::collections::HashSet<u8> = (0..50)
             .map(|i| rollout_bucket_for_identity(Some(&format!("user-{i}"))))
             .collect();
         assert!(buckets.len() > 10, "expected spread, got {buckets:?}");
@@ -251,59 +185,33 @@ mod tests {
     #[test]
     fn test_rollout_bucket_empty_identity_falls_back_to_random() {
         // Empty identity must not pin every caller to one bucket.
-        let buckets: std::collections::HashSet<i64> = (0..100)
+        let buckets: std::collections::HashSet<u8> = (0..100)
             .map(|_| rollout_bucket_for_identity(Some("")))
             .collect();
         assert!(buckets.len() > 1, "empty identity should randomize");
     }
 
+    /// F31, restated for the routing-bucket shape. The bucket used to live at
+    /// `data._rollout_bucket`, which meant it serialized into every success
+    /// body and into `traces.result_json` as a field the caller never sent —
+    /// and, with no `unset` in dataflow-rs v3, could only be nulled rather than
+    /// removed. It is now a message field the wire format does not carry, so
+    /// neither the response view nor the persisted message can leak it.
     #[test]
-    fn test_remove_rollout_bucket() {
-        let mut msg = make_message(json!({"_rollout_bucket": 42}));
-        remove_rollout_bucket(&mut msg);
-
-        let is_absent = msg
-            .data()
-            .get("_rollout_bucket")
-            .map(|v| v.is_null())
-            .unwrap_or(true);
-        assert!(is_absent, "bucket should be removed or null");
-    }
-
-    /// Build a message whose `context.data` is `data` — the shape the request
-    /// path actually produces (`Message::from_value` fills `payload`, not
-    /// `context`).
-    fn message_with_data(data: Value) -> dataflow_rs::Message {
-        let mut msg = dataflow_rs::Message::from_value(&json!({}));
-        set_nested_value(&mut msg.context, "data", OwnedDataValue::from(&data));
-        msg
-    }
-
-    #[test]
-    fn rollout_bucket_never_reaches_the_serialized_body() {
-        // The key can only be nulled, not deleted, so it used to serialise into
-        // every success body and into traces.result_json as a field the caller
-        // never sent (F31). The response view must not contain it at all.
-        let mut msg = message_with_data(json!({"order_id": 7}));
-        inject_rollout_bucket(&mut msg, Some("caller-1"));
+    fn the_routing_bucket_is_not_part_of_the_message_body() {
+        let msg = ingress_message(json!({"order_id": 7}), json!({}), Some("caller-1"));
         assert!(
-            msg.data().get("_rollout_bucket").is_some(),
-            "precondition: routing injected the bucket"
+            msg.routing_bucket().is_some(),
+            "precondition: the ingress set a bucket"
         );
-        remove_rollout_bucket(&mut msg);
 
-        let body = data_without_rollout_bucket(&msg);
-        assert_eq!(
-            body,
-            json!({"order_id": 7}),
-            "the response body must be exactly what the caller sent"
+        let body: Value = msg.data().into();
+        assert_eq!(body, json!({}), "routing must not write into `data`");
+
+        let serialized = serde_json::to_string(&msg).expect("message serializes");
+        assert!(
+            !serialized.contains("_rollout_bucket") && !serialized.contains("routing_bucket"),
+            "the bucket must not reach the persisted message: {serialized}"
         );
-    }
-
-    #[test]
-    fn data_view_survives_non_object_data() {
-        // `data` need not be an object; stripping must not panic or corrupt it.
-        let msg = message_with_data(json!([1, 2, 3]));
-        assert_eq!(data_without_rollout_bucket(&msg), json!([1, 2, 3]));
     }
 }

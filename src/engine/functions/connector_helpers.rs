@@ -31,11 +31,10 @@ pub fn build_entity_registry(
     };
     if let Some(guards) = connector_config.dialect_guards() {
         if !guards.schema_is_sufficient(!registry.is_empty(), registry.is_identity_mode()) {
-            return Err(DataflowError::Validation(format!(
-                "{}connector '{connector_name}' requires a declared schema \
+            return Err(crate::errors::connector_detail_error(format!(
+                "connector '{connector_name}' requires a declared schema \
                  (dialect.require_schema): supply \"schema\" with an \"entities\" map \
-                 and without \"unmapped\": \"identity\"",
-                crate::errors::CONNECTOR_DETAIL_MARKER
+                 and without \"unmapped\": \"identity\""
             )));
         }
         registry.restrict_to(&guards.allowed_entities);
@@ -60,9 +59,8 @@ pub fn require_op_allowed(
 /// The refusal is worded identically whatever the connector type.
 pub fn require_op(allowed: bool, op: &str, connector_name: &str) -> Result<(), DataflowError> {
     if !allowed {
-        return Err(DataflowError::Validation(format!(
-            "{}operation '{op}' is disabled on connector '{connector_name}'",
-            crate::errors::CONNECTOR_DETAIL_MARKER
+        return Err(crate::errors::connector_detail_error(format!(
+            "operation '{op}' is disabled on connector '{connector_name}'"
         )));
     }
     Ok(())
@@ -77,10 +75,9 @@ pub fn require_method_allowed(
     connector_name: &str,
 ) -> Result<(), DataflowError> {
     if !gates.allows_method(method) {
-        return Err(DataflowError::Validation(format!(
-            "{}HTTP method '{method}' is not allowed on connector \
+        return Err(crate::errors::connector_detail_error(format!(
+            "HTTP method '{method}' is not allowed on connector \
              '{connector_name}' (allowed: {})",
-            crate::errors::CONNECTOR_DETAIL_MARKER,
             gates.methods.join(", ")
         )));
     }
@@ -453,9 +450,8 @@ pub fn require_db_connector<'a>(
 ) -> Result<&'a DbConnectorConfig, DataflowError> {
     match config {
         ConnectorConfig::Db(c) => Ok(c),
-        _ => Err(DataflowError::Validation(format!(
-            "{}Connector '{name}' is not a database connector",
-            crate::errors::CONNECTOR_DETAIL_MARKER
+        _ => Err(crate::errors::connector_detail_error(format!(
+            "Connector '{name}' is not a database connector"
         ))),
     }
 }
@@ -468,9 +464,8 @@ pub fn require_http_connector<'a>(
 ) -> Result<&'a crate::connector::HttpConnectorConfig, DataflowError> {
     match config {
         ConnectorConfig::Http(c) => Ok(c),
-        _ => Err(DataflowError::Validation(format!(
-            "{}Connector '{name}' is not an HTTP connector",
-            crate::errors::CONNECTOR_DETAIL_MARKER
+        _ => Err(crate::errors::connector_detail_error(format!(
+            "Connector '{name}' is not an HTTP connector"
         ))),
     }
 }
@@ -483,9 +478,8 @@ pub fn require_kafka_connector<'a>(
 ) -> Result<&'a crate::connector::KafkaConnectorConfig, DataflowError> {
     match config {
         ConnectorConfig::Kafka(c) => Ok(c),
-        _ => Err(DataflowError::Validation(format!(
-            "{}Connector '{name}' is not a Kafka connector",
-            crate::errors::CONNECTOR_DETAIL_MARKER
+        _ => Err(crate::errors::connector_detail_error(format!(
+            "Connector '{name}' is not a Kafka connector"
         ))),
     }
 }
@@ -498,9 +492,8 @@ pub fn require_cache_connector<'a>(
 ) -> Result<&'a CacheConnectorConfig, DataflowError> {
     match config {
         ConnectorConfig::Cache(c) => Ok(c),
-        _ => Err(DataflowError::Validation(format!(
-            "{}Connector '{name}' is not a cache connector",
-            crate::errors::CONNECTOR_DETAIL_MARKER
+        _ => Err(crate::errors::connector_detail_error(format!(
+            "Connector '{name}' is not a cache connector"
         ))),
     }
 }

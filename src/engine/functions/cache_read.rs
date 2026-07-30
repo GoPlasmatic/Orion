@@ -89,6 +89,7 @@ pub(super) const CACHE_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "key",
@@ -96,6 +97,7 @@ pub(super) const CACHE_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: true,
+        alias: None,
     },
     FieldSchema {
         name: "output",
@@ -103,5 +105,6 @@ pub(super) const CACHE_READ_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        alias: None,
     },
 ];

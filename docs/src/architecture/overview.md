@@ -233,7 +233,7 @@ Each composed channel has its own workflow, versioning, and governance, but call
 
 Two sources contribute task functions, all compiled into every binary:
 
-**From dataflow-rs 3.0 (workflow primitives):**
+**From dataflow-rs 3.1 (workflow primitives):**
 
 | Function | Description |
 |----------|-------------|

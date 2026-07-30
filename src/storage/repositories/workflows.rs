@@ -682,39 +682,49 @@ pub fn synthetic_workflow(
     })
 }
 
-/// Rewrite `input.output` to `input.response_path` on every `http_call` task.
+/// Shared body of the two converters below.
 ///
-/// Orion's task contract names the destination path `output` for all ten
-/// handlers (proposal F43). Nine of them are Orion-owned and take the field
-/// directly — `channel_call` via a serde alias, the rest via
-/// `connector_helpers::extract_output_path`. `http_call` is the exception:
-/// dataflow-rs claims the name as a **built-in**, so `{"name": "http_call"}`
-/// deserializes into the upstream `HttpCallConfig` struct, whose field is
-/// `response_path` and which Orion cannot annotate. Renaming it here, at the
-/// one boundary where workflow JSON becomes a `DataflowWorkflow`, keeps the
-/// public contract uniform without forking the dependency.
+/// `id` and `status` differ between them, and `rollout` is the half-open
+/// bucket range this version serves — `None` for a workflow that takes all of
+/// its channel's traffic.
 ///
-/// `response_path` is still honoured (it is what the upstream struct reads),
-/// so 0.3.x workflows load unchanged. When both are present `output` wins,
-/// matching the alias precedence on `channel_call`.
-fn normalize_http_call_output(tasks: &mut serde_json::Value) {
-    let Some(tasks) = tasks.as_array_mut() else {
-        return;
-    };
-    for task in tasks {
-        let Some(function) = task.get_mut("function") else {
-            continue;
-        };
-        if function.get("name").and_then(|n| n.as_str()) != Some("http_call") {
-            continue;
-        }
-        let Some(input) = function.get_mut("input").and_then(|i| i.as_object_mut()) else {
-            continue;
-        };
-        if let Some(output) = input.remove("output") {
-            input.insert("response_path".to_string(), output);
-        }
-    }
+/// `http_call`'s destination path used to be rewritten here from Orion's
+/// `output` spelling to the upstream `response_path`, because
+/// `{"name": "http_call"}` deserializes into dataflow-rs's own
+/// `HttpCallConfig` and Orion could not annotate it. dataflow-rs 3.1 carries
+/// `alias = "output"` on the field, so the rewrite is gone and a storage
+/// repository no longer deep-walks task JSON to rename a function input.
+fn workflow_to_dataflow_inner(
+    workflow: &Workflow,
+    channel_name: &str,
+    id: String,
+    status: &str,
+    rollout: Option<(u8, u8)>,
+) -> Result<DataflowWorkflow, OrionError> {
+    let tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
+    let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
+    let tags: Vec<String> = serde_json::from_str(&workflow.tags_json)?;
+
+    let workflow_json = serde_json::json!({
+        "id": id,
+        "name": workflow.name,
+        "description": workflow.description,
+        "channel": channel_name,
+        "priority": workflow.priority,
+        "version": workflow.version,
+        "status": status,
+        "condition": condition,
+        "tasks": tasks,
+        "tags": tags,
+        "continue_on_error": workflow.continue_on_error,
+        "rollout": rollout.map(|(bucket_start, bucket_end)| serde_json::json!({
+            "bucket_start": bucket_start,
+            "bucket_end": bucket_end,
+        })),
+    });
+
+    let df_workflow: DataflowWorkflow = serde_json::from_value(workflow_json)?;
+    Ok(df_workflow)
 }
 
 /// Convert a Workflow DB model to a dataflow-rs Workflow via JSON deserialization.
@@ -723,67 +733,58 @@ pub fn workflow_to_dataflow(
     workflow: &Workflow,
     channel_name: &str,
 ) -> Result<DataflowWorkflow, OrionError> {
-    let mut tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
-    normalize_http_call_output(&mut tasks);
-    let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
-    let tags: Vec<String> = serde_json::from_str(&workflow.tags_json)?;
-
-    let workflow_json = serde_json::json!({
-        "id": workflow.workflow_id,
-        "name": workflow.name,
-        "description": workflow.description,
-        "channel": channel_name,
-        "priority": workflow.priority,
-        "version": workflow.version,
-        "status": EntityStatus::Active.as_str(),
-        "condition": condition,
-        "tasks": tasks,
-        "tags": tags,
-        "continue_on_error": workflow.continue_on_error,
-    });
-
-    let df_workflow: DataflowWorkflow = serde_json::from_value(workflow_json)?;
-    Ok(df_workflow)
+    workflow_to_dataflow_inner(
+        workflow,
+        channel_name,
+        workflow.workflow_id.clone(),
+        EntityStatus::Active.as_str(),
+        None,
+    )
 }
 
-/// Convert a Workflow to a dataflow-rs Workflow with rollout-aware condition wrapping and unique ID.
-/// The `channel_name` parameter is supplied externally (from the Channel entity).
+/// Convert a Workflow to a dataflow-rs Workflow serving the half-open bucket
+/// range `[bucket_min, bucket_max)`, under a version-qualified id.
+///
+/// The range used to be spliced into the author's condition as
+/// `{"and": [condition, {">=": [{"var": "_rollout_bucket"}, min]}, ...]}`,
+/// against a `data._rollout_bucket` key every ingress injected and then had to
+/// strip back out. That wiring was stringly-typed across a namespace boundary
+/// and had been misspelled since it shipped: the condition's `var` addressed
+/// the context root while the injection wrote under `data`, so the lookup
+/// resolved to null, coerced to `0`, and every version whose range did not
+/// start at 0 was unreachable. dataflow-rs 3.1 routes on `Workflow::rollout`
+/// against `Message::routing_bucket` instead, which is checked before any
+/// arena work and never touches the caller-visible `data` namespace.
 pub fn workflow_to_dataflow_with_rollout(
     workflow: &Workflow,
     channel_name: &str,
     bucket_min: i64,
     bucket_max: i64,
 ) -> Result<DataflowWorkflow, OrionError> {
-    let mut tasks: serde_json::Value = serde_json::from_str(&workflow.tasks_json)?;
-    normalize_http_call_output(&mut tasks);
-    let condition: serde_json::Value = serde_json::from_str(&workflow.condition_json)?;
-    let tags: Vec<String> = serde_json::from_str(&workflow.tags_json)?;
+    // Buckets are 0–99, so both bounds fit a `u8` (100 is the exclusive top).
+    // Whether they *sum* to 100 is `build_engine_workflows`'s check, which
+    // reports the over/under case far better than this can — so only refuse a
+    // span that cannot be represented at all, and let the caller's own check
+    // speak for everything else.
+    let bounds = u8::try_from(bucket_min)
+        .ok()
+        .zip(u8::try_from(bucket_max).ok())
+        .filter(|(min, max)| min <= max)
+        .ok_or_else(|| {
+            OrionError::validation(format!(
+                "workflow '{}' v{} has an unrepresentable rollout bucket span \
+                 [{bucket_min}, {bucket_max}) — buckets are 0–100",
+                workflow.workflow_id, workflow.version
+            ))
+        })?;
 
-    // Wrap condition with bucket range check
-    let wrapped_condition = serde_json::json!({
-        "and": [
-            condition,
-            {">=": [{"var": "_rollout_bucket"}, bucket_min]},
-            {"<": [{"var": "_rollout_bucket"}, bucket_max]}
-        ]
-    });
-
-    let workflow_json = serde_json::json!({
-        "id": format!("{}:v{}", workflow.workflow_id, workflow.version),
-        "name": workflow.name,
-        "description": workflow.description,
-        "channel": channel_name,
-        "priority": workflow.priority,
-        "version": workflow.version,
-        "status": workflow.status,
-        "condition": wrapped_condition,
-        "tasks": tasks,
-        "tags": tags,
-        "continue_on_error": workflow.continue_on_error,
-    });
-
-    let df_workflow: DataflowWorkflow = serde_json::from_value(workflow_json)?;
-    Ok(df_workflow)
+    workflow_to_dataflow_inner(
+        workflow,
+        channel_name,
+        format!("{}:v{}", workflow.workflow_id, workflow.version),
+        &workflow.status,
+        Some(bounds),
+    )
 }
 
 #[cfg(test)]
@@ -840,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn test_workflow_to_dataflow_with_rollout_wraps_condition() {
+    fn test_workflow_to_dataflow_with_rollout_carries_a_typed_range() {
         let workflow = Workflow {
             workflow_id: "rollout-wf".to_string(),
             name: "Rollout Test".to_string(),
@@ -863,14 +864,39 @@ mod tests {
         assert_eq!(df_workflow.id, "rollout-wf:v3");
         assert_eq!(df_workflow.channel, "default");
 
-        // Verify the condition was wrapped
-        let cond = &df_workflow.condition;
-        assert!(
-            cond.get("and").is_some(),
-            "condition should be wrapped in 'and'"
-        );
-        let and_arr = cond.get("and").expect("test").as_array().expect("test");
-        assert_eq!(and_arr.len(), 3);
+        // The author's condition is passed through untouched. It used to be
+        // wrapped in an `and` with two synthetic bucket comparisons against a
+        // key the ingress injected into `data`; the range is a typed field the
+        // engine gates on before it builds an arena.
+        assert_eq!(df_workflow.condition, serde_json::json!(true));
+        let rollout = df_workflow.rollout.expect("rollout range");
+        assert_eq!((rollout.bucket_start, rollout.bucket_end), (0, 50));
+        assert!(rollout.accepts(0) && rollout.accepts(49));
+        assert!(!rollout.accepts(50) && !rollout.accepts(99));
+    }
+
+    /// The plain converter must leave `rollout` unset — a workflow with no
+    /// range takes all of its channel's traffic, which is what the single
+    /// version at 100% case means.
+    #[test]
+    fn test_workflow_to_dataflow_has_no_rollout_range() {
+        let workflow = Workflow {
+            workflow_id: "wf-orders".to_string(),
+            name: "Orders".to_string(),
+            description: None,
+            priority: 1,
+            version: 1,
+            status: EntityStatus::Active.as_str().to_string(),
+            rollout_percentage: 100,
+            condition_json: "true".to_string(),
+            tasks_json: "[]".to_string(),
+            tags_json: "[]".to_string(),
+            continue_on_error: false,
+            created_at: chrono::NaiveDateTime::default(),
+            updated_at: chrono::NaiveDateTime::default(),
+        };
+        let df_workflow = workflow_to_dataflow(&workflow, "orders").expect("test");
+        assert_eq!(df_workflow.rollout, None);
     }
 
     #[test]

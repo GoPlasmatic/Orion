@@ -179,10 +179,48 @@ pub(crate) async fn get_trace(
         response["duration_ms"] = json!(duration);
     }
     if let Some(ref tt) = trace.task_trace_json
-        && let Ok(v) = serde_json::from_str::<Value>(tt)
+        && let Ok(mut v) = serde_json::from_str::<Value>(tt)
     {
+        strip_step_metadata(&mut v);
         response["task_trace_json"] = v;
     }
 
     Ok(data_response(response))
+}
+
+/// Apply the S14 strip to every step snapshot inside a stored task trace.
+///
+/// The strip above covers `result_json`, but each `ExecutionStep` holds its own
+/// full `Message` clone carrying the same `context.metadata` — so the identical
+/// request headers were returned verbatim one field further down. Only four
+/// header names are masked at ingress, which left everything else readable
+/// through this path.
+///
+/// New rows do not need this: `runner::trace_options` sets `redact_paths`, so
+/// the header map is never cloned into a step. It stays for rows already on
+/// disk, which is why it is a read-side walk rather than a migration.
+fn strip_step_metadata(trace: &mut Value) {
+    fn drop_metadata(context: Option<&mut Value>) {
+        if let Some(obj) = context.and_then(Value::as_object_mut) {
+            obj.remove("metadata");
+        }
+    }
+
+    let Some(steps) = trace.get_mut("steps").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for step in steps {
+        drop_metadata(step.get_mut("message").and_then(|m| m.get_mut("context")));
+        // A `map` task's per-mapping snapshots are whole-context clones of
+        // their own, so they carry the header map independently of the step's
+        // `message` — one more copy per mapping, not per task.
+        if let Some(contexts) = step
+            .get_mut("mapping_contexts")
+            .and_then(Value::as_array_mut)
+        {
+            for context in contexts {
+                drop_metadata(Some(context));
+            }
+        }
+    }
 }

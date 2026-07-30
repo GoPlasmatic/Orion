@@ -81,12 +81,7 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
                         kafka_config.allow_private_urls,
                     )
                     .await
-                    .map_err(|e| {
-                        DataflowError::Validation(format!(
-                            "{}{e}",
-                            crate::errors::CONNECTOR_DETAIL_MARKER
-                        ))
-                    })?;
+                    .map_err(crate::errors::connector_detail_error)?;
                 }
 
                 // F13: publish to the cluster the *connector* names, not the one
@@ -105,48 +100,24 @@ impl AsyncFunctionHandler for PublishKafkaHandler {
                         )
                     })?;
 
-                let key = if let Some(compiled) = input.compiled_key_logic.as_deref() {
-                    let result: Value = ctx
-                        .datalogic()
-                        .session()
-                        .eval_into(compiled, &ctx.message().context)
-                        .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-                    let key_str = if let Some(s) = result.as_str() {
-                        s.to_string()
-                    } else {
-                        serde_json::to_string(&result).map_err(|e| {
-                            DataflowError::function_execution(
-                                format!("Failed to serialize Kafka message key: {e}"),
-                                None,
-                            )
-                        })?
-                    };
-                    Some(key_str)
-                } else {
-                    None
-                };
+                // `resolve_key` applies the same string coercion this handler
+                // used to spell out — a JSON string yields its contents,
+                // anything else its compact form.
+                let key = input.resolve_key(ctx)?;
 
-                let value = if let Some(compiled) = input.compiled_value_logic.as_deref() {
-                    let result: Value = ctx
-                        .datalogic()
-                        .session()
-                        .eval_into(compiled, &ctx.message().context)
-                        .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-                    serde_json::to_string(&result).map_err(|e| {
-                        DataflowError::function_execution(
-                            format!("Failed to serialize Kafka message value: {e}"),
-                            None,
-                        )
-                    })?
-                } else {
-                    let data_json: Value = ctx.data().into();
-                    serde_json::to_string(&data_json).map_err(|e| {
-                        DataflowError::function_execution(
-                            format!("Failed to serialize Kafka message value: {e}"),
-                            None,
-                        )
-                    })?
+                // No `value_logic` still means "publish the message data": that
+                // is a transport decision the config cannot make, so upstream
+                // returns `None` and the fallback stays here.
+                let value_json: Value = match input.resolve_value(ctx)? {
+                    Some(value) => value,
+                    None => ctx.data().into(),
                 };
+                let value = serde_json::to_string(&value_json).map_err(|e| {
+                    DataflowError::function_execution(
+                        format!("Failed to serialize Kafka message value: {e}"),
+                        None,
+                    )
+                })?;
 
                 producer
                     .send(&input.topic, key.as_deref(), value.as_bytes())
@@ -185,6 +156,7 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "topic",
@@ -192,6 +164,7 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "key_logic",
@@ -199,6 +172,7 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "value_logic",
@@ -206,5 +180,6 @@ pub(super) const PUBLISH_KAFKA_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        alias: None,
     },
 ];

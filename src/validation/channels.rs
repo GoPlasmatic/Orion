@@ -1,6 +1,7 @@
 use crate::errors::OrionError;
 use crate::storage::models::{Channel, ChannelProtocol};
 use crate::storage::repositories::channels::{CreateChannelRequest, UpdateChannelRequest};
+use dataflow_rs::datalogic_rs;
 
 use super::common::{validate_description, validate_id, validate_name};
 

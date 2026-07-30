@@ -72,6 +72,15 @@ pub struct FieldSchema {
     /// everything else — connector names, SQL text, output paths — stays
     /// literal by design.
     pub resolvable: bool,
+    /// A second accepted spelling for this field, or `None`.
+    ///
+    /// Only `http_call.output` has one (`response_path`, the pre-1.0 name),
+    /// and it is a real serde alias on dataflow-rs's `HttpCallConfig` rather
+    /// than an Orion convention — so supplying **both** is a duplicate-field
+    /// parse error upstream, not a precedence rule. [`check_fields`] reports
+    /// that here instead of letting the workflow load and quarantine its
+    /// channel.
+    pub alias: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -80,6 +89,15 @@ pub struct FunctionSchema {
     pub description: &'static str,
     pub category: &'static str,
     pub input_fields: &'static [FieldSchema],
+    /// Whether a key outside `input_fields` is an error rather than ignored.
+    ///
+    /// True for the functions dataflow-rs owns the config struct for
+    /// (`http_call`, `publish_kafka`), whose structs are `deny_unknown_fields`
+    /// as of 3.1: a misspelled key there fails `Workflow::from_json`, which for
+    /// Orion means the channel is quarantined at load. Catching it at authoring
+    /// time turns that into a 400 naming the field. Orion's own handlers take
+    /// freeform `serde_json::Value` inputs and keep ignoring extra keys.
+    pub deny_unknown: bool,
 }
 
 // F53: each function's field table lives in the module implementing it, so a
@@ -104,64 +122,74 @@ const REGISTRY: &[FunctionSchema] = &[
         description: "Read a value from a cache connector (Redis or in-memory).",
         category: "connector",
         input_fields: CACHE_READ_FIELDS,
+        deny_unknown: false,
     },
     FunctionSchema {
         name: "cache_write",
         description: "Write a value to a cache connector.",
         category: "connector",
         input_fields: CACHE_WRITE_FIELDS,
+        deny_unknown: false,
     },
     FunctionSchema {
         name: "db_read",
         description: "Execute a SELECT against a SQL connector.",
         category: "connector",
         input_fields: DB_READ_FIELDS,
+        deny_unknown: false,
     },
     FunctionSchema {
         name: "db_write",
         description: "Execute INSERT/UPDATE/DELETE against a SQL connector.",
         category: "connector",
         input_fields: DB_WRITE_FIELDS,
+        deny_unknown: false,
     },
     FunctionSchema {
         name: "data_query",
         description: "Run a backend-neutral query (filter + envelope) against a SQL, MongoDB, or Elasticsearch connector.",
         category: "connector",
         input_fields: DATA_QUERY_FIELDS,
+        deny_unknown: false,
     },
     FunctionSchema {
         name: "data_write",
         description: "Run a backend-neutral mutation (insert/update/delete/upsert) against a SQL, MongoDB, or Elasticsearch connector.",
         category: "connector",
         input_fields: DATA_WRITE_FIELDS,
+        deny_unknown: false,
     },
     FunctionSchema {
         name: "mongo_read",
         description: "Run find() against a MongoDB connector.",
         category: "connector",
         input_fields: MONGO_READ_FIELDS,
+        deny_unknown: false,
     },
     FunctionSchema {
         name: "channel_call",
         description: "Invoke another channel's workflow in-process (no HTTP hop).",
         category: "control",
         input_fields: CHANNEL_CALL_FIELDS,
+        deny_unknown: false,
     },
     FunctionSchema {
         name: "http_call",
         description: "HTTP request to an HTTP connector with retry + circuit breaker.",
         category: "connector",
         input_fields: HTTP_CALL_FIELDS,
+        deny_unknown: true,
     },
     FunctionSchema {
         name: "publish_kafka",
         description: "Publish a message to a Kafka topic via a Kafka connector.",
         category: "connector",
         input_fields: PUBLISH_KAFKA_FIELDS,
+        deny_unknown: true,
     },
 ];
 
-/// Every function that has an input schema. Functions in `engine::KNOWN_FUNCTIONS`
+/// Every function that has an input schema. Accepted function names
 /// without an entry here (e.g. `map`, `log`, `filter`) are still accepted
 /// by workflows — they just won't get input-schema checking.
 pub fn registry() -> &'static [FunctionSchema] {
@@ -195,7 +223,25 @@ fn check_fields(
         return errors;
     };
     for field in fields {
-        match (obj.get(field.name), field.required) {
+        // An aliased field may be supplied under either name — but not both.
+        // Upstream's alias makes that a `duplicate field` parse error, so
+        // there is no precedence to fall back on.
+        let alias_value = field.alias.and_then(|alias| obj.get(alias));
+        if let Some(alias) = field.alias
+            && obj.contains_key(field.name)
+            && alias_value.is_some()
+        {
+            errors.push(FieldError::new(
+                format!("{path_prefix}.{}", field.name),
+                "DUPLICATE_FIELD",
+                format!(
+                    "'{}' and its alias '{alias}' are both set; supply exactly one",
+                    field.name
+                ),
+            ));
+            continue;
+        }
+        match (obj.get(field.name).or(alias_value), field.required) {
             (None, true) => errors.push(FieldError::new(
                 format!("{path_prefix}.{}", field.name),
                 "REQUIRED",
@@ -220,6 +266,41 @@ fn check_fields(
         }
     }
     errors
+}
+
+/// Report every key in `input` that the schema does not declare.
+///
+/// Only called for functions whose upstream config struct is
+/// `deny_unknown_fields` — see [`FunctionSchema::deny_unknown`]. Without this
+/// a typo like `outputs` passes create, activates, and then fails
+/// `Workflow::from_json` at engine build, taking its whole channel into
+/// quarantine with a message about a field the author cannot see from the API.
+fn check_unknown_fields(
+    fields: &[FieldSchema],
+    input: &Value,
+    path_prefix: &str,
+    function_name: &str,
+) -> Vec<FieldError> {
+    let Some(obj) = input.as_object() else {
+        return Vec::new();
+    };
+    obj.keys()
+        .filter(|key| {
+            !fields
+                .iter()
+                .any(|f| f.name == key.as_str() || f.alias == Some(key.as_str()))
+        })
+        .map(|key| {
+            FieldError::new(
+                format!("{path_prefix}.{key}"),
+                "UNKNOWN_FIELD",
+                format!(
+                    "function '{function_name}' has no input field '{key}' — \
+                     it would be rejected when the workflow is loaded"
+                ),
+            )
+        })
+        .collect()
 }
 
 /// Validate a function's `input` JSON against the registered schema for
@@ -255,6 +336,14 @@ pub fn validate_input(function_name: &str, input: &Value, task_path: &str) -> Ve
         &input_path,
         function_name,
     ));
+    if schema.deny_unknown {
+        errors.extend(check_unknown_fields(
+            schema.input_fields,
+            input,
+            &input_path,
+            function_name,
+        ));
+    }
 
     // Cross-field: data_write's mutation envelope. Nested under `write` since
     // W7; the pre-1.0 flat form is still accepted, and whichever shape the

@@ -65,7 +65,7 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
         if fn_name.is_empty() {
             continue;
         }
-        if !crate::engine::KNOWN_FUNCTIONS.contains(&fn_name) {
+        if !crate::engine::is_known_function(fn_name) {
             errors.push(FieldError::new(
                 format!("tasks[{i}].function.name"),
                 "unknown_function",

@@ -6,6 +6,7 @@ use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::message::Message;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
+use dataflow_rs::{Template, TemplateCompiler};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::RwLock;
@@ -28,8 +29,17 @@ pub struct ChannelCallInput {
     /// existing target check below.
     #[serde(default)]
     pub channel: String,
+    /// JSONLogic naming the target channel, compiled once at engine build.
+    ///
+    /// A [`Template`] rather than a raw `Value`: this and `data_logic` were the
+    /// only two `ctx.datalogic().compile(..)` calls left in the handler surface,
+    /// so `channel_call` re-parsed and re-compiled both expressions **on every
+    /// message** while `http_call` and `publish_kafka` got an `Arc<Logic>` for
+    /// free from dataflow-rs's own typed configs. `Template` closes that
+    /// asymmetry and evaluates on the worker's pooled arena instead of
+    /// constructing a fresh one per call.
     #[serde(default)]
-    pub channel_logic: Option<Value>,
+    pub channel_logic: Option<Template>,
     /// Dotted path where the called channel's response is written. Named
     /// `output` to match the other nine handlers (proposal F43);
     /// `response_path` stays accepted as a deprecated alias so 0.3.x
@@ -38,8 +48,10 @@ pub struct ChannelCallInput {
     pub output: Option<String>,
     #[serde(default)]
     pub data: Option<Value>,
+    /// JSONLogic producing the payload to send. Same `Template` treatment as
+    /// [`ChannelCallInput::channel_logic`].
     #[serde(default)]
-    pub data_logic: Option<Value>,
+    pub data_logic: Option<Template>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
 }
@@ -58,6 +70,23 @@ pub struct ChannelCallHandler {
 #[async_trait]
 impl AsyncFunctionHandler for ChannelCallHandler {
     type Input = ChannelCallInput;
+
+    /// Compile both JSONLogic fields once, at engine construction.
+    ///
+    /// This moves a malformed expression from a per-message failure to a build
+    /// failure — which for Orion is a *whole-instance* failure: boot aborts, or
+    /// every channel on every node goes down on reload. `custom_input_parse_check`
+    /// compiles the same two fields ahead of `Engine::new` so a bad expression
+    /// stays a per-channel `ChannelLoadIssue` (F33/F41) instead.
+    fn compile_input(input: &mut Self::Input, c: &TemplateCompiler) -> dataflow_rs::Result<()> {
+        if let Some(t) = input.channel_logic.as_mut() {
+            t.compile(c, "channel_call.channel_logic")?;
+        }
+        if let Some(t) = input.data_logic.as_mut() {
+            t.compile(c, "channel_call.data_logic")?;
+        }
+        Ok(())
+    }
 
     async fn execute(
         &self,
@@ -114,14 +143,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
 
             // Resolve data to send.
             let call_data: Value = if let Some(ref logic) = input.data_logic {
-                let compiled = ctx
-                    .datalogic()
-                    .compile(logic)
-                    .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-                ctx.datalogic()
-                    .session()
-                    .eval_into(&compiled, &ctx.message().context)
-                    .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?
+                logic.eval_into(ctx)?
             } else if let Some(ref data) = input.data {
                 data.clone()
             } else {
@@ -222,8 +244,10 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             let _backpressure_permit = admission.backpressure_permit;
 
             // Build a child message for the target channel.
-            let mut child_message = Message::from_value(&call_data);
-            crate::engine::utils::merge_metadata(&mut child_message, &child_meta);
+            let mut child_message = Message::builder()
+                .payload_json(&call_data)
+                .metadata_json(&child_meta)
+                .build();
 
             // Get current engine snapshot and process with timeout.
             // Timeout precedence: explicit input > target channel's
@@ -245,7 +269,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                 &mut child_message,
                 Some(timeout_ms),
                 None,
-                false,
+                None,
             )
             .await
             {
@@ -279,15 +303,10 @@ impl AsyncFunctionHandler for ChannelCallHandler {
 /// Resolve the target channel name, static or dynamic via JSONLogic.
 fn resolve_target(ctx: &TaskContext<'_>, input: &ChannelCallInput) -> dataflow_rs::Result<String> {
     let target = if let Some(ref logic) = input.channel_logic {
-        let compiled = ctx
-            .datalogic()
-            .compile(logic)
-            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-        let result: Value = ctx
-            .datalogic()
-            .session()
-            .eval_into(&compiled, &ctx.message().context)
-            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
+        // Deliberately not `eval_to_plain_string`: a non-string result here is
+        // an authoring mistake worth reporting, not something to coerce into a
+        // channel name that cannot exist.
+        let result: Value = logic.eval_into(ctx)?;
         result.as_str().map(|s| s.to_string()).ok_or_else(|| {
             DataflowError::Validation("channel_logic must evaluate to a string".to_string())
         })?
@@ -345,6 +364,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "channel_logic",
@@ -352,6 +372,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "data",
@@ -359,6 +380,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "data_logic",
@@ -366,6 +388,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "output",
@@ -373,6 +396,7 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "timeout_ms",
@@ -380,5 +404,6 @@ pub(super) const CHANNEL_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Number,
         required: false,
         resolvable: false,
+        alias: None,
     },
 ];

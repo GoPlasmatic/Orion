@@ -20,16 +20,6 @@ fn serialize_result_with_profile(
     profile: Option<&Arc<crate::engine::profile::ProfileCollector>>,
 ) -> Result<String, serde_json::Error> {
     let mut v = serde_json::to_value(message)?;
-    // The rollout key can only be nulled, not deleted (see
-    // engine::utils::remove_rollout_bucket), so strip it here or it is
-    // persisted into traces.result_json as a field the caller never sent (F31).
-    if let Some(data) = v
-        .get_mut("context")
-        .and_then(|c| c.get_mut("data"))
-        .and_then(|d| d.as_object_mut())
-    {
-        crate::engine::utils::strip_rollout_bucket(data);
-    }
     if let Some(p) = profile
         && let Some(obj) = v.as_object_mut()
     {
@@ -291,18 +281,26 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     }
 
     // Build message
-    let mut message = dataflow_rs::Message::from_value(&msg.payload);
-    crate::engine::utils::merge_metadata(&mut message, &msg.metadata);
     let sticky_identity =
         crate::engine::utils::rollout_identity(&msg.metadata, &ctx.rollout_sticky_header);
-    crate::engine::utils::inject_rollout_bucket(&mut message, sticky_identity);
+    let mut message = dataflow_rs::Message::builder()
+        .payload_json(&msg.payload)
+        .metadata_json(&msg.metadata)
+        .routing_bucket(crate::engine::utils::rollout_bucket_for_identity(
+            sticky_identity,
+        ))
+        .build();
 
     // Clone the inner Arc<Engine> and release the lock immediately
     let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
     // A2: capture the per-task execution trace when the channel opted in via
     // `config.tracing.task_details = true`. Both arms resolve to the same
     // `(Result, Option<ExecutionTrace>)` shape so the timeout handling is shared.
-    let capture_trace = effective_trace.task_details;
+    let capture = effective_trace
+        .task_details
+        .then_some(crate::engine::TraceCapture {
+            max_snapshot_bytes: ctx.max_result_size_bytes,
+        });
     let processing_timeout_ms = timeout_ms;
     let workflow_start = Instant::now();
     let timeout_outcome = crate::engine::run_for_channel(
@@ -311,7 +309,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
         &mut message,
         Some(processing_timeout_ms),
         profile.as_ref(),
-        capture_trace,
+        capture,
     )
     .await;
     if let Some(ref p) = profile {
@@ -339,8 +337,6 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
         ctx.max_result_size_bytes,
         &trace_id,
     );
-
-    crate::engine::utils::remove_rollout_bucket(&mut message);
 
     let duration = start.elapsed();
     let duration_secs = duration.as_secs_f64();

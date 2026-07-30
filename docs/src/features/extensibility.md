@@ -448,7 +448,7 @@ Orion provides 10 async function handlers that can be used in workflow tasks:
 | `mongo_read` | Query MongoDB collections with raw find() filters |
 | `publish_kafka` | Produce messages to Kafka topics |
 
-In addition to the Orion-specific handlers, the dataflow-rs 3.0 engine contributes a **built-in function library** for parsing, transformation, and output:
+In addition to the Orion-specific handlers, the dataflow-rs 3.1 engine contributes a **built-in function library** for parsing, transformation, and output:
 
 | Function | Description |
 |----------|-------------|

@@ -89,6 +89,7 @@ from the main one. See
 | `orion_circuit_breaker_rejections_total` | Counter | `connector`, `channel` | Requests rejected by open breakers |
 | `orion_connector_requests_total` | Counter | `connector`, `channel`, `status` | Outbound connector calls, by outcome |
 | `orion_connector_request_duration_seconds` | Histogram | `connector`, `channel` | Outbound connector latency |
+| `orion_task_duration_seconds` | Histogram | `workflow`, `task`, `function` | Per-task body latency, for **every** task — including the sync built-ins (`map`, `validate`, `filter`, `parse_*`, `publish_*`, `log`), which the engine dispatches internally and which no other metric can see. Keyed by task, so three `db_read` tasks in one workflow are distinguishable; `orion_connector_request_duration_seconds` remains the per-connector view. Labels are authored ids, not caller input, so cardinality is bounded by the deployed workflow set. |
 | `orion_rate_limit_rejections_total` | Counter | `scope` | Rate-limited requests. `scope` is a registry-confirmed channel name or a route group — never the client address, which spoofed headers would turn into unbounded cardinality. |
 | `orion_response_cache_hits_total` | Counter | `channel` | Per-channel response-cache hits |
 | `orion_response_cache_misses_total` | Counter | `channel` | Per-channel response-cache misses |

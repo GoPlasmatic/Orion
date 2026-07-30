@@ -356,115 +356,122 @@ impl IntoResponse for OrionError {
     }
 }
 
-/// Marker prefixed to the message of the `DataflowError` an open circuit
-/// breaker returns.
+/// The classifications Orion's function handlers attach to a
+/// [`dataflow_rs::DataflowError::Service`].
 ///
-/// `AsyncFunctionHandler` must return a `DataflowError`, and dataflow-rs 3.0's
-/// enum is closed, `Serialize`, and has no extension point — so the breaker
-/// rejection travels as `Http { status: 503 }`, the one variant whose
-/// `retryable()` is already true *because* it is a 503, and which survives
-/// serialization into `message.errors` / trace rows / DLQ payloads. The marker
-/// is what separates an Orion breaker rejection from a genuine downstream 503
-/// relayed by `http_call`; only the former becomes `CIRCUIT_OPEN`.
-pub const CIRCUIT_OPEN_MARKER: &str = "orion.circuit_open: ";
-
-/// Prefix marking a `DataflowError::Validation` message that names a connector
-/// or other internal topology. Such messages are redacted before they reach a
-/// caller (the data plane is anonymous) but are logged and stored on the trace
-/// in full. Same mechanism as [`CIRCUIT_OPEN_MARKER`]; the prefix is stripped
-/// from anything that does get surfaced.
-pub const CONNECTOR_DETAIL_MARKER: &str = "orion.connector_detail: ";
-
-/// Prefix marking a `DataflowError::Http` produced when a **target channel's
-/// own ingress guards** refused an in-process `channel_call` (N16).
+/// These used to be **prefixes on the error message**, matched back out with
+/// `starts_with` in an order-sensitive `match`: `AsyncFunctionHandler` has to
+/// return a `DataflowError`, and before 3.1 that enum was closed with no
+/// extension point, so a handler's own classification had nowhere to live but
+/// the text. The markers leaked verbatim into `message.errors`, trace rows and
+/// DLQ payloads, because nothing on the async path stripped them.
 ///
-/// Same mechanism, and the same reason, as [`CIRCUIT_OPEN_MARKER`]: a handler
-/// can only return a `DataflowError`, and `Http { status }` is the one
-/// variant that carries a status through serialization into `message.errors`
-/// and trace rows. Without it, a target that is over its rate limit or at its
-/// concurrency cap reached the caller as a generic `500` — a server bug,
-/// reported for a condition the caller can simply retry.
-pub const CHANNEL_REFUSED_MARKER: &str = "orion.channel_refused: ";
+/// `kind` is now a first-class field the engine never interprets, and it
+/// survives being wrapped in `FunctionExecution` for context. `detail` is the
+/// operator-only channel that `Display` never renders, so `to_string()` on one
+/// of these is always safe to hand to an untrusted caller.
+pub mod kind {
+    /// An open circuit breaker shed the request before it reached a connector.
+    pub const CIRCUIT_OPEN: &str = "circuit_open";
+    /// A refusal whose text names a connector or other internal topology. G3:
+    /// "operation 'delete' is disabled on connector 'prod-billing-db'" hands
+    /// out connector inventory to an anonymous caller, so the caller gets a
+    /// generic message and the real text rides in `detail`.
+    pub const CONNECTOR_DETAIL: &str = "connector_detail";
+    /// N16: a target channel's own ingress guards refused an in-process
+    /// `channel_call`. One kind per outcome, so the status is declared by the
+    /// producer rather than re-derived from a number.
+    pub const CHANNEL_RATE_LIMITED: &str = "channel_rate_limited";
+    pub const CHANNEL_FORBIDDEN: &str = "channel_forbidden";
+    pub const CHANNEL_CONFLICT: &str = "channel_conflict";
+    pub const CHANNEL_UNAVAILABLE: &str = "channel_unavailable";
+}
 
 /// Build the error a `channel_call` returns when the target channel's guards
-/// refused it, preserving the refusal's own status (`429` over limit, `503`
-/// at capacity or fail-closed).
+/// refused it, preserving the refusal's own meaning (over limit, forbidden,
+/// conflicting, or at capacity / fail-closed).
 pub fn channel_refused_dataflow_error(
     status: StatusCode,
     message: String,
 ) -> dataflow_rs::DataflowError {
-    dataflow_rs::DataflowError::Http {
-        status: status.as_u16(),
-        message: format!("{CHANNEL_REFUSED_MARKER}{message}"),
-    }
+    let kind = match status.as_u16() {
+        429 => kind::CHANNEL_RATE_LIMITED,
+        403 => kind::CHANNEL_FORBIDDEN,
+        409 => kind::CHANNEL_CONFLICT,
+        _ => kind::CHANNEL_UNAVAILABLE,
+    };
+    // Retryable: the caller is over a limit or the target is at capacity.
+    // Neither is a server fault and both clear on their own.
+    dataflow_rs::DataflowError::service(kind, message)
+        .retryable(!matches!(status.as_u16(), 403 | 409))
+        .build()
 }
 
 /// Build the error an open breaker returns from a function handler.
+///
+/// The connector and channel names stay in the caller-facing message, as they
+/// were under the marker. That is arguably at odds with the redaction
+/// [`kind::CONNECTOR_DETAIL`] applies to the same kind of names, but it is the
+/// shipped behaviour of `503 CIRCUIT_OPEN` and changing it is a data-plane
+/// contract decision, not part of swapping the mechanism underneath it.
 pub fn circuit_open_dataflow_error(connector: &str, channel: &str) -> dataflow_rs::DataflowError {
-    dataflow_rs::DataflowError::Http {
-        status: 503,
-        message: format!(
-            "{CIRCUIT_OPEN_MARKER}Circuit breaker open for connector '{connector}' on channel '{channel}'"
-        ),
-    }
+    dataflow_rs::DataflowError::service(
+        kind::CIRCUIT_OPEN,
+        format!("Circuit breaker open for connector '{connector}' on channel '{channel}'"),
+    )
+    // Retryable: a shed dependency is transient, and the DLQ retry loop must
+    // re-attempt it — by the time it does, the breaker may well have closed.
+    // Nothing retries it *within* the request: `guarded_handler` checks the
+    // breaker outside `retry_with_policy`, so this never drives that loop.
+    .retryable(true)
+    .build()
+}
+
+/// Build a refusal whose text names internal topology (G3).
+///
+/// The caller gets `public`; `detail` is logged and kept on the trace.
+pub fn connector_detail_error(detail: impl std::fmt::Display) -> dataflow_rs::DataflowError {
+    dataflow_rs::DataflowError::service(kind::CONNECTOR_DETAIL, "Request validation failed")
+        .detail(detail.to_string())
+        .build()
 }
 
 /// Map DataflowError variants to appropriate HTTP status codes and sanitized messages.
 fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'static str, String) {
     use dataflow_rs::DataflowError;
+
+    // A handler-classified failure answers for itself, with no ordering hazard
+    // between guards and no risk of a genuine downstream 503 relayed by
+    // `http_call` being mistaken for one of Orion's own refusals.
+    //
+    // `Display` on a `Service` error is the caller-safe message alone, so
+    // `to_string()` here can never leak the operator-only `detail`.
+    if let Some(k) = e.kind() {
+        let (status, code) = match k {
+            kind::CIRCUIT_OPEN => (StatusCode::SERVICE_UNAVAILABLE, "CIRCUIT_OPEN"),
+            kind::CONNECTOR_DETAIL => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
+            kind::CHANNEL_RATE_LIMITED => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED"),
+            kind::CHANNEL_FORBIDDEN => (StatusCode::FORBIDDEN, "FORBIDDEN"),
+            kind::CHANNEL_CONFLICT => (StatusCode::CONFLICT, "CONFLICT"),
+            kind::CHANNEL_UNAVAILABLE => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),
+            _ => {
+                tracing::error!(kind = %k, "unhandled service error kind; mapped to 500");
+                (StatusCode::INTERNAL_SERVER_ERROR, "ENGINE_ERROR")
+            }
+        };
+        return (status, code, e.to_string());
+    }
+
     match e {
-        // G3: validation messages that name a connector must not reach the
-        // anonymous data plane — "operation 'delete' is disabled on connector
-        // 'prod-billing-db'" hands out connector inventory for free. Producers
-        // tag those with CONNECTOR_DETAIL_MARKER; the detail is logged and kept
-        // on the trace, and the caller gets a generic message.
-        //
         // Untagged validation messages are workflow-structural and safe —
         // "max call depth 10 exceeded", "'delete' has no filter" — and stay
         // verbatim, because they are what makes a misconfigured workflow
-        // diagnosable from the response.
-        DataflowError::Validation(msg) if msg.starts_with(CONNECTOR_DETAIL_MARKER) => (
-            StatusCode::BAD_REQUEST,
-            "VALIDATION_ERROR",
-            "Request validation failed".to_string(),
-        ),
+        // diagnosable from the response. Anything naming a connector goes
+        // through `connector_detail_error` and is handled above.
         DataflowError::Validation(msg) => {
             (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone())
         }
         DataflowError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, "TIMEOUT_ERROR", msg.clone()),
-        // Must precede the catch-all: a shed dependency is a 503 the client
-        // can retry, not a 500 server bug.
-        DataflowError::Http {
-            status: 503,
-            message,
-        } if message.starts_with(CIRCUIT_OPEN_MARKER) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "CIRCUIT_OPEN",
-            message
-                .strip_prefix(CIRCUIT_OPEN_MARKER)
-                .unwrap_or(message)
-                .to_string(),
-        ),
-        // N16: a target channel refused an in-process `channel_call` at its
-        // own ingress guards. The refusal keeps its status — the caller is
-        // over a limit or the target is at capacity, neither of which is a
-        // server fault. Same shape as the breaker arm above.
-        DataflowError::Http { status, message } if message.starts_with(CHANNEL_REFUSED_MARKER) => {
-            let detail = message
-                .strip_prefix(CHANNEL_REFUSED_MARKER)
-                .unwrap_or(message)
-                .to_string();
-            match status {
-                429 => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", detail),
-                403 => (StatusCode::FORBIDDEN, "FORBIDDEN", detail),
-                409 => (StatusCode::CONFLICT, "CONFLICT", detail),
-                _ => (
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "SERVICE_UNAVAILABLE",
-                    detail,
-                ),
-            }
-        }
         other => {
             // Surface unhandled DataflowError variants so a dataflow-rs upgrade
             // that adds new variants doesn't silently degrade them to a generic
@@ -841,8 +848,8 @@ mod tests {
         assert_eq!(body["error"]["code"], "CIRCUIT_OPEN");
         let message = body["error"]["message"].as_str().expect("test");
         assert!(
-            !message.contains(CIRCUIT_OPEN_MARKER),
-            "the internal marker must not reach the client: {message}"
+            !message.contains("orion.circuit_open"),
+            "no internal classification token may reach the client: {message}"
         );
         assert!(message.contains("orders-api") && message.contains("orders"));
     }
@@ -869,15 +876,16 @@ mod tests {
             assert_eq!(body["error"]["code"], code, "{body}");
             let message = body["error"]["message"].as_str().expect("test");
             assert!(
-                !message.contains(CHANNEL_REFUSED_MARKER),
-                "the internal marker must not reach the client: {message}"
+                !message.contains("orion.channel_refused"),
+                "no internal classification token may reach the client: {message}"
             );
+            assert!(message.contains("channel_call to 'billing'"), "{message}");
         }
     }
 
-    /// An unmarked `Http` error from a downstream call keeps the generic
-    /// engine mapping — the marker, not the status, is what identifies an
-    /// Orion-side channel refusal.
+    /// A plain `Http` error from a downstream call keeps the generic engine
+    /// mapping — the `kind`, not the status, is what identifies an Orion-side
+    /// channel refusal, and a relayed 429 carries none.
     #[tokio::test]
     async fn test_downstream_429_is_not_reported_as_a_channel_refusal() {
         let err = OrionError::Engine(dataflow_rs::DataflowError::http(429, "Too Many Requests"));
@@ -902,6 +910,56 @@ mod tests {
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = body_to_value(response).await;
         assert_eq!(body["error"]["code"], "ENGINE_ERROR");
+    }
+
+    /// No classification token survives into any persisted text.
+    ///
+    /// The three classifications used to be message prefixes, and the async
+    /// path never stripped them: `queue::processing` hands `e.to_string()`
+    /// straight to `handle_failure`, so `orion.circuit_open: ` and friends were
+    /// written verbatim into `traces.error` and `trace_dlq` rows. `kind` is a
+    /// field now, so `Display` is the caller-safe sentence and nothing has to
+    /// remember to strip anything.
+    #[test]
+    fn no_classification_token_reaches_persisted_error_text() {
+        let errors = [
+            circuit_open_dataflow_error("billing-api", "orders"),
+            channel_refused_dataflow_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "channel_call to 'billing': over limit".to_string(),
+            ),
+            connector_detail_error("operation 'delete' is disabled on connector 'prod-billing'"),
+        ];
+        for e in errors {
+            // This is exactly what the DLQ and the failed-trace row store.
+            let persisted = e.to_string();
+            assert!(
+                !persisted.contains("orion."),
+                "classification leaked into persisted text: {persisted}"
+            );
+            assert!(e.kind().is_some(), "each of these must carry a kind");
+        }
+    }
+
+    /// The operator-only channel stays out of `Display`, so the topology a
+    /// connector refusal names cannot reach an anonymous caller even though it
+    /// is kept on the trace for whoever has to debug it (G3).
+    #[tokio::test]
+    async fn connector_detail_is_kept_off_the_wire_but_not_lost() {
+        let secret = "operation 'delete' is disabled on connector 'prod-billing-db'";
+        let e = connector_detail_error(secret);
+        assert_eq!(e.detail(), Some(secret));
+        assert!(!e.to_string().contains("prod-billing-db"));
+
+        let response = OrionError::Engine(e).into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_to_value(response).await;
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
+        assert_eq!(body["error"]["message"], "Request validation failed");
+        assert!(
+            !body.to_string().contains("prod-billing-db"),
+            "connector inventory must not reach the data plane: {body}"
+        );
     }
 
     #[tokio::test]

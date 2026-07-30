@@ -77,15 +77,10 @@ impl std::fmt::Display for QueryError {
                  so a query naming no \"fields\" has nothing it may return: mark a \
                  column \"queryable\": true, or read it through a different entity"
             ),
-            // G3: the physical name and the existence of an operator allowlist
-            // are connector topology, so the message is tagged for redaction at
-            // the data-plane edge and kept in full in the log and the trace —
-            // the same treatment `require_schema`'s refusal gets.
             QueryError::EntityNotAllowed { entity, physical } => write!(
                 f,
-                "{}entity '{entity}' resolves to '{physical}', which the connector's \
-                 allowed_entities list does not permit",
-                crate::errors::CONNECTOR_DETAIL_MARKER
+                "entity '{entity}' resolves to '{physical}', which the connector's \
+                 allowed_entities list does not permit"
             ),
             QueryError::FeatureUnsupportedByTarget { feature, target } => {
                 write!(f, "{feature} is not supported by the {target} backend")
@@ -108,8 +103,29 @@ impl std::fmt::Display for QueryError {
 
 impl std::error::Error for QueryError {}
 
+impl QueryError {
+    /// Whether the message names connector topology and must therefore be
+    /// redacted before it reaches the anonymous data plane (G3).
+    ///
+    /// This used to be a prefix written by the `Display` impl itself, which
+    /// meant every `to_string()` — including the ones that only ever reach a
+    /// log line — carried `orion.connector_detail: `. Classifying the variant
+    /// at the boundary keeps `Display` a plain sentence and puts the decision
+    /// where the redaction actually happens.
+    pub fn is_connector_detail(&self) -> bool {
+        // The physical name and the existence of an operator allowlist are
+        // both connector topology. Every other variant is workflow-structural
+        // and safe to return verbatim — that is what makes a misconfigured
+        // task diagnosable from the response.
+        matches!(self, QueryError::EntityNotAllowed { .. })
+    }
+}
+
 impl From<QueryError> for DataflowError {
     fn from(e: QueryError) -> Self {
+        if e.is_connector_detail() {
+            return crate::errors::connector_detail_error(e);
+        }
         DataflowError::Validation(e.to_string())
     }
 }

@@ -228,6 +228,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **dataflow-rs 3.0 → 3.1, and the workarounds it exists to remove are gone.**
+  Six behaviour changes come with it; the rest of the upgrade is internal.
+
+  - **The versioned rollout traffic split now actually splits traffic.** This
+    is a live defect being fixed, not a new feature. Each version's condition
+    was wrapped with `{">=": [{"var": "_rollout_bucket"}, min]}` — a
+    **context-root** lookup — while every ingress injected the key at
+    `data._rollout_bucket`. Conditions evaluate against the whole
+    `{data, metadata, temp_data}` object as root and datalogic's root-scope
+    `var` has no scope fallback, so the lookup yielded null, null coerced to
+    `0`, and `0 >= bucket_min` held only for the version whose range starts at
+    zero. **100% of traffic went to the newest version regardless of the
+    configured percentages**, and the only test covering it asserted on the
+    shape of the generated condition without ever evaluating one. Routing is
+    now `Workflow::rollout` matched against `Message::routing_bucket`, checked
+    before any arena work and never touching the caller-visible `data`
+    namespace. **A deployment relying on the observed (broken) behaviour will
+    see traffic move to the percentages it configured.**
+  - **`enrich` is refused at workflow create.** It is a dataflow-rs built-in
+    *name*, but not a self-contained one: it deserializes into a typed built-in
+    variant — so the engine accepts it and the custom-input check skips it —
+    and then dispatches to a handler registered under the same name. Orion
+    registers none, so such a workflow activated cleanly and failed **every**
+    request with `FunctionNotFound`, forever. The function-name gate now keys
+    on `BuiltinKind` instead of membership in a hand-copied list, so it asks
+    whether this engine can run the task rather than whether the name is
+    spelled correctly. Stored `enrich` workflows are unaffected until edited;
+    they did not work before either.
+  - **`http_call`, `enrich` and `publish_kafka` inputs reject unknown keys.**
+    Upstream made those config structs `deny_unknown_fields`. A misspelled key
+    previously parsed cleanly and was discarded — an `http_call` would make its
+    request and silently throw the response away. Orion's own input schema now
+    reports it at create, as a `400` naming the field, rather than letting the
+    workflow activate and then quarantine its channel at engine load.
+  - **`output` and `response_path` may not both be set on an `http_call`.**
+    `response_path` is now a real serde alias upstream, which replaced the
+    `output` → `response_path` rewrite Orion did while loading workflow JSON in
+    a storage repository. An alias cannot express a precedence rule, so the
+    documented "`output` wins" behaviour becomes a refusal — raised at create,
+    naming both spellings. Either key alone works exactly as before.
+  - **`POST /api/v1/admin/workflows/{id}/test` returns `200` with a partial
+    trace where it used to return `5xx`.** The trace was built as a local and
+    moved into the success arm, so a hard failure discarded every step already
+    recorded — on the one endpoint whose purpose is showing them. The response
+    now carries the steps that ran plus an `error` field. Note the failing
+    task's own step is still absent: the engine propagates before appending it,
+    so the trace ends at the last known-good step. `orion-server dry-run`
+    prints the same partial trace and still exits non-zero, so it remains
+    usable as a CI gate.
+  - **Metadata keys are taken literally.** Request metadata was seeded one
+    `set_nested_value("metadata.{key}")` per key, which re-read each key as a
+    *path*: a caller-supplied `"a.b"` became nested `metadata.a.b`, and `"#20"`
+    became `metadata["20"]`. Seeding through `MessageBuilder` keeps them flat.
+    This changes the shape of `context.metadata`, of `traces.result_json`, and
+    of what `{"var": "metadata.a.b"}` resolves to, for callers that send dotted
+    metadata keys.
+
 - **Every connector's endpoint is now scheme- and address-checked, not just
   `http` (S6).** Until now `validate_url_not_private` was called from exactly
   two places — the HTTP handler and the Elasticsearch helper — so no db, cache,
@@ -920,6 +977,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`orion_task_duration_seconds{workflow,task,function}` times every task,
+  including the eight built-ins nothing could reach.** `map`, `validate`,
+  `filter`, `parse_json`, `parse_xml`, `publish_json`, `publish_xml` and `log`
+  are dispatched inside a private executor method and never reach the handler
+  registry, so Orion's `observed_handler_named` wrapper could not time them at
+  any price — their cost showed up only as `workflow_overhead_ms`, a residual
+  computed by subtraction in the opt-in profile surface. dataflow-rs 3.1's
+  `ExecutionObserver` is the seam; it is always on and allocates nothing per
+  request, unlike a trace. Keyed by task, so three `db_read` tasks in one
+  workflow are finally distinguishable.
+  `orion_connector_request_duration_seconds` is unchanged and remains the
+  per-connector view. Labels are authored ids, not caller input, so no request
+  can grow the label space.
+
+- **Request headers can no longer be read back through `task_trace_json`
+  (S14, completing it).** `context.metadata` was stripped from `result_json`
+  on read because it carries the request header map — but `task_trace_json`
+  was returned verbatim, and every `ExecutionStep` inside it holds a full
+  `Message` clone carrying the same metadata, as do a `map` task's per-mapping
+  context snapshots. Only four header names are masked at ingress, so
+  everything else (`x-auth-token`, `x-amz-security-token`, …) was readable one
+  field further down. New traces never capture it —
+  `TraceOptions::redact_paths` prunes `metadata.headers` as the snapshot is
+  built, so it is not cloned in the first place — and rows already on disk are
+  covered by a read-side walk over the steps.
+
+- **Captured traces are bounded at capture time, not trimmed afterwards.**
+  With `tracing.task_details = true` each step deep-cloned the whole message
+  *including the accumulated audit trail*, making trace size unbounded in
+  message size and quadratic in task count: a 6-task workflow over a ~1 MB
+  context serialized to ~12 MB. `serialize_task_trace_capped` caught the result
+  but only after the clones and the serialization were already paid. Capture
+  now carries the same byte budget (`queue.max_result_size_bytes`), keeps only
+  each task's own audit entry, and records the per-task diff — which is what
+  the feature is for, and which is correctly attributed on a skipped task,
+  unlike reading `audit_trail.last()`. The post-hoc cap stays as a backstop.
+
 - **The Helm chart can serve metrics, and ships a ServiceMonitor (P3).** The
   chart never emitted `ORION_METRICS__ENABLED`, and `metrics.enabled` defaults
   to `false` — so since O12 the route was not registered at all and `/metrics`
@@ -1469,6 +1563,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint. Still a 500 (D18).
 
 ### Changed
+
+- **Handler classification moved off the error message and onto the error.**
+  A handler must return a `DataflowError`, and before 3.1 that enum was closed
+  with no extension point — so three classifications lived as *prefixes on the
+  message text* (`orion.circuit_open: `, `orion.connector_detail: `,
+  `orion.channel_refused: `), matched back out with order-sensitive
+  `starts_with` guards. They also leaked verbatim into `traces.error` and
+  `trace_dlq` rows, because the async path hands `e.to_string()` straight to
+  the failure handler and nothing stripped them. `DataflowError::Service`
+  carries `kind` as a field the engine never interprets, plus an operator-only
+  `detail` that `Display` never renders. Responses are unchanged; the tokens
+  are gone from persisted text, and a genuine downstream `429`/`503` relayed by
+  `http_call` can no longer be confused with one of Orion's own refusals.
+
+- **`datalogic-rs` and `datavalue` are no longer direct dependencies.**
+  dataflow-rs's public API is expressed in terms of both — `TaskContext::datalogic()`
+  returns `&Arc<datalogic_rs::Engine>`, `TaskContext::eval` takes a
+  `&datalogic_rs::Logic`, and the context and dot-path surface is
+  `datavalue::OwnedDataValue` — so naming those types required a second,
+  independently versioned pin of each. 3.1 re-exports both, and Orion now reaches
+  them as `dataflow_rs::datalogic_rs` / `dataflow_rs::datavalue`, which locks
+  their major versions to whatever dataflow-rs links. Without that, a future
+  dataflow-rs moving to datalogic-rs 6 would put *both* majors in the graph and
+  make `engine.datalogic()` return a type nominally identical to, but
+  incompatible with, the `Logic` values Orion holds in its channel registry.
+  Nothing changes at runtime: the resolved versions and the enabled feature set
+  are identical, because Orion's features were already a subset of dataflow-rs's.
+  The cost is that Orion can no longer turn on a datalogic feature unilaterally —
+  `ext-string`, `ext-array`, `ext-math` and the date operators now depend on
+  dataflow-rs enabling them.
+
+- **`channel_call` compiles its JSONLogic once instead of per message.**
+  `channel_logic` and `data_logic` were the last two
+  `ctx.datalogic().compile(..)` calls in the handler surface, so both
+  expressions were re-parsed and re-compiled on **every** message while
+  `http_call` and `publish_kafka` got a compiled expression for free from
+  dataflow-rs's typed configs. Both are now `Template` fields compiled at
+  engine construction, and evaluate on the worker's pooled arena rather than
+  allocating one per call. A malformed expression is still a per-channel load
+  issue, not a boot abort: the loader compiles them ahead of `Engine::new`.
 
 - **`migrate` output names the backend and every pending migration (D13).**
   Migration version numbers are per-backend and are not comparable: `004` is

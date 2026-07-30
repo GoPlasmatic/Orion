@@ -318,8 +318,14 @@ async fn process_one_kafka_message(
     let processing_timeout_ms = admission.timeout_ms.unwrap_or(ctx.processing_timeout_ms);
 
     let start = Instant::now();
-    let mut message = dataflow_rs::Message::from_value(&data);
-    crate::engine::utils::merge_metadata(&mut message, &metadata);
+    // Kafka ingress carries no rollout bucket: a record has no sticky caller
+    // identity and no forwarded IP, and a random bucket per record would split
+    // one topic's traffic across canary versions non-deterministically. A
+    // message with no bucket is admitted by every workflow, rollout or not.
+    let mut message = dataflow_rs::Message::builder()
+        .payload_json(&data)
+        .metadata_json(&metadata)
+        .build();
 
     // Clone the inner Arc<Engine> and release the lock immediately.
     let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
@@ -329,7 +335,7 @@ async fn process_one_kafka_message(
         &mut message,
         Some(processing_timeout_ms),
         None,
-        false,
+        None,
     )
     .await;
 

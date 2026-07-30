@@ -296,6 +296,7 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "query",
@@ -305,6 +306,7 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: true,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "database",
@@ -315,6 +317,7 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "schema",
@@ -325,6 +328,7 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "params",
@@ -333,6 +337,7 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: true,
+        alias: None,
     },
     FieldSchema {
         name: "output",
@@ -340,5 +345,6 @@ pub(super) const DATA_QUERY_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        alias: None,
     },
 ];

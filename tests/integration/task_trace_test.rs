@@ -329,3 +329,92 @@ async fn async_request_with_task_details_captures_and_returns_task_trace_json() 
     assert!(!steps.is_empty());
     assert!(steps.iter().any(|s| s["task_id"] == "t1"));
 }
+
+/// S14, for the field it was never applied to: request headers must not come
+/// back through `task_trace_json`.
+///
+/// `context.metadata` is stripped from `result_json` on read because it carries
+/// the request header map. `task_trace_json` was returned verbatim — and every
+/// `ExecutionStep` inside it holds a full `Message` clone carrying the same
+/// metadata, so the identical bytes were readable one field further down. Only
+/// four header names are masked at ingress, so anything else (`x-auth-token`,
+/// `x-amz-security-token`, …) was in the clear.
+///
+/// Two things close it: `TraceOptions::redact_paths` prunes `metadata.headers`
+/// as the snapshot is built, so it is never cloned for new rows, and the
+/// read-side step walk covers rows already on disk.
+#[tokio::test]
+async fn task_trace_steps_do_not_carry_request_headers() {
+    let app = test_app().await;
+
+    let (channel_name, _) = create_and_activate_channel_with_config(
+        &app,
+        "trace-header-leak",
+        json!({
+            "name": "trace-header-leak-wf",
+            "tasks": [{
+                "id": "t1",
+                "name": "Touch the context so the step snapshot is non-trivial",
+                "function": {
+                    "name": "map",
+                    "input": {"mappings": [{"path": "data.seen", "logic": true}]}
+                }
+            }]
+        }),
+        json!({ "tracing": { "task_details": true } }),
+    )
+    .await;
+
+    // `x-auth-token` is not in CREDENTIAL_HEADERS, so it reaches metadata
+    // unmasked — which is exactly why it must not reach a trace read.
+    let secret = "sk-not-a-masked-header-name";
+    let mut req = json_request(
+        "POST",
+        &format!("/api/v1/data/{channel_name}"),
+        Some(json!({ "data": { "x": 1 } })),
+    );
+    req.headers_mut().insert(
+        "x-auth-token",
+        axum::http::HeaderValue::from_static("sk-not-a-masked-header-name"),
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = crate::common::wait_for_body(
+        &app,
+        &format!("/api/v1/admin/traces?channel={channel_name}"),
+        |b| b["data"].as_array().is_some_and(|a| !a.is_empty()),
+    )
+    .await;
+    let trace_id = body["data"][0]["id"]
+        .as_str()
+        .expect("a trace row")
+        .to_string();
+
+    let resp = app
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/traces/{trace_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+
+    // The trace is still useful — this is a redaction, not a removal.
+    let steps = body["data"]["task_trace_json"]["steps"]
+        .as_array()
+        .expect("task_details=true must still persist steps");
+    assert!(steps.iter().any(|s| s["task_id"] == "t1"));
+
+    let rendered = body.to_string();
+    assert!(
+        !rendered.contains(secret),
+        "a request header reached the trace read: {rendered}"
+    );
+    assert!(
+        !rendered.contains("x-auth-token"),
+        "the header map must not appear in any step snapshot: {rendered}"
+    );
+}

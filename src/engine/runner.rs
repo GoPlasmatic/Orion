@@ -39,6 +39,21 @@ pub async fn acquire_engine_write(
 /// per-task `ExecutionTrace` when the caller opted in (A2).
 pub type EngineCallResult = (dataflow_rs::Result<()>, Option<dataflow_rs::ExecutionTrace>);
 
+/// Opt in to per-task trace capture, bounded by the same byte budget the
+/// persisted row is capped at.
+///
+/// A `bool` before: the engine took no capture policy, so the only defence
+/// against an oversized trace was throwing the finished one away.
+#[derive(Debug, Clone, Copy)]
+pub struct TraceCapture {
+    /// Approximate in-memory snapshot budget. Pass
+    /// `queue.max_result_size_bytes`: it is the exact limit the serialized row
+    /// is checked against afterwards, so using it here makes the post-hoc cap a
+    /// backstop that should essentially never fire. `0` is unbounded, matching
+    /// the result cap's own semantics.
+    pub max_snapshot_bytes: usize,
+}
+
 /// Run the engine for `channel` with optional timeout, optional per-task
 /// trace capture, and optional profiling scope. The sync HTTP, async trace
 /// queue, Kafka ingress and in-process `channel_call` paths all go through
@@ -50,9 +65,9 @@ pub async fn run_for_channel(
     message: &mut dataflow_rs::Message,
     timeout_ms: Option<u64>,
     profile: Option<&Arc<profile::ProfileCollector>>,
-    capture_trace: bool,
+    capture: Option<TraceCapture>,
 ) -> Result<EngineCallResult, u64> {
-    let run = run_for_channel_inner(engine, channel, message, timeout_ms, capture_trace);
+    let run = run_for_channel_inner(engine, channel, message, timeout_ms, capture);
     if let Some(p) = profile {
         profile::ORION_PROFILE.scope(p.clone(), run).await
     } else {
@@ -79,19 +94,57 @@ where
     }
 }
 
+/// What a `task_details` run records per executed step.
+///
+/// Under the default policy a step deep-clones the whole `Message` — context,
+/// payload **and** the accumulated audit trail — so trace size is unbounded in
+/// message size and quadratic in task count: a 6-task workflow over a ~1 MB
+/// context serialized to ~12 MB. `serialize_task_trace_capped` is the exact
+/// cap, but it runs strictly afterwards, by which point the clones and the
+/// serialization are already paid. This bounds it at capture time, which is the
+/// only place memory can be bounded.
+///
+/// - `snapshot_audit_trail: Own` — each snapshot carries only the entry its own
+///   task produced. `Full` accumulates `N*(N+1)/2` entries across a trace and is
+///   the term that makes the growth quadratic. Orion reads `Message::audit_trail`
+///   nowhere.
+/// - `changes` — the per-task diff, which is what `task_details` is *for*
+///   ("inspect intermediate inputs/outputs for each task"). Correctly attributed
+///   on a `Skip`, unlike reading `audit_trail.last()`.
+/// - `redact_paths: ["metadata.headers"]` — a pruning clone, so the header map
+///   is never cloned into a step in the first place. `context.metadata` is
+///   stripped from `result_json` on read (S14) but `task_trace_json` was
+///   returned verbatim, and every step inside it held a full `Message` clone
+///   carrying the same headers. Only four header names are masked at ingress,
+///   so everything else was readable through that hole. Forward-only: rows
+///   already on disk still need the read-side strip.
+fn trace_options(max_snapshot_bytes: usize) -> dataflow_rs::TraceOptions {
+    dataflow_rs::TraceOptions {
+        changes: true,
+        snapshot_audit_trail: dataflow_rs::AuditTrailScope::Own,
+        max_snapshot_bytes,
+        redact_paths: vec!["metadata.headers".to_string()],
+        ..Default::default()
+    }
+}
+
 async fn run_for_channel_inner(
     engine: &Arc<dataflow_rs::Engine>,
     channel: &str,
     message: &mut dataflow_rs::Message,
     timeout_ms: Option<u64>,
-    capture_trace: bool,
+    capture: Option<TraceCapture>,
 ) -> Result<EngineCallResult, u64> {
-    if capture_trace {
+    if let Some(capture) = capture {
         // A trace-capturing run reports task failure through the trace itself,
         // so an `Err` here is the workflow's error, not the call's.
         let inner = with_deadline(
             timeout_ms,
-            engine.process_message_for_channel_with_trace(channel, message),
+            engine.process_message_for_channel_with_trace_options(
+                channel,
+                message,
+                trace_options(capture.max_snapshot_bytes),
+            ),
         )
         .await?;
         Ok(match inner {

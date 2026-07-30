@@ -763,3 +763,196 @@ async fn test_rollout_traffic_split() {
         "rollout_percentage of 101 should be rejected"
     );
 }
+
+// ============================================================
+// Rollout actually routes traffic (not just stores percentages)
+// ============================================================
+
+/// A 50/50 split must reach both versions.
+///
+/// This is the end-to-end assertion the rollout mechanism never had. The
+/// traffic split was wired by wrapping each version's condition with
+/// `{">=": [{"var": "_rollout_bucket"}, min]}` — a **context-root** lookup —
+/// while the ingress injected the key at `data._rollout_bucket`. The lookup
+/// therefore resolved to null, coerced to `0`, and only the version whose
+/// range started at 0 ever matched: 100% of traffic to one version, whatever
+/// the configured percentages said. The only test covering it asserted on the
+/// *shape* of the generated condition and never evaluated one.
+///
+/// dataflow-rs 3.1 routes on `Workflow::rollout` against
+/// `Message::routing_bucket`, so there is no expression and no namespace to
+/// misspell. Buckets are random per request when the caller has no sticky
+/// identity, so this drives enough requests that a one-sided split is not a
+/// plausible outcome: at 50/50 over 60 requests, missing a version has
+/// probability 2⁻⁵⁹.
+#[tokio::test]
+async fn rollout_percentages_split_traffic_across_versions() {
+    let app = common::test_app().await;
+
+    let marker_workflow = |marker: &str| {
+        json!({
+            "workflow_id": "split",
+            "name": "Split",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "Mark the version",
+                "function": {
+                    "name": "map",
+                    "input": {"mappings": [{"path": "data.version", "logic": marker}]}
+                }
+            }]
+        })
+    };
+
+    // v1 at 100%, on an active channel.
+    common::create_and_activate_channel(&app, "split", marker_workflow("v1")).await;
+
+    // v2 as a new draft, edited to mark itself differently.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/split/versions",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/workflows/split",
+            Some(marker_workflow("v2")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Activate v2 at 50%, which puts v1 at the other 50%.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            "/api/v1/admin/workflows/split/status",
+            Some(json!({"status": "active", "rollout_percentage": 50})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "body = {}",
+        body_json(resp).await
+    );
+
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..60 {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/split",
+                Some(json!({"data": {}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        let version = body["data"]["version"]
+            .as_str()
+            .unwrap_or_else(|| panic!("every request must match a version, got: {body}"))
+            .to_string();
+        seen.insert(version);
+    }
+
+    let mut seen: Vec<String> = seen.into_iter().collect();
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec!["v1".to_string(), "v2".to_string()],
+        "a 50/50 rollout must reach both versions"
+    );
+}
+
+/// A dry run that dies partway still reports the steps that ran.
+///
+/// `process_message_with_trace` builds the trace as a function-local and moves
+/// it into the `Ok` arm, so a hard failure discarded every step already
+/// recorded — on the one endpoint whose entire purpose is showing them. The
+/// steps were in memory the whole time; only the two public entry points
+/// inverted a by-reference trace into a by-value return, which dataflow-rs 3.1
+/// fixes with `process_message_tracing`.
+///
+/// Note the failing task's own step is still not recorded: the engine
+/// propagates before appending it, so the trace ends at the last known-good
+/// step and `error` names what stopped it.
+#[tokio::test]
+async fn a_failing_dry_run_returns_the_steps_that_ran() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "workflow_id": "partial-dry-run",
+                "name": "Partial Dry Run",
+                "condition": true,
+                "tasks": [
+                    {
+                        "id": "ok",
+                        "name": "This one succeeds",
+                        "function": {
+                            "name": "map",
+                            "input": {"mappings": [{"path": "data.reached", "logic": true}]}
+                        }
+                    },
+                    {
+                        "id": "boom",
+                        "name": "This one cannot resolve its connector",
+                        "function": {
+                            "name": "http_call",
+                            "input": {"connector": "no-such-connector", "path": "/x"}
+                        }
+                    }
+                ]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/partial-dry-run/test",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "a failed dry run must report its trace, not a bare 5xx"
+    );
+
+    let body = body_json(resp).await;
+    assert!(
+        body["data"]["error"].is_string(),
+        "the failure must be named, got: {body}"
+    );
+
+    let steps = body["data"]["trace"]["steps"].as_array().unwrap();
+    assert!(
+        steps.iter().any(|s| s["task_id"] == "ok"),
+        "the step that ran before the failure must survive it, got: {body}"
+    );
+    assert_eq!(
+        body["data"]["output"]["reached"], true,
+        "and its writes must be visible in the output, got: {body}"
+    );
+}

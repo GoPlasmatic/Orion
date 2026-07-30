@@ -17,8 +17,6 @@ use crate::queue::{TracePersistenceQueue, TracePersistenceTask};
 use crate::server::state::AppState;
 use crate::storage::repositories::traces::TraceCompletedRow;
 
-use crate::engine::utils::{inject_rollout_bucket, merge_metadata, remove_rollout_bucket};
-
 /// One completed sync trace, ready for persistence and (optionally) caching.
 /// Shared by [`route_store_completed`] and [`persist_trace_and_cache`] so
 /// the trace fields are passed as a single borrow instead of 6 positional
@@ -250,18 +248,32 @@ pub(super) async fn process_sync_for_channel(
 
     let start = Instant::now();
     let engine = crate::engine::acquire_engine_read(&state.engine).await;
-    let mut message = dataflow_rs::Message::from_value(&data);
-    merge_metadata(&mut message, &metadata);
     let sticky_identity = crate::engine::utils::rollout_identity(
         &metadata,
         &state.config.engine.rollout_sticky_header,
     );
-    inject_rollout_bucket(&mut message, sticky_identity);
+    // The routing bucket rides beside the context rather than inside `data`,
+    // so it never reaches the caller and never needs stripping back out.
+    let mut message = dataflow_rs::Message::builder()
+        .payload_json(&data)
+        .metadata_json(&metadata)
+        .routing_bucket(crate::engine::utils::rollout_bucket_for_identity(
+            sticky_identity,
+        ))
+        .build();
 
     // A2: when the channel opted in via `config.tracing.task_details = true`,
     // use the with-trace engine entry point so per-step inputs/outputs are
     // captured for persistence.
-    let capture_trace = channel_config.trace_storage.task_details;
+    // Bounded by the same budget the persisted row is capped at, so the
+    // post-hoc `serialize_task_trace_capped` check becomes a backstop rather
+    // than the only defence.
+    let capture = channel_config
+        .trace_storage
+        .task_details
+        .then(|| crate::engine::TraceCapture {
+            max_snapshot_bytes: state.config.trace_queue.max_result_size_bytes,
+        });
 
     let workflow_start = Instant::now();
     let result = crate::engine::run_for_channel(
@@ -270,7 +282,7 @@ pub(super) async fn process_sync_for_channel(
         &mut message,
         timeout_ms,
         profile.as_ref(),
-        capture_trace,
+        capture,
     )
     .await;
     if let Some(ref p) = profile {
@@ -280,7 +292,6 @@ pub(super) async fn process_sync_for_channel(
     let (result, task_trace) = match result {
         Ok(inner) => inner,
         Err(ms) => {
-            remove_rollout_bucket(&mut message);
             metrics::record_message(channel, "timeout");
             metrics::record_error("timeout");
             return Err(OrionError::Timeout {
@@ -292,7 +303,6 @@ pub(super) async fn process_sync_for_channel(
 
     match result {
         Ok(()) => {
-            remove_rollout_bucket(&mut message);
             let duration = start.elapsed();
             let duration_secs = duration.as_secs_f64();
             let duration_ms = duration.as_secs_f64() * 1000.0;
@@ -301,7 +311,7 @@ pub(super) async fn process_sync_for_channel(
 
             let mut response = response_envelope(
                 message.id(),
-                crate::engine::utils::data_without_rollout_bucket(&message),
+                message.data().into(),
                 message
                     .errors()
                     .iter()
@@ -389,7 +399,6 @@ pub(super) async fn process_sync_for_channel(
             ))
         }
         Err(e) => {
-            remove_rollout_bucket(&mut message);
             metrics::record_message(channel, "error");
             metrics::record_error("engine");
             Err(OrionError::Engine(e))
@@ -465,15 +474,14 @@ mod tests {
     #[test]
     fn sanitized_errors_match_their_documented_schema() {
         use crate::server::routes::data::ProcessTaskError;
-        let info = |code: &str, message: &str, task_id: Option<&str>| dataflow_rs::ErrorInfo {
-            code: code.to_string(),
-            message: message.to_string(),
-            path: None,
-            workflow_id: None,
-            task_id: task_id.map(str::to_string),
-            timestamp: None,
-            retry_attempted: None,
-            retry_count: None,
+        let info = |code: &str, message: &str, task_id: Option<&str>| {
+            // `ErrorInfo` is `#[non_exhaustive]` as of dataflow-rs 3.1, so the
+            // builder is the only cross-crate construction path.
+            let mut b = dataflow_rs::ErrorInfo::builder(code, message);
+            if let Some(task_id) = task_id {
+                b = b.task_id(task_id);
+            }
+            b.build()
         };
         let errors = sanitize_errors(&[
             info(

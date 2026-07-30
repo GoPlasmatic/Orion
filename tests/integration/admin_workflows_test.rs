@@ -1209,12 +1209,22 @@ async fn a_second_draft_cannot_be_created_for_one_workflow() {
     );
 }
 
-/// F54: `KNOWN_FUNCTIONS` gates workflow creation, so a dataflow-rs built-in
-/// missing from it is rejected with `unknown_function` — not merely warned
-/// about. `enrich` was missing, so every workflow using it was refused at
-/// create even though the engine runs it.
+/// `enrich` is refused at create, because Orion registers no handler for it.
+///
+/// It is a dataflow-rs built-in *name* but not a self-contained one: it
+/// deserializes into a typed built-in variant — so `Engine::new` accepts it and
+/// the custom-input check skips it, since it never becomes
+/// `FunctionConfig::Custom` — and then dispatches to a handler registered under
+/// the same name. Nothing registers one.
+///
+/// The gate used to be membership in a hand-copied name list, and `enrich` was
+/// added to it (F54) on the reasoning that "the engine runs it". The engine
+/// does not: such a workflow activated cleanly and then failed every single
+/// request with `FunctionNotFound`, forever. dataflow-rs 3.1 publishes the
+/// distinction as `BuiltinKind`, so the gate now asks whether this engine can
+/// run the task rather than whether the name is spelled correctly.
 #[tokio::test]
-async fn a_workflow_using_the_enrich_builtin_is_accepted() {
+async fn a_workflow_using_the_handlerless_enrich_builtin_is_refused() {
     let app = common::test_app().await;
     let resp = app
         .clone()
@@ -1228,6 +1238,37 @@ async fn a_workflow_using_the_enrich_builtin_is_accepted() {
                     "id": "t1",
                     "name": "Enrich",
                     "function": { "name": "enrich", "input": {} }
+                }]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = common::body_json(resp).await;
+    assert!(
+        body.to_string().contains("enrich"),
+        "the refusal must name the function, got: {body}"
+    );
+}
+
+/// …while a self-contained built-in with no Orion handler is still accepted.
+/// `filter` needs no registration, so refusing it would turn the gate into a
+/// blanket "Orion handlers only" rule.
+#[tokio::test]
+async fn a_workflow_using_a_self_contained_builtin_is_accepted() {
+    let app = common::test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(json!({
+                "name": "filter-wf",
+                "channel": "filter-ch",
+                "tasks": [{
+                    "id": "t1",
+                    "name": "Filter",
+                    "function": { "name": "filter", "input": {"condition": true} }
                 }]
             })),
         ))

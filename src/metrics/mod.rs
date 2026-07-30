@@ -474,6 +474,39 @@ pub fn record_connector_duration(connector: &str, channel: &str, duration_secs: 
 }
 
 // ---------------------------------------------------------------------------
+// Per-task engine timing
+// ---------------------------------------------------------------------------
+
+/// Record one workflow task's body duration.
+///
+/// Fed by `engine::observer`, which is the only way to time the eight sync
+/// built-ins (`map`, `validate`, `filter`, `parse_*`, `publish_*`, `log`):
+/// they are dispatched inside a private executor method and never reach the
+/// handler registry, so no host can wrap them. Before this they were invisible
+/// to Prometheus entirely and showed up only as the unattributed
+/// `workflow_overhead_ms` residual in the opt-in profile surface.
+///
+/// `orion_connector_request_duration_seconds` remains the connector-scoped
+/// view; this is keyed by *task*, so three `db_read` tasks in one workflow are
+/// finally distinguishable.
+///
+/// Label cardinality is bounded by the deployed workflow set — `workflow` and
+/// `task` are authored ids, not caller-supplied values, so no request can grow
+/// the label space.
+pub fn record_task_duration(workflow: &str, task: &str, function: &'static str, secs: f64) {
+    if !is_enabled() {
+        return;
+    }
+    histogram!(
+        "orion_task_duration_seconds",
+        "workflow" => workflow.to_owned(),
+        "task" => task.to_owned(),
+        "function" => function
+    )
+    .record(secs);
+}
+
+// ---------------------------------------------------------------------------
 // Kafka consumer lag gauge
 // ---------------------------------------------------------------------------
 

@@ -6,6 +6,7 @@
 //! Tests are marked #[ignore] by default to avoid CI failures when Docker is unavailable.
 //! Run explicitly with: `cargo test -- --ignored kafka`
 
+use dataflow_rs::datalogic_rs;
 use std::sync::Arc;
 use std::time::Duration;
 

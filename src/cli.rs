@@ -284,19 +284,32 @@ pub(crate) async fn run_dry_run(
     let engine = dataflow_rs::Engine::new(vec![df_workflow], std::collections::HashMap::new())?;
     let mut message = dataflow_rs::Message::from_value(&input);
 
-    let trace = engine
-        .process_message_with_trace(&mut message)
+    // Own the trace so a hard failure still prints the steps that ran. A dry
+    // run that dies on task three and reports nothing is the least useful
+    // possible answer to "what does this workflow do?".
+    let mut trace = dataflow_rs::ExecutionTrace::new();
+    let run_error = engine
+        .process_message_tracing(&mut message, &mut trace)
         .await
-        .map_err(orion::errors::OrionError::Engine)?;
+        .err();
 
-    let output = serde_json::json!({
+    let mut output = serde_json::json!({
         "matched": !trace.steps.is_empty(),
         "trace": trace,
         "output": message.data(),
         "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
     });
+    if let Some(ref e) = run_error {
+        output["error"] = serde_json::json!(e.to_string());
+    }
     println!("{}", serde_json::to_string_pretty(&output)?);
-    Ok(())
+
+    // The trace is on stdout either way; the exit status still reports the
+    // failure, so `orion-server dry-run` stays usable as a CI gate.
+    match run_error {
+        Some(e) => Err(orion::errors::OrionError::Engine(e).into()),
+        None => Ok(()),
+    }
 }
 
 /// Probe the configured backends: open the database pool and run the

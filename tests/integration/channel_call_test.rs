@@ -545,3 +545,95 @@ async fn test_http_call_end_to_end() {
     assert_eq!(body["data"]["api_response"]["user_id"], "123");
     assert_eq!(body["data"]["api_response"]["status"], "created");
 }
+
+/// `channel_logic` and `data_logic` both work end-to-end.
+///
+/// Neither had any coverage, which mattered when they moved from raw
+/// `serde_json::Value` — recompiled from JSON on **every message**, the only
+/// two `ctx.datalogic().compile(..)` calls left in the handler surface — to
+/// `dataflow_rs::Template`, compiled once at engine construction through the
+/// `compile_input` hook. The observable contract is unchanged; this pins it.
+#[tokio::test]
+async fn channel_call_resolves_target_and_payload_from_logic() {
+    let app = common::test_app().await;
+
+    // Two leaves, so a dynamic target has something to choose between.
+    for leaf in ["alpha", "beta"] {
+        common::create_and_activate_channel(
+            &app,
+            leaf,
+            json!({
+                "name": format!("Leaf {leaf}"),
+                "condition": true,
+                "tasks": [{
+                    "id": "t0",
+                    "name": "Parse payload",
+                    "function": {"name": "parse_json", "input": {"source": "payload", "target": "input"}}
+                }, {
+                    "id": "t1",
+                    "name": "Echo which leaf ran, and what it was sent",
+                    "function": {
+                        "name": "map",
+                        "input": {"mappings": [
+                            {"path": "data.served_by", "logic": leaf},
+                            {"path": "data.saw", "logic": {"var": "data.input.forwarded"}}
+                        ]}
+                    }
+                }]
+            }),
+        )
+        .await;
+    }
+
+    common::create_and_activate_channel(
+        &app,
+        "dispatcher",
+        json!({
+            "name": "Dispatcher",
+            "condition": true,
+            "tasks": [
+                {
+                    "id": "parse",
+                    "name": "Parse payload",
+                    "function": {"name": "parse_json", "input": {"source": "payload", "target": "input"}}
+                },
+                {
+                    "id": "call",
+                    "name": "Call whichever leaf the request names",
+                    "function": {
+                        "name": "channel_call",
+                        "input": {
+                            "channel_logic": {"var": "data.input.route"},
+                            "data_logic": {"forwarded": {"var": "data.input.token"}},
+                            "output": "data.child"
+                        }
+                    }
+                }
+            ]
+        }),
+    )
+    .await;
+
+    for route in ["alpha", "beta"] {
+        let resp = app
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/dispatcher",
+                Some(json!({"data": {"route": route, "token": format!("t-{route}")}})),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["data"]["child"]["served_by"], route,
+            "channel_logic must pick the target per message, got: {body}"
+        );
+        assert_eq!(
+            body["data"]["child"]["saw"],
+            format!("t-{route}"),
+            "data_logic must build the payload per message, got: {body}"
+        );
+    }
+}

@@ -18,53 +18,16 @@ use std::time::Duration;
 
 use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::message::Message;
-use dataflow_rs::engine::task_context::TaskContext;
 use serde_json::Value;
 
-/// Resolve a URL path from a static string or a pre-compiled JSONLogic expression.
+/// Convert a dataflow `HttpMethod` to a reqwest `Method`.
 ///
-/// In v3 the engine pre-compiles JSONLogic from the typed `HttpCallConfig`
-/// at startup, so handlers pass the cached `Arc<Logic>` rather than the raw
-/// `serde_json::Value`. Evaluation uses the engine inside the
-/// [`TaskContext`].
-pub fn resolve_path(
-    static_path: &Option<String>,
-    compiled_logic: Option<&datalogic_rs::Logic>,
-    ctx: &TaskContext<'_>,
-) -> dataflow_rs::Result<Option<String>> {
-    if let Some(compiled) = compiled_logic {
-        let result: Value = ctx
-            .datalogic()
-            .session()
-            .eval_into(compiled, &ctx.message().context)
-            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-        let path_str = if let Some(s) = result.as_str() {
-            s.to_string()
-        } else {
-            serde_json::to_string(&result).map_err(|e| {
-                DataflowError::function_execution(
-                    format!("Failed to serialize resolved path: {e}"),
-                    None,
-                )
-            })?
-        };
-        Ok(Some(path_str))
-    } else {
-        Ok(static_path.clone())
-    }
-}
-
-/// Convert a dataflow HttpMethod to a reqwest Method.
-pub fn to_reqwest_method(
-    method: &dataflow_rs::engine::functions::integration::HttpMethod,
-) -> reqwest::Method {
-    match method {
-        dataflow_rs::engine::functions::integration::HttpMethod::Get => reqwest::Method::GET,
-        dataflow_rs::engine::functions::integration::HttpMethod::Post => reqwest::Method::POST,
-        dataflow_rs::engine::functions::integration::HttpMethod::Put => reqwest::Method::PUT,
-        dataflow_rs::engine::functions::integration::HttpMethod::Patch => reqwest::Method::PATCH,
-        dataflow_rs::engine::functions::integration::HttpMethod::Delete => reqwest::Method::DELETE,
-    }
+/// `HttpMethod::as_str` (dataflow-rs 3.1) is tied by an upstream test to the
+/// enum's own `Deserialize` spelling, so the token is always a valid method
+/// name and `from_bytes` cannot actually fail. The fallback keeps this
+/// infallible rather than asserting on that.
+pub fn to_reqwest_method(method: &dataflow_rs::HttpMethod) -> reqwest::Method {
+    reqwest::Method::from_bytes(method.as_str().as_bytes()).unwrap_or(reqwest::Method::GET)
 }
 
 /// Extract the channel name from a message's metadata.
@@ -151,40 +114,20 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
 
+    /// Five one-assert tests used to sit here, one per variant, and a new
+    /// upstream variant would have gone untested. Driving off `HttpMethod::ALL`
+    /// covers whatever the enum holds, and the `unwrap_or(GET)` fallback in
+    /// `to_reqwest_method` means a name reqwest cannot parse is silent — so
+    /// assert the round trip, not just that a `Method` came back.
     #[test]
-    fn test_to_reqwest_method_get() {
-        use dataflow_rs::engine::functions::integration::HttpMethod;
-        assert_eq!(to_reqwest_method(&HttpMethod::Get), reqwest::Method::GET);
-    }
-
-    #[test]
-    fn test_to_reqwest_method_post() {
-        use dataflow_rs::engine::functions::integration::HttpMethod;
-        assert_eq!(to_reqwest_method(&HttpMethod::Post), reqwest::Method::POST);
-    }
-
-    #[test]
-    fn test_to_reqwest_method_put() {
-        use dataflow_rs::engine::functions::integration::HttpMethod;
-        assert_eq!(to_reqwest_method(&HttpMethod::Put), reqwest::Method::PUT);
-    }
-
-    #[test]
-    fn test_to_reqwest_method_patch() {
-        use dataflow_rs::engine::functions::integration::HttpMethod;
-        assert_eq!(
-            to_reqwest_method(&HttpMethod::Patch),
-            reqwest::Method::PATCH
-        );
-    }
-
-    #[test]
-    fn test_to_reqwest_method_delete() {
-        use dataflow_rs::engine::functions::integration::HttpMethod;
-        assert_eq!(
-            to_reqwest_method(&HttpMethod::Delete),
-            reqwest::Method::DELETE
-        );
+    fn every_http_method_maps_to_the_same_reqwest_verb() {
+        for method in dataflow_rs::HttpMethod::ALL {
+            assert_eq!(
+                to_reqwest_method(method).as_str(),
+                method.as_str(),
+                "{method} did not round-trip through reqwest::Method"
+            );
+        }
     }
 
     #[test]
@@ -193,7 +136,7 @@ mod tests {
         dataflow_rs::engine::utils::set_nested_value(
             &mut message.context,
             "metadata.channel",
-            datavalue::OwnedDataValue::from("orders".to_string()),
+            dataflow_rs::datavalue::OwnedDataValue::from("orders".to_string()),
         );
         assert_eq!(extract_channel(&message), "orders");
     }

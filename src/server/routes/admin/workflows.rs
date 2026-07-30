@@ -1,6 +1,7 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
+use dataflow_rs::datalogic_rs;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -469,13 +470,23 @@ pub(crate) async fn test_workflow(
         payload = req.data;
     }
 
-    let mut message = dataflow_rs::Message::from_value(&payload);
-    crate::engine::utils::merge_metadata(&mut message, &req.metadata);
+    let mut message = dataflow_rs::Message::builder()
+        .payload_json(&payload)
+        .metadata_json(&req.metadata)
+        .build();
 
-    let trace = test_engine
-        .process_message_with_trace(&mut message)
+    // Record into a trace this function owns, so the steps that ran before a
+    // hard failure survive it. `process_message_with_trace` builds the trace as
+    // a local and moves it into the `Ok` arm, so an `Err` used to leave this
+    // endpoint — the one place a human explicitly asks "show me the steps" —
+    // returning a bare 5xx with no steps at all. A failed dry run is the case
+    // it exists to explain, so it answers 200 with the partial trace and the
+    // error rather than throwing both away.
+    let mut trace = dataflow_rs::ExecutionTrace::new();
+    let run_error = test_engine
+        .process_message_tracing(&mut message, &mut trace)
         .await
-        .map_err(OrionError::Engine)?;
+        .err();
 
     let matched = !trace.steps.is_empty()
         && trace.steps.iter().any(|s| {
@@ -486,13 +497,20 @@ pub(crate) async fn test_workflow(
         });
 
     let trace_value = serde_json::to_value(&trace)?;
-
-    Ok(data_response(json!({
+    let mut body = json!({
         "matched": matched,
         "trace": trace_value,
         "output": message.data(),
         "errors": message.errors().iter().filter_map(|e| serde_json::to_value(e).ok()).collect::<Vec<_>>(),
-    })))
+    });
+    if let Some(e) = run_error {
+        // Note the failing task's own step is still absent: the engine
+        // propagates before appending it, so the trace ends at the last
+        // known-good step and this names what stopped it.
+        body["error"] = json!(e.to_string());
+    }
+
+    Ok(data_response(body))
 }
 
 // ============================================================

@@ -2,12 +2,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::functions::HttpCallConfig;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
-use serde_json::Value;
 
 use super::http_common::{self, build_url};
 use super::schema::{FieldKind, FieldSchema};
@@ -61,11 +59,14 @@ impl AsyncFunctionHandler for HttpCallHandler {
                     &input.connector,
                 )?;
 
-                let path =
-                    super::resolve_path(&input.path, input.compiled_path_logic.as_deref(), ctx)?;
+                // `resolve_path` / `resolve_body` are dataflow-rs's own
+                // sanctioned read of the (static, logic) pairs: they apply the
+                // static fallback, coerce a non-string path to compact JSON,
+                // and evaluate on the worker's pooled arena.
+                let path = input.resolve_path(ctx)?;
                 let url = build_url(&http_config.url, path.as_deref());
 
-                let body = resolve_body(&input.body, input.compiled_body_logic.as_deref(), ctx)?;
+                let body = input.resolve_body(ctx)?;
 
                 let timeout = Duration::from_millis(input.timeout_ms);
 
@@ -76,7 +77,8 @@ impl AsyncFunctionHandler for HttpCallHandler {
                 // Idempotent methods retry as before; others need an explicit
                 // per-connector opt-in (the workflow can carry its own
                 // idempotency key in headers).
-                let retryable_method = is_idempotent(&method) || http_config.retry_non_idempotent;
+                let retryable_method =
+                    input.method.is_idempotent() || http_config.retry_non_idempotent;
                 let retry_config = &http_config.retry;
                 let max_retries = if retryable_method {
                     retry_config.max_retries
@@ -129,37 +131,6 @@ impl AsyncFunctionHandler for HttpCallHandler {
     }
 }
 
-/// RFC 9110 idempotent methods: re-sending them is safe by definition, so
-/// a timeout can be retried without risking a duplicate side effect (F8).
-fn is_idempotent(method: &reqwest::Method) -> bool {
-    matches!(
-        *method,
-        reqwest::Method::GET
-            | reqwest::Method::HEAD
-            | reqwest::Method::PUT
-            | reqwest::Method::DELETE
-            | reqwest::Method::OPTIONS
-            | reqwest::Method::TRACE
-    )
-}
-
-fn resolve_body(
-    static_body: &Option<Value>,
-    compiled_logic: Option<&datalogic_rs::Logic>,
-    ctx: &TaskContext<'_>,
-) -> dataflow_rs::Result<Option<Value>> {
-    if let Some(compiled) = compiled_logic {
-        let result: Value = ctx
-            .datalogic()
-            .session()
-            .eval_into(compiled, &ctx.message().context)
-            .map_err(|e| DataflowError::LogicEvaluation(e.to_string()))?;
-        Ok(Some(result))
-    } else {
-        Ok(static_body.clone())
-    }
-}
-
 // -- Input schema (F53) --
 //
 // The table describing this handler's `function.input` lives next to the
@@ -175,6 +146,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: true,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "method",
@@ -182,6 +154,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "path",
@@ -189,6 +162,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "path_logic",
@@ -196,6 +170,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "headers",
@@ -203,6 +178,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Object,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "body",
@@ -210,6 +186,7 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "body_logic",
@@ -217,13 +194,17 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Any,
         required: false,
         resolvable: false,
+        alias: None,
     },
     FieldSchema {
         name: "output",
-        description: "Dotted path where the response body is written. Omit to discard it. (Was `response_path` before 1.0; still accepted.)",
+        description: "Dotted path where the response body is written. Omit to discard it. (Was `response_path` before 1.0; still accepted, but not alongside `output`.)",
         kind: FieldKind::String,
         required: false,
         resolvable: false,
+        // A real serde alias on dataflow-rs's `HttpCallConfig` since 3.1 —
+        // Orion used to rewrite the key in the storage repository instead.
+        alias: Some("response_path"),
     },
     FieldSchema {
         name: "timeout_ms",
@@ -231,5 +212,6 @@ pub(super) const HTTP_CALL_FIELDS: &[FieldSchema] = &[
         kind: FieldKind::Number,
         required: false,
         resolvable: false,
+        alias: None,
     },
 ];

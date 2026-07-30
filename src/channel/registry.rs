@@ -1,3 +1,4 @@
+use dataflow_rs::datalogic_rs;
 use std::collections::HashMap;
 use std::sync::Arc;
 

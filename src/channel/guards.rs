@@ -48,6 +48,7 @@
 //! Header-derived inputs are lowered to plain strings and a [`HeaderLookup`]
 //! closure, so non-HTTP callers never need an `axum::http::HeaderMap`.
 
+use dataflow_rs::datalogic_rs;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -940,6 +941,7 @@ async fn check_response_cache(
 
 #[cfg(test)]
 mod tests {
+    use dataflow_rs::datalogic_rs;
     use std::sync::Arc;
 
     use async_trait::async_trait;

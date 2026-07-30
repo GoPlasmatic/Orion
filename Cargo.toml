@@ -55,7 +55,7 @@ path = "tests/cluster/main.rs"
 harness = true
 
 [dependencies]
-dataflow-rs = "3.0.2"
+dataflow-rs = "3.1.0"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
@@ -73,8 +73,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 thiserror = "2"
 async-trait = "0.1"
-datalogic-rs = { version = "5.1", features = ["serde_json"] }
-datavalue = { package = "datavalue-rs", version = "0.2.3", features = ["serde_json"] }
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
 url = "2"
@@ -98,7 +96,7 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 mongodb = { version = "3", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
 # connection-manager: reconnecting handle — a plain MultiplexedConnection is
 # dead for the process lifetime after one Redis restart (proposal D15).
-redis = { version = "1.3", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
+redis = { version = "1.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # TLS support. `rustls` is a direct dependency only so `server::tls` can install

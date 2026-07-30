@@ -2,6 +2,7 @@
 //! engine is built from — including the per-channel quarantine that keeps one
 //! bad row from taking the instance down.
 
+use dataflow_rs::datalogic_rs;
 use std::collections::HashMap;
 
 use crate::storage::models::{Channel, Workflow};
@@ -110,14 +111,37 @@ pub const CUSTOM_HANDLER_FUNCTIONS: &[&str] = &[
 /// `serde_json::Value` and accepts any JSON. (`http_call` and `publish_kafka`
 /// are dataflow-rs *builtins* — their typed configs are already parsed during
 /// `workflow_to_dataflow`, so they never reach `Custom`.)
+///
+/// For `channel_call` this also **compiles** its two JSONLogic fields, which
+/// `AsyncFunctionHandler::compile_input` will compile again inside
+/// `Engine::new`. That duplication is deliberate: since those fields became
+/// `Template`s a malformed expression fails the *build* rather than one
+/// message, and an engine-build failure is a whole-instance failure. Compiling
+/// here first keeps it a per-channel `ChannelLoadIssue` (F33/F41).
 fn custom_input_parse_check(name: &str, input: &serde_json::Value) -> Result<(), String> {
-    fn check<T: serde::de::DeserializeOwned>(v: &serde_json::Value) -> Result<(), String> {
-        serde_json::from_value::<T>(v.clone())
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
     match name {
-        "channel_call" => check::<super::functions::channel_call::ChannelCallInput>(input),
+        "channel_call" => {
+            let parsed: super::functions::channel_call::ChannelCallInput =
+                serde_json::from_value(input.clone()).map_err(|e| e.to_string())?;
+            // `TemplateCompiler::new` is crate-private, so this cannot call
+            // `Template::compile` — it compiles the same raw JSON against an
+            // engine configured the way `LogicCompiler` configures its own
+            // (templating on), which is the property that matters.
+            let engine = datalogic_rs::Engine::builder()
+                .with_templating(true)
+                .build();
+            for (label, template) in [
+                ("channel_logic", parsed.channel_logic.as_ref()),
+                ("data_logic", parsed.data_logic.as_ref()),
+            ] {
+                if let Some(t) = template {
+                    engine
+                        .compile(t.as_json())
+                        .map_err(|e| format!("{label} does not compile: {e}"))?;
+                }
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -414,14 +438,17 @@ mod tests {
         assert!(issues.is_empty(), "{issues:?}");
     }
 
-    /// Extract the `[min, max)` rollout bucket range from a converted
-    /// workflow's wrapped condition (`and[1]` is `>= min`, `and[2]` is `< max`).
-    fn bucket_range(wf: &dataflow_rs::Workflow) -> (i64, i64) {
-        let and = wf.condition["and"].as_array().expect("wrapped condition");
-        (
-            and[1][">="][1].as_i64().expect("bucket_min"),
-            and[2]["<"][1].as_i64().expect("bucket_max"),
-        )
+    /// The `[min, max)` rollout bucket range a converted workflow serves.
+    ///
+    /// This used to parse the range back out of a synthetic condition
+    /// (`and[1]` is `>= min`, `and[2]` is `< max`) — which is why the split
+    /// could be inert for as long as it was: the assertion only ever checked
+    /// the *shape* of the generated JSON, never that a bucket routed anywhere.
+    fn bucket_range(wf: &dataflow_rs::Workflow) -> (u8, u8) {
+        let rollout = wf
+            .rollout
+            .expect("converted rollout workflow carries a range");
+        (rollout.bucket_start, rollout.bucket_end)
     }
 
     /// The bucket ranges must partition 0–99 contiguously, newest version
@@ -441,7 +468,7 @@ mod tests {
         assert!(issues.is_empty(), "{issues:?}");
         assert_eq!(converted.len(), 3);
 
-        let by_id: std::collections::HashMap<String, (i64, i64)> = converted
+        let by_id: std::collections::HashMap<String, (u8, u8)> = converted
             .iter()
             .map(|w| (w.id.clone(), bucket_range(w)))
             .collect();
@@ -452,6 +479,24 @@ mod tests {
         );
         assert_eq!(by_id["wf:v2"], (20, 70));
         assert_eq!(by_id["wf:v1"], (70, 100));
+
+        // …and the ranges actually route. Every bucket 0–99 must be served by
+        // exactly one version. The previous wiring passed the shape assertion
+        // above while sending 100% of traffic to whichever version started at
+        // 0, because the condition's `var` addressed the context root and the
+        // bucket was injected under `data`.
+        for bucket in 0u8..100 {
+            let serving: Vec<&str> = converted
+                .iter()
+                .filter(|w| w.rollout.is_some_and(|r| r.accepts(bucket)))
+                .map(|w| w.id.as_str())
+                .collect();
+            assert_eq!(
+                serving.len(),
+                1,
+                "bucket {bucket} is served by {serving:?}, not exactly one version"
+            );
+        }
     }
 
     /// F33: a channel with no workflow_id, and one pointing at a workflow
