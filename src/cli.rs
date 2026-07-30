@@ -63,9 +63,9 @@ fn masked_effective_config(
     Ok(tree)
 }
 
-/// URL-shaped values the summary prints verbatim can embed `user:password@`
-/// credentials or secret-named query parameters; show them with both
-/// positions struck out.
+/// URL-shaped values the summary and the connectivity probe print verbatim can
+/// embed `user:password@` credentials or secret-named query parameters; show
+/// them with both positions struck out.
 fn redacted(value: &str) -> String {
     orion::connector::redact_url_secrets(value).unwrap_or_else(|| value.to_string())
 }
@@ -306,7 +306,7 @@ pub(crate) async fn run_dry_run(
 pub(crate) async fn run_test_connectivity(
     config: &config::AppConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    eprintln!("Probing storage at {} ...", config.storage.url);
+    eprintln!("Probing storage at {} ...", redacted(&config.storage.url));
     let pool = orion::storage::init_pool_no_migrate(&config.storage)
         .await
         .map_err(|e| format!("storage: connection failed: {e}"))?;
@@ -318,10 +318,8 @@ pub(crate) async fn run_test_connectivity(
         pending.len()
     );
     if config.kafka.enabled {
-        eprintln!(
-            "Probing Kafka brokers {} ...",
-            config.kafka.brokers.join(",")
-        );
+        let broker_list: Vec<String> = config.kafka.brokers.iter().map(|b| redacted(b)).collect();
+        eprintln!("Probing Kafka brokers {} ...", broker_list.join(","));
         let kafka_config = config.kafka.clone();
         let brokers = tokio::task::spawn_blocking(move || {
             orion::kafka::probe_brokers(&kafka_config, std::time::Duration::from_secs(5))
