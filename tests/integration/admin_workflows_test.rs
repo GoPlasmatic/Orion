@@ -1472,3 +1472,161 @@ async fn version_pagination_bounds_are_shared_by_both_entities() {
         assert_eq!(body["offset"], 0, "{entity} offset must not go negative");
     }
 }
+
+// ============================================================
+// Task identity is mandatory, and refused at authoring time
+// ============================================================
+
+/// Build a one-task workflow, letting the caller break the task's identity.
+fn workflow_with_tasks(id: &str, tasks: serde_json::Value) -> serde_json::Value {
+    json!({"workflow_id": id, "name": "Identity", "condition": true, "tasks": tasks})
+}
+
+async fn create_status_and_body(
+    app: &axum::Router,
+    wf: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(wf),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    (status, common::body_json(resp).await)
+}
+
+/// A task with no `id` is refused at create, not discovered at first request.
+///
+/// `dataflow_rs::Task::id` is a required `String`, so such a workflow used to be
+/// accepted (201), activate cleanly (200), and then fail to convert at engine
+/// load — quarantining its channel and answering 503 to every request with
+/// "missing field `id`". Same class as the `enrich` false-accept above.
+#[tokio::test]
+async fn a_task_without_an_id_is_refused_at_create() {
+    let app = common::test_app().await;
+    let (status, body) = create_status_and_body(
+        &app,
+        workflow_with_tasks(
+            "no-task-id",
+            json!([{"name": "Log", "function": {"name": "log", "input": {"message": "hi"}}}]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert!(
+        body.to_string().contains("tasks[0].id"),
+        "the error must point at the offending task, got: {body}"
+    );
+}
+
+/// Same for `name`: also a required `String` upstream, and it is what makes an
+/// audit trail or a trace legible to a human.
+#[tokio::test]
+async fn a_task_without_a_name_is_refused_at_create() {
+    let app = common::test_app().await;
+    let (status, body) = create_status_and_body(
+        &app,
+        workflow_with_tasks(
+            "no-task-name",
+            json!([{"id": "t1", "function": {"name": "log", "input": {"message": "hi"}}}]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert!(
+        body.to_string().contains("tasks[0].name"),
+        "the error must point at the offending task, got: {body}"
+    );
+}
+
+/// Duplicate task ids are the worst of the three: `Workflow::validate()` runs
+/// inside `LogicCompiler::compile_workflows`, so a repeated id fails the whole
+/// `Engine::new` — a 500 on the activate that triggers the reload, and a boot
+/// abort on startup. It is not contained by the per-channel quarantine, which
+/// is exactly why it cannot be left to load time.
+#[tokio::test]
+async fn duplicate_task_ids_are_refused_at_create() {
+    let app = common::test_app().await;
+    let (status, body) = create_status_and_body(
+        &app,
+        workflow_with_tasks(
+            "dup-task-ids",
+            json!([
+                {"id": "t1", "name": "A", "function": {"name": "log", "input": {"message": "a"}}},
+                {"id": "t1", "name": "B", "function": {"name": "log", "input": {"message": "b"}}}
+            ]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("tasks[1].id") && rendered.contains("DUPLICATE_TASK_ID"),
+        "the error must name the second occurrence, got: {body}"
+    );
+}
+
+/// An empty-string id is as unusable as a missing one — two of them collide on
+/// `Workflow::validate()`'s uniqueness check, and one produces a blank
+/// `task_id` in every trace, audit entry and metric label.
+#[tokio::test]
+async fn a_blank_task_id_is_refused_at_create() {
+    let app = common::test_app().await;
+    let (status, body) = create_status_and_body(
+        &app,
+        workflow_with_tasks(
+            "blank-task-id",
+            json!([{"id": "  ", "name": "Log", "function": {"name": "log", "input": {"message": "hi"}}}]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert!(body.to_string().contains("tasks[0].id"), "body = {body}");
+}
+
+/// R20: `/validate` must agree with create rather than green-lighting a payload
+/// create refuses.
+#[tokio::test]
+async fn the_validate_endpoint_agrees_about_task_identity() {
+    let app = common::test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows/validate",
+            Some(workflow_with_tasks(
+                "v",
+                json!([{"name": "Log", "function": {"name": "log", "input": {"message": "hi"}}}]),
+            )),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(
+        body["data"]["valid"], false,
+        "/validate must not accept what create rejects, got: {body}"
+    );
+}
+
+/// The whole point: a well-formed workflow is untouched by any of this.
+#[tokio::test]
+async fn a_workflow_with_proper_task_identity_is_accepted() {
+    let app = common::test_app().await;
+    let (status, body) = create_status_and_body(
+        &app,
+        workflow_with_tasks(
+            "good-ids",
+            json!([
+                {"id": "fetch", "name": "Fetch", "function": {"name": "log", "input": {"message": "a"}}},
+                {"id": "emit",  "name": "Emit",  "function": {"name": "log", "input": {"message": "b"}}}
+            ]),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {body}");
+}

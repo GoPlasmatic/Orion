@@ -40,8 +40,8 @@ pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), Orion
     Ok(())
 }
 
-/// Walk the `tasks` array and collect schema-validation errors for each task's
-/// `function.input` against the schema registered for `function.name`.
+/// Walk the `tasks` array and collect validation errors: each task's identity,
+/// then its `function.input` against the schema registered for `function.name`.
 ///
 /// R5: an unknown `function.name` is a hard error — the function set is closed,
 /// so such a workflow can only fail at its first request.
@@ -51,12 +51,73 @@ pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), Orion
 /// documented as *"public so the `/validate` endpoint can reuse it"* and had
 /// zero external callers; the endpoint re-implemented the walk and reported an
 /// unknown function as a **warning**, so it green-lit payloads create rejects.
+///
+/// The identity checks exist for the same reason as the function-name one, and
+/// they were the last three ways to author a workflow that create accepts and
+/// the engine then refuses. All three were verified end to end:
+///
+/// | Authored | Create | What actually happened |
+/// |---|---|---|
+/// | task without `id` | `201` | `503` on every request; channel quarantined at load |
+/// | task without `name` | `201` | same — both are required `String`s upstream |
+/// | two tasks sharing an `id` | `201` | `500` on activate; **the whole engine reload fails**, and at boot `Engine::new` aborts the process |
+///
+/// The duplicate case is the worst of the three because it is not contained by
+/// the per-channel quarantine: `LogicCompiler::compile_workflows` calls
+/// `Workflow::validate()`, so one repeated id takes down every channel on every
+/// node rather than its own.
 pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldError> {
     let Some(arr) = tasks.as_array() else {
         return Vec::new();
     };
     let mut errors = Vec::new();
+    let mut seen_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (i, task) in arr.iter().enumerate() {
+        // Identity first, and independently of whether the function resolves:
+        // a task can be broken in both ways at once, and an author fixing one
+        // error at a time is the thing structured field errors exist to avoid.
+        match task.get("id").and_then(|v| v.as_str()).map(str::trim) {
+            None | Some("") => errors.push(FieldError::new(
+                format!("tasks[{i}].id"),
+                "REQUIRED",
+                "Task 'id' is required and must be a non-empty string — it names \
+                 the task in audit trails, execution traces, per-task metrics and \
+                 `metadata.progress`, which workflow conditions can read. Without \
+                 one this workflow would be accepted and then fail to load, \
+                 taking its channel out of service",
+            )),
+            Some(id) => {
+                if !seen_ids.insert(id) {
+                    errors.push(FieldError::new(
+                        format!("tasks[{i}].id"),
+                        "DUPLICATE_TASK_ID",
+                        format!(
+                            "Duplicate task id '{id}' — ids must be unique within a \
+                             workflow. The engine refuses to build one that repeats \
+                             them, so this fails the entire engine reload rather \
+                             than just this workflow"
+                        ),
+                    ));
+                }
+            }
+        }
+        if task
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+        {
+            errors.push(FieldError::new(
+                format!("tasks[{i}].name"),
+                "REQUIRED",
+                "Task 'name' is required and must be a non-empty string — it is \
+                 what makes an audit trail or a trace readable to a human. \
+                 Without one this workflow would be accepted and then fail to \
+                 load, taking its channel out of service",
+            ));
+        }
+
         let function = task.get("function");
         let fn_name = function
             .and_then(|f| f.get("name"))

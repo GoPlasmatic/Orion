@@ -228,6 +228,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **Task identity is validated at authoring time, not discovered at first
+  request.** Every task must now carry a non-empty `id` and `name`, and ids must
+  be unique within a workflow. All three were already hard requirements of the
+  engine — `dataflow_rs::Task::id` and `::name` are required `String`s, and
+  `LogicCompiler::compile_workflows` calls `Workflow::validate()`, which rejects
+  duplicates — but nothing checked them until the workflow was loaded. Verified
+  end to end, all three were accepted with a `201` and then failed later:
+
+  | Authored | Create | What actually happened |
+  |---|---|---|
+  | task without `id` | `201` | `503` on every request; the channel is quarantined at load |
+  | task without `name` | `201` | the same |
+  | two tasks sharing an `id` | `201` | `500` on activate — **the entire engine reload fails**, and at boot `Engine::new` aborts the process |
+
+  The duplicate case is the one that matters most: it is not contained by the
+  per-channel quarantine, so a single repeated id takes down every channel on
+  every node. All four authoring paths share one check
+  (`validate_workflow_tasks_schema`), so create, update, bulk import,
+  `POST /admin/workflows/validate` and the CLI agree, and the response names the
+  offending `tasks[{i}].id`.
+
+  Nothing that currently serves traffic is affected — a workflow in any of these
+  shapes is already failing. `PUT` on such a stored workflow now reports the
+  problem instead of accepting the edit.
+
+  The alternative was to have the engine generate ids for tasks that omit them.
+  That was raised upstream as GoPlasmatic/dataflow-rs#35 and withdrawn: `task_id`
+  reaches `metadata.progress`, which workflow conditions can read, so it is
+  control flow rather than a log label — and a generated `task_3` that
+  corresponds to nothing in the author's document turns a loud parse error into a
+  quiet misattribution in traces and metrics.
+
 - **dataflow-rs 3.0 → 3.1, and the workarounds it exists to remove are gone.**
   Six behaviour changes come with it; the rest of the upgrade is internal.
 
