@@ -1305,12 +1305,32 @@ out.
 
 ### Response cache keys changed format
 
-**What changed.** The per-channel response cache key hashed only the request
-body. It now also folds in the HTTP method, route parameters, and query string
-(both sorted, so ordering does not affect the key). The old key could serve one
-caller's cached response to a different request that happened to share a body.
+**What changed.** Three things, all of which change the hash:
+
+1. The key hashed only the request body. It now also folds in the HTTP method,
+   route parameters, and query string (both sorted, so ordering does not affect
+   the key). The old key could serve one caller's cached response to a different
+   request that happened to share a body.
+2. The digest is **SHA-256 truncated to 128 bits**, not FNV-1a. FNV-1a is a
+   multiply-xor over 64 bits with no collision resistance — a colliding payload
+   is constructed rather than searched for, and the data plane is unauthenticated
+   by design, so on most deployments the body is attacker-shaped input. Two
+   requests that hash alike are served each other's response bodies.
+3. `cache_key_fields` entries now resolve as **paths**, not just literal
+   top-level keys. `user.id` walks into a nested object, and `data.user_id` —
+   the spelling this guide and the feature docs have always shown — resolves to
+   the payload's `user_id`. It previously matched nothing.
 
 **How you'll notice.** A one-time cache miss spike after the upgrade.
+
+If (3) applies to you, you will also see a **warning naming the channel and its
+fields**, and that channel will stop caching until the names are corrected. That
+is deliberate. A channel whose fields all missed was hashing only method, params
+and query, so every request on it collapsed onto one entry and the first
+caller's body was served to everyone for the TTL — it was not caching correctly
+before, it was mis-serving. Check the field names against your payload shape;
+all three spellings above resolve, so in most cases the existing config is
+already correct and simply starts working.
 
 **What to do.** Nothing is required. The key prefix (`cache:{channel}:{hash}`)
 is unchanged and carries no version segment, so old entries are **orphaned, not

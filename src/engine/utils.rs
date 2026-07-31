@@ -1,9 +1,14 @@
 use serde_json::Value;
 
-/// FNV-1a 64-bit hash mixin. Unkeyed and deterministic — used wherever a
-/// value must hash identically on every replica and across restarts
-/// (response-cache keys, rollout buckets).
-pub(crate) fn fnv1a_feed(h: &mut u64, bytes: &[u8]) {
+/// FNV-1a 64-bit hash mixin. Unkeyed and deterministic, so a given identity
+/// lands in the same rollout bucket on every replica and across restarts.
+///
+/// Rollout bucketing is the only remaining caller, and it is a fit: the input
+/// is an identity the caller already owns, and the worst a chosen collision
+/// buys is the version the caller could have reached by retrying. The response
+/// cache used this too until keys became attacker-reachable — see
+/// `channel::guards::compute_cache_key` for why that one needs SHA-256.
+fn fnv1a_feed(h: &mut u64, bytes: &[u8]) {
     for &b in bytes {
         *h ^= b as u64;
         *h = h.wrapping_mul(0x100000001b3);
@@ -11,7 +16,7 @@ pub(crate) fn fnv1a_feed(h: &mut u64, bytes: &[u8]) {
 }
 
 /// FNV-1a 64-bit offset basis (seed for [`fnv1a_feed`]).
-pub(crate) const FNV1A_SEED: u64 = 0xcbf29ce484222325;
+const FNV1A_SEED: u64 = 0xcbf29ce484222325;
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
     let mut h = FNV1A_SEED;

@@ -828,7 +828,7 @@ fn acquire_backpressure(
     }
 }
 
-use crate::engine::utils::{FNV1A_SEED, fnv1a_feed};
+use sha2::{Digest, Sha256};
 
 /// Resolve one `cache_key_fields` entry against the request payload.
 ///
@@ -880,31 +880,55 @@ fn resolve_key_field<'a>(data: &'a Value, field: &str) -> Option<&'a Value> {
 /// merely useless. Bypassing the cache costs one workflow run; keying on
 /// nothing costs correctness.
 ///
-/// Uses FNV-1a (64-bit) rather than `std::collections::hash_map::DefaultHasher`
-/// because the cache key must be **stable across processes** (multiple
-/// orion-server instances sharing a Redis cache must agree on the key for the
-/// same request). `DefaultHasher` is `SipHash` keyed by a per-process random
-/// seed and would produce different keys per process. `ahash` likewise
-/// randomises its seed on construction. FNV-1a is unkeyed and deterministic.
+/// # Why SHA-256 and not a fast hash
+///
+/// The key must be **stable across processes** — replicas sharing a Redis
+/// cache have to agree on the key for the same request — which rules out
+/// `DefaultHasher` (SipHash under a per-process random seed) and `ahash`
+/// (randomises its seed on construction). FNV-1a satisfied that and was used
+/// here first.
+///
+/// It is not sufficient on its own. Two requests that hash alike are served
+/// each other's response bodies, and FNV-1a is a multiply-xor over a 64-bit
+/// state with no collision resistance whatsoever: it inverts in closed form,
+/// so a colliding payload is *constructed*, not searched for. The data plane
+/// is unauthenticated by design, which makes the request body attacker-shaped
+/// input on most deployments.
+///
+/// SHA-256 truncated to 128 bits keeps the determinism the cache actually
+/// requires and puts a collision beyond construction. The cost lands next to
+/// the `serde_json::to_vec` of the same bytes, which this function already
+/// pays, and only on channels that enable caching.
 fn compute_cache_key(
     channel: &str,
     data: &Value,
     metadata: &Value,
     cache_cfg: &crate::channel::ChannelCacheConfig,
 ) -> Option<String> {
-    let mut h: u64 = FNV1A_SEED;
+    let mut h = Sha256::new();
+
+    // Every chunk is length-prefixed, so no arrangement of field names and
+    // values can be re-read as a different arrangement. A separator byte would
+    // have to argue that the byte never occurs inside a chunk; framing does not
+    // need the argument.
+    fn feed(h: &mut Sha256, bytes: &[u8]) {
+        h.update((bytes.len() as u64).to_be_bytes());
+        h.update(bytes);
+    }
 
     // The request's route identity must always distinguish keys: for a REST
     // channel like `GET /orders/{id}` the body is empty, so hashing only the
     // body would serve the first caller's response to every id.
-    if let Some(method) = metadata.get("http_method").and_then(Value::as_str) {
-        fnv1a_feed(&mut h, method.as_bytes());
-    }
-    fnv1a_feed(&mut h, &[0]);
-    fnv1a_feed_object_sorted(&mut h, metadata.get("params"));
-    fnv1a_feed(&mut h, &[0]);
-    fnv1a_feed_object_sorted(&mut h, metadata.get("query"));
-    fnv1a_feed(&mut h, &[0]);
+    feed(
+        &mut h,
+        metadata
+            .get("http_method")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .as_bytes(),
+    );
+    feed_object_sorted(&mut h, metadata.get("params"));
+    feed_object_sorted(&mut h, metadata.get("query"));
 
     if let Some(ref fields) = cache_cfg.cache_key_fields {
         // Hash selected fields directly — no intermediate Map or clones. An
@@ -913,39 +937,47 @@ fn compute_cache_key(
         // the same key by each contributing one term and skipping the other.
         let mut resolved = 0usize;
         for f in fields {
-            fnv1a_feed(&mut h, f.as_bytes());
+            feed(&mut h, f.as_bytes());
             match resolve_key_field(data, f) {
                 Some(v) => {
                     resolved += 1;
-                    fnv1a_feed(&mut h, &[1]);
-                    let v_bytes = serde_json::to_vec(v).unwrap_or_default();
-                    fnv1a_feed(&mut h, &v_bytes);
+                    h.update([1u8]);
+                    feed(&mut h, &serde_json::to_vec(v).unwrap_or_default());
                 }
-                None => fnv1a_feed(&mut h, &[0]),
+                None => h.update([0u8]),
             }
         }
         if resolved == 0 {
             return None;
         }
     } else {
-        let bytes = serde_json::to_vec(data).unwrap_or_default();
-        fnv1a_feed(&mut h, &bytes);
+        feed(&mut h, &serde_json::to_vec(data).unwrap_or_default());
     };
 
-    Some(format!("cache:{channel}:{h:016x}"))
+    // 128 bits of a 256-bit digest: the birthday bound is 2^64 distinct
+    // requests per channel, and the full digest would only make the Redis key
+    // longer.
+    let digest = h.finalize();
+    Some(format!("cache:{channel}:{}", hex::encode(&digest[..16])))
 }
 
-/// Feed an optional JSON object into the FNV-1a state in sorted-key order,
-/// so the key is independent of map iteration and query-string order.
-fn fnv1a_feed_object_sorted(h: &mut u64, v: Option<&Value>) {
-    if let Some(Value::Object(map)) = v {
-        let mut keys: Vec<&String> = map.keys().collect();
-        keys.sort_unstable();
-        for k in keys {
-            fnv1a_feed(h, k.as_bytes());
-            let bytes = serde_json::to_vec(&map[k.as_str()]).unwrap_or_default();
-            fnv1a_feed(h, &bytes);
-        }
+/// Feed an optional JSON object into the digest in sorted-key order, so the
+/// key is independent of map iteration and query-string order.
+fn feed_object_sorted(h: &mut Sha256, v: Option<&Value>) {
+    let Some(Value::Object(map)) = v else {
+        h.update([0u8]);
+        return;
+    };
+    h.update([1u8]);
+    h.update((map.len() as u64).to_be_bytes());
+    let mut keys: Vec<&String> = map.keys().collect();
+    keys.sort_unstable();
+    for k in keys {
+        h.update((k.len() as u64).to_be_bytes());
+        h.update(k.as_bytes());
+        let bytes = serde_json::to_vec(&map[k.as_str()]).unwrap_or_default();
+        h.update((bytes.len() as u64).to_be_bytes());
+        h.update(&bytes);
     }
 }
 
@@ -2353,6 +2385,63 @@ mod tests {
         assert_eq!(
             key("c", &flat_1, &m, &cache_cfg(fields.clone())),
             key("c", &nested, &m, &cache_cfg(fields))
+        );
+    }
+
+    /// The property the hash choice exists to serve: the same request must
+    /// key identically in every process, so a replica sharing a Redis cache
+    /// agrees with its peers. A per-process-seeded hash would pass every other
+    /// test in this module and fail only in production, on more than one node.
+    #[test]
+    fn the_key_is_stable_across_processes() {
+        let m = meta(
+            "POST",
+            serde_json::json!({"id": "7"}),
+            serde_json::json!({"expand": "items"}),
+        );
+        let data = serde_json::json!({"order_id": 7, "nested": {"a": [1, 2, 3]}});
+        // Pinned literal: this value was produced by this code, and changing
+        // the hash or the framing changes it. That is the point — a silent
+        // change cold-starts every deployment's cache, so it should be a
+        // deliberate edit to this line rather than a surprise in production.
+        assert_eq!(
+            key("orders", &data, &m, &cache_cfg(None)),
+            "cache:orders:47396736ec3c2fde9455d2f9a9161e91"
+        );
+    }
+
+    /// Map iteration order must not reach the key: `params` and `query` are
+    /// fed in sorted order so two spellings of one query string agree.
+    #[test]
+    fn key_ignores_map_ordering() {
+        let data = serde_json::json!({});
+        let a = meta(
+            "GET",
+            serde_json::json!({}),
+            serde_json::json!({"a": "1", "b": "2"}),
+        );
+        let b = meta(
+            "GET",
+            serde_json::json!({}),
+            serde_json::json!({"b": "2", "a": "1"}),
+        );
+        assert_eq!(
+            key("c", &data, &a, &cache_cfg(None)),
+            key("c", &data, &b, &cache_cfg(None))
+        );
+    }
+
+    /// Length-prefixed framing: no rearrangement of adjacent chunks can be
+    /// re-read as a different request. Without it, a `params` key/value pair
+    /// could be shifted into the neighbouring field and hash alike.
+    #[test]
+    fn framing_separates_adjacent_chunks() {
+        let data = serde_json::json!({});
+        let a = meta("GET", serde_json::json!({"ab": "c"}), serde_json::json!({}));
+        let b = meta("GET", serde_json::json!({"a": "bc"}), serde_json::json!({}));
+        assert_ne!(
+            key("c", &data, &a, &cache_cfg(None)),
+            key("c", &data, &b, &cache_cfg(None))
         );
     }
 
