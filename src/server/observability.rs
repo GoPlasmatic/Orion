@@ -20,15 +20,16 @@ pub async fn http_metrics_middleware(
         .map(|m: &MatchedPath| m.as_str().to_string())
         .unwrap_or_else(|| req.uri().path().to_string());
 
-    // Extract request ID set by SetRequestIdLayer (inner layer, runs before us)
+    // Request id set by SetRequestIdLayer (inner layer, runs before us).
+    //
+    // Owned rather than borrowed: `req` moves into `next.run(req)` below, so a
+    // borrow of its headers cannot survive to the log line after the response.
     let request_id = req
         .headers()
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("-");
-
-    // Borrow request_id for logging; avoid allocating unless tracing needs it
-    let request_id = request_id.to_string();
+        .unwrap_or("-")
+        .to_string();
 
     let start = Instant::now();
     let response = next.run(req).await;
