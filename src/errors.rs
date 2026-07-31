@@ -182,7 +182,7 @@ impl OrionError {
     /// embed raw driver text in a 200 body.
     ///
     /// Does not log: callers that surface the error (`IntoResponse`) log the
-    /// internal detail separately via [`OrionError::log_internal_detail`].
+    /// internal detail separately via `log_internal_detail`.
     pub fn response_parts(&self) -> (StatusCode, &'static str, String) {
         match self {
             OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),

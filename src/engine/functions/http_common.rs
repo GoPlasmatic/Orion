@@ -35,7 +35,7 @@ const MAX_REDIRECTS: usize = 5;
 ///
 /// Builds the request with connector headers, auth, optional task-level headers,
 /// optional body, and timeout. Returns the parsed JSON response. Redirects are
-/// followed manually (up to [`MAX_REDIRECTS`]) with SSRF re-validation per hop.
+/// followed manually (up to `MAX_REDIRECTS`) with SSRF re-validation per hop.
 #[tracing::instrument(skip(client, task_headers, http_config, body))]
 pub async fn execute_request(
     client: &reqwest::Client,

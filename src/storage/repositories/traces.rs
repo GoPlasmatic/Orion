@@ -342,7 +342,7 @@ pub trait TraceRepository: Send + Sync {
         task_trace_json: Option<&str>,
     ) -> Result<String, OrionError>;
 
-    /// Batched variant of [`store_completed`]. Default impl loops the singular
+    /// Batched variant of [`Self::store_completed`]. Default impl loops the singular
     /// method; backend implementations can override with a single multi-row
     /// INSERT inside one transaction (huge win on WAL-mode SQLite where each
     /// individual commit is a fsync).
@@ -368,7 +368,7 @@ pub trait TraceRepository: Send + Sync {
         Ok(ids)
     }
 
-    /// Batched variant of [`set_result`]. Default impl loops the singular
+    /// Batched variant of [`Self::set_result`]. Default impl loops the singular
     /// method; backend implementations can override using one transaction.
     async fn set_result_batch(&self, rows: &[TraceResultRow]) -> Result<(), OrionError> {
         for row in rows {

@@ -77,7 +77,7 @@ pub struct FieldSchema {
     /// Only `http_call.output` has one (`response_path`, the pre-1.0 name),
     /// and it is a real serde alias on dataflow-rs's `HttpCallConfig` rather
     /// than an Orion convention — so supplying **both** is a duplicate-field
-    /// parse error upstream, not a precedence rule. [`check_fields`] reports
+    /// parse error upstream, not a precedence rule. `check_fields` reports
     /// that here instead of letting the workflow load and quarantine its
     /// channel.
     pub alias: Option<&'static str>,

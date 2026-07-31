@@ -21,7 +21,7 @@
 //!
 //! A row reaches the wire only through a `From`/`TryFrom` into a [`dto`] type.
 //! That is enforced, not merely documented — see
-//! [`rows::tests::row_structs_are_not_wire_types`] and
+//! `rows::tests::row_structs_are_not_wire_types` and
 //! `no_storage_row_struct_is_published_unless_it_is_the_wire_shape` in
 //! `server::routes::openapi`.
 

@@ -13,7 +13,7 @@
 //! through a `From`/`TryFrom`. Adding a column therefore cannot leak it; it has
 //! to be copied into a DTO by hand first.
 //!
-//! [`row_structs_are_not_wire_types`](tests::row_structs_are_not_wire_types)
+//! `row_structs_are_not_wire_types`
 //! scans this file and fails if a derive here names either trait, and
 //! `no_storage_row_struct_is_published_unless_it_is_the_wire_shape` in
 //! `server::routes::openapi` fails if one of these names reaches the published

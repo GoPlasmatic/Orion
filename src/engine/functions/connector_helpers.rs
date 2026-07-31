@@ -12,7 +12,7 @@ use crate::connector::{
 };
 use crate::query::EntityRegistry;
 
-/// Build the dialect's [`EntityRegistry`] for one `data_query` / `data_write`
+/// Build the dialect's `EntityRegistry` for one `data_query` / `data_write`
 /// call: parse the task's optional inline `schema`, then apply the connector's
 /// operator-owned guards to it (F24).
 ///

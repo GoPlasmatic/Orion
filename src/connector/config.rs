@@ -82,7 +82,7 @@ impl ConnectorConfig {
 /// pre-1.0 can carry a `dialect` block, and a misspelled key here — the
 /// `requireSchema` / `allowed_entites` class of typo — is privileged security
 /// configuration silently not applying, the same rationale
-/// [`crate::query::schema`] denies unknown fields for.
+/// `query::schema` denies unknown fields for.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DialectGuards {

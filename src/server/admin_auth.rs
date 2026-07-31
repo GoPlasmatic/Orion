@@ -125,7 +125,7 @@ const KEY_ID_BYTES: usize = 8;
 #[derive(Debug, Clone)]
 pub struct AdminPrincipal {
     /// Stable per-key identifier for audit logging. See
-    /// [`AdminPrincipal::from_digest`] for the derivation.
+    /// `AdminPrincipal::from_digest` for the derivation.
     pub key_id: String,
 }
 

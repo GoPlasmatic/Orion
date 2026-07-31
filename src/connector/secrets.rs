@@ -13,7 +13,7 @@
 //!
 //! ## Relationship to A5
 //!
-//! [`crate::config::env_substitute`] resolves `${VAR}` placeholders in
+//! `config::env_substitute` resolves `${VAR}` placeholders in
 //! the raw config TOML / JSON text — purely textual, runs before any
 //! parsing. B5's `env://` operates on parsed string values, so it can
 //! resolve secrets inside structured fields without leaking template

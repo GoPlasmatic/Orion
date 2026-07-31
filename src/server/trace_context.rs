@@ -46,7 +46,7 @@ impl opentelemetry::propagation::Extractor for MapExtractor<'_> {
 /// Extract a W3C trace context from a string header map and attach it as the
 /// parent of the current tracing span. Returns the propagated context so the
 /// caller can keep it in scope. Shared by the Kafka consumer and the async
-/// trace queue; uses the cached [`PROPAGATOR`] instead of building one per
+/// trace queue; uses the cached `PROPAGATOR` instead of building one per
 /// message.
 pub fn set_parent_from_map(headers: &HashMap<String, String>) -> opentelemetry::Context {
     let cx = PROPAGATOR.extract(&MapExtractor(headers));

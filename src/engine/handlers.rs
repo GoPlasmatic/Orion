@@ -33,6 +33,8 @@ use crate::connector::{ConnectorRegistry, ConnectorType};
 /// `RequiresHandler` name is accepted only if Orion has the handler.
 ///
 /// [`BuiltinKind`]: dataflow_rs::BuiltinKind
+/// [`BuiltinKind::SelfContained`]: dataflow_rs::BuiltinKind::SelfContained
+/// [`BuiltinKind::RequiresHandler`]: dataflow_rs::BuiltinKind::RequiresHandler
 /// [`CUSTOM_HANDLER_FUNCTIONS`]: super::CUSTOM_HANDLER_FUNCTIONS
 pub fn is_known_function(function: &str) -> bool {
     match dataflow_rs::builtin_function_kind(function) {

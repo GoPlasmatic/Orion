@@ -209,7 +209,7 @@ impl ConnectorRegistry {
     /// Load all enabled connectors from the repository into the registry.
     ///
     /// Connectors that fail to load are skipped, as before, but are now also
-    /// recorded as [`ConnectorLoadIssue`]s so the degraded set is reportable
+    /// recorded as `ConnectorLoadIssue`s so the degraded set is reportable
     /// (F16) rather than existing only as a log line.
     ///
     /// A load that produces the same connector set leaves both the stored map

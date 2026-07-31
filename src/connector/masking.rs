@@ -211,7 +211,7 @@ fn render_pair(name: &str, value: Option<&str>) -> String {
 /// Replace the secrets a URL-shaped string carries in-band, preserving
 /// everything else byte-for-byte: the userinfo password
 /// (`scheme://user:password@host…`) and the value of every query parameter
-/// whose name satisfies [`is_secret_key`] (`?api_key=…`, `?sig=…`) — one
+/// whose name satisfies `is_secret_key` (`?api_key=…`, `?sig=…`) — one
 /// predicate, two positions (S18). Returns `None` when the string carries
 /// neither, so credential-free URLs are left exactly as authored.
 ///
@@ -403,7 +403,7 @@ pub fn mask_connector(connector: &crate::storage::models::Connector) -> Connecto
 /// (`"password": "******"`), the URL form (`"url": "redis://u:******@host"`),
 /// and any masking rule added later, with no second copy of the logic to keep
 /// in sync. A URL that matches neither the stored value nor its masked form
-/// is restored *per position* instead ([`restore_url_secrets`]) — S18 gave
+/// is restored *per position* instead (`restore_url_secrets`) — S18 gave
 /// one string several maskable positions, and a client may rotate one secret
 /// while round-tripping the others still masked.
 ///
