@@ -11,6 +11,9 @@ use tower::ServiceExt;
 fn enabled_config() -> AppConfig {
     let mut cfg = AppConfig::default();
     cfg.tracing.debug_profile_enabled = true;
+    // `profile_async_embedded_in_trace` reads the profile back out of the
+    // persisted trace, so the row must be committed before it looks.
+    cfg.trace_storage.mode = orion::config::TraceStorageMode::Sync;
     cfg
 }
 

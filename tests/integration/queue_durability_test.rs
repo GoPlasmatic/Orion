@@ -122,7 +122,12 @@ async fn failed_running_write_routes_message_to_dlq() {
         dataflow_rs::Engine::builder().build().unwrap(),
     )));
     let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
-    let tracing_storage = orion::config::TraceStorageConfig::default(); // sync mode
+    // Pinned rather than defaulted: this test asserts on the trace row right
+    // after processing, so the write has to land inline.
+    let tracing_storage = orion::config::TraceStorageConfig {
+        mode: orion::config::TraceStorageMode::Sync,
+        ..Default::default()
+    };
     let (persistence_queue, _persistence_handle) =
         orion::queue::trace_persistence::start(&tracing_storage, trace_repo.clone());
     let queue_config = orion::config::TraceQueueConfig {
@@ -282,7 +287,12 @@ async fn run_one_message_to_terminal_status(
         dataflow_rs::Engine::builder().build().unwrap(),
     )));
     let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
-    let tracing_storage = orion::config::TraceStorageConfig::default(); // sync mode
+    // Pinned rather than defaulted: this test asserts on the trace row right
+    // after processing, so the write has to land inline.
+    let tracing_storage = orion::config::TraceStorageConfig {
+        mode: orion::config::TraceStorageMode::Sync,
+        ..Default::default()
+    };
     let (persistence_queue, _persistence_handle) =
         orion::queue::trace_persistence::start(&tracing_storage, trace_repo.clone());
     let (trace_queue, _worker_handle) = orion::queue::start_workers(

@@ -22,8 +22,20 @@ use orion::config::AppConfig;
 use orion::server::state::AppState;
 
 /// Create a test app with an in-memory SQLite database.
+///
+/// Trace persistence is pinned to `sync` rather than taking the product default
+/// (`batch`), because a test that submits a request and then asserts on the
+/// trace needs the row committed before the response returns. Under `batch` the
+/// write lands on a background worker up to `batch_flush_interval_ms` later, so
+/// every such assertion would race the flush and fail intermittently.
+///
+/// This is a statement about test determinism, not about the default. Tests
+/// that exercise a particular mode — including `sync` itself — set it
+/// explicitly through [`test_app_with_config`] and do not rely on this.
 pub async fn test_app() -> Router {
-    test_app_with_config(AppConfig::default()).await
+    let mut config = AppConfig::default();
+    config.trace_storage.mode = orion::config::TraceStorageMode::Sync;
+    test_app_with_config(config).await
 }
 
 /// Create a test app with a custom config (e.g. for rate limiting tests).

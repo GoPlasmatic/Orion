@@ -478,7 +478,11 @@ async fn test_credential_headers_masked_at_rest_in_async_trace() {
     use axum::body::Body;
     use axum::http::Request;
 
-    let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
+    // Sync traces: the assertion reads `traces.result_json` straight from the
+    // repository once processing completes, with no flush to wait on.
+    let mut cfg = orion::config::AppConfig::default();
+    cfg.trace_storage.mode = orion::config::TraceStorageMode::Sync;
+    let state = common::test_state_with_config(cfg).await;
     let app = orion::server::build_router(state.clone());
 
     common::create_and_activate_channel(

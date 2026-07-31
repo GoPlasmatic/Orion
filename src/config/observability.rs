@@ -186,18 +186,33 @@ impl TraceStorageConfig {
 
 /// Persistence mode for engine traces.
 ///
-/// `Sync` writes inside the request path (default — strongest durability,
-/// throughput capped by single-writer DB contention). `Async` enqueues to a
-/// bounded background queue. `Batch` is the throughput-optimised path:
-/// background workers accumulate writes and commit in one transaction.
-/// `Off` disables persistence entirely.
+/// `Sync` writes inside the request path: strongest durability, and throughput
+/// capped by single-writer DB contention. `Async` enqueues to a bounded
+/// background queue, one DB write per task. `Batch` is the throughput-optimised
+/// path and the default: background workers accumulate writes and commit them
+/// in one transaction. `Off` disables persistence entirely.
+///
+/// `Batch` is the default because `Sync` makes a trace write part of answering
+/// a request — on the default SQLite backend, a single-writer fsync per request
+/// on the hottest path in the product. Traces are observability data about a
+/// request, not part of its result, so the failure mode that belongs to them is
+/// losing a window of traces under overload rather than slowing every caller
+/// down to the speed of the trace table.
+///
+/// What the default costs: a *hard* kill can lose up to
+/// `batch_flush_interval_ms` of traces, and a sustained overrun of `max_pending`
+/// drops them (`async_on_overflow`). Graceful shutdown drains the queue, so an
+/// orderly restart loses nothing. Deployments that treat the trace table as an
+/// audit record rather than as telemetry should set `mode = "sync"` — the
+/// `audit_logs` table is unaffected either way and remains the durable record of
+/// admin mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TraceStorageMode {
-    /// Backwards-compatible default — existing deployments behave exactly as before.
-    #[default]
     Sync,
     Async,
+    /// Default: keeps trace persistence off the request path.
+    #[default]
     Batch,
     Off,
 }
@@ -264,7 +279,7 @@ pub struct TraceStorageConfig {
 impl Default for TraceStorageConfig {
     fn default() -> Self {
         Self {
-            mode: TraceStorageMode::Sync,
+            mode: TraceStorageMode::Batch,
             sample_rate: 1.0,
             errors_only: false,
             max_pending: 10_000,

@@ -1303,6 +1303,41 @@ upgrade still contain plaintext headers at rest; the trace-read projection
 hides them from HTTP responses, and `trace_queue.retention_hours` ages them
 out.
 
+### Trace persistence now defaults to `batch`
+
+**What changed.** `trace_storage.mode` defaulted to `sync`, which writes a trace
+row inline before the response is sent. It now defaults to `batch`, where
+background workers accumulate rows and commit them in one transaction.
+
+On the default SQLite backend `sync` meant a single-writer fsync on the hottest
+path in the product, for every request, to persist observability data about a
+request rather than any part of its result.
+
+**How you'll notice.** Higher data-plane throughput. A trace is no longer
+guaranteed to be visible the instant its request returns — code that submits a
+request and immediately reads `GET /api/v1/admin/traces/{id}` may now see the
+row appear up to `batch_flush_interval_ms` (default `100`) later.
+
+**What to do.** Nothing, for most deployments. Two cases want a decision:
+
+- **You poll a trace immediately after a synchronous request.** Either tolerate
+  the delay or set `mode = "sync"`. The `/async` path is unaffected — its
+  pending row is still written before the `202`, so the returned `trace_id` is
+  always immediately pollable.
+- **You treat the trace table as an audit record.** Set `mode = "sync"`. Under
+  `batch`, a hard kill (SIGKILL, OOM, power loss) can lose up to one flush
+  interval, and a sustained overrun of `max_pending` drops traces per
+  `async_on_overflow`. Graceful shutdown drains the queue, so an orderly restart
+  loses nothing.
+
+  If what you need is an audit trail of admin mutations rather than of data-plane
+  traffic, that is the `audit_logs` table, which this change does not touch.
+
+```toml
+[trace_storage]
+mode = "sync"   # restore the pre-1.0 behaviour
+```
+
 ### Response cache keys changed format
 
 **What changed.** Three things, all of which change the hash:

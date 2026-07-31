@@ -498,7 +498,7 @@ Orion's own per-request trace records — rows in the `traces` table, read via `
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `trace_storage.mode` | `"sync"` | `ORION_TRACE_STORAGE__MODE` | Move to `batch` when trace writes bound throughput. |
+| `trace_storage.mode` | `"batch"` | `ORION_TRACE_STORAGE__MODE` | Keeps trace writes off the request path. Set `sync` when a trace must be durable before the response is sent. |
 | `trace_storage.sample_rate` | `1.0` | `ORION_TRACE_STORAGE__SAMPLE_RATE` | Fraction of traces persisted, `0.0` to `1.0`. Applies to sync traces only — an async submission's trace row is how its result is delivered, so async traces always persist regardless of this rate; bound async storage with `errors_only` or `trace_queue.retention_hours` instead. |
 | `trace_storage.errors_only` | `false` | `ORION_TRACE_STORAGE__ERRORS_ONLY` | Persist only traces that ended with errors — a cheap way to keep the table small. |
 | `trace_storage.max_pending` | `10000` | `ORION_TRACE_STORAGE__MAX_PENDING` | Queue capacity in `async` and `batch` modes. |
@@ -522,7 +522,7 @@ All capabilities are compiled into a single binary and controlled at runtime:
 | Kafka | `kafka.enabled` | Disabled |
 | Kafka SASL/TLS | `kafka.auth.security_protocol` | Plaintext |
 | OpenTelemetry | `tracing.enabled` | Disabled |
-| Trace persistence | `trace_storage.mode` | `sync` |
+| Trace persistence | `trace_storage.mode` | `batch` |
 | TLS/HTTPS | `server.tls.enabled` | Disabled |
 | Response compression | `server.compression.enabled` | Disabled |
 | Swagger UI / OpenAPI spec | `server.docs.enabled` | Enabled outside production |

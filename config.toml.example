@@ -355,7 +355,7 @@
 #            already holds the answer. POST /{channel}/async still writes its
 #            row and still returns a trace_id: submitting async *is* the
 #            request for a result to fetch later.
-# mode = "sync"
+# mode = "batch"
 #
 # Filters, composing with the mode and applied per trace:
 # sample_rate = 1.0                 # Fraction of traces persisted, 0.0-1.0

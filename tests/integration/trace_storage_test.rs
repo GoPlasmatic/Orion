@@ -60,7 +60,7 @@ async fn submit_sync(app: &axum::Router, channel: &str) -> StatusCode {
 
 #[tokio::test]
 async fn sync_mode_persists_traces_inline() {
-    let app = common::test_app().await; // default = sync
+    let app = common::test_app_with_config(cfg_with_storage(TraceStorageMode::Sync)).await;
     let (_, _) =
         common::create_and_activate_channel(&app, "ch_sync", common::simple_log_workflow("Log"))
             .await;
