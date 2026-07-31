@@ -268,7 +268,7 @@ mod tests {
                 tokio::time::sleep(d).await;
             }
             if self.fail {
-                return Err(OrionError::Internal("audit insert failed".to_string()));
+                return Err(OrionError::internal("audit insert failed".to_string()));
             }
             self.rows
                 .lock()

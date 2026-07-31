@@ -413,7 +413,7 @@ pub async fn admit(req: GuardRequest<'_>) -> Result<Admission, OrionError> {
     let transport = req.transport;
     match apply_guards(req).await? {
         GuardVerdict::Admitted(admission) => Ok(admission),
-        GuardVerdict::CacheHit(_) => Err(OrionError::Internal(format!(
+        GuardVerdict::CacheHit(_) => Err(OrionError::internal(format!(
             "{transport:?} does not enable the response cache"
         ))),
     }
@@ -1100,7 +1100,7 @@ mod tests {
                 StubOutcome::New => Ok(None),
                 StubOutcome::Duplicate => Ok(Some(super::DEDUP_SETTLED.to_string())),
                 StubOutcome::BackendError => {
-                    Err(OrionError::Internal("dedup backend down".to_string()))
+                    Err(OrionError::internal("dedup backend down".to_string()))
                 }
             }
         }
@@ -1221,7 +1221,7 @@ mod tests {
     #[async_trait]
     impl crate::channel::RateLimitBackend for FailingLimiter {
         async fn check(&self, _key: String) -> Result<bool, OrionError> {
-            Err(OrionError::Internal("backend down".to_string()))
+            Err(OrionError::internal("backend down".to_string()))
         }
     }
 

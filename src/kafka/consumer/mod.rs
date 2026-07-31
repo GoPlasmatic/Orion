@@ -125,12 +125,12 @@ impl ConsumerHandle {
         let assignment = self
             .consumer
             .assignment()
-            .map_err(|e| OrionError::Internal(format!("Failed to get consumer assignment: {e}")))?;
+            .map_err(|e| OrionError::internal(format!("Failed to get consumer assignment: {e}")))?;
         if assignment.count() == 0 {
             return Ok(());
         }
         f(&self.consumer, &assignment)
-            .map_err(|e| OrionError::Internal(format!("Failed to {op} consumer partitions: {e}")))
+            .map_err(|e| OrionError::internal(format!("Failed to {op} consumer partitions: {e}")))
     }
 
     /// Get the set of topics this consumer is subscribed to.
@@ -180,9 +180,9 @@ pub fn start_consumer(
     let rebalance = Arc::new(RebalanceState::new());
     let consumer: StreamConsumer<KafkaConsumerContext> = client_config
         .create_with_context(KafkaConsumerContext::new(rebalance.clone()))
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::Internal {
             context: "Failed to create Kafka consumer".to_string(),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })?;
 
     // Verify broker connectivity (non-fatal — brokers may come online later)
@@ -212,9 +212,9 @@ pub fn start_consumer(
     let topics: Vec<&str> = config.topics.iter().map(|t| t.topic.as_str()).collect();
     consumer
         .subscribe(&topics)
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::Internal {
             context: "Failed to subscribe to Kafka topics".to_string(),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })?;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);

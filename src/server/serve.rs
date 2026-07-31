@@ -21,15 +21,15 @@ use crate::errors::OrionError;
 pub fn create_tcp_listener(addr: &str) -> Result<tokio::net::TcpListener, OrionError> {
     let socket_addr = addr
         .parse::<std::net::SocketAddr>()
-        .map_err(|e| OrionError::Internal(format!("Invalid address '{addr}': {e}")))?;
+        .map_err(|e| OrionError::internal(format!("Invalid address '{addr}': {e}")))?;
     let domain = if socket_addr.is_ipv4() {
         socket2::Domain::IPV4
     } else {
         socket2::Domain::IPV6
     };
-    let map_err = |stage: &str, e: std::io::Error| OrionError::InternalSource {
+    let map_err = |stage: &str, e: std::io::Error| OrionError::Internal {
         context: format!("Failed to {stage} for {addr}"),
-        source: Box::new(e),
+        source: Some(Box::new(e)),
     };
     let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))
         .map_err(|e| map_err("create socket", e))?;
@@ -63,7 +63,7 @@ pub async fn serve_tls(
     let addr = format!("{}:{}", config.server.host, config.server.port);
     let bind_addr: std::net::SocketAddr = addr
         .parse()
-        .map_err(|e| OrionError::Internal(format!("Invalid address '{addr}': {e}")))?;
+        .map_err(|e| OrionError::internal(format!("Invalid address '{addr}': {e}")))?;
     let shutdown_handle = handle.clone();
     let drain_secs = config.server.shutdown_drain_secs;
     let force_timeout_secs = config.server.shutdown_force_timeout_secs;
@@ -93,9 +93,9 @@ pub async fn serve_tls(
         .handle(handle)
         .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::Internal {
             context: format!("HTTPS server error on {addr}"),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })
 }
 
@@ -132,9 +132,9 @@ pub async fn serve_metrics(
             tokio::time::sleep(drain).await;
         })
         .await
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::Internal {
             context: format!("Metrics server error on {addr}"),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })
 }
 
@@ -171,9 +171,9 @@ pub async fn serve_plain_http(
         router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(gate);
-    let map_err = |e: std::io::Error| OrionError::InternalSource {
+    let map_err = |e: std::io::Error| OrionError::Internal {
         context: format!("HTTP server error on {addr}"),
-        source: Box::new(e),
+        source: Some(Box::new(e)),
     };
     if force_timeout_secs == 0 {
         serve.await.map_err(map_err)?;

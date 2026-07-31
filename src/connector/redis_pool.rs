@@ -35,16 +35,16 @@ impl RedisPoolCache {
                 // note in `pool_cache.rs` on why this is create-path only).
                 crate::validation::check_cache_endpoint(connector_name, config).await?;
 
-                let client = redis::Client::open(url).map_err(|e| OrionError::InternalSource {
+                let client = redis::Client::open(url).map_err(|e| OrionError::Internal {
                     context: format!("Invalid Redis URL for '{connector_name}'"),
-                    source: Box::new(e),
+                    source: Some(Box::new(e)),
                 })?;
                 client
                     .get_connection_manager()
                     .await
-                    .map_err(|e| OrionError::InternalSource {
+                    .map_err(|e| OrionError::Internal {
                         context: format!("Failed to connect to Redis '{connector_name}'"),
-                        source: Box::new(e),
+                        source: Some(Box::new(e)),
                     })
             })
             .await

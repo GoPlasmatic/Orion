@@ -478,9 +478,9 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), OrionError> {
         DbPool::Postgres(p) => m.run(p).await,
         DbPool::Mysql(p) => m.run(p).await,
     }
-    .map_err(|e| OrionError::InternalSource {
+    .map_err(|e| OrionError::Internal {
         context: "Failed to run migrations".to_string(),
-        source: Box::new(e),
+        source: Some(Box::new(e)),
     })
 }
 
@@ -518,9 +518,9 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
 
     let busy_timeout = config.busy_timeout_ms.to_string();
     let options = SqliteConnectOptions::from_str(&config.url)
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::Internal {
             context: "Invalid DB path".to_string(),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })?
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
@@ -543,9 +543,9 @@ async fn init_sqlite_pool(config: &StorageConfig) -> Result<DbPool, OrionError> 
     let pool = pool_opts
         .connect_with(options)
         .await
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::Internal {
             context: "Failed to connect to database".to_string(),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })?;
     Ok(DbPool::Sqlite(pool))
 }
@@ -563,9 +563,9 @@ async fn init_postgres_pool(config: &StorageConfig) -> Result<DbPool, OrionError
     let pool = pool_opts
         .connect(&config.url)
         .await
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::Internal {
             context: "Failed to connect to database".to_string(),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })?;
     Ok(DbPool::Postgres(pool))
 }
@@ -583,9 +583,9 @@ async fn init_mysql_pool(config: &StorageConfig) -> Result<DbPool, OrionError> {
     let pool = pool_opts
         .connect(&config.url)
         .await
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::Internal {
             context: "Failed to connect to database".to_string(),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })?;
     Ok(DbPool::Mysql(pool))
 }

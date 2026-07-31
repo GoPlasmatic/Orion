@@ -279,9 +279,9 @@ impl CacheBackend for RedisCacheBackend {
     async fn get(&self, key: &str) -> Result<Option<String>, OrionError> {
         use redis::AsyncCommands;
         let mut conn = self.conn.clone();
-        conn.get(key).await.map_err(|e| OrionError::InternalSource {
+        conn.get(key).await.map_err(|e| OrionError::Internal {
             context: format!("Redis GET failed for key '{key}'"),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })
     }
 
@@ -290,9 +290,9 @@ impl CacheBackend for RedisCacheBackend {
         let mut conn = self.conn.clone();
         conn.set::<_, _, ()>(key, value)
             .await
-            .map_err(|e| OrionError::InternalSource {
+            .map_err(|e| OrionError::Internal {
                 context: format!("Redis SET failed for key '{key}'"),
-                source: Box::new(e),
+                source: Some(Box::new(e)),
             })
     }
 
@@ -301,9 +301,9 @@ impl CacheBackend for RedisCacheBackend {
         let mut conn = self.conn.clone();
         conn.set_ex::<_, _, ()>(key, value, ttl_secs)
             .await
-            .map_err(|e| OrionError::InternalSource {
+            .map_err(|e| OrionError::Internal {
                 context: format!("Redis SETEX failed for key '{key}'"),
-                source: Box::new(e),
+                source: Some(Box::new(e)),
             })
     }
 
@@ -312,9 +312,9 @@ impl CacheBackend for RedisCacheBackend {
         let mut conn = self.conn.clone();
         conn.del::<_, ()>(key)
             .await
-            .map_err(|e| OrionError::InternalSource {
+            .map_err(|e| OrionError::Internal {
                 context: format!("Redis DEL failed for key '{key}'"),
-                source: Box::new(e),
+                source: Some(Box::new(e)),
             })
     }
 
@@ -343,21 +343,18 @@ impl CacheBackend for RedisCacheBackend {
                 .arg(window_secs)
                 .query_async(&mut conn)
                 .await
-                .map_err(|e| OrionError::InternalSource {
+                .map_err(|e| OrionError::Internal {
                     context: format!("Redis SET NX EX failed for key '{key}'"),
-                    source: Box::new(e),
+                    source: Some(Box::new(e)),
                 })?;
             // Redis returns "OK" if SET succeeded (key was free), nil if held
             if claimed.is_some() {
                 return Ok(None);
             }
-            let holder: Option<String> =
-                conn.get(key)
-                    .await
-                    .map_err(|e| OrionError::InternalSource {
-                        context: format!("Redis GET failed for key '{key}'"),
-                        source: Box::new(e),
-                    })?;
+            let holder: Option<String> = conn.get(key).await.map_err(|e| OrionError::Internal {
+                context: format!("Redis GET failed for key '{key}'"),
+                source: Some(Box::new(e)),
+            })?;
             if let Some(holder) = holder {
                 return Ok(Some(holder));
             }

@@ -200,16 +200,15 @@ impl AuditConfig {
 pub fn load_config(path: Option<&str>) -> Result<AppConfig, OrionError> {
     let mut referenced_by_config_file = std::collections::BTreeSet::new();
     let mut config = if let Some(p) = path {
-        let raw =
-            std::fs::read_to_string(Path::new(p)).map_err(|e| OrionError::InternalSource {
-                context: format!("Failed to read config file '{p}'"),
-                source: Box::new(e),
-            })?;
+        let raw = std::fs::read_to_string(Path::new(p)).map_err(|e| OrionError::Internal {
+            context: format!("Failed to read config file '{p}'"),
+            source: Some(Box::new(e)),
+        })?;
         referenced_by_config_file = env_substitute::referenced_vars(&raw);
         let content = env_substitute::substitute(&raw, p)?;
-        toml::from_str::<AppConfig>(&content).map_err(|e| OrionError::InternalSource {
+        toml::from_str::<AppConfig>(&content).map_err(|e| OrionError::Internal {
             context: format!("Failed to parse config file '{p}'"),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })?
     } else {
         AppConfig::default()

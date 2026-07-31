@@ -105,14 +105,13 @@ pub async fn init_cluster_runtime(
             })?;
         // Eager connect: a cluster node whose coordination Redis is
         // unreachable at boot must fail fast rather than start degraded.
-        let conn =
-            client
-                .get_connection_manager()
-                .await
-                .map_err(|e| OrionError::InternalSource {
-                    context: "Failed to connect to cluster Redis (cluster.redis_url)".to_string(),
-                    source: Box::new(e),
-                })?;
+        let conn = client
+            .get_connection_manager()
+            .await
+            .map_err(|e| OrionError::Internal {
+                context: "Failed to connect to cluster Redis (cluster.redis_url)".to_string(),
+                source: Some(Box::new(e)),
+            })?;
         let cache: Arc<dyn CacheBackend> = Arc::new(
             crate::connector::cache_backend::RedisCacheBackend::new(conn.clone()),
         );

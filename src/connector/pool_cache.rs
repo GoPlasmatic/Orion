@@ -57,9 +57,9 @@ impl SqlPoolCache {
                     .acquire_timeout(Duration::from_millis(connect_timeout))
                     .connect(&conn_str)
                     .await
-                    .map_err(|e| OrionError::InternalSource {
+                    .map_err(|e| OrionError::Internal {
                         context: format!("Failed to connect to external DB '{connector_name}'"),
-                        source: Box::new(e),
+                        source: Some(Box::new(e)),
                     })
             })
             .await

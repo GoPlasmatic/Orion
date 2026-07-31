@@ -42,11 +42,11 @@ impl MongoPoolCache {
             .get_or_create(connector_name, || async move {
                 let mut opts = mongodb::options::ClientOptions::parse(&conn_str)
                     .await
-                    .map_err(|e| OrionError::InternalSource {
+                    .map_err(|e| OrionError::Internal {
                         context: format!(
                             "Invalid MongoDB connection string for '{connector_name}'"
                         ),
-                        source: Box::new(e),
+                        source: Some(Box::new(e)),
                     })?;
 
                 // S6: check the addresses the driver actually resolved. A
@@ -78,9 +78,9 @@ impl MongoPoolCache {
                     // which has its own (30 s) default.
                     opts.server_selection_timeout = Some(d);
                 }
-                Client::with_options(opts).map_err(|e| OrionError::InternalSource {
+                Client::with_options(opts).map_err(|e| OrionError::Internal {
                     context: format!("Failed to connect to MongoDB '{connector_name}'"),
-                    source: Box::new(e),
+                    source: Some(Box::new(e)),
                 })
             })
             .await

@@ -142,9 +142,9 @@ pub(super) fn parse_json_field<T: serde::de::DeserializeOwned>(
     entity_id: &str,
     field_name: &str,
 ) -> Result<T, OrionError> {
-    serde_json::from_str(json_str).map_err(|e| OrionError::InternalSource {
+    serde_json::from_str(json_str).map_err(|e| OrionError::Internal {
         context: format!("Corrupt JSON in {entity_type} {entity_id} {field_name}"),
-        source: Box::new(e),
+        source: Some(Box::new(e)),
     })
 }
 

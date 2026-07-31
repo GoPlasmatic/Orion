@@ -234,7 +234,7 @@ pub async fn build_engine_components(
         .dns_resolver(std::sync::Arc::new(crate::validation::PinnedDnsResolver))
         .build()
         .map_err(|e| {
-            crate::errors::OrionError::Internal(format!("Failed to build HTTP client: {e}"))
+            crate::errors::OrionError::internal(format!("Failed to build HTTP client: {e}"))
         })?;
 
     // Shared datalogic engine — used by handlers for template evaluation and

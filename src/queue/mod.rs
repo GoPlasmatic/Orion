@@ -250,7 +250,9 @@ impl TraceQueue {
                     ))
                 }
                 mpsc::error::TrySendError::Closed(_) => {
-                    crate::errors::OrionError::Queue("Trace queue is closed".to_string())
+                    crate::errors::OrionError::ServiceUnavailable(
+                        "Trace queue is closed".to_string(),
+                    )
                 }
             });
         }
@@ -429,7 +431,7 @@ mod tests {
             .await
             .expect_err("closed queue must be rejected");
         assert!(
-            matches!(err, crate::errors::OrionError::Queue(_)),
+            matches!(err, crate::errors::OrionError::ServiceUnavailable(_)),
             "expected Queue error, got: {err:?}"
         );
     }

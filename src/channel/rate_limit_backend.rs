@@ -85,7 +85,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
             // N7: not resolved here — the per-channel `on_backend_error`
             // policy lives with the caller, which also logs and records the
             // error metric with the channel in scope.
-            Err(e) => Err(OrionError::Internal(format!(
+            Err(e) => Err(OrionError::internal(format!(
                 "rate-limit backend '{}': {e}",
                 self.scope
             ))),

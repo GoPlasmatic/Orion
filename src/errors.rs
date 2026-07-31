@@ -70,8 +70,20 @@ pub enum OrionError {
     #[error("Conflict: {0}")]
     Conflict(String),
 
-    #[error("Internal error: {0}")]
-    Internal(String),
+    /// An internal failure, with the cause attached when there is one.
+    ///
+    /// G11: this was two variants. `Internal(String)` was `InternalSource`
+    /// minus a cause, and since G2 routed every 5xx through one redaction
+    /// policy the pair became indistinguishable at the boundary — both answer
+    /// 500 `INTERNAL_ERROR` with "An internal error occurred" and log the
+    /// detail. Two variants that provably differ in nothing a caller or an
+    /// operator can observe are one variant with an optional field.
+    #[error("{context}")]
+    Internal {
+        context: String,
+        #[source]
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
 
     #[error("Configuration error: {message}")]
     Config { message: String },
@@ -110,16 +122,6 @@ pub enum OrionError {
     #[error("Method not allowed: {0}")]
     MethodNotAllowed(String),
 
-    #[error("Queue error: {0}")]
-    Queue(String),
-
-    #[error("{context}")]
-    InternalSource {
-        context: String,
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
-
     #[error("Storage error: {0}")]
     Storage(#[from] sqlx::Error),
 
@@ -137,10 +139,29 @@ impl OrionError {
             OrionError::Storage(_) => true,
             OrionError::Engine(e) => e.retryable(),
             OrionError::RateLimited(_) => true,
-            OrionError::Queue(_) => true,
             OrionError::ServiceUnavailable(_) => true,
             OrionError::Timeout { .. } => true,
             _ => false,
+        }
+    }
+
+    /// An internal failure with no cause to attach.
+    pub fn internal(context: impl Into<String>) -> Self {
+        OrionError::Internal {
+            context: context.into(),
+            source: None,
+        }
+    }
+
+    /// An internal failure carrying the error that caused it. The cause reaches
+    /// the log, never the client.
+    pub fn internal_from(
+        context: impl Into<String>,
+        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
+        OrionError::Internal {
+            context: context.into(),
+            source: Some(source.into()),
         }
     }
 
@@ -231,7 +252,7 @@ impl OrionError {
             // and whole database URLs — `detect_backend` is called on a
             // *connector's* connection string at request time, so a DSN with
             // credentials could round-trip into a 500 body.
-            OrionError::Internal(_) => (
+            OrionError::Internal { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "INTERNAL_ERROR",
                 "An internal error occurred".to_string(),
@@ -240,16 +261,6 @@ impl OrionError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "CONFIG_ERROR",
                 "A configuration error occurred".to_string(),
-            ),
-            OrionError::Queue(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "QUEUE_ERROR",
-                "An internal queue error occurred".to_string(),
-            ),
-            OrionError::InternalSource { .. } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                "An internal error occurred".to_string(),
             ),
             OrionError::Storage(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -280,14 +291,14 @@ impl OrionError {
     /// message is redacted. No-op for variants that surface their own message.
     fn log_internal_detail(&self) {
         match self {
-            OrionError::Internal(msg) => {
-                tracing::error!(error.category = "internal", error = %msg, "internal error")
+            OrionError::Internal {
+                context,
+                source: None,
+            } => {
+                tracing::error!(error.category = "internal", error = %context, "internal error")
             }
             OrionError::Config { message } => {
                 tracing::error!(error.category = "config", error = %message, "config error")
-            }
-            OrionError::Queue(msg) => {
-                tracing::error!(error.category = "queue", error = %msg, "queue error")
             }
             OrionError::Storage(e) => {
                 tracing::error!(error.category = "storage", error = %e, "storage error")
@@ -295,7 +306,10 @@ impl OrionError {
             OrionError::Serialization(e) => {
                 tracing::error!(error.category = "serialization", error = %e, "serialization error")
             }
-            OrionError::InternalSource { context, source } => tracing::error!(
+            OrionError::Internal {
+                context,
+                source: Some(source),
+            } => tracing::error!(
                 error.category = "internal",
                 error.context = %context,
                 error.source = %source,
@@ -526,7 +540,7 @@ mod tests {
 
     #[test]
     fn test_internal_status() {
-        let err = OrionError::Internal("something broke".to_string());
+        let err = OrionError::internal("something broke");
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
@@ -556,19 +570,26 @@ mod tests {
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
+    /// G11: a closed trace queue used to be `Queue`, a **500** that
+    /// `is_retryable()` reported as `true` — a contradiction, and one the
+    /// OpenAPI document never believed: it has always described queue-full and
+    /// queue-closed together as `503`. The adjacent arm in `TraceQueue::submit`
+    /// (queue *full*) was already `ServiceUnavailable`, so the two halves of one
+    /// condition answered with different status codes.
     #[test]
-    fn test_queue_error_status() {
-        let err = OrionError::Queue("queue is closed".to_string());
+    fn a_closed_queue_is_service_unavailable() {
+        let err = OrionError::ServiceUnavailable("queue is closed".to_string());
+        assert!(err.is_retryable());
         let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[test]
     fn test_internal_source_status() {
         let source = std::io::Error::other("disk full");
-        let err = OrionError::InternalSource {
+        let err = OrionError::Internal {
             context: "Failed to write file".to_string(),
-            source: Box::new(source),
+            source: Some(Box::new(source)),
         };
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
@@ -577,9 +598,9 @@ mod tests {
     #[test]
     fn test_internal_source_preserves_chain() {
         let source = std::io::Error::other("connection reset");
-        let err = OrionError::InternalSource {
+        let err = OrionError::Internal {
             context: "Failed to connect to database".to_string(),
-            source: Box::new(source),
+            source: Some(Box::new(source)),
         };
         assert!(std::error::Error::source(&err).is_some());
     }
@@ -592,7 +613,7 @@ mod tests {
 
     #[test]
     fn test_retryable_queue() {
-        assert!(OrionError::Queue("closed".to_string()).is_retryable());
+        assert!(OrionError::ServiceUnavailable("closed".to_string()).is_retryable());
     }
 
     #[test]
@@ -674,14 +695,14 @@ mod tests {
 
     #[test]
     fn test_internal_not_retryable() {
-        assert!(!OrionError::Internal("err".to_string()).is_retryable());
+        assert!(!OrionError::internal("err").is_retryable());
     }
 
     #[test]
     fn test_internal_source_not_retryable() {
-        let err = OrionError::InternalSource {
+        let err = OrionError::Internal {
             context: "ctx".to_string(),
-            source: Box::new(std::io::Error::other("err")),
+            source: Some(Box::new(std::io::Error::other("err"))),
         };
         assert!(!err.is_retryable());
     }
@@ -720,7 +741,7 @@ mod tests {
                 .contains("dup")
         );
         assert!(
-            OrionError::Queue("closed".to_string())
+            OrionError::ServiceUnavailable("closed".to_string())
                 .to_string()
                 .contains("closed")
         );

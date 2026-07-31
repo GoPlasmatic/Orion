@@ -51,10 +51,10 @@ pub(crate) async fn create_backup(
     let dir = backup_dir.clone();
     tokio::task::spawn_blocking(move || std::fs::create_dir_all(&dir))
         .await
-        .map_err(|e| OrionError::Internal(format!("spawn_blocking failed: {e}")))?
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::internal(format!("spawn_blocking failed: {e}")))?
+        .map_err(|e| OrionError::Internal {
             context: format!("Failed to create backup directory '{backup_dir}'"),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })?;
 
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
@@ -68,9 +68,9 @@ pub(crate) async fn create_backup(
     let backed_up = state
         .backup_sqlite_into(&backup_path_str)
         .await
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::Internal {
             context: "Failed to create database backup".to_string(),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })?;
     if !backed_up {
         return Err(OrionError::BadRequest(
@@ -81,10 +81,10 @@ pub(crate) async fn create_backup(
     let meta_path = backup_path.clone();
     let metadata = tokio::task::spawn_blocking(move || std::fs::metadata(&meta_path))
         .await
-        .map_err(|e| OrionError::Internal(format!("spawn_blocking failed: {e}")))?
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::internal(format!("spawn_blocking failed: {e}")))?
+        .map_err(|e| OrionError::Internal {
             context: "Failed to read backup file metadata".to_string(),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })?;
 
     // Retention (O6): the backup succeeded, so prune down to the configured
@@ -213,9 +213,9 @@ pub(crate) async fn list_backups(State(state): State<AppState>) -> Result<Json<V
                 return Ok(Vec::new());
             }
             Err(e) => {
-                return Err(OrionError::InternalSource {
+                return Err(OrionError::Internal {
                     context: format!("Failed to read backup directory '{backup_dir}'"),
-                    source: Box::new(e),
+                    source: Some(Box::new(e)),
                 });
             }
         };
@@ -247,7 +247,7 @@ pub(crate) async fn list_backups(State(state): State<AppState>) -> Result<Json<V
         Ok(backups)
     })
     .await
-    .map_err(|e| OrionError::Internal(format!("spawn_blocking failed: {e}")))??;
+    .map_err(|e| OrionError::internal(format!("spawn_blocking failed: {e}")))??;
 
     Ok(data_response(backups))
 }

@@ -111,12 +111,10 @@ impl KafkaProducer {
         super::apply_client_auth(&mut client_config, auth, extra_config);
 
         let producer: FutureProducer =
-            client_config
-                .create()
-                .map_err(|e| OrionError::InternalSource {
-                    context: "Failed to create Kafka producer".to_string(),
-                    source: Box::new(e),
-                })?;
+            client_config.create().map_err(|e| OrionError::Internal {
+                context: "Failed to create Kafka producer".to_string(),
+                source: Some(Box::new(e)),
+            })?;
 
         Ok(Self { producer })
     }
@@ -156,9 +154,9 @@ impl KafkaProducer {
         self.producer
             .send(record, Duration::from_secs(30))
             .await
-            .map_err(|(e, _)| OrionError::InternalSource {
+            .map_err(|(e, _)| OrionError::Internal {
                 context: format!("Kafka send to '{topic}' failed"),
-                source: Box::new(e),
+                source: Some(Box::new(e)),
             })?;
 
         Ok(())

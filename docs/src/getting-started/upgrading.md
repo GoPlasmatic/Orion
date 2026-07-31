@@ -1303,6 +1303,25 @@ upgrade still contain plaintext headers at rest; the trace-read projection
 hides them from HTTP responses, and `trace_queue.retention_hours` ages them
 out.
 
+### A closed trace queue answers 503, not 500
+
+**What changed.** `TraceQueue::submit` had two adjacent failure arms for one
+condition — the queue cannot take this message. Queue *full* answered `503
+SERVICE_UNAVAILABLE`; queue *closed* answered `500 QUEUE_ERROR`, which
+`is_retryable()` simultaneously reported as retryable. A retryable 500 is a
+contradiction, and the OpenAPI document had never described it: it lists
+queue-full and queue-closed together under `503`.
+
+Both now answer `503` with code `SERVICE_UNAVAILABLE`. The `QUEUE_ERROR` code is
+gone.
+
+**How you'll notice.** Only during shutdown, which is the one time the queue is
+closed while requests still arrive. A client retrying on 503 now retries this
+too, which is the correct behaviour and was already what the documentation
+promised.
+
+**What to do.** Nothing, unless you match on the literal string `QUEUE_ERROR`.
+
 ### `engine.reload_timeout_secs` and `orion_engine_lock_wait_seconds` are gone
 
 **What changed.** The live engine was held behind a read-write lock, so every

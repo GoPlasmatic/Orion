@@ -28,12 +28,12 @@ pub async fn load_rustls_config(
     ensure_crypto_provider();
     RustlsConfig::from_pem_file(cert_path, key_path)
         .await
-        .map_err(|e| OrionError::InternalSource {
+        .map_err(|e| OrionError::Internal {
             context: format!(
                 "Failed to initialize TLS from cert='{cert_path}' key='{key_path}'. \
                  Verify that both are valid PEM-encoded files."
             ),
-            source: Box::new(e),
+            source: Some(Box::new(e)),
         })
 }
 

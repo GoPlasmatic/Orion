@@ -248,7 +248,7 @@ pub(crate) async fn update_connector(
             Some(ct) => ct,
             None => serde_json::from_value(Value::String(stored.connector_type.clone())).map_err(
                 |_| {
-                    OrionError::Internal(format!(
+                    OrionError::internal(format!(
                         "Stored connector '{id}' has unknown type '{}'",
                         stored.connector_type
                     ))

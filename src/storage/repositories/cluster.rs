@@ -63,7 +63,7 @@ impl SqlClusterRepository {
     }
 
     fn missing_epoch_row() -> OrionError {
-        OrionError::Internal(
+        OrionError::internal(
             "config_epoch row missing — cluster_coordination migration not applied".to_string(),
         )
     }

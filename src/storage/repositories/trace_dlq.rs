@@ -342,9 +342,9 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
             self.pool
                 .fetch_one_as::<TraceDlqEntry>(&sql, values)
                 .await
-                .map_err(|e| OrionError::InternalSource {
+                .map_err(|e| OrionError::Internal {
                     context: "Failed to fetch inserted DLQ entry".to_string(),
-                    source: Box::new(e),
+                    source: Some(Box::new(e)),
                 })
         })
         .await
