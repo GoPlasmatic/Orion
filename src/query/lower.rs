@@ -604,6 +604,44 @@ mod tests {
         ));
     }
 
+    /// `10 > x > 1` is the same range as `1 < x < 10`, so the `>` arm has to
+    /// reverse its bounds on the way into `Between` — the one arm of
+    /// `lower_chained` that does not pass its operands through in order.
+    /// Asserted separately from the `<` arms because a reversal that is
+    /// dropped (or applied twice) produces `low=10, high=1`: an empty range
+    /// that answers every query with zero rows rather than an error.
+    #[test]
+    fn test_chained_strict_range_descending() {
+        let c = lower_ok(json!({ ">": [10, {"field": "x"}, 1] }));
+        assert_eq!(
+            c,
+            Cond::Between {
+                field: FieldRef::identity("x"),
+                low: Value::Int(1),
+                high: Value::Int(10),
+                low_incl: false,
+                high_incl: false,
+                negated: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_chained_inclusive_range_descending() {
+        let c = lower_ok(json!({ ">=": [10, {"field": "x"}, 1] }));
+        assert_eq!(
+            c,
+            Cond::Between {
+                field: FieldRef::identity("x"),
+                low: Value::Int(1),
+                high: Value::Int(10),
+                low_incl: true,
+                high_incl: true,
+                negated: false,
+            }
+        );
+    }
+
     #[test]
     fn test_membership() {
         let c = lower_ok(json!({ "in": [{"field": "status"}, ["a", "b"]] }));

@@ -757,6 +757,192 @@ mod tests {
         );
     }
 
+    /// The variant's name, as an exhaustive match with **no wildcard arm**.
+    ///
+    /// This exists for its compile error: adding a variant to [`OrionError`]
+    /// stops this file building until the variant is named here, which is the
+    /// prompt to give it a sample in [`wire_contract`] too.
+    fn variant_name(err: &OrionError) -> &'static str {
+        match err {
+            OrionError::NotFound(_) => "NotFound",
+            OrionError::BadRequest(_) => "BadRequest",
+            OrionError::Validation { .. } => "Validation",
+            OrionError::Unauthorized(_) => "Unauthorized",
+            OrionError::Forbidden(_) => "Forbidden",
+            OrionError::Conflict(_) => "Conflict",
+            OrionError::Internal { .. } => "Internal",
+            OrionError::Config { .. } => "Config",
+            OrionError::RateLimited(_) => "RateLimited",
+            OrionError::RateLimitKeyUnavailable(_) => "RateLimitKeyUnavailable",
+            OrionError::ResponseTooLarge(_) => "ResponseTooLarge",
+            OrionError::ServiceUnavailable(_) => "ServiceUnavailable",
+            OrionError::Timeout { .. } => "Timeout",
+            OrionError::UnsupportedMediaType(_) => "UnsupportedMediaType",
+            OrionError::MethodNotAllowed(_) => "MethodNotAllowed",
+            OrionError::Storage(_) => "Storage",
+            OrionError::Engine(_) => "Engine",
+            OrionError::Serialization(_) => "Serialization",
+        }
+    }
+
+    /// The number of variants [`variant_name`] enumerates. Bumping this is the
+    /// second half of the prompt: the compile error says "name the variant",
+    /// this assertion says "and state its wire contract below".
+    const VARIANT_COUNT: usize = 18;
+
+    /// One sample per variant with the `(status, code)` it must answer with.
+    ///
+    /// The `code` is the machine-readable half of the documented
+    /// `{"error": {"code", "message"}}` envelope — a client branches on it, so
+    /// renaming one is a breaking API change. The tests around this one assert
+    /// status and retryability but not `code`, which left most of the strings
+    /// unpinned: `STORAGE_ERROR`, `CONFIG_ERROR`, `UNSUPPORTED_MEDIA_TYPE` and
+    /// `RESPONSE_TOO_LARGE` could each be renamed with the whole suite green.
+    fn wire_contract() -> Vec<(OrionError, StatusCode, &'static str)> {
+        vec![
+            (
+                OrionError::NotFound("workflow xyz".into()),
+                StatusCode::NOT_FOUND,
+                "NOT_FOUND",
+            ),
+            (
+                OrionError::BadRequest("bad".into()),
+                StatusCode::BAD_REQUEST,
+                "BAD_REQUEST",
+            ),
+            (
+                OrionError::validation("invalid"),
+                StatusCode::BAD_REQUEST,
+                "VALIDATION_ERROR",
+            ),
+            (
+                OrionError::Unauthorized("no key".into()),
+                StatusCode::UNAUTHORIZED,
+                "UNAUTHORIZED",
+            ),
+            (
+                OrionError::Forbidden("nope".into()),
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+            ),
+            (
+                OrionError::Conflict("dup".into()),
+                StatusCode::CONFLICT,
+                "CONFLICT",
+            ),
+            (
+                OrionError::internal("boom"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+            ),
+            (
+                OrionError::Config {
+                    message: "bad toml".into(),
+                },
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "CONFIG_ERROR",
+            ),
+            (
+                OrionError::RateLimited("slow down".into()),
+                StatusCode::TOO_MANY_REQUESTS,
+                "RATE_LIMITED",
+            ),
+            // Shares RATE_LIMITED with the variant above by design: a caller
+            // that cannot be metered is told to back off the same way.
+            (
+                OrionError::RateLimitKeyUnavailable("key logic failed".into()),
+                StatusCode::TOO_MANY_REQUESTS,
+                "RATE_LIMITED",
+            ),
+            (
+                OrionError::ResponseTooLarge("big".into()),
+                StatusCode::BAD_GATEWAY,
+                "RESPONSE_TOO_LARGE",
+            ),
+            (
+                OrionError::ServiceUnavailable("closed".into()),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "SERVICE_UNAVAILABLE",
+            ),
+            (
+                OrionError::Timeout {
+                    channel: "orders".into(),
+                    timeout_ms: 500,
+                },
+                StatusCode::GATEWAY_TIMEOUT,
+                "TIMEOUT",
+            ),
+            (
+                OrionError::UnsupportedMediaType("text/plain".into()),
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "UNSUPPORTED_MEDIA_TYPE",
+            ),
+            (
+                OrionError::MethodNotAllowed("PUT".into()),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "METHOD_NOT_ALLOWED",
+            ),
+            (
+                OrionError::Storage(sqlx::Error::PoolTimedOut),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "STORAGE_ERROR",
+            ),
+            // `Engine` delegates to `engine_error_response`; the arms that
+            // branch on the inner DataflowError are covered by the tests above.
+            (
+                OrionError::Engine(dataflow_rs::DataflowError::Unknown("x".into())),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ENGINE_ERROR",
+            ),
+            (
+                OrionError::Serialization(
+                    serde_json::from_str::<i32>("not json").expect_err("test"),
+                ),
+                StatusCode::BAD_REQUEST,
+                "SERIALIZATION_ERROR",
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_variant_states_its_status_and_code() {
+        for (err, want_status, want_code) in wire_contract() {
+            let name = variant_name(&err);
+            let (status, code, _) = err.response_parts();
+            assert_eq!(status, want_status, "{name} answers the wrong status");
+            assert_eq!(code, want_code, "{name} answers the wrong error code");
+        }
+    }
+
+    #[test]
+    fn the_wire_contract_covers_every_variant() {
+        let covered: std::collections::HashSet<&str> = wire_contract()
+            .iter()
+            .map(|(e, ..)| variant_name(e))
+            .collect();
+        assert_eq!(
+            covered.len(),
+            VARIANT_COUNT,
+            "wire_contract() covers {} of {VARIANT_COUNT} variants; a variant with no sample \
+             has its status and error code unpinned",
+            covered.len()
+        );
+    }
+
+    /// The `code` a client branches on must survive the trip through
+    /// `IntoResponse`, not just `response_parts`.
+    #[tokio::test]
+    async fn the_code_reaches_the_response_body() {
+        for (err, _, want_code) in wire_contract() {
+            let name = variant_name(&err);
+            let body = body_to_value(err.into_response()).await;
+            assert_eq!(
+                body["error"]["code"], want_code,
+                "{name} did not put its code on the wire (body: {body})"
+            );
+        }
+    }
+
     async fn body_to_value(response: Response) -> Value {
         let body_bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
             .await
