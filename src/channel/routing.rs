@@ -270,12 +270,16 @@ impl RouteTable {
     /// loser is simply dead — its declared route resolves to the winner's
     /// workflow, which is a *wrong answer*, not an error. Nothing said so.
     fn warn_on_conflicts(&self) {
+        // Canonicalised once per entry rather than once per *pair*. The inner
+        // loop used to call `winner.canonical()`, which rebuilds a `String` from
+        // the entry's segments, so the scan allocated O(n^2) strings — ~125k of
+        // them at 500 routes, on every engine reload, to report the handful of
+        // collisions that are usually zero.
+        let canonicals: Vec<String> = self.entries.iter().map(RouteEntry::canonical).collect();
         for (i, entry) in self.entries.iter().enumerate() {
-            let canonical: String = entry.canonical();
-            for winner in &self.entries[..i] {
-                if winner.canonical() == canonical
-                    && methods_overlap(&winner.methods, &entry.methods)
-                {
+            let canonical = &canonicals[i];
+            for (j, winner) in self.entries[..i].iter().enumerate() {
+                if &canonicals[j] == canonical && methods_overlap(&winner.methods, &entry.methods) {
                     tracing::warn!(
                         route = %canonical,
                         shadowed_channel = %entry.channel_name,
