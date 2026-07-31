@@ -298,14 +298,22 @@ async fn test_tls_drain_withdraws_readiness_before_stopping_accept() {
     // 2. Signal. The drain sequence (withdraw readiness, keep accepting
     // through the grace window, then graceful_shutdown) runs INSIDE the real
     // serve_tls — nothing is re-implemented here.
+    // Polled, not slept on — see the note in `drain_test.rs`: a fixed sleep
+    // has to land inside the grace window from both directions, which is a
+    // guess on a loaded runner.
     shutdown_tx.send(()).expect("send shutdown");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    let resp = client
-        .get(format!("{base}/readyz"))
-        .send()
-        .await
-        .expect("readyz reachable during grace");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let resp = loop {
+        let resp = client
+            .get(format!("{base}/readyz"))
+            .send()
+            .await
+            .expect("readyz reachable during grace");
+        if resp.status() == 503 || tokio::time::Instant::now() >= deadline {
+            break resp;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
     assert_eq!(resp.status(), 503, "readyz must flip to 503 during drain");
 
     // ...and a brand-new TLS connection is still accepted during the window.

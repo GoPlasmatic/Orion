@@ -88,7 +88,7 @@ are `#[ignore]`d so the default run stays Docker-free:
 # Integration binary: portable-dialect round-trips, raw-SQL backends,
 # Mongo/ES connectors, Redis cache/dedup, column-type matrix, dynamic
 # inputs, Kafka channels
-cargo test --test integration -- --ignored data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test
+cargo test --test integration -- --ignored data_parity_test data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test
 cargo test --test integration -- --ignored kafka_test
 
 # Orion's own storage on Postgres / MySQL
@@ -104,7 +104,41 @@ cargo test --test cluster -- --ignored --test-threads=1
 
 CI runs exactly these invocations in the `integration-containers` job
 (`.github/workflows/ci.yml`); Kafka gets its own step because sharing one
-invocation with the other containers starves the brokers.
+invocation with the other containers starves the brokers. Every step after
+the first carries `if: !cancelled()`, so a flaky broker cannot hide a real
+Postgres or schema-parity failure until the next push.
+
+Because those filters are the only thing that ever selects an `#[ignore]`d
+test, a module missing from them runs **nowhere** — not locally (ignored) and
+not in CI (unmatched), silently and without failing.
+`ci_filter_drift_test.rs` asserts the two agree in both directions: every
+module with `#[ignore]` tests is named by a filter, and every filter still
+matches a module. Add a container-gated module and the default suite fails
+until `ci.yml` is updated.
+
+## Mutation Testing
+
+Coverage says a line ran; it does not say anything would have failed if that
+line were wrong. `errors.rs` had 47 tests and full line coverage of
+`response_parts`, and four of its error-code strings could still be renamed
+with the whole suite green — every assertion checked the HTTP status, none
+checked the code.
+
+[`cargo-mutants`](https://mutants.rs) closes that gap. `.cargo/mutants.toml`
+scopes it to the modules where a surviving mutant is a security or
+data-correctness bug: SSRF predicates, admin auth, secret masking, the
+circuit breaker, the portable query dialect, and the error envelope.
+
+```bash
+cargo mutants                        # the whole scoped set (~819 mutants — hours)
+cargo mutants --shard 1/8            # one slice of it
+cargo mutants --in-diff <(git diff origin/main...)   # just what you changed
+```
+
+CI runs the last form on pull requests (the `mutants` job), so only code a PR
+touches is mutated. A surviving mutant fails the job; to accept one as
+genuinely equivalent, annotate the function `#[mutants::skip]` with a comment
+saying why, rather than widening a glob.
 
 ## Benchmarks
 

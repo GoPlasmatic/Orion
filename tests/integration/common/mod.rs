@@ -698,8 +698,16 @@ pub async fn poll_trace_until_done(
         body = envelope["data"].take();
         let status = body["status"].as_str().unwrap_or("");
         if status == "completed" || status == "failed" {
-            break;
+            return body;
         }
     }
-    body
+    // Running out of polls used to return the last non-terminal body, so a
+    // pipeline that stopped finishing traces surfaced as a confusing
+    // assertion further down — or, at the call sites that discard the result,
+    // as nothing at all. Fail here instead, naming the status it was stuck in.
+    panic!(
+        "trace {trace_id} did not reach a terminal status within {max_polls} polls \
+         ({}ms); last body: {body}",
+        max_polls * 50
+    );
 }

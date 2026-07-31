@@ -484,10 +484,98 @@ fn single_arg<'a>(arg: &'a Json, at: &str) -> Result<&'a Json, QueryError> {
 mod tests {
     use super::*;
     use crate::query::ir::{EsStorage, JunctionRef, MongoStorage, RelRef};
+    use proptest::prelude::*;
+    use proptest::test_runner::TestCaseError;
     use serde_json::json;
 
     fn lower_ok(filter: Json) -> Cond {
         lower(&filter, &Params::new()).expect("lowering should succeed")
+    }
+
+    /// Arbitrary JSON, with keys biased toward operator-shaped strings so a
+    /// meaningful share of the generated trees reach real lowering arms
+    /// instead of bouncing off `classify` immediately.
+    ///
+    /// Depth is capped at 4. Production input is bounded too, one layer up:
+    /// `serde_json` refuses to deserialize past 128 levels of nesting, so
+    /// `lower_cond`'s recursion cannot be driven arbitrarily deep by a
+    /// request body.
+    fn arb_json() -> impl Strategy<Value = Json> {
+        let leaf = prop_oneof![
+            Just(Json::Null),
+            any::<bool>().prop_map(Json::from),
+            any::<i64>().prop_map(Json::from),
+            ".*".prop_map(Json::from),
+        ];
+        leaf.prop_recursive(4, 24, 3, |inner| {
+            prop_oneof![
+                prop::collection::vec(inner.clone(), 0..4).prop_map(Json::from),
+                prop::collection::vec(
+                    (
+                        prop_oneof![
+                            Just("and".to_string()),
+                            Just("or".to_string()),
+                            Just("!".to_string()),
+                            Just("<".to_string()),
+                            Just(">".to_string()),
+                            Just("==".to_string()),
+                            Just("in".to_string()),
+                            Just("some".to_string()),
+                            Just("field".to_string()),
+                            Just("param".to_string()),
+                            "[a-z]{1,4}",
+                        ],
+                        inner,
+                    ),
+                    0..3,
+                )
+                .prop_map(|pairs| Json::Object(pairs.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest! {
+        /// Totality, in the same spirit as `match_route_is_total`: an
+        /// arbitrary filter tree must lower to a `Cond` or to a located
+        /// `QueryError`, and never panic or overflow. A panic here aborts a
+        /// data-plane request mid-flight rather than answering 400.
+        #[test]
+        fn lowering_is_total(filter in arb_json()) {
+            let _ = lower(&filter, &Params::new());
+        }
+
+        /// `a < x < b` and `b > x > a` denote the same range, so they must
+        /// lower to the same `Between`. This is the invariant the `>`/`>=`
+        /// arms' operand reversal exists to satisfy, stated once as a
+        /// symmetry instead of re-asserted per operator — it holds for every
+        /// pair of bounds, including the reversed and equal ones that a
+        /// hand-written case would not think to try.
+        #[test]
+        fn ascending_and_descending_chains_agree(a in -10_000i64..10_000, b in -10_000i64..10_000) {
+            prop_assert_eq!(
+                lower_ok(json!({ "<": [a, {"field": "x"}, b] })),
+                lower_ok(json!({ ">": [b, {"field": "x"}, a] })),
+            );
+            prop_assert_eq!(
+                lower_ok(json!({ "<=": [a, {"field": "x"}, b] })),
+                lower_ok(json!({ ">=": [b, {"field": "x"}, a] })),
+            );
+        }
+
+        /// Strictness is carried, not invented: `<`/`>` produce exclusive
+        /// bounds on both ends and `<=`/`>=` inclusive ones, whatever the
+        /// bounds are.
+        #[test]
+        fn chained_strictness_matches_the_operator(a in -10_000i64..10_000, b in -10_000i64..10_000) {
+            for (op, incl) in [("<", false), (">", false), ("<=", true), (">=", true)] {
+                let c = lower_ok(json!({ op: [a, {"field": "x"}, b] }));
+                let Cond::Between { low_incl, high_incl, .. } = c else {
+                    return Err(TestCaseError::fail(format!("{op} did not lower to Between")));
+                };
+                prop_assert_eq!(low_incl, incl, "{} low bound", op);
+                prop_assert_eq!(high_incl, incl, "{} high bound", op);
+            }
+        }
     }
 
     /// A registry with users→orders (has_many) and users↔tags (many-to-many).

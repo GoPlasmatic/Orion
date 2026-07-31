@@ -57,13 +57,26 @@ async fn drain_withdraws_readiness_before_stopping_accept() {
     assert_eq!(resp.status(), 200);
 
     // 2. Signal: readiness withdrawn immediately...
+    //
+    // Polled rather than slept on. A fixed sleep here sits inside a two-sided
+    // window — long enough for readiness to flip, short enough to still be
+    // inside the 2s grace window with two HTTP round-trips left to make — and
+    // on a loaded runner both ends are guessable. Polling returns as soon as
+    // the flag flips, which leaves the rest of the grace window for the
+    // assertions below.
     shutdown_tx.send(()).expect("send shutdown");
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let resp = client
-        .get(format!("{base}/readyz"))
-        .send()
-        .await
-        .expect("readyz reachable during grace");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    let resp = loop {
+        let resp = client
+            .get(format!("{base}/readyz"))
+            .send()
+            .await
+            .expect("readyz reachable during grace");
+        if resp.status() == 503 || tokio::time::Instant::now() >= deadline {
+            break resp;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
     assert_eq!(resp.status(), 503, "readyz must flip to 503 during drain");
 
     // ...but new connections still get served during the grace window.

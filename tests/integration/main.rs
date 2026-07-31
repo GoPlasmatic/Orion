@@ -21,6 +21,7 @@ mod channel_config_validation_test;
 mod channel_dedup_test;
 mod channel_load_refusal_test;
 mod channel_response_cache_test;
+mod ci_filter_drift_test;
 mod circuit_breaker_test;
 mod cli_subcommands_test;
 mod cluster_epoch_test;
