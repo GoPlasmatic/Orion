@@ -548,6 +548,7 @@ orion-server migrate --dry-run                      # Preview pending migrations
 orion-server lint path/to/workflow.json             # Strict-validate a workflow JSON file
 orion-server dry-run -w workflow.json -i input.json # Execute a workflow against a sample payload
 orion-server test-connectivity                      # Probe DB (and Kafka if enabled)
+orion-server preflight                              # Scan stored channels/workflows before upgrading
 orion-server dump-openapi > docs/openapi.json       # Write the OpenAPI 3.1 spec (checked in for offline use / client gen)
 ```
 

@@ -33,6 +33,7 @@ EXAMPLES:\n    \
     orion-server lint workflow.json           Validate a workflow JSON file\n    \
     orion-server dry-run -w wf.json -i x.json Dry-run a workflow against an input\n    \
     orion-server test-connectivity            Probe DB (and Kafka if enabled)\n    \
+    orion-server preflight                    Scan stored channels/workflows before upgrading\n    \
     orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n\n\
 ENVIRONMENT VARIABLES:\n    \
     All settings can be overridden via ORION_SECTION__KEY env vars:\n\n    \
@@ -104,6 +105,20 @@ enum Command {
     /// Needs no config, database, or running server. Redirect it to refresh
     /// the checked-in copy: `orion-server dump-openapi > docs/openapi.json`.
     DumpOpenapi,
+    /// Scan the stored channels and workflows for anything the 1.0 rules will
+    /// refuse, before the upgrade rather than during it.
+    ///
+    /// Answers the database-backed rows of the 0.3.0 -> 1.0.0 upgrade
+    /// checklist: channel configs that no longer parse (the pre-1.0 `cors` and
+    /// `backpressure.max_concurrent` spellings, and typos that were always
+    /// silently ignored), workflows whose tasks the create validator would
+    /// reject, and `data_query`/`data_write` tasks with no `schema` — the one
+    /// change that surfaces on live traffic rather than at startup.
+    ///
+    /// Read-only, and exits non-zero when it finds anything, so it can gate a
+    /// deploy. Config-file and ORION_* problems are reported by
+    /// `validate-config`; this reads what only the database knows.
+    Preflight,
 }
 
 #[tokio::main]
@@ -147,6 +162,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Command::TestConnectivity) => return cli::run_test_connectivity(&config).await,
         Some(Command::DumpOpenapi) => return cli::run_dump_openapi(),
+        Some(Command::Preflight) => return cli::run_preflight(&config).await,
         None => {} // Continue to start the server
     }
 

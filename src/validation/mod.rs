@@ -14,4 +14,7 @@ pub use endpoints::{
     check_broker_endpoints, check_cache_endpoint, check_db_endpoint, check_mongo_hosts,
 };
 pub use ssrf::{PinnedDnsResolver, validate_url_not_private};
-pub use workflows::{validate_create_workflow, validate_update_workflow, validate_workflow_id};
+pub use workflows::{
+    validate_create_workflow, validate_update_workflow, validate_workflow_id,
+    validate_workflow_tasks_schema,
+};

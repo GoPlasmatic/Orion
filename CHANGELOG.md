@@ -1058,6 +1058,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`orion-server preflight` scans the stored estate before an upgrade.** The
+  0.3.0 → 1.0.0 guide carries an 18-row checklist, and several rows were only
+  answerable by running SQL against the `channels` and `workflows` tables by
+  hand. This runs those checks in the binary that knows the rules: channel
+  configs that no longer parse (naming the replacement key for the two
+  renames), workflows whose tasks the create validator would reject, and —
+  the one nothing else could catch in advance — `data_query`/`data_write`
+  tasks with no `schema`.
+
+  That last one is why the command exists. Every other high-impact 1.0 break
+  either fails at startup or is visible in a config file; a schema-less dialect
+  task keeps loading and activating and fails at its *first request*, which
+  means production traffic. Read-only, needs only `storage.url`, reports each
+  finding against its checklist row, and exits non-zero so it can gate a
+  deploy. Config-file and `ORION_*` problems are already reported by
+  `validate-config`, which is what preflight's header says rather than
+  duplicating them.
+
 - **`orion_task_duration_seconds{workflow,task,function}` times every task,
   including the eight built-ins nothing could reach.** `map`, `validate`,
   `filter`, `parse_json`, `parse_xml`, `publish_json`, `publish_xml` and `log`

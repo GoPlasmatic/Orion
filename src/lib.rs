@@ -42,6 +42,7 @@ pub mod engine;
 pub mod errors;
 pub mod kafka;
 pub mod metrics;
+pub mod preflight;
 pub(crate) mod query;
 pub mod queue;
 pub mod server;

@@ -312,6 +312,52 @@ pub(crate) async fn run_dry_run(
     }
 }
 
+/// Scan the stored estate for anything the 1.0 rules refuse (`preflight`).
+///
+/// Deliberately opens the pool *without* migrating: the point is to report on
+/// the database as it stands, before the upgrade, and migrating first would be
+/// a side effect no one asked a read-only check for.
+///
+/// Config-file and `ORION_*` problems never reach this function — `load_config`
+/// refuses unknown keys and retired variable names before any subcommand
+/// dispatches — so getting this far is itself the result for that surface, and
+/// the header says so rather than leaving it unstated.
+pub(crate) async fn run_preflight(
+    config: &config::AppConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use orion::storage::repositories::channels::SqlChannelRepository;
+    use orion::storage::repositories::workflows::SqlWorkflowRepository;
+
+    let pool = orion::storage::init_pool_no_migrate(&config.storage)
+        .await
+        .map_err(|e| format!("storage: connection failed: {e}"))?;
+
+    println!("Config and environment: OK (checked while loading).");
+    eprintln!("Scanning stored channels and workflows ...");
+
+    let channels = SqlChannelRepository::new(pool.clone());
+    let workflows = SqlWorkflowRepository::new(pool);
+    let findings = orion::preflight::scan(&channels, &workflows).await?;
+
+    if findings.is_empty() {
+        println!("Stored channels and workflows: OK — nothing to migrate.");
+        return Ok(());
+    }
+
+    println!(
+        "\n{} item(s) need attention before upgrading. Numbers in brackets are \
+         checklist rows in docs/src/getting-started/upgrading.md.\n",
+        findings.len()
+    );
+    for finding in &findings {
+        println!("{finding}\n");
+    }
+
+    // Non-zero so this can gate a deploy (`orion-server preflight || exit 1`),
+    // the same way `validate-config` and `lint` already do.
+    Err(format!("preflight found {} item(s) to fix", findings.len()).into())
+}
+
 /// Probe the configured backends: open the database pool and run the
 /// migrations check, and (if Kafka is enabled) fetch cluster metadata from
 /// the configured brokers with the configured auth. Avoids the "wrong

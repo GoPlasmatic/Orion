@@ -151,4 +151,5 @@ orion-server -c config.toml               # Start with config
 orion-server validate-config              # Validate config
 orion-server migrate                      # Run migrations
 orion-server migrate --dry-run            # Preview migrations
+orion-server preflight                    # Scan stored channels/workflows for 1.0 breaks
 ```

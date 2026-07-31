@@ -57,6 +57,7 @@ mod pagination_contract_test;
 mod pipeline_test;
 mod pool_exhaustion_test;
 mod postgres_test;
+mod preflight_test;
 mod profile_test;
 mod protocol_required_fields_test;
 mod queue_durability_test;

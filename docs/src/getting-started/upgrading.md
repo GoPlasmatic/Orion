@@ -14,7 +14,20 @@ the runtime's request path, deployment defaults, and operational surfaces.
 
 ## Before you start
 
-Work through this list. Each row links to the section with the detail.
+**Run this first.** It answers the database-backed rows below — 3, 7b, 14, and
+the two channel-config renames — against your actual estate rather than in the
+abstract, and exits non-zero if it finds anything:
+
+```bash
+orion-server preflight
+```
+
+It is read-only, needs only `storage.url`, and reports each finding with the
+checklist row it belongs to. Run it with the **1.0 binary against your 0.3.0
+database**, before you start the rollout. Config-file and `ORION_*` problems are
+reported separately by `orion-server validate-config`.
+
+Then work through this list. Each row links to the section with the detail.
 
 | # | Check | Applies to you if |
 |---|-------|-------------------|
@@ -1769,6 +1782,19 @@ returning wrong or incomplete data. The first fires unconditionally.
   ```json
   "schema": { "unmapped": "identity" }
   ```
+
+  *Find them first:* this is the one change on the page that fails on live
+  traffic rather than at startup, so do not discover it from your error rate.
+  `orion-server preflight` names every stored task in this shape, workflow and
+  task id. The direct query, if you would rather look yourself:
+
+  ```sql
+  SELECT name FROM current_workflows
+  WHERE tasks_json LIKE '%data_query%' OR tasks_json LIKE '%data_write%';
+  ```
+
+  That one over-reports — it cannot see which of those tasks already declares a
+  `schema`, which is exactly the part `preflight` does per task.
 
   Declare every column the task names in `fields`, `sort`, `filter`, `values`,
   `set`, `returning` and `include.<relation>.fields` — the last resolve against
