@@ -98,7 +98,7 @@ jobs:
       # contributor on 1.88 can build AND test, which also keeps
       # dev-dependencies honest about the MSRV.
       - name: Test on MSRV
-        run: cargo test
+        run: cargo test --no-fail-fast
 
   examples:
     name: Examples
@@ -181,8 +181,11 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
 
+      # --no-fail-fast: without it cargo stops after the first test binary that
+      # fails, so one broken unit test suppresses all 544 integration results
+      # and a red CI is diagnosed one round-trip at a time.
       - name: Run tests
-        run: cargo test --all-targets
+        run: cargo test --all-targets --no-fail-fast
 
       # --all-targets silently skips doctests; the config structs carry
       # heavily documented examples that would otherwise never compile.
@@ -307,14 +310,76 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      # --fail-under-lines turns the artifact into a ratchet: measured at
+      # 89.47% line / 89.97% function on the 1.0 tree, floored a little below
+      # that so an ordinary refactor has room to move but a module landing
+      # with no tests does not.
+      #
+      # Raise the floor when the real number moves up; never lower it to make
+      # a red build green. Note this only *reports* while the job carries
+      # continue-on-error (see above) — drop that key to make coverage
+      # genuinely blocking, once the job has proven it survives the runner.
       - name: Generate coverage report
-        run: cargo llvm-cov --lcov --output-path lcov.info -j 2
+        run: cargo llvm-cov --lcov --output-path lcov.info -j 2 --fail-under-lines 88
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v6
         with:
           name: coverage-report
           path: lcov.info
+
+  # Coverage answers "did this line run", which is not the same question as
+  # "would anything have failed if it were wrong". Four of the error-code
+  # strings in errors.rs sat at full line coverage and could still be renamed
+  # with the whole suite green, because every assertion around them checked
+  # the HTTP status instead.
+  #
+  # --in-diff keeps this proportional: only code the PR actually touched is
+  # mutated, intersected with the security- and correctness-critical globs in
+  # .cargo/mutants.toml. A PR touching none of them generates no mutants and
+  # passes in seconds.
+  mutants:
+    name: Mutation Testing (changed code)
+    runs-on: ubuntu-22.04
+    # PR-only: --in-diff needs two commits to compare, and on a branch push
+    # there is no natural base to diff against.
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          # Full history: the diff is taken against the merge base, which a
+          # shallow clone does not contain.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@cargo-mutants
+
+      - name: Diff against the merge base
+        run: git diff "origin/${{ github.base_ref }}"... > /tmp/pr.diff
+
+      # Surviving mutants fail this step. To accept one as genuinely
+      # equivalent, annotate the function `#[mutants::skip]` with a comment
+      # saying why — that records the judgement in the code rather than
+      # widening a glob nobody revisits.
+      - name: Mutate the changed code
+        run: cargo mutants --in-diff /tmp/pr.diff --no-shuffle -j 2
+
+      - name: Upload mutants report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: mutants-report
+          path: mutants.out/
 
   integration-containers:
     name: Container Integration Tests
@@ -349,16 +414,25 @@ jobs:
       # failures in the combined run, 13/13 green when Kafka runs on its own.
       # Scheduling pressure, not a defect. If this step is still flaky on a
       # smaller runner, add `--test-threads=2`.
+      #
+      # Every container step from here on runs even if an earlier one failed
+      # (`!cancelled()`). They are independent backends, and this is the
+      # slowest feedback loop in the repo — without it a single flaky Kafka
+      # broker hides a real Postgres or schema-parity regression until the
+      # next push. The job still fails if any step does.
       - name: Kafka container tests
+        if: ${{ !cancelled() }}
         run: cargo test --test integration -- --ignored kafka_test
 
       # Orion's own storage on Postgres / MySQL. Separate binaries (one
       # process each) because the storage backend is pinned per process via
       # the DB_BACKEND OnceLock.
       - name: Postgres storage backend tests
+        if: ${{ !cancelled() }}
         run: cargo test --test storage_postgres -- --ignored
 
       - name: MySQL storage backend tests
+        if: ${{ !cancelled() }}
         run: cargo test --test storage_mysql -- --ignored
 
       # D10: migrate all three backends from scratch and assert the schemas
@@ -367,9 +441,11 @@ jobs:
       # without Docker, so on a machine with no daemon this step is the only
       # place the three are compared.
       - name: Schema parity across backends
+        if: ${{ !cancelled() }}
         run: cargo test --test schema_parity -- --ignored
 
       # Multi-node cluster-mode tests: two AppStates over one Postgres + one
       # Redis container per test. Serial — each test runs its own containers.
       - name: Cluster mode multi-node tests
+        if: ${{ !cancelled() }}
         run: cargo test --test cluster -- --ignored --test-threads=1

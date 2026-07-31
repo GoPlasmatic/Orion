@@ -1,0 +1,32 @@
+# cargo-mutants configuration.
+#
+# Coverage says which lines ran; mutation testing says whether anything would
+# have *noticed* them being wrong. The two disagree more often than is
+# comfortable: `errors.rs` had 47 tests and full line coverage of
+# `response_parts`, yet four of its error-code strings could be renamed with
+# the whole suite green, because every assertion checked the HTTP status and
+# none checked the code.
+#
+# Scoped to the modules where a silently-surviving mutant is a security or
+# data-correctness bug rather than a cosmetic one. Mutating the whole tree
+# would take hours and mostly report equivalent mutants in glue code.
+#
+# Even so, this scope generates ~819 mutants, and each one re-runs the suite —
+# far past a per-PR budget. That is why CI drives it with `--in-diff` and
+# mutates only the code a PR touched; a full sweep is a local or scheduled
+# activity (`cargo mutants --shard i/N` to split it).
+examine_globs = [
+    "src/validation/**",         # SSRF allow/deny predicates
+    "src/server/admin_auth.rs",  # API-key comparison, guarded-path set
+    "src/connector/masking.rs",  # secret redaction before secrets reach the wire
+    "src/connector/circuit_breaker.rs",
+    "src/query/**",              # the portable data dialect: filter → SQL/Mongo/ES
+    "src/errors.rs",             # the public {code, message} envelope
+]
+
+# The default `cargo test` already builds and runs the integration binary,
+# which is where most of the behaviour above is actually observed.
+#
+# Mutants that survive are reported; to accept one as equivalent, annotate the
+# function with `#[mutants::skip]` and say why in a comment, rather than
+# widening the excludes here.
