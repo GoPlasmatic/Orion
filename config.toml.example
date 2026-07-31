@@ -351,8 +351,10 @@
 #            capped by single-writer contention
 #   async  — enqueue to a bounded background queue, one DB write per task
 #   batch  — bounded queue; workers commit `batch_size` rows per transaction
-#   off    — no persistence. POST /{channel}/async then returns trace_id: null
-#            with a `Warning: 299` header, and the result is unrecoverable.
+#   off    — no persistence on the synchronous endpoint, where the caller
+#            already holds the answer. POST /{channel}/async still writes its
+#            row and still returns a trace_id: submitting async *is* the
+#            request for a result to fetch later.
 # mode = "sync"
 #
 # Filters, composing with the mode and applied per trace:

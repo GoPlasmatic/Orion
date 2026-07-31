@@ -509,7 +509,7 @@ Orion's own per-request trace records — rows in the `traces` table, read via `
 | `trace_storage.batch_flush_interval_ms` | `100` | `ORION_TRACE_STORAGE__BATCH_FLUSH_INTERVAL_MS` | How long a partial batch waits before flushing. |
 | `trace_storage.batch_workers` | `4` | `ORION_TRACE_STORAGE__BATCH_WORKERS` | Worker count in `batch` mode; each owns an independent batch. |
 
-With `mode = "off"`, `POST /{channel}/async` returns `trace_id: null` and a `Warning: 299` header — the caller has no way to learn the outcome. Do not combine `off` with async channels whose results matter.
+`mode = "off"` applies to the **synchronous** endpoint, where the caller already holds the answer. It does not disable persistence for `POST /{channel}/async`: appending `/async` *is* a request for a result to be fetched later, so the trace row is written before the `202` is returned and `trace_id` is always present. `off` is safe to combine with async channels.
 
 ## Built-in Capabilities
 
