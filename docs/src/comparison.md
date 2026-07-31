@@ -1,16 +1,16 @@
 # Is Orion Right for You?
 
-Orion occupies a specific spot: **declarative business logic served as
-governed, high-performance services** — below full workflow orchestrators,
-above API gateways, beside (not inside) your application code. This page maps
-the neighbors honestly; several of these tools are the better choice for their
-home turf, and pairing them with Orion is often the right answer.
+Orion sits in a specific spot: **your business logic, running as fast,
+production-ready APIs**. It lives below full workflow orchestrators, above
+API gateways, and beside (not inside) your application code. This page maps
+the neighbors honestly. Several of these tools are the better choice for
+their home turf, and pairing them with Orion is often the right answer.
 
 ## The short answer
 
 | If you need to... | Orion? | Reach for |
 |---|:-:|---|
-| Turn business rules into live REST/Kafka services | **Yes** | — |
+| Turn business logic into live REST/Kafka services | **Yes** | — |
 | Let AI generate and manage business logic safely | **Yes** | — |
 | Replace a handful of single-purpose microservices | **Yes** | — |
 | Orchestrate long-running jobs (hours/days), human approvals | No | Temporal, Airflow, BPMN engines |
@@ -24,7 +24,7 @@ home turf, and pairing them with Orion is often the right answer.
 
 The baseline alternative. A new microservice means an HTTP server, connection
 pools, metrics exporters, tracing integration, retry loops, a Dockerfile, a CI
-pipeline, and a deployment — before the first line of business logic. In
+pipeline, and a deployment, all before the first line of business logic. In
 Orion the business logic is a JSON document deployed with one API call, and
 rate limiting, circuit breakers, validation, versioning, and observability are
 runtime guarantees rather than per-service chores.
@@ -39,7 +39,7 @@ for).
 
 Orchestrators own **durable, long-running, stateful** execution: workflows
 that sleep for days, survive restarts mid-run, and wait on humans. Orion
-workflows are **stateless request pipelines** — they execute in milliseconds
+workflows are **stateless request pipelines**. They execute in milliseconds
 inside a request or event, and durability lives in your databases and topics,
 not in the engine.
 
@@ -54,16 +54,16 @@ channel, and an Orion workflow can kick off a Temporal run via `http_call`.
 A gateway **proxies and polices** traffic on its way to your services; it
 deliberately doesn't implement them. Orion **is** the service: the request
 terminates in a workflow that executes your logic. The overlap (rate
-limiting, auth, CORS) exists because Orion channels are self-sufficient — but
-in front of a fleet, a gateway still earns its place, with Orion as an
-upstream that happens to need far fewer of the gateway's crutches.
+limiting, auth, CORS) exists because Orion channels are self-sufficient. In
+front of a fleet, though, a gateway still earns its place, with Orion as an
+upstream that needs far fewer of the gateway's crutches.
 
 ## vs. Drools and RETE rule engines
 
-Orion evaluates [JSONLogic](https://jsonlogic.com) conditions — compiled at
-engine build time, fast, deterministic, and trivially generatable by LLMs.
-What it is not: a RETE engine doing incremental matching over a working
-memory of thousands of interdependent facts. If your problem is "which of
+Orion evaluates [JSONLogic](https://jsonlogic.com) conditions. They're
+compiled at engine build time, fast, deterministic, and easy for LLMs to
+write. What it is not: a RETE engine doing incremental matching over a
+working memory of thousands of interdependent facts. If your problem is "which of
 10,000 rules fire as facts accumulate," use Drools. If it's "does this
 request satisfy these conditions, then transform and route it," Orion's model
 is simpler to write, review, version, and roll back.
@@ -73,7 +73,7 @@ is simpler to write, review, version, and roll back.
 Visual automation tools optimize for **person-builds-integration-quickly**:
 huge app catalogs, drag-and-drop, hosted convenience. Orion optimizes for
 **production service traffic**: thousands of requests per second, P99 in
-milliseconds, versioned rollouts, circuit breakers, Prometheus metrics — and
+milliseconds, versioned rollouts, circuit breakers, Prometheus metrics, and
 an API-first design where definitions are JSON in your repo, not boxes in a
 canvas ([Orion UI](https://github.com/GoPlasmatic/Orion-ui) adds a dashboard
 for managing and visualizing them, but the API stays the source of truth).
@@ -84,10 +84,10 @@ automation tools. If it *is* one of your services, run it on Orion.
 
 Orion is the **runtime** built on the
 [dataflow-rs](https://github.com/GoPlasmatic/dataflow-rs) engine. If you want
-workflow execution *inside* your own Rust application — no server, no admin
-API, no lifecycle management — embed dataflow-rs directly. Orion is what you
-deploy when you want the engine plus channels, connectors, versioning,
-governance, and an admin API as a standing service.
+workflow execution *inside* your own Rust application, with no server, no
+admin API, and no lifecycle management, embed dataflow-rs directly. Orion is
+what you deploy when you want the engine plus channels, connectors,
+versioning, governance, and an admin API as a standing service.
 
 ---
 

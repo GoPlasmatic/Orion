@@ -1,33 +1,38 @@
 <div class="hero-logo">
   <img src="images/plasmatic-logo.png" alt="Plasmatic Logo">
   <h1>Orion</h1>
-  <p>Deploy high-performance, governed microservices as JSON workflows—without writing boilerplate.</p>
+  <p>Turn business logic into APIs your AI can write and your ops team can trust.</p>
+  <p class="hero-sub">No new service to build. No deploy to wait for.</p>
 </div>
 
-**Orion** is an API-first declarative services runtime written in Rust. Instead of writing, containerizing, and operating a new microservice for every piece of business logic, you simply **declare** what the service should do as a JSON workflow, and Orion runs it.
+Every piece of business logic tends to turn into its own microservice. You set up a repo, an HTTP server, a Dockerfile, a CI pipeline, metrics, retries, and a deployment, all before you get to the logic itself.
 
-Every workflow is executed with enterprise-grade architectural governance—including observability, rate limiting, circuit breakers, caching, input validation, and versioning—built directly into the runtime, not bolted on. Build workflows yourself or let an AI generate them; either way, they run under the same production-grade guarantees.
+**Orion** works the other way around. You write the logic as JSON, either by hand or by asking an AI, and send it to a running Orion server. A second later it's a live API.
+
+Everything you'd normally build around it is already running: rate limits, retries, caching, metrics, tracing, input validation, versioning, and rollback. Change the logic and the endpoint changes with it. No rebuild, no restart, no downtime.
+
+Orion is a single Rust binary. It stores your service definitions in an embedded database and runs them on Tokio and Axum at 6,000+ requests per second. There's nothing to containerize and nothing to provision.
 
 ### Why Orion?
 
-Developers spend too much time building the same boilerplate for microservices—setting up HTTP servers, configuring database connection pools, writing Prometheus exporters, integrating OpenTelemetry, and coding retry loops or circuit breakers. Orion eliminates this overhead entirely.
+Open a small internal microservice and count the lines. HTTP server setup, connection pools, a Prometheus exporter, OpenTelemetry wiring, retry loops, a circuit breaker, health checks, a Dockerfile, a deploy manifest. Somewhere in the middle sits the logic you actually cared about, and it's maybe fifty lines long. Orion runs that middle part for you and provides everything around it, the same way, for every service.
 
-* **⚡ Zero Boilerplate:** Go from idea to a live REST/Kafka service in seconds. No Dockerfiles, no CI pipelines, and no server boilerplates.
-* **🛡️ Built-in Governance:** Out-of-the-box support for rate limiting, circuit breakers, timeouts, caching, and payload validation.
-* **🤖 AI-Native & Safe:** Structured JSON workflows are exceptionally easy for LLMs to generate. Safe rollout pipelines (validation, draft/dry-run, rollout percentage, rollbacks) ensure AI-generated code never breaks production.
-* **🦀 Rust Performance:** Built on Tokio and Axum. Achieves **6,000+ requests/sec** per instance with single-digit millisecond latency and a tiny memory footprint.
-* **🧩 In-Process Composition:** Call other workflows in-process like functions with zero network round-trip overhead.
+* **⚡ No service to build:** Idea to live REST or Kafka endpoint in seconds. No Dockerfile, no CI pipeline, no server code.
+* **🛡️ Production features included:** Rate limiting, circuit breakers, timeouts, caching, and payload validation on every endpoint. You configure them instead of writing them.
+* **🤖 Safe for AI-written logic:** Models generate JSON reliably. Validation, draft-before-activate, dry-run, percentage rollout, and one-call rollback mean AI output can't quietly break production.
+* **🦀 Rust speed:** Built on Tokio and Axum. **6,000+ requests/sec** per instance, single-digit millisecond latency, small memory footprint.
+* **🧩 Services that call services:** `channel_call` runs another workflow in-process, so there's no network hop and no serialization cost.
 
-This site is the deep reference and how-to guide — new here? [**Install Orion and ship your first service**](./tutorials/cli-setup.md) in a couple of minutes.
+This site is the deep reference and how-to guide. New here? [**Install Orion and ship your first service**](./tutorials/cli-setup.md) in a couple of minutes.
 
 <div class="themed-media">
   <video class="media-dark" controls muted playsinline preload="metadata" src="videos/ui-quickstart-dark.webm"></video>
   <video class="media-light" controls muted playsinline preload="metadata" src="videos/ui-quickstart-light.webm"></video>
 </div>
-<span class="asciinema-caption">▶ Zero to a live service in under a minute, without writing code — in <a href="getting-started/console.html">the Orion console</a>. Prefer a terminal? The same flow over plain HTTP:</span>
+<span class="asciinema-caption">▶ Zero to a live service in under a minute, without writing code, in <a href="getting-started/console.html">the Orion console</a>. Prefer a terminal? The same flow over plain HTTP:</span>
 
 <div class="asciinema-player" data-cast="casts/quickstart.cast"></div>
-<span class="asciinema-caption">From zero to a live, governed service — business logic as JSON, deployed over plain HTTP. ▶ Click to play.</span>
+<span class="asciinema-caption">From zero to a live, governed service, with business logic as JSON deployed over plain HTTP. ▶ Click to play.</span>
 
 ## Three Primitives
 
@@ -54,22 +59,22 @@ You build services in Orion with three things:
 | **Workflow** | A pipeline of tasks that defines what the service does | Parse → validate → enrich → transform → respond |
 | **Connector** | A named connection to an external system, with auth and retries | Stripe API, PostgreSQL, MongoDB, Elasticsearch, Redis, Kafka cluster |
 
-**Design-time:** define channels, build workflows, configure connectors, test with dry-run, manage versions — all through the admin API. **Runtime:** Orion routes traffic to channels, executes workflows, calls connectors, and handles observability automatically. See [**Dev & Prod Environments**](./topology/environments.md) for how the same binary serves both planes.
+**Design-time:** define channels, build workflows, configure connectors, test with dry-run, and manage versions, all through the admin API. **Runtime:** Orion routes traffic to channels, executes workflows, calls connectors, and handles observability automatically. See [**Dev & Prod Environments**](./topology/environments.md) for how the same binary serves both planes.
 
 ## Start here
 
-- [**CLI Setup**](./tutorials/cli-setup.md) — install Orion and ship your first service in a couple of minutes.
-- [**MCP Server Setup**](./tutorials/mcp-setup.md) — give an AI assistant full Orion context so it generates valid workflows.
-- [**Use Cases & Patterns**](./tutorials/use-cases.md) — complete, tested examples for classification, transformation, routing, and CI/CD.
+- [**CLI Setup**](./tutorials/cli-setup.md): install Orion and ship your first service in a couple of minutes.
+- [**MCP Server Setup**](./tutorials/mcp-setup.md): give an AI assistant full Orion context so it generates valid workflows.
+- [**Use Cases & Patterns**](./tutorials/use-cases.md): complete, tested examples for classification, transformation, routing, and CI/CD.
 
 ## Build workflows
 
-- [**Workflow Reference**](./reference/workflows.md) — the workflow & task JSON schema, conditions, error handling, lifecycle, and rollout.
-- [**Function Reference**](./reference/functions.md) — every built-in task function and its exact `input` schema.
-- [**Admin API**](./api/admin.md) & [**Data API**](./api/data.md) — the full REST surface for managing and calling services.
-- [**Configuration**](./configuration/reference.md) — config file, environment variables, database backends, and deployment.
+- [**Workflow Reference**](./reference/workflows.md): the workflow & task JSON schema, conditions, error handling, lifecycle, and rollout.
+- [**Function Reference**](./reference/functions.md): every built-in task function and its exact `input` schema.
+- [**Admin API**](./api/admin.md) & [**Data API**](./api/data.md): the full REST surface for managing and calling services.
+- [**Configuration**](./configuration/reference.md): config file, environment variables, database backends, and deployment.
 
 ## How it works
 
-- [**Architecture Overview**](./architecture/overview.md) — channels, workflows, the engine, hot-reload, and the request-processing flow.
+- [**Architecture Overview**](./architecture/overview.md): channels, workflows, the engine, hot-reload, and the request-processing flow.
 - **Production features**, all built in and configurable per channel: [Observability](./features/observability.md), [Resilience](./features/resilience.md), [Security](./features/security.md), [Scalability](./features/scalability.md), [Deployability](./features/deployability.md), [Extensibility](./features/extensibility.md), [Availability](./features/availability.md), and [Maintainability](./features/maintainability.md).

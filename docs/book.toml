@@ -1,6 +1,6 @@
 [book]
 title = "Orion Documentation"
-description = "Deploy high-performance, governed microservices as JSON workflows—without writing boilerplate."
+description = "Turn business logic into APIs your AI can write and your ops team can trust. Describe a service as JSON, send it to Orion, and it's live in seconds."
 authors = ["Plasmatic"]
 language = "en"
 src = "src"

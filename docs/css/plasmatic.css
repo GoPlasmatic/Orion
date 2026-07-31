@@ -664,6 +664,12 @@ pre > .buttons {
   margin: 8px 0 0;
 }
 
+.hero-logo .hero-sub {
+  font-size: 0.95em;
+  opacity: 0.7;
+  margin-top: 4px;
+}
+
 .navy .hero-logo p {
   color: #7FAFC0;
 }

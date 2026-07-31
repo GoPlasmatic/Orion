@@ -1,11 +1,11 @@
 # Orion
 
-> Orion is an API-first declarative services runtime written in Rust. Business
-> logic is declared as JSON workflows and exposed through channels (REST/Kafka
-> service endpoints) via a REST admin API — with rate limiting, circuit
-> breakers, caching, validation, versioning, and observability built into the
-> runtime. Single binary, embedded SQLite by default (PostgreSQL/MySQL
-> optional).
+> Orion turns business logic into live APIs without building a microservice for
+> each one. Logic is declared as JSON workflows and exposed through channels
+> (REST/Kafka service endpoints) via a REST admin API, with rate limiting,
+> circuit breakers, caching, validation, versioning, and observability built
+> into the runtime. Written in Rust; single binary, embedded SQLite by default
+> (PostgreSQL/MySQL optional).
 
 Key facts: workflows are pipelines of tasks using JSONLogic; everything is
 created as a draft, tested via dry-run, then activated (the engine

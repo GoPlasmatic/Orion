@@ -1,7 +1,7 @@
 # Prompt Pack (any LLM)
 
 The [MCP server](../tutorials/mcp-setup.md) is the richest way to give an AI
-assistant control of Orion — 46 tools, live schema discovery, no prompt
+assistant control of Orion: 46 tools, live schema discovery, no prompt
 engineering. But it needs an MCP-capable client.
 
 This page is the zero-install alternative: **paste the block below into any
@@ -10,8 +10,9 @@ and it has enough context to write valid workflows and deploy them through
 Orion's plain REST API.
 
 ````text
-You are working with Orion, an API-first declarative services runtime.
-Services are defined as JSON over a REST admin API — no code, no deploys.
+You are working with Orion, a runtime that turns JSON definitions into live
+REST/Kafka services. Everything is managed over a REST admin API. No code,
+no deploys.
 Base URL: http://localhost:8080 (adjust if told otherwise).
 
 ## The three primitives
@@ -44,9 +45,9 @@ and map tasks write via paths like "data.order.flagged". The final data
 context is returned to the caller.
 
 Built-in task functions (get exact input schemas from
-GET /api/v1/admin/functions — always check before using one):
+GET /api/v1/admin/functions, always check before using one):
 parse_json, parse_xml, filter, map, validation, http_call, channel_call,
-data_query, data_write (portable, backend-neutral DB read/write — preferred),
+data_query, data_write (portable, backend-neutral DB read/write, preferred),
 db_read, db_write (raw SQL escape hatch), cache_read, cache_write, mongo_read,
 publish_json, publish_xml, publish_kafka, log.
 
@@ -93,8 +94,8 @@ GET   /api/v1/admin/traces/{trace_id}               poll async result
 - For database access prefer data_query / data_write (parameterized, portable,
   injection-safe); use db_read / db_write only for SQL the portable dialect
   cannot express.
-- Connector configs support ${VAR} / ${VAR:-default} environment references —
-  never embed real credentials in JSON.
+- Connector configs support ${VAR} / ${VAR:-default} environment references.
+  Never embed real credentials in JSON.
 ````
 
 A worked end-to-end session using exactly these calls is in
@@ -106,5 +107,5 @@ the deeper references the LLM (or you) may need are the
 
 > **Tip:** the docs site also serves [`llms.txt`](https://goplasmatic.github.io/Orion/llms.txt)
 > (a machine-readable index) and [`llms-full.txt`](https://goplasmatic.github.io/Orion/llms-full.txt)
-> (the entire documentation as one file) — point your tools at those for full
+> (the entire documentation as one file). Point your tools at those for full
 > documentation context.
