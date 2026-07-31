@@ -830,7 +830,55 @@ fn acquire_backpressure(
 
 use crate::engine::utils::{FNV1A_SEED, fnv1a_feed};
 
+/// Resolve one `cache_key_fields` entry against the request payload.
+///
+/// Three spellings resolve, tried in this order:
+///
+/// 1. The **literal key** — `data.get(f)`. This was the only spelling the
+///    original implementation supported, so trying it first keeps every stored
+///    channel keying exactly as it did, including a payload whose top-level key
+///    genuinely contains a dot.
+/// 2. A **dotted path** from the payload root — `user.id` walks
+///    `{"user": {"id": …}}`.
+/// 3. The same path with a leading `data.` stripped — the spelling the docs
+///    have always shown (`data.user_id`), which resolved to nothing under (1)
+///    because the payload *is* `data` and has no member of that name.
+///
+/// (3) is what made this worth fixing: a channel configured from the
+/// documented example matched no field at all, and a field that matches
+/// nothing contributed nothing to the hash, so every request on the channel
+/// collapsed onto one cache entry and the first caller's body was served to
+/// everyone for the TTL. [`compute_cache_key`] now refuses to build a key at
+/// all in that case rather than building a meaningless one.
+fn resolve_key_field<'a>(data: &'a Value, field: &str) -> Option<&'a Value> {
+    fn walk<'a>(mut cur: &'a Value, path: &str) -> Option<&'a Value> {
+        for segment in path.split('.') {
+            if segment.is_empty() {
+                return None;
+            }
+            cur = cur.get(segment)?;
+        }
+        Some(cur)
+    }
+
+    if let Some(v) = data.get(field) {
+        return Some(v);
+    }
+    if !field.contains('.') {
+        return None;
+    }
+    walk(data, field).or_else(|| field.strip_prefix("data.").and_then(|p| walk(data, p)))
+}
+
 /// Compute a deterministic cache key from channel name and request data.
+///
+/// `None` means **this request has no meaningful cache key** and must neither
+/// be served from the cache nor stored in it. That happens when the channel
+/// declares `cache_key_fields` and not one of them resolves against the
+/// payload: the request is then indistinguishable from every other request on
+/// the channel, which is precisely when a cache entry is dangerous rather than
+/// merely useless. Bypassing the cache costs one workflow run; keying on
+/// nothing costs correctness.
 ///
 /// Uses FNV-1a (64-bit) rather than `std::collections::hash_map::DefaultHasher`
 /// because the cache key must be **stable across processes** (multiple
@@ -843,7 +891,7 @@ fn compute_cache_key(
     data: &Value,
     metadata: &Value,
     cache_cfg: &crate::channel::ChannelCacheConfig,
-) -> String {
+) -> Option<String> {
     let mut h: u64 = FNV1A_SEED;
 
     // The request's route identity must always distinguish keys: for a REST
@@ -859,20 +907,32 @@ fn compute_cache_key(
     fnv1a_feed(&mut h, &[0]);
 
     if let Some(ref fields) = cache_cfg.cache_key_fields {
-        // Hash selected fields directly — no intermediate Map or clones
+        // Hash selected fields directly — no intermediate Map or clones. An
+        // absent field feeds its *name* and a marker byte rather than nothing,
+        // so `{"a": 1}` and `{"b": 1}` under fields `["a", "b"]` cannot land on
+        // the same key by each contributing one term and skipping the other.
+        let mut resolved = 0usize;
         for f in fields {
-            if let Some(v) = data.get(f) {
-                fnv1a_feed(&mut h, f.as_bytes());
-                let v_bytes = serde_json::to_vec(v).unwrap_or_default();
-                fnv1a_feed(&mut h, &v_bytes);
+            fnv1a_feed(&mut h, f.as_bytes());
+            match resolve_key_field(data, f) {
+                Some(v) => {
+                    resolved += 1;
+                    fnv1a_feed(&mut h, &[1]);
+                    let v_bytes = serde_json::to_vec(v).unwrap_or_default();
+                    fnv1a_feed(&mut h, &v_bytes);
+                }
+                None => fnv1a_feed(&mut h, &[0]),
             }
+        }
+        if resolved == 0 {
+            return None;
         }
     } else {
         let bytes = serde_json::to_vec(data).unwrap_or_default();
         fnv1a_feed(&mut h, &bytes);
     };
 
-    format!("cache:{channel}:{h:016x}")
+    Some(format!("cache:{channel}:{h:016x}"))
 }
 
 /// Feed an optional JSON object into the FNV-1a state in sorted-key order,
@@ -922,7 +982,19 @@ async fn check_response_cache(
     let Some(ref cache) = cfg.response_cache else {
         return CacheLookup::Miss(None);
     };
-    let key = compute_cache_key(channel, data, metadata, cache_cfg);
+    let Some(key) = compute_cache_key(channel, data, metadata, cache_cfg) else {
+        // Every declared key field was absent from this payload, so any key we
+        // built would be shared with every other request on the channel. Run
+        // the workflow and store nothing.
+        tracing::warn!(
+            channel = %channel,
+            fields = ?cache_cfg.cache_key_fields,
+            "No cache_key_fields resolved against the request payload; bypassing the \
+             response cache. Field names are literal payload keys or dotted paths \
+             (`user.id`, or `data.user_id` for a top-level `user_id`)."
+        );
+        return CacheLookup::Miss(None);
+    };
     match cache.get(&key).await {
         Ok(Some(cached)) => {
             metrics::record_cache_hit(channel);
@@ -2142,6 +2214,17 @@ mod tests {
         }
     }
 
+    /// `compute_cache_key` for the cases that must produce one.
+    fn key(
+        channel: &str,
+        data: &serde_json::Value,
+        metadata: &serde_json::Value,
+        cfg: &crate::channel::ChannelCacheConfig,
+    ) -> String {
+        super::compute_cache_key(channel, data, metadata, cfg)
+            .expect("this request must have a cache key")
+    }
+
     fn meta(
         method: &str,
         params: serde_json::Value,
@@ -2158,13 +2241,13 @@ mod tests {
     #[test]
     fn test_cache_key_distinguishes_route_params() {
         let data = serde_json::json!({});
-        let a = super::compute_cache_key(
+        let a = key(
             "orders",
             &data,
             &meta("GET", serde_json::json!({"id": "1"}), serde_json::json!({})),
             &cache_cfg(None),
         );
-        let b = super::compute_cache_key(
+        let b = key(
             "orders",
             &data,
             &meta("GET", serde_json::json!({"id": "2"}), serde_json::json!({})),
@@ -2181,8 +2264,8 @@ mod tests {
             serde_json::json!({}),
             serde_json::json!({"page": "1"}),
         );
-        let a = super::compute_cache_key("orders", &data, &base, &cache_cfg(None));
-        let b = super::compute_cache_key(
+        let a = key("orders", &data, &base, &cache_cfg(None));
+        let b = key(
             "orders",
             &data,
             &meta(
@@ -2192,7 +2275,7 @@ mod tests {
             ),
             &cache_cfg(None),
         );
-        let c = super::compute_cache_key(
+        let c = key(
             "orders",
             &data,
             &meta(
@@ -2214,9 +2297,98 @@ mod tests {
             serde_json::json!({"id": "1"}),
             serde_json::json!({"expand": "items"}),
         );
-        let a = super::compute_cache_key("orders", &data, &m, &cache_cfg(None));
-        let b = super::compute_cache_key("orders", &data, &m, &cache_cfg(None));
+        let a = key("orders", &data, &m, &cache_cfg(None));
+        let b = key("orders", &data, &m, &cache_cfg(None));
         assert_eq!(a, b);
+    }
+
+    /// The spelling the docs have always shown. It resolved to nothing under
+    /// the original literal-key lookup, and a field that matches nothing
+    /// contributed nothing to the hash — so two different users landed on one
+    /// cache entry and the first response was served to both for the TTL.
+    #[test]
+    fn documented_data_prefixed_paths_distinguish_callers() {
+        let m = meta("POST", serde_json::json!({}), serde_json::json!({}));
+        let fields = Some(vec!["data.user_id".to_string(), "data.action".to_string()]);
+        let alice = serde_json::json!({"user_id": "alice", "action": "balance"});
+        let bob = serde_json::json!({"user_id": "bob", "action": "balance"});
+        assert_ne!(
+            key("acct", &alice, &m, &cache_cfg(fields.clone())),
+            key("acct", &bob, &m, &cache_cfg(fields)),
+            "distinct users must not share a cache entry"
+        );
+    }
+
+    /// Nested paths walk the payload.
+    #[test]
+    fn dotted_paths_walk_into_nested_objects() {
+        let m = meta("POST", serde_json::json!({}), serde_json::json!({}));
+        let fields = Some(vec!["user.id".to_string()]);
+        let a = serde_json::json!({"user": {"id": 1}});
+        let b = serde_json::json!({"user": {"id": 2}});
+        assert_ne!(
+            key("c", &a, &m, &cache_cfg(fields.clone())),
+            key("c", &b, &m, &cache_cfg(fields))
+        );
+    }
+
+    /// The literal lookup is tried first, so a payload key that genuinely
+    /// contains a dot keeps resolving exactly as it did before paths existed.
+    #[test]
+    fn a_literal_dotted_payload_key_still_wins() {
+        let m = meta("POST", serde_json::json!({}), serde_json::json!({}));
+        let fields = Some(vec!["a.b".to_string()]);
+        let flat_1 = serde_json::json!({"a.b": 1});
+        let flat_2 = serde_json::json!({"a.b": 2});
+        assert_ne!(
+            key("c", &flat_1, &m, &cache_cfg(fields.clone())),
+            key("c", &flat_2, &m, &cache_cfg(fields.clone()))
+        );
+        // The nested spelling resolves through the path fallback to the same
+        // value, and therefore to the same key. That is the contract, not a
+        // collision: `cache_key_fields` declares that these fields determine
+        // the response, so two payloads agreeing on all of them are the same
+        // request as far as the cache is concerned.
+        let nested = serde_json::json!({"a": {"b": 1}});
+        assert_eq!(
+            key("c", &flat_1, &m, &cache_cfg(fields.clone())),
+            key("c", &nested, &m, &cache_cfg(fields))
+        );
+    }
+
+    /// A payload that resolves *no* declared field has no meaningful key, so
+    /// the request is refused the cache rather than given a key it shares with
+    /// every other request on the channel.
+    #[test]
+    fn a_payload_matching_no_declared_field_has_no_key() {
+        let m = meta("POST", serde_json::json!({}), serde_json::json!({}));
+        let fields = Some(vec!["user_id".to_string(), "action".to_string()]);
+        assert!(
+            super::compute_cache_key(
+                "acct",
+                &serde_json::json!({"unrelated": 1}),
+                &m,
+                &cache_cfg(fields)
+            )
+            .is_none()
+        );
+    }
+
+    /// A field that is absent still feeds its name, so two payloads that each
+    /// resolve a *different* half of the field list cannot collide.
+    #[test]
+    fn absent_fields_are_not_silently_skipped() {
+        let m = meta("POST", serde_json::json!({}), serde_json::json!({}));
+        let fields = Some(vec!["a".to_string(), "b".to_string()]);
+        assert_ne!(
+            key(
+                "c",
+                &serde_json::json!({"a": 1}),
+                &m,
+                &cache_cfg(fields.clone())
+            ),
+            key("c", &serde_json::json!({"b": 1}), &m, &cache_cfg(fields))
+        );
     }
 
     #[test]
@@ -2225,13 +2397,13 @@ mod tests {
         // must still distinguish keys.
         let data = serde_json::json!({"tenant": "acme"});
         let fields = Some(vec!["tenant".to_string()]);
-        let a = super::compute_cache_key(
+        let a = key(
             "orders",
             &data,
             &meta("GET", serde_json::json!({"id": "1"}), serde_json::json!({})),
             &cache_cfg(fields.clone()),
         );
-        let b = super::compute_cache_key(
+        let b = key(
             "orders",
             &data,
             &meta("GET", serde_json::json!({"id": "2"}), serde_json::json!({})),

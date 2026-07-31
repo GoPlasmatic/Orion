@@ -355,6 +355,53 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
             )
         })?;
     }
+    if let Some(ref cache) = parsed.cache {
+        validate_cache_key_fields(cache)?;
+    }
+    Ok(())
+}
+
+/// Structurally check `cache.cache_key_fields`.
+///
+/// Whether a field *resolves* is a per-request property and cannot be decided
+/// here — a payload that omits every declared field is refused the cache at
+/// request time instead (see `guards::compute_cache_key`). What can be decided
+/// here is that the operator wrote something capable of resolving at all: an
+/// empty list, a blank name, or a path with an empty segment (`a..b`, `.id`)
+/// can never match any payload, so a channel carrying one would silently never
+/// cache. Refusing at create is the only point that failure is visible.
+fn validate_cache_key_fields(cache: &crate::channel::ChannelCacheConfig) -> Result<(), OrionError> {
+    let Some(ref fields) = cache.cache_key_fields else {
+        return Ok(());
+    };
+    const PATH: &str = "channel.config.cache.cache_key_fields";
+    if fields.is_empty() {
+        return Err(OrionError::invalid_field(
+            PATH,
+            "INVALID",
+            "cache_key_fields must name at least one field; omit it entirely to key on \
+             the whole payload",
+        ));
+    }
+    for (i, f) in fields.iter().enumerate() {
+        if f.trim().is_empty() {
+            return Err(OrionError::invalid_field(
+                format!("{PATH}[{i}]"),
+                "INVALID",
+                "cache_key_fields entries must not be blank",
+            ));
+        }
+        if f.contains('.') && f.split('.').any(|s| s.is_empty()) {
+            return Err(OrionError::invalid_field(
+                format!("{PATH}[{i}]"),
+                "INVALID",
+                format!(
+                    "'{f}' has an empty path segment; use a literal payload key \
+                     (`user_id`) or a dotted path (`user.id`)"
+                ),
+            ));
+        }
+    }
     Ok(())
 }
 

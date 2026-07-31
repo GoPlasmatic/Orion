@@ -135,7 +135,11 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows/import \
 }
 ```
 
-Cache keys are computed from the specified fields. Cached responses are returned directly without executing the workflow. The cache backend is in-memory by default; Redis-backed caching is available via a cache connector. In cluster mode, channels without an explicit connector use the shared cluster Redis — cache hits are shared across replicas instead of each node warming its own.
+Each entry in `cache_key_fields` names a field of the request payload, written either as a literal key (`user_id`), a dotted path into a nested object (`user.id`), or with an explicit `data.` prefix (`data.user_id`) — all three resolve. Omit `cache_key_fields` entirely to key on the whole payload.
+
+A request that resolves **none** of the declared fields has no distinguishing key, so it bypasses the cache: the workflow runs and nothing is stored. Orion logs a warning naming the channel and the fields when that happens — it almost always means the field names do not match the payload shape, and the alternative would be to serve one caller's response to every other caller on the channel.
+
+Cached responses are returned directly without executing the workflow. The cache backend is in-memory by default; Redis-backed caching is available via a cache connector. In cluster mode, channels without an explicit connector use the shared cluster Redis — cache hits are shared across replicas instead of each node warming its own.
 
 **Request deduplication:** prevent duplicate processing using idempotency keys:
 
