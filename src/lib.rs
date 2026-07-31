@@ -5,11 +5,27 @@
 //! task pipelines) behind a REST API, shipped as a single binary with an
 //! embedded SQLite database (PostgreSQL/MySQL selectable at runtime).
 //!
-//! The library target exists for the binary and the integration test suite.
-//! It is not a supported embedding API: module layout and signatures may
-//! change between releases without semver ceremony. If you want to run
-//! Orion, use the binary — see the
-//! [documentation](https://goplasmatic.github.io/Orion/) for operating it.
+//! # This is not an embedding API
+//!
+//! The library target exists for two consumers: the `orion-server` binary and
+//! the integration test suite. Everything below is `pub` because those two need
+//! it, not because it is offered for use.
+//!
+//! **Nothing here is covered by semver.** Module layout, type names, function
+//! signatures and trait shapes change whenever the binary needs them to,
+//! including in patch releases. The crate version tracks the *product* — its
+//! HTTP API, config surface, workflow JSON contract, metric names and database
+//! schema, which is what 1.0 stabilises. It does not describe this Rust surface,
+//! and a `1.x` bump is not a promise about any item on this page.
+//!
+//! If you want to run Orion, use the binary. See the
+//! [documentation](https://goplasmatic.github.io/Orion/) for operating it, and
+//! `docs/src/api/` for the interfaces that *are* stable.
+//!
+//! If you are reading this to understand the code, start at
+//! [`bootstrap`] (the startup sequence, doc-hidden but public),
+//! [`server::routes::data`] (the request path) and [`engine`] (the workflow
+//! runtime).
 #![warn(clippy::unwrap_used, clippy::panic)]
 
 /// Startup wiring shared by the binary and the test harness. Doc-hidden:
