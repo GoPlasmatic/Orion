@@ -32,22 +32,16 @@ struct CompletedTrace<'a> {
 }
 
 /// Route a completed sync trace through the chosen persistence mode.
-/// Returns early via [`EffectiveTraceConfig::should_drop`] when the
-/// per-channel/global filters say this trace should not be persisted.
+///
+/// The drop decision is the caller's, not this function's: it gates work that
+/// happens *before* a `CompletedTrace` can be built. See
+/// [`TracePlan::decide`].
 async fn route_store_completed(
     cfg: &EffectiveTraceConfig,
     trace_repo: &std::sync::Arc<dyn crate::storage::repositories::traces::TraceRepository>,
     persistence_queue: &TracePersistenceQueue,
     trace: &CompletedTrace<'_>,
 ) {
-    // N22: the sampling coin is drawn exactly once per trace, here — the
-    // single point a sync trace's persistence is decided — so a sampled-out
-    // trace produces no rows at all (the sync path writes no separate
-    // status row; skipping this write skips the trace entirely).
-    if let Some(reason) = cfg.should_drop(trace.has_errors, cfg.draw_sample()) {
-        metrics::record_trace_dropped(reason);
-        return;
-    }
     // `should_drop` already returned for `Off`; remaining modes are Sync / Async / Batch.
     if matches!(cfg.mode, TraceStorageMode::Sync) {
         if let Err(e) = trace_repo
@@ -75,6 +69,45 @@ async fn route_store_completed(
             task_trace_json: trace.task_trace_json.map(str::to_string),
         });
         persistence_queue.submit(task).await;
+    }
+}
+
+/// Whether this trace will be persisted, decided *before* the strings it would
+/// need are built.
+///
+/// The filters (`off`, `errors_only`, sampling) used to be consulted inside
+/// [`route_store_completed`], at the end of the request — after the caller had
+/// already serialized the request payload to a `String` and capped the task
+/// trace to hand it over. Both were then dropped on the floor. That is a full
+/// copy of every request body on the hottest path in the product, paid in
+/// exactly the configurations chosen to *avoid* trace cost: `mode = "off"`,
+/// `errors_only` on a clean run, or any `sample_rate` below 1.
+///
+/// Deciding first makes the drop actually free.
+enum TracePlan {
+    Persist,
+    /// The reason is not carried: `decide` has already reported it to
+    /// `orion_traces_dropped_total`, which is where an operator looks.
+    Drop,
+}
+
+impl TracePlan {
+    /// N22: the sampling coin is drawn exactly once per trace, here — the
+    /// single point a sync trace's persistence is decided — so a sampled-out
+    /// trace produces no rows at all (the sync path writes no separate status
+    /// row; skipping this write skips the trace entirely).
+    fn decide(cfg: &EffectiveTraceConfig, has_errors: bool) -> Self {
+        match cfg.should_drop(has_errors, cfg.draw_sample()) {
+            Some(reason) => {
+                metrics::record_trace_dropped(reason);
+                Self::Drop
+            }
+            None => Self::Persist,
+        }
+    }
+
+    fn persists(&self) -> bool {
+        matches!(self, Self::Persist)
     }
 }
 
@@ -108,22 +141,27 @@ fn json_response(status: StatusCode, body: String) -> Response {
 async fn persist_trace_and_cache(
     state: &AppState,
     channel_config: &std::sync::Arc<crate::channel::ChannelRuntimeConfig>,
+    plan: &TracePlan,
     trace: &CompletedTrace<'_>,
     cache_body: &str,
     cache_context: &Option<CacheStoreCtx>,
     profile: Option<&std::sync::Arc<crate::engine::profile::ProfileCollector>>,
 ) {
-    let effective_trace = channel_config.trace_storage;
-    let trace_store_start = Instant::now();
-    route_store_completed(
-        &effective_trace,
-        &state.trace_repo,
-        &state.trace_persistence_queue,
-        trace,
-    )
-    .await;
-    if let Some(p) = profile {
-        p.set_trace_store(trace_store_start.elapsed());
+    // The cache store below is not part of the trace decision: a sampled-out or
+    // `errors_only` trace still populates the response cache.
+    if plan.persists() {
+        let effective_trace = channel_config.trace_storage;
+        let trace_store_start = Instant::now();
+        route_store_completed(
+            &effective_trace,
+            &state.trace_repo,
+            &state.trace_persistence_queue,
+            trace,
+        )
+        .await;
+        if let Some(p) = profile {
+            p.set_trace_store(trace_store_start.elapsed());
+        }
     }
 
     // Fire-and-forget cache store. N2: never cache a response carrying task
@@ -353,15 +391,27 @@ pub(super) async fn process_sync_for_channel(
                 )));
             }
 
-            let input_json = serde_json::to_string(&data).ok();
-            let task_trace_json = crate::engine::utils::serialize_task_trace_capped(
-                task_trace.as_ref(),
-                max_result_size,
-                channel,
-            );
+            // Decided before the two strings below are built: under `off`,
+            // `errors_only` on a clean run, or any sample_rate < 1, both are
+            // pure waste — and a full copy of the request payload is not a
+            // cheap kind of waste on this path.
+            let plan = TracePlan::decide(&channel_config.trace_storage, has_errors);
+            let (input_json, task_trace_json) = if plan.persists() {
+                (
+                    serde_json::to_string(&data).ok(),
+                    crate::engine::utils::serialize_task_trace_capped(
+                        task_trace.as_ref(),
+                        max_result_size,
+                        channel,
+                    ),
+                )
+            } else {
+                (None, None)
+            };
             persist_trace_and_cache(
                 state,
                 &channel_config,
+                &plan,
                 &CompletedTrace {
                     channel,
                     channel_id: Some(channel_config.channel.channel_id.as_str()),
