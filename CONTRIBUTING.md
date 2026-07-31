@@ -155,6 +155,30 @@ cargo test --test integration           # Run the whole integration binary
 - **Error handling** — use `OrionError` variants from `src/errors.rs` for new error cases
 - **Async** — all repository traits use `async_trait`; keep I/O operations async
 
+### Comments citing an item ID
+
+Around 900 comments across `src/` open with a short code — `N10`, `R13`, `F35`,
+`W8`, `S15`. These are items from the pre-1.0 audits, and the code is the reason
+the comment exists rather than a note about it. Resolve one with:
+
+```bash
+git log --grep=N10          # the commit that closed it, with the full rationale
+```
+
+Every commit that closed an item names it in the message body, so the history is
+the index. `proposal.md` holds only what is still **open** — an item is deleted
+from it as it ships, so a live ID will not be found there and its absence means
+the work is done, not that the reference is stale.
+
+Two rules keep this readable. Each comment must stand on its own without the ID:
+the prefix points at the history for a reader who wants the argument, and is
+never the only place the reason is written. And when a comment's claim stops
+being true, correct the comment — the ID records why the code was written, not a
+promise that it still behaves that way.
+
+New comments do not need an ID. The scheme is a record of how 1.0 was reached,
+not a convention to keep feeding.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under the [Apache-2.0 License](LICENSE).
