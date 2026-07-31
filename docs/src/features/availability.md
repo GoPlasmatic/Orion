@@ -141,6 +141,36 @@ A request that resolves **none** of the declared fields has no distinguishing ke
 
 Cached responses are returned directly without executing the workflow. The cache backend is in-memory by default; Redis-backed caching is available via a cache connector. In cluster mode, channels without an explicit connector use the shared cluster Redis — cache hits are shared across replicas instead of each node warming its own.
 
+### What the cache key covers
+
+The key is derived from exactly four things:
+
+| Part | Always included |
+|---|---|
+| Channel name | Yes — entries are scoped per channel |
+| HTTP method | Yes |
+| Route parameters (`metadata.params`) | Yes, order-independent |
+| Query string (`metadata.query`) | Yes, order-independent |
+| Request payload | The whole payload, or the subset named by `cache_key_fields` |
+
+**Request headers are never part of the cache key, by design.** Orion does not
+inspect headers to decide cache identity and will not grow a `cache_key_headers`
+setting. A cached entry is shared by every caller whose method, route, query and
+payload agree, whatever headers they sent.
+
+The consequence is the one rule to design around: **if a response varies by
+anything a header carries, that thing must appear in the payload, or the channel
+must not cache.** A channel whose workflow reads `metadata.headers` — via
+`validation_logic` or a task — and lets it change the response body is a channel
+whose cache will serve one caller's body to another. Fold the distinguishing
+value into the payload and name it in `cache_key_fields`, or leave `cache`
+disabled.
+
+This is a deliberate boundary rather than a gap. Orion is single-tenant by
+design, and the key strategy is the workflow author's to define, expressed in
+the payload they control — not inferred by the runtime from transport headers
+whose meaning it cannot know.
+
 **Request deduplication:** prevent duplicate processing using idempotency keys:
 
 ```json
