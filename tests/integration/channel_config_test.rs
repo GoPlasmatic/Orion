@@ -390,9 +390,7 @@ async fn test_channel_cors_rejects_disallowed_origin() {
                 "route_pattern": "/cors-ch",
                 "workflow_id": wf_id,
                 "config": {
-                    "cors": {
-                        "allowed_origins": ["https://allowed.example.com"]
-                    }
+                    "origin_allow_list": ["https://allowed.example.com"]
                 }
             })),
         ))
@@ -522,7 +520,7 @@ async fn test_channel_backpressure_rejects_when_at_capacity() {
                 "workflow_id": wf_id,
                 "config": {
                     "backpressure": {
-                        "max_concurrent": 0
+                        "max_concurrent_per_node": 0
                     }
                 }
             })),

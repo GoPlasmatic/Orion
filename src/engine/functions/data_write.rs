@@ -84,30 +84,20 @@ impl AsyncFunctionHandler for DataWriteHandler {
             // namespace with the handler keys (`connector`, `schema`,
             // `params`, `database`, `output`) — so those five names could
             // never be used by the dialect, and there was no single JSON
-            // value that *was* the envelope. The flat form is still accepted
-            // for one release; since `resolve_write` rejects unknown keys
-            // (W6), the handler keys are stripped from it first.
-            let legacy_flat: Value;
-            let envelope = match input.get("write") {
-                Some(w) => w,
-                None => {
-                    // The handler keys are read back off the schema table
-                    // below, so a sixth one cannot be declared there and
-                    // forgotten here.
-                    legacy_flat = match input.as_object() {
-                        Some(o) => Value::Object(
-                            o.iter()
-                                .filter(|(k, _)| {
-                                    !DATA_WRITE_FIELDS.iter().any(|f| f.name == k.as_str())
-                                })
-                                .map(|(k, v)| (k.clone(), v.clone()))
-                                .collect(),
-                        ),
-                        None => input.clone(),
-                    };
-                    &legacy_flat
-                }
-            };
+            // value that *was* the envelope. The flat form is not accepted:
+            // `write` is `required` in the field schema, so the shared
+            // validator refuses it at create, update, import, `POST
+            // /admin/workflows/validate` and `orion-server lint`, and
+            // `orion-server preflight` names any task already stored in that
+            // shape.
+            let envelope = input.get("write").ok_or_else(|| {
+                query::write::WriteError::InvalidEnvelope(
+                    "missing `write`: the mutation envelope (op/target/values/set/filter/\
+                     on_conflict/returning/all) is nested under `write`, alongside the \
+                     handler's `connector`/`schema`/`params`/`database`/`output`"
+                        .to_string(),
+                )
+            })?;
 
             // One backend-neutral resolution: parse envelope, fold params into
             // values/set, resolve physical names, coerce, lower the filter,
@@ -555,10 +545,12 @@ pub(super) const DATA_WRITE_FIELDS: &[FieldSchema] = &[
         name: "write",
         description: "Backend-neutral mutation envelope: op/target/values/set/filter/on_conflict/returning/all.",
         kind: FieldKind::Object,
-        // Not `required` in the schema: the pre-1.0 flat form (envelope keys at
-        // the top level) is still accepted, and `validate_input`'s cross-field
-        // rule reports whichever of the two shapes is actually missing.
-        required: false,
+        // W7: required. The pre-1.0 flat form (envelope keys at the top level)
+        // is gone, so there is exactly one shape and the generic
+        // missing-required-field rule reports it — at create, update, import,
+        // `POST /admin/workflows/validate` and `orion-server lint`, rather than
+        // at the task's first request.
+        required: true,
         resolvable: false,
         alias: None,
     },

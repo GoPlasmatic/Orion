@@ -183,11 +183,13 @@ The two are complementary, and it is worth being exact about which one enforces 
 
 So if the point is to keep a workflow from *running* for an unlisted origin, `origin_allow_list` is the control that does it; `[cors]` alone is a browser-side courtesy. Note that neither is authentication: `Origin` is a client-supplied header and any non-browser caller can set it to anything, or omit it — a request with no `Origin` is not checked at all. Use `validation_logic` or a gateway in front of Orion for access control that has to hold against a hostile client.
 
-The pre-1.0 spelling still parses, so stored channels keep their check:
+The pre-1.0 spelling is refused, not ignored:
 
 ```json
 { "cors": { "allowed_origins": ["https://app.example.com"] } }
 ```
+
+A stored channel still carrying it fails to parse and is quarantined at load — refused at every ingress rather than served. Accepting the key and dropping it would leave the channel with no allow-list at all, indistinguishable from one that deliberately checks nothing, so every unlisted origin would be admitted silently. `orion-server preflight` names every stored channel still using it.
 
 ## Data Safety
 

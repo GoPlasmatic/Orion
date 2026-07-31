@@ -228,6 +228,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **1.0 ships no deprecated spellings.** Three compatibility shims that would
+  otherwise have to be carried through the whole 1.x line are removed before
+  the tag, and the versioning policy in `docs/src/reference/support.md` now
+  says so under a new *Deprecations* section. The shims claimed three different
+  lifetimes between them — "for one release", "removed in a later major", and
+  nothing at all — and the first contradicted the same document's rule that
+  breaking changes to workflow and channel definitions are reserved for a
+  major. Removed:
+
+  - `cors: { allowed_origins: [...] }` on a channel, superseded by
+    `origin_allow_list`.
+  - `backpressure.max_concurrent`, superseded by `max_concurrent_per_node`.
+  - The flat `data_write` envelope, superseded by nesting it under `write`.
+
+  All three are refused rather than ignored, which for the first two is the
+  security-relevant outcome: an accepted-and-dropped `cors` key would leave the
+  channel serving with no origin allow-list, and an accepted `max_concurrent`
+  would admit N× the intended concurrency on an N-replica deployment. Both fail
+  the config instead, quarantining the channel. `orion-server preflight` lists
+  every affected stored entity before the upgrade.
+
+  `http_call.response_path` remains accepted and is *not* a deprecation: that
+  alias belongs to `HttpCallConfig` in dataflow-rs, which Orion does not own.
+  It is documented under *Accepted alternate spellings*.
+
+- **A channel config rejects keys it does not recognise.** `ChannelConfig` is
+  `deny_unknown_fields`. Every key in that struct is a guard, so an
+  unrecognised one is a guard that never runs — and because nothing
+  re-serialises `config_json`, the mistake survived every reload: a stored
+  `"deduplicaton"` meant no idempotency, no error, ever. `validate_channel_config_blob`
+  called itself a strict validation while only checking the shape of the keys
+  it recognised. The config file, the connector configs and both dialect
+  envelopes (W5/W6) already rejected unknown keys; this was the last surface
+  that did not. A stored channel carrying one is now quarantined at load —
+  refused at every ingress rather than served with a guard quietly absent — and
+  a create or update naming one gets a `400`. This is also the mechanism that
+  refuses the two renamed keys above, and it retires `backpressure.queue_depth`,
+  which the upgrade guide previously said could be left in place.
+
 - **Task identity is validated at authoring time, not discovered at first
   request.** Every task must now carry a non-empty `id` and a `name` key, and
   ids must be unique within a workflow. All three were already hard requirements
@@ -475,10 +514,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
                                                  "set": { "status": "off" } } }
   ```
 
-  **The flat form is still accepted for one release**, so existing workflows
-  keep running; `write` wins if a task carries both. Validation errors are now
-  reported under `…function.input.write.<field>`, and a `data_write` with
-  neither shape is rejected at create naming `write`.
+  **The flat form is not accepted.** `write` is a required input, so a task in
+  the old shape is refused at create, update, bulk import,
+  `POST /admin/workflows/validate` and `orion-server lint`, naming `write`;
+  `orion-server preflight` lists stored tasks still using it. Validation errors
+  are reported under `…function.input.write.<field>`. Stale flat keys left by a
+  half-finished migration are inert.
 
 - **Four config sections renamed, and audit-log retention split out of
   `[queue]`.** Each of these cost a paragraph of documentation to explain what

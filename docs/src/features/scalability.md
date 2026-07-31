@@ -99,7 +99,7 @@ Semaphore-based concurrency limits prevent any single channel from overwhelming 
 
 When all semaphore permits are taken, additional requests receive `503 Service Unavailable` immediately. This is load shedding. The system sheds excess load rather than queuing unboundedly, which protects latency for requests that are admitted.
 
-Each channel has its own independent backpressure semaphore, so a spike in one channel doesn't affect others. The semaphore is per process — the field is named for that: N replicas admit up to N× `max_concurrent_per_node` in-flight requests in total. (The pre-1.0 name `max_concurrent` is accepted as an alias for one release.)
+Each channel has its own independent backpressure semaphore, so a spike in one channel doesn't affect others. The semaphore is per process — the field is named for that: N replicas admit up to N× `max_concurrent_per_node` in-flight requests in total. (The pre-1.0 name `max_concurrent` is not accepted: it read as a cluster-wide cap, so honouring it under the new field would admit N× the intended concurrency. A stored config using it fails to parse and the channel is quarantined.)
 
 The permit is per **channel**, not per ingress: synchronous requests, queued `/async` work, Kafka records and in-process `channel_call`s all draw from the same semaphore, so `max_concurrent_per_node` bounds the channel's total in-flight work. A Kafka record that cannot get a permit is left uncommitted for redelivery rather than shed, since the transport can wait and the caller cannot be told to.
 

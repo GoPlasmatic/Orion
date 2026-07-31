@@ -460,80 +460,49 @@ async fn unknown_write_envelope_keys_are_rejected() {
     );
 }
 
-/// Every other test in this file goes through `dsl::dw`, which builds the
-/// nested 1.0 shape. This one writes both shapes out by hand and asserts they
-/// produce the same rows, so the compatibility path cannot rot unnoticed.
+/// W7: the pre-1.0 flat shape — envelope keys sharing the namespace with the
+/// handler's own — is refused at create, naming `write`.
+///
+/// Refusing at create rather than at the task's first request is the whole
+/// point: a stored `data_write` that never migrated would otherwise keep
+/// loading and activating, and fail only once production traffic reached it.
 #[tokio::test]
-async fn flat_and_nested_envelopes_write_the_same_rows() {
-    async fn insert_via(app: &axum::Router, channel: &str, table: &str, input: Value) -> Value {
-        common::create_and_activate_channel(
-            app,
-            channel,
-            common::workflow_with_tasks(
+async fn the_pre_1_0_flat_envelope_is_refused_at_create() {
+    let app = common::test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(common::workflow_with_tasks(
                 "dw",
-                json!([
-                    ddl(
-                        "dw-shapes",
-                        "ddl",
-                        &format!("CREATE TABLE IF NOT EXISTS {table} (id INTEGER, name TEXT)")
-                    ),
-                    json!({
-                        "id": "w", "name": "w",
-                        "function": { "name": "data_write", "input": input }
-                    }),
-                    dq("dw-shapes", "read", json!({ "source": table })),
-                ]),
-            ),
-        )
-        .await;
-        let (status, body) = post(app, channel, json!({ "data": {} })).await;
-        assert_eq!(status, StatusCode::OK, "body = {body}");
-        body["data"]["result"].clone()
-    }
+                json!([{
+                    "id": "w", "name": "w",
+                    "function": { "name": "data_write", "input": {
+                        "connector": "dw-shapes",
+                        "output": "data.w",
+                        "schema": { "unmapped": "identity" },
+                        // The envelope, flat — the 0.3.x spelling.
+                        "op": "insert",
+                        "target": "shapes_flat",
+                        "values": { "id": 1, "name": "a" }
+                    }}
+                }]),
+            )),
+        ))
+        .await
+        .unwrap();
 
-    let app = sqlite_app("dw-shapes", "dw_shapes").await;
-
-    // 1.0: envelope under `write`, handler keys alongside it.
-    let nested = insert_via(
-        &app,
-        "ch-dw-nested",
-        "shapes_nested",
-        json!({
-            "connector": "dw-shapes",
-            "output": "data.w",
-            "schema": { "unmapped": "identity" },
-            "write": { "op": "insert", "target": "shapes_nested", "values": { "id": 1, "name": "a" } }
-        }),
-    )
-    .await;
-
-    // Pre-1.0: envelope flat, sharing the namespace with the handler keys.
-    let flat = insert_via(
-        &app,
-        "ch-dw-flat",
-        "shapes_flat",
-        json!({
-            "connector": "dw-shapes",
-            "output": "data.w",
-            // A handler key, so it is stripped from the flat envelope (W7).
-            "schema": { "unmapped": "identity" },
-            "op": "insert",
-            "target": "shapes_flat",
-            "values": { "id": 1, "name": "a" }
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        nested,
-        json!([{ "id": 1, "name": "a" }]),
-        "nested = {nested}"
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = common::body_json(resp).await;
+    assert!(
+        body.to_string().contains("write"),
+        "the rejection must name the envelope key: {body}"
     );
-    assert_eq!(flat, nested, "the deprecated flat form must agree: {flat}");
 }
 
-/// `write` wins when a task carries both, so a half-migrated task cannot
-/// silently execute the stale envelope.
+/// A half-migrated task — envelope moved under `write`, stale flat keys left
+/// behind — runs the `write` envelope. The stale keys are inert.
 #[tokio::test]
 async fn nested_envelope_wins_when_both_shapes_are_present() {
     let app = sqlite_app("dw-both", "dw_both").await;

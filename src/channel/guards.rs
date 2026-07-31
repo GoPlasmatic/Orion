@@ -1773,29 +1773,37 @@ mod tests {
         }
     }
 
-    /// N24: the deprecated `{"cors": {"allowed_origins": [...]}}` spelling
-    /// keeps working — stored channel configs must not silently lose the
-    /// check when the key is renamed.
+    /// N24: the pre-1.0 `{"cors": {"allowed_origins": [...]}}` spelling cannot
+    /// reach this layer at all.
+    ///
+    /// The failure mode this pins is the one that makes the rename a security
+    /// question rather than a documentation one: if the old key merely parsed
+    /// and was dropped, the channel would arrive here with `allowed_origins()`
+    /// returning `None` — indistinguishable from a channel that deliberately
+    /// checks nothing — and every unlisted origin would be admitted. Refusing
+    /// the config means no such runtime exists, so the guard can never be
+    /// silently absent; the channel is quarantined instead.
     #[tokio::test]
-    async fn the_deprecated_cors_spelling_still_enforces() {
-        let dl = engine();
-        let mut runtime = Runtime::new();
-        runtime.parsed_config.cors = Some(crate::channel::ChannelCorsConfig {
-            allowed_origins: Some(vec!["https://allowed.example".to_string()]),
-        });
-        let runtime = runtime.build();
-        let (data, meta) = (json!({}), json!({}));
+    async fn the_pre_1_0_cors_spelling_cannot_produce_a_runtime() {
+        let stored = r#"{"cors": {"allowed_origins": ["https://allowed.example"]}}"#;
+        assert!(
+            serde_json::from_str::<crate::channel::ChannelConfig>(stored).is_err(),
+            "the old spelling must fail the config, not silently drop the allow-list"
+        );
 
+        // And the shape it would have degraded to — no allow-list at all —
+        // admits the origin it was written to refuse. This is what the parse
+        // refusal above prevents from ever being reached.
+        let dl = engine();
+        let runtime = Runtime::new().build();
+        let (data, meta) = (json!({}), json!({}));
         let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
         req.origin = Some("https://evil.example");
-        assert!(matches!(
-            apply_guards(req).await,
-            Err(OrionError::Forbidden(_))
-        ));
-
-        let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &meta);
-        req.origin = Some("https://allowed.example");
-        assert!(apply_guards(req).await.is_ok());
+        assert!(
+            apply_guards(req).await.is_ok(),
+            "a channel with no allow-list checks nothing — which is why the \
+             old spelling must not degrade into one"
+        );
     }
 
     // ---- Validation ----

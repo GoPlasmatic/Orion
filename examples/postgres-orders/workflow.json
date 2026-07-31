@@ -16,19 +16,21 @@
         "name": "data_write",
         "input": {
           "connector": "orders-db",
-          "op": "insert",
-          "target": "orders",
-          "values": {
-            "customer_id": { "param": "customer_id" },
-            "item": { "param": "item" },
-            "total": { "param": "total" }
+          "write": {
+            "op": "insert",
+            "target": "orders",
+            "values": {
+              "customer_id": { "param": "customer_id" },
+              "item": { "param": "item" },
+              "total": { "param": "total" }
+            },
+            "returning": ["id"]
           },
           "params": {
             "customer_id": { "var": "data.req.customer_id" },
             "item": { "var": "data.req.item" },
             "total": { "var": "data.req.total" }
           },
-          "returning": ["id"],
           "schema": {
             "entities": {
               "orders": {

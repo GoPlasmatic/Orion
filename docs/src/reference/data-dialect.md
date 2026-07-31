@@ -145,8 +145,10 @@ One task per operation:
 ```
 
 > **Upgrading from 0.3.x.** The pre-1.0 flat form — `op`/`target`/`values`/…
-> alongside `connector` and `output` — is still accepted for one release, so
-> existing workflows keep running. When a task carries both, `write` wins.
+> alongside `connector` and `output` — is not accepted. `write` is required, so
+> a task still in the flat shape is refused at create, update, import,
+> `POST /admin/workflows/validate` and `orion-server lint`. Run
+> `orion-server preflight` to list the stored tasks that need moving.
 
 ### Safety guards
 

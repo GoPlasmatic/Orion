@@ -3,7 +3,19 @@ use serde_json::Value;
 
 /// Per-channel baseline configuration.
 /// All fields are optional with sensible defaults.
+///
+/// `deny_unknown_fields` because every field here is a *guard*, and a key this
+/// struct does not recognise is a guard that silently does not run: a stored
+/// `"deduplicaton"` typo meant no idempotency, no error, forever. The channel's
+/// stored `config_json` is the operator's original document — nothing
+/// re-serialises it — so an unrecognised key survives every reload until
+/// someone notices the behaviour is missing. Rejecting it turns that into a
+/// create-time 400, or an F35 quarantine for a channel already stored: refused
+/// at every ingress rather than served with a guard quietly absent. This is the
+/// same posture the config file (`deny_unknown_fields` throughout), the
+/// connector configs and both dialect envelopes (W5/W6) already take.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelConfig {
     /// Rate limiting configuration.
     #[serde(default)]
@@ -28,12 +40,6 @@ pub struct ChannelConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_allow_list: Option<Vec<String>>,
 
-    /// Deprecated spelling of [`ChannelConfig::origin_allow_list`]:
-    /// `{"cors": {"allowed_origins": [...]}}`. Still parsed so channels
-    /// stored before 1.0 keep working; prefer the new key.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cors: Option<ChannelCorsConfig>,
-
     /// Backpressure / load-shedding configuration.
     #[serde(default)]
     pub backpressure: Option<BackpressureConfig>,
@@ -57,25 +63,28 @@ pub struct ChannelConfig {
 }
 
 impl ChannelConfig {
-    /// The effective origin allow-list: [`ChannelConfig::origin_allow_list`],
-    /// falling back to the deprecated `cors.allowed_origins` spelling.
+    /// The channel's server-side origin allow-list.
     ///
-    /// N24: the old key promised CORS and delivered a rejection check. It set
-    /// no `Access-Control-Allow-Origin` and answered no preflight — the
-    /// router's platform CORS layer short-circuits a genuine preflight
-    /// (`OPTIONS` carrying `Access-Control-Request-Method`) before a channel
-    /// is even resolved. The control is real and worth keeping: it is the
-    /// only *server-side* origin check, and it runs on every request that
-    /// reaches the handler, since `[cors]` leaves a non-preflighted
-    /// cross-origin request to run and merely omits the response header, and
-    /// does nothing at all for a non-browser caller. Only the name was a lie,
-    /// so the name is what changed.
+    /// N24: the pre-1.0 key was `cors: { allowed_origins: [...] }`, which
+    /// promised CORS and delivered a rejection check. It set no
+    /// `Access-Control-Allow-Origin` and answered no preflight — the router's
+    /// platform CORS layer short-circuits a genuine preflight (`OPTIONS`
+    /// carrying `Access-Control-Request-Method`) before a channel is even
+    /// resolved. The control is real and worth keeping: it is the only
+    /// *server-side* origin check, and it runs on every request that reaches
+    /// the handler, since `[cors]` leaves a non-preflighted cross-origin
+    /// request to run and merely omits the response header, and does nothing
+    /// at all for a non-browser caller. Only the name was a lie, so the name
+    /// is what changed.
+    ///
+    /// The old spelling is not accepted. Silently ignoring it would drop the
+    /// check on every stored channel that used it — a security regression
+    /// dressed as a rename — so `deny_unknown_fields` on this struct refuses
+    /// the whole config instead, and the channel is quarantined rather than
+    /// served without its allow-list. `orion-server preflight` names every
+    /// stored channel still carrying it.
     pub fn allowed_origins(&self) -> Option<&[String]> {
-        self.origin_allow_list.as_deref().or_else(|| {
-            self.cors
-                .as_ref()
-                .and_then(|c| c.allowed_origins.as_deref())
-        })
+        self.origin_allow_list.as_deref()
     }
 }
 
@@ -152,26 +161,21 @@ pub struct ChannelCacheConfig {
     pub connector: Option<String>,
 }
 
-/// Deprecated `cors` block, kept so channels stored before 1.0 still parse.
-/// Read through [`ChannelConfig::allowed_origins`], never directly.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelCorsConfig {
-    /// Allowed origins. Absent means the channel checks nothing.
-    #[serde(default)]
-    pub allowed_origins: Option<Vec<String>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackpressureConfig {
     /// Maximum concurrent requests for this channel **on this node**.
     /// Excess requests are rejected immediately with 503 (no queueing).
     ///
     /// N9: named for what it bounds — the semaphore is per process, so N
-    /// replicas admit up to N× this value in total. The old name
+    /// replicas admit up to N× this value in total. The pre-1.0 name
     /// `max_concurrent` read as an absolute cluster-wide cap while sitting
-    /// next to dedup/rate-limit controls that *are* shared in cluster mode;
-    /// it is accepted as an alias for one release.
-    #[serde(alias = "max_concurrent")]
+    /// next to dedup/rate-limit controls that *are* shared in cluster mode.
+    /// It is not accepted: the field has no `serde(default)`, so a stored
+    /// config using the old spelling fails with `missing field
+    /// max_concurrent_per_node` and the channel is quarantined — a channel
+    /// admitted N× its intended concurrency is not a quiet outcome worth
+    /// having.
     pub max_concurrent_per_node: usize,
 }
 
@@ -231,14 +235,18 @@ mod tests {
         assert_eq!(dedup.on_backend_error, BackendErrorPolicy::Allow);
     }
 
-    /// N9: configs stored before the rename keep working for one release.
+    /// N9: the pre-1.0 spelling is refused, not silently accepted. Failing to
+    /// parse quarantines the channel; accepting it under a name that means
+    /// something else would admit N× the intended concurrency.
     #[test]
-    fn test_backpressure_old_name_is_an_alias() {
-        let config: ChannelConfig =
-            serde_json::from_str(r#"{"backpressure": {"max_concurrent": 7}}"#).expect("test");
-        assert_eq!(
-            config.backpressure.expect("test").max_concurrent_per_node,
-            7
+    fn test_backpressure_old_name_is_refused() {
+        let err =
+            serde_json::from_str::<ChannelConfig>(r#"{"backpressure": {"max_concurrent": 7}}"#)
+                .expect_err("the pre-1.0 `max_concurrent` spelling must not parse");
+        let message = err.to_string();
+        assert!(
+            message.contains("max_concurrent"),
+            "the error must name the offending key: {message}"
         );
     }
 
@@ -267,12 +275,9 @@ mod tests {
         );
     }
 
-    /// N24: `origin_allow_list` is the key now, and the pre-1.0
-    /// `cors.allowed_origins` spelling still resolves to it — a rename that
-    /// silently dropped the check on every stored channel would be a
-    /// security regression, not a documentation change.
+    /// N24: `origin_allow_list` is the only spelling.
     #[test]
-    fn test_origin_allow_list_accepts_both_spellings() {
+    fn test_origin_allow_list() {
         let new_key: ChannelConfig =
             serde_json::from_str(r#"{"origin_allow_list": ["https://app.example.com"]}"#)
                 .expect("test");
@@ -281,29 +286,43 @@ mod tests {
             Some(["https://app.example.com".to_string()].as_slice())
         );
 
-        let old_key: ChannelConfig =
-            serde_json::from_str(r#"{"cors": {"allowed_origins": ["https://old.example.com"]}}"#)
-                .expect("test");
-        assert_eq!(
-            old_key.allowed_origins(),
-            Some(["https://old.example.com".to_string()].as_slice())
-        );
-
-        // The new key wins when a config carries both.
-        let both: ChannelConfig = serde_json::from_str(
-            r#"{"origin_allow_list": ["https://new.example.com"],
-                "cors": {"allowed_origins": ["https://old.example.com"]}}"#,
-        )
-        .expect("test");
-        assert_eq!(
-            both.allowed_origins(),
-            Some(["https://new.example.com".to_string()].as_slice())
-        );
-
         // No list at all means the channel checks nothing.
         assert!(ChannelConfig::default().allowed_origins().is_none());
-        let empty_cors: ChannelConfig = serde_json::from_str(r#"{"cors": {}}"#).expect("test");
-        assert!(empty_cors.allowed_origins().is_none());
+    }
+
+    /// N24: the pre-1.0 `cors` spelling is *refused*, not ignored. Parsing it
+    /// and dropping the key would leave every channel that used it serving
+    /// with no origin check — the security regression the rename was written
+    /// to avoid. `deny_unknown_fields` makes the whole config fail instead,
+    /// which quarantines the channel.
+    #[test]
+    fn test_pre_1_0_cors_spelling_is_refused_not_ignored() {
+        for stored in [
+            r#"{"cors": {"allowed_origins": ["https://old.example.com"]}}"#,
+            r#"{"cors": {}}"#,
+        ] {
+            let err = serde_json::from_str::<ChannelConfig>(stored)
+                .expect_err("the pre-1.0 `cors` spelling must not parse");
+            let message = err.to_string();
+            assert!(
+                message.contains("cors"),
+                "the error must name the offending key: {message}"
+            );
+        }
+    }
+
+    /// The general case the `cors` removal relies on: an unrecognised key is a
+    /// guard that would silently not run, so it fails the whole config.
+    #[test]
+    fn test_unknown_channel_config_key_is_refused() {
+        let err = serde_json::from_str::<ChannelConfig>(
+            r#"{"deduplicaton": {"header": "Idempotency-Key"}}"#,
+        )
+        .expect_err("a misspelled guard key must not be silently ignored");
+        assert!(
+            err.to_string().contains("deduplicaton"),
+            "the error must name the typo: {err}"
+        );
     }
 
     #[test]

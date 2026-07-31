@@ -859,27 +859,74 @@ async fn test_origin_allow_list_refuses_an_unlisted_origin() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-/// N24: channels stored with the pre-1.0 `cors` spelling keep their check.
-/// A rename that quietly dropped the guard would be a security regression.
+/// N24: the pre-1.0 `cors` spelling is refused at create, not accepted and
+/// dropped.
+///
+/// Dropping it would leave the channel serving with no origin allow-list —
+/// the same shape as a channel that deliberately checks nothing — so an
+/// unlisted origin would be admitted with nothing to indicate the guard had
+/// gone. A 400 naming the key is the only outcome that cannot be missed.
 #[tokio::test]
-async fn test_deprecated_cors_key_still_refuses_an_unlisted_origin() {
+async fn test_pre_1_0_cors_key_is_refused_at_create() {
     let app = common::test_app().await;
-
-    common::create_and_activate_channel_with_config(
-        &app,
-        "n24-legacy-cors",
-        common::simple_log_workflow("N24 Legacy CORS WF"),
-        json!({ "cors": { "allowed_origins": ["https://allowed.example"] } }),
-    )
-    .await;
 
     let resp = app
         .clone()
-        .oneshot(post_with_origin(
-            "/api/v1/data/n24-legacy-cors",
-            "https://evil.example",
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": "n24-legacy-cors",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": ["POST"],
+                "route_pattern": "/n24-legacy-cors",
+                "workflow_id": "wf-does-not-matter",
+                "config": { "cors": { "allowed_origins": ["https://allowed.example"] } }
+            })),
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = common::body_json(resp).await;
+    let message = body.to_string();
+    assert!(
+        message.contains("cors"),
+        "the error must name the offending key so the fix is obvious: {message}"
+    );
+}
+
+/// The general form of the guarantee above: an unrecognised key in a channel
+/// config is a guard that would silently not run, so it is refused rather than
+/// ignored.
+#[tokio::test]
+async fn test_misspelled_channel_config_key_is_refused_at_create() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": "typo-guard",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": ["POST"],
+                "route_pattern": "/typo-guard",
+                "workflow_id": "wf-does-not-matter",
+                "config": { "deduplicaton": { "header": "Idempotency-Key" } }
+            })),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = common::body_json(resp).await;
+    let message = body.to_string();
+    assert!(
+        message.contains("deduplicaton"),
+        "the error must name the typo: {message}"
+    );
 }

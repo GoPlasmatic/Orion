@@ -21,6 +21,7 @@ Work through this list. Each row links to the section with the detail.
 | 1 | [Set `rate_limit.trusted_proxies`](#1-rate-limiting-behind-a-proxy-or-load-balancer) | You run behind a proxy, LB, or ingress — **whether or not** `rate_limit.enabled` is set, if any channel declares a `rate_limit` block |
 | 2 | [Update dashboards and alerts](#2-metrics-dashboards-and-alerts-will-break) | You scrape `/metrics` — three families changed name or labels, and `/metrics` now 404s when metrics are off |
 | 3 | [Audit stored channel configs](#3-channels-with-broken-stored-config-now-refuse-to-load) | Always — this one can stop the server from booting |
+| 3b | [Remove unknown keys from channel configs](#unknown-keys-in-a-channel-config-are-now-refused) | Any stored channel config carries a key Orion does not recognise — including the pre-1.0 `cors` and `backpressure.max_concurrent` spellings, `queue_depth`, and typos that were silently ignored before |
 | 4 | [Enable the Kafka DLQ](#4-kafka-delivery-is-now-at-least-once) | `kafka.enabled = true` |
 | 5 | [Size every ingress against the channel's guards](#every-ingress-applies-the-channels-rate-limit-dedup-and-backpressure) | Any channel declaring `rate_limit`, `deduplication`, `backpressure` or `timeout_ms` is reached over Kafka, `/async`, or `channel_call` — **this one silently throttles or suppresses live traffic** |
 | 6 | [Supply admin API keys](#5-deployment-defaults-helm-and-ha-compose-now-require-admin-keys) | You deploy via the Helm chart or `docker-compose.ha.yml` |
@@ -32,7 +33,8 @@ Work through this list. Each row links to the section with the detail.
 | 11 | [Delete `kafka.max_inflight`](#7-config-keys-four-sections-renamed) | You set `kafka.max_inflight` in the config file or `ORION_KAFKA__MAX_INFLIGHT` in the environment — Kafka enabled or not |
 | 12 | [Audit your `ORION_*` environment](#misspelled-environment-overrides-now-stop-the-boot) | You set any `ORION_*` variable containing `__` that is not on the config reference page |
 | 13 | [Check client URL casing](#rest-routes-match-byte-exactly-and-decode-parameters-once) | You call data-plane REST routes with casing that differs from the channel's `route_pattern` |
-| 14 | [Declare a `schema` on every `data_query` / `data_write`](#the-data-dialect-rejects-what-it-used-to-ignore) | Any workflow uses the portable data dialect — **this one breaks every 0.x dialect task at its first request** |
+| 14 | [Declare a `schema` on every `data_query` / `data_write`](#the-data-dialect-rejects-what-it-used-to-ignore) | Any workflow uses the portable data dialect — **this one breaks every 0.x dialect task at its first request**; `orion-server preflight` lists them |
+| 14b | [Move the `data_write` envelope under `write`](#data_write-takes-its-envelope-under-write) | Any workflow uses `data_write` — the pre-1.0 flat form is refused, and `preflight` lists the stored tasks still using it |
 | 15 | [Stop reading `total` from the trace list](#the-trace-list-no-longer-returns-total-by-default) | You page `GET /api/v1/admin/traces` |
 | 16 | [Re-point anything scraping `/docs`](#docs-and-the-openapi-spec-are-off-in-production) | You fetch `/docs` or `/api/v1/openapi.json` and run with `environment = "production"` |
 | 17 | [`chown` existing data volumes](#the-charts-pod-defaults-are-hardened-and-the-images-are-pinned) | You upgrade a Docker or compose deployment with an existing `/app/data` mount |
@@ -343,9 +345,9 @@ WHERE status = 'active'
        jsonb_typeof(config_json::jsonb #> '{rate_limit,requests_per_second}') NOT IN ('number','null')
     OR jsonb_typeof(config_json::jsonb #> '{cache,ttl_secs}')                 NOT IN ('number','null')
     OR jsonb_typeof(config_json::jsonb #> '{timeout_ms}')                     NOT IN ('number','null')
-    OR jsonb_typeof(config_json::jsonb #> '{backpressure,max_concurrent}')    NOT IN ('number','null')
+    OR jsonb_typeof(config_json::jsonb #> '{backpressure,max_concurrent_per_node}') NOT IN ('number','null')
     -- required whenever the parent object is present:
-    OR (config_json::jsonb ? 'backpressure'  AND NOT (config_json::jsonb->'backpressure')  ? 'max_concurrent')
+    OR (config_json::jsonb ? 'backpressure'  AND NOT (config_json::jsonb->'backpressure')  ? 'max_concurrent_per_node')
     OR (config_json::jsonb ? 'cache'         AND NOT (config_json::jsonb->'cache')         ? 'enabled')
     OR (config_json::jsonb ? 'deduplication' AND NOT (config_json::jsonb->'deduplication') ? 'header')
     OR (config_json::jsonb ? 'rate_limit'    AND NOT (config_json::jsonb->'rate_limit')    ? 'requests_per_second')
@@ -360,15 +362,19 @@ WHERE status = 'active' AND json_valid(config_json) = 0;
 ```
 
 **SQL cannot predict the `validation_logic` case** — that requires actually
-compiling the JSONLogic expression. The only complete pre-flight is to **run
-the 1.0.0 binary against a restored snapshot or a read replica** and confirm it
-boots. That exercises the identical code path and names every offending channel
-in one error.
+compiling the JSONLogic expression. `orion-server preflight` runs the real
+parser over every stored row and names each offending channel in one report,
+which is what the queries above approximate. Running the 1.0.0 binary against a
+restored snapshot or a read replica and confirming it boots exercises the same
+code path end to end.
 
-> **Unknown fields are still ignored.** `ChannelConfig` does not use
-> `deny_unknown_fields`, so a stray key in `config_json` — including the
-> removed [`backpressure.queue_depth`](#backpressurequeue_depth-was-removed) —
-> parses fine. Only invalid JSON and wrong *types* on known fields fail.
+> **Unknown fields fail too.** `ChannelConfig` is `deny_unknown_fields` as of
+> 1.0, so a stray key in `config_json` — a typo, the removed
+> [`backpressure.queue_depth`](#backpressurequeue_depth-was-removed), or either
+> of the two renamed keys — fails the same way a wrong type does. See [Unknown
+> keys in a channel config are now
+> refused](#unknown-keys-in-a-channel-config-are-now-refused). The type sweeps
+> above therefore under-report; `preflight` does not.
 
 ---
 
@@ -1179,15 +1185,23 @@ failed, so check `failed` rather than the status code.
       "filter": { "==": [{ "field": "id" }, { "param": "id" }] } } } }
 ```
 
-**How you'll notice.** You won't — the flat form is still honoured, so existing
-workflows keep running. It is documented as deprecated and will be removed in a
-later major.
+**How you'll notice.** The flat form is **not** accepted. `write` is a required
+input, so a task still in the old shape is refused at create, update, bulk
+import, `POST /admin/workflows/validate` and `orion-server lint`, with an error
+naming `write`. A workflow already stored in the flat shape fails at its first
+request.
+
+Find them before you upgrade:
+
+```bash
+orion-server preflight
+```
 
 **What to do.** Move the eight envelope keys — `op`, `target`, `values`, `set`,
 `filter`, `on_conflict`, `returning`, `all` — into a `write` object, leaving
-`connector`, `schema`, `params`, `database` and `output` where they are. If a
-task carries both shapes, `write` wins, so a half-finished migration cannot
-silently run the stale envelope.
+`connector`, `schema`, `params`, `database` and `output` where they are. Stale
+flat keys left behind by a half-finished migration are inert — `write` is the
+only envelope — so you can move them one workflow at a time.
 
 **Why.** The two halves of one dialect read differently, and because the
 envelope shared a namespace with the handler it could never grow a field named
@@ -1201,9 +1215,14 @@ there is one JSON value that *is* the envelope — validation errors now point a
 path `output`; `http_call` and `channel_call` named it `response_path`. All ten
 now take `output`.
 
-**How you'll notice.** You won't — `response_path` is still honoured, so
-existing workflows keep running. It is documented as deprecated and will be
-removed in a later major. If a task somehow carries both keys, `output` wins.
+**How you'll notice.** You won't — `response_path` is still accepted, so
+existing workflows keep running. Unlike the other 1.0 renames it carries no
+removal date: on `http_call` the alias belongs to the `HttpCallConfig` struct in
+`dataflow-rs`, which Orion does not own and cannot remove on its own. It is
+listed under [accepted alternate
+spellings](../reference/support.md#accepted-alternate-spellings) rather than as
+a deprecation. Supplying both keys is a duplicate-field error, not a precedence
+rule.
 
 **What to do.** Rename the key at your leisure:
 
@@ -1679,24 +1698,24 @@ where it previously returned a row of nulls.
 immediately at `max_concurrent` via `try_acquire`; there is no wait queue, so
 the field promised behaviour that never existed.
 
-**What to do — nothing, and that is the point.** `ChannelConfig` does not use
-`deny_unknown_fields`, so a stored `config_json` still carrying `queue_depth`
-**parses and loads normally**; the key is ignored. It does *not* interact with
-the [new load strictness](#3-channels-with-broken-stored-config-now-refuse-to-load).
-Remove it at your leisure. To find them:
+**What to do — delete it.** `ChannelConfig` is `deny_unknown_fields` as of 1.0
+(see [Unknown keys in a channel config are now
+refused](#unknown-keys-in-a-channel-config-are-now-refused)), so a stored
+`config_json` still carrying `queue_depth` **no longer parses**, and the channel
+is quarantined at load. This is the same failure as any other unrecognised key.
+
+`orion-server preflight` lists every affected channel. The direct query, if you
+would rather look yourself:
 
 ```sql
 SELECT channel_id, version, name FROM channels
 WHERE config_json LIKE '%queue_depth%';
 ```
 
-The one case that does fail is `backpressure` present with `queue_depth` but
-**no `max_concurrent`** — that field is required and always was; the failure is
-just loud now instead of swallowed. (It is named
+While you are in there: the field next to it is named
 [`max_concurrent_per_node`](#backpressuremax_concurrent-is-now-max_concurrent_per_node)
-as of this release, with `max_concurrent` accepted as a deserialization alias
-for one release, so a stored config satisfies the requirement under either
-spelling.)
+as of this release, and the pre-1.0 `max_concurrent` spelling is not accepted
+either. A `backpressure` block written for 0.3.0 therefore needs both edits.
 
 ### Storage pool defaults: a docs correction, not a behaviour change
 
@@ -1980,16 +1999,44 @@ reachable through a double-encoded request — write the literal character
 instead. Already-active channels keep their existing behaviour until you next
 edit them.
 
+### Unknown keys in a channel config are now refused
+
+**What changed.** `ChannelConfig` rejects keys it does not recognise. Before
+1.0 they were silently ignored.
+
+**Why.** Every key in a channel config is a *guard*. A key Orion does not
+recognise is a guard that never runs — and because nothing re-serialises
+`config_json` (the stored document is the one you wrote), the mistake survives
+every reload. A stored `"deduplicaton"` meant no idempotency, no error, forever.
+The config file, the connector configs and both dialect envelopes already
+rejected unknown keys; channel config was the last surface that did not.
+
+**How you'll notice.** A channel whose stored config carries a stray key is
+quarantined at load — refused at every ingress, listed on `/health` and the
+admin surface with the reason. On create and update it is a `400` naming the
+key. This is also the mechanism behind the `cors`, `max_concurrent` and
+`queue_depth` entries elsewhere on this page: all four are the same failure.
+
+**What to do.** Run `orion-server preflight` — it names every stored channel
+with an unparseable config and, for the two renames, the key to use instead.
+
 ### `backpressure.max_concurrent` is now `max_concurrent_per_node`
 
 **What changed.** The limit was always per node (N replicas admit up to N× the
 value); the name now says so, which matters because dedup and rate limiting sit
 in the same config block and *are* cluster-shared.
 
-**What to do.** Nothing immediately — stored configs using `max_concurrent`
-keep working, as it is a deserialization alias for this release. Update the key
-the next time you edit the channel; the alias is scheduled for removal in the
-following release.
+**What to do.** Rename the key on every stored channel that sets it, **and
+check the value**. The old spelling is refused — a stored config using it fails
+to parse and the channel is quarantined at load.
+
+There is no alias, deliberately. Honouring `max_concurrent` under a field that
+means something else would admit N× the intended concurrency on an N-replica
+deployment, silently, which is a worse outcome than a channel that refuses to
+start. If your 0.3.0 value was sized as a cluster-wide cap, divide it by your
+replica count rather than copying it across.
+
+`orion-server preflight` lists every affected channel.
 
 ### A channel's `cors` is now `origin_allow_list`
 
@@ -2005,8 +2052,21 @@ becomes
 { "origin_allow_list": ["https://app.example.com"] }
 ```
 
-The old spelling is still parsed, so stored channels keep their check and no
-migration is required. Find them with:
+**The old spelling is refused.** A stored channel still carrying it fails to
+parse and is quarantined at load — refused at every ingress rather than served.
+This is deliberate and it is the security-relevant choice: had the old key been
+parsed and dropped, the channel would have served with **no origin allow-list at
+all**, which is indistinguishable from a channel that deliberately checks
+nothing. Every unlisted origin would have been admitted, silently and
+permanently. A quarantined channel is the loud version of the same event.
+
+Find them before you upgrade:
+
+```bash
+orion-server preflight
+```
+
+or directly:
 
 ```sql
 SELECT name FROM current_channels WHERE config_json LIKE '%"cors"%';
