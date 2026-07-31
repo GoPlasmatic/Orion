@@ -1303,6 +1303,33 @@ upgrade still contain plaintext headers at rest; the trace-read projection
 hides them from HTTP responses, and `trace_queue.retention_hours` ages them
 out.
 
+### `engine.reload_timeout_secs` and `orion_engine_lock_wait_seconds` are gone
+
+**What changed.** The live engine was held behind a read-write lock, so every
+request acquired a read guard and a reload waited for a write guard. It is
+published with an atomic store now, so readers never block and a reload never
+waits.
+
+Two things existed only to describe that wait and have been removed:
+
+- **`engine.reload_timeout_secs`** (`ORION_ENGINE__RELOAD_TIMEOUT_SECS`) — how
+  long a reload would wait for the write lock. There is no wait to bound.
+- **`orion_engine_lock_wait_seconds`** — the histogram of that wait. It could
+  now only ever report zero.
+
+The `_orion.profile` debug output loses its `engine_lock_wait` phase and
+`engine_lock_wait_ms` field for the same reason. `engine.health_check_timeout_secs`
+stays — it still bounds the `/readyz` cluster-Redis ping.
+
+**How you'll notice.** Setting `ORION_ENGINE__RELOAD_TIMEOUT_SECS` now **stops
+the boot** with a message naming it as removed, rather than being silently
+ignored. A `reload_timeout_secs` line in a config file is rejected by
+`deny_unknown_fields` the same way.
+
+**What to do.** Delete the setting from any config file, Helm values or
+environment. Drop `orion_engine_lock_wait_seconds` from dashboards and alerts —
+a panel on it will read empty rather than break.
+
 ### Trace persistence now defaults to `batch`
 
 **What changed.** `trace_storage.mode` defaulted to `sync`, which writes a trace

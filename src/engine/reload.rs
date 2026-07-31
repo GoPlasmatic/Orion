@@ -61,7 +61,7 @@ pub async fn reload_engine_with_opts(
 
         // Build the new engine outside the write lock to minimize lock hold time.
         // Clone the current engine Arc, build new workflows, then swap atomically.
-        let current_engine = crate::engine::acquire_engine_read(&state.engine).await;
+        let current_engine = state.engine.load();
         let new_engine = Arc::new(
             current_engine
                 .with_new_workflows(workflows)
@@ -90,21 +90,10 @@ pub async fn reload_engine_with_opts(
             )
             .await;
 
-        let mut engine_write = tokio::time::timeout(
-            std::time::Duration::from_secs(state.config.engine.reload_timeout_secs),
-            crate::engine::acquire_engine_write(&state.engine),
-        )
-        .await
-        .map_err(|_| {
-            crate::errors::OrionError::Internal(
-                "Engine reload timed out waiting for write lock".into(),
-            )
-        })?;
-        *engine_write = new_engine;
-        // Release the write lock before the Kafka restart: request handlers
-        // block on engine reads while it is held, and the epoch-driven
-        // restart path below sleeps a 0–5 s jitter.
-        drop(engine_write);
+        // Publishing the new engine is a single atomic store. There is no
+        // window in which a reader is held off, so this needs neither a timeout
+        // nor a carefully-scoped drop before the Kafka restart below.
+        state.engine.store(new_engine);
 
         // Update active workflows gauge
         crate::metrics::set_active_workflows(active_workflows.len() as f64);

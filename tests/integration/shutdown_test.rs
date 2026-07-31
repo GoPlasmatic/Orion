@@ -26,7 +26,7 @@ async fn test_worker_shutdown_empty_queue() {
             orion::storage::repositories::traces::SqlTraceRepository::new(pool.clone()),
         );
 
-    let engine = std::sync::Arc::new(tokio::sync::RwLock::new(std::sync::Arc::new(
+    let engine = std::sync::Arc::new(orion::engine::EngineHandle::new(std::sync::Arc::new(
         dataflow_rs::Engine::builder().build().unwrap(),
     )));
 

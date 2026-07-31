@@ -4,7 +4,7 @@ use std::sync::atomic::AtomicBool;
 
 use datalogic_rs::Engine as DatalogicEngine;
 use metrics_exporter_prometheus::PrometheusHandle;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 use crate::channel::ChannelRegistry;
 use crate::config::AppConfig;
@@ -26,7 +26,7 @@ use crate::storage::repositories::workflows::WorkflowRepository;
 /// clone Axum performs on `State<AppState>` is a single atomic refcount bump
 /// rather than one per `Arc` field (~20+).
 pub struct AppStateInner {
-    pub engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    pub engine: Arc<crate::engine::EngineHandle>,
     pub channel_repo: Arc<dyn ChannelRepository>,
     pub workflow_repo: Arc<dyn WorkflowRepository>,
     pub connector_repo: Arc<dyn ConnectorRepository>,

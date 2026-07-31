@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 
 use crate::metrics;
 use crate::storage::repositories::trace_dlq::TraceDlqRepository;
@@ -299,7 +299,7 @@ impl WorkerHandle {
 #[allow(clippy::too_many_arguments)]
 pub fn start_workers(
     config: &crate::config::TraceQueueConfig,
-    engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    engine: Arc<crate::engine::EngineHandle>,
     trace_repo: Arc<dyn TraceRepository>,
     dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,

@@ -8,10 +8,8 @@ use crate::errors::OrionError;
 #[serde(default, deny_unknown_fields)]
 pub struct EngineConfig {
     pub circuit_breaker: crate::connector::circuit_breaker::CircuitBreakerConfig,
-    /// Timeout in seconds for acquiring engine read lock in health checks.
+    /// Timeout in seconds for the `/readyz` cluster-Redis ping.
     pub health_check_timeout_secs: u64,
-    /// Timeout in seconds for acquiring engine write lock during reload.
-    pub reload_timeout_secs: u64,
     /// Maximum nesting depth for channel_call invocations.
     pub max_channel_call_depth: u32,
     /// Default timeout in milliseconds for channel_call invocations.
@@ -54,7 +52,6 @@ impl Default for EngineConfig {
         Self {
             circuit_breaker: Default::default(),
             health_check_timeout_secs: 2,
-            reload_timeout_secs: 10,
             max_channel_call_depth: 10,
             default_channel_call_timeout_ms: 30_000,
             global_http_timeout_secs: 30,
@@ -81,7 +78,6 @@ impl EngineConfig {
             self.health_check_timeout_secs,
             "engine.health_check_timeout_secs",
         )?;
-        require_nonzero(self.reload_timeout_secs, "engine.reload_timeout_secs")?;
         Ok(())
     }
 }

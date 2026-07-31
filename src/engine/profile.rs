@@ -66,8 +66,6 @@ impl HandlerSample {
 pub struct ProfileCollector {
     /// Wall-clock at collector creation; used for `request_total_ms`.
     start: Instant,
-    /// Time spent acquiring the engine read lock.
-    engine_lock_wait: Mutex<Option<Duration>>,
     /// Total engine `process_message_for_channel` duration (set after the call).
     workflow_total: Mutex<Option<Duration>>,
     /// Time spent in `route_store_completed` (sync write OR queue submit).
@@ -83,17 +81,11 @@ impl ProfileCollector {
     pub fn new() -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             start: Instant::now(),
-            engine_lock_wait: Mutex::new(None),
             workflow_total: Mutex::new(None),
             trace_store: Mutex::new(None),
             samples: Mutex::new(Vec::new()),
             depth: AtomicU32::new(0),
         })
-    }
-
-    pub fn set_engine_lock_wait(&self, d: Duration) {
-        let mut g = lock(&self.engine_lock_wait);
-        *g = Some(g.map_or(d, |existing| existing + d));
     }
 
     pub fn set_workflow_total(&self, d: Duration) {
@@ -130,10 +122,9 @@ impl ProfileCollector {
     ///   "handlers":           [{function, duration_ms, pct_of_workflow, ...}],
     ///   "by_function":        {fn_name: {count, total_ms}, ...},
     ///   "by_connector":       {connector: {count, total_ms}, ...},
-    ///   "breakdown_pct":      {external_io, workflow_overhead, trace_store, engine_lock_wait},
+    ///   "breakdown_pct":      {external_io, workflow_overhead, trace_store},
     ///   "workflow_total_ms":  optional,
     ///   "workflow_overhead_ms": optional,
-    ///   "engine_lock_wait_ms": optional,
     ///   "trace_store_ms":      optional
     /// }
     /// ```
@@ -144,7 +135,6 @@ impl ProfileCollector {
         // another for the persisted trace — silently returned a profile with
         // the phase timings blanked and `workflow_overhead_ms` recomputed from
         // a missing basis. Copy; `Option<Duration>` is `Copy`.
-        let engine_lock_wait = *lock(&self.engine_lock_wait);
         let workflow_total = *lock(&self.workflow_total);
         let trace_store = *lock(&self.trace_store);
 
@@ -160,15 +150,10 @@ impl ProfileCollector {
             .sum();
 
         let workflow_total_ms = workflow_total.map(|d| d.as_secs_f64() * 1000.0);
-        let engine_lock_wait_ms = engine_lock_wait.map(|d| d.as_secs_f64() * 1000.0);
         let trace_store_ms = trace_store.map(|d| d.as_secs_f64() * 1000.0);
         let request_total_ms = request_total.as_secs_f64() * 1000.0;
 
-        let workflow_overhead_ms = match (workflow_total_ms, engine_lock_wait_ms) {
-            (Some(w), Some(lw)) => Some((w - handlers_total_ms - lw).max(0.0)),
-            (Some(w), None) => Some((w - handlers_total_ms).max(0.0)),
-            _ => None,
-        };
+        let workflow_overhead_ms = workflow_total_ms.map(|w| (w - handlers_total_ms).max(0.0));
 
         // F50: nesting is resolved by interval containment against the
         // children collected once, rather than by attaching every depth>0
@@ -263,14 +248,10 @@ impl ProfileCollector {
                 .map(|v| (v / basis) * 100.0)
                 .unwrap_or(0.0);
             let ts = trace_store_ms.map(|v| (v / basis) * 100.0).unwrap_or(0.0);
-            let lw = engine_lock_wait_ms
-                .map(|v| (v / basis) * 100.0)
-                .unwrap_or(0.0);
             json!({
                 "external_io": round2(ext),
                 "workflow_overhead": round2(ov),
                 "trace_store": round2(ts),
-                "engine_lock_wait": round2(lw),
             })
         } else {
             json!({})
@@ -294,9 +275,6 @@ impl ProfileCollector {
                 "pct": round2(pct),
             }));
         };
-        if let Some(v) = engine_lock_wait_ms {
-            push_phase("engine_lock_wait", v);
-        }
         push_phase("handlers", handlers_total_ms);
         if let Some(v) = workflow_overhead_ms {
             push_phase("workflow_overhead", v);
@@ -321,9 +299,6 @@ impl ProfileCollector {
         }
         if let Some(v) = workflow_overhead_ms {
             out["workflow_overhead_ms"] = json!(round2(v));
-        }
-        if let Some(v) = engine_lock_wait_ms {
-            out["engine_lock_wait_ms"] = json!(round2(v));
         }
         if let Some(v) = trace_store_ms {
             out["trace_store_ms"] = json!(round2(v));
@@ -375,12 +350,6 @@ where
     });
 
     result
-}
-
-/// Convenience: if a collector is in scope, append the given lock-wait
-/// duration to it. Used by `engine::acquire_engine_read`.
-pub fn record_engine_lock_wait(d: Duration) {
-    let _ = ORION_PROFILE.try_with(|c| c.set_engine_lock_wait(d));
 }
 
 #[cfg(test)]
@@ -507,14 +476,12 @@ mod tests {
             })
             .await;
         collector.set_workflow_total(Duration::from_millis(10));
-        collector.set_engine_lock_wait(Duration::from_micros(50));
         collector.set_trace_store(Duration::from_millis(1));
 
         let first = collector.to_json();
         let second = collector.to_json();
         for key in [
             "workflow_total_ms",
-            "engine_lock_wait_ms",
             "trace_store_ms",
             "workflow_overhead_ms",
             "handlers_total_ms",
@@ -573,7 +540,6 @@ mod tests {
             })
             .await;
         collector.set_workflow_total(Duration::from_millis(10));
-        collector.set_engine_lock_wait(Duration::from_micros(50));
         collector.set_trace_store(Duration::from_millis(1));
 
         let v = collector.to_json();
@@ -585,8 +551,7 @@ mod tests {
         assert!(v["totals_ms"].as_f64().expect("test") >= 0.0);
         let phases = v["phases"].as_array().expect("phases must be an array");
         let phase_names: Vec<&str> = phases.iter().filter_map(|p| p["name"].as_str()).collect();
-        // All four phases (set above) should appear in order.
-        assert!(phase_names.contains(&"engine_lock_wait"));
+        // All three phases (set above) should appear in order.
         assert!(phase_names.contains(&"handlers"));
         assert!(phase_names.contains(&"workflow_overhead"));
         assert!(phase_names.contains(&"trace_store"));

@@ -9,7 +9,6 @@ use dataflow_rs::engine::task_outcome::TaskOutcome;
 use dataflow_rs::{Template, TemplateCompiler};
 use serde::Deserialize;
 use serde_json::Value;
-use tokio::sync::RwLock;
 
 use super::schema::{FieldKind, FieldSchema};
 
@@ -58,7 +57,7 @@ pub struct ChannelCallInput {
 
 /// Invokes another channel's workflow in-process (no HTTP round-trip).
 pub struct ChannelCallHandler {
-    pub engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    pub engine: Arc<crate::engine::EngineHandle>,
     /// Registry lookup for the target channel's ingress contract (F14).
     /// Held as the shared Arc and consulted lazily per call, since the
     /// registry is populated by reload after the engine is built.
@@ -253,7 +252,7 @@ impl AsyncFunctionHandler for ChannelCallHandler {
             // Timeout precedence: explicit input > target channel's
             // timeout_ms > engine default (the last two resolved by the
             // guard chain, so every transport agrees on them).
-            let engine = crate::engine::acquire_engine_read(&self.engine).await;
+            let engine = self.engine.load();
             let timeout_ms = input
                 .timeout_ms
                 .or(admission.timeout_ms)

@@ -13,7 +13,6 @@ use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqFil
 use orion::storage::repositories::traces::{
     SqlTraceRepository, TraceCompletedRow, TraceFilter, TracePage, TraceRepository, TraceResultRow,
 };
-use tokio::sync::RwLock;
 
 /// Delegating wrapper that fails the first `update_status(_, "running", _)`
 /// call, simulating a DB blip at the worst moment.
@@ -118,7 +117,7 @@ async fn failed_running_write_routes_message_to_dlq() {
     });
     let dlq_repo = Arc::new(SqlTraceDlqRepository::new(pool.clone()));
 
-    let engine = Arc::new(RwLock::new(Arc::new(
+    let engine = Arc::new(orion::engine::EngineHandle::new(Arc::new(
         dataflow_rs::Engine::builder().build().unwrap(),
     )));
     let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());
@@ -283,7 +282,7 @@ async fn run_one_message_to_terminal_status(
     trace_repo: Arc<dyn TraceRepository>,
     queue_config: orion::config::TraceQueueConfig,
 ) -> Trace {
-    let engine = Arc::new(RwLock::new(Arc::new(
+    let engine = Arc::new(orion::engine::EngineHandle::new(Arc::new(
         dataflow_rs::Engine::builder().build().unwrap(),
     )));
     let channel_registry = Arc::new(orion::channel::ChannelRegistry::new());

@@ -104,7 +104,6 @@ global_http_timeout_secs = 30
 ```toml
 [engine]
 health_check_timeout_secs = 2
-reload_timeout_secs = 10
 ```
 
 ## Fault Tolerance

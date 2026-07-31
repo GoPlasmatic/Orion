@@ -35,6 +35,4 @@ pub use reload::{
     ReloadOpts, reload_engine, reload_engine_with_opts, resync_from_db,
     spawn_kafka_restart_supervisor,
 };
-pub use runner::{
-    EngineCallResult, TraceCapture, acquire_engine_read, acquire_engine_write, run_for_channel,
-};
+pub use runner::{EngineCallResult, EngineHandle, TraceCapture, run_for_channel};

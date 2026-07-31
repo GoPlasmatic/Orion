@@ -292,7 +292,6 @@ where
 
     // Engine
     ov!(engine.health_check_timeout_secs: u64);
-    ov!(engine.reload_timeout_secs: u64);
     ov!(engine.max_channel_call_depth: u32);
     ov!(engine.default_channel_call_timeout_ms: u64);
     ov!(engine.global_http_timeout_secs: u64);
@@ -510,7 +509,6 @@ mod tests {
         env.insert("ORION_TRACING__SERVICE_NAME", "my-orion");
         env.insert("ORION_TRACING__SAMPLE_RATE", "0.5");
         env.insert("ORION_ENGINE__HEALTH_CHECK_TIMEOUT_SECS", "5");
-        env.insert("ORION_ENGINE__RELOAD_TIMEOUT_SECS", "20");
         env.insert("ORION_ENGINE__CIRCUIT_BREAKER__ENABLED", "true");
         env.insert("ORION_ENGINE__CIRCUIT_BREAKER__FAILURE_THRESHOLD", "10");
         env.insert("ORION_ENGINE__CIRCUIT_BREAKER__RECOVERY_TIMEOUT_SECS", "60");
@@ -571,7 +569,6 @@ mod tests {
         assert_eq!(config.tracing.service_name, "my-orion");
         assert!((config.tracing.sample_rate - 0.5).abs() < f64::EPSILON);
         assert_eq!(config.engine.health_check_timeout_secs, 5);
-        assert_eq!(config.engine.reload_timeout_secs, 20);
         assert!(config.engine.circuit_breaker.enabled);
         assert_eq!(config.engine.circuit_breaker.failure_threshold, 10);
         assert_eq!(config.engine.circuit_breaker.recovery_timeout_secs, 60);

@@ -66,6 +66,11 @@ const RETIRED_ENV_VARS: &[(&str, &str)] = &[
         "ORION_TRACE_QUEUE__DLQ_BATCH_SIZE",
     ),
     (
+        "ORION_ENGINE__RELOAD_TIMEOUT_SECS",
+        "removed — the engine is published with an atomic store, so a reload \
+         never waits on readers and has no timeout to configure",
+    ),
+    (
         "ORION_QUEUE__DLQ_LEASE_SECS",
         "ORION_TRACE_QUEUE__DLQ_LEASE_SECS",
     ),

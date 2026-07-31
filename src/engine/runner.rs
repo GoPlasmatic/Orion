@@ -4,35 +4,47 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::RwLock;
+use arc_swap::ArcSwap;
 
 use super::profile;
 
-/// Acquire the engine read lock with timing instrumentation.
+/// The live engine, swapped wholesale on reload.
 ///
-/// Records lock wait time as a histogram metric and returns the cloned inner `Arc<Engine>`,
-/// releasing the lock immediately.
-pub async fn acquire_engine_read(
-    lock: &RwLock<Arc<dataflow_rs::Engine>>,
-) -> Arc<dataflow_rs::Engine> {
-    let start = std::time::Instant::now();
-    let guard = lock.read().await;
-    let elapsed = start.elapsed();
-    crate::metrics::record_engine_lock_wait("read", elapsed.as_secs_f64());
-    profile::record_engine_lock_wait(elapsed);
-    guard.clone()
-}
+/// Was `Arc<RwLock<Arc<Engine>>>`. The outer lock never protected a mutation —
+/// reload builds the replacement engine entirely outside it and the critical
+/// section was a single assignment — so all it ever did was serialise readers
+/// against a writer that had nothing left to do. Every data-plane request paid
+/// a futures-aware acquire, and a reload could still block readers in the
+/// window between the timeout and the store.
+///
+/// `ArcSwap` is the shape the access pattern always had: many readers taking a
+/// snapshot, one writer publishing a finished value. Readers never block and
+/// never wait, so the reload no longer needs a timeout to bound how long it
+/// might hold them off, and a reader that is mid-request keeps the engine it
+/// started with until it drops the `Arc`. N17 made the same change to the
+/// channel-registry snapshot for the same reason.
+///
+/// Reloads are still serialised, by the `reload_lock` in `AppState` — that is
+/// a separate concern (two concurrent reloads would each build from a possibly
+/// stale read) and is not what this type is for.
+pub struct EngineHandle(ArcSwap<dataflow_rs::Engine>);
 
-/// Acquire the engine write lock with timing instrumentation.
-///
-/// Records lock wait time as a histogram metric.
-pub async fn acquire_engine_write(
-    lock: &RwLock<Arc<dataflow_rs::Engine>>,
-) -> tokio::sync::RwLockWriteGuard<'_, Arc<dataflow_rs::Engine>> {
-    let start = std::time::Instant::now();
-    let guard = lock.write().await;
-    crate::metrics::record_engine_lock_wait("write", start.elapsed().as_secs_f64());
-    guard
+impl EngineHandle {
+    pub fn new(engine: Arc<dataflow_rs::Engine>) -> Self {
+        Self(ArcSwap::new(engine))
+    }
+
+    /// A snapshot of the current engine. Wait-free; the returned `Arc` stays
+    /// valid across a concurrent [`Self::store`].
+    pub fn load(&self) -> Arc<dataflow_rs::Engine> {
+        self.0.load_full()
+    }
+
+    /// Publish a new engine. Readers already holding a snapshot finish against
+    /// the old one; every load after this returns the new one.
+    pub fn store(&self, engine: Arc<dataflow_rs::Engine>) {
+        self.0.store(engine);
+    }
 }
 
 /// Result of one engine invocation: the engine's own result plus the captured

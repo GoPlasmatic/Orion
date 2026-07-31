@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use tokio::sync::{RwLock, Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc};
 
 use crate::config::TraceStorageMode;
 use crate::metrics;
@@ -52,7 +52,7 @@ pub(super) struct DispatcherContext {
 /// owns its own handles.
 #[derive(Clone)]
 pub(super) struct ProcessingContext {
-    pub(super) engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    pub(super) engine: Arc<crate::engine::EngineHandle>,
     pub(super) trace_repo: Arc<dyn TraceRepository>,
     pub(super) dlq_repo: Option<Arc<dyn TraceDlqRepository>>,
     pub(super) processing_timeout_ms: u64,
@@ -292,7 +292,7 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
         .build();
 
     // Clone the inner Arc<Engine> and release the lock immediately
-    let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
+    let engine_ref = ctx.engine.load();
     // A2: capture the per-task execution trace when the channel opted in via
     // `config.tracing.task_details = true`. Both arms resolve to the same
     // `(Result, Option<ExecutionTrace>)` shape so the timeout handling is shared.

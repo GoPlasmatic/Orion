@@ -288,13 +288,7 @@ async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
 /// engine is up", identical only by accident. The guard is released before
 /// returning.
 async fn probe_engine(state: &AppState) -> Option<usize> {
-    tokio::time::timeout(
-        std::time::Duration::from_secs(state.config.engine.health_check_timeout_secs),
-        crate::engine::acquire_engine_read(&state.engine),
-    )
-    .await
-    .ok()
-    .map(|engine| engine.workflows().len())
+    Some(state.engine.load().workflows().len())
 }
 
 /// Coarse state of the Kafka ingest consumer for `/health` and `/readyz`:

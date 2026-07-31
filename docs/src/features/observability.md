@@ -84,7 +84,6 @@ from the main one. See
 | `orion_db_pool_idle` | Gauge | — | Idle connections in the primary pool. Sustained `0` with a growing latency histogram is pool exhaustion. |
 | `orion_engine_reloads_total` | Counter | `status` | Engine reload events |
 | `orion_engine_reload_duration_seconds` | Histogram | — | Engine reload latency |
-| `orion_engine_lock_wait_seconds` | Histogram | `mode` | Time spent waiting for the engine lock (`read` / `write`) |
 | `orion_circuit_breaker_trips_total` | Counter | `connector`, `channel` | Circuit breaker trip events |
 | `orion_circuit_breaker_rejections_total` | Counter | `connector`, `channel` | Requests rejected by open breakers |
 | `orion_connector_requests_total` | Counter | `connector`, `channel`, `status` | Outbound connector calls, by outcome |

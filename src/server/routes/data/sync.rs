@@ -285,7 +285,7 @@ pub(super) async fn process_sync_for_channel(
     // cardinality by inventing path segments.
 
     let start = Instant::now();
-    let engine = crate::engine::acquire_engine_read(&state.engine).await;
+    let engine = state.engine.load();
     let sticky_identity = crate::engine::utils::rollout_identity(
         &metadata,
         &state.config.engine.rollout_sticky_header,

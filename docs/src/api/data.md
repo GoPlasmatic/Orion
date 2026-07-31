@@ -70,7 +70,6 @@ Add `X-Orion-Profile: 1` (or `?profile=1`) to the request and the response gains
       "version": 2,
       "totals_ms": 6.75,
       "phases": [
-        { "name": "engine_lock_wait",  "ms": 0.04, "pct": 0.59 },
         { "name": "handlers",          "ms": 5.33, "pct": 78.96 },
         { "name": "workflow_overhead", "ms": 1.34, "pct": 19.85 }
       ],

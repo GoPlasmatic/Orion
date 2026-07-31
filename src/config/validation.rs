@@ -205,13 +205,6 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_config_zero_reload_timeout() {
-        let mut config = AppConfig::default();
-        config.engine.reload_timeout_secs = 0;
-        assert!(validate_config(&config).is_err());
-    }
-
-    #[test]
     fn test_validate_config_zero_shutdown_timeout() {
         let mut config = AppConfig::default();
         config.trace_queue.shutdown_timeout_secs = 0;

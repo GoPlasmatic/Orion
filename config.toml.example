@@ -117,8 +117,7 @@
                                # The admin API has its own: server.max_admin_body_size
 
 [engine]
-# health_check_timeout_secs = 2            # Engine read-lock timeout in health checks
-# reload_timeout_secs = 10                 # Engine write-lock timeout during reload
+# health_check_timeout_secs = 2            # Timeout for the /readyz cluster-Redis ping
 # max_channel_call_depth = 10              # Recursion limit for channel_call
 # default_channel_call_timeout_ms = 30000  # Default channel_call timeout
 # global_http_timeout_secs = 30            # Safety net for every outbound HTTP request;

@@ -209,7 +209,7 @@ pub fn set_active_workflows(count: f64) {
 
 /// Record HTTP request count and duration in a single call.
 ///
-/// Borrowed labels, owned only past the [`is_enabled`] gate. They used to be
+/// Borrowed labels, owned only past the `is_enabled` gate. They used to be
 /// `String` parameters, on the reasoning that the caller had already allocated
 /// them — but the caller allocated them *for this call*, so with metrics
 /// disabled the request paid two allocations to reach an early return. The
@@ -255,14 +255,6 @@ where
     let result = f.await;
     record_db_query_duration(operation, start.elapsed().as_secs_f64());
     result
-}
-
-/// Record engine lock acquisition wait time.
-pub fn record_engine_lock_wait(mode: &'static str, duration_secs: f64) {
-    if !is_enabled() {
-        return;
-    }
-    histogram!("orion_engine_lock_wait_seconds", "mode" => mode).record(duration_secs);
 }
 
 /// Record engine reload duration.
@@ -694,13 +686,6 @@ mod tests {
         ensure_recorder();
         let result = timed_db_op("test_op", async { 42 }).await;
         assert_eq!(result, 42);
-    }
-
-    #[test]
-    fn test_record_engine_lock_wait() {
-        ensure_recorder();
-        record_engine_lock_wait("read", 0.001);
-        record_engine_lock_wait("write", 0.050);
     }
 
     #[test]

@@ -5,7 +5,6 @@
 use dataflow_rs::datalogic_rs;
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -166,7 +165,7 @@ pub struct ServingComponents {
     pub connector_registry: Arc<ConnectorRegistry>,
     pub http_client: reqwest::Client,
     pub datalogic: Arc<datalogic_rs::Engine>,
-    pub engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    pub engine: Arc<crate::engine::EngineHandle>,
     pub cache_pool: Arc<crate::connector::cache_backend::CachePool>,
     pub sql_pool_cache: Arc<crate::connector::pool_cache::SqlPoolCache>,
     pub mongo_pool_cache: Arc<crate::connector::mongo_pool::MongoPoolCache>,
@@ -244,9 +243,9 @@ pub async fn build_engine_components(
 
     // Create the engine lock early so channel_call handler can reference it.
     // We'll populate it with the real engine after building workflows.
-    let engine: Arc<RwLock<Arc<dataflow_rs::Engine>>> = Arc::new(RwLock::new(Arc::new(
-        dataflow_rs::Engine::builder().build()?,
-    )));
+    let engine: Arc<crate::engine::EngineHandle> = Arc::new(crate::engine::EngineHandle::new(
+        Arc::new(dataflow_rs::Engine::builder().build()?),
+    ));
 
     // Build cache pool (memory backend always available, redis always compiled)
     let cache_pool = Arc::new(crate::connector::cache_backend::CachePool::new(
@@ -392,7 +391,7 @@ impl EngineComponents {
         // it needs setting.
         let built_engine = dataflow_rs::Engine::new(workflows, custom_functions)?
             .with_observer(Arc::new(crate::engine::MetricsObserver));
-        *crate::engine::acquire_engine_write(&serving.engine).await = Arc::new(built_engine);
+        serving.engine.store(Arc::new(built_engine));
 
         Ok((serving, channels, active_workflows.len()))
     }
@@ -404,7 +403,7 @@ impl EngineComponents {
 pub fn start_kafka_ingest(
     kafka_config: &config::KafkaIngestConfig,
     channels: &[crate::storage::models::Channel],
-    engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    engine: Arc<crate::engine::EngineHandle>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     datalogic: Arc<datalogic_rs::Engine>,
     kafka_producer: Option<Arc<crate::kafka::producer::KafkaProducer>>,
@@ -596,7 +595,7 @@ impl TaskHandles {
 /// the shutdown sequence.
 pub fn start_background_tasks(
     config: &config::AppConfig,
-    engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    engine: Arc<crate::engine::EngineHandle>,
     repos: &Repositories,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     cluster: &crate::cluster::ClusterRuntime,

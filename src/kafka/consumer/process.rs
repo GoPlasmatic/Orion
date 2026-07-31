@@ -328,7 +328,7 @@ async fn process_one_kafka_message(
         .build();
 
     // Clone the inner Arc<Engine> and release the lock immediately.
-    let engine_ref = crate::engine::acquire_engine_read(&ctx.engine).await;
+    let engine_ref = ctx.engine.load();
     let process_result = crate::engine::run_for_channel(
         &engine_ref,
         channel,

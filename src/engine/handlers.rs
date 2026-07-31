@@ -4,8 +4,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tokio::sync::RwLock;
-
 use super::functions;
 use crate::connector::{ConnectorRegistry, ConnectorType};
 
@@ -128,7 +126,7 @@ pub fn requires_mongo_database(function: &str) -> bool {
 pub struct HandlerDeps<'a> {
     pub registry: Arc<ConnectorRegistry>,
     pub client: reqwest::Client,
-    pub engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    pub engine: Arc<crate::engine::EngineHandle>,
     pub channel_registry: Arc<crate::channel::ChannelRegistry>,
     pub engine_config: &'a crate::config::EngineConfig,
     pub query_config: &'a crate::config::QueryConfig,

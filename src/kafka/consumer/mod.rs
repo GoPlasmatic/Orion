@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use rdkafka::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
-use tokio::sync::{RwLock, watch};
+use tokio::sync::watch;
 
 use crate::config::KafkaIngestConfig;
 use crate::errors::OrionError;
@@ -57,7 +57,7 @@ pub(crate) use process::{INITIAL_RETRY_BACKOFF_MS, next_backoff_ms};
 struct ConsumeLoopContext {
     consumer: Arc<StreamConsumer<KafkaConsumerContext>>,
     topic_map: HashMap<String, String>,
-    engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    engine: Arc<crate::engine::EngineHandle>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     datalogic: Arc<datalogic_rs::Engine>,
     dlq_producer: Option<Arc<KafkaProducer>>,
@@ -151,7 +151,7 @@ impl ConsumerHandle {
 /// rebalance. `None` (single node) keeps today's dynamic membership.
 pub fn start_consumer(
     config: &KafkaIngestConfig,
-    engine: Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    engine: Arc<crate::engine::EngineHandle>,
     channel_registry: Arc<crate::channel::ChannelRegistry>,
     datalogic: Arc<datalogic_rs::Engine>,
     dlq_producer: Option<Arc<KafkaProducer>>,

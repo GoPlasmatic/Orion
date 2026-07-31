@@ -15,7 +15,6 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::{ClientConfig, Message};
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::kafka::Kafka;
-use tokio::sync::RwLock;
 
 use orion::config::{DlqConfig, KafkaAuthConfig, KafkaIngestConfig, TopicMapping};
 use orion::kafka::consumer;
@@ -42,8 +41,8 @@ async fn start_kafka() -> (testcontainers::ContainerAsync<Kafka>, String) {
 }
 
 /// Create a simple test engine with no workflows.
-fn empty_engine() -> Arc<RwLock<Arc<dataflow_rs::Engine>>> {
-    Arc::new(RwLock::new(Arc::new(
+fn empty_engine() -> Arc<orion::engine::EngineHandle> {
+    Arc::new(orion::engine::EngineHandle::new(Arc::new(
         dataflow_rs::Engine::builder().build().unwrap(),
     )))
 }
@@ -1390,7 +1389,7 @@ async fn assert_no_commits_within(brokers: &str, group_id: &str, topic: &str, se
 /// consumer without resetting the guard state under test.
 async fn guarded_consumer_app() -> (
     axum::Router,
-    Arc<RwLock<Arc<dataflow_rs::Engine>>>,
+    Arc<orion::engine::EngineHandle>,
     Arc<orion::channel::ChannelRegistry>,
     Arc<datalogic_rs::Engine>,
 ) {

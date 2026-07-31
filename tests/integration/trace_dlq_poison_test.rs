@@ -15,7 +15,6 @@ use dataflow_rs::engine::error::DataflowError;
 use dataflow_rs::engine::functions::AsyncFunctionHandler;
 use dataflow_rs::engine::task_context::TaskContext;
 use dataflow_rs::engine::task_outcome::TaskOutcome;
-use tokio::sync::RwLock;
 
 use orion::channel::ChannelRegistry;
 use orion::config::{StorageConfig, TraceQueueConfig, TraceStorageConfig};
@@ -46,7 +45,7 @@ impl AsyncFunctionHandler for AlwaysFail {
     }
 }
 
-fn poison_engine() -> Arc<RwLock<Arc<dataflow_rs::Engine>>> {
+fn poison_engine() -> Arc<orion::engine::EngineHandle> {
     let workflow = dataflow_rs::Workflow::from_json(
         r#"{
             "id": "poison-wf",
@@ -66,7 +65,7 @@ fn poison_engine() -> Arc<RwLock<Arc<dataflow_rs::Engine>>> {
         .build()
         .expect("engine builds");
 
-    Arc::new(RwLock::new(Arc::new(engine)))
+    Arc::new(orion::engine::EngineHandle::new(Arc::new(engine)))
 }
 
 fn sqlite(pool: &DbPool) -> &sqlx::SqlitePool {
