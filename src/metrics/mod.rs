@@ -16,7 +16,7 @@ pub(crate) fn set_enabled(enabled: bool) {
 }
 
 #[inline(always)]
-fn is_enabled() -> bool {
+pub(crate) fn is_enabled() -> bool {
     METRICS_ENABLED.load(Ordering::Relaxed)
 }
 
@@ -209,24 +209,30 @@ pub fn set_active_workflows(count: f64) {
 
 /// Record HTTP request count and duration in a single call.
 ///
-/// Accepts owned `String` labels so callers can pass values they already
-/// allocated without a redundant re-allocation.
-pub fn record_http_request(method: String, path: String, status: u16, duration_secs: f64) {
+/// Borrowed labels, owned only past the [`is_enabled`] gate. They used to be
+/// `String` parameters, on the reasoning that the caller had already allocated
+/// them — but the caller allocated them *for this call*, so with metrics
+/// disabled the request paid two allocations to reach an early return. The
+/// labels are cardinality-bounded (`method` is a verb, `path` is the matched
+/// route template), so they cannot be borrowed as `&'static str` and must be
+/// owned to become metric labels; the question is only whether that happens
+/// when nothing will read them.
+pub fn record_http_request(method: &str, path: &str, status: u16, duration_secs: f64) {
     if !is_enabled() {
         return;
     }
     let status = status.to_string();
     counter!(
         "orion_http_requests_total",
-        "method" => method.clone(),
-        "path" => path.clone(),
+        "method" => method.to_owned(),
+        "path" => path.to_owned(),
         "status" => status.clone()
     )
     .increment(1);
     histogram!(
         "orion_http_request_duration_seconds",
-        "method" => method,
-        "path" => path,
+        "method" => method.to_owned(),
+        "path" => path.to_owned(),
         "status" => status
     )
     .record(duration_secs);
@@ -673,8 +679,8 @@ mod tests {
     #[test]
     fn test_record_http_request() {
         ensure_recorder();
-        record_http_request("GET".into(), "/health".into(), 200, 0.005);
-        record_http_request("POST".into(), "/api/v1/data/orders".into(), 201, 0.010);
+        record_http_request("GET", "/health", 200, 0.005);
+        record_http_request("POST", "/api/v1/data/orders", 201, 0.010);
     }
 
     #[test]

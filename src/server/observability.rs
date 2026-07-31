@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::time::Instant;
 
 use axum::extract::{MatchedPath, Request};
@@ -14,11 +15,17 @@ pub async fn http_metrics_middleware(
     req: Request,
     next: Next,
 ) -> Response {
-    let method = req.method().to_string();
-    let path = matched_path
-        .as_ref()
-        .map(|m: &MatchedPath| m.as_str().to_string())
-        .unwrap_or_else(|| req.uri().path().to_string());
+    // `Method` is an inline enum for the standard verbs, so cloning it is
+    // cheaper than the `to_string()` this used to do — and `as_str()` below
+    // then costs nothing. Only an extension method allocates.
+    let method = req.method().clone();
+    // Borrowed from `matched_path`, which outlives the response. Only the
+    // unmatched fallback allocates, and it has to: it reads from `req`, which
+    // moves into `next.run` below.
+    let path: Cow<'_, str> = match matched_path.as_ref() {
+        Some(m) => Cow::Borrowed(m.as_str()),
+        None => Cow::Owned(req.uri().path().to_string()),
+    };
 
     // Request id set by SetRequestIdLayer (inner layer, runs before us).
     //
@@ -45,7 +52,7 @@ pub async fn http_metrics_middleware(
 
     tracing::info!(
         request_id = %request_id,
-        http.method = %method,
+        http.method = %method.as_str(),
         http.route = %path,
         http.status_code = status,
         http.response_content_length = %content_length,
@@ -53,8 +60,7 @@ pub async fn http_metrics_middleware(
         "HTTP request"
     );
 
-    // Pass owned Strings to avoid re-allocation inside record_http_request
-    metrics::record_http_request(method, path, status, duration);
+    metrics::record_http_request(method.as_str(), &path, status, duration);
 
     response
 }
