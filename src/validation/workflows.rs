@@ -66,6 +66,17 @@ pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), Orion
 /// the per-channel quarantine: `LogicCompiler::compile_workflows` calls
 /// `Workflow::validate()`, so one repeated id takes down every channel on every
 /// node rather than its own.
+///
+/// **These track dataflow-rs's parsing rules rather than tightening them**, so
+/// that "Orion accepts it" and "the engine can load it" stay the same
+/// statement. Both fields must be *present* because both are required `String`s
+/// with no serde default. Only `id` additionally has to be non-empty, and that
+/// is the one deliberate step beyond the parse: `""` deserializes happily, but
+/// it collides with any second blank id on `Workflow::validate()`'s uniqueness
+/// check, and a task that does parse with one writes an empty `task_id` into
+/// every audit entry, trace step and metric label. `name` is left alone — an
+/// empty one is unhelpful in a log, but it loads, and refusing it would be
+/// Orion inventing a rule the engine does not have.
 pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldError> {
     let Some(arr) = tasks.as_array() else {
         return Vec::new();
@@ -101,20 +112,17 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
                 }
             }
         }
-        if task
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .unwrap_or("")
-            .is_empty()
-        {
+        // Presence only, matching the parse: `Task::name` is a required
+        // `String`, but an empty one deserializes and loads fine, so refusing
+        // it here would reject a workflow the engine would happily run.
+        if task.get("name").and_then(|v| v.as_str()).is_none() {
             errors.push(FieldError::new(
                 format!("tasks[{i}].name"),
                 "REQUIRED",
-                "Task 'name' is required and must be a non-empty string — it is \
-                 what makes an audit trail or a trace readable to a human. \
-                 Without one this workflow would be accepted and then fail to \
-                 load, taking its channel out of service",
+                "Task 'name' is required and must be a string — it is what makes \
+                 an audit trail or a trace readable to a human. It may be empty, \
+                 but it must be present: without the key this workflow would be \
+                 accepted and then fail to load, taking its channel out of service",
             ));
         }
 

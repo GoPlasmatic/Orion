@@ -229,9 +229,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Breaking
 
 - **Task identity is validated at authoring time, not discovered at first
-  request.** Every task must now carry a non-empty `id` and `name`, and ids must
-  be unique within a workflow. All three were already hard requirements of the
-  engine — `dataflow_rs::Task::id` and `::name` are required `String`s, and
+  request.** Every task must now carry a non-empty `id` and a `name` key, and
+  ids must be unique within a workflow. All three were already hard requirements
+  of the engine — `dataflow_rs::Task::id` and `::name` are required `String`s, and
   `LogicCompiler::compile_workflows` calls `Workflow::validate()`, which rejects
   duplicates — but nothing checked them until the workflow was loaded. Verified
   end to end, all three were accepted with a `201` and then failed later:
@@ -248,6 +248,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`validate_workflow_tasks_schema`), so create, update, bulk import,
   `POST /admin/workflows/validate` and the CLI agree, and the response names the
   offending `tasks[{i}].id`.
+
+  These track dataflow-rs's parsing rules rather than tightening them, so
+  "Orion accepts it" and "the engine can load it" stay the same statement. An
+  **empty** `name` is still accepted, because it deserializes and runs — only
+  the missing key is refused. `id` is the single deliberate step beyond the
+  parse: `""` deserializes too, but it collides with any second blank id on
+  `Workflow::validate()`, and even alone it writes an empty `task_id` into every
+  trace step, audit entry and metric label.
 
   Nothing that currently serves traffic is affected — a workflow in any of these
   shapes is already failing. `PUT` on such a stored workflow now reports the

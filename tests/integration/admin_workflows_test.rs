@@ -1523,8 +1523,8 @@ async fn a_task_without_an_id_is_refused_at_create() {
     );
 }
 
-/// Same for `name`: also a required `String` upstream, and it is what makes an
-/// audit trail or a trace legible to a human.
+/// A *missing* `name` is refused: it is a required `String` upstream, so the
+/// document would not deserialize.
 #[tokio::test]
 async fn a_task_without_a_name_is_refused_at_create() {
     let app = common::test_app().await;
@@ -1541,6 +1541,55 @@ async fn a_task_without_a_name_is_refused_at_create() {
         body.to_string().contains("tasks[0].name"),
         "the error must point at the offending task, got: {body}"
     );
+}
+
+/// …but an *empty* `name` is accepted, because the engine accepts it.
+///
+/// This is the boundary between the two rules. Orion tracks dataflow-rs's
+/// parsing rules rather than tightening them, so that "Orion accepts it" and
+/// "the engine can load it" remain the same statement. `""` deserializes into
+/// the required `String` and the workflow loads and runs; an empty name is
+/// unhelpful in a log, but that is an authoring preference, not a defect, and
+/// refusing it would be Orion inventing a rule the engine does not have.
+/// `id` is the one deliberate exception — see below.
+#[tokio::test]
+async fn a_task_with_an_empty_name_is_accepted_and_serves_traffic() {
+    let app = common::test_app().await;
+
+    // Not just "create says 201": the point of the parity rule is that what
+    // Orion accepts, the engine loads. Drive it all the way to a served
+    // request, so this fails if the rule ever drifts in either direction.
+    common::create_and_activate_channel(
+        &app,
+        "empty-name-ch",
+        json!({
+            "workflow_id": "empty-task-name",
+            "name": "Empty Task Name",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "",
+                "function": {"name": "map", "input": {"mappings": [{"path": "data.ok", "logic": true}]}}
+            }]
+        }),
+    )
+    .await;
+
+    let resp = app
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/empty-name-ch",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "an empty task name must load and run, not quarantine the channel"
+    );
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["ok"], true, "body = {body}");
 }
 
 /// Duplicate task ids are the worst of the three: `Workflow::validate()` runs
@@ -1570,9 +1619,11 @@ async fn duplicate_task_ids_are_refused_at_create() {
     );
 }
 
-/// An empty-string id is as unusable as a missing one — two of them collide on
-/// `Workflow::validate()`'s uniqueness check, and one produces a blank
-/// `task_id` in every trace, audit entry and metric label.
+/// A blank `id`, unlike a blank `name`, is refused — the one place Orion is
+/// deliberately stricter than the parse. `""` deserializes fine, but two of
+/// them collide on `Workflow::validate()`'s uniqueness check, and even one
+/// writes an empty `task_id` into every trace step, audit entry and metric
+/// label, which makes the identifier useless for the thing it exists to do.
 #[tokio::test]
 async fn a_blank_task_id_is_refused_at_create() {
     let app = common::test_app().await;
