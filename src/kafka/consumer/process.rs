@@ -685,7 +685,7 @@ mod tests {
         // Validation rejected the payload: it will never be accepted, so
         // dead letter it rather than block the partition forever.
         assert_eq!(
-            classify_guard_refusal(&OrionError::BadRequest("Input validation failed".into())),
+            classify_guard_refusal(&OrionError::validation("Input validation failed")),
             GuardDisposition::Terminal
         );
 

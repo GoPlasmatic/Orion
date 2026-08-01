@@ -3277,17 +3277,7 @@
             }
           },
           "500": {
-            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "Result exceeded `queue.max_result_size_bytes` (`RESPONSE_TOO_LARGE`)",
+            "description": "Result exceeded `queue.max_result_size_bytes` (`RESPONSE_TOO_LARGE`), or an internal failure (`INTERNAL_ERROR`)",
             "content": {
               "application/json": {
                 "schema": {

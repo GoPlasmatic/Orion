@@ -88,7 +88,7 @@ fn scheme_error(field: &str, conn: &str, allowed: &[&str]) -> OrionError {
         Some(s) => format!("'{s}'"),
         None => "no scheme".to_string(),
     };
-    OrionError::BadRequest(format!(
+    OrionError::validation(format!(
         "Connector {field} uses {shown}. Allowed: {}",
         allowed.join(", ")
     ))
@@ -153,19 +153,19 @@ pub fn validate_endpoint_schemes(parsed: &ConnectorConfig) -> Result<(), OrionEr
 fn parse_broker(broker: &str) -> Result<(String, u16), OrionError> {
     let broker = broker.trim();
     if broker.is_empty() {
-        return Err(OrionError::BadRequest(
+        return Err(OrionError::validation(
             "Kafka broker entry is empty".to_string(),
         ));
     }
     if broker.contains("://") {
-        return Err(OrionError::BadRequest(format!(
+        return Err(OrionError::validation(format!(
             "Kafka broker '{broker}' must be host:port, not a URL"
         )));
     }
     // IPv6 literals are bracketed: [::1]:9092.
     let (host, port) = if let Some(rest) = broker.strip_prefix('[') {
         let (host, tail) = rest.split_once(']').ok_or_else(|| {
-            OrionError::BadRequest(format!(
+            OrionError::validation(format!(
                 "Kafka broker '{broker}' has an unterminated IPv6 literal"
             ))
         })?;
@@ -178,7 +178,7 @@ fn parse_broker(broker: &str) -> Result<(String, u16), OrionError> {
         }
     };
     if host.is_empty() {
-        return Err(OrionError::BadRequest(format!(
+        return Err(OrionError::validation(format!(
             "Kafka broker '{broker}' has no host"
         )));
     }
@@ -186,7 +186,7 @@ fn parse_broker(broker: &str) -> Result<(String, u16), OrionError> {
         9092
     } else {
         port.parse().map_err(|_| {
-            OrionError::BadRequest(format!("Kafka broker '{broker}' has an invalid port"))
+            OrionError::validation(format!("Kafka broker '{broker}' has an invalid port"))
         })?
     };
     Ok((host, port))
@@ -298,7 +298,7 @@ pub async fn check_mongo_hosts(
 }
 
 fn refused(kind: &str, connector_name: &str, msg: &str) -> OrionError {
-    OrionError::BadRequest(format!(
+    OrionError::validation(format!(
         "Refusing to connect {kind} connector '{connector_name}': {msg}. \
          Set \"allow_private_urls\": true on this connector if the target is \
          intentionally on a private network."

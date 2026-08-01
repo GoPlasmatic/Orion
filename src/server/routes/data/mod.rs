@@ -103,7 +103,7 @@ the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),
-        (status = 502, description = "Result exceeded `queue.max_result_size_bytes` (`RESPONSE_TOO_LARGE`)", body = ErrorResponse),
+        (status = 500, description = "Result exceeded `queue.max_result_size_bytes` (`RESPONSE_TOO_LARGE`), or an internal failure (`INTERNAL_ERROR`)", body = ErrorResponse),
         (status = 503, description = "Channel backpressure limit reached, a connector circuit breaker is open (`CIRCUIT_OPEN`), or a rate-limit/dedup backend outage on a channel configured with `on_backend_error = \"deny\"`", body = ErrorResponse),
         (status = 504, description = "Workflow exceeded the channel's `timeout_ms`", body = ErrorResponse),
     )
@@ -144,9 +144,7 @@ pub(crate) async fn dynamic_handler(
 
     let route_path = route_path.trim_matches('/').trim();
     if route_path.is_empty() {
-        return Err(OrionError::BadRequest(
-            "Channel name must not be empty".into(),
-        ));
+        return Err(OrionError::validation("Channel name must not be empty"));
     }
 
     // Resolve channel: try REST route table first, then direct name lookup.
@@ -169,9 +167,7 @@ pub(crate) async fn dynamic_handler(
             .unwrap_or_else(|| route_path.to_string());
         let name = name.trim().to_string();
         if name.is_empty() {
-            return Err(OrionError::BadRequest(
-                "Channel name must not be empty".into(),
-            ));
+            return Err(OrionError::validation("Channel name must not be empty"));
         }
         (name, std::collections::HashMap::new())
     } else {
@@ -578,7 +574,7 @@ impl ProcessRequest {
             });
         }
         let parsed: Value = serde_json::from_slice(body)
-            .map_err(|e| OrionError::BadRequest(format!("Invalid JSON body: {e}")))?;
+            .map_err(|e| OrionError::validation(format!("Invalid JSON body: {e}")))?;
 
         // The envelope's two fields are `Value`, so they are taken straight
         // out of the parsed map rather than re-deserialized — a second pass

@@ -51,7 +51,7 @@ fn parse_timestamp(field: &str, raw: &str) -> Result<chrono::NaiveDateTime, Orio
     chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S")
         .or_else(|_| chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S"))
         .map_err(|_| {
-            OrionError::BadRequest(format!(
+            OrionError::validation(format!(
                 "Invalid `{field}`: expected an RFC 3339 timestamp, got '{raw}'"
             ))
         })
@@ -140,6 +140,6 @@ mod tests {
     #[test]
     fn rejects_malformed_timestamps() {
         let err = parse_timestamp("end_time", "yesterday").expect_err("must reject");
-        assert!(matches!(err, OrionError::BadRequest(_)));
+        assert!(matches!(err, OrionError::Validation { .. }));
     }
 }

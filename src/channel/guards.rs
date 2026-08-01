@@ -724,7 +724,7 @@ fn validate_input(
         {
             Ok(result) => {
                 if !is_truthy(&result) {
-                    return Err(OrionError::BadRequest(
+                    return Err(OrionError::validation(
                         "Input validation failed".to_string(),
                     ));
                 }
@@ -735,7 +735,7 @@ fn validate_input(
                 // anonymous (proposal G4). The failed-predicate arm above is
                 // already opaque; these two must agree.
                 tracing::warn!(channel = %channel, error = %e, "validation_logic evaluation failed, rejecting");
-                return Err(OrionError::BadRequest(
+                return Err(OrionError::validation(
                     "Input validation failed".to_string(),
                 ));
             }
@@ -2008,7 +2008,7 @@ mod tests {
             assert!(
                 matches!(
                     apply_guards(request(transport, &runtime, &dl, &bad, &meta)).await,
-                    Err(OrionError::BadRequest(_))
+                    Err(OrionError::Validation { .. })
                 ),
                 "{transport:?} must reject"
             );

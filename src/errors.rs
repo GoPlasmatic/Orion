@@ -47,13 +47,17 @@ pub enum OrionError {
     #[error("Not found: {0}")]
     NotFound(String),
 
-    #[error("Bad request: {0}")]
-    BadRequest(String),
-
-    /// A validation failure with structured per-field details.
-    /// Maps to HTTP 400 with `code` defaulting to `VALIDATION_ERROR`.
-    /// `details` is omitted from the response body when empty so clients
-    /// expecting only the v0.1 `{code, message}` envelope still work.
+    /// A request the server refuses to act on, with structured per-field
+    /// details when the refusal names a field. Maps to HTTP 400 with `code`
+    /// defaulting to `VALIDATION_ERROR`. `details` is omitted from the
+    /// response body when empty so clients expecting only the v0.1
+    /// `{code, message}` envelope still work.
+    ///
+    /// G11: `BadRequest(String)` used to sit beside this variant. Both were
+    /// 400, validators mixed them freely, and two identical `remap_to_field`
+    /// helpers existed purely to convert one into the other — so the pair
+    /// carried a distinction no caller could rely on. One variant now; the
+    /// former `BAD_REQUEST` code answers `VALIDATION_ERROR` like the rest.
     #[error("Validation failed: {message}")]
     Validation {
         code: &'static str,
@@ -207,7 +211,6 @@ impl OrionError {
     pub fn response_parts(&self) -> (StatusCode, &'static str, String) {
         match self {
             OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
-            OrionError::BadRequest(msg) => (StatusCode::BAD_REQUEST, "BAD_REQUEST", msg.clone()),
             OrionError::Validation { code, message, .. } => {
                 (StatusCode::BAD_REQUEST, code, message.clone())
             }
@@ -244,9 +247,18 @@ impl OrionError {
                     "Workflow execution on channel '{channel}' exceeded {timeout_ms}ms timeout"
                 ),
             ),
-            OrionError::ResponseTooLarge(msg) => {
-                (StatusCode::BAD_GATEWAY, "RESPONSE_TOO_LARGE", msg.clone())
-            }
+            // G11: this answered 502 `BAD_GATEWAY`, but the condition is a
+            // workflow *result* exceeding the operator's own
+            // `trace_queue.max_result_size_bytes` cap — no upstream is
+            // involved, so nothing here is a gateway. It is the server
+            // refusing to send what it built: a 500, under a code distinct
+            // enough to diagnose. The message stays verbatim; it names two
+            // byte counts and nothing sensitive.
+            OrionError::ResponseTooLarge(msg) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "RESPONSE_TOO_LARGE",
+                msg.clone(),
+            ),
             // G2: `Internal` and `Config` used to return their message verbatim.
             // Reachable `Config` messages carry filesystem paths (TLS cert/key)
             // and whole database URLs — `detect_backend` is called on a
@@ -513,13 +525,6 @@ mod tests {
     }
 
     #[test]
-    fn test_bad_request_status() {
-        let err = OrionError::BadRequest("invalid input".to_string());
-        let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
-
-    #[test]
     fn test_unauthorized_status() {
         let err = OrionError::Unauthorized("missing token".to_string());
         let response = err.into_response();
@@ -617,11 +622,6 @@ mod tests {
     }
 
     #[test]
-    fn test_not_retryable_bad_request() {
-        assert!(!OrionError::BadRequest("bad".to_string()).is_retryable());
-    }
-
-    #[test]
     fn test_not_retryable_config() {
         let err = OrionError::Config {
             message: "invalid".to_string(),
@@ -655,11 +655,13 @@ mod tests {
         assert!(OrionError::RateLimited("too many".to_string()).is_retryable());
     }
 
+    /// G11: was 502 `BAD_GATEWAY`; no upstream is involved in an oversized
+    /// workflow result, so it is a 500 now.
     #[test]
     fn test_response_too_large_status() {
         let err = OrionError::ResponseTooLarge("10MB exceeded".to_string());
         let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]
@@ -730,11 +732,7 @@ mod tests {
                 .to_string()
                 .contains("workflow")
         );
-        assert!(
-            OrionError::BadRequest("bad".to_string())
-                .to_string()
-                .contains("bad")
-        );
+        assert!(OrionError::validation("bad").to_string().contains("bad"));
         assert!(
             OrionError::Conflict("dup".to_string())
                 .to_string()
@@ -765,7 +763,6 @@ mod tests {
     fn variant_name(err: &OrionError) -> &'static str {
         match err {
             OrionError::NotFound(_) => "NotFound",
-            OrionError::BadRequest(_) => "BadRequest",
             OrionError::Validation { .. } => "Validation",
             OrionError::Unauthorized(_) => "Unauthorized",
             OrionError::Forbidden(_) => "Forbidden",
@@ -788,7 +785,7 @@ mod tests {
     /// The number of variants [`variant_name`] enumerates. Bumping this is the
     /// second half of the prompt: the compile error says "name the variant",
     /// this assertion says "and state its wire contract below".
-    const VARIANT_COUNT: usize = 18;
+    const VARIANT_COUNT: usize = 17;
 
     /// One sample per variant with the `(status, code)` it must answer with.
     ///
@@ -804,11 +801,6 @@ mod tests {
                 OrionError::NotFound("workflow xyz".into()),
                 StatusCode::NOT_FOUND,
                 "NOT_FOUND",
-            ),
-            (
-                OrionError::BadRequest("bad".into()),
-                StatusCode::BAD_REQUEST,
-                "BAD_REQUEST",
             ),
             (
                 OrionError::validation("invalid"),
@@ -856,7 +848,7 @@ mod tests {
             ),
             (
                 OrionError::ResponseTooLarge("big".into()),
-                StatusCode::BAD_GATEWAY,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 "RESPONSE_TOO_LARGE",
             ),
             (
@@ -1028,12 +1020,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_v01_envelope_unchanged_for_non_validation_errors() {
-        // BadRequest must produce the v0.1 envelope: code+message, no details key.
-        let err = OrionError::BadRequest("classic v0.1 message".to_string());
+        // A detail-free error must produce the v0.1 envelope: code+message,
+        // no details key.
+        let err = OrionError::NotFound("classic v0.1 message".to_string());
         let response = err.into_response();
         let body = body_to_value(response).await;
         let error = &body["error"];
-        assert_eq!(error["code"], "BAD_REQUEST");
+        assert_eq!(error["code"], "NOT_FOUND");
         assert_eq!(error["message"], "classic v0.1 message");
         assert!(error.get("details").is_none());
     }
@@ -1177,9 +1170,7 @@ mod tests {
             ..Default::default()
         };
         let response = REQUEST_CONTEXT
-            .scope(ctx, async {
-                OrionError::BadRequest("x".to_string()).into_response()
-            })
+            .scope(ctx, async { OrionError::validation("x").into_response() })
             .await;
         let body = body_to_value(response).await;
         assert_eq!(body["error"]["request_id"], "req-abc-123");
@@ -1190,7 +1181,7 @@ mod tests {
         use crate::server::request_context::{REQUEST_CONTEXT, RequestContext};
         let response = REQUEST_CONTEXT
             .scope(RequestContext::default(), async {
-                OrionError::BadRequest("x".to_string()).into_response()
+                OrionError::validation("x").into_response()
             })
             .await;
         let body = body_to_value(response).await;

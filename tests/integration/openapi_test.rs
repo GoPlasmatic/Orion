@@ -159,10 +159,12 @@ async fn openapi_documents_the_data_plane() {
         sync["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
         "#/components/schemas/ProcessResponse"
     );
-    // 400 validation, 409 dedup, 429 rate limit, 503 backpressure/CIRCUIT_OPEN,
-    // 504 timeout — the statuses a client has to branch on.
+    // 400 validation, 409 dedup, 429 rate limit, 500 oversized result
+    // (G11: RESPONSE_TOO_LARGE moved off 502 — no upstream is involved),
+    // 503 backpressure/CIRCUIT_OPEN, 504 timeout — the statuses a client
+    // has to branch on.
     for status in [
-        "400", "403", "404", "409", "415", "429", "502", "503", "504",
+        "400", "403", "404", "409", "415", "429", "500", "503", "504",
     ] {
         assert!(
             sync["responses"][status]["content"]["application/json"]["schema"]["$ref"]

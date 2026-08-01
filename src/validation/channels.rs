@@ -7,11 +7,11 @@ use super::common::{validate_description, validate_id, validate_name};
 
 pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionError> {
     if let Some(ref id) = req.channel_id {
-        validate_id(id).map_err(|e| remap_to_field(e, "channel.channel_id"))?;
+        validate_id(id, "channel.channel_id")?;
     }
-    validate_name(&req.name, "Name").map_err(|e| remap_to_field(e, "channel.name"))?;
+    validate_name(&req.name, "channel.name")?;
     if let Some(ref desc) = req.description {
-        validate_description(desc).map_err(|e| remap_to_field(e, "channel.description"))?;
+        validate_description(desc, "channel.description")?;
     }
     // B1: collect all protocol-conditional missing-field errors in one
     // response (instead of failing on the first). Channel authors get
@@ -43,10 +43,10 @@ pub fn validate_update_channel(
     req: &UpdateChannelRequest,
 ) -> Result<(), OrionError> {
     if let Some(ref name) = req.name {
-        validate_name(name, "Name").map_err(|e| remap_to_field(e, "channel.name"))?;
+        validate_name(name, "channel.name")?;
     }
     if let Some(ref desc) = req.description {
-        validate_description(desc).map_err(|e| remap_to_field(e, "channel.description"))?;
+        validate_description(desc, "channel.description")?;
     }
     // A stored row whose `methods_json` fails to parse contributes no methods
     // (`Channel::methods` owns that rule), so the request must supply them.
@@ -405,17 +405,8 @@ fn validate_cache_key_fields(cache: &crate::channel::ChannelCacheConfig) -> Resu
     Ok(())
 }
 
-/// Promote a `BadRequest` returned by a shared `common::*` validator to a
-/// `Validation` error with the caller's field path. Other variants pass through.
-fn remap_to_field(err: OrionError, path: &'static str) -> OrionError {
-    match err {
-        OrionError::BadRequest(msg) => OrionError::invalid_field(path, "INVALID", msg),
-        other => other,
-    }
-}
-
 pub fn validate_channel_id(id: &str) -> Result<(), OrionError> {
-    validate_id(id)
+    validate_id(id, "channel.channel_id")
 }
 
 #[cfg(test)]

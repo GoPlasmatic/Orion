@@ -145,7 +145,7 @@ fn draft_query(spec: &VersionedSpec, id: &str) -> (String, sea_query_binder::Sql
 
 /// Uniform "no draft" wording for [`draft_query`] misses.
 fn no_draft_err(spec: &VersionedSpec, id: &str) -> OrionError {
-    OrionError::BadRequest(format!("No draft version found for {} '{id}'", spec.noun))
+    OrionError::validation(format!("No draft version found for {} '{id}'", spec.noun))
 }
 
 /// Fetch the draft version, `BadRequest` when there is none.

@@ -41,7 +41,7 @@ impl StatusAction {
         match status {
             EntityStatus::Active => Ok(Self::Activate),
             EntityStatus::Archived => Ok(Self::Archive),
-            EntityStatus::Draft => Err(crate::errors::OrionError::BadRequest(
+            EntityStatus::Draft => Err(crate::errors::OrionError::validation(
                 "Invalid status transition to 'draft'. Use 'active' or 'archived'".to_string(),
             )),
         }

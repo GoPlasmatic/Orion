@@ -483,7 +483,7 @@ impl CachePool {
                 let conn = self.redis.get_conn(connector_name, config).await?;
                 Ok(Arc::new(RedisCacheBackend::new(conn)))
             }
-            other => Err(OrionError::BadRequest(format!(
+            other => Err(OrionError::validation(format!(
                 "Unknown cache backend '{other}'. Must be 'redis' or 'memory'"
             ))),
         }

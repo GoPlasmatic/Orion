@@ -24,7 +24,7 @@ impl RedisPoolCache {
         config: &CacheConnectorConfig,
     ) -> Result<ConnectionManager, OrionError> {
         let url = config.url.as_deref().ok_or_else(|| {
-            OrionError::BadRequest(format!(
+            OrionError::validation(format!(
                 "Cache connector '{connector_name}' with backend='redis' requires a 'url'"
             ))
         })?;

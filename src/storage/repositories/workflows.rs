@@ -491,7 +491,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
     async fn activate(&self, workflow_id: &str, rollout_pct: i64) -> Result<Workflow, OrionError> {
         if !(0..=100).contains(&rollout_pct) {
-            return Err(OrionError::BadRequest(
+            return Err(OrionError::validation(
                 "rollout_percentage must be between 0 and 100".to_string(),
             ));
         }
@@ -544,7 +544,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
     async fn update_rollout(&self, workflow_id: &str, pct: i64) -> Result<Workflow, OrionError> {
         if !(1..=100).contains(&pct) {
-            return Err(OrionError::BadRequest(
+            return Err(OrionError::validation(
                 "rollout_percentage must be between 1 and 100".to_string(),
             ));
         }
@@ -565,7 +565,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
             let active_versions: Vec<Workflow> = tx.fetch_all_as::<Workflow>(&sql, values).await?;
 
             if active_versions.is_empty() {
-                return Err(OrionError::BadRequest(format!(
+                return Err(OrionError::validation(format!(
                     "No active versions found for workflow '{workflow_id}'"
                 )));
             }
@@ -577,7 +577,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
                         .get_version(workflow_id, active_versions[0].version)
                         .await;
                 }
-                return Err(OrionError::BadRequest(
+                return Err(OrionError::validation(
                     "Cannot set partial rollout with only one active version".to_string(),
                 ));
             }

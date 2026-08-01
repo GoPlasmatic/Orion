@@ -20,13 +20,13 @@ pub fn validate_connector_config(
             serde_json::Value::String(type_str.to_string()),
         );
     } else {
-        return Err(OrionError::BadRequest(
+        return Err(OrionError::validation(
             "Connector config must be a JSON object".to_string(),
         ));
     }
 
     let parsed: ConnectorConfig = serde_json::from_value(config_with_type).map_err(|e| {
-        OrionError::BadRequest(format!(
+        OrionError::validation(format!(
             "Invalid connector config for type '{type_str}': {e}"
         ))
     })?;
@@ -43,11 +43,11 @@ pub fn validate_connector_config(
         && !http_config.url.is_empty()
     {
         let parsed_url = url::Url::parse(&http_config.url).map_err(|e| {
-            OrionError::BadRequest(format!("Invalid connector URL '{}': {e}", http_config.url))
+            OrionError::validation(format!("Invalid connector URL '{}': {e}", http_config.url))
         })?;
         let scheme = parsed_url.scheme();
         if scheme != "http" && scheme != "https" {
-            return Err(OrionError::BadRequest(format!(
+            return Err(OrionError::validation(format!(
                 "Connector URL must use http or https scheme, got '{scheme}'"
             )));
         }
@@ -62,7 +62,7 @@ pub fn validate_connector_config(
     if let ConnectorConfig::Http(c) = &parsed
         && c.retry.max_retries > 16
     {
-        return Err(OrionError::BadRequest(format!(
+        return Err(OrionError::validation(format!(
             "retry.max_retries must be <= 16 (backoff doubles per attempt), got {}",
             c.retry.max_retries
         )));
@@ -78,7 +78,7 @@ pub fn validate_connector_config(
                 .iter()
                 .any(|valid| valid.eq_ignore_ascii_case(method))
             {
-                return Err(OrionError::BadRequest(format!(
+                return Err(OrionError::validation(format!(
                     "Invalid HTTP method '{method}' in operations.methods. Must be \
                      one of: {}",
                     crate::connector::VALID_HTTP_METHODS.join(", ")
@@ -90,7 +90,7 @@ pub fn validate_connector_config(
     // For Cache connectors, validate backend and url requirement
     if let ConnectorConfig::Cache(cache_config) = &parsed {
         if !crate::connector::VALID_CACHE_BACKENDS.contains(&cache_config.backend.as_str()) {
-            return Err(OrionError::BadRequest(format!(
+            return Err(OrionError::validation(format!(
                 "Invalid cache backend '{}'. Must be one of: {}",
                 cache_config.backend,
                 crate::connector::VALID_CACHE_BACKENDS.join(", ")
@@ -102,7 +102,7 @@ pub fn validate_connector_config(
                 .as_ref()
                 .is_none_or(|u| u.trim().is_empty())
         {
-            return Err(OrionError::BadRequest(
+            return Err(OrionError::validation(
                 "Cache connector with backend='redis' requires a non-empty 'url'".to_string(),
             ));
         }
@@ -128,7 +128,7 @@ fn validate_operation_gate_keys(
         return Ok(());
     };
     let Some(object) = operations.as_object() else {
-        return Err(OrionError::BadRequest(format!(
+        return Err(OrionError::validation(format!(
             "Connector 'operations' must be a JSON object of operation gates, one of: {}",
             connector_type.operation_gate_keys().join(", ")
         )));
@@ -142,7 +142,7 @@ fn validate_operation_gate_keys(
     if unknown.is_empty() {
         return Ok(());
     }
-    Err(OrionError::BadRequest(format!(
+    Err(OrionError::validation(format!(
         "Unknown operation gate(s) {:?} for connector type '{connector_type}'. A gate \
          that is not read leaves the operation allowed, so this would be a silent \
          no-op — must be one of: {}",
@@ -153,9 +153,9 @@ fn validate_operation_gate_keys(
 
 pub fn validate_create_connector(req: &CreateConnectorRequest) -> Result<(), OrionError> {
     if let Some(ref id) = req.id {
-        validate_id(id)?;
+        validate_id(id, "connector.id")?;
     }
-    validate_name(&req.name, "Name")?;
+    validate_name(&req.name, "connector.name")?;
     // connector_type itself is now validated by serde at deserialization —
     // unknown values like "grpc" produce a 400 before this function runs.
     validate_connector_config(req.connector_type, &req.config)?;
@@ -168,7 +168,7 @@ pub fn validate_create_connector(req: &CreateConnectorRequest) -> Result<(), Ori
 /// Refuse to persist the read API's mask sentinel as a real credential (F34).
 pub fn reject_masked_values(config: &serde_json::Value) -> Result<(), OrionError> {
     if let Some(path) = crate::connector::find_masked_value(config) {
-        return Err(OrionError::BadRequest(format!(
+        return Err(OrionError::validation(format!(
             "Connector config field '{path}' is the masked placeholder that \
              GET /api/v1/admin/connectors returns, not a real value. Send the \
              actual secret, or omit the field to keep the stored one."
@@ -186,7 +186,7 @@ pub fn reject_masked_values(config: &serde_json::Value) -> Result<(), OrionError
 /// edit, so the handler owns that step.
 pub fn validate_update_connector(req: &UpdateConnectorRequest) -> Result<(), OrionError> {
     if let Some(ref name) = req.name {
-        validate_name(name, "Name")?;
+        validate_name(name, "connector.name")?;
     }
     Ok(())
 }

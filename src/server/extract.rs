@@ -38,7 +38,7 @@ where
 }
 
 fn map_query_rejection(rej: QueryRejection) -> OrionError {
-    OrionError::BadRequest(format!("Invalid query string: {}", rej.body_text()))
+    OrionError::validation(format!("Invalid query string: {}", rej.body_text()))
 }
 
 impl<T, S> FromRequest<S> for OrionJson<T>
@@ -69,13 +69,13 @@ fn map_rejection(rej: JsonRejection) -> OrionError {
             OrionError::invalid_field(path, "INVALID", msg)
         }
         JsonRejection::JsonSyntaxError(e) => {
-            OrionError::BadRequest(format!("Invalid JSON: {}", e.body_text()))
+            OrionError::validation(format!("Invalid JSON: {}", e.body_text()))
         }
         JsonRejection::MissingJsonContentType(_) => OrionError::UnsupportedMediaType(
             "Expected `content-type: application/json`".to_string(),
         ),
         // Catch-all: surface body_text but use the rejection's status as a hint.
-        other => OrionError::BadRequest(other.body_text()),
+        other => OrionError::validation(other.body_text()),
     }
 }
 

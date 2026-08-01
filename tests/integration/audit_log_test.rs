@@ -749,7 +749,7 @@ async fn test_audit_time_range_filter() {
 
     let (status, body) = audit_query(&app, "?start_time=not-a-timestamp").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "BAD_REQUEST");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
 }
 
 /// The core of O8: before the fix an unknown parameter was dropped and the
@@ -764,7 +764,7 @@ async fn test_audit_unknown_query_param_is_rejected() {
         StatusCode::BAD_REQUEST,
         "a mistyped filter must not silently return everything"
     );
-    assert_eq!(body["error"]["code"], "BAD_REQUEST");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR");
     assert!(body.get("data").is_none());
 }
 

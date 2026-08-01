@@ -20,7 +20,7 @@ use super::audit_log;
 /// at the managed database's native mechanisms instead (multi-instance B3).
 fn reject_in_cluster_mode(state: &AppState) -> Result<(), OrionError> {
     if state.cluster.enabled {
-        return Err(OrionError::BadRequest(
+        return Err(OrionError::validation(
             "Filesystem backups are disabled in cluster mode — the file would land on \
              one arbitrary node. Use your managed database's snapshot/PITR tooling \
              (e.g. pg_dump, RDS/Cloud SQL backups) instead; see the availability docs."
@@ -73,7 +73,7 @@ pub(crate) async fn create_backup(
             source: Some(Box::new(e)),
         })?;
     if !backed_up {
-        return Err(OrionError::BadRequest(
+        return Err(OrionError::validation(
             "Database backup via VACUUM INTO is only supported for SQLite".to_string(),
         ));
     }

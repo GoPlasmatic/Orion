@@ -302,7 +302,7 @@ impl RouteTable {
     /// with 400 rather than matched or silently passed along (N10).
     pub fn match_route(&self, method: &str, path: &str) -> Result<Option<RouteMatch>, OrionError> {
         let Some(path_parts) = decode_path_parts(path) else {
-            return Err(OrionError::BadRequest(
+            return Err(OrionError::validation(
                 "Invalid percent-encoding in request path".to_string(),
             ));
         };

@@ -1354,6 +1354,32 @@ promised.
 
 **What to do.** Nothing, unless you match on the literal string `QUEUE_ERROR`.
 
+### `BAD_REQUEST` is now `VALIDATION_ERROR`, and an oversized result is a 500
+
+**What changed.** Two 400 codes existed for one condition. Validators mixed
+`BAD_REQUEST` and `VALIDATION_ERROR` freely — which one a given refusal
+answered with was an accident of which internal variant the code path
+constructed, not a distinction a client could rely on. They are merged: every
+400 that answered `{"code": "BAD_REQUEST"}` now answers
+`{"code": "VALIDATION_ERROR"}`. The message is unchanged, the status is
+unchanged, and `details[]` appears on a few more of them (connector
+create/update refusals now name the offending field the way channel and
+workflow refusals already did).
+
+Separately, `RESPONSE_TOO_LARGE` — a workflow result exceeding
+`trace_queue.max_result_size_bytes` — moves from `502 Bad Gateway` to
+`500 Internal Server Error`. No upstream is involved in that condition, so 502
+was the wrong claim; the code string is unchanged.
+
+**How you'll notice.** A client branching on `error.code == "BAD_REQUEST"`
+stops matching; branch on `VALIDATION_ERROR` (or on the 400 status). Anything
+alerting on 502s from the data plane should alert on the `RESPONSE_TOO_LARGE`
+code instead.
+
+**What to do.** Update literal matches on `BAD_REQUEST`. If you branch only on
+HTTP status, the 400s are untouched and the oversized-result case moves from
+502 to 500.
+
 ### `engine.reload_timeout_secs` and `orion_engine_lock_wait_seconds` are gone
 
 **What changed.** The live engine was held behind a read-write lock, so every
@@ -1670,7 +1696,7 @@ looked like a successful narrow query. Unknown parameters now return `400`.
 **How you'll notice.**
 
 ```json
-{"error": {"code": "BAD_REQUEST",
+{"error": {"code": "VALIDATION_ERROR",
            "message": "Invalid query string: Failed to deserialize query string: unknown field `resource_types`, expected one of `offset`, `limit`, `action`, `resource_type`, `resource_id`, `principal`, `start_time`, `end_time`"}}
 ```
 

@@ -252,7 +252,7 @@ All error responses follow a consistent structure:
 | Code | HTTP Status | Description |
 |------|-------------|-------------|
 | `NOT_FOUND` | 404 | Resource not found |
-| `BAD_REQUEST` | 400 | Invalid input |
+| `VALIDATION_ERROR` | 400 | Invalid input |
 | `UNAUTHORIZED` | 401 | Missing or invalid credentials |
 | `FORBIDDEN` | 403 | Access denied |
 | `CONFLICT` | 409 | Duplicate or conflicting state |
@@ -267,17 +267,17 @@ When a workflow, channel, or connector fails strict validation on create/update,
 ```json
 {
   "error": {
-    "code": "BAD_REQUEST",
+    "code": "VALIDATION_ERROR",
     "message": "Workflow validation failed",
     "details": [
-      { "field": "tasks[0].function.input.connector", "message": "is required" },
-      { "field": "tasks[2].function.input.method",    "message": "expected string, got number" }
+      { "path": "tasks[0].function.input.connector", "code": "REQUIRED", "message": "is required" },
+      { "path": "tasks[2].function.input.method",    "code": "INVALID",  "message": "expected string, got number" }
     ]
   }
 }
 ```
 
-The `field` path mirrors the JSON structure the API received, so editors can jump straight to the failing key. The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{id}/test`, and the `orion-server lint` / `dry-run` CLI subcommands.
+The `path` mirrors the JSON structure the API received, so editors can jump straight to the failing key. The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{id}/test`, and the `orion-server lint` / `dry-run` CLI subcommands.
 
 ### Warnings
 

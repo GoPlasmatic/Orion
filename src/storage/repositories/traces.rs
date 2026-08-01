@@ -83,7 +83,7 @@ impl TraceCursor {
 
     pub fn decode(raw: &str) -> Result<Self, OrionError> {
         let invalid = || {
-            OrionError::BadRequest(
+            OrionError::validation(
                 "Invalid `cursor`: pass back a `next_cursor` from a previous page unmodified"
                     .to_string(),
             )
@@ -636,13 +636,13 @@ impl TraceRepository for SqlTraceRepository {
             let cursor = match filter.cursor.as_deref() {
                 Some(raw) => {
                     if !created_at_order {
-                        return Err(OrionError::BadRequest(
+                        return Err(OrionError::validation(
                             "`cursor` is only supported with the default `created_at` ordering"
                                 .to_string(),
                         ));
                     }
                     if filter.offset.is_some_and(|o| o != 0) {
-                        return Err(OrionError::BadRequest(
+                        return Err(OrionError::validation(
                             "`cursor` and `offset` are two different pagination modes — pass one"
                                 .to_string(),
                         ));
@@ -1104,7 +1104,7 @@ mod tests {
                 ..Default::default()
             })
             .await;
-        assert!(matches!(wrong_sort, Err(OrionError::BadRequest(_))));
+        assert!(matches!(wrong_sort, Err(OrionError::Validation { .. })));
 
         let both_modes = repo
             .list_paginated(&TraceFilter {
@@ -1113,7 +1113,7 @@ mod tests {
                 ..Default::default()
             })
             .await;
-        assert!(matches!(both_modes, Err(OrionError::BadRequest(_))));
+        assert!(matches!(both_modes, Err(OrionError::Validation { .. })));
 
         let malformed = repo
             .list_paginated(&TraceFilter {
@@ -1121,7 +1121,7 @@ mod tests {
                 ..Default::default()
             })
             .await;
-        assert!(matches!(malformed, Err(OrionError::BadRequest(_))));
+        assert!(matches!(malformed, Err(OrionError::Validation { .. })));
     }
 
     #[test]

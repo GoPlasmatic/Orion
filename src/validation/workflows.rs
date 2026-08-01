@@ -5,11 +5,11 @@ use super::common::{validate_description, validate_id, validate_name};
 
 pub fn validate_create_workflow(req: &CreateWorkflowRequest) -> Result<(), OrionError> {
     if let Some(ref id) = req.workflow_id {
-        validate_id(id).map_err(|e| remap_to_field(e, "workflow.workflow_id"))?;
+        validate_id(id, "workflow.workflow_id")?;
     }
-    validate_name(&req.name, "Name").map_err(|e| remap_to_field(e, "workflow.name"))?;
+    validate_name(&req.name, "workflow.name")?;
     if let Some(ref desc) = req.description {
-        validate_description(desc).map_err(|e| remap_to_field(e, "workflow.description"))?;
+        validate_description(desc, "workflow.description")?;
     }
     let task_errors = validate_workflow_tasks_schema(&req.tasks);
     if !task_errors.is_empty() {
@@ -23,10 +23,10 @@ pub fn validate_create_workflow(req: &CreateWorkflowRequest) -> Result<(), Orion
 
 pub fn validate_update_workflow(req: &UpdateWorkflowRequest) -> Result<(), OrionError> {
     if let Some(ref name) = req.name {
-        validate_name(name, "Name").map_err(|e| remap_to_field(e, "workflow.name"))?;
+        validate_name(name, "workflow.name")?;
     }
     if let Some(ref desc) = req.description {
-        validate_description(desc).map_err(|e| remap_to_field(e, "workflow.description"))?;
+        validate_description(desc, "workflow.description")?;
     }
     if let Some(ref tasks) = req.tasks {
         let task_errors = validate_workflow_tasks_schema(tasks);
@@ -165,15 +165,8 @@ fn validation_with_details(message: &str, details: Vec<FieldError>) -> OrionErro
     }
 }
 
-fn remap_to_field(err: OrionError, path: &'static str) -> OrionError {
-    match err {
-        OrionError::BadRequest(msg) => OrionError::invalid_field(path, "INVALID", msg),
-        other => other,
-    }
-}
-
 pub fn validate_workflow_id(id: &str) -> Result<(), OrionError> {
-    validate_id(id)
+    validate_id(id, "workflow.workflow_id")
 }
 
 #[cfg(test)]

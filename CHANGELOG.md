@@ -228,6 +228,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
+- **The `BAD_REQUEST` error code is retired; every 400 answers
+  `VALIDATION_ERROR`.** Two codes existed for one condition, and which one a
+  refusal carried was an accident of the internal error variant the code path
+  happened to construct — validators mixed them freely, and two identical
+  internal helpers existed purely to convert one into the other. The
+  `OrionError::BadRequest` variant is deleted; messages and statuses are
+  unchanged, and connector create/update refusals now carry the per-field
+  `details[]` array the channel and workflow validators already produced.
+  Clients branching on the literal `BAD_REQUEST` string must branch on
+  `VALIDATION_ERROR` (or on the 400 status). (G11)
+
+- **`RESPONSE_TOO_LARGE` answers 500, not 502.** The condition is a workflow
+  result exceeding the operator's own `trace_queue.max_result_size_bytes` cap —
+  no upstream is involved, so `502 Bad Gateway` was the wrong claim. The code
+  string and message are unchanged; only the status moves. (G11)
+
 - **1.0 ships no deprecated spellings.** Three compatibility shims that would
   otherwise have to be carried through the whole 1.x line are removed before
   the tag, and the versioning policy in `docs/src/reference/support.md` now
