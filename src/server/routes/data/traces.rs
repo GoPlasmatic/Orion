@@ -20,17 +20,7 @@ use crate::storage::repositories::traces::TraceFilter;
     get,
     path = "/api/v1/admin/traces",
     tag = "Traces",
-    params(
-        ("status" = Option<String>, Query, description = "Filter by trace status"),
-        ("channel" = Option<String>, Query, description = "Filter by channel"),
-        ("mode" = Option<String>, Query, description = "Filter by mode: sync, async"),
-        ("limit" = Option<i64>, Query, description = "Page size (default 50, max 1000)"),
-        ("offset" = Option<i64>, Query, description = "Page offset. Mutually exclusive with `cursor`"),
-        ("cursor" = Option<String>, Query, description = "Keyset cursor: the previous page's `next_cursor`, passed back unmodified. Only valid with the default `created_at` ordering, and cheaper than `offset` on a large table because it never skips rows"),
-        ("include_total" = Option<bool>, Query, description = "Compute `total` for this page (default false). The count scans the whole filtered set, so it is opt-in"),
-        ("sort_by" = Option<String>, Query, description = "Sort column: created_at (default), updated_at, status, channel, mode"),
-        ("sort_order" = Option<String>, Query, description = "Sort direction: asc or desc (default)"),
-    ),
+    params(TraceFilter),
     responses(
         (status = 200, description = "Page of traces", body = TracePageEnvelope),
         (status = 400, description = "Malformed cursor, or cursor combined with offset or a non-default sort", body = ErrorResponse),

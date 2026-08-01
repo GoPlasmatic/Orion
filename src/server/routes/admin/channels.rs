@@ -15,9 +15,9 @@ use crate::storage::repositories::channels::{
 };
 
 use super::StatusAction;
-use super::VersionFilter;
 use super::audit_and_reload;
 use super::audit_log_draft_only;
+use crate::storage::repositories::helpers::VersionFilter;
 
 // ============================================================
 // Channels CRUD
@@ -97,8 +97,8 @@ pub(crate) async fn get_channel(
     request_body = UpdateChannelRequest,
     responses(
         (status = 200, description = "Draft channel updated", body = DataEnvelope<ChannelResponse>),
-        (status = 400, description = "No draft version or invalid input"),
-        (status = 404, description = "Channel not found"),
+        (status = 400, description = "Invalid input"),
+        (status = 404, description = "Channel not found, or it has no draft version to update"),
     )
 )]
 #[tracing::instrument(skip(state, req, principal))]
@@ -250,6 +250,7 @@ async fn ensure_route_is_unclaimed(
     tag = "Channels",
     params(
         ("id" = String, Path, description = "Channel ID"),
+        VersionFilter,
     ),
     responses(
         (status = 200, description = "Paginated version history", body = PaginatedEnvelope<ChannelResponse>),
@@ -265,8 +266,7 @@ pub(crate) async fn list_channel_versions(
     // Verify channel exists
     let _ = state.channel_repo.get_by_id(&id).await?;
 
-    let (limit, offset) = filter.limit_offset();
-    let result = state.channel_repo.list_versions(&id, limit, offset).await?;
+    let result = state.channel_repo.list_versions(&id, &filter).await?;
     paginated_into(result, |c| ChannelResponse::try_from(c))
 }
 

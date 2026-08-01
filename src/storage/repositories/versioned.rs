@@ -105,17 +105,13 @@ pub(crate) async fn list_active<T: DbRow>(
 }
 
 /// One page of an entity's version history, newest first.
-///
-/// `limit`/`offset` arrive already resolved (the route layer supplies the
-/// version-page defaults), so they are clamped here rather than through
-/// `clamp_pagination`, which exists to default an *absent* page size.
 pub(crate) async fn list_versions<T: DbRow>(
     pool: &DbPool,
     spec: &VersionedSpec,
     id: &str,
-    limit: i64,
-    offset: i64,
+    filter: &super::helpers::VersionFilter,
 ) -> Result<PaginatedResult<T>, OrionError> {
+    let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
     paginate(
         pool,
         Page {
@@ -124,8 +120,8 @@ pub(crate) async fn list_versions<T: DbRow>(
             cond: Condition::all().add(Expr::col(spec.id_col.clone()).eq(id)),
             sort: spec.version_col.clone(),
             order: Order::Desc,
-            limit: limit.clamp(1, 1000),
-            offset: offset.max(0),
+            limit,
+            offset,
         },
     )
     .await
@@ -144,11 +140,18 @@ fn draft_query(spec: &VersionedSpec, id: &str) -> (String, sea_query_binder::Sql
 }
 
 /// Uniform "no draft" wording for [`draft_query`] misses.
+///
+/// D22: this was a 400 while every sibling lookup in the module maps a
+/// missing row to `NotFound` — the same inconsistency the comment on
+/// [`archive_latest_active`] already argues against (G7). "The draft you
+/// addressed does not exist" is a 404 like "the entity you addressed does
+/// not exist"; which one a caller gets should not depend on which lifecycle
+/// method they reached first.
 fn no_draft_err(spec: &VersionedSpec, id: &str) -> OrionError {
-    OrionError::validation(format!("No draft version found for {} '{id}'", spec.noun))
+    OrionError::NotFound(format!("No draft version found for {} '{id}'", spec.noun))
 }
 
-/// Fetch the draft version, `BadRequest` when there is none.
+/// Fetch the draft version, `NotFound` when there is none.
 ///
 /// The query and its miss wording are paired here rather than left to the four
 /// draft-consuming call sites (update, activate, per entity) to combine
@@ -205,7 +208,7 @@ pub(crate) fn archive_actives_query(
     build_sqlx(&mut q)
 }
 
-/// Archive an entity: find the latest active version (BadRequest when none),
+/// Archive an entity: find the latest active version (NotFound when none),
 /// archive every active version, and return the newly archived row.
 pub(crate) async fn archive_latest_active<T: DbRow + HasVersion>(
     pool: &DbPool,

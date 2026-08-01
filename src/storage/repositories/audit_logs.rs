@@ -11,16 +11,63 @@ use crate::storage::{DbPool, build_sqlx};
 /// Server-side filter for audit-log reads (O8). Every field is an exact match
 /// except the half-open time window `[start_time, end_time)`; unset fields do
 /// not constrain the query.
-#[derive(Debug, Clone, Default)]
+///
+/// `deny_unknown_fields` is deliberate: before O8 the handler accepted only
+/// `offset`/`limit`, so `?action=activate` was dropped and the caller got a
+/// 200 with unfiltered data. A rejected typo is better than a silently wrong
+/// compliance answer.
+#[derive(Debug, Clone, Default, serde::Deserialize, utoipa::IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
 pub struct AuditLogFilter {
+    /// Exact-match filter on the action (e.g. `create`, `activate`, `delete`).
     pub action: Option<String>,
+    /// Exact-match filter on the resource type (`workflow`, `channel`,
+    /// `connector`, `engine`).
     pub resource_type: Option<String>,
+    /// Exact-match filter on the resource ID.
     pub resource_id: Option<String>,
+    /// Exact-match filter on the acting principal.
     pub principal: Option<String>,
+    /// Inclusive lower bound on `created_at`, RFC 3339
+    /// (e.g. `2026-07-01T00:00:00Z`) or a bare naive timestamp.
+    #[serde(default, deserialize_with = "de_timestamp")]
+    #[param(value_type = Option<String>)]
     pub start_time: Option<NaiveDateTime>,
+    /// Exclusive upper bound on `created_at`, RFC 3339 or a bare naive
+    /// timestamp.
+    #[serde(default, deserialize_with = "de_timestamp")]
+    #[param(value_type = Option<String>)]
     pub end_time: Option<NaiveDateTime>,
+    /// Page size, clamped to [1, 1000] (default 50).
     pub limit: Option<i64>,
+    /// Pagination offset (default 0).
     pub offset: Option<i64>,
+}
+
+/// Accepts RFC 3339 (`2026-07-01T00:00:00Z`) or a bare naive timestamp
+/// (`2026-07-01T00:00:00` / `2026-07-01 00:00:00`); `created_at` is stored
+/// timezone-naive in UTC, so offsets are normalized to UTC first.
+pub(crate) fn parse_timestamp(raw: &str) -> Result<NaiveDateTime, String> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Ok(dt.naive_utc());
+    }
+    NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(raw, "%Y-%m-%d %H:%M:%S"))
+        .map_err(|_| format!("expected an RFC 3339 timestamp, got '{raw}'"))
+}
+
+/// [`parse_timestamp`] as a serde field deserializer, so the filter can be
+/// extracted straight from the query string (D22 — the route used to carry a
+/// parallel string-typed DTO purely to host this parse).
+fn de_timestamp<'de, D>(deserializer: D) -> Result<Option<NaiveDateTime>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = serde::Deserialize::deserialize(deserializer)?;
+    raw.as_deref()
+        .map(|r| parse_timestamp(r).map_err(serde::de::Error::custom))
+        .transpose()
 }
 
 #[async_trait]
@@ -176,6 +223,54 @@ impl AuditLogRepository for SqlAuditLogRepository {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn parses_rfc3339_and_naive_timestamps() {
+        let expected = chrono::NaiveDate::from_ymd_opt(2026, 7, 1)
+            .expect("date")
+            .and_hms_opt(12, 30, 0)
+            .expect("time");
+        assert_eq!(
+            parse_timestamp("2026-07-01T12:30:00Z").expect("rfc3339"),
+            expected
+        );
+        assert_eq!(
+            parse_timestamp("2026-07-01T12:30:00").expect("naive"),
+            expected
+        );
+        // Offsets are normalized to UTC before comparison with `created_at`.
+        assert_eq!(
+            parse_timestamp("2026-07-01T14:30:00+02:00").expect("offset"),
+            expected
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_timestamps() {
+        assert!(parse_timestamp("yesterday").is_err());
+    }
+
+    /// The filter deserializes directly at the extraction boundary,
+    /// timestamps and `deny_unknown_fields` included (D22 — the route used to
+    /// carry a parallel string-typed DTO for this).
+    #[test]
+    fn filter_deserializes_with_timestamps_and_rejects_unknown_keys() {
+        use serde_json::json;
+        let f: AuditLogFilter = serde_json::from_value(
+            json!({"action": "activate", "start_time": "2026-07-01T00:00:00Z"}),
+        )
+        .expect("deserialize");
+        assert_eq!(f.action.as_deref(), Some("activate"));
+        assert!(f.start_time.is_some());
+
+        assert!(
+            serde_json::from_value::<AuditLogFilter>(json!({"actoin": "activate"})).is_err(),
+            "a misspelled key must be refused, not silently dropped (O8)"
+        );
+        assert!(
+            serde_json::from_value::<AuditLogFilter>(json!({"start_time": "yesterday"})).is_err()
+        );
+    }
 
     async fn test_repo() -> SqlAuditLogRepository {
         SqlAuditLogRepository::new(crate::storage::test_sqlite_pool().await)

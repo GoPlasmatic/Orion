@@ -13,13 +13,17 @@ use super::helpers::{Page, PaginatedResult, Projection};
 
 // -- Request DTOs --
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct TraceDlqFilter {
+    /// Filter by channel name.
     pub channel: Option<String>,
-    /// `Some(true)` = only exhausted entries (`retry_count >= max_retries`),
-    /// `Some(false)` = only entries with retries left, `None` = both.
+    /// `true` = only exhausted entries (`retry_count >= max_retries`),
+    /// `false` = only entries with retries left, absent = both.
     pub exhausted: Option<bool>,
+    /// Page size, clamped to [1, 1000] (default 50).
     pub limit: Option<i64>,
+    /// Pagination offset (default 0).
     pub offset: Option<i64>,
 }
 
@@ -331,7 +335,10 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
 
             self.pool.execute_query(&sql, values).await?;
 
-            // Fetch the inserted entry
+            // Fetch the inserted entry. A miss here is a 500, not the 404 the
+            // read paths use (D22): the row was written one statement ago by
+            // this same call, so its absence is server-side inconsistency, not
+            // a caller addressing something that does not exist.
             let (sql, values) = build_sqlx(
                 Query::select()
                     .column(Asterisk)

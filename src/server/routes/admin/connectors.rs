@@ -469,6 +469,7 @@ pub(crate) async fn export_connectors(
         let page_filter = ConnectorFilter {
             limit: Some(limit),
             offset: Some(offset),
+            ..Default::default()
         };
         async move { Ok(repo.list_paginated(&page_filter).await?.data) }
     })

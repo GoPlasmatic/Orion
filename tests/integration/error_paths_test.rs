@@ -194,10 +194,11 @@ async fn test_delete_nonexistent_connector_returns_404() {
 }
 
 #[tokio::test]
-async fn test_update_nonexistent_workflow_returns_400() {
+async fn test_update_nonexistent_workflow_returns_404() {
     let app = common::test_app().await;
 
-    // update_draft returns BadRequest "No draft version found"
+    // update_draft answers NotFound "No draft version found" (D22 — this was
+    // a 400 while every sibling missing-row lookup answered 404).
     let resp = app
         .oneshot(json_request(
             "PUT",
@@ -207,7 +208,7 @@ async fn test_update_nonexistent_workflow_returns_400() {
         .await
         .unwrap();
 
-    assert!(resp.status().is_client_error());
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 // ============================================================

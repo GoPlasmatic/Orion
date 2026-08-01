@@ -111,6 +111,13 @@ impl AppStateInner {
         (self.db_pool.size(), self.db_pool.num_idle())
     }
 
+    /// Database connectivity check for the health probes (D22 — this was
+    /// `WorkflowRepository::ping`, which only existed because the probes
+    /// needed a pool).
+    pub async fn ping_db(&self) -> Result<(), sqlx::Error> {
+        self.db_pool.ping().await
+    }
+
     /// Copy the database to `path` via SQLite's `VACUUM INTO` (R26).
     ///
     /// `Ok(false)` when the backend is not SQLite — the operation has no

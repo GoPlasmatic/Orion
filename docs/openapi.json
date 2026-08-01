@@ -17,29 +17,9 @@
         "operationId": "list_audit_logs",
         "parameters": [
           {
-            "name": "offset",
-            "in": "query",
-            "description": "Pagination offset (default 0)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Page size, clamped to [1, 1000] (default 50)",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          },
-          {
             "name": "action",
             "in": "query",
-            "description": "Exact-match filter on the action (e.g. `create`, `activate`, `delete`)",
+            "description": "Exact-match filter on the action (e.g. `create`, `activate`, `delete`).",
             "required": false,
             "schema": {
               "type": "string"
@@ -48,7 +28,7 @@
           {
             "name": "resource_type",
             "in": "query",
-            "description": "Exact-match filter on the resource type (`workflow`, `channel`, `connector`, `engine`)",
+            "description": "Exact-match filter on the resource type (`workflow`, `channel`,\n`connector`, `engine`).",
             "required": false,
             "schema": {
               "type": "string"
@@ -57,7 +37,7 @@
           {
             "name": "resource_id",
             "in": "query",
-            "description": "Exact-match filter on the resource ID",
+            "description": "Exact-match filter on the resource ID.",
             "required": false,
             "schema": {
               "type": "string"
@@ -66,7 +46,7 @@
           {
             "name": "principal",
             "in": "query",
-            "description": "Exact-match filter on the acting principal",
+            "description": "Exact-match filter on the acting principal.",
             "required": false,
             "schema": {
               "type": "string"
@@ -75,7 +55,7 @@
           {
             "name": "start_time",
             "in": "query",
-            "description": "Inclusive lower bound on `created_at`, RFC 3339",
+            "description": "Inclusive lower bound on `created_at`, RFC 3339\n(e.g. `2026-07-01T00:00:00Z`) or a bare naive timestamp.",
             "required": false,
             "schema": {
               "type": "string"
@@ -84,10 +64,30 @@
           {
             "name": "end_time",
             "in": "query",
-            "description": "Exclusive upper bound on `created_at`, RFC 3339",
+            "description": "Exclusive upper bound on `created_at`, RFC 3339 or a bare naive\ntimestamp.",
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to [1, 1000] (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Pagination offset (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
             }
           }
         ],
@@ -621,7 +621,7 @@
             }
           },
           "400": {
-            "description": "No draft version or invalid input",
+            "description": "Invalid input",
             "content": {
               "application/json": {
                 "schema": {
@@ -641,7 +641,7 @@
             }
           },
           "404": {
-            "description": "Channel not found",
+            "description": "Channel not found, or it has no draft version to update",
             "content": {
               "application/json": {
                 "schema": {
@@ -835,6 +835,26 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to [1, 1000] (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Pagination offset (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         ],
         "responses": {
@@ -979,6 +999,24 @@
             "schema": {
               "type": "integer",
               "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Column to sort by: name (default), connector_type, created_at, updated_at.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc (default) or desc. The default differs from the\nversioned lists (which default desc on priority) because connectors\nhave always listed alphabetically — D22 added the sort fields without\nmoving the unsorted callers' rows.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -1649,7 +1687,7 @@
           {
             "name": "channel",
             "in": "query",
-            "description": "Filter by channel name",
+            "description": "Filter by channel name.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1658,16 +1696,16 @@
           {
             "name": "exhausted",
             "in": "query",
-            "description": "true = only exhausted entries, false = only entries awaiting retry",
+            "description": "`true` = only exhausted entries (`retry_count >= max_retries`),\n`false` = only entries with retries left, absent = both.",
             "required": false,
             "schema": {
               "type": "boolean"
             }
           },
           {
-            "name": "offset",
+            "name": "limit",
             "in": "query",
-            "description": "Pagination offset (default 0)",
+            "description": "Page size, clamped to [1, 1000] (default 50).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -1675,9 +1713,9 @@
             }
           },
           {
-            "name": "limit",
+            "name": "offset",
             "in": "query",
-            "description": "Page size, clamped to [1, 1000] (default 50)",
+            "description": "Pagination offset (default 0).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -1943,7 +1981,7 @@
           {
             "name": "status",
             "in": "query",
-            "description": "Filter by trace status",
+            "description": "Filter by trace status.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1952,7 +1990,7 @@
           {
             "name": "channel",
             "in": "query",
-            "description": "Filter by channel",
+            "description": "Filter by channel.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1961,7 +1999,7 @@
           {
             "name": "mode",
             "in": "query",
-            "description": "Filter by mode: sync, async",
+            "description": "Filter by mode: sync, async.",
             "required": false,
             "schema": {
               "type": "string"
@@ -1970,7 +2008,7 @@
           {
             "name": "limit",
             "in": "query",
-            "description": "Page size (default 50, max 1000)",
+            "description": "Page size, clamped to [1, 1000] (default 50).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -1980,7 +2018,7 @@
           {
             "name": "offset",
             "in": "query",
-            "description": "Page offset. Mutually exclusive with `cursor`",
+            "description": "Page offset. Mutually exclusive with `cursor`.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -1988,27 +2026,9 @@
             }
           },
           {
-            "name": "cursor",
-            "in": "query",
-            "description": "Keyset cursor: the previous page's `next_cursor`, passed back unmodified. Only valid with the default `created_at` ordering, and cheaper than `offset` on a large table because it never skips rows",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "include_total",
-            "in": "query",
-            "description": "Compute `total` for this page (default false). The count scans the whole filtered set, so it is opt-in",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
             "name": "sort_by",
             "in": "query",
-            "description": "Sort column: created_at (default), updated_at, status, channel, mode",
+            "description": "Column to sort by: created_at (default), updated_at, status, channel, mode.",
             "required": false,
             "schema": {
               "type": "string"
@@ -2017,10 +2037,28 @@
           {
             "name": "sort_order",
             "in": "query",
-            "description": "Sort direction: asc or desc (default)",
+            "description": "Sort direction: asc or desc (default).",
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Keyset cursor from a previous page's `next_cursor` (D8): pass it back\nunmodified. Valid only with the default `created_at` ordering, and\nmutually exclusive with `offset`; cheaper than `offset` on a large\ntable because it never skips rows.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "include_total",
+            "in": "query",
+            "description": "Compute `total` for this page (default false). Off by default (D8):\nthe count is a full scan of the filtered set on Postgres and InnoDB,\npaid on every page even though the number rarely changes what the\ncaller does next.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -2663,7 +2701,7 @@
             }
           },
           "400": {
-            "description": "No draft version or invalid input",
+            "description": "Invalid input",
             "content": {
               "application/json": {
                 "schema": {
@@ -2683,7 +2721,7 @@
             }
           },
           "404": {
-            "description": "Workflow not found",
+            "description": "Workflow not found, or it has no draft version to update",
             "content": {
               "application/json": {
                 "schema": {
@@ -3034,6 +3072,26 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to [1, 1000] (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Pagination offset (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
             }
           }
         ],

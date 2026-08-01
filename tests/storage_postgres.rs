@@ -361,7 +361,13 @@ async fn upgrade_from_0_3_0_schema_with_data_preserves_rows() {
     assert_eq!(wf.status, "active");
     assert_eq!(
         wf_repo
-            .list_versions("wf-legacy", 10, 0)
+            .list_versions(
+                "wf-legacy",
+                &orion::storage::repositories::helpers::VersionFilter {
+                    limit: Some(10),
+                    offset: Some(0),
+                },
+            )
             .await
             .expect("versions")
             .total,

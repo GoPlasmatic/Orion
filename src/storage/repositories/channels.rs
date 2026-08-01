@@ -130,8 +130,7 @@ pub trait ChannelRepository: Send + Sync {
     async fn list_versions(
         &self,
         channel_id: &str,
-        limit: i64,
-        offset: i64,
+        filter: &super::helpers::VersionFilter,
     ) -> Result<PaginatedResult<Channel>, OrionError>;
 }
 
@@ -145,7 +144,10 @@ impl SqlChannelRepository {
     /// Fetch one specific version — internal helper for the lifecycle
     /// methods; the admin API only exposes latest/list forms.
     async fn get_version(&self, channel_id: &str, version: i64) -> Result<Channel, OrionError> {
-        versioned::get_version(&self.pool, &spec(), channel_id, version).await
+        crate::metrics::timed_db_op("channels.get_version", async {
+            versioned::get_version(&self.pool, &spec(), channel_id, version).await
+        })
+        .await
     }
 
     pub fn new(pool: DbPool) -> Self {
@@ -495,10 +497,12 @@ impl ChannelRepository for SqlChannelRepository {
     async fn list_versions(
         &self,
         channel_id: &str,
-        limit: i64,
-        offset: i64,
+        filter: &super::helpers::VersionFilter,
     ) -> Result<PaginatedResult<Channel>, OrionError> {
-        versioned::list_versions(&self.pool, &spec(), channel_id, limit, offset).await
+        crate::metrics::timed_db_op("channels.list_versions", async {
+            versioned::list_versions(&self.pool, &spec(), channel_id, filter).await
+        })
+        .await
     }
 }
 

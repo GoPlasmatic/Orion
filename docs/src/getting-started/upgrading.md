@@ -1380,6 +1380,29 @@ code instead.
 HTTP status, the 400s are untouched and the oversized-result case moves from
 502 to 500.
 
+### Updating an entity with no draft is a 404, not a 400
+
+**What changed.** `PUT /api/v1/admin/workflows/{id}` (and the channel
+equivalent, and `PATCH …/status` activation) answered `400` with *"No draft
+version found"* when the entity had no draft — while every other missing-row
+lookup in the admin API answers `404`. Which status a missing thing produced
+depended on which lifecycle method you reached first. All no-draft misses now
+answer `404 NOT_FOUND` with the same message.
+
+Alongside it, the admin list surfaces were normalised: connector listings
+accept `sort_by` (`name` default, `connector_type`, `created_at`,
+`updated_at`) and `sort_order` — previously they were hard-wired to
+`name ASC`, which remains the default — and the version-history, trace, DLQ
+and audit-log query parameters are now declared in the OpenAPI document
+instead of only in prose.
+
+**How you'll notice.** Automation that treated a 400 from an update as "no
+draft — create one first" sees a 404 for that case now. The 400 still exists
+for genuinely invalid input.
+
+**What to do.** Branch on 404 for the no-draft case. If you branched on the
+message text, it is unchanged.
+
 ### `engine.reload_timeout_secs` and `orion_engine_lock_wait_seconds` are gone
 
 **What changed.** The live engine was held behind a read-write lock, so every

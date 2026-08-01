@@ -9,24 +9,32 @@ use crate::errors::OrionError;
 use crate::storage::models::{self, Trace, TraceListRow};
 use crate::storage::{build_sqlx, schema::Traces};
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, serde::Serialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct TraceFilter {
+    /// Filter by trace status.
     pub status: Option<String>,
+    /// Filter by channel.
     pub channel: Option<String>,
+    /// Filter by mode: sync, async.
     pub mode: Option<String>,
+    /// Page size, clamped to [1, 1000] (default 50).
     pub limit: Option<i64>,
+    /// Page offset. Mutually exclusive with `cursor`.
     pub offset: Option<i64>,
     /// Column to sort by: created_at (default), updated_at, status, channel, mode.
     pub sort_by: Option<String>,
     /// Sort direction: asc or desc (default).
     pub sort_order: Option<String>,
-    /// Keyset cursor from a previous page's `next_cursor` (D8). Valid only
-    /// with the default `created_at` ordering, and mutually exclusive with
-    /// `offset`.
+    /// Keyset cursor from a previous page's `next_cursor` (D8): pass it back
+    /// unmodified. Valid only with the default `created_at` ordering, and
+    /// mutually exclusive with `offset`; cheaper than `offset` on a large
+    /// table because it never skips rows.
     pub cursor: Option<String>,
-    /// Compute `total` for this page. Off by default (D8): the count is a
-    /// full scan of the filtered set on Postgres and InnoDB, paid on every
-    /// page even though the number rarely changes what the caller does next.
+    /// Compute `total` for this page (default false). Off by default (D8):
+    /// the count is a full scan of the filtered set on Postgres and InnoDB,
+    /// paid on every page even though the number rarely changes what the
+    /// caller does next.
     pub include_total: Option<bool>,
 }
 

@@ -14,6 +14,23 @@ pub struct PaginatedResult<T> {
     pub offset: i64,
 }
 
+/// Page bounds for a version-history listing, shared by the channel and
+/// workflow `list_versions` endpoints.
+///
+/// D22: the trait methods took bare `(limit, offset)` positionals — the one
+/// pagination surface that did — with the route layer resolving defaults on
+/// one side and `versioned::list_versions` clamping inline on the other. It
+/// is a filter DTO like every other list, resolved once through
+/// [`clamp_pagination`].
+#[derive(Debug, Default, serde::Deserialize, Serialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct VersionFilter {
+    /// Page size, clamped to [1, 1000] (default 50).
+    pub limit: Option<i64>,
+    /// Pagination offset (default 0).
+    pub offset: Option<i64>,
+}
+
 /// Converts an `Option<&str>` to a `sea_query::Value::String`, mapping `None`
 /// to a SQL NULL string.  Replaces the repetitive
 /// `.as_ref().map(|s| s.as_str().into()).unwrap_or(sea_query::Value::String(None))`

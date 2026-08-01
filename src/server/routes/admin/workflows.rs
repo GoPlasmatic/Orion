@@ -21,11 +21,11 @@ use crate::storage::repositories::workflows::{
 };
 
 use super::StatusAction;
-use super::VersionFilter;
 use super::audit_and_reload;
 use super::audit_log;
 use super::audit_log_draft_only;
 use super::{ValidationEnvelope, ValidationIssue, issues_from_error};
+use crate::storage::repositories::helpers::VersionFilter;
 
 // ============================================================
 // Workflows CRUD
@@ -105,8 +105,8 @@ pub(crate) async fn get_workflow(
     request_body = UpdateWorkflowRequest,
     responses(
         (status = 200, description = "Draft workflow updated", body = DataEnvelope<WorkflowResponse>),
-        (status = 400, description = "No draft version or invalid input"),
-        (status = 404, description = "Workflow not found"),
+        (status = 400, description = "Invalid input"),
+        (status = 404, description = "Workflow not found, or it has no draft version to update"),
     )
 )]
 #[tracing::instrument(skip(state, req, principal))]
@@ -361,6 +361,7 @@ pub(crate) async fn update_rollout(
     tag = "Workflows",
     params(
         ("id" = String, Path, description = "Workflow ID"),
+        VersionFilter,
     ),
     responses(
         (status = 200, description = "Paginated version history", body = PaginatedEnvelope<WorkflowResponse>),
@@ -376,11 +377,7 @@ pub(crate) async fn list_workflow_versions(
     // Verify workflow exists
     let _ = state.workflow_repo.get_by_id(&id).await?;
 
-    let (limit, offset) = filter.limit_offset();
-    let result = state
-        .workflow_repo
-        .list_versions(&id, limit, offset)
-        .await?;
+    let result = state.workflow_repo.list_versions(&id, &filter).await?;
     paginated_into(result, |w| WorkflowResponse::try_from(w))
 }
 

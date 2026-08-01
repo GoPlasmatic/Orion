@@ -150,6 +150,21 @@ impl DbPool {
         dispatch_pool!(self, p => p.size())
     }
 
+    /// Database connectivity check: `SELECT 1` through the pool.
+    ///
+    /// D22: this lived on `WorkflowRepository` purely because the health
+    /// checks needed *a* pool and that trait happened to hold one. It is a
+    /// property of the pool, not of any entity.
+    pub async fn ping(&self) -> Result<(), sqlx::Error> {
+        crate::metrics::timed_db_op("db.ping", async {
+            let (sql, values) =
+                build_sqlx(sea_query::Query::select().expr(sea_query::Expr::val(1i32)));
+            self.fetch_scalar::<i32>(&sql, values).await?;
+            Ok(())
+        })
+        .await
+    }
+
     pub fn num_idle(&self) -> usize {
         dispatch_pool!(self, p => p.num_idle())
     }

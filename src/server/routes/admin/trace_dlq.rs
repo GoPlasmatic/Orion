@@ -18,20 +18,6 @@ use super::audit_log;
 // Trace DLQ (O4)
 // ============================================================
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct TraceDlqQuery {
-    #[serde(default)]
-    channel: Option<String>,
-    /// `true` = only entries that have given up, `false` = only entries still
-    /// scheduled for retry, absent = both.
-    #[serde(default)]
-    exhausted: Option<bool>,
-    #[serde(default)]
-    offset: Option<i64>,
-    #[serde(default)]
-    limit: Option<i64>,
-}
-
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub(crate) struct PurgeTraceDlqRequest {
     /// Age cut-off in hours: exhausted entries whose `failed_at` is older than
@@ -45,12 +31,7 @@ pub(crate) struct PurgeTraceDlqRequest {
     get,
     path = "/api/v1/admin/trace-dlq",
     tag = "Trace DLQ",
-    params(
-        ("channel" = Option<String>, Query, description = "Filter by channel name"),
-        ("exhausted" = Option<bool>, Query, description = "true = only exhausted entries, false = only entries awaiting retry"),
-        ("offset" = Option<i64>, Query, description = "Pagination offset (default 0)"),
-        ("limit" = Option<i64>, Query, description = "Page size, clamped to [1, 1000] (default 50)"),
-    ),
+    params(TraceDlqFilter),
     responses(
         // D28: the summary, not the full entry. The listing has never carried
         // `payload_json` / `metadata_json`, but the spec advertised them here
@@ -61,17 +42,9 @@ pub(crate) struct PurgeTraceDlqRequest {
 #[tracing::instrument(skip(state))]
 pub(crate) async fn list_trace_dlq(
     State(state): State<AppState>,
-    OrionQuery(params): OrionQuery<TraceDlqQuery>,
+    OrionQuery(filter): OrionQuery<TraceDlqFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let result = state
-        .trace_dlq_repo
-        .list_paginated(&TraceDlqFilter {
-            channel: params.channel,
-            exhausted: params.exhausted,
-            limit: params.limit,
-            offset: params.offset,
-        })
-        .await?;
+    let result = state.trace_dlq_repo.list_paginated(&filter).await?;
 
     let rows: Vec<TraceDlqSummaryResponse> = result
         .data

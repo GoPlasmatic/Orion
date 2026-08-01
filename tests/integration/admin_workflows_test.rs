@@ -358,7 +358,9 @@ async fn test_cannot_update_active_workflow() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Try to update the active workflow -- should fail (no draft exists)
+    // Try to update the active workflow -- should fail (no draft exists).
+    // 404, not 400: D22 aligned the no-draft miss with every other
+    // missing-row lookup.
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -368,7 +370,7 @@ async fn test_cannot_update_active_workflow() {
         ))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

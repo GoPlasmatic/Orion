@@ -244,6 +244,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no upstream is involved, so `502 Bad Gateway` was the wrong claim. The code
   string and message are unchanged; only the status moves. (G11)
 
+- **Updating or activating an entity with no draft answers 404, not 400.** The
+  no-draft miss was the one missing-row lookup in the admin API that answered
+  `400 Bad Request`; every sibling answers `404`. All of them agree now, with
+  the message unchanged. The repository layer was normalised with it (D22):
+  every list filter is one DTO deriving `Deserialize + IntoParams`, so the
+  trace, DLQ, audit-log and version-history query parameters appear in the
+  OpenAPI document; connector listings accept `sort_by`/`sort_order`
+  (previously hard-wired `name ASC`, which stays the default); the audit-log
+  route's parallel string-typed query DTO is gone (timestamp parsing lives on
+  the filter itself); version history pages through the same
+  `limit`/`offset` filter as every other list; `ping()` moved off
+  `WorkflowRepository` onto the pool, where the health probes always wanted
+  it; and the previously untimed `list_versions`, `get_version` and ping
+  paths now report to `orion_db_query_duration_seconds` (as
+  `workflows.list_versions`, `channels.list_versions`,
+  `workflows.get_version`, `channels.get_version`, `db.ping`).
+
 - **1.0 ships no deprecated spellings.** Three compatibility shims that would
   otherwise have to be carried through the whole 1.x line are removed before
   the tag, and the versioning policy in `docs/src/reference/support.md` now

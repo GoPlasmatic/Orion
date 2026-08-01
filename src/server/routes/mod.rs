@@ -112,7 +112,7 @@ pub(crate) async fn health_check(
     let uptime = chrono::Utc::now() - state.start_time;
 
     // Check database connectivity
-    let db_healthy = state.workflow_repo.ping().await.is_ok();
+    let db_healthy = state.ping_db().await.is_ok();
 
     // Check engine state — independently verify the engine lock is acquirable
     let loaded = probe_engine(&state).await;
@@ -352,7 +352,7 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     // `timeoutSeconds: 1`, reporting not-ready for a reason that is not the
     // actual degradation.
     let (db_ping, engine_loaded, redis_healthy) = tokio::join!(
-        state.workflow_repo.ping(),
+        state.ping_db(),
         probe_engine(&state),
         cluster_redis_healthy(&state)
     );

@@ -31,11 +31,18 @@ pub struct UpdateConnectorRequest {
     pub enabled: Option<bool>,
 }
 
-#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[derive(Debug, Default, Deserialize, serde::Serialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ConnectorFilter {
     pub limit: Option<i64>,
     pub offset: Option<i64>,
+    /// Column to sort by: name (default), connector_type, created_at, updated_at.
+    pub sort_by: Option<String>,
+    /// Sort direction: asc (default) or desc. The default differs from the
+    /// versioned lists (which default desc on priority) because connectors
+    /// have always listed alphabetically — D22 added the sort fields without
+    /// moving the unsorted callers' rows.
+    pub sort_order: Option<String>,
 }
 
 // -- Repository trait --
@@ -134,17 +141,30 @@ impl ConnectorRepository for SqlConnectorRepository {
         crate::metrics::timed_db_op("connectors.list_paginated", async {
             let (limit, offset) = super::helpers::clamp_pagination(filter.limit, filter.offset);
 
+            let sort_iden = match filter.sort_by.as_deref() {
+                Some("connector_type") => Connectors::ConnectorType,
+                Some("created_at") => Connectors::CreatedAt,
+                Some("updated_at") => Connectors::UpdatedAt,
+                _ => Connectors::Name,
+            };
+            // Asc unless "desc" is asked for: the historical (and only
+            // pre-D22) ordering was name ASC, and an absent sort_order must
+            // keep returning the rows it always did.
+            let order = match filter.sort_order.as_deref() {
+                Some("desc") => Order::Desc,
+                _ => Order::Asc,
+            };
             super::helpers::paginate(
                 &self.pool,
                 Page {
                     from: Connectors::Table.into_iden(),
                     projection: Projection::All,
                     // Connectors are unversioned and unfiltered — the filter
-                    // DTO carries page bounds only. An empty `Condition::all()`
-                    // renders no `WHERE` clause.
+                    // DTO carries page bounds and sort only. An empty
+                    // `Condition::all()` renders no `WHERE` clause.
                     cond: sea_query::Condition::all(),
-                    sort: Connectors::Name.into_iden(),
-                    order: Order::Asc,
+                    sort: sort_iden.into_iden(),
+                    order,
                     limit,
                     offset,
                 },

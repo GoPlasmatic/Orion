@@ -136,11 +136,8 @@ pub trait WorkflowRepository: Send + Sync {
     async fn list_versions(
         &self,
         workflow_id: &str,
-        limit: i64,
-        offset: i64,
+        filter: &super::helpers::VersionFilter,
     ) -> Result<PaginatedResult<Workflow>, OrionError>;
-    /// Database connectivity check.
-    async fn ping(&self) -> Result<(), OrionError>;
 }
 
 // -- SQL implementation --
@@ -153,7 +150,10 @@ impl SqlWorkflowRepository {
     /// Fetch one specific version — internal helper for the lifecycle
     /// methods; the admin API only exposes latest/list forms.
     async fn get_version(&self, workflow_id: &str, version: i64) -> Result<Workflow, OrionError> {
-        versioned::get_version(&self.pool, &spec(), workflow_id, version).await
+        crate::metrics::timed_db_op("workflows.get_version", async {
+            versioned::get_version(&self.pool, &spec(), workflow_id, version).await
+        })
+        .await
     }
 
     pub fn new(pool: DbPool) -> Self {
@@ -642,16 +642,12 @@ impl WorkflowRepository for SqlWorkflowRepository {
     async fn list_versions(
         &self,
         workflow_id: &str,
-        limit: i64,
-        offset: i64,
+        filter: &super::helpers::VersionFilter,
     ) -> Result<PaginatedResult<Workflow>, OrionError> {
-        versioned::list_versions(&self.pool, &spec(), workflow_id, limit, offset).await
-    }
-
-    async fn ping(&self) -> Result<(), OrionError> {
-        let (sql, values) = build_sqlx(Query::select().expr(Expr::val(1i32)));
-        self.pool.fetch_scalar::<i32>(&sql, values).await?;
-        Ok(())
+        crate::metrics::timed_db_op("workflows.list_versions", async {
+            versioned::list_versions(&self.pool, &spec(), workflow_id, filter).await
+        })
+        .await
     }
 }
 

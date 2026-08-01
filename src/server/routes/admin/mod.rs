@@ -349,27 +349,6 @@ pub(crate) struct ImportQuery {
     pub dry_run: bool,
 }
 
-/// Shared version filter used by both channel and workflow version endpoints.
-#[derive(Debug, Deserialize)]
-pub(crate) struct VersionFilter {
-    pub limit: Option<i64>,
-    pub offset: Option<i64>,
-}
-
-impl VersionFilter {
-    /// The effective page bounds.
-    ///
-    /// R24: `unwrap_or(50)` / `unwrap_or(0)` were written out in both
-    /// `list_channel_versions` and `list_workflow_versions`. Two copies of a
-    /// default is how defaults drift — and the repository layer encodes the
-    /// same `50` a third time, in `clamp_pagination`. Route-layer callers read
-    /// it from here; the repository still clamps, because it is the one that
-    /// must not be handed an unbounded `LIMIT` by any caller.
-    pub fn limit_offset(&self) -> (i64, i64) {
-        crate::storage::repositories::helpers::clamp_pagination(self.limit, self.offset)
-    }
-}
-
 /// The audit actor when no admin credential was presented — which is every
 /// request when `admin_auth.enabled = false`.
 const ANONYMOUS_PRINCIPAL: &str = "anonymous";
