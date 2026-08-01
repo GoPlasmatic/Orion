@@ -112,7 +112,9 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 mongodb = { version = "3", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
 # connection-manager: reconnecting handle — a plain MultiplexedConnection is
 # dead for the process lifetime after one Redis restart (proposal D15).
-redis = { version = "1.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
+# `script`: EVALSHA-cached Lua for the shared rate-limit window, whose second
+# must come from Redis's own clock (N8).
+redis = { version = "1.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager", "script"] }
 futures = { version = "0.3", default-features = false, features = ["alloc"] }
 
 # TLS support. `rustls` is a direct dependency only so `server::tls` can install
