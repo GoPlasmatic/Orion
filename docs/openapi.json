@@ -2500,7 +2500,7 @@
         "tags": [
           "Traces"
         ],
-        "description": "Fetch one trace. Access follows a two-lane rule (R12): present either a valid admin credential, or — for async submissions — the `trace_token` returned with the 202, via the `x-trace-token` header or `?token=` query parameter. Traces without a token (sync traces, DLQ retries, rows from before 1.0.1) are admin-plane only when admin auth is enabled.",
+        "description": "Fetch one trace. Access follows a two-lane rule (R12): present either a valid admin credential, or — for async submissions — the `trace_token` returned with the 202, via the `x-trace-token` header or `?token=` query parameter. Traces without a token (sync traces, DLQ retries, rows from before 1.0.0) are admin-plane only when admin auth is enabled.",
         "operationId": "get_trace",
         "parameters": [
           {
@@ -6176,6 +6176,7 @@
         "description": "What a probe found.",
         "required": [
           "reachable",
+          "supported",
           "connector_type",
           "probe"
         ],
@@ -6198,6 +6199,10 @@
           "reachable": {
             "type": "boolean",
             "description": "`true` when the backend answered."
+          },
+          "supported": {
+            "type": "boolean",
+            "description": "R29: `false` when no probe exists for this connector type (`es`,\n`kafka`) — a permanent capability gap, not an outage. Without this\nfield the two were indistinguishable in the response shape, and\noperator tooling read \"not implemented\" as downtime."
           }
         }
       },

@@ -162,14 +162,14 @@ codegen-units = 256
 [profile.release]
 strip = true
 
-# Inherits release optimizations but keeps debug symbols so samply / Instruments
-# can resolve function names. Use with `cargo build --profile=profiling`.
 # Windows cannot run librdkafka's configure build, so it keeps cmake-build —
 # features unify additively with the base rdkafka entry above, per target.
 # See that entry for why unix deliberately avoids cmake-build.
 [target.'cfg(windows)'.dependencies]
 rdkafka = { version = "0.39", default-features = false, features = ["cmake-build"] }
 
+# Inherits release optimizations but keeps debug symbols so samply / Instruments
+# can resolve function names. Use with `cargo build --profile=profiling`.
 [profile.profiling]
 inherits = "release"
 strip = false

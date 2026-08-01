@@ -323,6 +323,14 @@ impl OrionError {
             OrionError::Serialization(e) => {
                 tracing::error!(error.category = "serialization", error = %e, "serialization error")
             }
+            // G15: the exception to "no-op for variants that surface their own
+            // message" — the client does see the byte counts, but the operator
+            // who owns the cap gets no server-side record without this, and
+            // the cap firing is an operations signal (raise the cap or shrink
+            // the response), not a client mistake.
+            OrionError::ResponseTooLarge(detail) => {
+                tracing::error!(error.category = "response_too_large", error = %detail, "connector response exceeded the configured cap")
+            }
             OrionError::Internal {
                 context,
                 source: Some(source),

@@ -276,7 +276,8 @@ import_workflows() {
     }
 
     local imported
-    imported=$(echo "$response" | jq -r '.imported // 0')
+    # T41: the import response is enveloped — {"data":{"imported":N,...}}.
+    imported=$(echo "$response" | jq -r '.data.imported // 0')
     log_info "Imported $imported workflows"
 
     # Activate all imported (draft) workflows
@@ -298,8 +299,7 @@ reload_engine() {
 
 # Bind a channel to a workflow.
 #
-# 1.0 routes channel -> workflow (`channels.workflow_id`); the workflow fixtures
-# still carry a pre-1.0 `"channel"` field that nothing reads. Without a channel
+# 1.0 routes channel -> workflow (`channels.workflow_id`). Without a channel
 # the data plane answers 404 for an unregistered name, so every scenario below
 # measured error responses until this was added.
 create_and_activate_channel() {

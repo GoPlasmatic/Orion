@@ -46,7 +46,7 @@ listener). Container-gated tests are `#[ignore]` and skipped.
 
 All integration tests link into a **single binary**: each file under
 `tests/integration/` is a module declared in `tests/integration/main.rs`, so
-the suite links once instead of ~60 times. Shared helpers live in
+the suite links once instead of once per file (dozens of link steps). Shared helpers live in
 `tests/integration/common/` (`mod.rs` for the app/channel/workflow builders,
 `dsl.rs` for the data-plane task DSL, `backends.rs` for the testcontainers
 harness); the same `common` module is reused by the `cluster` binary via

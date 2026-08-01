@@ -200,9 +200,12 @@ git log --grep=N10          # the commit that closed it, with the full rationale
 ```
 
 Every commit that closed an item names it in the message body, so the history is
-the index. `proposal.md` holds only what is still **open** — an item is deleted
-from it as it ships, so a live ID will not be found there and its absence means
-the work is done, not that the reference is stale.
+the index. The `proposal.md` trackers that held open items are retired — both
+audits closed out before the 1.0 tag, and the last four carried items live where
+they are actioned: P12 and C13 in `RELEASING.md`'s release procedure, P13's
+revisit criterion in `dist-workspace.toml`, B6 an external listing process. An
+ID's absence from the tree means the work is done (or externally tracked), not
+that the reference is stale.
 
 Two rules keep this readable. Each comment must stand on its own without the ID:
 the prefix points at the history for a reader who wants the argument, and is

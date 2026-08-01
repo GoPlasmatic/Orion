@@ -31,7 +31,9 @@ ORDERS_DB_URL=postgres://orion:orion@localhost:5432/orion_orders orion-server
 cd .. && ./deploy.sh postgres-orders
 ```
 
-> Requires Orion ≥ 0.3 (the release that ships `data_query`/`data_write`).
+> Requires Orion ≥ 1.0.0 — the dialect envelope changed shape for 1.0 (see
+> the [upgrade guide](../../docs/src/getting-started/upgrading.md)), and this
+> example is written against the 1.0 form.
 
 Expected response (ids vary):
 

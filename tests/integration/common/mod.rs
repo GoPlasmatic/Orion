@@ -165,18 +165,20 @@ async fn test_state_inner(
             channel_registry.clone(),
             &cluster,
         );
+    // Divergence 2: process-global metrics recorder (see doc comment).
+    //
+    // T37: through orion's own init rather than a raw `PrometheusBuilder` —
+    // the raw install left `orion::metrics::is_enabled()` false, so every
+    // metric write in the app short-circuited before reaching the recorder
+    // and the rendered exposition was empty in *every* test app, first or
+    // not (which is why `metrics_endpoint_test` could only assert status
+    // codes). Same first-caller-wins semantics: later apps get a standalone
+    // handle from the fallback inside `init_metrics_with_instance`. Ordered
+    // before `set_active_workflows`, or the first app's gauge write lands
+    // before any recorder exists and is dropped.
+    let metrics_handle = orion::metrics::init_metrics_with_instance(None);
     orion::metrics::set_active_workflows(active_workflow_count as f64);
     let rate_limit_state = orion::bootstrap::build_rate_limit_state(&config);
-
-    // Divergence 2: process-global metrics recorder (see doc comment).
-    let metrics_handle = metrics_exporter_prometheus::PrometheusBuilder::new()
-        .install_recorder()
-        .unwrap_or_else(|_| {
-            // Recorder already installed by another test — create a no-op handle
-            metrics_exporter_prometheus::PrometheusBuilder::new()
-                .build_recorder()
-                .handle()
-        });
 
     let state = orion::bootstrap::build_app_state(orion::bootstrap::AppStateParams {
         config: Arc::new(config),

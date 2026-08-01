@@ -66,13 +66,15 @@ jobs:
         # queue near-indefinitely (see dist-workspace.toml).
         os: [macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Build
         run: cargo build --locked
@@ -86,15 +88,16 @@ jobs:
     name: Build (x86_64-unknown-linux-musl)
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
         with:
+          toolchain: "stable"
           targets: x86_64-unknown-linux-musl
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       # musl-tools ships only a C compiler, and rdkafka's cmake configure also
       # demands a musl g++ — librdkafka's project() declares CXX even though
@@ -104,7 +107,7 @@ jobs:
       # is fetched only when the pinned version changes.
       - name: Cache musl cross toolchain
         id: musl-tc-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/musl-tc/x86-64--musl--stable-2025.08-1
           key: musl-tc-x86-64--musl--stable-2025.08-1

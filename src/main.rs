@@ -1,3 +1,8 @@
+// T42: `main.rs` + `cli.rs` are their own crate root, so `lib.rs`'s panic
+// lints did not reach them — a future unjustified unwrap on the CLI path
+// would have compiled clean.
+#![warn(clippy::unwrap_used, clippy::panic)]
+
 use std::sync::Arc;
 
 use clap::Parser;

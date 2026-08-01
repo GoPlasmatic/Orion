@@ -130,13 +130,13 @@ SQLite (default), PostgreSQL, or MySQL — selected at runtime from `storage.url
 
 ## Testing
 
-- **Integration tests** in `tests/`: Use `common::test_app()` which creates an in-memory SQLite DB, full `AppState`, and Axum router. Tests use `tower::ServiceExt::oneshot()` (no HTTP server needed).
-- **Test helpers** in `tests/common/mod.rs`:
+- **Integration tests** in `tests/integration/`: one binary — each file is a module declared in `tests/integration/main.rs`. Use `common::test_app()` which creates an in-memory SQLite DB, full `AppState`, and Axum router. Tests use `tower::ServiceExt::oneshot()` (no HTTP server needed).
+- **Test helpers** in `tests/integration/common/mod.rs`:
   - `test_app()` — returns a ready-to-use `Router` with in-memory DB
   - `json_request(method, uri, body)` — builds an HTTP `Request<Body>` with JSON content-type
   - `body_json(response)` — extracts and parses the response body as `serde_json::Value`
-- **Pattern for new integration tests:** Clone the app, call `.oneshot(json_request(...))`, assert status, parse body with `body_json()`. See `tests/admin_workflows_test.rs` for examples.
-- **Test files:** `admin_workflows_test`, `admin_channels_test`, `admin_connectors_test`, `channel_call_test`, `channel_config_test`, `rest_routing_test`, `rate_limit_test`, `concurrency_test`, `async_traces_test`, `error_paths_test`, `security_test`, `shutdown_test`, `pool_exhaustion_test`, `openapi_test`, `kafka_test`.
+- **Pattern for new integration tests:** Clone the app, call `.oneshot(json_request(...))`, assert status, parse body with `body_json()`. See `tests/integration/admin_workflows_test.rs` for examples. Declare the new module in `tests/integration/main.rs`.
+- **Other test binaries:** `tests/cluster/` (multi-node contracts), `tests/storage_postgres.rs`, `tests/storage_mysql.rs`, `tests/schema_parity.rs` (container-gated), plus container-gated modules inside the integration binary listed in `.github/workflows/ci.yml` (kept in sync by `ci_filter_drift_test`).
 - **Benchmarks:** `tests/benchmark/bench.sh` — 6 scenarios using `hey` HTTP load generator.
 
 ## Configuration

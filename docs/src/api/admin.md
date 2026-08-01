@@ -79,19 +79,22 @@ the registry — a connector that failed to load has no registry entry, and that
 is exactly when this endpoint is useful.
 
 ```json
-{ "data": { "reachable": true, "connector_type": "db", "probe": "SELECT 1" } }
+{ "data": { "reachable": true, "supported": true, "connector_type": "db", "probe": "SELECT 1" } }
 ```
 
 A backend that cannot be reached is still a `200`: the probe ran, and
 `reachable: false` with an `error` string is its answer. A `5xx` would claim
-Orion failed, which is a different thing.
+Orion failed, which is a different thing. For the types with no probe
+(`es`, `kafka`), `supported: false` distinguishes the permanent capability
+gap from an outage — key monitoring on `supported && !reachable`, not on
+`reachable` alone.
 
 | Type | Probe | Touches the backend? |
 |---|---|---|
 | `db` | `SELECT 1` through the shared pool | Yes, read-only |
 | `cache` | reads one probe key | Yes, read-only — nothing is written |
 | `http` | `GET` the configured URL with the connector's auth, 5 s timeout | **Yes — one real request** |
-| `es`, `kafka` | not implemented | No |
+| `es`, `kafka` | not implemented (`supported: false`) | No |
 
 The HTTP probe issues a genuine request with genuine credentials, which is the
 point: a wrong bearer token is invisible until traffic hits it. A `401`/`403` is

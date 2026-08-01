@@ -199,3 +199,86 @@ async fn test_data_query_mongo_find() {
         .expect("result should be an array");
     assert!(rows.is_empty(), "expected empty array, got {rows:?}");
 }
+
+/// T36: the tests above prove absence works; this proves presence does —
+/// BSON→JSON decoding of real documents (ObjectId `_id`, strings, ints,
+/// nested documents) and filter selectivity, which is what `mongo_read`
+/// exists to do and what nothing asserted before (the suite only ever read
+/// empty collections).
+#[tokio::test]
+#[ignore]
+async fn test_mongo_read_decodes_seeded_documents() {
+    let app = common::test_app().await;
+
+    let h = common::backends::start(Backend::Mongo, "mongo-seeded").await;
+    common::create_connector(&app, h.connector_json()).await;
+
+    // Seed through the same driver orion links.
+    let client = mongodb::Client::with_uri_str(&h.connection_string)
+        .await
+        .expect("mongo client");
+    let coll = client
+        .database("orion_test")
+        .collection::<mongodb::bson::Document>("seeded_items");
+    coll.insert_many([
+        mongodb::bson::doc! {"sku": "A-1", "qty": 3_i32, "meta": {"tier": "gold"}},
+        mongodb::bson::doc! {"sku": "B-2", "qty": 7_i32, "meta": {"tier": "silver"}},
+    ])
+    .await
+    .expect("seed documents");
+
+    common::create_and_activate_channel(
+        &app,
+        "mongo-seeded-ch",
+        common::workflow_with_tasks(
+            "MongoReadSeeded",
+            json!([
+                {
+                    "id": "t1",
+                    "name": "Read seeded documents",
+                    "function": {
+                        "name": "mongo_read",
+                        "input": {
+                            "connector": "mongo-seeded",
+                            "database": "orion_test",
+                            "collection": "seeded_items",
+                            "filter": {"sku": "A-1"},
+                            "output": "data.items"
+                        }
+                    }
+                }
+            ]),
+        ),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/mongo-seeded-ch",
+            Some(json!({"data": {}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = common::body_json(resp).await;
+    assert_eq!(body["status"], "ok");
+    let items = body["data"]["items"]
+        .as_array()
+        .expect("items should be an array");
+    assert_eq!(
+        items.len(),
+        1,
+        "the filter must select exactly the matching document: {items:?}"
+    );
+    let item = &items[0];
+    assert_eq!(item["sku"], "A-1");
+    assert_eq!(item["qty"], 3);
+    assert_eq!(item["meta"]["tier"], "gold");
+    assert!(
+        !item["_id"].is_null(),
+        "_id must survive BSON→JSON decoding: {item:?}"
+    );
+}

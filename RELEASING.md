@@ -75,8 +75,9 @@ is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
 
 5. **On failure:** fix, bump to `-rc.2`, repeat. The rc artifacts are honest
    prereleases — no cleanup needed either way.
-6. **Close P12** in `proposal.md`, recording the green run's URL in the
-   closing commit message.
+6. **Close P12**: record the green run's URL in a commit whose message
+   names P12 (the audit trackers are retired; `git log --grep=P12` is the
+   index, per CONTRIBUTING's proposal-ID convention).
 7. **For the real release:** set `version = "1.0.0"` back, land, wait for
    CI, tag `v1.0.0`.
 8. **Publish the docs:** merge the release branch into `main`. The docs
@@ -121,7 +122,8 @@ produces numbers worse than none.
    schemes), and replace the README's Performance section numbers — table,
    alt text, and the "measured on v0.2.0" framing — with the 1.0.0 numbers
    including cluster scaling efficiency.
-7. **Close C13** in `proposal.md`.
+7. **Close C13**: the commit that lands the numbers names C13 in its
+   message (`git log --grep=C13` is the index).
 
 ## Musl promotion checkpoint (P13)
 

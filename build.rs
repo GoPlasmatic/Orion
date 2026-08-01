@@ -33,6 +33,23 @@ fn main() {
 
     // Only re-run if git HEAD changes or build.rs itself changes
     println!("cargo:rerun-if-changed=.git/HEAD");
+    // P20: `.git/HEAD` only changes on branch switch — a normal commit moves
+    // the *branch ref*, so GIT_HASH went stale across local commits (and,
+    // because emitting any rerun-if-changed disables cargo's default rule,
+    // stayed stale until something unrelated changed). Track the ref HEAD
+    // points at, plus packed-refs for when it is packed. Existence-guarded:
+    // cargo re-runs every build for a listed file that does not exist.
+    if let Ok(head) = std::fs::read_to_string(".git/HEAD")
+        && let Some(reference) = head.strip_prefix("ref: ")
+    {
+        let ref_file = format!(".git/{}", reference.trim());
+        if std::path::Path::new(&ref_file).exists() {
+            println!("cargo:rerun-if-changed={ref_file}");
+        }
+    }
+    if std::path::Path::new(".git/packed-refs").exists() {
+        println!("cargo:rerun-if-changed=.git/packed-refs");
+    }
     println!("cargo:rerun-if-changed=build.rs");
     // Recompile when migrations change: sqlx::migrate! embeds the directory
     // contents at macro expansion, so a NEW migration file is silently

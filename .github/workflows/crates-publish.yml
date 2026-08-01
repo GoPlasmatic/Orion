@@ -21,15 +21,23 @@ jobs:
     name: Publish to crates.io
     needs: ci-gate
     runs-on: ubuntu-22.04
+    # T32: scopes CRATES_IO_TOKEN — a long-lived secret exposed to a job that
+    # runs every build script in the dependency tree — behind a GitHub
+    # environment. Auto-created unprotected on first run; add reviewers or a
+    # branch policy under Settings → Environments to make it a real gate
+    # (crates.io Trusted Publishing can replace the token entirely later).
+    environment: crates-io
     # Skip prereleases (tags containing alpha, beta, rc, pre)
     if: ${{ !contains(github.ref_name, 'alpha') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'pre') }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
 
       # P14: one dependency list, maintained in the composite action.
       - name: Install system dependencies

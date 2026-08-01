@@ -267,7 +267,11 @@ pub(crate) const EXPORT_PAGE_SIZE: i64 = 500;
 /// Invariant: `page_size` must lie in `1..=1000` — the repositories clamp the
 /// limit they are handed (`clamp_pagination`), so a larger request comes back
 /// as at most 1000 rows, the short-page check misreads that as "exhausted", and
-/// the export silently truncates. Enforced by the `debug_assert!` below.
+/// the export silently truncates. Enforced by the `assert!` below (R29: a
+/// `debug_assert!` compiled out of release builds, where the stated
+/// consequence — a silently truncated export — is exactly what must not
+/// happen; the check is once per export and the panic surfaces as a 500
+/// through `CatchPanicLayer` instead of corrupt output).
 pub(crate) async fn collect_pages<T, F, Fut>(
     page_size: i64,
     fetch: F,
@@ -276,7 +280,7 @@ where
     F: Fn(i64, i64) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<T>, crate::errors::OrionError>>,
 {
-    debug_assert!(
+    assert!(
         (1..=1000).contains(&page_size),
         "page_size {page_size} is outside the repository clamp (1..=1000); \
          a clamped page would silently truncate the export"

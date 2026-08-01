@@ -540,7 +540,7 @@ docker run -p 8080:8080 ghcr.io/goplasmatic/orion:latest
 # Docker Compose (with persistent storage)
 docker compose up  # uses docker-compose.yml from this repo
 
-# macOS (Homebrew)
+# macOS (Homebrew — Apple silicon; Intel Macs use the shell installer below)
 brew install GoPlasmatic/tap/orion-server
 
 # macOS / Linux (shell installer)
@@ -562,10 +562,13 @@ The server binary also ships diagnostic subcommands you can run without booting 
 
 ```bash
 orion-server validate-config -c config.toml         # Parse + validate the config file
+orion-server validate-config --format summary       # One-screen view of the headline settings, secrets redacted
 orion-server migrate                                # Run pending DB migrations
 orion-server migrate --dry-run                      # Preview pending migrations
 orion-server lint path/to/workflow.json             # Strict-validate a workflow JSON file
 orion-server dry-run -w workflow.json -i input.json # Execute a workflow against a sample payload
+orion-server dry-run -w workflow.json -i input.json --stubs stubs.json  # ...with connector calls answered from canned responses
+orion-server test examples/workflow-tests           # Run offline *.case.json workflow regression tests
 orion-server test-connectivity                      # Probe DB (and Kafka if enabled)
 orion-server preflight                              # Scan stored channels/workflows before upgrading
 orion-server dump-openapi > docs/openapi.json       # Write the OpenAPI 3.1 spec (checked in for offline use / client gen)
@@ -608,6 +611,8 @@ See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full comma
 | [Scalability](https://goplasmatic.github.io/Orion/features/scalability.html) | Rate limiting, backpressure, horizontal scaling |
 | [Security](https://goplasmatic.github.io/Orion/features/security.html) | Input validation, SSRF protection, CORS, auth |
 | [Deployability](https://goplasmatic.github.io/Orion/features/deployability.html) | Packaging, Docker, installers, distribution |
+| [Availability](https://goplasmatic.github.io/Orion/features/availability.html) | HA topology, failure modes, recovery drills |
+| [Maintainability](https://goplasmatic.github.io/Orion/features/maintainability.html) | Backups, migrations, audit logs, upgrade procedure |
 | [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html) | AI prompt templates, tested examples, validation workflows, CI/CD |
 | [CLI Tool](https://github.com/GoPlasmatic/Orion-cli) | Command-line tool for managing channels, workflows, and connectors |
 

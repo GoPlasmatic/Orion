@@ -1,7 +1,9 @@
 # Shared toolchain stage: cargo-chef is compiled from source ONCE here and
 # inherited by both stages below — it used to be built independently in each,
 # doubling the cold-cache cost for the same binary (T23).
-FROM rust:1.93-slim AS chef
+# P18: digest-pinned (multi-arch manifest list) so a rebuild months from now
+# resolves the same base layers; dependabot bumps the tag+digest pair.
+FROM rust:1.93-slim@sha256:c0a38f5662afdb298898da1d70b909af4bda4e0acff2dc52aea6360a9b9c6956 AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
@@ -22,7 +24,10 @@ RUN apt-get update && apt-get install -y pkg-config cmake g++ curl libcurl4-open
 # versions than the build then verifies — quietly defeating both the cache
 # and the lockfile guarantee (T23).
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --locked --recipe-path recipe.json
+# P17: the `dist` profile (thin LTO on top of release), matching how the
+# GitHub-release archives are built — same version string, same optimization,
+# instead of two measurably different binaries sharing a version.
+RUN cargo chef cook --profile dist --locked --recipe-path recipe.json
 
 # Build application (only this layer rebuilds on source changes)
 COPY Cargo.toml Cargo.lock* ./
@@ -36,11 +41,11 @@ COPY build.rs ./
 ARG GIT_HASH
 ENV GIT_HASH=${GIT_HASH}
 
-RUN cargo build --release --locked
+RUN cargo build --profile dist --locked
 
 # Runtime stage. Named so `docker build --target` can address it, like the
 # stages above (T23).
-FROM debian:trixie-slim AS runtime
+FROM debian:trixie-slim@sha256:020c0d20b9880058cbe785a9db107156c3c75c2ac944a6aa7ab59f2add76a7bd AS runtime
 
 # OCI identity on the image itself (T23): docker-release.yml injects the full
 # metadata-action label set at push time, but a local `docker build` — the
@@ -65,7 +70,7 @@ RUN groupadd --system --gid 10001 orion && useradd --system --uid 10001 --gid or
 WORKDIR /app
 RUN mkdir -p /app/data && chown -R orion:orion /app
 
-COPY --from=builder --chown=orion:orion /app/target/release/orion-server /usr/local/bin/orion-server
+COPY --from=builder --chown=orion:orion /app/target/dist/orion-server /usr/local/bin/orion-server
 COPY --chown=orion:orion config.toml.example /app/config.toml.example
 # The image redistributes the Apache-2.0 binary; ship the license with it (P16).
 COPY LICENSE /usr/share/doc/orion-server/LICENSE

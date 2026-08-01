@@ -32,6 +32,7 @@ pub fn validate_connector_config(
     })?;
 
     validate_operation_gate_keys(connector_type, config)?;
+    validate_retry_keys(config)?;
 
     // S6: every variant's endpoint gets a scheme allow-list, not just HTTP's.
     // Schemes only — the private-address check runs on the pool-open paths,
@@ -120,6 +121,39 @@ pub fn validate_connector_config(
 /// on a cache would answer 201 and gate nothing. The values are already
 /// checked here for the HTTP method allow-list; this is the same door for the
 /// keys, for every type.
+/// F60: the same door as [`validate_operation_gate_keys`], for `retry`.
+/// `RetryConfig` is all-`serde(default)` with no `deny_unknown_fields`
+/// (legacy rows must keep loading), so `{"retry": {"max_attempts": 5}}`
+/// deserialized into the default policy and changed nothing — the operator
+/// believed retries were configured. Refused at the CRUD boundary only;
+/// stored rows keep loading, exactly like the gate check above.
+fn validate_retry_keys(config: &serde_json::Value) -> Result<(), OrionError> {
+    const ALLOWED: &[&str] = &["max_retries", "retry_delay_ms"];
+    let Some(retry) = config.get("retry") else {
+        return Ok(());
+    };
+    let Some(object) = retry.as_object() else {
+        return Err(OrionError::validation(format!(
+            "Connector 'retry' must be a JSON object with keys: {}",
+            ALLOWED.join(", ")
+        )));
+    };
+    let unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !ALLOWED.contains(key))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(OrionError::validation(format!(
+        "Connector 'retry' has unrecognised key(s) {unknown:?} — a key the retry \
+         policy does not read silently leaves the default policy in place. \
+         Valid keys: {}",
+        ALLOWED.join(", ")
+    )))
+}
+
 fn validate_operation_gate_keys(
     connector_type: ConnectorType,
     config: &serde_json::Value,
@@ -209,6 +243,27 @@ mod tests {
         let config = json!({
             "url": "https://example.com/api",
             "method": "POST"
+        });
+        assert!(validate_connector_config(ConnectorType::Http, &config).is_ok());
+    }
+
+    /// F60: a misspelled retry key deserialized into the default policy and
+    /// changed nothing — refused at the boundary, like the operation gates.
+    #[test]
+    fn a_misspelled_retry_key_is_refused_and_named() {
+        let config = json!({
+            "url": "https://example.com/api",
+            "retry": {"max_attempts": 5}
+        });
+        let err = validate_connector_config(ConnectorType::Http, &config)
+            .expect_err("unknown retry key must not be silently ignored");
+        let message = err.client_message();
+        assert!(message.contains("max_attempts"), "{message}");
+        assert!(message.contains("max_retries"), "{message}");
+
+        let config = json!({
+            "url": "https://example.com/api",
+            "retry": {"max_retries": 5, "retry_delay_ms": 100}
         });
         assert!(validate_connector_config(ConnectorType::Http, &config).is_ok());
     }

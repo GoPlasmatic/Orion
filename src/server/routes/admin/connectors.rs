@@ -559,6 +559,11 @@ pub(crate) async fn validate_connector(
 pub(crate) struct ProbeResult {
     /// `true` when the backend answered.
     reachable: bool,
+    /// R29: `false` when no probe exists for this connector type (`es`,
+    /// `kafka`) — a permanent capability gap, not an outage. Without this
+    /// field the two were indistinguishable in the response shape, and
+    /// operator tooling read "not implemented" as downtime.
+    supported: bool,
     /// Connector type, so a caller need not re-read the connector to know
     /// which kind of probe ran.
     connector_type: String,
@@ -602,11 +607,15 @@ pub(crate) async fn test_connector(
     super::audit_log(&state.audit_queue, &principal, "test", "connector", &id);
 
     // One construction site: `reachable` is derived from the outcome, so a
-    // fourth early exit cannot report a failure as reachable.
+    // fourth early exit cannot report a failure as reachable. `supported` is
+    // fixed by the connector type alone — the early exits (secret
+    // resolution, config parse) are failures of a *supported* probe.
+    let supported = !matches!(connector.connector_type.as_str(), "es" | "kafka");
     let result = |probe: &'static str, outcome: Result<(), String>| {
         Json(ProbeEnvelope {
             data: ProbeResult {
                 reachable: outcome.is_ok(),
+                supported,
                 connector_type: connector.connector_type.clone(),
                 probe,
                 error: outcome.err(),

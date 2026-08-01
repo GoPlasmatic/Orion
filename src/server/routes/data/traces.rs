@@ -76,7 +76,7 @@ Fetch one trace. Access follows a two-lane rule (R12): present either a \
 valid admin credential, or — for async submissions — the `trace_token` \
 returned with the 202, via the `x-trace-token` header or `?token=` query \
 parameter. Traces without a token (sync traces, DLQ retries, rows from \
-before 1.0.1) are admin-plane only when admin auth is enabled.",
+before 1.0.0) are admin-plane only when admin auth is enabled.",
     params(
         ("id" = String, Path, description = "Trace ID"),
         TraceAccessQuery,

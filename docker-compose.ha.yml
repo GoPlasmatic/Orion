@@ -59,7 +59,7 @@ x-orion-env: &orion-env
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
     environment:
       POSTGRES_USER: orion
       POSTGRES_PASSWORD: orion
@@ -73,7 +73,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -105,7 +105,7 @@ services:
       ORION_CLUSTER__INSTANCE_ID: "node-b"
 
   lb:
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     ports:
       - "8080:8080"
     volumes:

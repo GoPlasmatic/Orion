@@ -124,3 +124,55 @@ fn every_ci_filter_still_matches_a_module() {
          update .github/workflows/ci.yml."
     );
 }
+
+/// T40: the two guards above cover only the `integration` binary — the four
+/// other binaries are hand-listed in ci.yml, and a NEW top-level test binary
+/// carrying `#[ignore]` tests would get no CI step and no failure: it
+/// compiles, is skipped locally, and never runs anywhere. This closes that
+/// door the same way: enumerate the binaries from the filesystem, and refuse
+/// to let one with ignored tests go unnamed by a `cargo test --test <name>`
+/// line.
+#[test]
+fn every_test_binary_with_ignored_tests_has_a_ci_step() {
+    let tests_dir = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/tests"));
+    let workflow = std::fs::read_to_string(Path::new(WORKFLOW)).expect("read ci.yml");
+
+    // Auto-discovered `tests/*.rs` binaries, plus explicit [[test]] targets
+    // with a directory (integration is covered by the guards above; cluster
+    // is the other one).
+    let mut binaries: Vec<(String, Vec<std::path::PathBuf>)> = Vec::new();
+    for entry in std::fs::read_dir(tests_dir).expect("read tests/") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) == Some("rs")
+            && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+        {
+            binaries.push((stem.to_string(), vec![path.clone()]));
+        }
+    }
+    let cluster_sources: Vec<std::path::PathBuf> = std::fs::read_dir(tests_dir.join("cluster"))
+        .expect("read tests/cluster")
+        .map(|e| e.expect("dir entry").path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
+        .collect();
+    binaries.push(("cluster".to_string(), cluster_sources));
+
+    let unnamed: Vec<&String> = binaries
+        .iter()
+        .filter(|(_, sources)| {
+            sources.iter().any(|path| {
+                std::fs::read_to_string(path)
+                    .expect("read test source")
+                    .lines()
+                    .any(|l| l.trim_start().starts_with("#[ignore"))
+            })
+        })
+        .filter(|(name, _)| !workflow.contains(&format!("--test {name}")))
+        .map(|(name, _)| name)
+        .collect();
+
+    assert!(
+        unnamed.is_empty(),
+        "these test binaries declare #[ignore] tests but no `cargo test --test <name>` \
+         line in ci.yml runs them — their ignored half executes nowhere: {unnamed:?}"
+    );
+}

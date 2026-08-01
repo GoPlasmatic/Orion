@@ -60,3 +60,32 @@ pub fn init_otel_pipeline(
 
     Ok((provider, tracer))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// T35: nothing else exercises this pipeline — the integration harness
+    /// forbids `init_observability` (global subscriber), so a dependency
+    /// bump breaking exporter construction would first surface at production
+    /// startup with `tracing.enabled`. Construction is lazy (the OTLP tonic
+    /// exporter does not connect until spans flush), so this runs offline:
+    /// it proves the exporter builds, all three sampler regimes construct,
+    /// and shutdown of a never-exported provider completes. A runtime must
+    /// be live: the tonic exporter binds its channel to the reactor at
+    /// construction even though nothing connects.
+    #[tokio::test]
+    async fn pipeline_builds_offline_for_every_sampler_regime() {
+        for sample_rate in [0.0, 0.5, 1.0] {
+            let config = TracingConfig {
+                enabled: true,
+                otlp_endpoint: "http://127.0.0.1:1".to_string(),
+                sample_rate,
+                ..Default::default()
+            };
+            let (provider, _tracer) = init_otel_pipeline(&config, "test-instance")
+                .expect("offline pipeline construction must succeed");
+            let _ = provider.shutdown();
+        }
+    }
+}

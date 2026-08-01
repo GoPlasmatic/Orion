@@ -16,7 +16,7 @@ activated, first request sent) against a running instance in one command.
 
 ## Layout
 
-Each example directory holds three request bodies:
+Each example directory holds a set of request bodies:
 
 | File | Sent to | Purpose |
 |------|---------|---------|
@@ -60,11 +60,11 @@ curl -X POST http://localhost:8080/api/v1/admin/channels \
   -H 'Content-Type: application/json' --data @channel.json
 
 # 4. Activate it
-curl -X PATCH http://localhost:8080/api/v1/admin/channels/orders/status \
+curl -X PATCH http://localhost:8080/api/v1/admin/channels/high-value-orders/status \
   -H 'Content-Type: application/json' -d '{"status":"active"}'
 
 # 5. Send a request
-curl -X POST http://localhost:8080/api/v1/data/orders \
+curl -X POST http://localhost:8080/api/v1/data/high-value-orders \
   -H 'Content-Type: application/json' --data @request.json
 ```
 
@@ -73,19 +73,33 @@ curl -X POST http://localhost:8080/api/v1/data/orders \
 > envelope and returns an execution trace showing which tasks ran or were skipped:
 > ```bash
 > curl -X POST http://localhost:8080/api/v1/admin/workflows/high-value-order/test \
->   -H 'Content-Type: application/json' --data @high-value-order/request.json
+>   -H 'Content-Type: application/json' --data @request.json
 > ```
 
 ## The examples
 
 | Example | Endpoint | What it shows |
 |---------|----------|---------------|
-| [`high-value-order`](high-value-order/) | `POST /orders` | Flag orders over a threshold; build an alert string with `cat` |
+| [`high-value-order`](high-value-order/) | `POST /high-value-orders` | Flag orders over a threshold; build an alert string with `cat` |
 | [`order-classification`](order-classification/) | `POST /order-tiers` | Tiered classification driven by task-level conditions |
 | [`iot-sensor-alert`](iot-sensor-alert/) | `POST /sensors` | Range-based severity with `and` / `or` |
 | [`webhook-transform`](webhook-transform/) | `POST /webhooks` | Normalize provider payloads with `var` mapping (null-safe) |
 | [`notification-routing`](notification-routing/) | `POST /notifications` | Progressive routing with the `in` set-membership operator |
 | [`postgres-orders`](postgres-orders/) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |
+
+## Offline regression tests
+
+[`workflow-tests/`](workflow-tests/) holds `*.case.json` regression cases for
+the self-contained examples above — each runs the real workflow JSON through
+the real engine with no server, database, or network:
+
+```bash
+orion-server test examples/workflow-tests
+```
+
+The runner exits non-zero on any failure, so it gates CI alongside
+`orion-server lint`. See [its README](workflow-tests/README.md) for the case
+format (including connector stubs).
 
 ## Beyond these examples
 

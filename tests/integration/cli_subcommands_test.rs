@@ -692,3 +692,73 @@ fn dump_openapi_writes_the_spec_to_stdout() {
         "the data plane must be documented"
     );
 }
+
+/// T38: `preflight`'s documented contract is "exits non-zero when it finds
+/// anything, so it can gate a deploy" — and nothing invoked it as a binary,
+/// so that exit-code promise (the entire point of the subcommand) was
+/// unverified. `preflight_test.rs` drives the library; this drives the
+/// process a deploy pipeline actually runs.
+#[tokio::test]
+async fn preflight_binary_exit_code_gates_a_deploy() {
+    // A migrated SQLite file with nothing stored: preflight must exit 0.
+    let dir = std::env::temp_dir().join(format!(
+        "orion_preflight_cli_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let url = format!("sqlite:{}/orion.db", dir.display());
+    let pool = orion::storage::init_pool(&orion::config::StorageConfig {
+        url: url.clone(),
+        max_connections: 1,
+        ..Default::default()
+    })
+    .await
+    .expect("migrate scratch db");
+
+    let clean = Command::new(orion_bin())
+        .env("ORION_STORAGE__URL", &url)
+        .arg("preflight")
+        .output()
+        .expect("invoke orion-server preflight");
+    assert!(
+        clean.status.success(),
+        "a clean store must pass preflight: {}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+
+    // Store a channel whose config carries the retired pre-1.0 `cors` key —
+    // the exact class of break preflight exists to find.
+    let orion::storage::DbPool::Sqlite(sq) = &pool else {
+        panic!("sqlite expected");
+    };
+    sqlx::query(
+        "INSERT INTO channels \
+           (channel_id, version, name, channel_type, protocol, methods_json, route_pattern, status, config_json) \
+         VALUES ('legacy', 1, 'legacy', 'sync', 'http', '[\"POST\"]', '/legacy', 'active', '{\"cors\": {}}')",
+    )
+    .execute(sq)
+    .await
+    .expect("seed broken channel");
+    drop(pool);
+
+    let dirty = Command::new(orion_bin())
+        .env("ORION_STORAGE__URL", &url)
+        .arg("preflight")
+        .output()
+        .expect("invoke orion-server preflight");
+    let stdout = String::from_utf8_lossy(&dirty.stdout);
+    let stderr = String::from_utf8_lossy(&dirty.stderr);
+    assert!(
+        !dirty.status.success(),
+        "a store with a 1.0 break must fail the gate: stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        format!("{stdout}{stderr}").contains("legacy"),
+        "the finding must name the channel: stdout={stdout} stderr={stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
