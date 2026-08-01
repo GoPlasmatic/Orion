@@ -14,6 +14,11 @@ their in-band secrets redacted (`redis://user:******@host`,
 `?api_key=******`), and `env://` secret *references* pass through unmasked —
 they name a variable, not a value, and must survive `export` → `import`.
 
+For defence in depth below the API, `storage.connector_encryption_key`
+encrypts `connectors.config_json` at rest (AES-256-GCM) — a database dump or
+backup then carries an opaque envelope rather than credentials. See the
+[Config Reference](../configuration/reference.md).
+
 Channel configs mask their two credential fields exactly: `auth.keys` and
 `auth.secret`. Both surfaces support the same GET → edit → PUT round-trip —
 a value still reading `"******"` on update is restored from the stored config,

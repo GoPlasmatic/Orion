@@ -91,6 +91,11 @@
 # busy_timeout_ms = 5000       # SQLite busy timeout; ignored by other backends
 # acquire_timeout_secs = 3     # How long a request waits for a pooled connection before erroring
 # idle_timeout_secs = 300      # Close connections idle this long (0 = never)
+# connector_encryption_key = ""  # Encrypt connectors.config_json at rest (AES-256-GCM).
+                                # Empty means plaintext. Set to `openssl rand -hex 32` output;
+                                # prefer the env var form so the key does not sit beside the
+                                # database it protects. Plaintext rows written before the key
+                                # keep loading and re-encrypt on their next write.
 # backup_dir = "./backups"     # Where POST /api/v1/admin/backups writes (SQLite only)
 # backup_retention_count = 10  # Keep only the newest N backups, pruning older ones after
                                # each successful backup. Unset keeps every backup — they

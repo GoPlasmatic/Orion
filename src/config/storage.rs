@@ -18,6 +18,15 @@ pub struct StorageConfig {
     pub acquire_timeout_secs: u64,
     /// Maximum idle time in seconds before a connection is closed (0 = no limit).
     pub idle_timeout_secs: u64,
+    /// Encrypt `connectors.config_json` at rest (H3). Empty (the default)
+    /// stores connector configs as plaintext JSON. Set to the 64-hex-char
+    /// encoding of a 32-byte key (`openssl rand -hex 32`) and every connector
+    /// write is AES-256-GCM-encrypted before it reaches the database; reads
+    /// decrypt transparently, and pre-existing plaintext rows keep loading
+    /// until their next write re-encrypts them. Prefer the environment form
+    /// (`ORION_STORAGE__CONNECTOR_ENCRYPTION_KEY`) over the config file — a
+    /// key in the file sits beside the database it protects.
+    pub connector_encryption_key: String,
     /// Directory for database backup files (SQLite only).
     pub backup_dir: String,
     /// Keep only the newest N `orion_backup_*.db` files in `backup_dir`,
@@ -52,6 +61,7 @@ impl Default for StorageConfig {
             busy_timeout_ms: 5000,
             acquire_timeout_secs: 3,
             idle_timeout_secs: 300,
+            connector_encryption_key: String::new(),
             backup_dir: "./backups".to_string(),
             backup_retention_count: None,
             auto_migrate: true,
@@ -67,6 +77,12 @@ impl StorageConfig {
         require_nonzero(self.acquire_timeout_secs, "storage.acquire_timeout_secs")?;
         // 0 would delete the backup just written; "keep none" is not a
         // retention policy — leave the field unset to disable pruning.
+        // H3: fail at startup, not at the first connector read/write.
+        if !self.connector_encryption_key.is_empty() {
+            crate::storage::config_encryption::ConfigCipher::from_hex(
+                &self.connector_encryption_key,
+            )?;
+        }
         if self.backup_retention_count == Some(0) {
             return Err(OrionError::Config {
                 message: "storage.backup_retention_count must be >= 1 when set \

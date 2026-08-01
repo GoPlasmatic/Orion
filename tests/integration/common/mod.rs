@@ -126,7 +126,7 @@ async fn test_state_inner(
     let cluster = orion::cluster::init_cluster_runtime(&config.cluster, &pool)
         .await
         .expect("cluster runtime");
-    let repos = orion::bootstrap::Repositories::new(&pool);
+    let repos = orion::bootstrap::Repositories::new(&pool, &config.storage).expect("repositories");
     let channel_registry = Arc::new(if config.cluster.enabled {
         ChannelRegistry::with_cluster((&*cluster).into())
     } else {

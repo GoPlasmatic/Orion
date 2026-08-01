@@ -71,11 +71,50 @@ pub trait ConnectorRepository: Send + Sync {
 
 pub struct SqlConnectorRepository {
     pool: DbPool,
+    /// H3: present when `storage.connector_encryption_key` is set. Writes
+    /// encrypt `config_json`; reads decrypt (with plaintext pass-through for
+    /// rows written before the key existed).
+    cipher: Option<std::sync::Arc<crate::storage::config_encryption::ConfigCipher>>,
 }
 
 impl SqlConnectorRepository {
     pub fn new(pool: DbPool) -> Self {
-        Self { pool }
+        Self { pool, cipher: None }
+    }
+
+    /// H3: construct with the optional at-rest cipher.
+    pub fn with_cipher(
+        pool: DbPool,
+        cipher: Option<std::sync::Arc<crate::storage::config_encryption::ConfigCipher>>,
+    ) -> Self {
+        Self { pool, cipher }
+    }
+
+    /// The form `config_json` takes in the database.
+    fn store_form(&self, config_json: &str) -> Result<String, OrionError> {
+        match &self.cipher {
+            Some(cipher) => cipher.encrypt(config_json),
+            None => Ok(config_json.to_string()),
+        }
+    }
+
+    /// Undo [`Self::store_form`] on a fetched row. An encrypted row with no
+    /// key configured is a loud error — serving the literal `enc:v1:…` string
+    /// as a config would fail everywhere downstream with worse messages.
+    fn open_row(&self, mut row: Connector) -> Result<Connector, OrionError> {
+        use crate::storage::config_encryption::ConfigCipher;
+        row.config_json = match &self.cipher {
+            Some(cipher) => cipher.decrypt(&row.config_json)?,
+            None if ConfigCipher::is_encrypted(&row.config_json) => {
+                return Err(OrionError::internal(format!(
+                    "connector '{}' is encrypted at rest but \
+                     storage.connector_encryption_key is not set",
+                    row.id
+                )));
+            }
+            None => row.config_json,
+        };
+        Ok(row)
     }
 }
 
@@ -87,7 +126,7 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .id
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let config_json = serde_json::to_string(&req.config)?;
+            let config_json = self.store_form(&serde_json::to_string(&req.config)?)?;
 
             let (sql, values) = build_sqlx(
                 Query::insert()
@@ -130,6 +169,7 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .fetch_optional_as::<Connector>(&sql, values)
                 .await?
                 .ok_or_else(|| OrionError::NotFound(format!("Connector '{id}' not found")))
+                .and_then(|row| self.open_row(row))
         })
         .await
     }
@@ -154,7 +194,7 @@ impl ConnectorRepository for SqlConnectorRepository {
                 Some("desc") => Order::Desc,
                 _ => Order::Asc,
             };
-            super::helpers::paginate(
+            let page: PaginatedResult<Connector> = super::helpers::paginate(
                 &self.pool,
                 Page {
                     from: Connectors::Table.into_iden(),
@@ -169,7 +209,17 @@ impl ConnectorRepository for SqlConnectorRepository {
                     offset,
                 },
             )
-            .await
+            .await?;
+            Ok(PaginatedResult {
+                data: page
+                    .data
+                    .into_iter()
+                    .map(|row| self.open_row(row))
+                    .collect::<Result<_, _>>()?,
+                total: page.total,
+                limit: page.limit,
+                offset: page.offset,
+            })
         })
         .await
     }
@@ -188,10 +238,10 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .as_ref()
                 .map(|c| c.as_str())
                 .unwrap_or(existing.connector_type.as_str());
-            let config_json = match &req.config {
+            let config_json = self.store_form(&match &req.config {
                 Some(c) => serde_json::to_string(c)?,
                 None => existing.config_json.clone(),
-            };
+            })?;
             let enabled = req.enabled.unwrap_or(existing.enabled);
 
             let (sql, values) = build_sqlx(
@@ -240,7 +290,12 @@ impl ConnectorRepository for SqlConnectorRepository {
                     .order_by(Connectors::Name, Order::Asc),
             );
 
-            Ok(self.pool.fetch_all_as::<Connector>(&sql, values).await?)
+            self.pool
+                .fetch_all_as::<Connector>(&sql, values)
+                .await?
+                .into_iter()
+                .map(|row| self.open_row(row))
+                .collect()
         })
         .await
     }

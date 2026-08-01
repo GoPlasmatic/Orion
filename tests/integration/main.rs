@@ -30,6 +30,7 @@ mod concurrency_test;
 mod config_docs_drift_test;
 mod connector_cache_test;
 mod connector_db_test;
+mod connector_encryption_test;
 mod connector_load_issues_test;
 mod connector_ops_test;
 mod connector_redis_test;

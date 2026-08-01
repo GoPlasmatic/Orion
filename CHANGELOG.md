@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Optional encryption at rest for connector configs.**
+  `storage.connector_encryption_key` (64-hex, `openssl rand -hex 32`; prefer
+  the `ORION_STORAGE__CONNECTOR_ENCRYPTION_KEY` env form) makes the
+  repository AES-256-GCM-encrypt `connectors.config_json` on every write and
+  decrypt on every read — a database dump, replica or backup shows an
+  `enc:v1:` envelope instead of credentials. Plaintext rows written before
+  the key keep loading and re-encrypt on their next write; an encrypted row
+  with no (or the wrong) key is a loud error, never served raw. (H3)
+
 - **Read-only admin keys.** `admin_auth.read_only_api_keys` holds keys that
   authorise `GET`/`HEAD` on the admin plane only; every mutating method
   answers `403` without touching the failed-auth backoff. Same entry forms as

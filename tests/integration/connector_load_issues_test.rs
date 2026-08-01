@@ -389,8 +389,8 @@ async fn boot_refuses_broken_connector_when_fail_fast_is_on() {
     .await
     .expect("seed broken connector");
 
-    let repos = orion::bootstrap::Repositories::new(&pool);
     let mut config = orion::config::AppConfig::default();
+    let repos = orion::bootstrap::Repositories::new(&pool, &config.storage).expect("repositories");
     config.engine.fail_on_connector_load_error = true;
 
     let err = orion::bootstrap::build_engine_components(

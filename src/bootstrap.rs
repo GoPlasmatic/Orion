@@ -106,12 +106,26 @@ pub struct Repositories {
 }
 
 impl Repositories {
-    /// Create repositories.
-    pub fn new(pool: &crate::storage::DbPool) -> Self {
-        Self {
+    /// Create repositories. `storage` supplies the optional at-rest cipher
+    /// for connector configs (H3) — validated at config load, so a bad key
+    /// never reaches this point.
+    pub fn new(
+        pool: &crate::storage::DbPool,
+        storage: &crate::config::StorageConfig,
+    ) -> Result<Self, crate::errors::OrionError> {
+        let cipher = if storage.connector_encryption_key.is_empty() {
+            None
+        } else {
+            Some(Arc::new(
+                crate::storage::config_encryption::ConfigCipher::from_hex(
+                    &storage.connector_encryption_key,
+                )?,
+            ))
+        };
+        Ok(Self {
             workflows: Arc::new(SqlWorkflowRepository::new(pool.clone())),
             channels: Arc::new(SqlChannelRepository::new(pool.clone())),
-            connectors: Arc::new(SqlConnectorRepository::new(pool.clone())),
+            connectors: Arc::new(SqlConnectorRepository::with_cipher(pool.clone(), cipher)),
             traces: Arc::new(SqlTraceRepository::new(pool.clone())),
             audit_logs: Arc::new(
                 crate::storage::repositories::audit_logs::SqlAuditLogRepository::new(pool.clone()),
@@ -119,7 +133,7 @@ impl Repositories {
             trace_dlq: Arc::new(
                 crate::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
             ),
-        }
+        })
     }
 }
 

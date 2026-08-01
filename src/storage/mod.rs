@@ -25,6 +25,7 @@
 //! still opened with `PRAGMA foreign_keys = ON` so a future FK takes effect
 //! immediately; see `init_sqlite_pool`.
 
+pub mod config_encryption;
 pub mod models;
 pub mod repositories;
 pub mod schema;

@@ -195,6 +195,7 @@ where
     ov!(storage.url: String);
     ov!(storage.busy_timeout_ms: u64);
     ov!(storage.acquire_timeout_secs: u64);
+    ov!(storage.connector_encryption_key: String);
     ov!(storage.backup_dir: String);
     ov_opt!(storage.backup_retention_count: u32);
     ov!(storage.max_connections: u32);

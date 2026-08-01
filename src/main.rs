@@ -242,7 +242,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Create repositories
-    let repos = bootstrap::Repositories::new(&pool);
+    let repos = bootstrap::Repositories::new(&pool, &config.storage)?;
 
     // Channel registry
     let channel_registry = Arc::new(if config.cluster.enabled {
