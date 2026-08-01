@@ -22,7 +22,7 @@ use crate::config::QueryConfig;
 use crate::query::bulk::{BulkOutcome, ItemOutcome};
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, FieldRef, MongoStorage, Quant, TextOp, Value};
-use crate::query::spec::{QuerySpec, SortDir};
+use crate::query::spec::QuerySpec;
 use crate::query::write::{ConflictAction, ResolvedConflict, ResolvedWrite, WriteError};
 
 /// A rendered MongoDB `find`: the collection plus filter and options.
@@ -54,11 +54,9 @@ pub fn render(
         other => match_doc(other)?,
     };
 
-    let projection = if spec.fields.is_empty() {
-        None
-    } else {
+    let projection = super::plan_projection(&spec.fields).map(|fields| {
         let mut p = Document::new();
-        for f in &spec.fields {
+        for f in fields {
             p.insert(f.as_str(), 1_i32);
         }
         // W9: Mongo returns `_id` by default even when not projected, while
@@ -67,24 +65,21 @@ pub fn render(
         if !p.contains_key("_id") {
             p.insert("_id", 0_i32);
         }
-        Some(p)
-    };
+        p
+    });
 
-    // W8: a bare `1`/`-1` is exactly the shared null-ordering rule — BSON sorts
-    // null (and a missing field) below every other value, so `asc` yields nulls
-    // first and `desc` nulls last, matching SQL and ES. Under the old rule
-    // ("nulls last on asc") Mongo silently disagreed with both, because `find`
-    // has no way to express it.
-    let sort = if spec.sort.is_empty() {
+    // A bare `1`/`-1` realises the planned nulls placement exactly (W8): BSON
+    // sorts null (and a missing field) below every other value, so `asc`
+    // yields nulls first and `desc` nulls last — which is what `plan_sort`
+    // asks for. Under the old rule ("nulls last on asc") Mongo silently
+    // disagreed with SQL and ES, because `find` has no way to express it.
+    let plans = super::plan_sort(&spec.sort);
+    let sort = if plans.is_empty() {
         None
     } else {
         let mut s = Document::new();
-        for k in &spec.sort {
-            let dir = match k.dir {
-                SortDir::Asc => 1_i32,
-                SortDir::Desc => -1_i32,
-            };
-            s.insert(k.field.as_str(), dir);
+        for p in &plans {
+            s.insert(p.field, if p.ascending { 1_i32 } else { -1_i32 });
         }
         Some(s)
     };

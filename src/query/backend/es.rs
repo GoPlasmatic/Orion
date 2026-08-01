@@ -18,7 +18,7 @@ use crate::config::QueryConfig;
 use crate::query::bulk::{BulkOutcome, ItemOutcome};
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, EsStorage, FieldRef, Quant, TextOp, Value};
-use crate::query::spec::{QuerySpec, SortDir};
+use crate::query::spec::QuerySpec;
 use crate::query::write::{ConflictAction, ResolvedConflict, ResolvedWrite, WriteError};
 
 /// ES bounds `from + size` by `index.max_result_window` (default 10k). Beyond it
@@ -59,27 +59,24 @@ pub fn render(
         "from": from,
     });
 
-    if !spec.sort.is_empty() {
-        let sort: Vec<Json> = spec
-            .sort
+    let plans = super::plan_sort(&spec.sort);
+    if !plans.is_empty() {
+        let sort: Vec<Json> = plans
             .iter()
-            .map(|k| {
-                // W8: a null/missing value sorts as the smallest — first on
-                // `asc`, last on `desc`. ES defaults to `_last` on `asc`, so
-                // both directions are stated explicitly. See `apply_sort_keys`
-                // in `sql.rs` for why this is the shared rule.
-                let (order, missing) = match k.dir {
-                    SortDir::Asc => ("asc", "_first"),
-                    SortDir::Desc => ("desc", "_last"),
-                };
-                json!({ &k.field: { "order": order, "missing": missing } })
+            .map(|p| {
+                // ES defaults `missing` to `_last` regardless of direction, so
+                // the planned placement (W8, see `plan_sort`) is stated
+                // explicitly both ways.
+                let order = if p.ascending { "asc" } else { "desc" };
+                let missing = if p.nulls_first { "_first" } else { "_last" };
+                json!({ p.field: { "order": order, "missing": missing } })
             })
             .collect();
         body["sort"] = Json::Array(sort);
     }
 
-    if !spec.fields.is_empty() {
-        body["_source"] = json!(spec.fields);
+    if let Some(fields) = super::plan_projection(&spec.fields) {
+        body["_source"] = json!(fields);
     }
 
     Ok(EsQuery {

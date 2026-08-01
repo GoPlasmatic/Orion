@@ -793,7 +793,7 @@ mod tests {
         )
         .expect("resolves");
         let ResolvedWrite::Insert { rows, .. } = resolved else {
-            panic!("insert resolves to the Insert variant");
+            unreachable!("insert resolves to the Insert variant");
         };
         assert_eq!(rows.len(), 1);
         assert!(matches!(rows[0][0], ir::Value::Int(42)));

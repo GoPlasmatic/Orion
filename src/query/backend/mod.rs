@@ -1,5 +1,7 @@
 //! Backend renderers over the same `Cond` IR: SQL (`sql`), MongoDB (`mongo`), and
-//! Elasticsearch (`es`).
+//! Elasticsearch (`es`), plus the envelope planning they share: page-size and
+//! skip resolution, the projection rule, and the sort rule (direction + nulls
+//! placement) are decided once here and mapped to each backend's native form.
 
 pub mod es;
 pub mod mongo;
@@ -8,7 +10,7 @@ pub mod sql;
 use crate::config::QueryConfig;
 use crate::query::error::QueryError;
 use crate::query::ir::RelRef;
-use crate::query::spec::QuerySpec;
+use crate::query::spec::{QuerySpec, SortDir, SortKey};
 use crate::storage::DbBackend;
 
 /// Resolve the effective page size: an explicit `limit` above `max_limit` is
@@ -43,6 +45,49 @@ pub(crate) fn resolve_skip(
         }),
         other => Ok(other),
     }
+}
+
+/// The projection plan: `None` = every column/field (an empty `fields` list
+/// means "everything" — identity mode only, since a declared schema's
+/// `resolve_names` injects the entity's queryable columns), `Some` = exactly
+/// the named fields.
+pub(crate) fn plan_projection(fields: &[String]) -> Option<&[String]> {
+    if fields.is_empty() {
+        None
+    } else {
+        Some(fields)
+    }
+}
+
+/// One planned sort key: direction plus nulls placement, in backend-neutral
+/// terms. Each renderer maps it to its native form.
+pub(crate) struct SortPlan<'a> {
+    pub field: &'a str,
+    pub ascending: bool,
+    /// Where rows without a meaningful value sort. **The rule (W8): a null
+    /// sorts as the smallest value** — nulls first on `asc`, last on `desc`.
+    /// That is already the native ordering of SQLite, MySQL and MongoDB;
+    /// PostgreSQL (which sorts nulls as the largest value) and Elasticsearch
+    /// have to be told.
+    pub nulls_first: bool,
+}
+
+/// Plan the sort keys once for every renderer, applying the W8 null-ordering
+/// rule. Deciding placement here is what keeps the three renderers from
+/// restating (and eventually skewing) the rule — a renderer only maps
+/// `nulls_first` to its native syntax, or documents why its native order
+/// already realises it.
+pub(crate) fn plan_sort(sort: &[SortKey]) -> Vec<SortPlan<'_>> {
+    sort.iter()
+        .map(|k| {
+            let ascending = matches!(k.dir, SortDir::Asc);
+            SortPlan {
+                field: &k.field,
+                ascending,
+                nulls_first: ascending,
+            }
+        })
+        .collect()
 }
 
 /// Refuse an `include` on a document store. F26: `include` hydration exists only

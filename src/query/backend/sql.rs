@@ -18,7 +18,7 @@ use crate::query::IncludePlan;
 use crate::query::backend::SqlDialect;
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, FieldRef, Quant, RelRef, TextOp, Value};
-use crate::query::spec::{QuerySpec, SortDir, SortKey};
+use crate::query::spec::{QuerySpec, SortKey};
 use crate::query::write::{ConflictAction, ResolvedConflict, ResolvedWrite, WriteError};
 
 /// Column the include's window function writes its per-parent row number into.
@@ -44,11 +44,14 @@ pub fn render(
     let skip = resolve_skip(spec.skip, limits)?;
 
     let mut stmt = Query::select();
-    if spec.fields.is_empty() {
-        stmt.column(Asterisk);
-    } else {
-        for f in &spec.fields {
-            stmt.column(Alias::new(f.as_str()));
+    match super::plan_projection(&spec.fields) {
+        None => {
+            stmt.column(Asterisk);
+        }
+        Some(fields) => {
+            for f in fields {
+                stmt.column(Alias::new(f.as_str()));
+            }
         }
     }
     stmt.from(Alias::new(root_table));
@@ -136,14 +139,18 @@ pub fn build_include_select(
 }
 
 /// Project a child row from [`IncludePlan::projection`]. An empty projection is
-/// the unprojected case (`include` with no `fields`) and means every column.
+/// the unprojected case (`include` with no `fields`) and means every column —
+/// the same [`super::plan_projection`] rule the top-level select follows.
 fn project_child(stmt: &mut SelectStatement, projection: &[String]) {
-    if projection.is_empty() {
-        stmt.column(Asterisk);
-        return;
-    }
-    for f in projection {
-        stmt.column(Alias::new(f.as_str()));
+    match super::plan_projection(projection) {
+        None => {
+            stmt.column(Asterisk);
+        }
+        Some(fields) => {
+            for f in fields {
+                stmt.column(Alias::new(f.as_str()));
+            }
+        }
     }
 }
 
@@ -379,35 +386,31 @@ fn escape_like(pattern: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// Apply the dialect's ordering rule to anything that takes an `ORDER BY` — the
-/// statement itself, or the `OVER (…)` clause of the include's window (F27).
+/// Apply the shared sort plan ([`super::plan_sort`], which owns the W8
+/// null-ordering rule) to anything that takes an `ORDER BY` — the statement
+/// itself, or the `OVER (…)` clause of the include's window (F27).
 ///
-/// **The rule (W8): a null sorts as the smallest value** — nulls first on `asc`,
-/// nulls last on `desc`. That is already the native ordering of SQLite, MySQL
-/// and MongoDB; PostgreSQL (which sorts nulls as the largest value) and
-/// Elasticsearch have to be told. Of the three that agree natively, only MySQL
-/// is special-cased here, because it has no `NULLS FIRST`/`NULLS LAST` syntax at
-/// all; SQLite accepts the clause and so gets it, redundantly but harmlessly —
-/// one rendering path rather than a second exception to keep in step.
-///
-/// This replaced "nulls last on asc", which needed an emulated `IS NULL` prefix
-/// key on MySQL and which MongoDB's `find` could not express at all — so the
-/// same envelope ordered its page differently on Mongo than on SQL and ES,
-/// silently.
+/// Only MySQL is special-cased here: it has no `NULLS FIRST`/`NULLS LAST`
+/// syntax and needs none, because its native ordering already places nulls
+/// first on ASC and last on DESC — exactly the planned placement. SQLite's
+/// native order agrees too but accepts the clause, so it gets it, redundantly
+/// but harmlessly — one rendering path rather than a second exception to keep
+/// in step. PostgreSQL (which sorts nulls as the largest value) is the backend
+/// the explicit clause exists for.
 fn apply_sort_keys<S: OrderedStatement>(stmt: &mut S, sort: &[SortKey], dialect: SqlDialect) {
-    for k in sort {
-        let (order, nulls) = match k.dir {
-            SortDir::Asc => (Order::Asc, NullOrdering::First),
-            SortDir::Desc => (Order::Desc, NullOrdering::Last),
+    for p in super::plan_sort(sort) {
+        let order = if p.ascending { Order::Asc } else { Order::Desc };
+        let nulls = if p.nulls_first {
+            NullOrdering::First
+        } else {
+            NullOrdering::Last
         };
         match dialect {
-            // MySQL has no NULLS FIRST/LAST clause, and needs none: its native
-            // ordering already places nulls first on ASC and last on DESC.
             SqlDialect::Mysql => {
-                stmt.order_by(Alias::new(k.field.as_str()), order);
+                stmt.order_by(Alias::new(p.field), order);
             }
             _ => {
-                stmt.order_by_with_nulls(Alias::new(k.field.as_str()), order, nulls);
+                stmt.order_by_with_nulls(Alias::new(p.field), order, nulls);
             }
         }
     }
