@@ -174,12 +174,12 @@ fn render_expr(cond: &Cond, current_table: &str) -> Result<SimpleExpr, QueryErro
         Cond::And(cs) => fold_bool(cs, current_table, true)?,
         Cond::Or(cs) => fold_bool(cs, current_table, false)?,
         Cond::Not(inner) => render_expr(inner, current_table)?.not(),
-        Cond::Compare { field, op, value } => compare_expr(field, *op, value)?,
+        Cond::Compare { field, op, value } => compare_expr(field, *op, value),
         Cond::In {
             field,
             values,
             negated,
-        } => in_expr(field, values, *negated)?,
+        } => in_expr(field, values, *negated),
         Cond::IsNull { field, negated } => {
             let col = col_expr(field);
             if *negated {
@@ -195,7 +195,7 @@ fn render_expr(cond: &Cond, current_table: &str) -> Result<SimpleExpr, QueryErro
             low_incl,
             high_incl,
             negated,
-        } => between_expr(field, low, high, *low_incl, *high_incl, *negated)?,
+        } => between_expr(field, low, high, *low_incl, *high_incl, *negated),
         Cond::Text { field, op, pattern } => text_expr(field, *op, pattern),
         Cond::Rel { quant, rel, cond } => render_rel(*quant, rel, cond, current_table)?,
     })
@@ -298,30 +298,27 @@ fn rel_subquery(
     Ok(sub)
 }
 
-fn compare_expr(field: &FieldRef, op: CmpOp, value: &Value) -> Result<SimpleExpr, QueryError> {
+fn compare_expr(field: &FieldRef, op: CmpOp, value: &Value) -> SimpleExpr {
     let col = col_expr(field);
-    let v = to_sea_value(value)?;
-    Ok(match op {
+    let v = to_sea_value(value);
+    match op {
         CmpOp::Eq => col.eq(v),
         CmpOp::Ne => col.ne(v),
         CmpOp::Lt => col.lt(v),
         CmpOp::Le => col.lte(v),
         CmpOp::Gt => col.gt(v),
         CmpOp::Ge => col.gte(v),
-    })
+    }
 }
 
-fn in_expr(field: &FieldRef, values: &[Value], negated: bool) -> Result<SimpleExpr, QueryError> {
+fn in_expr(field: &FieldRef, values: &[Value], negated: bool) -> SimpleExpr {
     let col = col_expr(field);
-    let mut vals = Vec::with_capacity(values.len());
-    for v in values {
-        vals.push(to_sea_value(v)?);
-    }
-    Ok(if negated {
+    let vals: Vec<SeaValue> = values.iter().map(to_sea_value).collect();
+    if negated {
         col.is_not_in(vals)
     } else {
         col.is_in(vals)
-    })
+    }
 }
 
 fn between_expr(
@@ -331,9 +328,9 @@ fn between_expr(
     low_incl: bool,
     high_incl: bool,
     negated: bool,
-) -> Result<SimpleExpr, QueryError> {
-    let lo = to_sea_value(low)?;
-    let hi = to_sea_value(high)?;
+) -> SimpleExpr {
+    let lo = to_sea_value(low);
+    let hi = to_sea_value(high);
     // Native BETWEEN is inclusive-only; use it only when both bounds are
     // inclusive, else render explicit per-bound comparisons (the
     // chained-range rule).
@@ -352,7 +349,7 @@ fn between_expr(
         };
         lo_e.and(hi_e)
     };
-    Ok(if negated { e.not() } else { e })
+    if negated { e.not() } else { e }
 }
 
 fn text_expr(field: &FieldRef, op: TextOp, pattern: &str) -> SimpleExpr {
@@ -422,9 +419,10 @@ fn col_expr(field: &FieldRef) -> Expr {
 
 /// Convert an IR value to a `sea_query::Value`, restricted to the variants the
 /// `sqlx-any` binder accepts (Bool/BigInt/Double/String) — never Decimal/Json,
-/// which panic under `AnyArguments`.
-fn to_sea_value(v: &Value) -> Result<SeaValue, QueryError> {
-    Ok(match v {
+/// which panic under `AnyArguments`. IR values are always scalars (nested lists
+/// are rejected during lowering), so this conversion is total.
+fn to_sea_value(v: &Value) -> SeaValue {
+    match v {
         // A scalar null is already lowered to `IsNull`; this placeholder only
         // arises for an explicit null inside a list, binding as SQL NULL.
         Value::Null => SeaValue::String(None),
@@ -432,13 +430,7 @@ fn to_sea_value(v: &Value) -> Result<SeaValue, QueryError> {
         Value::Int(i) => (*i).into(),
         Value::Float(f) => (*f).into(),
         Value::Str(s) => s.clone().into(),
-        Value::List(_) => {
-            return Err(QueryError::NotRepresentable {
-                what: "nested list literal".to_string(),
-                at: "filter".to_string(),
-            });
-        }
-    })
+    }
 }
 
 // ---- Write rendering (INSERT / UPDATE / DELETE / upsert) ----
@@ -474,10 +466,7 @@ fn render_insert(
     stmt.into_table(Alias::new(w.table.as_str()));
     stmt.columns(w.columns.iter().map(|c| Alias::new(c.as_str())));
     for row in &w.rows {
-        let vals: Vec<SimpleExpr> = row
-            .iter()
-            .map(value_expr)
-            .collect::<Result<_, WriteError>>()?;
+        let vals: Vec<SimpleExpr> = row.iter().map(value_expr).collect();
         stmt.values(vals)
             .map_err(|e| WriteError::InvalidEnvelope(e.to_string()))?;
     }
@@ -499,7 +488,7 @@ fn render_insert(
             ConflictAction::Update => {
                 if !w.set.is_empty() {
                     for (col, v) in &w.set {
-                        oc.value(Alias::new(col.as_str()), value_expr(v)?);
+                        oc.value(Alias::new(col.as_str()), value_expr(v));
                     }
                 } else {
                     // Default: overwrite every inserted column except the conflict keys.
@@ -535,7 +524,7 @@ fn render_update(
     let mut stmt = Query::update();
     stmt.table(Alias::new(w.table.as_str()));
     for (col, v) in &w.set {
-        stmt.value(Alias::new(col.as_str()), value_expr(v)?);
+        stmt.value(Alias::new(col.as_str()), value_expr(v));
     }
     if let Some(cond) = &w.cond
         && !matches!(cond, Cond::True)
@@ -570,9 +559,8 @@ fn render_delete(
 }
 
 /// An IR value as a bound `SimpleExpr` (a NULL binds as SQL NULL).
-fn value_expr(v: &Value) -> Result<SimpleExpr, WriteError> {
-    let sv = to_sea_value(v).map_err(WriteError::from)?;
-    Ok(Expr::val(sv).into())
+fn value_expr(v: &Value) -> SimpleExpr {
+    Expr::val(to_sea_value(v)).into()
 }
 
 /// Dialect-specific `(sql, values)` for any write statement (Insert/Update/Delete).

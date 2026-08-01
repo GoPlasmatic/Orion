@@ -214,9 +214,15 @@ impl FieldRef {
     }
 }
 
-/// A literal operand value. Only these variants ever become bound parameters,
-/// and each maps to an `AnyPool`-safe `sea_query::Value` (never Decimal/Json/Uuid,
-/// which panic under the `sqlx-any` binder).
+/// A literal operand value — always a scalar. Only these variants ever become
+/// bound parameters, and each maps to an `AnyPool`-safe `sea_query::Value`
+/// (never Decimal/Json/Uuid, which panic under the `sqlx-any` binder).
+///
+/// Lists are deliberately not representable here: the only place the dialect
+/// accepts one is the `in` haystack, which lowering carries as `Cond::In`'s
+/// `values` — a flat `Vec<Value>` — so a nested list cannot survive past
+/// lowering and every backend refuses it identically, at the real filter
+/// location.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Null,
@@ -224,5 +230,4 @@ pub enum Value {
     Int(i64),
     Float(f64),
     Str(String),
-    List(Vec<Value>),
 }

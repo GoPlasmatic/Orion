@@ -28,10 +28,13 @@ struct Ctx<'a> {
     reg: &'a EntityRegistry,
 }
 
-/// A parsed operand: either a column reference or a literal value.
+/// A parsed operand: a column reference, a scalar literal, or a flat list of
+/// scalars (legal only as the `in` haystack — nested lists are rejected while
+/// parsing, where the real filter location is known).
 enum Operand {
     Field(FieldRef),
     Val(Value),
+    List(Vec<Value>),
 }
 
 /// Lower a `filter` in identity mode (no schema). Test convenience —
@@ -156,6 +159,9 @@ fn lower_binary_cmp(cmp: CmpOp, a: Operand, b: Operand, at: &str) -> Result<Cond
     let (field, value, op) = match (a, b) {
         (Operand::Field(f), Operand::Val(v)) => (f, v, cmp),
         (Operand::Val(v), Operand::Field(f)) => (f, v, cmp.flipped()),
+        (Operand::List(_), _) | (_, Operand::List(_)) => {
+            return Err(not_representable("list literal in a scalar comparison", at));
+        }
         (Operand::Field(_), Operand::Field(_)) => {
             return Err(not_representable("column-to-column comparison", at));
         }
@@ -168,9 +174,6 @@ fn lower_binary_cmp(cmp: CmpOp, a: Operand, b: Operand, at: &str) -> Result<Cond
             field,
             negated: matches!(op, CmpOp::Ne),
         });
-    }
-    if let Value::List(_) = value {
-        return Err(not_representable("list literal in a scalar comparison", at));
     }
     Ok(Cond::Compare { field, op, value })
 }
@@ -188,7 +191,7 @@ fn lower_chained(
 
     let field = match mid {
         Operand::Field(f) => f,
-        Operand::Val(_) => {
+        Operand::Val(_) | Operand::List(_) => {
             return Err(not_representable(
                 "chained comparison requires the middle operand to be a field",
                 at,
@@ -238,7 +241,7 @@ fn lower_in(arg: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Cond, Query
     let haystack = parse_operand(&args[1], ctx, entity, at)?;
     match (needle, haystack) {
         // Membership: field IN (list).
-        (Operand::Field(f), Operand::Val(Value::List(items))) => {
+        (Operand::Field(f), Operand::List(items)) => {
             if items.is_empty() {
                 Ok(Cond::False) // empty membership folds to false
             } else {
@@ -262,13 +265,11 @@ fn lower_in(arg: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Cond, Query
             "'in' membership requires a list as the second operand",
             at,
         )),
-        (Operand::Val(_), Operand::Field(_)) => Err(not_representable(
+        (Operand::Val(_) | Operand::List(_), Operand::Field(_)) => Err(not_representable(
             "'in' substring needle must be a string literal",
             at,
         )),
-        (Operand::Val(_), Operand::Val(_)) => {
-            Err(not_representable("'in' requires a field operand", at))
-        }
+        _ => Err(not_representable("'in' requires a field operand", at)),
     }
 }
 
@@ -287,7 +288,7 @@ fn lower_text(
     }
     let field = match parse_operand(&args[0], ctx, entity, at)? {
         Operand::Field(f) => f,
-        Operand::Val(_) => {
+        Operand::Val(_) | Operand::List(_) => {
             return Err(not_representable(
                 "starts_with/ends_with requires a field as the first operand",
                 at,
@@ -369,7 +370,7 @@ fn parse_operand(node: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Opera
                         name: name.to_string(),
                         at: at.to_string(),
                     })?;
-                return Ok(Operand::Val(json_to_value(resolved, at)?));
+                return literal_operand(resolved, at);
             }
             match single_entry(map) {
                 Some((inner_op, _)) => Err(QueryError::UnsupportedInQuery {
@@ -379,6 +380,23 @@ fn parse_operand(node: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Opera
                 None => Err(not_representable("object literal operand", at)),
             }
         }
+        other => literal_operand(other, at),
+    }
+}
+
+/// Parse a literal JSON node (or a resolved param value): a flat array becomes
+/// [`Operand::List`] of scalars, anything else a scalar [`Operand::Val`]. A
+/// list inside a list has no portable meaning and is rejected here, during
+/// lowering, where `at` names the real filter location — so every backend
+/// refuses it identically instead of one erroring late and others nesting
+/// silently.
+fn literal_operand(j: &Json, at: &str) -> Result<Operand, QueryError> {
+    match j {
+        Json::Array(arr) => arr
+            .iter()
+            .map(|e| json_to_value(e, at))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Operand::List),
         other => Ok(Operand::Val(json_to_value(other, at)?)),
     }
 }
@@ -432,13 +450,9 @@ fn json_to_value(j: &Json, at: &str) -> Result<Value, QueryError> {
             }
         }
         Json::String(s) => Value::Str(s.clone()),
-        Json::Array(arr) => {
-            let mut out = Vec::with_capacity(arr.len());
-            for e in arr {
-                out.push(json_to_value(e, at)?);
-            }
-            Value::List(out)
-        }
+        // Only list *elements* reach this arm (a top-level array becomes an
+        // `Operand::List` in `literal_operand`), so an array here is a nested list.
+        Json::Array(_) => return Err(not_representable("nested list literal", at)),
         Json::Object(_) => return Err(not_representable("object literal value", at)),
     })
 }
@@ -799,6 +813,64 @@ mod tests {
         )
         .expect_err("missing param");
         assert!(matches!(err, QueryError::MissingParam { .. }));
+    }
+
+    #[test]
+    fn test_nested_list_in_membership_rejected_with_location() {
+        // A list inside the `in` haystack is rejected at lowering — before any
+        // backend renders — with the real filter location.
+        let err = lower(
+            &json!({ "in": [{"field": "status"}, ["a", ["b"]]] }),
+            &Params::new(),
+        )
+        .expect_err("nested list");
+        assert_eq!(
+            err,
+            QueryError::NotRepresentable {
+                what: "nested list literal".into(),
+                at: "filter.in".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_nested_list_via_param_rejected_with_location() {
+        let mut params = Params::new();
+        params.insert("xs".into(), json!(["a", ["b"]]));
+        let err = lower(
+            &json!({ "in": [{"field": "status"}, {"param": "xs"}] }),
+            &params,
+        )
+        .expect_err("nested list from param");
+        assert_eq!(
+            err,
+            QueryError::NotRepresentable {
+                what: "nested list literal".into(),
+                at: "filter.in".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_list_in_scalar_comparison_rejected() {
+        let err = lower(&json!({ "==": [{"field": "x"}, [1, 2]] }), &Params::new())
+            .expect_err("list in scalar comparison");
+        assert!(matches!(err, QueryError::NotRepresentable { .. }), "{err}");
+    }
+
+    #[test]
+    fn test_list_as_chained_bound_rejected() {
+        // Previously a list bound survived lowering and only SQL errored (with a
+        // fabricated location); now every backend refuses identically, here.
+        let err = lower(&json!({ "<": [[1], {"field": "x"}, 10] }), &Params::new())
+            .expect_err("list bound");
+        assert_eq!(
+            err,
+            QueryError::NotRepresentable {
+                what: "chained comparison bounds must be literals".into(),
+                at: "filter.<".into(),
+            }
+        );
     }
 
     #[test]

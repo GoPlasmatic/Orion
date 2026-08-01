@@ -252,7 +252,6 @@ fn to_bson(v: &Value) -> Bson {
         Value::Int(i) => Bson::Int64(*i),
         Value::Float(f) => Bson::Double(*f),
         Value::Str(s) => Bson::String(s.clone()),
-        Value::List(items) => Bson::Array(items.iter().map(to_bson).collect()),
     }
 }
 

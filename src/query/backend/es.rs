@@ -237,7 +237,6 @@ fn to_json(v: &Value) -> Json {
         Value::Int(i) => json!(i),
         Value::Float(f) => json!(f),
         Value::Str(s) => Json::String(s.clone()),
-        Value::List(items) => Json::Array(items.iter().map(to_json).collect()),
     }
 }
 

@@ -277,6 +277,43 @@ async fn test_data_query_limit_exceeds_max_rejected() {
     );
 }
 
+/// W19: a nested list inside an `in` haystack has no portable form; it must be
+/// rejected at lowering — identically for every backend — not mistranslated.
+/// SQL used to error late with a fabricated `at: filter` location while Mongo
+/// and ES silently nested it.
+#[tokio::test]
+async fn test_data_query_nested_list_rejected() {
+    let app = common::test_app().await;
+    let conn = "dq-nest";
+    common::create_connector(
+        &app,
+        common::db_connector_sqlite(conn, "sqlite:file:dq_nest?mode=memory&cache=shared"),
+    )
+    .await;
+
+    let mut tasks = seed_tasks(conn);
+    tasks.push(dq(
+        conn,
+        "t_query",
+        json!({
+            "source": "users",
+            "filter": { "in": [{ "field": "status" }, ["active", ["nested"]]] }
+        }),
+    ));
+    common::create_and_activate_channel(
+        &app,
+        "ch-dq-nest",
+        common::workflow_with_tasks("dq", json!(tasks)),
+    )
+    .await;
+
+    let (status, body) = post(&app, "ch-dq-nest", json!({ "data": {} })).await;
+    assert!(
+        is_rejection(status, &body),
+        "expected a rejection for a nested list literal, got status={status} body={body}"
+    );
+}
+
 /// W12: `skip` is capped like `limit` — rejected over `query.max_skip`,
 /// never clamped. The cap used to exist only on Elasticsearch, so the same
 /// envelope scanned arbitrarily deep on SQL.
