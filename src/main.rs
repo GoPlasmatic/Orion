@@ -226,8 +226,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let pool = orion::storage::init_pool_for_startup(&config.storage).await?;
     // S20: the DSN can embed `user:password@` credentials — never log it raw.
     tracing::info!(
-        storage = %orion::connector::redact_url_secrets(&config.storage.url)
-            .unwrap_or_else(|| config.storage.url.clone()),
+        storage = %orion::connector::redact_url_secrets_or_raw(&config.storage.url),
         "Database initialized"
     );
     // C7: in production this pairing is refused by `validate_config` before

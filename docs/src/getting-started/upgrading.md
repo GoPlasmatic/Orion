@@ -1371,14 +1371,21 @@ Separately, `RESPONSE_TOO_LARGE` — a workflow result exceeding
 `500 Internal Server Error`. No upstream is involved in that condition, so 502
 was the wrong claim; the code string is unchanged.
 
+And the same one-condition-two-codes merge on the 504: an engine timeout
+answered `{"code": "TIMEOUT_ERROR"}` while the channel-level timeout guard
+answered `{"code": "TIMEOUT"}` — which one a caller saw was an accident of
+which layer fired first. Every 504 now answers `TIMEOUT`. The status and
+message are unchanged.
+
 **How you'll notice.** A client branching on `error.code == "BAD_REQUEST"`
 stops matching; branch on `VALIDATION_ERROR` (or on the 400 status). Anything
 alerting on 502s from the data plane should alert on the `RESPONSE_TOO_LARGE`
-code instead.
+code instead. Retry/backoff or paging rules matching `TIMEOUT_ERROR` on 504s
+silently stop firing; match `TIMEOUT` (or the 504 status).
 
-**What to do.** Update literal matches on `BAD_REQUEST`. If you branch only on
-HTTP status, the 400s are untouched and the oversized-result case moves from
-502 to 500.
+**What to do.** Update literal matches on `BAD_REQUEST` and `TIMEOUT_ERROR`.
+If you branch only on HTTP status, the 400s and 504s are untouched and the
+oversized-result case moves from 502 to 500.
 
 ### Updating an entity with no draft is a 404, not a 400
 

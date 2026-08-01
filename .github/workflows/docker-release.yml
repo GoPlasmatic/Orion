@@ -49,25 +49,41 @@ jobs:
 
       - name: Determine version
         id: version
+        env:
+          TAG_OVERRIDE: ${{ inputs.tag_override }}
         run: |
-          if [ -n "${{ inputs.tag_override }}" ]; then
-            VERSION="${{ inputs.tag_override }}"
-          elif [ "${{ github.ref_type }}" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-            # P19: dist refuses a tag that disagrees with the workspace
-            # version; this workflow used to stamp whatever the tag said
-            # onto image tags, OCI labels and the Helm chart. Same refusal.
-            CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
-            if [ "${VERSION}" != "${CARGO_VERSION}" ]; then
-              echo "::error::Tag says ${VERSION} but Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report."
+          RELEASE=1
+          if [ -n "${TAG_OVERRIDE}" ]; then
+            VERSION="${TAG_OVERRIDE}"
+            # P19: the override rides the same `type=semver` metadata path as
+            # a tag — an unparseable value is dropped by metadata-action,
+            # leaving the merge job's `imagetools create` with zero -t flags
+            # after the per-arch digests already pushed. (A tag's shape is
+            # constrained by the `on: push: tags` pattern instead.)
+            if ! printf '%s' "${VERSION}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$'; then
+              echo "::error::tag_override '${VERSION}' is not a semver version — metadata-action would drop it and the merge job would fail with untagged images already pushed."
               exit 1
             fi
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
           else
             # P19: must parse as semver — `type=semver` in metadata-action
             # drops an unparseable value, leaving `imagetools create` with
             # zero -t flags. A prerelease version also keeps `latest=auto`
             # from tagging `latest` on a rehearsal.
             VERSION="0.0.0-dev.${GITHUB_SHA::8}"
+            RELEASE=0
+          fi
+          # P19: dist refuses a tag that disagrees with the workspace
+          # version; this workflow used to stamp whatever the tag (or the
+          # dispatch override) said onto image tags, OCI labels and the Helm
+          # chart. One refusal for both release paths, so they cannot drift.
+          if [ "${RELEASE}" = "1" ]; then
+            CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+            if [ "${VERSION}" != "${CARGO_VERSION}" ]; then
+              echo "::error::Release version says ${VERSION} but Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Release from a ref whose Cargo.toml agrees."
+              exit 1
+            fi
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Version: ${VERSION}"

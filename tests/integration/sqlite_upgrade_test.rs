@@ -20,39 +20,12 @@ use orion::storage::DbPool;
 use orion::storage::repositories::channels::{ChannelRepository, SqlChannelRepository};
 use orion::storage::repositories::trace_dlq::{SqlTraceDlqRepository, TraceDlqRepository};
 use orion::storage::repositories::workflows::{SqlWorkflowRepository, WorkflowRepository};
-use std::path::PathBuf;
 
-/// Self-cleaning scratch directory; `tempfile` is not in the dependency tree.
-struct ScratchDir(PathBuf);
-
-impl ScratchDir {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "orion_sqlite_upgrade_test_{}_{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&path).expect("create scratch dir");
-        Self(path)
-    }
-
-    fn url(&self) -> String {
-        format!("sqlite:{}/orion.db", self.0.display())
-    }
-}
-
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use crate::common::ScratchDir;
 
 #[tokio::test]
 async fn upgrade_from_0_3_0_sqlite_file_with_data_preserves_rows() {
-    let dir = ScratchDir::new();
+    let dir = ScratchDir::new("sqlite_upgrade");
 
     // Apply only 001–003: the 0.3.0 schema, with the real checksums in the
     // `_sqlx_migrations` ledger so the later full run continues cleanly.

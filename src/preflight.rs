@@ -394,7 +394,10 @@ mod tests {
             },
             {
                 "id": "note", "name": "Note",
-                "function": { "name": "log", "input": {} }
+                // `message` is required by the engine's own `log` config
+                // parse — the shared validator's engine-parse catch-all
+                // refuses it absent, exactly as `Engine::new` would.
+                "function": { "name": "log", "input": { "message": "noted" } }
             },
         ]);
         let found = check_workflow_tasks("wf", &tasks.to_string());

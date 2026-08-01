@@ -559,10 +559,11 @@ pub(crate) async fn validate_connector(
 pub(crate) struct ProbeResult {
     /// `true` when the backend answered.
     reachable: bool,
-    /// R29: `false` when no probe exists for this connector type (`es`,
-    /// `kafka`) — a permanent capability gap, not an outage. Without this
-    /// field the two were indistinguishable in the response shape, and
-    /// operator tooling read "not implemented" as downtime.
+    /// R29: `false` when no probe exists for this connector (`es`, `kafka`,
+    /// or a `db` connector with a `mongodb://` URL) — a permanent capability
+    /// gap, not an outage. Without this field the two were indistinguishable
+    /// in the response shape, and operator tooling read "not implemented" as
+    /// downtime.
     supported: bool,
     /// Connector type, so a caller need not re-read the connector to know
     /// which kind of probe ran.
@@ -608,10 +609,12 @@ pub(crate) async fn test_connector(
 
     // One construction site: `reachable` is derived from the outcome, so a
     // fourth early exit cannot report a failure as reachable. `supported` is
-    // fixed by the connector type alone — the early exits (secret
-    // resolution, config parse) are failures of a *supported* probe.
-    let supported = !matches!(connector.connector_type.as_str(), "es" | "kafka");
-    let result = |probe: &'static str, outcome: Result<(), String>| {
+    // owned by `probe_connector` — the one place that knows which configs
+    // have a probe — so the two cannot drift; the early exits (secret
+    // resolution, config parse) fire before a config exists to ask, and
+    // judge it by the connector type alone.
+    let type_supported = !matches!(connector.connector_type.as_str(), "es" | "kafka");
+    let result = |probe: &'static str, supported: bool, outcome: Result<(), String>| {
         Json(ProbeEnvelope {
             data: ProbeResult {
                 reachable: outcome.is_ok(),
@@ -628,15 +631,6 @@ pub(crate) async fn test_connector(
     // and that is exactly when an operator reaches for this endpoint.
     let mut config_value: Value = serde_json::from_str(&connector.config_json)
         .map_err(|e| OrionError::internal(format!("stored connector config is not JSON: {e}")))?;
-    if let Err(e) = crate::connector::secrets::resolve_in_place(
-        &mut config_value,
-        &crate::connector::secrets::default_resolvers(),
-        "config",
-    )
-    .await
-    {
-        return Ok(result("secret resolution", Err(e.client_message())));
-    }
 
     // `ConnectorConfig` is internally tagged on `type`, but the type lives in
     // its own column — inject it exactly as the registry load does, so a
@@ -648,18 +642,60 @@ pub(crate) async fn test_connector(
             Value::String(connector.connector_type.clone()),
         );
     }
+
+    // S21: shape-check *before* resolving secrets. A serde error over the
+    // resolved document can quote a resolved secret verbatim (a string
+    // credential in a numeric field, say) — the same detail the read API
+    // masks. Over the stored document the message can only quote the
+    // operator's own references.
+    if let Err(e) = <crate::connector::ConnectorConfig as serde::Deserialize>::deserialize(
+        // Deserializing from `&Value` checks the shape without cloning the
+        // document the way `from_value` (which takes ownership) would force.
+        &config_value,
+    ) {
+        return Ok(result("config parse", type_supported, Err(e.to_string())));
+    }
+    if let Err(e) = crate::connector::secrets::resolve_in_place(
+        &mut config_value,
+        &crate::connector::secrets::default_resolvers(),
+        "config",
+    )
+    .await
+    {
+        return Ok(result(
+            "secret resolution",
+            type_supported,
+            Err(e.client_message()),
+        ));
+    }
     let config = match serde_json::from_value::<crate::connector::ConnectorConfig>(config_value) {
         Ok(config) => config,
         Err(e) => {
-            return Ok(result("config parse", Err(e.to_string())));
+            // The stored shape parsed above, so only the resolved values can
+            // be at fault — and the message could quote them. Log it, don't
+            // serve it (same redaction as the probe errors below).
+            tracing::warn!(connector = %connector.name, error = %e, "resolved connector config failed to parse");
+            return Ok(result(
+                "config parse",
+                type_supported,
+                Err(
+                    "the config parses as stored but not with its secret references \
+                     resolved; the parse error is in the server log"
+                        .to_string(),
+                ),
+            ));
         }
     };
 
-    let (probe, outcome) = probe_connector(&state, &connector.name, &config).await;
-    Ok(result(probe, outcome))
+    let (probe, supported, outcome) = probe_connector(&state, &connector.name, &config).await;
+    Ok(result(probe, supported, outcome))
 }
 
-/// Run the probe appropriate to the connector's type.
+/// Run the probe appropriate to the connector's type. Returns what the probe
+/// did, whether one exists for this config at all (`supported`), and its
+/// outcome — supportedness lives here, next to the arms that define it, so
+/// implementing a probe for a currently-unsupported kind cannot leave a stale
+/// `supported: false` behind in the handler.
 ///
 /// Every probe is read-only. The HTTP one is the only that touches a third
 /// party, and it is the reason the endpoint is worth having at all: a wrong
@@ -668,18 +704,32 @@ async fn probe_connector(
     state: &AppState,
     name: &str,
     config: &crate::connector::ConnectorConfig,
-) -> (&'static str, Result<(), String>) {
+) -> (&'static str, bool, Result<(), String>) {
     use crate::connector::ConnectorConfig;
 
     match config {
-        ConnectorConfig::Db(db) => ("SELECT 1", probe_db(state, name, db).await),
+        // R29: a `db` connector pointing at MongoDB has no probe — the SQL
+        // pool below cannot dial `mongodb://`, so routing it to `probe_db`
+        // reported a permanent capability gap as an outage on every call.
+        ConnectorConfig::Db(db) if crate::connector::is_mongo_url(&db.connection_string) => (
+            "not implemented for this connector type",
+            false,
+            Err("connectivity probing is not implemented for MongoDB connectors yet".to_string()),
+        ),
+        ConnectorConfig::Db(db) => ("SELECT 1", true, probe_db(state, name, db).await),
         ConnectorConfig::Cache(cache) => (
             "cache read of a probe key",
+            true,
             probe_cache(state, name, cache).await,
         ),
-        ConnectorConfig::Http(http) => ("GET the configured URL", probe_http(state, http).await),
+        ConnectorConfig::Http(http) => (
+            "GET the configured URL",
+            true,
+            probe_http(state, http).await,
+        ),
         ConnectorConfig::Es(_) | ConnectorConfig::Kafka(_) => (
             "not implemented for this connector type",
+            false,
             Err(format!(
                 "connectivity probing is not implemented for '{}' connectors yet; \
                  Kafka brokers are covered by `orion-server test-connectivity`",
@@ -710,8 +760,19 @@ async fn probe_db(
             // the same detail the pool arm above redacts. Log it, don't
             // serve it.
             tracing::warn!(connector = %name, error = %e, "connectivity probe query failed");
-            "connected, but the probe query failed; the driver error is in the server log"
-                .to_string()
+            // The pool may be cached from an earlier probe, so an `execute`
+            // failure is not proof a connection existed — only an error the
+            // database itself reported is. Claiming "connected" on a
+            // connection-level failure would steer the operator away from
+            // the network/DNS/down-host diagnosis this endpoint exists for.
+            if matches!(e, sqlx::Error::Database(_)) {
+                "connected, but the probe query failed; the driver error is in the server log"
+                    .to_string()
+            } else {
+                "the probe could not complete against the database — it may be \
+                 unreachable; the driver error is in the server log"
+                    .to_string()
+            }
         })
 }
 
@@ -738,9 +799,13 @@ async fn probe_cache(
         .map(|_| ())
         .map_err(|e| {
             // S21: same redaction as `probe_db` — the backend error can
-            // carry the Redis host:port.
+            // carry the Redis host:port. And like `probe_db`, the backend
+            // handle may be cached from an earlier probe, so a failed read
+            // is not proof a connection existed — the wording must not
+            // claim one.
             tracing::warn!(connector = %name, error = %e, "connectivity probe read failed");
-            "connected, but the probe read failed; the driver error is in the server log"
+            "the probe read failed — the backend may be unreachable; the driver \
+             error is in the server log"
                 .to_string()
         })
 }

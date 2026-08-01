@@ -156,6 +156,16 @@ fn every_test_binary_with_ignored_tests_has_a_ci_step() {
         .collect();
     binaries.push(("cluster".to_string(), cluster_sources));
 
+    // The exact tokens following `--test` in ci.yml — not a raw substring
+    // match, which would count `tests/metrics.rs` as covered because
+    // `--test metrics_exposition` happens to start with `--test metrics`.
+    let tokens: Vec<&str> = workflow.split_whitespace().collect();
+    let tested: BTreeSet<&str> = tokens
+        .windows(2)
+        .filter(|pair| pair[0] == "--test")
+        .map(|pair| pair[1])
+        .collect();
+
     let unnamed: Vec<&String> = binaries
         .iter()
         .filter(|(_, sources)| {
@@ -166,7 +176,7 @@ fn every_test_binary_with_ignored_tests_has_a_ci_step() {
                     .any(|l| l.trim_start().starts_with("#[ignore"))
             })
         })
-        .filter(|(name, _)| !workflow.contains(&format!("--test {name}")))
+        .filter(|(name, _)| !tested.contains(name.as_str()))
         .map(|(name, _)| name)
         .collect();
 

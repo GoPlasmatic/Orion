@@ -32,7 +32,7 @@ pub fn validate_connector_config(
     })?;
 
     validate_operation_gate_keys(connector_type, config)?;
-    validate_retry_keys(config)?;
+    validate_retry_keys(connector_type, config)?;
 
     // S6: every variant's endpoint gets a scheme allow-list, not just HTTP's.
     // Schemes only — the private-address check runs on the pool-open paths,
@@ -121,27 +121,46 @@ pub fn validate_connector_config(
 /// on a cache would answer 201 and gate nothing. The values are already
 /// checked here for the HTTP method allow-list; this is the same door for the
 /// keys, for every type.
+/// The keys `RetryConfig` reads. Mirrors the struct the way the gate lists
+/// mirror theirs; `retry_allowed_keys_match_retry_config` below pins the two
+/// together, so adding a `RetryConfig` field without updating this list is a
+/// test failure rather than a valid config the boundary rejects.
+const ALLOWED_RETRY_KEYS: &[&str] = &["max_retries", "retry_delay_ms"];
+
 /// F60: the same door as [`validate_operation_gate_keys`], for `retry`.
 /// `RetryConfig` is all-`serde(default)` with no `deny_unknown_fields`
 /// (legacy rows must keep loading), so `{"retry": {"max_attempts": 5}}`
 /// deserialized into the default policy and changed nothing — the operator
-/// believed retries were configured. Refused at the CRUD boundary only;
-/// stored rows keep loading, exactly like the gate check above.
-fn validate_retry_keys(config: &serde_json::Value) -> Result<(), OrionError> {
-    const ALLOWED: &[&str] = &["max_retries", "retry_delay_ms"];
+/// believed retries were configured. And only the HTTP connector *reads*
+/// `retry` at all (F7 removed the inert copies on db and es), so a
+/// correctly-spelled block on any other type is the same
+/// believed-configured-but-inert mistake and is refused whole. Refused at
+/// the CRUD boundary only; stored rows keep loading, exactly like the gate
+/// check above.
+fn validate_retry_keys(
+    connector_type: ConnectorType,
+    config: &serde_json::Value,
+) -> Result<(), OrionError> {
     let Some(retry) = config.get("retry") else {
         return Ok(());
     };
+    if !matches!(connector_type, ConnectorType::Http) {
+        return Err(OrionError::validation(format!(
+            "Connector type '{connector_type}' has no retry policy — only `http` \
+             connectors read 'retry', so this block would be silently ignored. \
+             Remove it, or configure retries on the calling workflow instead."
+        )));
+    }
     let Some(object) = retry.as_object() else {
         return Err(OrionError::validation(format!(
             "Connector 'retry' must be a JSON object with keys: {}",
-            ALLOWED.join(", ")
+            ALLOWED_RETRY_KEYS.join(", ")
         )));
     };
     let unknown: Vec<&str> = object
         .keys()
         .map(String::as_str)
-        .filter(|key| !ALLOWED.contains(key))
+        .filter(|key| !ALLOWED_RETRY_KEYS.contains(key))
         .collect();
     if unknown.is_empty() {
         return Ok(());
@@ -150,7 +169,7 @@ fn validate_retry_keys(config: &serde_json::Value) -> Result<(), OrionError> {
         "Connector 'retry' has unrecognised key(s) {unknown:?} — a key the retry \
          policy does not read silently leaves the default policy in place. \
          Valid keys: {}",
-        ALLOWED.join(", ")
+        ALLOWED_RETRY_KEYS.join(", ")
     )))
 }
 
@@ -455,5 +474,29 @@ mod tests {
         assert!(validate_connector_config(ConnectorType::Cache, &config).is_err());
         let config = json!({"backend": "redis", "url": "redis://localhost:6379"});
         assert!(validate_connector_config(ConnectorType::Cache, &config).is_ok());
+    }
+
+    /// `ALLOWED_RETRY_KEYS` mirrors `RetryConfig` by hand; this pins the two
+    /// together the way `operation_gate_keys_match_the_gate_structs` pins the
+    /// gate lists. Without it, a new `RetryConfig` field makes the F60
+    /// boundary reject a perfectly valid config until someone remembers the
+    /// list — a hard 400, not just a stale message.
+    #[test]
+    fn retry_allowed_keys_match_retry_config() {
+        let value =
+            serde_json::to_value(crate::connector::RetryConfig::default()).expect("serialize");
+        let mut from_struct: Vec<&str> = value
+            .as_object()
+            .expect("RetryConfig serializes as an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        from_struct.sort_unstable();
+        let mut allowed = ALLOWED_RETRY_KEYS.to_vec();
+        allowed.sort_unstable();
+        assert_eq!(
+            allowed, from_struct,
+            "ALLOWED_RETRY_KEYS has drifted from RetryConfig's fields"
+        );
     }
 }

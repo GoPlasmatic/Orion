@@ -590,8 +590,12 @@ pub(super) async fn process_sync_for_channel(
             let max_result_size = state.config.trace_queue.max_result_size_bytes;
             if max_result_size > 0 && response_json.len() > max_result_size {
                 metrics::record_error("result_size_exceeded");
+                // The message names the knob (G15): this error surfaces in
+                // the response and the log, and "a size cap fired" without
+                // saying which sends the operator to the connector-level
+                // caps, which never produce this error.
                 return Err(OrionError::ResponseTooLarge(format!(
-                    "Result size {} bytes exceeds limit of {} bytes",
+                    "Result size {} bytes exceeds trace_queue.max_result_size_bytes ({} bytes)",
                     response_json.len(),
                     max_result_size
                 )));

@@ -67,7 +67,7 @@ fn masked_effective_config(
 /// embed `user:password@` credentials or secret-named query parameters; show
 /// them with both positions struck out.
 fn redacted(value: &str) -> String {
-    orion::connector::redact_url_secrets(value).unwrap_or_else(|| value.to_string())
+    orion::connector::redact_url_secrets_or_raw(value)
 }
 
 /// The `summary` format: the handful of headline settings an operator scans

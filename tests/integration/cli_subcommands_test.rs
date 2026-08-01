@@ -701,16 +701,8 @@ fn dump_openapi_writes_the_spec_to_stdout() {
 #[tokio::test]
 async fn preflight_binary_exit_code_gates_a_deploy() {
     // A migrated SQLite file with nothing stored: preflight must exit 0.
-    let dir = std::env::temp_dir().join(format!(
-        "orion_preflight_cli_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    std::fs::create_dir_all(&dir).expect("scratch dir");
-    let url = format!("sqlite:{}/orion.db", dir.display());
+    let dir = crate::common::ScratchDir::new("preflight_cli");
+    let url = dir.url();
     let pool = orion::storage::init_pool(&orion::config::StorageConfig {
         url: url.clone(),
         max_connections: 1,
@@ -760,5 +752,4 @@ async fn preflight_binary_exit_code_gates_a_deploy() {
         format!("{stdout}{stderr}").contains("legacy"),
         "the finding must name the channel: stdout={stdout} stderr={stderr}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

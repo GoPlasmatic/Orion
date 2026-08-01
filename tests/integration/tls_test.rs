@@ -13,7 +13,7 @@
 //! always run — no external `openssl` dependency and no silent skip path.
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -23,34 +23,7 @@ use crate::common;
 // Fixtures
 // ============================================================
 
-/// Self-cleaning scratch directory; `tempfile` is not in the dependency tree.
-struct ScratchDir(PathBuf);
-
-impl ScratchDir {
-    fn new(label: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "orion_tls_test_{}_{}_{}",
-            label,
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&path).expect("create scratch dir");
-        Self(path)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
-    }
-}
-
-impl Drop for ScratchDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use crate::common::ScratchDir;
 
 /// Generate a self-signed P-256 leaf valid for `localhost` and `127.0.0.1`,
 /// written as PEM files under `dir`. Returns `(cert_path, key_path)`.

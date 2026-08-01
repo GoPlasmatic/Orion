@@ -308,6 +308,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no upstream is involved, so `502 Bad Gateway` was the wrong claim. The code
   string and message are unchanged; only the status moves. (G11)
 
+- **Engine timeouts answer `TIMEOUT`, not `TIMEOUT_ERROR`.** A 504 carried one
+  of two codes depending on which layer timed out: the channel guard said
+  `TIMEOUT`, the engine said `TIMEOUT_ERROR`. A caller keying retry or paging
+  rules on the 504 `code` should not have to know which layer fired, so both
+  now answer `TIMEOUT`. The status and message are unchanged; clients matching
+  the literal `TIMEOUT_ERROR` string must match `TIMEOUT` (or the 504 status).
+  (G13)
+
 - **Updating or activating an entity with no draft answers 404, not 400.** The
   no-draft miss was the one missing-row lookup in the admin API that answered
   `400 Bad Request`; every sibling answers `404`. All of them agree now, with

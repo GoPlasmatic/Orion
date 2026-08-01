@@ -6202,7 +6202,7 @@
           },
           "supported": {
             "type": "boolean",
-            "description": "R29: `false` when no probe exists for this connector type (`es`,\n`kafka`) — a permanent capability gap, not an outage. Without this\nfield the two were indistinguishable in the response shape, and\noperator tooling read \"not implemented\" as downtime."
+            "description": "R29: `false` when no probe exists for this connector (`es`, `kafka`,\nor a `db` connector with a `mongodb://` URL) — a permanent capability\ngap, not an outage. Without this field the two were indistinguishable\nin the response shape, and operator tooling read \"not implemented\" as\ndowntime."
           }
         }
       },

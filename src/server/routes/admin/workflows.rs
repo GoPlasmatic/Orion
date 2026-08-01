@@ -451,7 +451,17 @@ pub(crate) async fn test_workflow(
     // dies mid-task.
     audit_log(&state.audit_queue, &principal, "test", "workflow", &id);
 
-    let df_workflow = workflow_to_dataflow(&workflow, "__test__")?;
+    // G14 keeps `OrionError::Serialization` a 500, on the premise that no
+    // client-authored parse reaches it via `?` — so this conversion of a
+    // client-authored draft must answer for itself. A stored workflow the
+    // engine's shape refuses (a gap the create-time task validation did not
+    // cover) is the author's document to fix, not a server fault: 400 with
+    // the shape error, which quotes their own workflow JSON and nothing else.
+    let df_workflow = workflow_to_dataflow(&workflow, "__test__").map_err(|e| {
+        OrionError::validation(format!(
+            "workflow '{id}' does not match the engine's workflow shape: {e}"
+        ))
+    })?;
 
     // Create an isolated engine with just this one workflow, reusing the shared HTTP client.
     // channel_call in dry-run still routes through the main engine for cross-channel calls.

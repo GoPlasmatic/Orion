@@ -82,15 +82,25 @@ fn heading_ids(src: &str) -> BTreeSet<String> {
         if !text.starts_with(' ') && !text.is_empty() {
             continue; // "#!/bin/sh"-style false positive
         }
-        let mut text = text.trim().to_string();
-        if let (Some(open), true) = (text.rfind("{#"), text.ends_with('}')) {
-            let custom = text[open + 2..text.len() - 1].to_string();
-            out.insert(custom);
-            text.truncate(open);
+        let text = text.trim();
+        if text.ends_with('}')
+            && let Some(open) = text.rfind("{#")
+        {
+            // mdBook emits ONLY the custom id for such a heading — also
+            // registering the auto slug of the heading text would let a link
+            // to an id the book never renders pass this guard.
+            out.insert(text[open + 2..text.len() - 1].to_string());
+            continue;
         }
-        // Strip inline code markers and reduce [text](url) to text.
+        // Strip inline code markers and reduce [text](url) to text. Anchor
+        // on "](" and find the '[' *before* it — locating each end
+        // independently builds an inverted (panicking) slice range when a
+        // heading contains "](" ahead of any '['.
         let mut stripped = text.replace('`', "");
-        while let (Some(open), Some(mid)) = (stripped.find('['), stripped.find("](")) {
+        while let Some(mid) = stripped.find("](") {
+            let Some(open) = stripped[..mid].rfind('[') else {
+                break;
+            };
             let Some(close_rel) = stripped[mid..].find(')') else {
                 break;
             };
@@ -113,16 +123,10 @@ fn heading_ids(src: &str) -> BTreeSet<String> {
 fn link_targets(src: &str) -> Vec<String> {
     let body = without_code_fences(src);
     let mut out = Vec::new();
-    let bytes = body.as_bytes();
-    let mut i = 0;
-    while i + 1 < bytes.len() {
-        if bytes[i] == b']'
-            && bytes[i + 1] == b'('
-            && let Some(close) = body[i + 2..].find(')')
-        {
+    for (i, _) in body.match_indices("](") {
+        if let Some(close) = body[i + 2..].find(')') {
             out.push(body[i + 2..i + 2 + close].to_string());
         }
-        i += 1;
     }
     out
 }
@@ -133,6 +137,14 @@ fn every_relative_link_and_anchor_in_the_book_resolves() {
     let mut files = Vec::new();
     markdown_files(root, &mut files);
     assert!(files.len() >= 25, "docs/src walk looks broken: {files:?}");
+    // Canonicalized so the map lookups below hit: link targets resolve via
+    // `canonicalize()`, which also expands symlinks in the checkout's own
+    // path (macOS /tmp, a symlinked workspace) — raw walk paths would then
+    // never match, silently disabling every anchor check.
+    let files: Vec<PathBuf> = files
+        .iter()
+        .map(|f| f.canonicalize().expect("canonicalize docs page path"))
+        .collect();
 
     let ids_by_file: BTreeMap<PathBuf, BTreeSet<String>> = files
         .iter()

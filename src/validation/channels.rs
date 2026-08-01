@@ -23,11 +23,13 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
         topic: req.topic.as_deref(),
         consumer_group: req.consumer_group.as_deref(),
     })?;
-    // B2: strict-validate the per-channel `config` blob at create time.
-    // The channel registry stays tolerant at runtime (so an already-active
-    // channel with a corrupt row doesn't crash engine reload), but new
-    // creates fail fast with field-pathed errors so authors learn at the
-    // CRUD boundary, not at first request.
+    // B2: strict-validate the per-channel `config` blob at create time, so
+    // authors learn at the CRUD boundary with field-pathed errors, not at
+    // first request. The registry applies the same strict parse at reload —
+    // a stored config that no longer parses (unknown keys included, per
+    // N24/N25) quarantines the channel rather than serving it with a guard
+    // silently absent; `orion-server preflight` names affected channels
+    // before an upgrade.
     validate_channel_config_blob(&req.config)?;
     Ok(())
 }
@@ -166,9 +168,6 @@ fn check_route_pattern(pattern: &str) -> Vec<crate::errors::FieldError> {
             .with_got(serde_json::Value::String(pattern.to_string()))
     };
 
-    if let Some(too_long) = check_varchar_len("channel.route_pattern", pattern) {
-        return vec![too_long];
-    }
     if !pattern.starts_with('/') {
         return vec![err(format!(
             "route_pattern must start with '/' (got \"{pattern}\")"
@@ -309,20 +308,22 @@ fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionEr
                     "REQUIRED_FOR_PROTOCOL",
                     "Kafka channels must specify a topic",
                 ));
-            } else if let Some(e) = fields
-                .topic
-                .and_then(|t| check_varchar_len("channel.topic", t))
-            {
-                out.push(e);
             }
         }
     }
-    // Not protocol-conditional, but bounded by the same MySQL column width.
-    if let Some(e) = fields
-        .consumer_group
-        .and_then(|cg| check_varchar_len("channel.consumer_group", cg))
-    {
-        out.push(e);
+    // D29: the varchar(255) caps are deliberately outside the protocol match —
+    // all three fields are optional on the request and persist whatever the
+    // protocol says, so an over-long `topic` on a REST channel (or
+    // `route_pattern` on a Kafka one) would still store on SQLite/Postgres
+    // and fail on MySQL if only the owning protocol's arm checked it.
+    for (path, value) in [
+        ("channel.route_pattern", fields.route_pattern),
+        ("channel.topic", fields.topic),
+        ("channel.consumer_group", fields.consumer_group),
+    ] {
+        if let Some(e) = value.and_then(|v| check_varchar_len(path, v)) {
+            out.push(e);
+        }
     }
     if out.is_empty() {
         return Ok(());
@@ -486,6 +487,35 @@ mod tests {
         assert!(validate_channel_id(&long_channel).is_err());
     }
 
+    /// D29: the varchar cap exists because MySQL stores these three channel
+    /// columns as `varchar(255)`, and `schema_parity` cannot see the link
+    /// (its normaliser folds declared widths). Pin the constant and the
+    /// checked-field trio to the migration, so widening a column without
+    /// moving the cap — or vice versa — fails here instead of silently
+    /// re-opening the stores-on-two-backends-fails-on-the-third gap.
+    #[test]
+    fn varchar_cap_matches_the_mysql_channels_schema() {
+        let sql = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/migrations/mysql/001_initial.sql"
+        ));
+        let channels = sql
+            .split("CREATE TABLE")
+            .find(|block| block.trim_start().starts_with("IF NOT EXISTS `channels`"))
+            .expect("channels table in the mysql migration");
+        let expected = format!("varchar({})", super::super::common::MAX_VARCHAR_FIELD_LEN);
+        for column in ["route_pattern", "topic", "consumer_group"] {
+            let line = channels
+                .lines()
+                .find(|l| l.trim_start().starts_with(&format!("`{column}`")));
+            assert!(
+                line.is_some_and(|l| l.contains(&expected)),
+                "mysql `{column}` is missing or no longer {expected}; move \
+                 MAX_VARCHAR_FIELD_LEN (and this cap) with it: {line:?}"
+            );
+        }
+    }
+
     // -- R6: route patterns and methods are structurally checked --
 
     /// Every one of these was created, activated and reloaded before R6, and
@@ -573,14 +603,7 @@ mod tests {
     #[test]
     fn varchar_backed_fields_are_capped_at_255_chars() {
         let at_limit = format!("/{}", "a".repeat(254));
-        assert!(
-            check_route_pattern(&at_limit).is_empty(),
-            "255 chars is fine"
-        );
         let over = format!("/{}", "a".repeat(255));
-        let errors = check_route_pattern(&over);
-        assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].code, "TOO_LONG");
 
         // Multi-byte safety: 255 two-byte chars is 510 bytes but 255 chars.
         assert!(check_varchar_len("channel.topic", &"é".repeat(255)).is_none());
@@ -601,6 +624,29 @@ mod tests {
             config: json!({}),
             priority: 0,
         };
+        let rest_req = |route_pattern: String, topic: Option<String>| CreateChannelRequest {
+            channel_id: None,
+            name: "rest-ch".to_string(),
+            description: None,
+            channel_type: crate::storage::models::ChannelType::Sync,
+            protocol: ChannelProtocol::Rest,
+            methods: Some(vec!["POST".to_string()]),
+            route_pattern: Some(route_pattern),
+            topic,
+            consumer_group: None,
+            transport_config: json!({}),
+            workflow_id: None,
+            config: json!({}),
+            priority: 0,
+        };
+        assert!(
+            validate_create_channel(&rest_req(at_limit, None)).is_ok(),
+            "at-limit route_pattern accepted"
+        );
+        assert!(
+            validate_create_channel(&rest_req(over.clone(), None)).is_err(),
+            "long route_pattern refused"
+        );
         assert!(
             validate_create_channel(&kafka_req("t".repeat(256), None)).is_err(),
             "long topic refused"
@@ -614,6 +660,22 @@ mod tests {
             validate_create_channel(&kafka_req("orders".to_string(), Some("g".repeat(255))))
                 .is_ok(),
             "at-limit consumer_group accepted"
+        );
+
+        // The caps are protocol-independent: both fields persist whatever the
+        // protocol says, so the over-long value must be refused on the
+        // "wrong" protocol too — it would otherwise store on SQLite/Postgres
+        // and fail on MySQL, the exact break D29 closes.
+        let mut kafka_with_route = kafka_req("orders".to_string(), None);
+        kafka_with_route.route_pattern = Some(over);
+        assert!(
+            validate_create_channel(&kafka_with_route).is_err(),
+            "long route_pattern on a Kafka channel refused"
+        );
+        assert!(
+            validate_create_channel(&rest_req("/orders".to_string(), Some("t".repeat(256))))
+                .is_err(),
+            "long topic on a REST channel refused"
         );
     }
 

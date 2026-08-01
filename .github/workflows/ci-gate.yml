@@ -30,13 +30,22 @@ jobs:
             exit 0
           fi
           # T28: `event=push` so a pull_request run on the same SHA cannot
-          # satisfy a gate that is about what landed on the branch.
+          # satisfy a gate that is about what landed on the branch. No
+          # `status` filter: the still-running check below needs to see
+          # incomplete runs, and `conclusion == "success"` only ever matches
+          # completed ones anyway. One fetch per workflow — the counts are
+          # then taken locally, so they all describe the same snapshot of the
+          # run list rather than three reads that can interleave with a run
+          # finishing.
           runs() {
             gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/$1/runs?head_sha=${GITHUB_SHA}&status=completed&event=push" \
-              --jq "$2"
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/$1/runs?head_sha=${GITHUB_SHA}&event=push" \
+              --jq '.workflow_runs'
           }
-          successes=$(runs ci.yml '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          count() {
+            jq "[.[] | select($1)] | length" <<< "$2"
+          }
+          successes=$(count '.conclusion == "success"' "$(runs ci.yml)")
           if [ "${successes}" = "0" ]; then
             echo "::error::No successful CI push run found for ${GITHUB_SHA}. Let CI pass on this commit before releasing."
             exit 1
@@ -44,16 +53,27 @@ jobs:
           echo "CI passed for ${GITHUB_SHA} (${successes} successful run(s))."
 
           # T28: the path-filtered workflows may legitimately have no run for
-          # this SHA (a docs-only commit skips them) — but a run that exists
-          # with zero successes is a known break the tag must not outrun:
+          # this SHA (a docs-only commit skips them) — but a break the tag
+          # must not outrun is one that ran, or is still running:
           # cross-os-build is the macOS compile the Homebrew formula depends
-          # on. "Some runs, none successful" fails; "no runs" passes.
+          # on. A run still executing has no verdict yet, so the gate refuses
+          # rather than reading "zero completed runs" as a pass; a cancelled
+          # run (codeql's per-ref concurrency group cancels superseded push
+          # runs) or a skipped one has no verdict either, and is ignored
+          # like "no run" rather than counted as a break. "Some attempted
+          # runs, none successful" fails; "no runs" passes.
           for wf in cross-os-build.yml codeql.yml ha-drill.yml; do
-            total=$(runs "$wf" '.workflow_runs | length')
-            ok=$(runs "$wf" '[.workflow_runs[] | select(.conclusion == "success")] | length')
-            if [ "${total}" != "0" ] && [ "${ok}" = "0" ]; then
+            wf_runs=$(runs "$wf")
+            pending=$(count '.status != "completed"' "$wf_runs")
+            if [ "${pending}" != "0" ]; then
+              echo "::error::${wf} is still running for ${GITHUB_SHA}. Wait for its verdict before releasing."
+              exit 1
+            fi
+            attempted=$(count '.conclusion != "cancelled" and .conclusion != "skipped"' "$wf_runs")
+            ok=$(count '.conclusion == "success"' "$wf_runs")
+            if [ "${attempted}" != "0" ] && [ "${ok}" = "0" ]; then
               echo "::error::${wf} ran for ${GITHUB_SHA} and did not succeed. Fix or re-run it before releasing."
               exit 1
             fi
-            echo "${wf}: ${ok}/${total} successful run(s)."
+            echo "${wf}: ${ok}/${attempted} successful run(s), 0 in progress."
           done

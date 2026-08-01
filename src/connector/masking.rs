@@ -391,6 +391,15 @@ pub fn redact_url_secrets(s: &str) -> Option<String> {
     changed.then(|| assemble_url(&url, password, query.as_deref()))
 }
 
+/// [`redact_url_secrets`] with the "nothing to redact" case collapsed to the
+/// original string — the form every log/print site wants (S20). One helper so
+/// the redact-or-verbatim policy is decided in exactly one place: a site
+/// spelling its own `unwrap_or_else` fallback would keep printing raw DSNs if
+/// this policy ever tightens.
+pub fn redact_url_secrets_or_raw(s: &str) -> String {
+    redact_url_secrets(s).unwrap_or_else(|| s.to_string())
+}
+
 /// Positional inverse of [`redact_url_secrets`] for the F34 round-trip: each
 /// position of `incoming` that still reads as the mask sentinel gets its
 /// value back from the *same position* of `stored`, independently. S18 gave

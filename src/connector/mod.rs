@@ -20,7 +20,7 @@ pub use config::{
 pub(crate) use masking::MASK;
 pub use masking::{
     find_masked_value, mask_channel_config, mask_connector, mask_secrets, redact_url_secrets,
-    unmask_channel_config, unmask_config,
+    redact_url_secrets_or_raw, unmask_channel_config, unmask_config,
 };
 pub use registry::ConnectorRegistry;
 /// A stub `ConnectorRepository` shared by the connector and channel registry

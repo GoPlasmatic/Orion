@@ -715,3 +715,40 @@ pub async fn poll_trace_until_done(
         max_polls * 50
     );
 }
+
+/// Self-cleaning scratch directory; `tempfile` is not in the dependency tree.
+/// One implementation for every module that needs a disk-backed fixture, so
+/// the naming scheme and the cleanup-on-drop behaviour live here rather than
+/// in per-module copies that drift.
+pub struct ScratchDir(std::path::PathBuf);
+
+impl ScratchDir {
+    pub fn new(label: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "orion_test_{label}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&path).expect("create scratch dir");
+        Self(path)
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+
+    /// A SQLite DSN for an `orion.db` inside this directory — the shape every
+    /// storage-backed test wants.
+    pub fn url(&self) -> String {
+        format!("sqlite:{}/orion.db", self.0.display())
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}

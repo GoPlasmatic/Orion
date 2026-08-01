@@ -132,6 +132,17 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
             .and_then(|n| n.as_str())
             .unwrap_or("");
         if fn_name.is_empty() {
+            // `Task::function` has no serde default, so a task without one
+            // (or with a nameless function) is not a lenient shape — it is a
+            // workflow the engine cannot deserialize. Skipping it here made
+            // that a 201 followed by a 500 from the dry-run endpoint.
+            errors.push(FieldError::new(
+                format!("tasks[{i}].function.name"),
+                "REQUIRED",
+                "Task 'function' with a non-empty 'name' is required — the engine's \
+                 task shape has no default for it, so without one this workflow \
+                 would be accepted and then fail to build",
+            ));
             continue;
         }
         if !crate::engine::is_known_function(fn_name) {
@@ -152,6 +163,23 @@ pub fn validate_workflow_tasks_schema(tasks: &serde_json::Value) -> Vec<FieldErr
         let task_path = format!("tasks[{i}]");
         errors.extend(crate::engine::functions::schema::validate_input(
             fn_name, &input, &task_path,
+        ));
+    }
+    // Catch-all for the class the checks above mirror by hand: a dataflow-rs
+    // upgrade can grow a task-shape requirement the mirror has not learned
+    // yet, and the doc above promises "Orion accepts it" and "the engine can
+    // load it" stay the same statement. Running the engine's own parse last
+    // keeps that promise without enumerating — an unmirrored refusal lands
+    // here as a 400 instead of a 201 followed by a failure to build. Only
+    // when no field-pathed error was collected: those are the better
+    // messages, and this one exists for the gaps they miss.
+    if errors.is_empty()
+        && let Err(e) = <Vec<dataflow_rs::Task> as serde::Deserialize>::deserialize(tasks)
+    {
+        errors.push(FieldError::new(
+            "tasks",
+            "INVALID",
+            format!("tasks do not match the engine's task shape: {e}"),
         ));
     }
     errors

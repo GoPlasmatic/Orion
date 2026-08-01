@@ -84,14 +84,16 @@ is exactly when this endpoint is useful.
 
 A backend that cannot be reached is still a `200`: the probe ran, and
 `reachable: false` with an `error` string is its answer. A `5xx` would claim
-Orion failed, which is a different thing. For the types with no probe
-(`es`, `kafka`), `supported: false` distinguishes the permanent capability
-gap from an outage — key monitoring on `supported && !reachable`, not on
-`reachable` alone.
+Orion failed, which is a different thing. For the kinds with no probe
+(`es`, `kafka`, and a `db` connector pointing at MongoDB via a `mongodb://`
+URL), `supported: false` distinguishes the permanent capability gap from an
+outage — key monitoring on `supported && !reachable`, not on `reachable`
+alone.
 
 | Type | Probe | Touches the backend? |
 |---|---|---|
-| `db` | `SELECT 1` through the shared pool | Yes, read-only |
+| `db` (SQL) | `SELECT 1` through the shared pool | Yes, read-only |
+| `db` (MongoDB) | not implemented (`supported: false`) | No |
 | `cache` | reads one probe key | Yes, read-only — nothing is written |
 | `http` | `GET` the configured URL with the connector's auth, 5 s timeout | **Yes — one real request** |
 | `es`, `kafka` | not implemented (`supported: false`) | No |
@@ -295,7 +297,7 @@ Every code the server emits, on both the admin and data planes:
 | `STORAGE_ERROR` | 500 | A database operation failed (detail in the server log) |
 | `SERIALIZATION_ERROR` | 500 | A stored row could not be decoded or a response could not be serialized — a server-side fault, never client input (detail in the server log) |
 | `CONFIG_ERROR` | 500 | A configuration problem surfaced at request time (detail in the server log) |
-| `RESPONSE_TOO_LARGE` | 500 | A connector's response exceeded the operator-configured size cap — the request cannot succeed until the cap or the response changes |
+| `RESPONSE_TOO_LARGE` | 500 | The workflow's result exceeded `trace_queue.max_result_size_bytes` — the request cannot succeed until that cap or the result changes |
 | `SERVICE_UNAVAILABLE` | 503 | Backpressure shed the request, a guard's backend failed closed, or the service is shutting down |
 | `CIRCUIT_OPEN` | 503 | The target connector's circuit breaker is open; retry after it recovers |
 | `TIMEOUT` | 504 | Workflow execution exceeded the channel's timeout |

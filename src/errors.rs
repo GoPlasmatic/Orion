@@ -284,7 +284,9 @@ impl OrionError {
             // server-side — decoding stored rows the repositories wrote, or
             // serializing a response — because client-input parses all handle
             // their errors explicitly (the import loop, `OrionQuery`, the
-            // axum extractors). G8 answered 400 on the theory that inbound
+            // axum extractors, and the dry-run endpoint's conversion of a
+            // client-authored draft, which maps its failure to a 400).
+            // G8 answered 400 on the theory that inbound
             // parses landed here too; they do not, and a 400 hid these
             // server bugs from 5xx error-rate SLOs. The raw serde message
             // carries byte offsets and type names, so it is still not
@@ -327,9 +329,12 @@ impl OrionError {
             // message" — the client does see the byte counts, but the operator
             // who owns the cap gets no server-side record without this, and
             // the cap firing is an operations signal (raise the cap or shrink
-            // the response), not a client mistake.
+            // the result), not a client mistake. Which cap fired is named by
+            // the construction site's detail, not here — this mapper serves
+            // every site, so a knob name hardcoded here becomes a lie the day
+            // a second one appears.
             OrionError::ResponseTooLarge(detail) => {
-                tracing::error!(error.category = "response_too_large", error = %detail, "connector response exceeded the configured cap")
+                tracing::error!(error.category = "response_too_large", error = %detail, "response exceeded a configured size cap")
             }
             OrionError::Internal {
                 context,
