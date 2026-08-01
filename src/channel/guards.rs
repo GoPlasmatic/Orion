@@ -1384,7 +1384,7 @@ mod tests {
 
         /// An `api_key` policy accepting exactly `key`, presented bare in
         /// `X-API-Key` so tests need no scheme prefix.
-        fn api_key(mut self, key: &str) -> Self {
+        async fn api_key(mut self, key: &str) -> Self {
             let cfg = crate::channel::config::ChannelAuthConfig {
                 mode: crate::channel::config::AuthMode::ApiKey,
                 keys: Some(vec![key.to_string()]),
@@ -1394,7 +1394,9 @@ mod tests {
                 signature_prefix: None,
             };
             self.auth = Some(
-                crate::channel::auth::CompiledAuth::compile(&cfg).expect("test auth compiles"),
+                crate::channel::auth::CompiledAuth::compile(&cfg)
+                    .await
+                    .expect("test auth compiles"),
             );
             self.parsed_config.auth = Some(cfg);
             self
@@ -1506,8 +1508,8 @@ mod tests {
     /// The matrix is the specification: these are the cells the module doc
     /// documents and `apply_guards` reads. A change here is a change to the
     /// contract, not an implementation detail.
-    #[test]
-    fn the_guard_matrix_is_what_the_docs_claim() {
+    #[tokio::test]
+    async fn the_guard_matrix_is_what_the_docs_claim() {
         let sync = Transport::HttpSync.guards();
         let submit = Transport::HttpAsync.guards();
         let kafka = Transport::Kafka.guards();
@@ -1547,14 +1549,14 @@ mod tests {
         let metadata = json!({});
 
         for transport in [Transport::HttpSync, Transport::HttpAsync] {
-            let runtime = Runtime::new().api_key("s3cret").build();
+            let runtime = Runtime::new().api_key("s3cret").await.build();
             let req = request(transport, &runtime, &dl, &data, &metadata);
             assert!(
                 apply_guards(req).await.is_err(),
                 "{transport:?} admitted a request presenting no key"
             );
 
-            let runtime = Runtime::new().api_key("s3cret").build();
+            let runtime = Runtime::new().api_key("s3cret").await.build();
             let present: HeaderLookup<'_> =
                 &|name: &str| (name == "X-API-Key").then(|| "s3cret".to_string());
             let mut req = request(transport, &runtime, &dl, &data, &metadata);
@@ -1577,7 +1579,7 @@ mod tests {
         let metadata = json!({});
 
         for transport in [Transport::Kafka, Transport::ChannelCall] {
-            let runtime = Runtime::new().api_key("s3cret").build();
+            let runtime = Runtime::new().api_key("s3cret").await.build();
             let req = request(transport, &runtime, &dl, &data, &metadata);
             assert!(
                 apply_guards(req).await.is_ok(),
@@ -1603,6 +1605,7 @@ mod tests {
         // failure this test is looking for.
         let runtime = Runtime::new()
             .api_key("s3cret")
+            .await
             .dedup(
                 Arc::new(StubDedupBackend {
                     outcome: StubOutcome::BackendError,
@@ -1630,8 +1633,8 @@ mod tests {
     /// The channel's `timeout_ms` wins on every transport; the transport's
     /// default only fills in when the channel declares none (N16 — Kafka and
     /// `/async` used to ignore the channel value entirely).
-    #[test]
-    fn the_channel_timeout_outranks_the_transport_default() {
+    #[tokio::test]
+    async fn the_channel_timeout_outranks_the_transport_default() {
         let with_timeout = Runtime::new().timeout_ms(2_000).build();
         let without = Runtime::new().build();
         assert_eq!(
@@ -1657,8 +1660,8 @@ mod tests {
     /// operator's ceiling. `timeout_ms` is unvalidated and unbounded upward,
     /// so the clamp is the only thing standing between a channel config and
     /// those two failures.
-    #[test]
-    fn a_transport_ceiling_clamps_an_over_long_channel_timeout() {
+    #[tokio::test]
+    async fn a_transport_ceiling_clamps_an_over_long_channel_timeout() {
         let over = Runtime::new().timeout_ms(600_000).build();
         let under = Runtime::new().timeout_ms(2_000).build();
         let none = Runtime::new().build();

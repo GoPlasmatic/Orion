@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`vault://` secret references resolve.** With the standard `VAULT_ADDR` +
+  `VAULT_TOKEN` environment present, `vault://<api-path>#<field>` in a
+  connector config or channel `auth` block reads HashiCorp Vault (KV v2 and
+  v1 shapes) at load time — the stored config never holds the value, and a
+  reference that cannot resolve quarantines its channel or fails its
+  connector load rather than being used as the literal credential. The
+  resolver trait went async for this; `aws-sm://`, `gcp-sm://` and
+  `azure-kv://` remain fail-closed pending a dependency decision. (H3)
+
 - **Optional encryption at rest for connector configs.**
   `storage.connector_encryption_key` (64-hex, `openssl rand -hex 32`; prefer
   the `ORION_STORAGE__CONNECTOR_ENCRYPTION_KEY` env form) makes the

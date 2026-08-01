@@ -535,7 +535,9 @@ pub(crate) async fn validate_connector(
         &mut config,
         &crate::connector::secrets::default_resolvers(),
         "config",
-    ) {
+    )
+    .await
+    {
         warnings.push(super::ValidationIssue {
             field: "config".to_string(),
             message: format!(
@@ -621,7 +623,9 @@ pub(crate) async fn test_connector(
         &mut config_value,
         &crate::connector::secrets::default_resolvers(),
         "config",
-    ) {
+    )
+    .await
+    {
         return Ok(result("secret resolution", Err(e.client_message())));
     }
 

@@ -296,7 +296,8 @@ impl ConnectorRegistry {
                     continue;
                 }
             };
-            if let Err(e) = super::secrets::resolve_in_place(&mut value, &resolvers, &source_label)
+            if let Err(e) =
+                super::secrets::resolve_in_place(&mut value, &resolvers, &source_label).await
             {
                 // Logged at ERROR, not WARN: an unresolved secret means the
                 // connector is absent at request time with no other signal

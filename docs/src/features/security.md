@@ -14,6 +14,16 @@ their in-band secrets redacted (`redis://user:******@host`,
 `?api_key=******`), and `env://` secret *references* pass through unmasked —
 they name a variable, not a value, and must survive `export` → `import`.
 
+Secret **references** resolve at load time, so stored configs never hold the
+value: `env://NAME` reads the process environment, and `vault://<api-path>#<field>`
+reads HashiCorp Vault over its HTTP API when the standard `VAULT_ADDR` +
+`VAULT_TOKEN` environment is present — KV v2 (`vault://secret/data/db#password`)
+and KV v1 shapes both resolve, per engine reload, so a renewed token or rotated
+secret is picked up by the next reload without a restart. The remaining
+reserved schemes (`aws-sm://`, `gcp-sm://`, `azure-kv://`) fail closed: a
+reference using one is refused at load rather than handed to a backend as the
+literal credential.
+
 For defence in depth below the API, `storage.connector_encryption_key`
 encrypts `connectors.config_json` at rest (AES-256-GCM) — a database dump or
 backup then carries an opaque envelope rather than credentials. See the

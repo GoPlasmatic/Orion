@@ -61,7 +61,7 @@ impl CompiledAuth {
     /// Resolve secrets and pre-hash keys. `Err` is a human-readable reason, and
     /// the caller turns it into a channel load issue: a channel whose auth
     /// cannot be built is quarantined rather than served without it (F35).
-    pub fn compile(cfg: &ChannelAuthConfig) -> Result<Self, String> {
+    pub async fn compile(cfg: &ChannelAuthConfig) -> Result<Self, String> {
         match cfg.mode {
             AuthMode::ApiKey => {
                 let keys = cfg
@@ -87,7 +87,7 @@ impl CompiledAuth {
 
                 let mut digests = Vec::with_capacity(keys.len());
                 for key in keys {
-                    let resolved = resolve_secret(key, "auth.keys")?;
+                    let resolved = resolve_secret(key, "auth.keys").await?;
                     if resolved.is_empty() {
                         return Err("auth.keys contains an empty key".to_string());
                     }
@@ -105,7 +105,7 @@ impl CompiledAuth {
                     .secret
                     .as_ref()
                     .ok_or("auth.mode = \"hmac\" requires auth.secret")?;
-                let secret = resolve_secret(secret, "auth.secret")?;
+                let secret = resolve_secret(secret, "auth.secret").await?;
                 if secret.is_empty() {
                     return Err("auth.secret resolved to an empty value".to_string());
                 }
@@ -200,13 +200,14 @@ fn decode_signature(presented: &str) -> Option<Vec<u8>> {
 /// The same resolver connector secrets use, so an operator has one mechanism to
 /// learn and production credentials never have to sit in a stored channel
 /// config.
-fn resolve_secret(value: &str, field: &str) -> Result<String, String> {
+async fn resolve_secret(value: &str, field: &str) -> Result<String, String> {
     let mut json = serde_json::Value::String(value.to_string());
     crate::connector::secrets::resolve_in_place(
         &mut json,
         &crate::connector::secrets::default_resolvers(),
         field,
     )
+    .await
     .map_err(|e| e.to_string())?;
     json.as_str()
         .map(str::to_string)
@@ -238,35 +239,41 @@ mod tests {
         }
     }
 
-    #[test]
-    fn api_key_defaults_to_bearer_on_authorization() {
-        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"])).expect("compiles");
+    #[tokio::test]
+    async fn api_key_defaults_to_bearer_on_authorization() {
+        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]))
+            .await
+            .expect("compiles");
         let headers = [("Authorization", "Bearer s3cret")];
         assert!(auth.authenticate(&lookup(&headers), None).is_ok());
     }
 
     /// The bare key without the scheme prefix is not accepted — otherwise the
     /// prefix would be decorative.
-    #[test]
-    fn api_key_requires_the_scheme_prefix() {
-        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"])).expect("compiles");
+    #[tokio::test]
+    async fn api_key_requires_the_scheme_prefix() {
+        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]))
+            .await
+            .expect("compiles");
         let headers = [("Authorization", "s3cret")];
         assert!(auth.authenticate(&lookup(&headers), None).is_err());
     }
 
     /// A custom header carries the bare key, with no prefix to strip.
-    #[test]
-    fn a_custom_header_takes_a_bare_key() {
+    #[tokio::test]
+    async fn a_custom_header_takes_a_bare_key() {
         let mut cfg = api_key_config(&["s3cret"]);
         cfg.header = Some("X-API-Key".to_string());
-        let auth = CompiledAuth::compile(&cfg).expect("compiles");
+        let auth = CompiledAuth::compile(&cfg).await.expect("compiles");
         let headers = [("X-API-Key", "s3cret")];
         assert!(auth.authenticate(&lookup(&headers), None).is_ok());
     }
 
-    #[test]
-    fn a_wrong_or_missing_key_is_refused() {
-        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"])).expect("compiles");
+    #[tokio::test]
+    async fn a_wrong_or_missing_key_is_refused() {
+        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]))
+            .await
+            .expect("compiles");
         assert!(
             auth.authenticate(&lookup(&[("Authorization", "Bearer nope")]), None)
                 .is_err()
@@ -276,9 +283,11 @@ mod tests {
 
     /// Several keys are accepted at once, which is what makes rotation
     /// possible without a window of refusals.
-    #[test]
-    fn any_configured_key_is_accepted() {
-        let auth = CompiledAuth::compile(&api_key_config(&["old", "new"])).expect("compiles");
+    #[tokio::test]
+    async fn any_configured_key_is_accepted() {
+        let auth = CompiledAuth::compile(&api_key_config(&["old", "new"]))
+            .await
+            .expect("compiles");
         for key in ["old", "new"] {
             let headers = [("Authorization", format!("Bearer {key}"))];
             let pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -286,13 +295,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn api_key_mode_requires_keys() {
+    #[tokio::test]
+    async fn api_key_mode_requires_keys() {
         let mut cfg = api_key_config(&[]);
         cfg.keys = None;
-        assert!(CompiledAuth::compile(&cfg).is_err());
+        assert!(CompiledAuth::compile(&cfg).await.is_err());
         let empty = api_key_config(&[]);
-        assert!(CompiledAuth::compile(&empty).is_err());
+        assert!(CompiledAuth::compile(&empty).await.is_err());
     }
 
     fn hmac_config(secret: &str, prefix: Option<&str>) -> ChannelAuthConfig {
@@ -312,9 +321,11 @@ mod tests {
         hex::encode(mac.finalize().into_bytes())
     }
 
-    #[test]
-    fn hmac_accepts_a_correct_hex_signature() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", None)).expect("compiles");
+    #[tokio::test]
+    async fn hmac_accepts_a_correct_hex_signature() {
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None))
+            .await
+            .expect("compiles");
         let body = br#"{"id":"evt_1","amount":2000}"#;
         let headers = [("X-Signature", sign_hex("whsec", body))];
         let pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -322,9 +333,11 @@ mod tests {
     }
 
     /// The GitHub spelling: `sha256=<hex>`.
-    #[test]
-    fn hmac_strips_a_configured_signature_prefix() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", Some("sha256="))).expect("compiles");
+    #[tokio::test]
+    async fn hmac_strips_a_configured_signature_prefix() {
+        let auth = CompiledAuth::compile(&hmac_config("whsec", Some("sha256=")))
+            .await
+            .expect("compiles");
         let body = br#"{"action":"opened"}"#;
         let headers = [("X-Signature", format!("sha256={}", sign_hex("whsec", body)))];
         let pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -332,9 +345,11 @@ mod tests {
     }
 
     /// The Shopify spelling: base64.
-    #[test]
-    fn hmac_accepts_a_base64_signature() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", None)).expect("compiles");
+    #[tokio::test]
+    async fn hmac_accepts_a_base64_signature() {
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None))
+            .await
+            .expect("compiles");
         let body = br#"{"order":1}"#;
         let mut mac = HmacSha256::new_from_slice(b"whsec").expect("hmac key");
         mac.update(body);
@@ -347,9 +362,11 @@ mod tests {
 
     /// The property the whole mode exists for: one byte changed in the body
     /// invalidates the signature.
-    #[test]
-    fn hmac_refuses_a_tampered_body() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", None)).expect("compiles");
+    #[tokio::test]
+    async fn hmac_refuses_a_tampered_body() {
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None))
+            .await
+            .expect("compiles");
         let signed = br#"{"amount":2000}"#;
         let tampered = br#"{"amount":9999}"#;
         let headers = [("X-Signature", sign_hex("whsec", signed))];
@@ -357,18 +374,22 @@ mod tests {
         assert!(auth.authenticate(&lookup(&pairs), Some(tampered)).is_err());
     }
 
-    #[test]
-    fn hmac_refuses_a_signature_from_the_wrong_secret() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", None)).expect("compiles");
+    #[tokio::test]
+    async fn hmac_refuses_a_signature_from_the_wrong_secret() {
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None))
+            .await
+            .expect("compiles");
         let body = br#"{"a":1}"#;
         let headers = [("X-Signature", sign_hex("attacker", body))];
         let pairs: Vec<(&str, &str)> = headers.iter().map(|(k, v)| (*k, v.as_str())).collect();
         assert!(auth.authenticate(&lookup(&pairs), Some(body)).is_err());
     }
 
-    #[test]
-    fn hmac_refuses_a_malformed_or_absent_signature() {
-        let auth = CompiledAuth::compile(&hmac_config("whsec", None)).expect("compiles");
+    #[tokio::test]
+    async fn hmac_refuses_a_malformed_or_absent_signature() {
+        let auth = CompiledAuth::compile(&hmac_config("whsec", None))
+            .await
+            .expect("compiles");
         let body = br#"{"a":1}"#;
         assert!(
             auth.authenticate(&lookup(&[("X-Signature", "not-a-signature!")]), Some(body))
@@ -377,18 +398,20 @@ mod tests {
         assert!(auth.authenticate(&lookup(&[]), Some(body)).is_err());
     }
 
-    #[test]
-    fn hmac_mode_requires_a_secret() {
+    #[tokio::test]
+    async fn hmac_mode_requires_a_secret() {
         let mut cfg = hmac_config("x", None);
         cfg.secret = None;
-        assert!(CompiledAuth::compile(&cfg).is_err());
+        assert!(CompiledAuth::compile(&cfg).await.is_err());
     }
 
     /// Every refusal reads the same, so a caller cannot learn which half of the
     /// credential was right by comparing messages.
-    #[test]
-    fn every_refusal_carries_the_same_message() {
-        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"])).expect("compiles");
+    #[tokio::test]
+    async fn every_refusal_carries_the_same_message() {
+        let auth = CompiledAuth::compile(&api_key_config(&["s3cret"]))
+            .await
+            .expect("compiles");
         let missing = auth
             .authenticate(&lookup(&[]), None)
             .expect_err("no header is a refusal");

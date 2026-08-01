@@ -678,20 +678,21 @@ impl ChannelRegistry {
         // `auth`-bearing channel with its authentication silently absent —
         // because an `env://` secret was not set on this host, say — is the
         // worst possible reading of the operator's intent.
-        let auth = parsed_config
-            .auth
-            .as_ref()
-            .map(|cfg| {
-                crate::channel::auth::CompiledAuth::compile(cfg).map_err(|e| {
-                    tracing::error!(
-                        channel = %channel.name,
-                        error = %e,
-                        "Refusing to load channel: auth config cannot be compiled"
-                    );
-                    issue(format!("auth: {e}"))
-                })
-            })
-            .transpose()?;
+        let auth = match parsed_config.auth.as_ref() {
+            Some(cfg) => Some(
+                crate::channel::auth::CompiledAuth::compile(cfg)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(
+                            channel = %channel.name,
+                            error = %e,
+                            "Refusing to load channel: auth config cannot be compiled"
+                        );
+                        issue(format!("auth: {e}"))
+                    })?,
+            ),
+            None => None,
+        };
 
         Ok(Arc::new(ChannelRuntimeConfig {
             channel: channel.clone(),
