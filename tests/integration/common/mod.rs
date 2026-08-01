@@ -23,11 +23,13 @@ use orion::server::state::AppState;
 
 /// Create a test app with an in-memory SQLite database.
 ///
-/// Trace persistence is pinned to `sync` rather than taking the product default
-/// (`batch`), because a test that submits a request and then asserts on the
-/// trace needs the row committed before the response returns. Under `batch` the
-/// write lands on a background worker up to `batch_flush_interval_ms` later, so
-/// every such assertion would race the flush and fail intermittently.
+/// Trace persistence is pinned to `sync` explicitly, even though that is also
+/// the product default: a test that submits a request and then asserts on the
+/// trace needs the row committed before the response returns, and inheriting
+/// that from a default is inheriting a decision that can be revisited. Under
+/// `batch` the write lands on a background worker up to
+/// `batch_flush_interval_ms` later, so every such assertion would race the
+/// flush and fail intermittently.
 ///
 /// This is a statement about test determinism, not about the default. Tests
 /// that exercise a particular mode — including `sync` itself — set it

@@ -1381,40 +1381,48 @@ ignored. A `reload_timeout_secs` line in a config file is rejected by
 environment. Drop `orion_engine_lock_wait_seconds` from dashboards and alerts —
 a panel on it will read empty rather than break.
 
-### Trace persistence now defaults to `batch`
+### `trace_storage.batch_size` now defaults to `1000`
 
-**What changed.** `trace_storage.mode` defaulted to `sync`, which writes a trace
-row inline before the response is sent. It now defaults to `batch`, where
-background workers accumulate rows and commit them in one transaction.
+**What changed.** Only the default; `trace_storage.mode` still defaults to
+`sync`, and a deployment that has not opted into `batch` or `async` is not
+affected by any of this.
 
-On the default SQLite backend `sync` meant a single-writer fsync on the hottest
-path in the product, for every request, to persist observability data about a
-request rather than any part of its result.
+For deployments that *have*, a flush costs a fixed per-transaction price plus a
+per-row one, so the old default of `100` rows per flush spent most of each
+transaction on overhead. Measured on SQLite with 4 workers, the same load
+drained at 26k rows/s at `100` and 45k rows/s at `1000` — a tenth as many
+transactions for the same rows.
 
-**How you'll notice.** Higher data-plane throughput. A trace is no longer
-guaranteed to be visible the instant its request returns — code that submits a
-request and immediately reads `GET /api/v1/admin/traces/{id}` may now see the
-row appear up to `batch_flush_interval_ms` (default `100`) later.
+**How you'll notice.** `batch` and `async` modes keep up with a higher request
+rate before `max_pending` overruns, and `orion_trace_persistence_batch_size`
+reports larger flushes. Trace visibility is unchanged — a partial batch still
+flushes on `batch_flush_interval_ms`.
 
-**What to do.** Nothing, for most deployments. Two cases want a decision:
-
-- **You poll a trace immediately after a synchronous request.** Either tolerate
-  the delay or set `mode = "sync"`. The `/async` path is unaffected — its
-  pending row is still written before the `202`, so the returned `trace_id` is
-  always immediately pollable.
-- **You treat the trace table as an audit record.** Set `mode = "sync"`. Under
-  `batch`, a hard kill (SIGKILL, OOM, power loss) can lose up to one flush
-  interval, and a sustained overrun of `max_pending` drops traces per
-  `async_on_overflow`. Graceful shutdown drains the queue, so an orderly restart
-  loses nothing.
-
-  If what you need is an audit trail of admin mutations rather than of data-plane
-  traffic, that is the `audit_logs` table, which this change does not touch.
+**What to do.** Nothing. Set `batch_size` explicitly to pin the old value:
 
 ```toml
 [trace_storage]
-mode = "sync"   # restore the pre-1.0 behaviour
+batch_size = 100
 ```
+
+### Trace loss under `batch` / `async` now warns in the log
+
+**What changed.** When the persistence queue overruns `max_pending`, the dropped
+traces were reported only to `orion_trace_dropped_total{reason="overflow"}` —
+and `metrics.enabled` defaults to `false`, so the out-of-the-box signal for
+"your traces are being discarded" was a counter nobody was collecting. The drop
+now also logs a `WARN`: immediately when the loss starts, then at most once
+every 5 seconds, each line carrying how many traces were dropped since the
+previous one.
+
+**How you'll notice.** A log line naming the overrun, if you run `batch` or
+`async` at a request rate the DB cannot absorb. `sync` cannot produce it.
+
+**What to do.** Treat the line as real data loss, not noise. Raise
+`trace_storage.max_pending` / `batch_size`, set `async_on_overflow = "block"` to
+slow producers instead of shedding, sample deliberately with `sample_rate` /
+`errors_only`, or move to `mode = "sync"` and let the request path be throttled
+by the trace table rather than outrun it.
 
 ### Response cache keys changed format
 

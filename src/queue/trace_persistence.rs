@@ -12,13 +12,14 @@
 //!   single-writer DB backends.
 //!
 //! When the bounded mpsc is full, the submission path follows
-//! [`AsyncOnOverflow`]: drop the task immediately (metric only) or block for
-//! up to `overflow_block_timeout_ms` before dropping.
+//! [`AsyncOnOverflow`]: drop the task immediately or block for up to
+//! `overflow_block_timeout_ms` before dropping. Either way the loss is counted
+//! *and* logged — see [`TracePersistenceQueue::warn_if_window_elapsed`].
 //!
 //! [`AsyncOnOverflow`]: crate::config::AsyncOnOverflow
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -61,7 +62,35 @@ pub struct TracePersistenceQueue {
     pending: Arc<AtomicUsize>,
     overflow_policy: AsyncOnOverflow,
     overflow_block_timeout: Duration,
+    /// Drops accumulated since the last warning. Q12: overflow used to be
+    /// reported *only* to `trace_dropped_total{reason="overflow"}`, and
+    /// `metrics.enabled` defaults to false — so the out-of-the-box signal for
+    /// "your traces are being discarded" was a counter nobody was collecting.
+    /// Losing observability data silently is the one failure mode
+    /// observability tooling must not have.
+    dropped_since_warn: Arc<AtomicUsize>,
+
+    /// Milliseconds since [`Self::started`] at the last warning, or
+    /// [`NEVER_WARNED`]. The rate limit is a time window rather than "warn on
+    /// the first drop after a success": at the overload threshold, accepted
+    /// and dropped submits interleave continuously, so a success-reset counter
+    /// reads every single drop as a fresh episode. Measured — it emitted 1152
+    /// lines in five seconds, each claiming one dropped trace.
+    last_warn_ms: Arc<AtomicU64>,
+
+    /// Fixed reference point for `last_warn_ms`, so the comparison is integer
+    /// arithmetic on a monotonic clock rather than a shared `Instant` lock.
+    started: Instant,
 }
+
+/// `last_warn_ms` sentinel: no warning has been emitted yet, so the next drop
+/// warns immediately instead of waiting out a window that never started.
+const NEVER_WARNED: u64 = u64::MAX;
+
+/// Minimum gap between overflow warnings. Long enough that sustained shedding
+/// costs a handful of lines a minute, short enough to see the loss while it is
+/// happening.
+const OVERFLOW_WARN_INTERVAL_MS: u64 = 5_000;
 
 impl TracePersistenceQueue {
     /// Create a no-op queue (used by `Sync` and `Off` modes). Submits return
@@ -73,6 +102,9 @@ impl TracePersistenceQueue {
             pending: Arc::new(AtomicUsize::new(0)),
             overflow_policy: AsyncOnOverflow::Drop,
             overflow_block_timeout: Duration::ZERO,
+            dropped_since_warn: Arc::new(AtomicUsize::new(0)),
+            last_warn_ms: Arc::new(AtomicU64::new(NEVER_WARNED)),
+            started: Instant::now(),
         }
     }
 
@@ -121,9 +153,42 @@ impl TracePersistenceQueue {
             }
             Err(_) => {
                 metrics::record_trace_dropped("overflow");
+                self.dropped_since_warn.fetch_add(1, Ordering::Relaxed);
+                self.warn_if_window_elapsed();
                 false
             }
         }
+    }
+
+    /// Emit one overflow warning per [`OVERFLOW_WARN_INTERVAL_MS`], carrying
+    /// everything dropped since the previous one.
+    ///
+    /// The compare-exchange is what makes the window hold under the concurrency
+    /// this path runs at: every in-flight request that finds the queue full
+    /// arrives here at once, and only the task that wins the swap logs. The
+    /// count is taken *after* winning, so the losers' increments are reported
+    /// by whoever wins next rather than lost.
+    fn warn_if_window_elapsed(&self) {
+        let elapsed = self.started.elapsed().as_millis() as u64;
+        let last = self.last_warn_ms.load(Ordering::Relaxed);
+        let due = last == NEVER_WARNED || elapsed.saturating_sub(last) >= OVERFLOW_WARN_INTERVAL_MS;
+        if !due
+            || self
+                .last_warn_ms
+                .compare_exchange(last, elapsed, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+        {
+            return;
+        }
+        let dropped = self.dropped_since_warn.swap(0, Ordering::Relaxed);
+        tracing::warn!(
+            dropped,
+            window_ms = OVERFLOW_WARN_INTERVAL_MS,
+            "trace_persistence: queue full, dropping traces — the persistence workers cannot \
+             keep up with the request rate. Raise trace_storage.max_pending / batch_size, set \
+             trace_storage.async_on_overflow = \"block\" to slow producers instead, or use \
+             mode = \"sync\" so the request path cannot outrun the trace table"
+        );
     }
 }
 
@@ -211,6 +276,9 @@ pub fn start(
         pending,
         overflow_policy: config.async_on_overflow,
         overflow_block_timeout: Duration::from_millis(config.overflow_block_timeout_ms),
+        dropped_since_warn: Arc::new(AtomicUsize::new(0)),
+        last_warn_ms: Arc::new(AtomicU64::new(NEVER_WARNED)),
+        started: Instant::now(),
     };
     let handle = PersistenceWorkerHandle {
         _senders: senders,
@@ -243,6 +311,14 @@ async fn run_batch_worker(
     let mut results: Vec<TraceResultRow> = Vec::new();
     let mut deadline = Instant::now() + flush_interval;
 
+    // Q11: what sets this worker's drain rate is `batch_size`, not anything in
+    // the loop below. A flush costs a fixed per-transaction price plus a
+    // per-row one, so committing the same rows in a tenth as many transactions
+    // is most of the throughput — measured on SQLite with 4 workers, 26k rows/s
+    // at 100 rows per flush against 45k rows/s at 1000. Draining the channel
+    // with `recv_many` instead of one `recv().await` per task was tried and
+    // measured neutral at both sizes: the cost is in the commit, not in the
+    // wakeup, so the simpler loop stays.
     loop {
         let now = Instant::now();
         let until = deadline.saturating_duration_since(now);

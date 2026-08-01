@@ -353,15 +353,23 @@
 # A channel can override this with its `config.tracing` field; unset per-channel
 # fields fall back to what is set here.
 #
-#   sync   — write inline before responding: strongest durability, throughput
-#            capped by single-writer contention
+#   sync   — write inline before responding (default): a served request implies
+#            a persisted trace, and throughput is capped by the DB's write rate
 #   async  — enqueue to a bounded background queue, one DB write per task
 #   batch  — bounded queue; workers commit `batch_size` rows per transaction
 #   off    — no persistence on the synchronous endpoint, where the caller
 #            already holds the answer. POST /{channel}/async still writes its
 #            row and still returns a trace_id: submitting async *is* the
 #            request for a result to fetch later.
-# mode = "batch"
+#
+# `async` and `batch` lift the throughput cap by letting the request path run
+# ahead of the trace table — which means it can outrun it. What happens then is
+# `async_on_overflow`, and the default ("drop") is silent data loss beyond a
+# WARN log and a counter. Measured on SQLite at c=50: sync sustained ~5.7k req/s
+# and kept every trace; batch sustained ~77k req/s and kept 34% of them. Pick a
+# background mode when traces are telemetry you are willing to sample, not when
+# they are the record of what happened.
+# mode = "sync"
 #
 # Filters, composing with the mode and applied per trace:
 # sample_rate = 1.0                 # Fraction of traces persisted, 0.0-1.0
@@ -376,6 +384,8 @@
 # async_workers = 4
 #
 # Batch mode:
-# batch_size = 100
+# batch_size = 1000                 # Rows per transaction, and the dominant term in
+#                                   # drain rate: 100 drains 26k rows/s, 1000 drains
+#                                   # 45k rows/s. Capped at 1000 by SQLite's bind limit.
 # batch_flush_interval_ms = 100     # Flush a partial batch after this long
 # batch_workers = 4                 # Each worker owns an independent batch

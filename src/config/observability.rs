@@ -186,33 +186,36 @@ impl TraceStorageConfig {
 
 /// Persistence mode for engine traces.
 ///
-/// `Sync` writes inside the request path: strongest durability, and throughput
-/// capped by single-writer DB contention. `Async` enqueues to a bounded
-/// background queue, one DB write per task. `Batch` is the throughput-optimised
-/// path and the default: background workers accumulate writes and commit them
-/// in one transaction. `Off` disables persistence entirely.
+/// `Sync` writes inside the request path and is the default: every trace that a
+/// served request produces is committed before that request is answered.
+/// `Async` enqueues to a bounded background queue, one DB write per task.
+/// `Batch` accumulates writes on background workers and commits them in one
+/// transaction. `Off` disables persistence entirely.
 ///
-/// `Batch` is the default because `Sync` makes a trace write part of answering
-/// a request — on the default SQLite backend, a single-writer fsync per request
-/// on the hottest path in the product. Traces are observability data about a
-/// request, not part of its result, so the failure mode that belongs to them is
-/// losing a window of traces under overload rather than slowing every caller
-/// down to the speed of the trace table.
+/// `Sync` is the default because it is the only mode where "the request
+/// succeeded" implies "its trace exists". Throughput is capped by the DB's write
+/// rate, and on the default single-writer SQLite backend that cap is low — but
+/// it is a cap that *throttles* rather than one that discards: the request path
+/// can never outrun the trace table, because it waits for it.
 ///
-/// What the default costs: a *hard* kill can lose up to
-/// `batch_flush_interval_ms` of traces, and a sustained overrun of `max_pending`
-/// drops them (`async_on_overflow`). Graceful shutdown drains the queue, so an
-/// orderly restart loses nothing. Deployments that treat the trace table as an
-/// audit record rather than as telemetry should set `mode = "sync"` — the
-/// `audit_logs` table is unaffected either way and remains the durable record of
-/// admin mutations.
+/// The background modes lift that cap by decoupling the two, which means the
+/// request path *can* outrun the trace table, and `max_pending` is what happens
+/// when it does. Measured on the benchmark's simple-workflow channel (M2 Pro,
+/// SQLite, c=50): `sync` sustained ~5.7k req/s and persisted 100 % of traces;
+/// `batch` sustained ~77k req/s and persisted 34 % of them, shedding the rest
+/// per `async_on_overflow`. Choosing a background mode is choosing that
+/// trade — worth it for telemetry sampled on purpose, wrong for a trace table
+/// read as a record of what happened.
+///
+/// Either way the `audit_logs` table is unaffected and remains the durable
+/// record of admin mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum TraceStorageMode {
+    /// Default: a served request implies a persisted trace.
+    #[default]
     Sync,
     Async,
-    /// Default: keeps trace persistence off the request path.
-    #[default]
     Batch,
     Off,
 }
@@ -266,7 +269,15 @@ pub struct TraceStorageConfig {
     pub async_workers: usize,
 
     // ---- Batch-mode-specific ----
-    /// Maximum entries accumulated before forcing a batch flush.
+    /// Maximum entries accumulated before forcing a batch flush, and so the
+    /// row count of one INSERT.
+    ///
+    /// Q11: this is the dominant term in how fast `batch` mode drains, because
+    /// a flush costs a fixed per-transaction price plus a per-row one. Measured
+    /// on SQLite with 4 workers: 100 rows/flush drains 26k rows/s, 1000
+    /// rows/flush drains 45k rows/s — the same work, committed in a tenth as
+    /// many transactions. The curve is flat past ~1000, which is also the
+    /// bind-limit ceiling, so that is the default.
     pub batch_size: usize,
 
     /// Maximum time to wait before flushing a non-full batch (milliseconds).
@@ -279,14 +290,14 @@ pub struct TraceStorageConfig {
 impl Default for TraceStorageConfig {
     fn default() -> Self {
         Self {
-            mode: TraceStorageMode::Batch,
+            mode: TraceStorageMode::Sync,
             sample_rate: 1.0,
             errors_only: false,
             max_pending: 10_000,
             async_on_overflow: AsyncOnOverflow::Drop,
             overflow_block_timeout_ms: 100,
             async_workers: 4,
-            batch_size: 100,
+            batch_size: 1000,
             batch_flush_interval_ms: 100,
             batch_workers: 4,
         }
@@ -465,6 +476,24 @@ mod tests {
         };
         assert_eq!(disabled_but_bound.dedicated_bind_addr(), None);
         assert!(!disabled_but_bound.on_main_listener());
+    }
+
+    /// The default is `sync` — a served request implies a persisted trace.
+    ///
+    /// Pinned because this default decides whether trace loss is possible at
+    /// all, and it is not the kind of thing that should change as a side effect
+    /// of a throughput change. The background modes let the request path
+    /// outrun the trace table: measured on SQLite at c=50, `batch` served ~77k
+    /// req/s and kept 34 % of traces where `sync` served ~5.7k and kept 100 %.
+    /// Trading the rest away is a decision an operator opts into.
+    #[test]
+    fn trace_persistence_defaults_to_sync() {
+        assert_eq!(
+            TraceStorageConfig::default().mode,
+            TraceStorageMode::Sync,
+            "changing this default changes whether traces can be silently dropped"
+        );
+        assert_eq!(TraceStorageMode::default(), TraceStorageMode::Sync);
     }
 
     #[test]

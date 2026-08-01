@@ -644,3 +644,136 @@ async fn transient_persistence_failure_is_retried_not_dropped() {
     );
     assert_eq!(fails_remaining.load(Ordering::SeqCst), 0);
 }
+
+// ============================================================
+// Q11: a burst commits as one transaction, not one per row
+// ============================================================
+
+/// Records the row count of every `store_completed_batch` call.
+struct BatchSizeProbeRepo {
+    flushes: Arc<std::sync::Mutex<Vec<usize>>>,
+}
+
+#[async_trait]
+impl TraceRepository for BatchSizeProbeRepo {
+    async fn create_pending(
+        &self,
+        _channel: &str,
+        _channel_id: Option<&str>,
+        _mode: &str,
+        _input_json: Option<&str>,
+        _access_token_hash: Option<&str>,
+    ) -> Result<Trace, OrionError> {
+        unimplemented!()
+    }
+    async fn get_by_id(&self, _id: &str) -> Result<Trace, OrionError> {
+        unimplemented!()
+    }
+    async fn update_status(
+        &self,
+        _id: &str,
+        _status: &str,
+        _error_message: Option<&str>,
+    ) -> Result<Trace, OrionError> {
+        unimplemented!()
+    }
+    async fn set_result(
+        &self,
+        _id: &str,
+        _result_json: &str,
+        _duration_ms: f64,
+        _task_trace_json: Option<&str>,
+    ) -> Result<(), OrionError> {
+        unimplemented!()
+    }
+    async fn store_completed(
+        &self,
+        _channel: &str,
+        _channel_id: Option<&str>,
+        _mode: &str,
+        _input_json: Option<&str>,
+        _result_json: &str,
+        _duration_ms: f64,
+        _task_trace_json: Option<&str>,
+    ) -> Result<String, OrionError> {
+        // The whole point of batch mode: never the per-row path.
+        unimplemented!("batch mode must not fall back to per-row writes")
+    }
+    async fn store_completed_batch(
+        &self,
+        rows: &[TraceCompletedRow],
+    ) -> Result<Vec<String>, OrionError> {
+        self.flushes.lock().unwrap().push(rows.len());
+        Ok(rows.iter().map(|_| String::new()).collect())
+    }
+    async fn list_paginated(&self, _filter: &TraceFilter) -> Result<TracePage, OrionError> {
+        unimplemented!()
+    }
+    async fn delete_older_than(&self, _hours: u64) -> Result<u64, OrionError> {
+        unimplemented!()
+    }
+}
+
+/// A burst that fits inside `batch_size` must reach the DB as **one** INSERT.
+///
+/// Q11: transaction count is what sets the drain rate — the same rows cost 26k
+/// rows/s at 100 per flush and 45k rows/s at 1000 — so "rows queued together
+/// are committed together" is the property the throughput rests on, and it was
+/// resting on it untested. A regression that split a batch into per-row writes
+/// would not fail any other test; it would just quietly drain 10x slower and
+/// start dropping traces under load.
+///
+/// `batch_flush_interval_ms` is set far above the test's runtime so the only
+/// flush trigger is the channel closing, which makes the count deterministic
+/// rather than a race against the timer.
+#[tokio::test]
+async fn a_burst_of_traces_commits_as_a_single_batch() {
+    const BURST: usize = 250;
+
+    let flushes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let repo: Arc<dyn TraceRepository> = Arc::new(BatchSizeProbeRepo {
+        flushes: flushes.clone(),
+    });
+
+    let config = orion::config::TraceStorageConfig {
+        mode: orion::config::TraceStorageMode::Batch,
+        batch_workers: 1,
+        batch_size: 1000,
+        batch_flush_interval_ms: 600_000,
+        ..Default::default()
+    };
+    let (queue, handle) = orion::queue::trace_persistence::start(&config, repo);
+
+    for i in 0..BURST {
+        assert!(
+            queue
+                .submit(orion::queue::TracePersistenceTask::StoreCompleted(
+                    TraceCompletedRow {
+                        channel: "probe".to_string(),
+                        channel_id: None,
+                        mode: "sync".to_string(),
+                        input_json: None,
+                        result_json: format!("{{\"n\":{i}}}"),
+                        duration_ms: 1.0,
+                        task_trace_json: None,
+                    }
+                ))
+                .await,
+            "submit {i} must be accepted: the burst fits in max_pending"
+        );
+    }
+    drop(queue);
+    handle.shutdown().await;
+
+    let flushes = flushes.lock().unwrap().clone();
+    assert_eq!(
+        flushes.iter().sum::<usize>(),
+        BURST,
+        "every queued trace must be persisted, not just the ones that fit a chunk"
+    );
+    assert_eq!(
+        flushes,
+        vec![BURST],
+        "a burst under batch_size must commit in one transaction (Q11)"
+    );
+}
