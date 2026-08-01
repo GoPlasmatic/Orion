@@ -65,25 +65,83 @@ pub struct ResolvedConflict {
 
 /// A fully resolved, backend-neutral mutation: physical names, IR values, and a
 /// lowered filter. Produced by [`resolve_write`] and consumed by the renderers.
+///
+/// One variant per operation, so the op-dependent invariants (rows for an
+/// insert, a conflict clause for an upsert, …) are carried by the type — a
+/// renderer can consume them without re-validating (W18).
 #[derive(Debug, Clone, PartialEq)]
-pub struct ResolvedWrite {
-    pub op: WriteOp,
-    /// Physical table / collection.
-    pub table: String,
-    /// Physical column names for `insert`/`upsert` (aligned to each row in `rows`).
-    pub columns: Vec<String>,
-    /// One value tuple per inserted row (aligned to `columns`).
-    pub rows: Vec<Vec<ir::Value>>,
-    /// Physical column → value assignments for `update`/`upsert`.
-    pub set: Vec<(String, ir::Value)>,
-    /// Lowered `filter` for `update`/`delete` (`None` when no `filter` was given).
-    pub cond: Option<Cond>,
-    pub conflict: Option<ResolvedConflict>,
-    /// Physical column names to return from mutated rows.
-    pub returning: Vec<String>,
+pub enum ResolvedWrite {
+    Insert {
+        /// Physical table / collection.
+        table: String,
+        /// Physical column names (aligned to each row in `rows`). Never empty.
+        columns: Vec<String>,
+        /// One value tuple per inserted row (aligned to `columns`). Never empty.
+        rows: Vec<Vec<ir::Value>>,
+        /// Physical column names to return from mutated rows.
+        returning: Vec<String>,
+    },
+    Update {
+        table: String,
+        /// Physical column → value assignments. Never empty.
+        set: Vec<(String, ir::Value)>,
+        /// Lowered `filter` (`None` when no `filter` was given — the W15 guard
+        /// then required the `all` acknowledgement before resolution succeeded).
+        cond: Option<Cond>,
+        returning: Vec<String>,
+    },
+    Delete {
+        table: String,
+        cond: Option<Cond>,
+        returning: Vec<String>,
+    },
+    Upsert {
+        table: String,
+        /// Never empty; aligned to each row in `rows`.
+        columns: Vec<String>,
+        /// Never empty.
+        rows: Vec<Vec<ir::Value>>,
+        /// Assignments applied on conflict; empty means "overwrite every
+        /// inserted non-target column".
+        set: Vec<(String, ir::Value)>,
+        conflict: ResolvedConflict,
+        returning: Vec<String>,
+    },
 }
 
 impl ResolvedWrite {
+    /// The mutation kind (for operation gates and error messages).
+    pub fn op(&self) -> WriteOp {
+        match self {
+            ResolvedWrite::Insert { .. } => WriteOp::Insert,
+            ResolvedWrite::Update { .. } => WriteOp::Update,
+            ResolvedWrite::Delete { .. } => WriteOp::Delete,
+            ResolvedWrite::Upsert { .. } => WriteOp::Upsert,
+        }
+    }
+
+    /// Physical columns to return from mutated rows (empty = none requested).
+    pub fn returning(&self) -> &[String] {
+        match self {
+            ResolvedWrite::Insert { returning, .. }
+            | ResolvedWrite::Update { returning, .. }
+            | ResolvedWrite::Delete { returning, .. }
+            | ResolvedWrite::Upsert { returning, .. } => returning,
+        }
+    }
+
+    /// Whether more than one row is being written — what the F28 transaction
+    /// gate keys on. Only insert/upsert carry rows; an update/delete is a
+    /// single statement however many rows it affects.
+    pub fn is_multi_row(&self) -> bool {
+        match self {
+            ResolvedWrite::Insert { rows, .. } | ResolvedWrite::Upsert { rows, .. } => {
+                rows.len() > 1
+            }
+            ResolvedWrite::Update { .. } | ResolvedWrite::Delete { .. } => false,
+        }
+    }
+
     /// Whether the lowered filter actually restricts the affected rows — this,
     /// not the mere presence of a `filter` key, is what [`resolve_write`]'s
     /// unfiltered guard is keyed on.
@@ -93,9 +151,15 @@ impl ResolvedWrite {
     /// whole table whether the renderer omits the `WHERE` clause or emits a
     /// tautology. Keying the guard on key *presence* let any of these skip both
     /// the `"all": true` acknowledgement and `write.allow_unfiltered`.
-    /// See [`Cond::is_always_true`].
+    /// See [`Cond::is_always_true`]. Insert/upsert have no filter and count as
+    /// unfiltered, but no guard keys on that.
     pub fn effective_filter(&self) -> bool {
-        self.cond.as_ref().is_some_and(|c| !c.is_always_true())
+        match self {
+            ResolvedWrite::Update { cond, .. } | ResolvedWrite::Delete { cond, .. } => {
+                cond.as_ref().is_some_and(|c| !c.is_always_true())
+            }
+            ResolvedWrite::Insert { .. } | ResolvedWrite::Upsert { .. } => false,
+        }
     }
 }
 
@@ -253,50 +317,54 @@ pub fn resolve_write(
     let returning = parse_returning(input.get("returning"), reg, &target)?;
     let all = input.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
 
-    // Per-op required-field checks.
-    match op {
+    let missing = |field: &str| WriteError::MissingField {
+        field: field.to_string(),
+        op: op.as_str().to_string(),
+    };
+
+    // Per-op required-field checks establish the variant invariants.
+    let w = match op {
         WriteOp::Insert => {
             if rows.is_empty() {
-                return Err(WriteError::MissingField {
-                    field: "values".to_string(),
-                    op: "insert".to_string(),
-                });
+                return Err(missing("values"));
+            }
+            ResolvedWrite::Insert {
+                table,
+                columns,
+                rows,
+                returning,
             }
         }
         WriteOp::Update => {
             if set.is_empty() {
-                return Err(WriteError::MissingField {
-                    field: "set".to_string(),
-                    op: "update".to_string(),
-                });
+                return Err(missing("set"));
+            }
+            ResolvedWrite::Update {
+                table,
+                set,
+                cond,
+                returning,
             }
         }
-        WriteOp::Delete => {}
+        WriteOp::Delete => ResolvedWrite::Delete {
+            table,
+            cond,
+            returning,
+        },
         WriteOp::Upsert => {
             if rows.is_empty() {
-                return Err(WriteError::MissingField {
-                    field: "values".to_string(),
-                    op: "upsert".to_string(),
-                });
+                return Err(missing("values"));
             }
-            if conflict.is_none() {
-                return Err(WriteError::MissingField {
-                    field: "on_conflict".to_string(),
-                    op: "upsert".to_string(),
-                });
+            let conflict = conflict.ok_or_else(|| missing("on_conflict"))?;
+            ResolvedWrite::Upsert {
+                table,
+                columns,
+                rows,
+                set,
+                conflict,
+                returning,
             }
         }
-    }
-
-    let w = ResolvedWrite {
-        op,
-        table,
-        columns,
-        rows,
-        set,
-        cond,
-        conflict,
-        returning,
     };
 
     // W15: the write-safety guards live in the resolution itself, so no caller
@@ -304,9 +372,11 @@ pub fn resolve_write(
     // enforced only by the `data_write` handler, making this function —
     // documented as the whole backend-neutral transformation — unsafe to call
     // alone.
-    if matches!(op, WriteOp::Insert | WriteOp::Upsert) && w.rows.len() as u64 > cfg.max_rows {
+    if let ResolvedWrite::Insert { rows, .. } | ResolvedWrite::Upsert { rows, .. } = &w
+        && rows.len() as u64 > cfg.max_rows
+    {
         return Err(WriteError::TooManyRows {
-            requested: w.rows.len(),
+            requested: rows.len(),
             max: cfg.max_rows,
         });
     }
@@ -712,8 +782,11 @@ mod tests {
             &permissive(),
         )
         .expect("resolves");
-        assert_eq!(resolved.rows.len(), 1);
-        assert!(matches!(resolved.rows[0][0], ir::Value::Int(42)));
+        let ResolvedWrite::Insert { rows, .. } = resolved else {
+            panic!("insert resolves to the Insert variant");
+        };
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(rows[0][0], ir::Value::Int(42)));
     }
 
     // -- write-safety guards (W15: enforced by resolve_write itself) -------

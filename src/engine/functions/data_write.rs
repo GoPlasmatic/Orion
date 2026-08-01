@@ -108,7 +108,7 @@ impl AsyncFunctionHandler for DataWriteHandler {
             // Per-connector operation gates: a connector config can disable
             // individual ops (e.g. delete) regardless of what workflows ask for.
             if let Some(gates) = connector_config.operation_gates() {
-                require_op_allowed(gates, resolved.op.as_str(), call.connector)?;
+                require_op_allowed(gates, resolved.op().as_str(), call.connector)?;
             }
 
             let (result, outcome) = match connector_config.as_ref() {
@@ -186,7 +186,7 @@ async fn execute_sql(
     timeout_ms: Option<u64>,
 ) -> Result<(Value, TaskOutcome), DataflowError> {
     let budget = QueryBudget::start(timeout_ms);
-    let mut out = if w.rows.len() > 1 {
+    let mut out = if w.is_multi_row() {
         let mut tx = budget.run(NAME, pool.begin()).await?;
         let out = run_write_statement(&mut *tx, sql, values, w, &budget).await?;
         budget.run(NAME, tx.commit()).await?;
@@ -214,12 +214,12 @@ async fn run_write_statement<'e, E>(
 where
     E: sqlx::Executor<'e, Database = sqlx::Any>,
 {
-    if w.returning.is_empty() {
+    if w.returning().is_empty() {
         let res = budget
             .run(NAME, sqlx::query_with(sql, values).execute(executor))
             .await?;
         let mut out = json!({ "rows_affected": res.rows_affected() });
-        if matches!(w.op, WriteOp::Insert | WriteOp::Upsert)
+        if matches!(w.op(), WriteOp::Insert | WriteOp::Upsert)
             && let Some(id) = res.last_insert_id()
         {
             out["last_insert_id"] = json!(id);

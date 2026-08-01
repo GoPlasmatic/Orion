@@ -19,7 +19,7 @@ use crate::query::bulk::{BulkOutcome, ItemOutcome};
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, EsStorage, FieldRef, Quant, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir};
-use crate::query::write::{ConflictAction, ResolvedWrite, WriteError, WriteOp};
+use crate::query::write::{ConflictAction, ResolvedConflict, ResolvedWrite, WriteError};
 
 /// ES bounds `from + size` by `index.max_result_window` (default 10k). Beyond it
 /// we raise a capability error rather than return a truncated page.
@@ -294,66 +294,79 @@ pub enum EsWrite {
 /// rename is an explicit schema decision (`{"columns": {"id": {"name": "_id"}}}`).
 /// A physical `_id` column is lifted out of the source into the action/path.
 pub fn render_write(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
-    if !w.returning.is_empty() {
+    if !w.returning().is_empty() {
         return Err(WriteError::FeatureUnsupportedByTarget {
             feature: "returning".to_string(),
             target: "elasticsearch".to_string(),
         });
     }
-    Ok(match w.op {
-        WriteOp::Insert => {
-            let id_idx = w.columns.iter().position(|c| c == "_id");
-            let mut docs = Vec::with_capacity(w.rows.len());
-            for row in &w.rows {
+    Ok(match w {
+        ResolvedWrite::Insert {
+            table,
+            columns,
+            rows,
+            ..
+        } => {
+            let id_idx = columns.iter().position(|c| c == "_id");
+            let mut docs = Vec::with_capacity(rows.len());
+            for row in rows {
                 let id = match id_idx {
                     Some(i) => id_string(&row[i], "values")?,
                     None => None,
                 };
-                docs.push((id, source_doc(&w.columns, row, "_id")));
+                docs.push((id, source_doc(columns, row, "_id")));
             }
             EsWrite::BulkInsert {
-                index: w.table.clone(),
+                index: table.clone(),
                 docs,
             }
         }
-        WriteOp::Update => {
-            reject_id_in_set(&w.set)?;
+        ResolvedWrite::Update {
+            table, set, cond, ..
+        } => {
+            reject_id_in_set(set)?;
             // Field names AND values travel as painless params — nothing
             // user-controlled is spliced into the script source.
             let mut source = String::new();
             let mut params = serde_json::Map::new();
-            for (i, (col, v)) in w.set.iter().enumerate() {
+            for (i, (col, v)) in set.iter().enumerate() {
                 source.push_str(&format!("ctx._source[params.f{i}] = params.v{i};"));
                 params.insert(format!("f{i}"), Json::String(col.clone()));
                 params.insert(format!("v{i}"), to_json(v));
             }
             EsWrite::UpdateByQuery {
-                index: w.table.clone(),
+                index: table.clone(),
                 body: json!({
-                    "query": cond_to_query(&w.cond)?,
+                    "query": cond_to_query(cond)?,
                     "script": { "lang": "painless", "source": source, "params": params },
                 }),
             }
         }
-        WriteOp::Delete => EsWrite::DeleteByQuery {
-            index: w.table.clone(),
-            body: json!({ "query": cond_to_query(&w.cond)? }),
+        ResolvedWrite::Delete { table, cond, .. } => EsWrite::DeleteByQuery {
+            index: table.clone(),
+            body: json!({ "query": cond_to_query(cond)? }),
         },
-        WriteOp::Upsert => render_es_upsert(w)?,
+        ResolvedWrite::Upsert {
+            table,
+            columns,
+            rows,
+            set,
+            conflict,
+            ..
+        } => render_es_upsert(table, columns, rows, set, conflict)?,
     })
 }
 
-fn render_es_upsert(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
-    let conflict = w
-        .conflict
-        .as_ref()
-        .ok_or_else(|| WriteError::MissingField {
-            field: "on_conflict".to_string(),
-            op: "upsert".to_string(),
-        })?;
+fn render_es_upsert(
+    table: &str,
+    columns: &[String],
+    rows: &[Vec<Value>],
+    set: &[(String, Value)],
+    conflict: &ResolvedConflict,
+) -> Result<EsWrite, WriteError> {
     // A single-document upsert keyed on `_id`. Bulk upsert would need one
     // `_update` call per row; deferred (fail loudly, don't guess).
-    if w.rows.len() != 1 {
+    if rows.len() != 1 {
         return Err(WriteError::FeatureUnsupportedByTarget {
             feature: "bulk upsert".to_string(),
             target: "elasticsearch".to_string(),
@@ -370,8 +383,8 @@ fn render_es_upsert(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
             target: "elasticsearch".to_string(),
         });
     }
-    let row = &w.rows[0];
-    let idx = w.columns.iter().position(|c| c == "_id").ok_or_else(|| {
+    let row = &rows[0];
+    let idx = columns.iter().position(|c| c == "_id").ok_or_else(|| {
         WriteError::InvalidEnvelope(
             "on_conflict target '_id' must be one of the inserted columns".to_string(),
         )
@@ -380,16 +393,16 @@ fn render_es_upsert(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
         what: "a null `_id` in an upsert".to_string(),
         at: "values".to_string(),
     })?;
-    let doc = source_doc(&w.columns, row, "_id");
+    let doc = source_doc(columns, row, "_id");
 
     Ok(match conflict.action {
         ConflictAction::Update => {
-            reject_id_in_set(&w.set)?;
-            if w.set.is_empty() {
+            reject_id_in_set(set)?;
+            if set.is_empty() {
                 // Overwrite every non-`_id` column on conflict; index the row
                 // when absent.
                 EsWrite::UpdateDoc {
-                    index: w.table.clone(),
+                    index: table.to_string(),
                     id,
                     body: json!({ "doc": doc, "doc_as_upsert": true }),
                 }
@@ -397,7 +410,7 @@ fn render_es_upsert(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
                 // On conflict apply `set`; on insert index the row overlaid with
                 // `set` (Mongo's `$set` + `$setOnInsert` split).
                 let mut set_doc = serde_json::Map::new();
-                for (col, v) in &w.set {
+                for (col, v) in set {
                     set_doc.insert(col.clone(), to_json(v));
                 }
                 let mut merged = match &doc {
@@ -408,14 +421,14 @@ fn render_es_upsert(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
                     merged.insert(k.clone(), v.clone());
                 }
                 EsWrite::UpdateDoc {
-                    index: w.table.clone(),
+                    index: table.to_string(),
                     id,
                     body: json!({ "doc": Json::Object(set_doc), "upsert": Json::Object(merged) }),
                 }
             }
         }
         ConflictAction::Nothing => EsWrite::CreateDoc {
-            index: w.table.clone(),
+            index: table.to_string(),
             id,
             doc,
         },

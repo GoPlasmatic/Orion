@@ -19,7 +19,7 @@ use crate::query::backend::SqlDialect;
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, FieldRef, Quant, RelRef, TextOp, Value};
 use crate::query::spec::{QuerySpec, SortDir, SortKey};
-use crate::query::write::{ConflictAction, ResolvedWrite, WriteError, WriteOp};
+use crate::query::write::{ConflictAction, ResolvedConflict, ResolvedWrite, WriteError};
 
 /// Column the include's window function writes its per-parent row number into.
 /// Prefixed so it cannot collide with a real column; stripped from the output.
@@ -443,57 +443,81 @@ pub fn render_write(
     dialect: SqlDialect,
 ) -> Result<(String, SqlxValues), WriteError> {
     // MySQL cannot express RETURNING; surface it rather than emitting invalid SQL.
-    if !w.returning.is_empty() && dialect == SqlDialect::Mysql {
+    if !w.returning().is_empty() && dialect == SqlDialect::Mysql {
         return Err(WriteError::FeatureUnsupportedByTarget {
             feature: "returning".to_string(),
             target: "mysql".to_string(),
         });
     }
-    match w.op {
-        WriteOp::Insert => render_insert(w, dialect, false),
-        WriteOp::Upsert => render_insert(w, dialect, true),
-        WriteOp::Update => render_update(w, dialect),
-        WriteOp::Delete => render_delete(w, dialect),
+    match w {
+        ResolvedWrite::Insert {
+            table,
+            columns,
+            rows,
+            returning,
+        } => render_insert(table, columns, rows, None, returning, dialect),
+        ResolvedWrite::Upsert {
+            table,
+            columns,
+            rows,
+            set,
+            conflict,
+            returning,
+        } => render_insert(
+            table,
+            columns,
+            rows,
+            Some((conflict, set)),
+            returning,
+            dialect,
+        ),
+        ResolvedWrite::Update {
+            table,
+            set,
+            cond,
+            returning,
+        } => render_update(table, set, cond, returning, dialect),
+        ResolvedWrite::Delete {
+            table,
+            cond,
+            returning,
+        } => render_delete(table, cond, returning, dialect),
     }
 }
 
+/// Render an INSERT, with `upsert` carrying the conflict clause and on-conflict
+/// assignments when the mutation is an upsert.
 fn render_insert(
-    w: &ResolvedWrite,
+    table: &str,
+    columns: &[String],
+    rows: &[Vec<Value>],
+    upsert: Option<(&ResolvedConflict, &[(String, Value)])>,
+    returning: &[String],
     dialect: SqlDialect,
-    upsert: bool,
 ) -> Result<(String, SqlxValues), WriteError> {
     let mut stmt = Query::insert();
-    stmt.into_table(Alias::new(w.table.as_str()));
-    stmt.columns(w.columns.iter().map(|c| Alias::new(c.as_str())));
-    for row in &w.rows {
+    stmt.into_table(Alias::new(table));
+    stmt.columns(columns.iter().map(|c| Alias::new(c.as_str())));
+    for row in rows {
         let vals: Vec<SimpleExpr> = row.iter().map(value_expr).collect();
         stmt.values(vals)
             .map_err(|e| WriteError::InvalidEnvelope(e.to_string()))?;
     }
 
-    if upsert {
-        // `conflict` is guaranteed present for upsert (validated in `resolve_write`).
-        let c = w
-            .conflict
-            .as_ref()
-            .ok_or_else(|| WriteError::MissingField {
-                field: "on_conflict".to_string(),
-                op: "upsert".to_string(),
-            })?;
+    if let Some((c, set)) = upsert {
         let mut oc = OnConflict::columns(c.targets.iter().map(|t| Alias::new(t.as_str())));
         match c.action {
             ConflictAction::Nothing => {
                 oc.do_nothing();
             }
             ConflictAction::Update => {
-                if !w.set.is_empty() {
-                    for (col, v) in &w.set {
+                if !set.is_empty() {
+                    for (col, v) in set {
                         oc.value(Alias::new(col.as_str()), value_expr(v));
                     }
                 } else {
                     // Default: overwrite every inserted column except the conflict keys.
-                    let upd: Vec<Alias> = w
-                        .columns
+                    let upd: Vec<Alias> = columns
                         .iter()
                         .filter(|c2| !c.targets.contains(c2))
                         .map(|c2| Alias::new(c2.as_str()))
@@ -509,50 +533,55 @@ fn render_insert(
         stmt.on_conflict(oc);
     }
 
-    if !w.returning.is_empty() {
+    if !returning.is_empty() {
         stmt.returning(
-            Query::returning().columns(w.returning.iter().map(|c| Alias::new(c.as_str()))),
+            Query::returning().columns(returning.iter().map(|c| Alias::new(c.as_str()))),
         );
     }
     Ok(build_write_for(dialect, &stmt))
 }
 
 fn render_update(
-    w: &ResolvedWrite,
+    table: &str,
+    set: &[(String, Value)],
+    cond: &Option<Cond>,
+    returning: &[String],
     dialect: SqlDialect,
 ) -> Result<(String, SqlxValues), WriteError> {
     let mut stmt = Query::update();
-    stmt.table(Alias::new(w.table.as_str()));
-    for (col, v) in &w.set {
+    stmt.table(Alias::new(table));
+    for (col, v) in set {
         stmt.value(Alias::new(col.as_str()), value_expr(v));
     }
-    if let Some(cond) = &w.cond
+    if let Some(cond) = cond
         && !matches!(cond, Cond::True)
     {
-        stmt.cond_where(render_expr(cond, &w.table).map_err(WriteError::from)?);
+        stmt.cond_where(render_expr(cond, table).map_err(WriteError::from)?);
     }
-    if !w.returning.is_empty() {
+    if !returning.is_empty() {
         stmt.returning(
-            Query::returning().columns(w.returning.iter().map(|c| Alias::new(c.as_str()))),
+            Query::returning().columns(returning.iter().map(|c| Alias::new(c.as_str()))),
         );
     }
     Ok(build_write_for(dialect, &stmt))
 }
 
 fn render_delete(
-    w: &ResolvedWrite,
+    table: &str,
+    cond: &Option<Cond>,
+    returning: &[String],
     dialect: SqlDialect,
 ) -> Result<(String, SqlxValues), WriteError> {
     let mut stmt = Query::delete();
-    stmt.from_table(Alias::new(w.table.as_str()));
-    if let Some(cond) = &w.cond
+    stmt.from_table(Alias::new(table));
+    if let Some(cond) = cond
         && !matches!(cond, Cond::True)
     {
-        stmt.cond_where(render_expr(cond, &w.table).map_err(WriteError::from)?);
+        stmt.cond_where(render_expr(cond, table).map_err(WriteError::from)?);
     }
-    if !w.returning.is_empty() {
+    if !returning.is_empty() {
         stmt.returning(
-            Query::returning().columns(w.returning.iter().map(|c| Alias::new(c.as_str()))),
+            Query::returning().columns(returning.iter().map(|c| Alias::new(c.as_str()))),
         );
     }
     Ok(build_write_for(dialect, &stmt))
@@ -1470,7 +1499,12 @@ mod prop_tests {
                             // channel still renders.
                             let mut w = w.clone();
                             if dialect == SqlDialect::Mysql {
-                                w.returning.clear();
+                                match &mut w {
+                                    ResolvedWrite::Insert { returning, .. }
+                                    | ResolvedWrite::Update { returning, .. }
+                                    | ResolvedWrite::Delete { returning, .. }
+                                    | ResolvedWrite::Upsert { returning, .. } => returning.clear(),
+                                }
                             }
                             let (sql, _) = render_write(&w, dialect).expect("render");
                             prop_assert!(
