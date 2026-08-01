@@ -9,3 +9,15 @@ cluster:
 adminAuth:
   apiKeys:
     - ci-render-only-not-a-real-key
+networkPolicy:
+  enabled: true
+  egress:
+    rules:
+      - to:
+          - ipBlock:
+              cidr: 10.0.0.0/8
+        ports:
+          - port: 5432
+            protocol: TCP
+          - port: 6379
+            protocol: TCP

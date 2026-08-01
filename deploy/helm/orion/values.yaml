@@ -235,6 +235,27 @@ podDisruptionBudget:
   # Keep at least one replica during voluntary disruptions.
   maxUnavailable: 1
 
+# NetworkPolicy for the Orion pods (P8). Off by default: it requires a CNI
+# that enforces NetworkPolicy, and useful egress rules depend on where YOUR
+# databases, Redis, Kafka and upstream APIs live. When enabled with no egress
+# rules, the pod can resolve DNS and reach nothing else — fail-closed on
+# purpose, so an unconfigured policy is loud rather than silently open.
+# Orion makes outbound calls wherever its connectors point (it is
+# SSRF-relevant by design); this is the network-level pairing for the
+# application-level allow_private_urls guard.
+networkPolicy:
+  enabled: false
+  ingress:
+    # NetworkPolicyPeer list for the HTTP (and metrics) ports, verbatim.
+    # Empty = admit from anywhere the CNI routes.
+    from: []
+  egress:
+    # Always allow DNS (port 53), without which nothing else can be named.
+    allowDns: true
+    # NetworkPolicyEgressRule list, verbatim — point these at your database,
+    # Redis, Kafka and the upstreams your connectors call.
+    rules: []
+
 podAnnotations: {}
 podLabels: {}
 nodeSelector: {}

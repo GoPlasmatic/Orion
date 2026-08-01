@@ -202,6 +202,28 @@
         "maxUnavailable": { "type": ["integer", "string"] }
       }
     },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "from": { "type": "array", "items": { "type": "object" } }
+          }
+        },
+        "egress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "allowDns": { "type": "boolean" },
+            "rules": { "type": "array", "items": { "type": "object" } }
+          }
+        }
+      }
+    },
     "podAnnotations": { "type": ["object", "null"] },
     "podLabels": { "type": ["object", "null"] },
     "nodeSelector": { "type": ["object", "null"] },

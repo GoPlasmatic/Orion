@@ -141,6 +141,7 @@ for the full annotated list:
 | `resources` | `250m` CPU / `256Mi` req, `512Mi` limit | Container resources |
 | `autoscaling.enabled` | `false` | CPU-based HPA (min `2`, max `6`, target `75%`) |
 | `podDisruptionBudget.enabled` | `true` | `maxUnavailable: 1` during voluntary disruptions |
+| `networkPolicy.enabled` | `false` | Ingress on the HTTP/metrics ports + egress rules you declare; with no egress rules the pod gets DNS and nothing else (fail-closed). The network-level pairing for `allow_private_urls` |
 | `strategy` | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1` | Deploys never drop below `replicaCount` Ready replicas |
 | `persistence.enabled` | `false` | PVC at `/app/data` for single-node SQLite installs |
 | `extraEnv` | `[]` | Additional `ORION_*` overrides (see the [Config Reference](../configuration/reference.md)) |
