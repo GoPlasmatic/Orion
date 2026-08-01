@@ -278,7 +278,7 @@ jobs:
             helm template orion deploy/helm/orion -f "${values}" \
               | kubeconform -strict -summary \
                   -schema-location default \
-                  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceVersion}}.json'
+                  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json'
           done
 
       # The schema must keep refusing what the templates do not read — that

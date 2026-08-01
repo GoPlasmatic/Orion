@@ -97,10 +97,19 @@ async fn connector_response_keeps_every_field_the_row_published() {
 #[tokio::test]
 async fn audit_log_response_keeps_every_field_the_row_published() {
     let app = common::test_app().await;
-    // Any admin mutation writes one audit row.
+    // Any admin mutation writes one audit row — through the async audit
+    // queue, so poll for it rather than racing the worker (a lost race read
+    // `data[0]` as null on slow CI runners).
     common::create_connector(&app, common::db_connector("wire-shape-audit")).await;
 
-    let body = get(&app, "/api/v1/admin/audit-logs").await;
+    let mut body = get(&app, "/api/v1/admin/audit-logs").await;
+    for _ in 0..50 {
+        if body["data"][0].is_object() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        body = get(&app, "/api/v1/admin/audit-logs").await;
+    }
     let row = &body["data"][0];
     assert_eq!(
         keys(row, "audit log row"),
