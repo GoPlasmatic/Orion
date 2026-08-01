@@ -113,6 +113,7 @@ build_orion() {
 BENCH_PID=""
 BENCH_PORT=""
 BENCH_URL=""
+BENCH_TMP_DIR=""
 BENCH_DB_PATH=""
 BENCH_LOG_FILE=""
 BENCH_CONFIG_FILE=""
@@ -128,9 +129,20 @@ find_free_port() {
 start_bench_server() {
     BENCH_PORT=$(find_free_port)
     BENCH_URL="http://127.0.0.1:${BENCH_PORT}"
-    BENCH_DB_PATH=$(mktemp "${TMPDIR:-/tmp}/orion-bench-XXXXXX.db")
-    BENCH_LOG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-bench-XXXXXX.log")
-    BENCH_CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-bench-XXXXXX.toml")
+
+    # One private directory, named files inside it.
+    #
+    # These were three `mktemp .../orion-bench-XXXXXX.db` calls, which is not
+    # portable: BSD/macOS mktemp only substitutes X's at the *end* of the
+    # template, so a suffixed template is taken literally and every run created
+    # the same `orion-bench-XXXXXX.db`. That worked only as long as each run
+    # reached its cleanup trap — the moment one was killed, the literal file
+    # survived and every subsequent run died at startup with "mkstemp failed:
+    # File exists", which reads like a full disk rather than a leftover file.
+    BENCH_TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/orion-bench-XXXXXX")
+    BENCH_DB_PATH="$BENCH_TMP_DIR/bench.db"
+    BENCH_LOG_FILE="$BENCH_TMP_DIR/bench.log"
+    BENCH_CONFIG_FILE="$BENCH_TMP_DIR/bench.toml"
 
     cat > "$BENCH_CONFIG_FILE" <<TOMLEOF
 [server]
@@ -199,9 +211,9 @@ stop_bench_server() {
     fi
 
     BENCH_PID=""
-    [[ -n "${BENCH_DB_PATH:-}" ]]     && rm -f "$BENCH_DB_PATH" "${BENCH_DB_PATH}-wal" "${BENCH_DB_PATH}-shm"
-    [[ -n "${BENCH_LOG_FILE:-}" ]]    && rm -f "$BENCH_LOG_FILE"
-    [[ -n "${BENCH_CONFIG_FILE:-}" ]] && rm -f "$BENCH_CONFIG_FILE"
+    # The whole directory goes, so the WAL/SHM sidecars cannot be left behind.
+    [[ -n "${BENCH_TMP_DIR:-}" ]] && rm -rf "$BENCH_TMP_DIR"
+    BENCH_TMP_DIR=""
 }
 
 # ═══════════════════════════════════════════════════════════════════
@@ -374,29 +386,39 @@ parse_hey_output() {
         RESULT_P99_MS="0.00"
     fi
 
-    # Error count: sum non-200/202 status codes
+    # Error count: every response that was not a 200/202, plus every request
+    # that never got a response at all.
+    #
+    # hey writes two tallies, and they are keyed differently:
+    #
+    #   Status code distribution:
+    #     [200]	103688 responses          <- bracket is the CODE, count is $2
+    #   Error distribution:
+    #     [37]	Get http://...: EOF       <- bracket is the COUNT
+    #
+    # Both were read wrong. The status arm took `$NF`, which is the word
+    # "responses" — so a run of 503s fed a bare word to `$(( ))`, where under
+    # `set -u` it is an unbound variable and aborts the whole benchmark. The
+    # error arm counted matching *lines*, so 1000 refused connections reported
+    # as 1. A benchmark whose error column reads 0 while the server is failing
+    # is worse than one with no error column.
     RESULT_ERRORS=0
-    local status_section
-    status_section=$(echo "$hey_output" | sed -n '/Status code distribution/,/^$/p' || true)
-    if [[ -n "$status_section" ]]; then
-        while IFS= read -r line; do
-            # Only process lines that contain [NNN] pattern
-            local code count
-            code=$(echo "$line" | grep -oE '\[([0-9]+)\]' | tr -d '[]' || true)
-            [[ -z "$code" ]] && continue
-            count=$(echo "$line" | awk '{print $NF}' | tr -d ' ')
-            if [[ "$code" != "200" ]] && [[ "$code" != "202" ]] && [[ -n "$count" ]]; then
-                RESULT_ERRORS=$((RESULT_ERRORS + count))
-            fi
-        done <<< "$status_section"
-    fi
 
-    # Also check for error distribution section (connection errors etc.)
-    local error_count
-    error_count=$(echo "$hey_output" | sed -n '/Error distribution/,/^$/p' | grep -cE '^\s+\[' || true)
-    if [[ "$error_count" -gt 0 ]]; then
-        RESULT_ERRORS=$((RESULT_ERRORS + error_count))
-    fi
+    local line code count
+    while IFS= read -r line; do
+        [[ "$line" =~ \[([0-9]+)\][[:space:]]+([0-9]+) ]] || continue
+        code="${BASH_REMATCH[1]}"
+        count="${BASH_REMATCH[2]}"
+        if [[ "$code" != "200" ]] && [[ "$code" != "202" ]]; then
+            RESULT_ERRORS=$((RESULT_ERRORS + count))
+        fi
+    done <<< "$(echo "$hey_output" | sed -n '/Status code distribution/,/^$/p' || true)"
+
+    while IFS= read -r line; do
+        [[ "$line" =~ ^[[:space:]]*\[([0-9]+)\] ]] || continue
+        count="${BASH_REMATCH[1]}"
+        RESULT_ERRORS=$((RESULT_ERRORS + count))
+    done <<< "$(echo "$hey_output" | sed -n '/Error distribution/,/^$/p' || true)"
 }
 
 # Run hey and parse results. Optionally saves raw output.
@@ -519,20 +541,56 @@ scenario_complex() {
     record_result "C: Complex workflow (4 tasks)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
-# D: Multi-workflow channel — 12 workflows on same channel
+# D: Loaded estate — 12 workflows, each behind its own channel
+#
+# This scenario used to be "12 workflows on the same channel", which measured
+# the engine picking one of 12 candidates by condition. 1.0 has no such state to
+# construct: a channel names exactly one `workflow_id`, and `activate` archives
+# the versions it supersedes — a full rollout archives all of them, a partial
+# rollout keeps only the primary — so the candidate set for a channel is at most
+# two (primary + canary), never twelve.
+#
+# It imported the 12 anyway and pointed one channel at `.data[0]`, leaving the
+# other 11 referenced by nothing. `build_engine_workflows` iterates *channels*,
+# so those 11 were never converted, never loaded, and never evaluated: the
+# scenario was scenario B with a larger `workflows` table, and it scored like B
+# (81,063 vs 82,454 req/s) because it *was* B.
+#
+# What "many workflows" means in 1.0 is many channels, so that is what this
+# builds: 12 active channels over 12 active workflows, load against one of them.
+# It measures route resolution and registry lookup against a populated estate
+# rather than a single-entry one. Not comparable to the pre-1.0 D — the thing
+# that one measured no longer exists.
 scenario_multi() {
-    log_info "D: Multi-workflow channel (12 workflows)"
+    log_info "D: Loaded estate (12 workflows, 12 channels)"
     CURRENT_SCENARIO="D_multi_workflows"
 
     clear_workflows
     import_workflows "$FIXTURES_DIR/workflows/bench_multi_rules.json"
-    local wf
-    wf=$(curl -sf "${BENCH_URL}/api/v1/admin/workflows?status=active" 2>/dev/null \
-        | jq -r '.data[0].workflow_id // empty')
-    create_and_activate_channel "bench" "$wf"
+
+    local ids
+    ids=$(curl -sf "${BENCH_URL}/api/v1/admin/workflows?status=active&limit=100" 2>/dev/null \
+        | jq -r '.data[]?.workflow_id // empty')
+
+    local n=0
+    while IFS= read -r wf; do
+        [[ -z "$wf" ]] && continue
+        # `bench` first, so the URL under load is the same one scenario B uses
+        # and the two differ only in how much else is registered.
+        local name="bench"
+        [[ $n -gt 0 ]] && name="bench-${n}"
+        create_and_activate_channel "$name" "$wf" || true
+        n=$((n + 1))
+    done <<< "$ids"
+
+    if [[ $n -lt 2 ]]; then
+        log_error "D: expected a multi-channel estate, built $n channel(s) — check the import"
+        return 1
+    fi
+    log_info "  Estate: $n active channels"
 
     run_hey POST "${BENCH_URL}/api/v1/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
-    record_result "D: Multi-workflow channel (12 workflows)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+    record_result "D: Loaded estate (${n} channels)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
 }
 
 # E: Concurrency scaling — c=1, 10, 50, 100
@@ -564,8 +622,7 @@ scenario_reload() {
     create_and_activate_channel "bench" "$wf"
 
     # Start hey in background
-    local hey_output_file
-    hey_output_file=$(mktemp "${TMPDIR:-/tmp}/orion-bench-hey-XXXXXX.txt")
+    local hey_output_file="$BENCH_TMP_DIR/hey-reload.txt"
 
     hey -z "$BENCH_DURATION" -c "$BENCH_CONCURRENCY" -m POST \
         -T "application/json" \
