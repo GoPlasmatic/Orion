@@ -758,3 +758,121 @@ async fn test_rate_limit_applies_to_rest_routed_async_path() {
         "the /async submission path resolves to the same channel"
     );
 }
+
+/// T16: every other test in this file sets `data_rps` high deliberately, to
+/// get the platform limiter out of the way of whatever it is testing — so no
+/// request had ever proven a data-plane 429 actually comes from
+/// `endpoints.data_rps`. The channel below carries no `rate_limit` config at
+/// all, so the platform limiter is the only thing that can refuse.
+#[tokio::test]
+async fn test_data_plane_429_comes_from_endpoints_data_rps() {
+    let app = common::test_app_with_config(AppConfig {
+        rate_limit: RateLimitConfig {
+            enabled: true,
+            default_rps: 1000,
+            default_burst: 500,
+            endpoints: EndpointRateLimits {
+                admin_rps: Some(1000),
+                data_rps: Some(1),
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    })
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/workflows",
+            Some(serde_json::json!({
+                "name": "data-rps-wf",
+                "tasks": [{"id": "t1", "name": "Log", "function": {"name": "log", "input": {"message": "x"}}}]
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = common::body_json(resp).await;
+    let wf_id = body["data"]["workflow_id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{}/status", wf_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Deliberately no `config.rate_limit`: the platform limiter must be the
+    // only 429 producer on this channel.
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(serde_json::json!({
+                "name": "data-rps-channel",
+                "channel_type": "sync",
+                "protocol": "http",
+                "methods": ["POST"],
+                "route_pattern": "/data-rps-channel",
+                "workflow_id": wf_id
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = common::body_json(resp).await;
+    let ch_id = body["data"]["channel_id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{}/status", ch_id),
+            Some(serde_json::json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let data_req = |ip: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/data/data-rps-channel")
+            .header("x-forwarded-for", ip.to_string())
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"data":{"n":1}}"#))
+            .unwrap()
+    };
+
+    let resp1 = app.clone().oneshot(data_req("10.0.0.77")).await.unwrap();
+    assert_ne!(
+        resp1.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "first request must pass"
+    );
+
+    let resp2 = app.clone().oneshot(data_req("10.0.0.77")).await.unwrap();
+    assert_eq!(
+        resp2.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "second request must trip endpoints.data_rps"
+    );
+    let body = common::body_json(resp2).await;
+    assert_eq!(body["error"]["code"], "RATE_LIMITED");
+
+    // And it is genuinely the *platform* limiter, keyed per client: a
+    // different client IP passes while the first is still over.
+    let resp3 = app.clone().oneshot(data_req("10.0.0.78")).await.unwrap();
+    assert_ne!(
+        resp3.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "a different client must not share the first client's bucket"
+    );
+}

@@ -330,3 +330,62 @@ async fn test_redis_dedup_claim_reports_the_holder_and_can_be_released() {
         .await
         .expect("remove absent key");
 }
+
+/// T16: the fixed-window limiter's own doc comment names the trade — "up to
+/// 2x burst at a window boundary" — and nothing pinned it. The window
+/// semantics are the contract multi-node rate limiting rests on: within one
+/// window the limit holds exactly, and across one boundary at most 2x passes.
+/// This drives the backend directly (the cluster test aligns to a fresh
+/// window on purpose and tolerates the boundary; this test *is* the
+/// boundary).
+#[tokio::test]
+#[ignore = "needs Docker; run with: cargo test --test integration -- --ignored connector_redis_test"]
+async fn redis_fixed_window_holds_per_window_and_spills_at_most_2x_at_the_boundary() {
+    use orion::channel::{RateLimitBackend, RedisRateLimitBackend};
+
+    let (_redis, url) = redis_container().await;
+    let client = redis::Client::open(url).expect("redis client");
+    let conn = redis::aio::ConnectionManager::new(client)
+        .await
+        .expect("redis connection");
+    // limit_per_window = rps + burst = 3.
+    let backend = RedisRateLimitBackend::new(conn, "t16-rollover".into(), 3, 0);
+
+    // Land just after a second boundary, so the in-window burst below cannot
+    // straddle one by accident.
+    align_to_fresh_window().await;
+
+    for i in 0..3 {
+        assert!(
+            backend.check("caller".into()).await.expect("check"),
+            "request {i} within the window's limit must pass"
+        );
+    }
+    assert!(
+        !backend.check("caller".into()).await.expect("check"),
+        "the 4th request in one window must be refused"
+    );
+
+    // Cross into the next window. 3 more pass — 6 total in well under two
+    // seconds: the documented up-to-2x boundary spill, no more.
+    align_to_fresh_window().await;
+    for i in 0..3 {
+        assert!(
+            backend.check("caller".into()).await.expect("check"),
+            "request {i} in the next window must pass (the 2x spill)"
+        );
+    }
+    assert!(
+        !backend.check("caller".into()).await.expect("check"),
+        "the spill is bounded: the 4th request of the second window must be refused"
+    );
+}
+
+/// Sleep until shortly after the next second boundary (the backend's window
+/// edge), leaving ~800ms of headroom for the requests that follow.
+async fn align_to_fresh_window() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock");
+    let into_window = u64::from(now.subsec_millis());
+    tokio::time::sleep(std::time::Duration::from_millis(1000 - into_window + 60)).await;
+}

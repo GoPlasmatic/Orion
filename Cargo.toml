@@ -156,6 +156,10 @@ lto = "thin"
 tokio = { version = "1", features = ["test-util"] }
 testcontainers = "0.27"
 testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "mongo", "elastic_search", "redis"] }
+# Already a runtime dependency; listed here so integration tests can build a
+# connection for direct backend tests (RedisRateLimitBackend takes a
+# ConnectionManager). Same version req as the runtime dep, so no extra crate.
+redis = { version = "1.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
 # In-process self-signed certificate generation for the TLS tests (no
 # external `openssl` CLI dependency).
 rcgen = "0.14"

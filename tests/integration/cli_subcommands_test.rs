@@ -682,7 +682,11 @@ fn dump_openapi_writes_the_spec_to_stdout() {
     // corrupt every `dump-openapi > docs/openapi.json` redirect.
     let spec: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("stdout must be a single JSON document");
-    assert_eq!(spec["openapi"], "3.1.0", "spec version: {}", spec["openapi"]);
+    assert_eq!(
+        spec["openapi"], "3.1.0",
+        "spec version: {}",
+        spec["openapi"]
+    );
     assert!(
         spec["paths"]["/api/v1/data/{channel}"].is_object(),
         "the data plane must be documented"
