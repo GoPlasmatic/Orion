@@ -41,8 +41,12 @@ pub struct ChannelCallInput {
     pub channel_logic: Option<Template>,
     /// Dotted path where the called channel's response is written. Named
     /// `output` to match the other nine handlers (proposal F43);
-    /// `response_path` stays accepted as a deprecated alias so 0.3.x
-    /// workflows keep loading.
+    /// `response_path` stays accepted so 0.3.x workflows keep loading — an
+    /// *accepted alternate spelling* with no removal date, not a deprecation
+    /// (F59): `http_call`'s twin alias lives on dataflow-rs's
+    /// `HttpCallConfig`, which Orion cannot retire on its own, and the two
+    /// functions must not drift apart. See "accepted alternate spellings" in
+    /// `docs/src/reference/support.md`.
     #[serde(default, alias = "response_path")]
     pub output: Option<String>,
     #[serde(default)]

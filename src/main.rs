@@ -219,7 +219,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // stale schema is a hard startup error — a replica must never serve
     // against pending migrations; `orion-server migrate` is the deploy step.
     let pool = orion::storage::init_pool_for_startup(&config.storage).await?;
-    tracing::info!(path = %config.storage.url, "Database initialized");
+    // S20: the DSN can embed `user:password@` credentials — never log it raw.
+    tracing::info!(
+        storage = %orion::connector::redact_url_secrets(&config.storage.url)
+            .unwrap_or_else(|| config.storage.url.clone()),
+        "Database initialized"
+    );
     // C7: in production this pairing is refused by `validate_config` before
     // anything opens a connection, so only a development cluster reaches here
     // — the Helm `devStack` shape, whose database is a release resource and so

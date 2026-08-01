@@ -16,6 +16,12 @@ use std::sync::atomic::AtomicBool;
 use crate::config::AppConfig;
 use crate::errors::OrionError;
 
+/// The storage DSN can embed `user:password@` credentials or secret-named
+/// query parameters — the ready-banner logs show it redacted (S20).
+fn redacted_storage(url: &str) -> String {
+    crate::connector::redact_url_secrets(url).unwrap_or_else(|| url.to_string())
+}
+
 /// Create a bound TCP listener with `TCP_NODELAY` enabled (avoids Nagle's
 /// 40 ms latency on small responses) and `SO_REUSEADDR` set.
 pub fn create_tcp_listener(addr: &str) -> Result<tokio::net::TcpListener, OrionError> {
@@ -84,7 +90,7 @@ pub async fn serve_tls(
 
     tracing::info!(
         address = %addr,
-        storage = %config.storage.url,
+        storage = %redacted_storage(&config.storage.url),
         tls = true,
         "Orion is ready (HTTPS)"
     );
@@ -155,7 +161,7 @@ pub async fn serve_plain_http(
         .unwrap_or_default();
     tracing::info!(
         address = %addr,
-        storage = %config.storage.url,
+        storage = %redacted_storage(&config.storage.url),
         tcp_nodelay = true,
         "Orion is ready"
     );

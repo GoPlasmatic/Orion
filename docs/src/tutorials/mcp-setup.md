@@ -103,5 +103,5 @@ The AI assistant will use the MCP tools to:
 - Ensure `orion-cli` is in your PATH
 
 **Authentication errors:**
-- Verify `ORION_API_KEY` matches your Orion instance's `admin_auth.api_key`
+- Verify `ORION_API_KEY` matches one of your Orion instance's `admin_auth.api_keys`
 - Check that admin auth is enabled on the Orion instance if you're passing a key

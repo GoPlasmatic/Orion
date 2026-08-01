@@ -330,8 +330,8 @@ Every channel gets production-grade features without writing a line of code. Con
 | **Rate limiting** | Throttle requests per client or globally | `requests_per_second`, `burst`, JSONLogic key computation |
 | **Timeouts** | Cancel slow workflows, return 504 | `timeout_ms` per channel |
 | **Input validation** | Reject bad requests at the boundary | JSONLogic with access to headers, query params, path params |
-| **Backpressure** | Shed load when overwhelmed, return 503 | `max_concurrent` (semaphore-based) |
-| **CORS** | Control browser cross-origin access | `allowed_origins` per channel |
+| **Backpressure** | Shed load when overwhelmed, return 503 | `max_concurrent_per_node` (semaphore-based) |
+| **CORS** | Control browser cross-origin access | `origin_allow_list` per channel |
 | **Circuit breakers** | Stop cascading failures to external services | Automatic per connector, admin API to inspect/reset |
 | **Versioning** | Draft → active → archived lifecycle | Automatic version history, rollout percentages, instant rollback |
 | **Observability** | Prometheus metrics, structured logs, distributed tracing | Always on, zero configuration |
@@ -358,7 +358,7 @@ REST     GET /api/v1/data/orders/{id}        → matched by route pattern
 Kafka    topic: order.placed                 → consumed automatically
 ```
 
-Sync channels respond immediately. Async channels return a trace ID; poll `GET /api/v1/data/traces/{id}` for results. Kafka channels consume from topics configured in the DB or config file, no restart needed when you add new ones.
+Sync channels respond immediately. Async channels return a trace ID; poll `GET /api/v1/admin/traces/{id}` for results. Kafka channels consume from topics configured in the DB or config file, no restart needed when you add new ones.
 
 **Bridging is a pattern, not a feature.** A sync workflow can `publish_kafka` and return 202. An async channel picks it up from there.
 
@@ -438,7 +438,7 @@ Production services fail. Orion handles it so you don't write retry loops and fa
 |---------|----------------|---------------|
 | **External API down** | Circuit breaker trips, fast-fails subsequent calls, auto-recovers | `failure_threshold`, `recovery_timeout_secs` per connector |
 | **Slow workflow** | Timeout fires, returns 504 to caller | `timeout_ms` per channel |
-| **Traffic spike** | Rate limiter rejects excess requests (429), backpressure sheds load (503) | `requests_per_second`, `max_concurrent` per channel |
+| **Traffic spike** | Rate limiter rejects excess requests (429), backpressure sheds load (503) | `requests_per_second`, `max_concurrent_per_node` per channel |
 | **Async task fails** | Moved to Dead Letter Queue, retried automatically with backoff | `dlq_max_retries`, `dlq_poll_interval_secs` |
 | **Task in pipeline fails** | Pipeline halts with error, or continues collecting errors if `continue_on_error: true` | Per-workflow setting |
 | **Duplicate request** | Detected via idempotency key, returns 409 | `Idempotency-Key` header + retention window |

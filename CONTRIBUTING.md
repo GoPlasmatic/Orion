@@ -217,9 +217,11 @@ not a convention to keep feeding.
 
 Releases are tag-driven. Pushing a version tag runs three workflows —
 `release.yml` (binaries, installers, Homebrew), `docker-release.yml`
-(multi-arch image, Helm chart, signing/attestation), and both gate on a
-successful CI run for the tagged commit (`ci-gate`), so a tag can never
-outrun a red build.
+(multi-arch image, Helm chart, signing/attestation), and
+`crates-publish.yml` (crates.io; skips prerelease tags) — and all three
+gate on a successful CI run for the tagged commit (`ci-gate`), so a tag can
+never outrun a red build. The secrets they need and the full procedure are
+in `RELEASING.md`.
 
 1. **Version alignment.** `Cargo.toml`'s `version` is the release version;
    tags are `v`-prefixed (`v1.0.0`). The Helm chart needs **no** manual bump —

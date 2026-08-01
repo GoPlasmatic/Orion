@@ -34,8 +34,13 @@ debug/
 # mdBook rendered output
 /docs/book/
 
-# Benchmark results
-/tests/benchmark/results/
+# Benchmark results: scratch runs stay local; each Orion release record
+# (RELEASING.md's C13 session) gets an explicit re-include line. Deliberately
+# not a blanket `v*` — dev machines hold comparison dirs named after
+# dataflow-rs versions (v2.1.5, v3.0.x) that must stay local.
+/tests/benchmark/results/*
+!/tests/benchmark/results/v0.2.0/
+!/tests/benchmark/results/v1.0.0/
 
 # Launch/marketing collateral (local only — drafts, checklists, submission notes)
 /marketing/

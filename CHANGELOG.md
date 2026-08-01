@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-01
+
 ### Security
 
 - **`vault://` secret references resolve.** With the standard `VAULT_ADDR` +
@@ -44,10 +46,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restore from the stored config on update, and an unmatched sentinel is
   refused rather than persisted as the credential. `env://` references pass
   through unmasked on both surfaces. (H3)
-
-## [1.0.0] - 2026-08-01
-
-### Security
 
 - **Admin credential guessing is now metered and throttled.** The middleware
   stack was registered so that admin auth ran *outside* rate limiting; since it

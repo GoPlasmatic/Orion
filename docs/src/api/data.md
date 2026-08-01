@@ -58,7 +58,7 @@ curl -s -X GET http://localhost:8080/api/v1/data/orders/ORD-123/items/ITEM-1
 
 ### Per-request profiling
 
-Add `X-Orion-Profile: 1` (or `?profile=1`) to the request and the response gains a `_orion.profile` block that breaks the request down by phase. The header is opt-in so you only pay the cost on the requests you care about, and `tracing.profile_enabled` in config gates the surface entirely. The debug surface always sits under the `_orion` namespace so workflow-produced output keys can never collide with future debug fields.
+Add `X-Orion-Profile: 1` (or `?profile=1`) to the request and the response gains a `_orion.profile` block that breaks the request down by phase. The header is opt-in so you only pay the cost on the requests you care about, and `tracing.debug_profile_enabled` in config gates the surface entirely. The debug surface always sits under the `_orion` namespace so workflow-produced output keys can never collide with future debug fields.
 
 ```json
 {

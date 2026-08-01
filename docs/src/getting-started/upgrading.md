@@ -2112,7 +2112,12 @@ edit them.
 ### Unknown keys in a channel config are now refused
 
 **What changed.** `ChannelConfig` rejects keys it does not recognise. Before
-1.0 they were silently ignored.
+1.0 they were silently ignored. The refusal applies at every nesting level:
+a typo *inside* a guard's body — `rate_limit`, `cache`, `deduplication`,
+`tracing`, `backpressure`, `auth`, `response` — fails the same way, where it
+previously fell back to that field's default (a misspelled
+`rate_limit.key_logic` silently meant per-client-IP keying; a misspelled
+`deduplication.window_secs` silently took the default window).
 
 **Why.** Every key in a channel config is a *guard*. A key Orion does not
 recognise is a guard that never runs — and because nothing re-serialises

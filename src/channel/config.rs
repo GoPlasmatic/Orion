@@ -252,6 +252,7 @@ impl ChannelResponseConfig {
 /// applies. The resolved `EffectiveTraceConfig` lives on `ChannelRuntimeConfig`
 /// so the request path doesn't merge per request.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelTracingConfig {
     #[serde(default)]
     pub mode: Option<crate::config::TraceStorageMode>,
@@ -286,6 +287,7 @@ pub enum BackendErrorPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelRateLimitConfig {
     /// Maximum requests per second.
     pub requests_per_second: u32,
@@ -306,6 +308,7 @@ pub struct ChannelRateLimitConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelCacheConfig {
     /// Whether caching is enabled.
     pub enabled: bool,
@@ -339,6 +342,7 @@ pub struct BackpressureConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DeduplicationConfig {
     /// Header name containing the idempotency key.
     pub header: String,
@@ -482,6 +486,37 @@ mod tests {
             err.to_string().contains("deduplicaton"),
             "the error must name the typo: {err}"
         );
+    }
+
+    /// N25: the same posture one level down. A typo *inside* a guard's own
+    /// body previously fell back to a default silently — a misspelled
+    /// `key_logic` meant per-IP rate keying, a misspelled `window_secs` meant
+    /// the default dedup window — which is the quiet-outcome failure the
+    /// top-level refusal exists to prevent.
+    #[test]
+    fn test_unknown_key_inside_a_guard_is_refused() {
+        for (config, typo) in [
+            (
+                r#"{"rate_limit": {"requests_per_second": 10, "key_logic_": {"var": "client_ip"}}}"#,
+                "key_logic_",
+            ),
+            (
+                r#"{"deduplication": {"header": "Idempotency-Key", "window_seconds": 60}}"#,
+                "window_seconds",
+            ),
+            (
+                r#"{"cache": {"enabled": true, "ttl_seconds": 30}}"#,
+                "ttl_seconds",
+            ),
+            (r#"{"tracing": {"sampling_rate": 0.5}}"#, "sampling_rate"),
+        ] {
+            let err = serde_json::from_str::<ChannelConfig>(config)
+                .expect_err("a misspelled key inside a guard must not be silently ignored");
+            assert!(
+                err.to_string().contains(typo),
+                "the error must name the typo `{typo}`: {err}"
+            );
+        }
     }
 
     #[test]

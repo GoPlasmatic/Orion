@@ -497,7 +497,9 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
         DataflowError::Validation(msg) => {
             (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone())
         }
-        DataflowError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, "TIMEOUT_ERROR", msg.clone()),
+        // G13: same wire code as `OrionError::Timeout` — a caller keying on
+        // the 504 `code` must not have to know which layer timed out.
+        DataflowError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, "TIMEOUT", msg.clone()),
         other => {
             // Surface unhandled DataflowError variants so a dataflow-rs upgrade
             // that adds new variants doesn't silently degrade them to a generic
