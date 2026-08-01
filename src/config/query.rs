@@ -9,8 +9,8 @@ use crate::errors::OrionError;
 /// `max_limit` is rejected (never silently clamped), so no query is ever
 /// unbounded by accident. `max_skip` bounds the pagination offset the same way,
 /// on every backend — Elasticsearch capped `skip` at its result window while
-/// SQL and MongoDB scanned arbitrarily deep (W12). See
-/// `proposals/query-dialect.md` §5.12.
+/// SQL and MongoDB scanned arbitrarily deep (W12). Documented under
+/// Configuration in `docs/src/reference/data-dialect.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct QueryConfig {

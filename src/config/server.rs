@@ -35,7 +35,7 @@ pub struct ServerConfig {
     /// and the data plane is unauthenticated) and wrong for development, where
     /// it costs a round trip to the trace API to learn what a task did. An
     /// explicit `true` in production is refused at startup rather than
-    /// honoured — see [`ServerConfig::validate`].
+    /// honoured — see `ServerConfig::validate`.
     pub verbose_errors: Option<bool>,
     /// Maximum request body size for the admin API, in bytes.
     ///

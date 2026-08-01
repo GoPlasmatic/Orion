@@ -3,9 +3,10 @@
 //! Resolves `{"field": ..}` references (against the schema, or identity mode) and
 //! `{"param": ..}` references (from the pre-resolved params map), lowers
 //! `some`/`all`/`none` over declared relations into [`Cond::Rel`], and applies the
-//! proposal §5 normalisations: empty `and`/`or` fold to `True`/`False`, empty `in`
-//! folds to `False`, `== null` becomes `IsNull`, and chained comparisons become
-//! `Between` with faithful strict/inclusive bounds (§5.11).
+//! dialect's normalisation rules (`docs/src/reference/data-dialect.md`): empty
+//! `and`/`or` fold to `True`/`False`, empty `in` folds to `False`, `== null`
+//! becomes `IsNull`, and chained comparisons become `Between` with faithful
+//! strict/inclusive bounds.
 //!
 //! Anything outside the vocabulary, column-to-column comparison, dotted-path
 //! fields, and relations not declared in the schema are rejected with a located
@@ -239,7 +240,7 @@ fn lower_in(arg: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Cond, Query
         // Membership: field IN (list).
         (Operand::Field(f), Operand::Val(Value::List(items))) => {
             if items.is_empty() {
-                Ok(Cond::False) // §5.5 empty membership
+                Ok(Cond::False) // empty membership folds to false
             } else {
                 Ok(Cond::In {
                     field: f,

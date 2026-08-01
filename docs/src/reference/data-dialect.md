@@ -100,6 +100,35 @@ applies to the envelopes themselves: an unknown key in the query or write
 envelope (a `"fileds"` typo, say) is rejected naming the key, because a
 silently dropped key is a filter or projection silently not applying.
 
+### Range, null and quantifier semantics
+
+These rules are **normative** — every renderer implements them, and the
+cross-backend parity suite pins them:
+
+- **Chained ranges keep each bound's own strictness.** An inclusive chain
+  `{ "<=": [1, {"field": "x"}, 10] }` renders as an inclusive `BETWEEN`
+  (or its backend equivalent). A strict chain (`<`) renders as explicit
+  per-bound comparisons — it is never widened into `BETWEEN` — and a mixed
+  chain keeps the strict side strict. The descending spellings
+  `{ ">": [10, {"field": "x"}, 1] }` / `">="` denote the *same* ranges with
+  the operands reversed: `a < x < b` and `b > x > a` are one range, a
+  symmetry that holds for every bound pair and is property-tested.
+- **Empty combinators fold, identically everywhere.** `{"and": []}` folds to
+  *true*, `{"or": []}` to *false*, and an empty `in` list to *false* — at
+  lowering time, before any backend sees the filter, so no backend can give
+  the empty forms a dialect of its own.
+- **`null` comparisons are existence tests.** `{"==": [{"field": "x"}, null]}`
+  is "x has no value" (SQL `IS NULL`, Mongo/ES missing-or-null), and `!=`
+  null is its negation — never a literal comparison against a NULL that SQL
+  three-valued logic would swallow.
+- **`all` counts an unevaluable element as a violation.** `all` over a
+  relation means "the relation is non-empty **and** no element violates the
+  predicate" — and an element for which the predicate evaluates to SQL
+  `NULL` counts as violating. On SQL this renders as
+  `EXISTS(rel) AND NOT EXISTS(rel WHERE NOT cond OR cond IS NULL)`; MongoDB
+  renders the equivalent; Elasticsearch rejects `all` outright (see the
+  parity table) rather than approximating it on nested documents.
+
 ## Write envelope (`data_write`)
 
 The envelope is nested under `write`, mirroring `data_query`'s `query`. The

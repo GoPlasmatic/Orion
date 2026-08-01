@@ -106,7 +106,7 @@ impl SecretResolver for ReservedSchemeResolver {
 /// masking it breaks `GET /export` → `POST /import` for every connector
 /// authored the recommended way.
 ///
-/// The scheme check is the whole point and must stay strict. [`parse_reference`]
+/// The scheme check is the whole point and must stay strict. `parse_reference`
 /// alone recognises *any* `scheme://rest`, which includes
 /// `postgres://user:password@host/db` — treating that as a reference would
 /// exempt real credentials from masking. Only `env://` and the reserved schemes

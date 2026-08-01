@@ -3,10 +3,8 @@
 //! A workflow's `filter` (JSONLogic-shaped) is lowered into this tree by
 //! [`crate::query::lower`], and each backend renderer walks it into native query
 //! form. The IR is deliberately small and evaluation-free: it exists only to be
-//! translated. See `proposals/query-dialect.md` §3.2 for the full model.
-//!
-//! Phase 1 is scalar SQL in identity mode, so relation quantifiers
-//! (`some`/`all`/`none`) are not represented here yet — they arrive in Phase 2.
+//! translated. The token model and its normative semantics are documented in
+//! `docs/src/reference/data-dialect.md`.
 
 /// A backend-neutral boolean condition over a single logical entity.
 #[derive(Debug, Clone, PartialEq)]
@@ -37,7 +35,8 @@ pub enum Cond {
     },
     /// Range with per-bound inclusivity so a chained `<` (strict) and `<=`
     /// (inclusive) render faithfully; native `BETWEEN` is used only when both
-    /// bounds are inclusive (proposal §5.11).
+    /// bounds are inclusive (the chained-range rule in
+    /// `docs/src/reference/data-dialect.md`).
     Between {
         field: FieldRef,
         low: Value,
@@ -196,8 +195,8 @@ pub enum TextOp {
 
 /// A resolved reference to a column/field.
 ///
-/// In identity mode `physical == path[0]` and `ty == Unknown`; a schema (Phase 2+)
-/// will populate renames and type hints.
+/// In identity mode `physical == path[0]` and `ty == Unknown`; a declared
+/// schema populates renames and type hints.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldRef {
     /// The dotted path as written, e.g. `["address", "city"]`.

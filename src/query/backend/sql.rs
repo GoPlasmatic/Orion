@@ -165,7 +165,7 @@ use super::{resolve_limit, resolve_skip};
 
 /// Render a `Cond` as a single boolean `SimpleExpr`. Composing on `SimpleExpr`
 /// (rather than `Condition`) keeps `and`/`or`/`not`, EXISTS subqueries, and the
-/// §5.6 `all` null-fix uniformly expressible. `current_table` is the physical
+/// the `all` null rule uniformly expressible. `current_table` is the physical
 /// table the bare columns belong to (the correlation base for relations).
 fn render_expr(cond: &Cond, current_table: &str) -> Result<SimpleExpr, QueryError> {
     Ok(match cond {
@@ -246,7 +246,8 @@ fn render_rel(
         Quant::All => {
             // Reference semantics: false on an empty relation, and a null inner
             // predicate counts as a counterexample. Rendered as
-            //   EXISTS(rel) AND NOT EXISTS(rel WHERE NOT c OR c IS NULL)   (§5.6)
+            //   EXISTS(rel) AND NOT EXISTS(rel WHERE NOT c OR c IS NULL)
+            //   (the `all` null rule)
             let nonempty = Expr::exists(rel_subquery(rel, current_table, None)?);
             let ie = render_expr(inner, target)?;
             let violates = ie.clone().not().or(Expr::expr(ie).is_null());
@@ -339,7 +340,8 @@ fn between_expr(
     let lo = to_sea_value(low)?;
     let hi = to_sea_value(high)?;
     // Native BETWEEN is inclusive-only; use it only when both bounds are
-    // inclusive, else render explicit per-bound comparisons (§5.11).
+    // inclusive, else render explicit per-bound comparisons (the
+    // chained-range rule).
     let e = if low_incl && high_incl {
         col_expr(field).between(lo, hi)
     } else {
@@ -713,7 +715,7 @@ mod tests {
 
     #[test]
     fn test_range_strict_is_not_between() {
-        // Chained `<` is strict → explicit > AND <, NOT inclusive BETWEEN (§5.11).
+        // Chained `<` is strict → explicit > AND <, NOT inclusive BETWEEN.
         let sql = sqlite(json!({
             "source": "t",
             "filter": { "<": [1, {"field": "x"}, 10] }
@@ -891,7 +893,7 @@ mod tests {
         ));
     }
 
-    // ---- Phase 2: relations ----
+    // ---- relations ----
 
     #[test]
     fn test_relation_some_exists() {
@@ -919,7 +921,8 @@ mod tests {
 
     #[test]
     fn test_relation_all_null_fix() {
-        // all → EXISTS(rel) AND NOT EXISTS(rel WHERE NOT c OR c IS NULL)  (§5.6)
+        // all → EXISTS(rel) AND NOT EXISTS(rel WHERE NOT c OR c IS NULL)
+        // (the `all` null rule)
         let sql = sqlite_schema(json!({
             "source": "users",
             "filter": { "all": [{"field": "orders"}, {">": [{"field": "total"}, 100]}] }
@@ -958,7 +961,7 @@ mod tests {
         );
     }
 
-    // ---- Phase 4: include planning ----
+    // ---- include planning ----
 
     /// Plan an include with the given selection, in identity mode over
     /// [`rel_schema`].

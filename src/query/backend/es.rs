@@ -3,9 +3,9 @@
 //! Walks a [`Cond`] + [`QuerySpec`] into an ES Query DSL search body over the same
 //! IR. Every predicate is emitted in **filter context** (`bool.filter` /
 //! `bool.must_not`, `should` + `minimum_should_match` for `or`) so results are
-//! set-equivalent to SQL/Mongo, never relevance-ranked (§5.2). Relations render as
-//! `nested` / `has_child` (§4.2). `all` and deep pagination are capability-gated
-//! (§5.6, §5.8).
+//! set-equivalent to SQL/Mongo, never relevance-ranked. Relations render as
+//! `nested` / `has_child`. `all` and deep pagination are capability-gated —
+//! see the parity table in `docs/src/reference/data-dialect.md`.
 //!
 //! Also renders the write dialect: [`render_write`] turns a [`ResolvedWrite`] into
 //! an [`EsWrite`] (`_bulk` / `_update_by_query` / `_delete_by_query` / `_update` /
@@ -22,7 +22,7 @@ use crate::query::spec::{QuerySpec, SortDir};
 use crate::query::write::{ConflictAction, ResolvedWrite, WriteError, WriteOp};
 
 /// ES bounds `from + size` by `index.max_result_window` (default 10k). Beyond it
-/// we raise a capability error rather than return a truncated page (§5.8).
+/// we raise a capability error rather than return a truncated page.
 const MAX_RESULT_WINDOW: u64 = 10_000;
 
 /// A rendered Elasticsearch search: the index plus the request body.
@@ -198,7 +198,8 @@ fn rel_json(
 ) -> Result<Json, QueryError> {
     if quant == Quant::All {
         // `all` over ES nesting needs must_not-of-negation with empty-relation
-        // caveats; not set-equivalent without an explicit opt-in (§5.6).
+        // caveats; not set-equivalent without an explicit opt-in (the `all`
+        // null rule is unrenderable on nested documents).
         return Err(QueryError::FeatureUnsupportedByTarget {
             feature: format!("`all` over relation '{name}'"),
             target: "elasticsearch".to_string(),

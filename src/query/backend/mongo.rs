@@ -2,8 +2,8 @@
 //!
 //! Walks a [`Cond`] + [`QuerySpec`] into a `find` query — a `$match`-shaped filter
 //! document plus projection / sort / skip / limit — over the same IR the SQL
-//! backend uses. Scalar operators map to the BSON forms in the master table
-//! (§4.1); embedded relations render as `$elemMatch` (§4.2). Referenced relations
+//! backend uses. Scalar operators map to their BSON forms; embedded
+//! relations render as `$elemMatch`. Referenced relations
 //! (`$lookup`) raise a capability error for now.
 //!
 //! **Names pass through exactly as the schema resolved them (W10).** There is no
@@ -201,7 +201,8 @@ fn rel_doc(
             )),
         ),
         Quant::All => {
-            // Non-empty AND no element violates the predicate (§5.6).
+            // Non-empty AND no element violates the predicate (the `all`
+            // null rule).
             let nonempty = doc_kv(
                 field,
                 Bson::Document(doc_kv("$elemMatch", Bson::Document(Document::new()))),

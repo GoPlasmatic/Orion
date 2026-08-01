@@ -16,7 +16,8 @@
 //! per-backend renderers (`backend::sql`, `backend::mongo`) consume the
 //! [`ResolvedWrite`].
 //!
-//! See `proposals/data-write-dialect.md` for the full design.
+//! The write envelope's normative semantics are documented in
+//! `docs/src/reference/data-dialect.md`.
 
 use serde_json::{Map, Value as Json};
 

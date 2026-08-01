@@ -1,6 +1,8 @@
 //! The common query dialect: one backend-neutral query (filter + envelope) that
-//! renders to a real backend. Phase 1 is scalar SQL in identity mode; see
-//! `proposals/query-dialect.md` for the full design and later phases.
+//! renders to a real backend — SQL (SQLite/PostgreSQL/MySQL), MongoDB and
+//! Elasticsearch, in identity or schema-mapped mode. The normative semantics
+//! live in `docs/src/reference/data-dialect.md` (published at
+//! <https://goplasmatic.github.io/Orion/reference/data-dialect.html>).
 //!
 //! Pipeline: [`spec::parse`] (envelope) → [`lower::lower_with`] (filter →
 //! [`ir::Cond`]) → [`backend::sql::render`] (`Cond` → `sea_query::SelectStatement`)

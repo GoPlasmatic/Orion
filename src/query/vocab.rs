@@ -2,9 +2,9 @@
 //! to their dialect meaning. Anything not classified here is rejected by
 //! [`crate::query::lower`] with a located `UnsupportedInQuery` error.
 //!
-//! This deliberately mirrors the operator set datalogic-rs evaluates (proposal
-//! §3.5), so a filter reads the same whether it is translated here or evaluated
-//! elsewhere in Orion. `some`/`all`/`none` (relations) and `include` are Phase 2+.
+//! This deliberately mirrors the operator set datalogic-rs evaluates — the
+//! shared JSONLogic subset — so a filter reads the same whether it is
+//! translated here or evaluated elsewhere in Orion.
 
 use crate::query::ir::CmpOp;
 
@@ -22,7 +22,7 @@ pub enum OpKind {
     EndsWith,
     /// `missing` — one or more fields have no meaningful value.
     Missing,
-    /// Relation quantifiers over a declared relation (Phase 2+).
+    /// Relation quantifiers over a declared relation.
     Some,
     All,
     None,

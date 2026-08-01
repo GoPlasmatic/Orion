@@ -14,7 +14,7 @@
 //! When the bounded mpsc is full, the submission path follows
 //! [`AsyncOnOverflow`]: drop the task immediately or block for up to
 //! `overflow_block_timeout_ms` before dropping. Either way the loss is counted
-//! *and* logged — see [`TracePersistenceQueue::warn_if_window_elapsed`].
+//! *and* logged — see `TracePersistenceQueue::warn_if_window_elapsed`.
 //!
 //! [`AsyncOnOverflow`]: crate::config::AsyncOnOverflow
 
