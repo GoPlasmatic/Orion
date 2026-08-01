@@ -58,11 +58,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest is Apple Silicon, matching the aarch64-apple-darwin
-        # dist target; windows-latest matches x86_64-pc-windows-msvc. cmake
-        # is preinstalled on both runner images (rdkafka's cmake-build needs
-        # it); vendored OpenSSL needs no system package.
-        os: [macos-latest, windows-latest]
+        # macos-latest is Apple Silicon (aarch64-apple-darwin); macos-13 is
+        # the last Intel image (x86_64-apple-darwin, added to dist in P13);
+        # windows-latest matches x86_64-pc-windows-msvc. cmake is preinstalled
+        # on all three runner images (rdkafka's cmake-build needs it);
+        # vendored OpenSSL needs no system package.
+        os: [macos-latest, macos-13, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -74,3 +75,28 @@ jobs:
 
       - name: Build
         run: cargo build --locked
+
+  # The static-Linux proof (P13). Musl is the audience of the "single binary,
+  # no runtime dependencies" pitch (Alpine/distroless/scratch), and rdkafka's
+  # cmake + vendored-OpenSSL build is exactly the part with a history of
+  # fighting musl — so the target earns its place in dist-workspace.toml by
+  # holding this job green, not by assertion. Promote it there once it has.
+  musl:
+    name: Build (x86_64-unknown-linux-musl)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl toolchain
+        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake
+
+      - name: Build
+        run: cargo build --locked --target x86_64-unknown-linux-musl

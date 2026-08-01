@@ -14,7 +14,12 @@ installers = ["shell", "powershell", "homebrew"]
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# x86_64-apple-darwin: Intel Macs got nothing before (P13) — the Homebrew
+# formula covered Apple Silicon only. Musl (static Linux) is deliberately NOT
+# here yet: rdkafka's cmake + vendored-OpenSSL build is the risk, and
+# cross-os-build.yml now compiles x86_64-unknown-linux-musl on every relevant
+# PR — promote it into this list once that job has a green history.
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Homebrew tap repository
 tap = "GoPlasmatic/homebrew-tap"
 # Attest dist artifacts with GitHub build provenance (proposal P12). The
