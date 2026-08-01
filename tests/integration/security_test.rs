@@ -940,3 +940,130 @@ async fn test_health_serves_topology_when_auth_disabled() {
     assert!(body["git_hash"].is_string());
     assert!(body["connectors"]["circuit_breakers"].is_object());
 }
+
+// ============================================================
+// S13: read-only admin keys
+// ============================================================
+
+/// A read-only key reads the admin plane and cannot mutate it: GET passes,
+/// every mutating method answers 403 (not 401 — the credential is valid, its
+/// authority is not), and the full-access key on the same install still
+/// writes.
+#[tokio::test]
+async fn test_read_only_key_reads_but_cannot_mutate() {
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["full-access-key-long-enough-000000".to_string()];
+    config.admin_auth.read_only_api_keys = vec!["read-only-key-long-enough-00000000".to_string()];
+    let app = common::test_app_with_config(config).await;
+
+    let with_key = |method: &str, uri: &str, key: &str, body: Option<serde_json::Value>| {
+        let builder = Request::builder()
+            .method(method)
+            .uri(uri.to_string())
+            .header("Authorization", format!("Bearer {key}"))
+            .header("content-type", "application/json");
+        match body {
+            Some(b) => builder.body(Body::from(serde_json::to_vec(&b).unwrap())),
+            None => builder.body(Body::empty()),
+        }
+        .unwrap()
+    };
+
+    // Reads pass.
+    let resp = app
+        .clone()
+        .oneshot(with_key(
+            "GET",
+            "/api/v1/admin/engine/status",
+            "read-only-key-long-enough-00000000",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // A mutation with the read-only key is 403 FORBIDDEN.
+    let create = serde_json::json!({
+        "name": "s13-wf",
+        "tasks": [{"id":"t1","name":"Log","function":{"name":"log","input":{"message":"x"}}}]
+    });
+    let resp = app
+        .clone()
+        .oneshot(with_key(
+            "POST",
+            "/api/v1/admin/workflows",
+            "read-only-key-long-enough-00000000",
+            Some(create.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = body_json(resp).await;
+    assert_eq!(body["error"]["code"], "FORBIDDEN");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("read-only"),
+        "{body}"
+    );
+
+    // The full key on the same install still writes.
+    let resp = app
+        .clone()
+        .oneshot(with_key(
+            "POST",
+            "/api/v1/admin/workflows",
+            "full-access-key-long-enough-000000",
+            Some(create),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    // DELETE with the read-only key: same refusal.
+    let resp = app
+        .clone()
+        .oneshot(with_key(
+            "DELETE",
+            "/api/v1/admin/workflows/s13-wf",
+            "read-only-key-long-enough-00000000",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+}
+
+/// The `sha256:` at-rest form carries the role too.
+#[tokio::test]
+async fn test_read_only_role_applies_to_the_digest_form() {
+    use sha2::Digest as _;
+    let key = "digest-form-read-only-key-0000000000";
+    let digest = hex::encode(sha2::Sha256::digest(key.as_bytes()));
+
+    let mut config = orion::config::AppConfig::default();
+    config.admin_auth.enabled = true;
+    config.admin_auth.api_keys = vec!["full-access-key-long-enough-000000".to_string()];
+    config.admin_auth.read_only_api_keys = vec![format!("sha256:{digest}")];
+    let app = common::test_app_with_config(config).await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/engine/reload")
+        .header("Authorization", format!("Bearer {key}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    let req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/engine/status")
+        .header("Authorization", format!("Bearer {key}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}

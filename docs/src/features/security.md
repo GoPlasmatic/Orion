@@ -157,11 +157,14 @@ key_path = "key.pem"
 [admin_auth]
 enabled = true
 api_keys = ["your-secret-key"]   # Any number of accepted keys; any match authorises a request
+read_only_api_keys = []          # Keys limited to GET/HEAD; mutating methods answer 403
 # header = "Authorization"       # Bearer format (default)
 # header = "X-API-Key"           # Raw key format
 ```
 
 When `header` is `"Authorization"`, the key is expected as `Bearer <key>`. For any other header name, the raw key value is matched directly.
+
+**Read-only keys** carry the same forms (plaintext or `sha256:` digest) but authorise `GET`/`HEAD` only — a dashboard, an auditor, or a CI check can list workflows and read traces without holding a credential able to rewrite them. A mutating request with a read-only key answers `403` (the credential is valid; its authority is not), and the refusal is counted under the `admin_auth_failures_total{reason="read_only_write"}` metric.
 
 ```bash
 # Bearer token

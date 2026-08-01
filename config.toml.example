@@ -310,6 +310,10 @@
                                 # (e.g. "s3cret-key") or "sha256:<64-hex>" — the SHA-256 digest
                                 # of the key — so the config file holds a hash, not a secret.
                                 # Generate one with:  printf %s "$KEY" | shasum -a 256
+# read_only_api_keys = []       # Keys limited to GET/HEAD on the admin plane; every mutating
+                                # method answers 403. Same entry forms as api_keys. For
+                                # dashboards, auditors and CI checks that should never hold a
+                                # credential able to rewrite workflows.
 # header = "Authorization"      # "Authorization" expects `Bearer <key>`; any other value
                                 # (e.g. "X-API-Key") expects the raw key
 

@@ -14,6 +14,11 @@ pub struct AdminAuthConfig {
     /// digest of the key — so operators can keep hashes rather than secrets at
     /// rest (S11). Empty strings are ignored.
     pub api_keys: Vec<String>,
+    /// API keys limited to read-only access (S13): `GET`/`HEAD` on the admin
+    /// plane succeed, every mutating method answers `403`. Same entry forms as
+    /// `api_keys`. For dashboards, auditors and CI checks that should never
+    /// hold a credential able to rewrite workflows or read-modify connectors.
+    pub read_only_api_keys: Vec<String>,
     /// Header name to extract the API key from.
     /// When "Authorization" (default), expects `Bearer <token>` format.
     /// For other values (e.g. "X-API-Key"), expects the raw key value.
@@ -48,11 +53,15 @@ pub fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
 /// Which config form the key came from is deliberately *not* recorded: both
 /// forms are the same credential, so both must compare and audit identically
 /// (see `AdminPrincipal::from_digest`). Carrying the distinction only ever
-/// invited code that treats them differently.
+/// invited code that treats them differently. The *role* is recorded — that
+/// distinction is the point of `read_only_api_keys` (S13).
 pub struct AdminKey {
     /// SHA-256 digest of the key, compared against the digest of the
     /// presented token.
     pub digest: [u8; 32],
+    /// Whether this key is limited to `GET`/`HEAD` (from
+    /// `read_only_api_keys`).
+    pub read_only: bool,
 }
 
 /// Decode a `sha256:` entry's 64-hex-char payload into a digest.
@@ -61,7 +70,8 @@ fn decode_sha256_hex(s: &str) -> Option<[u8; 32]> {
 }
 
 impl AdminAuthConfig {
-    /// Return the effective list of API keys (non-empty `api_keys` entries).
+    /// Return the effective list of full-access API keys (non-empty
+    /// `api_keys` entries).
     pub fn effective_keys(&self) -> Vec<&str> {
         self.api_keys
             .iter()
@@ -70,21 +80,35 @@ impl AdminAuthConfig {
             .collect()
     }
 
-    /// The effective keys as SHA-256 digests: `sha256:` entries decoded,
-    /// plaintext entries hashed. Malformed `sha256:` entries are skipped —
-    /// `validate()` rejects them at config load.
+    /// Non-empty `read_only_api_keys` entries.
+    fn effective_read_only_keys(&self) -> Vec<&str> {
+        self.read_only_api_keys
+            .iter()
+            .filter(|k| !k.is_empty())
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// Every effective key as a SHA-256 digest plus its role: `sha256:`
+    /// entries decoded, plaintext entries hashed. Malformed `sha256:` entries
+    /// are skipped — `validate()` rejects them at config load.
     pub fn admin_keys(&self) -> Vec<AdminKey> {
+        let to_key = |key: &str, read_only: bool| {
+            let digest = if let Some(hex_digest) = key.strip_prefix("sha256:") {
+                decode_sha256_hex(hex_digest)?
+            } else {
+                Sha256::digest(key.as_bytes()).into()
+            };
+            Some(AdminKey { digest, read_only })
+        };
         self.effective_keys()
             .into_iter()
-            .filter_map(|key| {
-                if let Some(hex_digest) = key.strip_prefix("sha256:") {
-                    decode_sha256_hex(hex_digest).map(|digest| AdminKey { digest })
-                } else {
-                    Some(AdminKey {
-                        digest: Sha256::digest(key.as_bytes()).into(),
-                    })
-                }
-            })
+            .filter_map(|key| to_key(key, false))
+            .chain(
+                self.effective_read_only_keys()
+                    .into_iter()
+                    .filter_map(|key| to_key(key, true)),
+            )
             .collect()
     }
 
@@ -97,35 +121,46 @@ impl AdminAuthConfig {
                         .to_string(),
             });
         }
-        for key in self.effective_keys() {
-            if let Some(hex_digest) = key.strip_prefix("sha256:") {
-                if decode_sha256_hex(hex_digest).is_none() {
-                    let shown: String = hex_digest.chars().take(16).collect();
-                    return Err(OrionError::Config {
-                        message: format!(
-                            "admin_auth.api_keys: 'sha256:' entries must be followed by the \
-                             64-character hex SHA-256 digest of the key, got 'sha256:{shown}'"
-                        ),
-                    });
+        // The same per-key rules govern both lists: a weak read-only key is
+        // still a credential that reads every trace payload.
+        let lists = [
+            ("admin_auth.api_keys", self.effective_keys()),
+            (
+                "admin_auth.read_only_api_keys",
+                self.effective_read_only_keys(),
+            ),
+        ];
+        for (list_name, keys) in lists {
+            for key in keys {
+                if let Some(hex_digest) = key.strip_prefix("sha256:") {
+                    if decode_sha256_hex(hex_digest).is_none() {
+                        let shown: String = hex_digest.chars().take(16).collect();
+                        return Err(OrionError::Config {
+                            message: format!(
+                                "{list_name}: 'sha256:' entries must be followed by the \
+                                 64-character hex SHA-256 digest of the key, got 'sha256:{shown}'"
+                            ),
+                        });
+                    }
+                    // A digest carries no information about the strength of the key
+                    // it was derived from, so the length floor below cannot apply.
+                    continue;
                 }
-                // A digest carries no information about the strength of the key
-                // it was derived from, so the length floor below cannot apply.
-                continue;
-            }
-            // Plaintext keys: enforce a minimum length. `api_keys = ["a"]` was
-            // previously a valid production admin credential (proposal S12).
-            if key.len() < MIN_PLAINTEXT_KEY_LEN {
-                let message = format!(
-                    "admin_auth.api_keys: plaintext keys must be at least \
-                     {MIN_PLAINTEXT_KEY_LEN} characters (got one of length {}). \
-                     Generate one with `openssl rand -hex 32`, or store the digest \
-                     as 'sha256:<64-hex>'",
-                    key.len()
-                );
-                if is_production {
-                    return Err(OrionError::Config { message });
+                // Plaintext keys: enforce a minimum length. `api_keys = ["a"]` was
+                // previously a valid production admin credential (proposal S12).
+                if key.len() < MIN_PLAINTEXT_KEY_LEN {
+                    let message = format!(
+                        "{list_name}: plaintext keys must be at least \
+                         {MIN_PLAINTEXT_KEY_LEN} characters (got one of length {}). \
+                         Generate one with `openssl rand -hex 32`, or store the digest \
+                         as 'sha256:<64-hex>'",
+                        key.len()
+                    );
+                    if is_production {
+                        return Err(OrionError::Config { message });
+                    }
+                    tracing::warn!("{message}");
                 }
-                tracing::warn!("{message}");
             }
         }
         if !self.enabled {
@@ -149,6 +184,7 @@ impl Default for AdminAuthConfig {
         Self {
             enabled: false,
             api_keys: Vec::new(),
+            read_only_api_keys: Vec::new(),
             header: "Authorization".to_string(),
         }
     }
@@ -162,6 +198,7 @@ mod tests {
         AdminAuthConfig {
             enabled: true,
             api_keys: keys.iter().map(|k| k.to_string()).collect(),
+            read_only_api_keys: Vec::new(),
             header: "Authorization".to_string(),
         }
     }

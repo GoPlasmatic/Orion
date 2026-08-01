@@ -422,6 +422,7 @@ Guards `/api/v1/admin/*` and the trace-read endpoints. Disabled by default so a 
 |---|---|---|---|
 | `admin_auth.enabled` | `false` | `ORION_ADMIN_AUTH__ENABLED` | Enable anywhere the admin API is reachable by anything but you. |
 | `admin_auth.api_keys` | `[]` | `ORION_ADMIN_AUTH__API_KEYS` | Comma-separated in the env var. Any listed key authorises a request. |
+| `admin_auth.read_only_api_keys` | `[]` | `ORION_ADMIN_AUTH__READ_ONLY_API_KEYS` | Keys limited to `GET`/`HEAD`; mutating methods answer `403`. For dashboards, auditors and CI checks. |
 | `admin_auth.header` | `"Authorization"` | `ORION_ADMIN_AUTH__HEADER` | `"Authorization"` expects `Bearer <key>`; any other value (e.g. `"X-API-Key"`) expects the raw key. |
 
 **Multiple keys exist for rotation.** Add the new key, roll clients over, then drop the old one — no restart gap where a valid client is refused.

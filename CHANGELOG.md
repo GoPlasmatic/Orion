@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Read-only admin keys.** `admin_auth.read_only_api_keys` holds keys that
+  authorise `GET`/`HEAD` on the admin plane only; every mutating method
+  answers `403` without touching the failed-auth backoff. Same entry forms as
+  `api_keys` (plaintext or `sha256:` digest), same strength rules, counted
+  under `admin_auth_failures_total{reason="read_only_write"}`. Every key was
+  previously a full superuser. (S13)
+
 - **Secret masking fails closed.** Connector configs are masked by
   *allowlist*: only the structural vocabulary the connector types define is
   served readable, and every other value — including all `headers` values and

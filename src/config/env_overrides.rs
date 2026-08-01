@@ -368,6 +368,7 @@ where
     ov!(admin_auth.enabled: bool);
     ov!(admin_auth.header: String);
     ov_list!(admin_auth.api_keys);
+    ov_list!(admin_auth.read_only_api_keys);
 
     Ok(())
 }

@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use axum::extract::{MatchedPath, Request, State};
+use axum::http::Method;
 use axum::middleware::Next;
 use axum::response::Response;
 use dashmap::DashMap;
@@ -294,6 +295,23 @@ pub async fn admin_auth_middleware(
 
     state.admin_auth_failures.record_success(&client);
 
+    // S13: a read-only key authenticates but does not authorize a mutation.
+    // 403, not 401 — the credential is valid, its authority is not — and no
+    // backoff: this is an authorization refusal, not a guessing attempt.
+    if matched_key.read_only && !matches!(*req.method(), Method::GET | Method::HEAD) {
+        let principal = AdminPrincipal::from_digest(&matched_key.digest);
+        metrics::record_admin_auth_failure("read_only_write");
+        tracing::warn!(
+            key_id = %principal.key_id,
+            method = %req.method(),
+            path = %req.uri().path(),
+            "Admin API request refused: read-only key attempted a mutation"
+        );
+        return Err(OrionError::Forbidden(
+            "This API key is read-only; mutating admin requests need a full-access key".into(),
+        ));
+    }
+
     // Store principal identity in request extensions for audit logging. Both
     // config forms derive from the same digest, so one key has one id.
     req.extensions_mut()
@@ -405,6 +423,7 @@ mod tests {
         let config = AdminAuthConfig {
             enabled: true,
             api_keys: vec![format!("sha256:{}", hex::encode(digest("the-real-key")))],
+            read_only_api_keys: Vec::new(),
             header: "Authorization".to_string(),
         };
         let presented = digest("the-real-key");
@@ -474,10 +493,12 @@ mod tests {
         let plaintext = AdminAuthConfig {
             enabled: true,
             api_keys: vec!["the-real-key".to_string()],
+            read_only_api_keys: Vec::new(),
             header: "Authorization".to_string(),
         };
         let hashed = AdminAuthConfig {
             api_keys: vec![format!("sha256:{}", hex::encode(digest("the-real-key")))],
+            read_only_api_keys: Vec::new(),
             ..plaintext.clone()
         };
         let id_of = |c: &AdminAuthConfig| {
