@@ -242,6 +242,57 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
+  # The chart's guards — two `{{- fail }}`s, two `required`s and
+  # values.schema.json — only fire at render time, so before this job a typo
+  # shipped undetected until a user's `helm install` (proposal T13). Lint and
+  # template need a values file: the chart's defaults deliberately `required`-
+  # fail without storage.url/redisUrl, so each documented install shape is
+  # rendered explicitly — devStack, production, and production with the
+  # Prometheus Operator ServiceMonitor. `helm template` also renders
+  # `templates/tests/`, which nothing else in CI touches. kubeconform then
+  # type-checks the output against the Kubernetes schemas (CRDs-catalog
+  # supplies the ServiceMonitor type).
+  helm:
+    name: Helm Chart
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install kubeconform
+        run: |
+          curl -sSfL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install /tmp/kubeconform /usr/local/bin/kubeconform
+
+      - name: Lint and render each value set
+        run: |
+          set -euo pipefail
+          for values in deploy/helm/orion/ci/*-values.yaml; do
+            echo "=== ${values}"
+            helm lint deploy/helm/orion -f "${values}" --strict
+            helm template orion deploy/helm/orion -f "${values}" \
+              | kubeconform -strict -summary \
+                  -schema-location default \
+                  -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceVersion}}.json'
+          done
+
+      # The schema must keep refusing what the templates do not read — that
+      # is the bug it exists to prevent (see values.schema.json in
+      # proposal.md's "already strong" list).
+      - name: A misspelled value must fail the render
+        run: |
+          if helm template orion deploy/helm/orion \
+               -f deploy/helm/orion/ci/production-values.yaml \
+               --set cluster.enabld=true > /dev/null 2>&1; then
+            echo "::error::values.schema.json accepted 'cluster.enabld' — the typo guard is gone"
+            exit 1
+          fi
+
   # The image build breaks independently of cargo (system deps like the
   # rdkafka toolchain, base-image drift). Building on every PR keeps that
   # from being discovered mid-release (proposal T10). No push — the release

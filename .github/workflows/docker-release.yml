@@ -176,3 +176,36 @@ jobs:
       - name: Inspect manifest
         run: |
           docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}"
+
+  # Publish the Helm chart to GHCR as an OCI artifact (proposal T13): before
+  # this job the chart existed only in-tree, so installing it meant cloning
+  # the repo. Runs after the manifest merge so a published chart can never
+  # point at an image tag that does not exist yet. The chart and app version
+  # are both stamped from the release version — the in-tree Chart.yaml value
+  # is a development placeholder.
+  helm-publish:
+    name: Publish Helm Chart
+    needs: [prepare, merge]
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Login to GitHub Container Registry
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" \
+            | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+
+      - name: Package and push
+        run: |
+          helm package deploy/helm/orion \
+            --version "${{ needs.prepare.outputs.version }}" \
+            --app-version "${{ needs.prepare.outputs.version }}" \
+            --destination /tmp/chart
+          helm push /tmp/chart/orion-${{ needs.prepare.outputs.version }}.tgz \
+            oci://ghcr.io/goplasmatic/charts
