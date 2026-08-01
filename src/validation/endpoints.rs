@@ -94,12 +94,28 @@ fn scheme_error(field: &str, conn: &str, allowed: &[&str]) -> OrionError {
     ))
 }
 
-fn require_scheme(field: &str, conn: &str, allowed: &[&str]) -> Result<String, OrionError> {
-    let scheme = scheme_of(conn).ok_or_else(|| scheme_error(field, conn, allowed))?;
-    if !allowed.contains(&scheme.as_str()) {
-        return Err(scheme_error(field, conn, allowed));
+fn require_scheme(field: &str, conn: &str, allowed: &[&str]) -> Result<(), OrionError> {
+    // The stored value may not be the endpoint itself. A resolvable secret
+    // reference (`env://…`, `vault://…`) resolves at load, so its scheme is
+    // the reference's, not the endpoint's; and `${VAR}` placeholders are
+    // substituted by the load path before anything parses the string. Judge
+    // what load will see: substitute when possible, and when the value cannot
+    // be resolved on this host (a reference, or an unset variable with no
+    // default) leave enforcement to the load path, which reports it as a
+    // load issue on the host that matters. Refusing here would reject every
+    // connector authored the documented way (`${ORDERS_DB_URL:-postgres://…}`).
+    if crate::connector::secrets::is_resolvable_reference(conn) {
+        return Ok(());
     }
-    Ok(scheme)
+    let effective = match crate::config::env_substitute::substitute(conn, field) {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+    let scheme = scheme_of(&effective).ok_or_else(|| scheme_error(field, &effective, allowed))?;
+    if !allowed.contains(&scheme.as_str()) {
+        return Err(scheme_error(field, &effective, allowed));
+    }
+    Ok(())
 }
 
 /// Refuse a connector whose endpoint uses a scheme its backend cannot serve.
@@ -337,6 +353,36 @@ mod tests {
             let result = validate_endpoint_schemes(&db(conn));
             assert!(result.is_ok(), "{conn} must be accepted: {result:?}");
         }
+    }
+
+    /// A stored endpoint is not always the endpoint itself: `${VAR}` text
+    /// substitutes at load, and `env://` / reserved-scheme references resolve
+    /// at load. The check judges the substituted value when this host can
+    /// produce it, and defers to the load path when it cannot — refusing the
+    /// raw text rejected every connector authored the documented way
+    /// (`${ORDERS_DB_URL:-postgres://…}`, the postgres-orders example).
+    #[test]
+    fn db_placeholders_and_references_are_judged_after_resolution() {
+        // A default makes the placeholder substitutable anywhere: the check
+        // sees the substituted string, so a good default passes…
+        validate_endpoint_schemes(&db(
+            "${ORION_TEST_UNSET_DB_URL:-postgres://db.example.com/x}",
+        ))
+        .expect("placeholder with a valid default");
+        // …and a bad one is still caught at the door.
+        let err =
+            validate_endpoint_schemes(&db("${ORION_TEST_UNSET_DB_URL:-redis://not-a-db:6379}"))
+                .expect_err("placeholder with a foreign-scheme default");
+        assert!(err.to_string().contains("Allowed:"), "{err}");
+
+        // No default and unset here: only the load host can judge it.
+        validate_endpoint_schemes(&db("${ORION_TEST_UNSET_DB_URL}"))
+            .expect("unresolvable placeholder is the load path's to enforce");
+
+        // Secret references resolve at load; their scheme is the reference's,
+        // not the endpoint's.
+        validate_endpoint_schemes(&db("env://ORDERS_DB_URL")).expect("env:// reference");
+        validate_endpoint_schemes(&db("vault://secret/data/db#url")).expect("vault:// reference");
     }
 
     /// The S6 headline: a scheme the db pool would happily dial but that is
