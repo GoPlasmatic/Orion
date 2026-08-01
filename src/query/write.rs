@@ -163,13 +163,14 @@ impl ResolvedWrite {
     }
 }
 
-/// A located write-translation error. Filter errors reuse [`QueryError`] verbatim
-/// (the filter is lowered by the query dialect). All variants map to
+/// A located write-translation error. Only the genuinely write-specific
+/// failures live here; everything the read dialect can also produce — a
+/// malformed envelope, a non-representable construct, a backend capability gap,
+/// and every filter / field / relation error — is the shared [`QueryError`],
+/// wrapped in [`WriteError::Query`] (W20). All variants map to
 /// `DataflowError::Validation` at the handler edge.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WriteError {
-    /// The envelope is malformed (bad/missing `op`, `target`, `values`, …).
-    InvalidEnvelope(String),
     /// A field required for this `op` is missing (e.g. `set` for update).
     MissingField { field: String, op: String },
     /// An `update`/`delete` has no `filter` and no `"all": true` acknowledgement.
@@ -178,18 +179,21 @@ pub enum WriteError {
     UnfilteredNotAllowed { op: String },
     /// A bulk insert asked for more rows than `write.max_rows`.
     TooManyRows { requested: usize, max: u64 },
-    /// A column value is not a bindable scalar (array/object).
-    NotRepresentable { what: String, at: String },
-    /// The chosen backend cannot express a requested feature (e.g. RETURNING on MySQL).
-    FeatureUnsupportedByTarget { feature: String, target: String },
-    /// A filter / field / relation error from the shared query lowering.
+    /// A shared translation error (envelope, representability, capability,
+    /// filter lowering) — see [`QueryError`].
     Query(QueryError),
+}
+
+impl WriteError {
+    /// Shorthand for the shared malformed-envelope error.
+    fn invalid_envelope(msg: impl Into<String>) -> Self {
+        WriteError::Query(QueryError::InvalidEnvelope(msg.into()))
+    }
 }
 
 impl std::fmt::Display for WriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WriteError::InvalidEnvelope(m) => write!(f, "invalid write envelope: {m}"),
             WriteError::MissingField { field, op } => {
                 write!(f, "'{op}' requires a '{field}' field")
             }
@@ -205,12 +209,6 @@ impl std::fmt::Display for WriteError {
                 f,
                 "insert of {requested} rows exceeds the configured maximum {max}"
             ),
-            WriteError::NotRepresentable { what, at } => {
-                write!(f, "{what} cannot be written as a bound value (at {at})")
-            }
-            WriteError::FeatureUnsupportedByTarget { feature, target } => {
-                write!(f, "{feature} is not supported by the {target} backend")
-            }
             WriteError::Query(e) => write!(f, "{e}"),
         }
     }
@@ -262,10 +260,10 @@ pub fn resolve_write(
     // W6: unknown keys were silently ignored — `"retuning"` meant no
     // returning, a misspelled `filter` key meant an unfiltered mutation.
     let obj = input.as_object().ok_or_else(|| {
-        WriteError::InvalidEnvelope("write envelope must be a JSON object".to_string())
+        WriteError::invalid_envelope("write envelope must be a JSON object".to_string())
     })?;
     if let Some(unknown) = obj.keys().find(|k| !ENVELOPE_KEYS.contains(&k.as_str())) {
-        return Err(WriteError::InvalidEnvelope(format!(
+        return Err(WriteError::invalid_envelope(format!(
             "unknown key '{unknown}' in write envelope (expected \
              op/target/values/set/filter/on_conflict/returning/all)"
         )));
@@ -277,12 +275,12 @@ pub fn resolve_write(
         Some("delete") => WriteOp::Delete,
         Some("upsert") => WriteOp::Upsert,
         Some(other) => {
-            return Err(WriteError::InvalidEnvelope(format!(
+            return Err(WriteError::invalid_envelope(format!(
                 "unknown op '{other}' (expected insert/update/delete/upsert)"
             )));
         }
         None => {
-            return Err(WriteError::InvalidEnvelope(
+            return Err(WriteError::invalid_envelope(
                 "missing required string field 'op'".to_string(),
             ));
         }
@@ -293,7 +291,7 @@ pub fn resolve_write(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            WriteError::InvalidEnvelope("missing required string field 'target'".to_string())
+            WriteError::invalid_envelope("missing required string field 'target'".to_string())
         })?
         .to_string();
     let table = reg.physical_table(&target)?;
@@ -411,13 +409,13 @@ fn parse_rows(
             let mut out = Vec::with_capacity(a.len());
             for (i, r) in a.iter().enumerate() {
                 out.push(r.as_object().ok_or_else(|| {
-                    WriteError::InvalidEnvelope(format!("values[{i}] must be an object"))
+                    WriteError::invalid_envelope(format!("values[{i}] must be an object"))
                 })?);
             }
             out
         }
         Some(_) => {
-            return Err(WriteError::InvalidEnvelope(
+            return Err(WriteError::invalid_envelope(
                 "'values' must be an object or an array of objects".to_string(),
             ));
         }
@@ -429,7 +427,7 @@ fn parse_rows(
 
     let logical: Vec<String> = raw_rows[0].keys().cloned().collect();
     if logical.is_empty() {
-        return Err(WriteError::InvalidEnvelope(
+        return Err(WriteError::invalid_envelope(
             "'values' rows must have at least one column".to_string(),
         ));
     }
@@ -441,7 +439,7 @@ fn parse_rows(
     let mut rows = Vec::with_capacity(raw_rows.len());
     for (i, r) in raw_rows.iter().enumerate() {
         if r.len() != logical.len() || logical.iter().any(|k| !r.contains_key(k)) {
-            return Err(WriteError::InvalidEnvelope(format!(
+            return Err(WriteError::invalid_envelope(format!(
                 "values[{i}] must have the same columns as the first row"
             )));
         }
@@ -471,7 +469,7 @@ fn parse_set(
         None | Some(Json::Null) => return Ok(Vec::new()),
         Some(Json::Object(m)) => m,
         Some(_) => {
-            return Err(WriteError::InvalidEnvelope(
+            return Err(WriteError::invalid_envelope(
                 "'set' must be an object of column → value".to_string(),
             ));
         }
@@ -493,7 +491,7 @@ fn parse_conflict(
         None | Some(Json::Null) => return Ok(None),
         Some(Json::Object(m)) => m,
         Some(_) => {
-            return Err(WriteError::InvalidEnvelope(
+            return Err(WriteError::invalid_envelope(
                 "'on_conflict' must be an object".to_string(),
             ));
         }
@@ -502,7 +500,7 @@ fn parse_conflict(
         .keys()
         .find(|k| !matches!(k.as_str(), "target" | "action"))
     {
-        return Err(WriteError::InvalidEnvelope(format!(
+        return Err(WriteError::invalid_envelope(format!(
             "unknown key '{unknown}' in on_conflict (expected target/action)"
         )));
     }
@@ -510,19 +508,19 @@ fn parse_conflict(
         .get("target")
         .and_then(|v| v.as_array())
         .ok_or_else(|| {
-            WriteError::InvalidEnvelope(
+            WriteError::invalid_envelope(
                 "on_conflict.target must be an array of columns".to_string(),
             )
         })?;
     if targets_raw.is_empty() {
-        return Err(WriteError::InvalidEnvelope(
+        return Err(WriteError::invalid_envelope(
             "on_conflict.target must name at least one column".to_string(),
         ));
     }
     let mut targets = Vec::with_capacity(targets_raw.len());
     for t in targets_raw {
         let name = t.as_str().ok_or_else(|| {
-            WriteError::InvalidEnvelope("on_conflict.target entries must be strings".to_string())
+            WriteError::invalid_envelope("on_conflict.target entries must be strings".to_string())
         })?;
         targets.push(reg.resolve_write_column(entity, name, "on_conflict.target")?);
     }
@@ -530,7 +528,7 @@ fn parse_conflict(
         None | Some("update") => ConflictAction::Update,
         Some("nothing") => ConflictAction::Nothing,
         Some(other) => {
-            return Err(WriteError::InvalidEnvelope(format!(
+            return Err(WriteError::invalid_envelope(format!(
                 "on_conflict.action '{other}' must be \"update\" or \"nothing\""
             )));
         }
@@ -549,7 +547,7 @@ fn parse_returning(
         None | Some(Json::Null) => return Ok(Vec::new()),
         Some(Json::Array(a)) => a,
         Some(_) => {
-            return Err(WriteError::InvalidEnvelope(
+            return Err(WriteError::invalid_envelope(
                 "'returning' must be an array of column names".to_string(),
             ));
         }
@@ -557,7 +555,7 @@ fn parse_returning(
     let mut out = Vec::with_capacity(arr.len());
     for (i, c) in arr.iter().enumerate() {
         let name = c.as_str().ok_or_else(|| {
-            WriteError::InvalidEnvelope(format!("returning[{i}] must be a string"))
+            WriteError::invalid_envelope(format!("returning[{i}] must be a string"))
         })?;
         // W3: `returning` reads columns back, so it is subject to the read
         // allowlist and to `unmapped: "reject"` exactly like `fields` is.
@@ -580,7 +578,7 @@ fn resolve_value_node(node: &Json, params: &Params, at: &str) -> Result<ir::Valu
         && let Some(p) = m.get("param")
     {
         let name = p.as_str().ok_or_else(|| {
-            WriteError::InvalidEnvelope(format!("{at}: param name must be a string"))
+            WriteError::invalid_envelope(format!("{at}: param name must be a string"))
         })?;
         let resolved = params.get(name).ok_or_else(|| {
             WriteError::Query(QueryError::MissingParam {
@@ -610,10 +608,10 @@ fn json_to_value(j: &Json, at: &str) -> Result<ir::Value, WriteError> {
         }
         Json::String(s) => ir::Value::Str(s.clone()),
         Json::Array(_) | Json::Object(_) => {
-            return Err(WriteError::NotRepresentable {
+            return Err(WriteError::Query(QueryError::NotRepresentable {
                 what: "an array/object column value".to_string(),
                 at: at.to_string(),
-            });
+            }));
         }
     })
 }
@@ -646,7 +644,10 @@ mod tests {
     #[test]
     fn missing_op_is_invalid_envelope() {
         let err = resolve(json!({ "target": "orders" })).expect_err("no op");
-        assert!(matches!(err, WriteError::InvalidEnvelope(_)));
+        assert!(matches!(
+            err,
+            WriteError::Query(QueryError::InvalidEnvelope(_))
+        ));
         assert!(err.to_string().contains("op"), "{err}");
     }
 
@@ -681,7 +682,10 @@ mod tests {
             let mut input = json!({ "op": "insert", "target": "orders", "values": {"a": 1} });
             input[bad] = json!(["id"]);
             let err = resolve(input).expect_err("unknown key must be rejected");
-            assert!(matches!(err, WriteError::InvalidEnvelope(_)), "{err}");
+            assert!(
+                matches!(err, WriteError::Query(QueryError::InvalidEnvelope(_))),
+                "{err}"
+            );
             assert!(err.to_string().contains(bad), "{err}");
         }
     }
@@ -738,7 +742,10 @@ mod tests {
             "values": { "meta": { "nested": true } }
         }))
         .expect_err("object value");
-        assert!(matches!(err, WriteError::NotRepresentable { .. }), "{err}");
+        assert!(
+            matches!(err, WriteError::Query(QueryError::NotRepresentable { .. })),
+            "{err}"
+        );
         // The error must name where, so a multi-column insert is debuggable.
         assert!(err.to_string().contains("meta"), "{err}");
     }
@@ -751,7 +758,10 @@ mod tests {
             "values": { "tags": ["a", "b"] }
         }))
         .expect_err("array value");
-        assert!(matches!(err, WriteError::NotRepresentable { .. }), "{err}");
+        assert!(
+            matches!(err, WriteError::Query(QueryError::NotRepresentable { .. })),
+            "{err}"
+        );
     }
 
     // -- params ------------------------------------------------------------

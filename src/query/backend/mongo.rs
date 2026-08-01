@@ -354,10 +354,10 @@ fn render_upsert(
     // A single-document upsert keyed on the conflict target. Bulk upsert would
     // need one updateOne per row; deferred (fail loudly, don't guess).
     if rows.len() != 1 {
-        return Err(WriteError::FeatureUnsupportedByTarget {
+        return Err(WriteError::Query(QueryError::FeatureUnsupportedByTarget {
             feature: "bulk upsert".to_string(),
             target: "mongodb".to_string(),
-        });
+        }));
     }
     let row = &rows[0];
 
@@ -365,9 +365,9 @@ fn render_upsert(
     let mut filter = Document::new();
     for t in &conflict.targets {
         let idx = columns.iter().position(|c| c == t).ok_or_else(|| {
-            WriteError::InvalidEnvelope(format!(
+            WriteError::Query(QueryError::InvalidEnvelope(format!(
                 "on_conflict target '{t}' must be one of the inserted columns"
-            ))
+            )))
         })?;
         filter.insert(t.as_str(), to_bson(&row[idx]));
     }

@@ -91,12 +91,12 @@ impl AsyncFunctionHandler for DataWriteHandler {
             // `orion-server preflight` names any task already stored in that
             // shape.
             let envelope = input.get("write").ok_or_else(|| {
-                query::write::WriteError::InvalidEnvelope(
+                query::write::WriteError::Query(query::QueryError::InvalidEnvelope(
                     "missing `write`: the mutation envelope (op/target/values/set/filter/\
                      on_conflict/returning/all) is nested under `write`, alongside the \
                      handler's `connector`/`schema`/`params`/`database`/`output`"
                         .to_string(),
-                )
+                ))
             })?;
 
             // One backend-neutral resolution: parse envelope, fold params into

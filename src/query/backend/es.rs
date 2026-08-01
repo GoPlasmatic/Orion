@@ -295,10 +295,10 @@ pub enum EsWrite {
 /// A physical `_id` column is lifted out of the source into the action/path.
 pub fn render_write(w: &ResolvedWrite) -> Result<EsWrite, WriteError> {
     if !w.returning().is_empty() {
-        return Err(WriteError::FeatureUnsupportedByTarget {
+        return Err(WriteError::Query(QueryError::FeatureUnsupportedByTarget {
             feature: "returning".to_string(),
             target: "elasticsearch".to_string(),
-        });
+        }));
     }
     Ok(match w {
         ResolvedWrite::Insert {
@@ -367,31 +367,33 @@ fn render_es_upsert(
     // A single-document upsert keyed on `_id`. Bulk upsert would need one
     // `_update` call per row; deferred (fail loudly, don't guess).
     if rows.len() != 1 {
-        return Err(WriteError::FeatureUnsupportedByTarget {
+        return Err(WriteError::Query(QueryError::FeatureUnsupportedByTarget {
             feature: "bulk upsert".to_string(),
             target: "elasticsearch".to_string(),
-        });
+        }));
     }
     // ES has no unique constraints; the only conflict key it can express is the
     // document `_id`.
     if conflict.targets.len() != 1 || conflict.targets[0] != "_id" {
-        return Err(WriteError::FeatureUnsupportedByTarget {
+        return Err(WriteError::Query(QueryError::FeatureUnsupportedByTarget {
             feature: format!(
                 "upsert on conflict target [{}] (Elasticsearch keys upserts on the document `_id`; declare a schema rename to \"_id\")",
                 conflict.targets.join(", ")
             ),
             target: "elasticsearch".to_string(),
-        });
+        }));
     }
     let row = &rows[0];
     let idx = columns.iter().position(|c| c == "_id").ok_or_else(|| {
-        WriteError::InvalidEnvelope(
+        WriteError::Query(QueryError::InvalidEnvelope(
             "on_conflict target '_id' must be one of the inserted columns".to_string(),
-        )
+        ))
     })?;
-    let id = id_string(&row[idx], "values")?.ok_or_else(|| WriteError::NotRepresentable {
-        what: "a null `_id` in an upsert".to_string(),
-        at: "values".to_string(),
+    let id = id_string(&row[idx], "values")?.ok_or_else(|| {
+        WriteError::Query(QueryError::NotRepresentable {
+            what: "a null `_id` in an upsert".to_string(),
+            at: "values".to_string(),
+        })
     })?;
     let doc = source_doc(columns, row, "_id");
 
@@ -498,10 +500,10 @@ fn cond_to_query(cond: &Option<Cond>) -> Result<Json, WriteError> {
 /// `_id` is immutable metadata; a `set` touching it cannot be expressed.
 fn reject_id_in_set(set: &[(String, Value)]) -> Result<(), WriteError> {
     if set.iter().any(|(c, _)| c == "_id") {
-        return Err(WriteError::FeatureUnsupportedByTarget {
+        return Err(WriteError::Query(QueryError::FeatureUnsupportedByTarget {
             feature: "updating `_id`".to_string(),
             target: "elasticsearch".to_string(),
-        });
+        }));
     }
     Ok(())
 }
@@ -526,10 +528,10 @@ fn id_string(v: &Value, at: &str) -> Result<Option<String>, WriteError> {
         Value::Str(s) => Some(s.clone()),
         Value::Int(i) => Some(i.to_string()),
         _ => {
-            return Err(WriteError::NotRepresentable {
+            return Err(WriteError::Query(QueryError::NotRepresentable {
                 what: "a non-string/integer `_id` value".to_string(),
                 at: at.to_string(),
-            });
+            }));
         }
     })
 }
@@ -1063,7 +1065,10 @@ mod tests {
             id_schema(),
         ))
         .expect_err("bulk upsert is gated on ES");
-        assert!(matches!(err, WriteError::FeatureUnsupportedByTarget { .. }));
+        assert!(matches!(
+            err,
+            WriteError::Query(QueryError::FeatureUnsupportedByTarget { .. })
+        ));
     }
 
     #[test]
@@ -1074,7 +1079,10 @@ mod tests {
             "on_conflict": { "target": ["email"], "action": "update" }
         })))
         .expect_err("non-_id conflict target is gated on ES");
-        assert!(matches!(err, WriteError::FeatureUnsupportedByTarget { .. }));
+        assert!(matches!(
+            err,
+            WriteError::Query(QueryError::FeatureUnsupportedByTarget { .. })
+        ));
     }
 
     #[test]
@@ -1085,7 +1093,10 @@ mod tests {
             "returning": ["id"]
         })))
         .expect_err("returning is gated on ES");
-        assert!(matches!(err, WriteError::FeatureUnsupportedByTarget { .. }));
+        assert!(matches!(
+            err,
+            WriteError::Query(QueryError::FeatureUnsupportedByTarget { .. })
+        ));
     }
 
     #[test]
@@ -1099,7 +1110,10 @@ mod tests {
             id_schema(),
         ))
         .expect_err("updating _id is gated on ES");
-        assert!(matches!(err, WriteError::FeatureUnsupportedByTarget { .. }));
+        assert!(matches!(
+            err,
+            WriteError::Query(QueryError::FeatureUnsupportedByTarget { .. })
+        ));
     }
 
     // -----------------------------------------------------------------

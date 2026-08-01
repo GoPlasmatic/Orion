@@ -444,10 +444,10 @@ pub fn render_write(
 ) -> Result<(String, SqlxValues), WriteError> {
     // MySQL cannot express RETURNING; surface it rather than emitting invalid SQL.
     if !w.returning().is_empty() && dialect == SqlDialect::Mysql {
-        return Err(WriteError::FeatureUnsupportedByTarget {
+        return Err(WriteError::Query(QueryError::FeatureUnsupportedByTarget {
             feature: "returning".to_string(),
             target: "mysql".to_string(),
-        });
+        }));
     }
     match w {
         ResolvedWrite::Insert {
@@ -501,7 +501,7 @@ fn render_insert(
     for row in rows {
         let vals: Vec<SimpleExpr> = row.iter().map(value_expr).collect();
         stmt.values(vals)
-            .map_err(|e| WriteError::InvalidEnvelope(e.to_string()))?;
+            .map_err(|e| WriteError::Query(QueryError::InvalidEnvelope(e.to_string())))?;
     }
 
     if let Some((c, set)) = upsert {
@@ -1345,7 +1345,7 @@ mod tests {
         let err = render_write(&resolved, SqlDialect::Mysql).expect_err("no RETURNING on MySQL");
         assert!(matches!(
             err,
-            crate::query::write::WriteError::FeatureUnsupportedByTarget { .. }
+            crate::query::write::WriteError::Query(QueryError::FeatureUnsupportedByTarget { .. })
         ));
     }
 }

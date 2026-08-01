@@ -13,9 +13,10 @@ pub enum QueryError {
     /// An operator outside the portable vocabulary was used.
     UnsupportedInQuery { op: String, at: String },
     /// A construct is recognised but has no portable form in v1
-    /// (e.g. column-to-column comparison).
+    /// (e.g. column-to-column comparison, an array/object column value).
     NotRepresentable { what: String, at: String },
-    /// The envelope (`source`/`fields`/`sort`/…) is malformed.
+    /// The envelope (`source`/`fields`/`sort`/`op`/`values`/…) is malformed.
+    /// Shared by the read and write envelopes (W20).
     InvalidEnvelope(String),
     /// A field reference is invalid for identity mode (e.g. a dotted JSON path).
     InvalidField { field: String, at: String },
@@ -50,7 +51,7 @@ impl std::fmt::Display for QueryError {
             QueryError::NotRepresentable { what, at } => {
                 write!(f, "{what} has no portable form in v1 (at {at})")
             }
-            QueryError::InvalidEnvelope(msg) => write!(f, "invalid query envelope: {msg}"),
+            QueryError::InvalidEnvelope(msg) => write!(f, "invalid envelope: {msg}"),
             QueryError::InvalidField { field, at } => {
                 write!(f, "invalid field reference '{field}' (at {at})")
             }
