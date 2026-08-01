@@ -17,6 +17,11 @@ publish-jobs = ["homebrew"]
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 # Homebrew tap repository
 tap = "GoPlasmatic/homebrew-tap"
+# Attest dist artifacts with GitHub build provenance (proposal P12). The
+# committed release.yml carries the matching hand-edits (allow-dirty = ["ci"]
+# means dist does not regenerate it); keep this flag so a future regen
+# preserves them.
+github-attestations = true
 
 # System dependencies for rdkafka-sys (librdkafka built from source via cmake)
 [dist.dependencies.apt]

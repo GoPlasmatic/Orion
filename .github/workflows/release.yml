@@ -106,6 +106,14 @@ jobs:
     # Let the initial task tell us to not run (currently very blunt)
     needs:
       - plan
+    # id-token/attestations: sign what this job built (proposal P12). The
+    # provenance links each archive to this workflow run and commit;
+    # consumers verify with
+    #   gh attestation verify <file> -R GoPlasmatic/Orion
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null && (needs.plan.outputs.publishing == 'true' || fromJson(needs.plan.outputs.val).ci.github.pr_run_mode == 'upload') }}
     strategy:
       fail-fast: false
@@ -170,6 +178,10 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: "${{ steps.cargo-dist.outputs.paths }}"
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v6
         with:
@@ -183,6 +195,11 @@ jobs:
     needs:
       - plan
       - build-local-artifacts
+    # See build-local-artifacts: the installers get provenance too (P12).
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -217,6 +234,10 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: "${{ steps.cargo-dist.outputs.paths }}"
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v6
         with:

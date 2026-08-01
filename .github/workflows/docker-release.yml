@@ -130,12 +130,31 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Merge platform images into a multi-arch manifest
+  # Merge platform images into a multi-arch manifest, then sign and attest
+  # THAT manifest (proposal P12). The per-platform builds push by digest and
+  # are merged with `imagetools create`, and buildx-level provenance/sbom
+  # attestations do not reliably survive that merge — attaching them at
+  # build-push time can produce a release that looks signed with nothing
+  # verifiable on the published tag. So everything verifiable is attached to
+  # the final merged manifest digest, which is registry-level and
+  # merge-independent:
+  #
+  #   cosign verify ghcr.io/goplasmatic/orion:<tag> \
+  #     --certificate-identity-regexp 'github.com/GoPlasmatic/Orion' \
+  #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  #   gh attestation verify oci://ghcr.io/goplasmatic/orion:<tag> -R GoPlasmatic/Orion
   merge:
     name: Merge & Push Manifest
     needs: [prepare, build]
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      packages: write
+      # Keyless signing (cosign) and the provenance attestation both
+      # authenticate as the workflow via the OIDC token.
+      id-token: write
+      attestations: write
     steps:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -176,6 +195,62 @@ jobs:
       - name: Inspect manifest
         run: |
           docker buildx imagetools inspect "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}"
+
+      # The digest of the multi-arch manifest list just pushed — the one
+      # thing every tag above points at, and therefore the subject every
+      # signature and attestation below is bound to.
+      - name: Resolve merged manifest digest
+        id: digest
+        run: |
+          DIGEST=$(docker buildx imagetools inspect \
+            "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}" \
+            --format '{{ json .Manifest }}' | jq -r '.digest')
+          test -n "${DIGEST}" && [ "${DIGEST}" != "null" ]
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          echo "Merged manifest digest: ${DIGEST}"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign the manifest (keyless)
+        run: cosign sign --yes "${{ env.GHCR_IMAGE }}@${{ steps.digest.outputs.digest }}"
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.GHCR_IMAGE }}@${{ steps.digest.outputs.digest }}
+          format: spdx-json
+          output-file: /tmp/orion-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attach SBOM attestation
+        run: |
+          cosign attest --yes --type spdxjson \
+            --predicate /tmp/orion-sbom.spdx.json \
+            "${{ env.GHCR_IMAGE }}@${{ steps.digest.outputs.digest }}"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ env.GHCR_IMAGE }}
+          subject-digest: ${{ steps.digest.outputs.digest }}
+          push-to-registry: true
+
+      # Trust, then verify — in the same run that published. This is the
+      # check P12 insists on: what is attached to the tag, not what the
+      # workflow diff claims. Fails the release if the signature or the
+      # provenance did not actually land on the manifest.
+      - name: Verify what is attached to the published tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cosign verify "${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}" \
+            --certificate-identity-regexp 'github.com/GoPlasmatic/Orion' \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          gh attestation verify \
+            "oci://${{ env.GHCR_IMAGE }}:${{ needs.prepare.outputs.version }}" \
+            -R "${GITHUB_REPOSITORY}"
 
   # Publish the Helm chart to GHCR as an OCI artifact (proposal T13): before
   # this job the chart existed only in-tree, so installing it meant cloning
