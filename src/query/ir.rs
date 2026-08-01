@@ -113,9 +113,23 @@ pub enum Quant {
 
 /// A relation resolved to physical join keys, ready to render. Populated during
 /// lowering from the schema so the renderer never needs the registry.
+///
+/// It deliberately carries every backend's binding hints side by side: lowering
+/// is backend-neutral (the same lowered [`Cond`] must render on whichever
+/// backend the connector turns out to be), so the render target is unknown
+/// here. Today the SQL renderer consumes the join keys and the document stores
+/// consume `name` + their storage hint, but the join keys are not SQL-specific
+/// — a referenced Mongo relation (`$lookup`, currently capability-gated) would
+/// join on exactly the same columns. A storage enum would force lowering to
+/// know the render target, forking the one backend-neutral IR into per-backend
+/// IRs; and grouping the join keys as an "SQL" sub-struct would mislead. The
+/// struct is built in one place and each renderer reads an obvious subset; no
+/// invariant is re-validated and no unreachable state exists, so a type change
+/// prevents nothing (W17, restructure declined).
 #[derive(Debug, Clone, PartialEq)]
 pub struct RelRef {
-    /// Logical relation name (Mongo embedded-array field / `$lookup` alias).
+    /// Logical relation name (Mongo embedded-array field / ES nested path or
+    /// child type / `$lookup` alias).
     pub name: String,
     /// Physical table of the related entity.
     pub target_table: String,
