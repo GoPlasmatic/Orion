@@ -38,15 +38,20 @@ Run `cargo clippy` and `cargo fmt` before committing — both must pass cleanly.
 
 ```
 src/
-  main.rs              # CLI entrypoint, startup sequence
+  main.rs              # Binary entrypoint (thin wrapper over cli.rs)
   lib.rs               # Public module declarations
-  channel/             # Channel registry, config, routing, deduplication
+  bootstrap.rs         # Startup sequence: config -> pools -> repos -> engine -> server
+  cli.rs               # CLI subcommands (migrate, lint, dry-run, test, preflight, ...)
+  preflight.rs         # `orion-server preflight`: scan stored entities for 1.0 breaks
+  channel/             # Channel registry, config, routing, deduplication, auth guards
+  cluster/             # Cluster mode: config-epoch watcher, background-job leases
   config/              # Configuration loading (TOML + ORION_SECTION__KEY env overrides)
   connector/           # Connector types, registry, circuit breakers, pool caching
   engine/              # Dataflow engine & custom function handlers (functions/)
   errors.rs            # OrionError enum -> HTTP response mapping
   kafka/               # Kafka producer & consumer
   metrics/             # Prometheus metrics collection
+  query/               # Portable data dialect (data_query / data_write -> SQL/Mongo/ES)
   queue/               # Async trace processing, DLQ retry
   server/              # Axum routes (routes/), middleware, AppState
   storage/             # Database abstraction, models, repositories (repositories/)
@@ -54,7 +59,13 @@ src/
 tests/
   integration/         # Consolidated integration test binary (main.rs + *_test.rs modules)
   integration/common/  # Test helpers (test_app, json_request, body_json)
+  cluster/             # Multi-node cluster suite (container-gated, #[ignore])
+  schema_parity.rs     # Cross-backend schema comparison (container-gated)
+  storage_postgres.rs  # PostgreSQL repository suite (container-gated)
+  storage_mysql.rs     # MySQL repository suite (container-gated)
+  benchmark/           # bench.sh + fixtures (hey-based performance scenarios)
 migrations/            # SQLite / Postgres / MySQL migrations (embedded at compile time)
+deploy/                # Helm chart (helm/orion), HA compose drill (ha/)
 docs/                  # mdBook documentation (published to GitHub Pages)
 ```
 
@@ -140,6 +151,29 @@ async fn test_my_feature() {
 
 Add unit tests inline in the relevant module using `#[cfg(test)]` blocks. See `src/config/mod.rs` or `src/errors.rs` for examples.
 
+### Container-gated tests
+
+Tests that need a real backend (PostgreSQL, MySQL, MongoDB, Elasticsearch,
+Kafka, Redis, or a multi-node cluster) are `#[ignore]`d, so `cargo test` skips
+them locally. CI runs every one of them; run them yourself with Docker up:
+
+```bash
+cargo test --test storage_postgres -- --ignored     # testcontainers spin up the DB
+cargo test --test cluster -- --ignored              # the 14-contract multi-node suite
+cargo test --test integration -- --ignored <filter> # container-gated integration modules
+```
+
+The `#[ignore]` → CI-filter mapping is self-enforcing
+(`tests/integration/ci_filter_drift_test.rs`): a container-gated module missing
+from CI's name filters fails the build, in both directions.
+
+### Doc tests
+
+CI also runs `cargo test --doc` and `RUSTDOCFLAGS="-D warnings" cargo doc
+--no-deps --lib` — a documented example that stops compiling, or a broken
+intra-doc link, fails a PR even though a plain `cargo test --all-targets`
+never executes either.
+
 ### Running a single test
 
 ```bash
@@ -178,6 +212,43 @@ promise that it still behaves that way.
 
 New comments do not need an ID. The scheme is a record of how 1.0 was reached,
 not a convention to keep feeding.
+
+## Cutting a Release
+
+Releases are tag-driven. Pushing a version tag runs three workflows —
+`release.yml` (binaries, installers, Homebrew), `docker-release.yml`
+(multi-arch image, Helm chart, signing/attestation), and both gate on a
+successful CI run for the tagged commit (`ci-gate`), so a tag can never
+outrun a red build.
+
+1. **Version alignment.** `Cargo.toml`'s `version` is the release version;
+   tags are `v`-prefixed (`v1.0.0`). The Helm chart needs **no** manual bump —
+   `docker-release.yml` stamps both the chart version and `appVersion` from
+   the tag at publish time; the in-tree `Chart.yaml` value is a development
+   placeholder.
+2. **CHANGELOG cut.** Fold `## [Unreleased]` into a dated
+   `## [X.Y.Z] - YYYY-MM-DD` heading (merge per category), leave an empty
+   `[Unreleased]` on top, and check the compare links at the foot of the file
+   name the new tag.
+3. **Tag and push.**
+   ```bash
+   git tag vX.Y.Z && git push origin vX.Y.Z
+   ```
+4. **Watch the release land.** `release.yml` builds each dist target
+   (macOS/Windows are pre-proven per PR by `cross-os-build.yml`, but the
+   release build is the real one) and publishes the GitHub Release;
+   `docker-release.yml` builds per-platform images, merges the manifest, then
+   signs and attests **the merged manifest digest** and pushes the chart to
+   `oci://ghcr.io/goplasmatic/charts`.
+5. **Verify what shipped.** The merge job's final step already runs
+   `cosign verify` and `gh attestation verify` against the published tag and
+   fails the release if nothing verifiable landed — confirm it ran green
+   rather than assuming. `dry_run` dispatches skip the merge job entirely, so
+   a scratch tag is the only true rehearsal of this half.
+
+Expand/contract migration discipline across releases is described under
+[Database migrations](#database-migrations) — a release may only *add* schema
+alongside code that tolerates both shapes.
 
 ## License
 
