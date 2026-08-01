@@ -61,7 +61,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -92,7 +92,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       # Run the suite, not just `cargo check`: the promise is that a
       # contributor on 1.88 can build AND test, which also keeps
@@ -115,7 +115,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       - name: Build
         run: cargo build
@@ -182,7 +182,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       # --no-fail-fast: without it cargo stops after the first test binary that
       # fails, so one broken unit test suppresses all 544 integration results
@@ -350,7 +350,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       - name: Add swap space
         run: |
@@ -413,7 +413,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       - name: Install cargo-mutants
         uses: taiki-e/install-action@cargo-mutants
@@ -450,7 +450,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       # GitHub-hosted ubuntu runners ship Docker, so testcontainers spins up
       # ephemeral Postgres / MySQL / MongoDB / Elasticsearch / Redis / Kafka

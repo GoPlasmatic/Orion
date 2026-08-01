@@ -1,0 +1,11 @@
+# T21: the apt line for rdkafka's cmake-build was pasted verbatim into seven
+# ci.yml jobs; a new system dependency had to land seven times or CI would
+# fail in whichever job was missed. One composite action, one place to edit.
+name: Install system build dependencies
+description: cmake + libcurl headers, required by rdkafka's cmake-build feature
+runs:
+  using: composite
+  steps:
+    - name: Install system dependencies
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev

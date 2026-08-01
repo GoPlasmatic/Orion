@@ -1,23 +1,28 @@
-# Planner stage: generate a recipe for dependency caching
-FROM rust:1.93-slim AS planner
+# Shared toolchain stage: cargo-chef is compiled from source ONCE here and
+# inherited by both stages below — it used to be built independently in each,
+# doubling the cold-cache cost for the same binary (T23).
+FROM rust:1.93-slim AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /app
+
+# Planner stage: generate a recipe for dependency caching
+FROM chef AS planner
 COPY Cargo.toml Cargo.lock* ./
 COPY src/ src/
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Builder stage: cache dependencies, then build
-FROM rust:1.93-slim AS builder
+FROM chef AS builder
 
 # perl is required by rdkafka's vendored OpenSSL build (kafka.auth TLS/SASL)
 RUN apt-get update && apt-get install -y pkg-config cmake g++ curl libcurl4-openssl-dev perl && rm -rf /var/lib/apt/lists/*
-RUN cargo install cargo-chef --locked
 
-WORKDIR /app
-
-# Cook dependencies (cached unless Cargo.toml/Cargo.lock change)
+# Cook dependencies (cached unless Cargo.toml/Cargo.lock change). --locked to
+# match the build below: without it, cook could resolve different dependency
+# versions than the build then verifies — quietly defeating both the cache
+# and the lockfile guarantee (T23).
 COPY --from=planner /app/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json
 
 # Build application (only this layer rebuilds on source changes)
 COPY Cargo.toml Cargo.lock* ./
@@ -33,8 +38,21 @@ ENV GIT_HASH=${GIT_HASH}
 
 RUN cargo build --release --locked
 
-# Runtime stage
-FROM debian:trixie-slim
+# Runtime stage. Named so `docker build --target` can address it, like the
+# stages above (T23).
+FROM debian:trixie-slim AS runtime
+
+# OCI identity on the image itself (T23): docker-release.yml injects the full
+# metadata-action label set at push time, but a local `docker build` — the
+# command the docs give — used to produce an entirely unlabeled image. The
+# dynamic pair (version, revision) still comes from CI; these are the static
+# facts.
+LABEL org.opencontainers.image.title="Orion" \
+      org.opencontainers.image.description="Declarative services runtime: channels + workflows over REST/Kafka, single binary" \
+      org.opencontainers.image.source="https://github.com/GoPlasmatic/Orion" \
+      org.opencontainers.image.documentation="https://goplasmatic.github.io/Orion/" \
+      org.opencontainers.image.vendor="Plasmatic" \
+      org.opencontainers.image.licenses="Apache-2.0"
 
 RUN apt-get update && apt-get install -y ca-certificates curl && rm -rf /var/lib/apt/lists/*
 
