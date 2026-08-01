@@ -200,6 +200,12 @@ fn columns_may_diverge(index: &str) -> bool {
 fn normalise(backend: DbBackend, data_type: &str, column_type: &str) -> LogicalType {
     let data = data_type.trim().to_ascii_lowercase();
     // Strip any declared length: `varchar(255)` and `text` are one thing here.
+    // D29: this folding is a deliberate blind spot — MySQL's varchar(255)
+    // columns (`route_pattern`, `topic`, `consumer_group`) genuinely diverge
+    // from the unbounded text SQLite/Postgres use, and this test cannot see
+    // it. The divergence is closed at the validation boundary instead:
+    // `MAX_VARCHAR_FIELD_LEN` caps those fields at create/update, so a value
+    // that stores on two backends and fails on the third cannot be written.
     let bare = data.split('(').next().unwrap_or(&data).trim().to_string();
     let full = column_type.trim().to_ascii_lowercase();
 

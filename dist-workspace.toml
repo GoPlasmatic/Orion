@@ -32,12 +32,20 @@ tap = "GoPlasmatic/homebrew-tap"
 # preserves them.
 github-attestations = true
 
-# System dependencies for rdkafka-sys (librdkafka built from source via cmake)
+# System dependencies for rdkafka-sys. P14: librdkafka builds via its native
+# configure on unix (cmake stays Windows-only, see Cargo.toml), and the
+# vendored OpenSSL build needs perl — GitHub's runner images preinstall all
+# of these, so this list matters exactly when a dist build runs in a
+# container, where nothing is preinstalled. Keep it in step with the
+# Dockerfile's builder-stage apt line and .github/actions/apt-build-deps.
 [dist.dependencies.apt]
 cmake = "*"
 "g++" = "*"
 pkg-config = "*"
 libcurl4-openssl-dev = "*"
+perl = "*"
 
+# macOS runners preinstall the whole toolchain; kept for a hypothetical
+# cmake-less runner image rather than because the configure path needs it.
 [dist.dependencies.homebrew]
 cmake = "*"

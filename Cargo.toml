@@ -25,6 +25,15 @@ include = [
     "/config.toml.example",
 ]
 
+# P15: docs.rs must compile the crate — librdkafka's native configure plus
+# vendored OpenSSL — inside its sandbox (the crates-build-env image ships
+# perl and the C toolchain, so the build is expected to pass). One target
+# only: the extra tier-1 targets would repeat that native build for zero
+# documentation difference.
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
 [[bin]]
 name = "orion-server"
 path = "src/main.rs"

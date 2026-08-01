@@ -219,6 +219,32 @@ jobs:
       - name: Run cargo-deny
         run: cargo deny check
 
+  # T29: crates-publish.yml runs `cargo publish --locked` on the release tag —
+  # the first time anything exercises the crates.io tarball. Cargo.toml uses
+  # an `include` allowlist, so a newly added required file silently drops out
+  # of the package and would only be discovered mid-release. `cargo package`
+  # assembles the tarball and verify-builds it from its own contents on every
+  # PR instead.
+  package:
+    name: Package (crates.io tarball)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-build-deps
+
+      - name: Assemble and verify-build the publish tarball
+        run: cargo package --locked
+
   # docs.yml only fires on merges touching docs/**, so without this a PR
   # can break the book (dangling SUMMARY entry, bad include) and nobody
   # notices until after merge. book.toml sets create-missing = false, so a

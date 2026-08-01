@@ -206,7 +206,7 @@ instance_id = "${HOSTNAME}"
 
 | Setting | Default | Env var | When to change |
 |---|---|---|---|
-| `engine.health_check_timeout_secs` | `2` | `ORION_ENGINE__HEALTH_CHECK_TIMEOUT_SECS` | Rarely — it bounds how long `/health` waits on the engine read lock. |
+| `engine.health_check_timeout_secs` | `2` | `ORION_ENGINE__HEALTH_CHECK_TIMEOUT_SECS` | Rarely — it bounds the `/readyz` cluster-Redis `PING` (the engine itself is lock-free and needs no health window). |
 | `engine.max_channel_call_depth` | `10` | `ORION_ENGINE__MAX_CHANNEL_CALL_DEPTH` | Lower it to catch accidental recursion between channels sooner. |
 | `engine.default_channel_call_timeout_ms` | `30000` | `ORION_ENGINE__DEFAULT_CHANNEL_CALL_TIMEOUT_MS` | Default deadline for `channel_call` when the task sets none. |
 | `engine.global_http_timeout_secs` | `30` | `ORION_ENGINE__GLOBAL_HTTP_TIMEOUT_SECS` | Safety net for every outbound HTTP request; shorter connector or task timeouts still win. |

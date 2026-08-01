@@ -29,11 +29,31 @@ jobs:
             echo "Gate skipped (dry run)."
             exit 0
           fi
-          successes=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=completed" \
-            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')
+          # T28: `event=push` so a pull_request run on the same SHA cannot
+          # satisfy a gate that is about what landed on the branch.
+          runs() {
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/$1/runs?head_sha=${GITHUB_SHA}&status=completed&event=push" \
+              --jq "$2"
+          }
+          successes=$(runs ci.yml '[.workflow_runs[] | select(.conclusion == "success")] | length')
           if [ "${successes}" = "0" ]; then
-            echo "::error::No successful CI run found for ${GITHUB_SHA}. Let CI pass on this commit before releasing."
+            echo "::error::No successful CI push run found for ${GITHUB_SHA}. Let CI pass on this commit before releasing."
             exit 1
           fi
           echo "CI passed for ${GITHUB_SHA} (${successes} successful run(s))."
+
+          # T28: the path-filtered workflows may legitimately have no run for
+          # this SHA (a docs-only commit skips them) — but a run that exists
+          # with zero successes is a known break the tag must not outrun:
+          # cross-os-build is the macOS compile the Homebrew formula depends
+          # on. "Some runs, none successful" fails; "no runs" passes.
+          for wf in cross-os-build.yml codeql.yml ha-drill.yml; do
+            total=$(runs "$wf" '.workflow_runs | length')
+            ok=$(runs "$wf" '[.workflow_runs[] | select(.conclusion == "success")] | length')
+            if [ "${total}" != "0" ] && [ "${ok}" = "0" ]; then
+              echo "::error::${wf} ran for ${GITHUB_SHA} and did not succeed. Fix or re-run it before releasing."
+              exit 1
+            fi
+            echo "${wf}: ${ok}/${total} successful run(s)."
+          done

@@ -56,12 +56,14 @@ curl -s http://localhost:8080/health
 ```json
 {
   "status": "ok",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "uptime_seconds": 5,
   "workflows_loaded": 0,
   "components": {
     "database": "ok",
-    "engine": "ok"
+    "engine": "ok",
+    "connectors": "ok",
+    "channels": "ok"
   }
 }
 ```

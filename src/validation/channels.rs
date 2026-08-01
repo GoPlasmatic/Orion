@@ -21,6 +21,7 @@ pub fn validate_create_channel(req: &CreateChannelRequest) -> Result<(), OrionEr
         methods: req.methods.as_deref(),
         route_pattern: req.route_pattern.as_deref(),
         topic: req.topic.as_deref(),
+        consumer_group: req.consumer_group.as_deref(),
     })?;
     // B2: strict-validate the per-channel `config` blob at create time.
     // The channel registry stays tolerant at runtime (so an already-active
@@ -64,6 +65,10 @@ pub fn validate_update_channel(
                 .as_deref()
                 .or(stored.route_pattern.as_deref()),
             topic: req.topic.as_deref().or(stored.topic.as_deref()),
+            consumer_group: req
+                .consumer_group
+                .as_deref()
+                .or(stored.consumer_group.as_deref()),
         })?;
     }
     if let Some(ref config) = req.config {
@@ -80,6 +85,25 @@ struct ProtocolFields<'a> {
     methods: Option<&'a [String]>,
     route_pattern: Option<&'a str>,
     topic: Option<&'a str>,
+    consumer_group: Option<&'a str>,
+}
+
+/// D29: cap the fields MySQL stores as `varchar(255)` at the validation
+/// boundary, so a value cannot store on SQLite/Postgres and fail on MySQL.
+fn check_varchar_len(path: &'static str, value: &str) -> Option<crate::errors::FieldError> {
+    let len = value.chars().count();
+    (len > super::common::MAX_VARCHAR_FIELD_LEN).then(|| {
+        crate::errors::FieldError::new(
+            path,
+            "TOO_LONG",
+            format!(
+                "{path} must be at most {} characters — MySQL stores this column as \
+                 varchar(255), so a longer value cannot load on every supported backend \
+                 (got {len})",
+                super::common::MAX_VARCHAR_FIELD_LEN,
+            ),
+        )
+    })
 }
 
 /// The HTTP methods a channel may declare.
@@ -142,6 +166,9 @@ fn check_route_pattern(pattern: &str) -> Vec<crate::errors::FieldError> {
             .with_got(serde_json::Value::String(pattern.to_string()))
     };
 
+    if let Some(too_long) = check_varchar_len("channel.route_pattern", pattern) {
+        return vec![too_long];
+    }
     if !pattern.starts_with('/') {
         return vec![err(format!(
             "route_pattern must start with '/' (got \"{pattern}\")"
@@ -282,8 +309,20 @@ fn check_protocol_required_fields(fields: &ProtocolFields) -> Result<(), OrionEr
                     "REQUIRED_FOR_PROTOCOL",
                     "Kafka channels must specify a topic",
                 ));
+            } else if let Some(e) = fields
+                .topic
+                .and_then(|t| check_varchar_len("channel.topic", t))
+            {
+                out.push(e);
             }
         }
+    }
+    // Not protocol-conditional, but bounded by the same MySQL column width.
+    if let Some(e) = fields
+        .consumer_group
+        .and_then(|cg| check_varchar_len("channel.consumer_group", cg))
+    {
+        out.push(e);
     }
     if out.is_empty() {
         return Ok(());
@@ -525,6 +564,57 @@ mod tests {
         for m in VALID_HTTP_METHODS {
             assert!(check_http_methods(&[(*m).to_string()]).is_empty(), "{m}");
         }
+    }
+
+    /// D29: MySQL stores these three columns as `varchar(255)`; the cap must
+    /// hold at the boundary or a value stores on SQLite/Postgres and fails
+    /// on MySQL. 255 exactly passes, 256 fails, and the count is characters
+    /// (a multi-byte char is one).
+    #[test]
+    fn varchar_backed_fields_are_capped_at_255_chars() {
+        let at_limit = format!("/{}", "a".repeat(254));
+        assert!(
+            check_route_pattern(&at_limit).is_empty(),
+            "255 chars is fine"
+        );
+        let over = format!("/{}", "a".repeat(255));
+        let errors = check_route_pattern(&over);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].code, "TOO_LONG");
+
+        // Multi-byte safety: 255 two-byte chars is 510 bytes but 255 chars.
+        assert!(check_varchar_len("channel.topic", &"é".repeat(255)).is_none());
+        assert!(check_varchar_len("channel.topic", &"é".repeat(256)).is_some());
+
+        let kafka_req = |topic: String, consumer_group: Option<String>| CreateChannelRequest {
+            channel_id: None,
+            name: "kafka-ch".to_string(),
+            description: None,
+            channel_type: crate::storage::models::ChannelType::Async,
+            protocol: ChannelProtocol::Kafka,
+            methods: None,
+            route_pattern: None,
+            topic: Some(topic),
+            consumer_group,
+            transport_config: json!({}),
+            workflow_id: None,
+            config: json!({}),
+            priority: 0,
+        };
+        assert!(
+            validate_create_channel(&kafka_req("t".repeat(256), None)).is_err(),
+            "long topic refused"
+        );
+        assert!(
+            validate_create_channel(&kafka_req("orders".to_string(), Some("g".repeat(256))))
+                .is_err(),
+            "long consumer_group refused"
+        );
+        assert!(
+            validate_create_channel(&kafka_req("orders".to_string(), Some("g".repeat(255))))
+                .is_ok(),
+            "at-limit consumer_group accepted"
+        );
     }
 
     /// R6's other half: the checks run on **update** as well as create. The

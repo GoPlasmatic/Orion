@@ -114,10 +114,7 @@ pub(crate) async fn health_check(
     // Check database connectivity
     let db_healthy = state.ping_db().await.is_ok();
 
-    // Check engine state — independently verify the engine lock is acquirable
-    let loaded = probe_engine(&state).await;
-    let engine_healthy = loaded.is_some();
-    let workflows_loaded = loaded.unwrap_or(0);
+    let workflows_loaded = workflows_loaded(&state);
 
     // Collect circuit breaker states
     let cb_states = state.connector_registry.circuit_breaker_states().await;
@@ -139,7 +136,7 @@ pub(crate) async fn health_check(
     // Degraded, not unhealthy: the rest of the instance still serves traffic,
     // and returning 503 would take a node out of its load balancer over a
     // connector or channel that may be used by nothing currently in flight.
-    let overall_healthy = db_healthy && engine_healthy;
+    let overall_healthy = db_healthy;
     let fully_loaded = connector_issues.is_empty()
         && quarantined_channels.is_empty()
         && kafka_state != Some("error");
@@ -170,7 +167,8 @@ pub(crate) async fn health_check(
         "uptime_seconds": uptime.num_seconds(),
         "components": {
             "database": if db_healthy { "ok" } else { "error" },
-            "engine": if engine_healthy { "ok" } else { "error" },
+            // Constant by construction — see `workflows_loaded` (O16).
+            "engine": "ok",
             "connectors": if connector_issues.is_empty() { "ok" } else { "degraded" },
             "channels": if quarantined_channels.is_empty() { "ok" } else { "degraded" },
         },
@@ -279,16 +277,18 @@ async fn cluster_redis_healthy(state: &AppState) -> Option<bool> {
     )
 }
 
-/// Acquire the engine read lock under `engine.health_check_timeout_secs` and
-/// report how many workflows are loaded. `None` means the lock was not
-/// acquirable inside the window.
+/// How many workflows the running engine holds.
 ///
-/// `/health` and `/readyz` both probe the engine, and each used to spell the
-/// timeout-and-acquire out for itself — two copies of one definition of "the
-/// engine is up", identical only by accident. The guard is released before
-/// returning.
-async fn probe_engine(state: &AppState) -> Option<usize> {
-    Some(state.engine.load().workflows().len())
+/// O16: this used to acquire the engine read lock under
+/// `engine.health_check_timeout_secs` and report `None` on timeout — a real
+/// check in the `RwLock` era. The engine is an `ArcSwap` now: `load()` is
+/// lock-free and infallible, so the probe cannot fail and there is nothing
+/// for the timeout to bound (`health_check_timeout_secs` still bounds the
+/// cluster-Redis ping above). Both probes keep serving a constant
+/// `"engine": "ok"` component for response-shape stability — monitors key on
+/// the field — not because anything is checked.
+fn workflows_loaded(state: &AppState) -> usize {
+    state.engine.load().workflows().len()
 }
 
 /// Coarse state of the Kafka ingest consumer for `/health` and `/readyz`:
@@ -325,10 +325,12 @@ fn kafka_component(state: &AppState) -> Option<&'static str> {
     operation_id = "readiness_probe",
     summary = "Readiness probe",
     description = "\
-Readiness probe. Reports `ready` only when the database responds, the engine \
-lock is acquirable, startup has completed, — in cluster mode — the shared \
-Redis answers `PING`, and — with Kafka enabled — the ingest consumer is not \
-degraded. Both conditional checks matter because those degradations are \
+Readiness probe. Reports `ready` only when the database responds, startup \
+has completed, — in cluster mode — the shared Redis answers `PING`, and — \
+with Kafka enabled — the ingest consumer is not degraded. The \
+`components.engine` field is a constant `\"ok\"` kept for response-shape \
+stability: the engine snapshot is lock-free and cannot be unavailable once \
+the process serves. Both conditional checks matter because those degradations are \
 otherwise silent: without Redis, deduplication fails open, the shared \
 response cache misses, and cluster rate limiting stops enforcing; with the \
 consumer down, no message is ingested — all while the data plane keeps \
@@ -346,25 +348,17 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
     use std::sync::atomic::Ordering;
 
     let initialized = state.ready.load(Ordering::Acquire);
-    // The three dependency probes share no state and each carries its own
+    // The dependency probes share no state and each carries its own
     // `health_check_timeout_secs` window, so running them sequentially made a
     // probe's worst case the *sum* of those windows — long past a typical
     // `timeoutSeconds: 1`, reporting not-ready for a reason that is not the
     // actual degradation.
-    let (db_ping, engine_loaded, redis_healthy) = tokio::join!(
-        state.ping_db(),
-        probe_engine(&state),
-        cluster_redis_healthy(&state)
-    );
+    let (db_ping, redis_healthy) = tokio::join!(state.ping_db(), cluster_redis_healthy(&state));
     let db_healthy = db_ping.is_ok();
-    let engine_healthy = engine_loaded.is_some();
     let kafka_state = kafka_component(&state);
 
-    let all_ready = db_healthy
-        && engine_healthy
-        && initialized
-        && redis_healthy.unwrap_or(true)
-        && kafka_state != Some("error");
+    let all_ready =
+        db_healthy && initialized && redis_healthy.unwrap_or(true) && kafka_state != Some("error");
     let http_status = if all_ready {
         StatusCode::OK
     } else {
@@ -373,7 +367,8 @@ pub(crate) async fn readiness_check(State(state): State<AppState>) -> impl IntoR
 
     let mut components = json!({
         "database": if db_healthy { "ok" } else { "error" },
-        "engine": if engine_healthy { "ok" } else { "error" },
+        // Constant by construction — see `workflows_loaded` (O16).
+        "engine": "ok",
         "initialized": initialized,
     });
     if let Some(healthy) = redis_healthy {

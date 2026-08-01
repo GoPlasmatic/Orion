@@ -67,6 +67,8 @@ RUN mkdir -p /app/data && chown -R orion:orion /app
 
 COPY --from=builder --chown=orion:orion /app/target/release/orion-server /usr/local/bin/orion-server
 COPY --chown=orion:orion config.toml.example /app/config.toml.example
+# The image redistributes the Apache-2.0 binary; ship the license with it (P16).
+COPY LICENSE /usr/share/doc/orion-server/LICENSE
 
 # Numeric form so orchestrators can verify non-root without /etc/passwd.
 USER 10001:10001

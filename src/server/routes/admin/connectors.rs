@@ -696,7 +696,14 @@ async fn probe_db(
         .execute(&pool)
         .await
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            // S21: a raw sqlx error names databases, roles and host:port —
+            // the same detail the pool arm above redacts. Log it, don't
+            // serve it.
+            tracing::warn!(connector = %name, error = %e, "connectivity probe query failed");
+            "connected, but the probe query failed; the driver error is in the server log"
+                .to_string()
+        })
 }
 
 /// A read, not a write: the probe must not leave anything behind in a store a
@@ -720,7 +727,13 @@ async fn probe_cache(
         .get("__orion_connectivity_probe__")
         .await
         .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            // S21: same redaction as `probe_db` — the backend error can
+            // carry the Redis host:port.
+            tracing::warn!(connector = %name, error = %e, "connectivity probe read failed");
+            "connected, but the probe read failed; the driver error is in the server log"
+                .to_string()
+        })
 }
 
 /// Issue one request against an HTTP connector's configured URL.

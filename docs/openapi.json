@@ -443,6 +443,116 @@
         ]
       }
     },
+    "/api/v1/admin/channels/export": {
+      "get": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "export_channels",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "protocol",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Column to sort by: priority (default), name, status, channel_type, protocol, created_at, updated_at.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc or desc (default).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exported channels",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Vec_ChannelResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/channels/import": {
       "post": {
         "tags": [
@@ -480,6 +590,64 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DataEnvelope_ImportResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/channels/validate": {
+      "post": {
+        "tags": [
+          "Channels"
+        ],
+        "operationId": "validate_channel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateChannelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Validation result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationEnvelope"
                 }
               }
             }
@@ -1245,6 +1413,92 @@
         ]
       }
     },
+    "/api/v1/admin/connectors/export": {
+      "get": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "export_connectors",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "description": "Column to sort by: name (default), connector_type, created_at, updated_at.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "description": "Sort direction: asc (default) or desc. The default differs from the\nversioned lists (which default desc on priority) because connectors\nhave always listed alphabetically — D22 added the sort fields without\nmoving the unsorted callers' rows.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Exported connectors, secrets masked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_Vec_ConnectorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/connectors/import": {
       "post": {
         "tags": [
@@ -1282,6 +1536,64 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DataEnvelope_ImportResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/connectors/validate": {
+      "post": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "validate_connector",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateConnectorRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Validation result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationEnvelope"
                 }
               }
             }
@@ -1491,6 +1803,75 @@
         "responses": {
           "204": {
             "description": "Connector deleted"
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Connector not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/connectors/{id}/test": {
+      "post": {
+        "tags": [
+          "Connectors"
+        ],
+        "operationId": "test_connector",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Connector ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Probe result. A backend that cannot be reached is still a 200 — the probe ran and this is its answer; `reachable: false` is the finding, not a server error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProbeEnvelope"
+                }
+              }
+            }
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
@@ -3625,7 +4006,7 @@
           "Operational"
         ],
         "summary": "Readiness probe",
-        "description": "Readiness probe. Reports `ready` only when the database responds, the engine lock is acquirable, startup has completed, — in cluster mode — the shared Redis answers `PING`, and — with Kafka enabled — the ingest consumer is not degraded. Both conditional checks matter because those degradations are otherwise silent: without Redis, deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing; with the consumer down, no message is ingested — all while the data plane keeps returning 200s.\n\nThe `components.cluster_redis` field is present only in cluster mode, and `components.kafka` only when `kafka.enabled` is true. Unauthenticated, so probes work without provisioning an admin key.",
+        "description": "Readiness probe. Reports `ready` only when the database responds, startup has completed, — in cluster mode — the shared Redis answers `PING`, and — with Kafka enabled — the ingest consumer is not degraded. The `components.engine` field is a constant `\"ok\"` kept for response-shape stability: the engine snapshot is lock-free and cannot be unavailable once the process serves. Both conditional checks matter because those degradations are otherwise silent: without Redis, deduplication fails open, the shared response cache misses, and cluster rate limiting stops enforcing; with the consumer down, no message is ingested — all while the data plane keeps returning 200s.\n\nThe `components.cluster_redis` field is present only in cluster mode, and `components.kafka` only when `kafka.enabled` is true. Unauthenticated, so probes work without provisioning an admin key.",
         "operationId": "readiness_probe",
         "responses": {
           "200": {
@@ -4741,6 +5122,152 @@
           }
         }
       },
+      "DataEnvelope_Vec_ChannelResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the `Channel` row struct — is what every channel endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+              "required": [
+                "channel_id",
+                "version",
+                "name",
+                "channel_type",
+                "protocol",
+                "transport_config",
+                "config",
+                "status",
+                "priority",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "channel_id": {
+                  "type": "string"
+                },
+                "channel_type": {
+                  "type": "string"
+                },
+                "config": {},
+                "consumer_group": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "description": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "methods": {},
+                "name": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "protocol": {
+                  "type": "string"
+                },
+                "route_pattern": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": "string"
+                },
+                "topic": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "transport_config": {},
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "version": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "workflow_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_Vec_ConnectorResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but the\nonly supported way to build one is [`crate::connector::mask_connector`],\nwhich replaces every secret with `******` first. The row struct it is built\nfrom carries the *unmasked* config, and cannot be serialized (D27), so a\nhandler that forgets to mask no longer compiles.",
+              "required": [
+                "id",
+                "name",
+                "connector_type",
+                "config_json",
+                "enabled",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "config_json": {
+                  "type": "string",
+                  "description": "Connector config with every secret replaced by `******`."
+                },
+                "connector_type": {
+                  "type": "string"
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "enabled": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          }
+        }
+      },
       "DataEnvelope_Vec_FunctionSchemaItem": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
@@ -5630,6 +6157,47 @@
             "type": "integer",
             "format": "int64",
             "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
+      "ProbeEnvelope": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/ProbeResult"
+          }
+        }
+      },
+      "ProbeResult": {
+        "type": "object",
+        "description": "What a probe found.",
+        "required": [
+          "reachable",
+          "connector_type",
+          "probe"
+        ],
+        "properties": {
+          "connector_type": {
+            "type": "string",
+            "description": "Connector type, so a caller need not re-read the connector to know\nwhich kind of probe ran."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Failure detail. Present only when `reachable` is false."
+          },
+          "probe": {
+            "type": "string",
+            "description": "What the probe did, named plainly — the operator is entitled to know\nwhether their production system was contacted and how."
+          },
+          "reachable": {
+            "type": "boolean",
+            "description": "`true` when the backend answered."
           }
         }
       },

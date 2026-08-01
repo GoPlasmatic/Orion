@@ -56,7 +56,9 @@ is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
    git push origin v1.0.0-rc.1
    ```
 
-3. **Watch both workflows.** The whole of P12 is the `merge` job's
+3. **Watch the pipelines** (`crates-publish` skips its publish job on an
+   rc tag, so the live ones are `release.yml` and `docker-release.yml`).
+   The whole of P12 is the `merge` job's
    *"Verify what is attached to the published tag"* step: it must pass
    `cosign verify` and `gh attestation verify` against
    `ghcr.io/goplasmatic/orion:1.0.0-rc.1`.

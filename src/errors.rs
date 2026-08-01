@@ -280,14 +280,19 @@ impl OrionError {
                 "An internal storage error occurred".to_string(),
             ),
             OrionError::Engine(e) => engine_error_response(e),
-            // G8: this variant is reached both by inbound parse failures (a
-            // genuine 400) and by outbound *serialize* failures, which are
-            // server bugs. The raw serde message also carries byte offsets and
-            // type names, so it is not surfaced.
+            // G14 (revising G8): every `?` reach of this variant is
+            // server-side — decoding stored rows the repositories wrote, or
+            // serializing a response — because client-input parses all handle
+            // their errors explicitly (the import loop, `OrionQuery`, the
+            // axum extractors). G8 answered 400 on the theory that inbound
+            // parses landed here too; they do not, and a 400 hid these
+            // server bugs from 5xx error-rate SLOs. The raw serde message
+            // carries byte offsets and type names, so it is still not
+            // surfaced (`log_internal_detail` records it).
             OrionError::Serialization(_) => (
-                StatusCode::BAD_REQUEST,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 "SERIALIZATION_ERROR",
-                "Request body could not be processed".to_string(),
+                "An internal serialization error occurred".to_string(),
             ),
         }
     }
@@ -677,7 +682,9 @@ mod tests {
             serde_json::from_str::<serde_json::Value>("invalid").expect_err("test");
         let err = OrionError::Serialization(serde_err);
         let response = err.into_response();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        // G14: server-side only (row decode, response serialize) — a 500,
+        // so it lands in 5xx SLOs instead of masquerading as a client error.
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[test]
@@ -892,7 +899,7 @@ mod tests {
                 OrionError::Serialization(
                     serde_json::from_str::<i32>("not json").expect_err("test"),
                 ),
-                StatusCode::BAD_REQUEST,
+                StatusCode::INTERNAL_SERVER_ERROR,
                 "SERIALIZATION_ERROR",
             ),
         ]

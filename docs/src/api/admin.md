@@ -65,7 +65,6 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 | GET | `/api/v1/admin/connectors/export` | Export every connector, secrets masked |
 | POST | `/api/v1/admin/connectors/validate` | Validate a connector definition without saving |
 | POST | `/api/v1/admin/connectors/{id}/test` | Probe the connector's backend and report whether it is reachable |
-| POST | `/api/v1/admin/connectors/reload` | Reload all connectors from DB |
 | GET | `/api/v1/admin/connectors/circuit-breakers` | List circuit breaker states |
 | POST | `/api/v1/admin/connectors/circuit-breakers/{key}` | Reset a circuit breaker |
 
@@ -201,6 +200,21 @@ but the queue is bounded (`audit.max_pending`) and drained at shutdown
 still recorded. Anything that does not make it is counted in
 `orion_audit_events_dropped_total`.
 
+## Trace DLQ
+
+An async trace whose persistence keeps failing lands in the dead-letter
+queue and is retried automatically with backoff (see
+[Resilience](../features/resilience.md)). These endpoints are the operator
+view of that queue — inspect what is stuck, put an entry back in line, or
+clear out entries that will never succeed.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/admin/trace-dlq` | List DLQ entries, paginated (`?offset=`, `?limit=`). Summaries only — the failed payload is omitted; fetch one by id for it |
+| GET | `/api/v1/admin/trace-dlq/{id}` | Get one entry including the failed payload and error metadata |
+| POST | `/api/v1/admin/trace-dlq/{id}/requeue` | Reset the entry to `retry_count = 0` and schedule it for immediate retry — including one already exhausted |
+| POST | `/api/v1/admin/trace-dlq/purge` | Delete **exhausted** entries (retries used up). Body: `{"older_than_hours": N}` (required; `0` purges every exhausted entry). Live entries are never purged |
+
 ## Backups
 
 | Method | Path | Description |
@@ -222,19 +236,31 @@ A channel links to a workflow via `workflow_id`. Activating a channel makes it a
 
 ## Authentication
 
-Admin API endpoints support bearer token or API key authentication when enabled:
+Admin API endpoints require an API key when `admin_auth.enabled` is true.
+The server reads the key from **exactly one header** — the one named by
+`admin_auth.header`, which defaults to `Authorization` (with or without a
+`Bearer ` prefix):
 
 ```bash
-# Bearer token (default header: Authorization)
+# Default configuration (admin_auth.header = "Authorization")
 curl -H "Authorization: Bearer your-secret-key" \
   http://localhost:8080/api/v1/admin/workflows
+```
 
-# API key via custom header
+To use a custom header instead, set `admin_auth.header` — and note this
+*replaces* the default, it does not add a second accepted header. With
+`header = "X-API-Key"`, an `Authorization: Bearer` credential is no longer
+read:
+
+```bash
+# Requires admin_auth.header = "X-API-Key" in config
 curl -H "X-API-Key: your-secret-key" \
   http://localhost:8080/api/v1/admin/workflows
 ```
 
-Configure via `[admin_auth]` in config or `ORION_ADMIN_AUTH__ENABLED=true` environment variable.
+Configure via `[admin_auth]` in config or `ORION_ADMIN_AUTH__ENABLED=true`
+environment variable. Keys listed under `admin_auth.read_only_api_keys`
+authorise `GET`/`HEAD` only; every mutating method answers `403`.
 
 ## Error Response Format
 
@@ -249,18 +275,27 @@ All error responses follow a consistent structure:
 }
 ```
 
+Every code the server emits, on both the admin and data planes:
+
 | Code | HTTP Status | Description |
 |------|-------------|-------------|
-| `NOT_FOUND` | 404 | Resource not found |
-| `VALIDATION_ERROR` | 400 | Invalid input |
+| `VALIDATION_ERROR` | 400 | Invalid input — malformed body, failed strict validation, bad query parameter |
 | `UNAUTHORIZED` | 401 | Missing or invalid credentials |
-| `FORBIDDEN` | 403 | Access denied |
-| `CONFLICT` | 409 | Duplicate or conflicting state |
-| `RATE_LIMITED` | 429 | Too many requests |
-| `TIMEOUT` | 504 | Workflow execution exceeded timeout |
-| `SERVICE_UNAVAILABLE` | 503 | Backpressure or circuit breaker open |
+| `FORBIDDEN` | 403 | Access denied — e.g. a read-only admin key on a mutating method, or a channel auth failure |
+| `NOT_FOUND` | 404 | Resource not found |
+| `METHOD_NOT_ALLOWED` | 405 | The path exists but not for this HTTP method |
+| `CONFLICT` | 409 | Duplicate or conflicting state — e.g. a second draft, or an import collision |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | Invalid content type |
+| `RATE_LIMITED` | 429 | Too many requests |
 | `INTERNAL_ERROR` | 500 | Internal server error |
+| `ENGINE_ERROR` | 500 | Workflow execution failed inside the engine for a reason the server does not surface (the detail is in the server log) |
+| `STORAGE_ERROR` | 500 | A database operation failed (detail in the server log) |
+| `SERIALIZATION_ERROR` | 500 | A stored row could not be decoded or a response could not be serialized — a server-side fault, never client input (detail in the server log) |
+| `CONFIG_ERROR` | 500 | A configuration problem surfaced at request time (detail in the server log) |
+| `RESPONSE_TOO_LARGE` | 500 | A connector's response exceeded the operator-configured size cap — the request cannot succeed until the cap or the response changes |
+| `SERVICE_UNAVAILABLE` | 503 | Backpressure shed the request, a guard's backend failed closed, or the service is shutting down |
+| `CIRCUIT_OPEN` | 503 | The target connector's circuit breaker is open; retry after it recovers |
+| `TIMEOUT` | 504 | Workflow execution exceeded the channel's timeout |
 
 When a workflow, channel, or connector fails strict validation on create/update, the envelope is extended with a `details` array of field-pathed errors (kept omitted for single-message errors so v0.1 clients aren't broken):
 

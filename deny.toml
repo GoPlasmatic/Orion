@@ -6,10 +6,14 @@
 [graph]
 # Orion has no features — check the tree exactly as it builds.
 all-features = false
+# T30: keep in step with dist-workspace.toml's `targets` plus the platforms
+# CI qualifies for promotion (cross-os-build.yml). x86_64-apple-darwin was
+# dropped from dist before ever shipping (P13); musl is compiled on every
+# relevant PR and staged to join the dist list.
 targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-musl",
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
 ]

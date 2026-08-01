@@ -3,4 +3,5 @@ target/
 docs/
 .claude/
 *.md
-LICENSE
+# LICENSE stays in the context: the runtime image redistributes the
+# Apache-2.0 binary and must carry the license text (P16).

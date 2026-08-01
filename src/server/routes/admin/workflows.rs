@@ -506,7 +506,12 @@ pub(crate) async fn test_workflow(
         // Note the failing task's own step is still absent: the engine
         // propagates before appending it, so the trace ends at the last
         // known-good step and this names what stopped it.
-        body["error"] = json!(e.to_string());
+        //
+        // G12: through the same redaction as every other engine-error
+        // surface — the raw Display can carry driver text. The full error
+        // goes to the log; validation/timeout messages stay verbatim.
+        tracing::warn!(error = %e, "workflow dry-run execution failed");
+        body["error"] = json!(OrionError::Engine(e).client_message());
     }
 
     Ok(data_response(body))

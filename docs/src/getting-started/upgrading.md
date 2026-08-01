@@ -2135,6 +2135,22 @@ key. This is also the mechanism behind the `cors`, `max_concurrent` and
 **What to do.** Run `orion-server preflight` — it names every stored channel
 with an unparseable config and, for the two renames, the key to use instead.
 
+### `route_pattern`, `topic` and `consumer_group` are capped at 255 characters
+
+**What changed.** Create, update and import reject values longer than 255
+characters in these three fields (field error code `TOO_LONG`). Before 1.0
+there was no length check at all.
+
+**Why.** MySQL stores all three columns as `varchar(255)`; SQLite and
+Postgres use unbounded `text`. A longer value stored fine on two backends
+and failed on the third — a silent divergence the portable schema exists to
+prevent. The narrowest backend sets the limit (characters, not bytes).
+
+**How you'll notice.** Only if you write a value that long: a `400` naming
+the field. Stored rows are not re-checked at load — a pre-1.0 row over the
+limit (only possible on SQLite/Postgres) keeps serving, but its next edit
+must shorten the value.
+
 ### `backpressure.max_concurrent` is now `max_concurrent_per_node`
 
 **What changed.** The limit was always per node (N replicas admit up to N× the

@@ -172,24 +172,42 @@ Orion exposes three health endpoints for different operational needs.
 ```json
 {
   "status": "ok",
-  "version": "0.2.0",
+  "version": "1.0.0",
   "uptime_seconds": 3600,
-  "workflows_loaded": 42,
   "components": {
     "database": "ok",
-    "engine": "ok"
+    "engine": "ok",
+    "connectors": "ok",
+    "channels": "ok"
   }
 }
 ```
 
-The health check tests the database with `SELECT 1` and verifies engine availability with a configurable lock timeout. If either check fails, the endpoint returns `503 Service Unavailable` with `"status": "degraded"`.
+`components.kafka` appears only when `kafka.enabled` is true. The `engine`
+component is a constant `"ok"` kept for response-shape stability: the engine
+snapshot is lock-free, so it cannot be unavailable once the process serves.
+
+Degradation reports on two levels, and they answer different HTTP codes. A
+failing database is `503` with `"status": "degraded"`. A failed connector
+load, a quarantined channel or a dead Kafka consumer also report
+`"status": "degraded"` — but at HTTP **200**: the instance still serves
+traffic, and a 503 would eject the node from its load balancer over a
+component that nothing in flight may even use. Point monitors at the
+`status` field, not only the HTTP code.
+
+Detail fields — `workflows_loaded`, `git_hash`, `build_timestamp`, the
+per-connector circuit-breaker map, failed connector loads and quarantined
+channel names — are internal topology, served only when admin auth is
+disabled or the caller presents a valid admin key. Anonymous callers get the
+coarse component states above, so a monitor can see *that* something is
+degraded without learning *what*.
 
 **Kubernetes probes:**
 
 | Endpoint | Purpose | Behavior |
 |----------|---------|----------|
 | `GET /healthz` | Liveness probe | Always returns 200. If the process is running, it's alive |
-| `GET /readyz` | Readiness probe | Returns 200 only when DB is reachable, engine is loaded, startup is complete, and — when enabled — cluster Redis answers and Kafka ingestion is not degraded; 503 otherwise |
+| `GET /readyz` | Readiness probe | Returns 200 only when DB is reachable, startup is complete, and — when enabled — cluster Redis answers and Kafka ingestion is not degraded; 503 otherwise |
 
 ```yaml
 livenessProbe:

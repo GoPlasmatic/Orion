@@ -44,11 +44,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # The Rust extractor is buildless, but it still runs build scripts and
-      # compiles proc-macros while resolving the crate graph. cmake + libcurl
-      # let rdkafka's cmake-build feature succeed, so the kafka/queue path
-      # resolves instead of extracting only partially.
+      # compiles proc-macros while resolving the crate graph. The rdkafka
+      # system deps let the kafka/queue path resolve instead of extracting
+      # only partially (P14: one list, in the composite action).
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y cmake libcurl4-openssl-dev
+        uses: ./.github/actions/apt-build-deps
 
       # Warm the dependency cache so extraction resolves the full graph reliably.
       - name: Fetch dependencies

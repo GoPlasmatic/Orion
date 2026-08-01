@@ -77,6 +77,7 @@ mod scenario_webhook_test;
 mod secret_references_test;
 mod security_test;
 mod shutdown_test;
+mod sqlite_upgrade_test;
 mod task_trace_test;
 mod tls_test;
 mod trace_dlq_admin_test;

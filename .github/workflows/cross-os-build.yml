@@ -16,10 +16,10 @@
 #
 # A separate workflow rather than a ci.yml job so it can be path-filtered:
 # GitHub has no per-job path filter, and most PRs (docs, helm, workflows)
-# should not pay for two extra-cost runners. Consequence: this is NOT part
-# of the tag-time `ci-gate` lookup, which queries ci.yml runs only — the
-# release build itself remains the final proof; this exists to surface the
-# breakage weeks earlier.
+# should not pay for two extra-cost runners. Since T28 the tag-time
+# `ci-gate` also consults this workflow: a run that exists for the tagged
+# SHA with no success blocks the release (a docs-only SHA with no run
+# passes) — so a known-broken macOS build can no longer be tagged over.
 name: Cross-OS Build
 
 on:
