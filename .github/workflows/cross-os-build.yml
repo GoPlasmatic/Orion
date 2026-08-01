@@ -53,17 +53,18 @@ env:
 
 jobs:
   build:
-    name: Build (${{ matrix.os }})
+    name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest is Apple Silicon (aarch64-apple-darwin); macos-13 is
-        # the last Intel image (x86_64-apple-darwin, added to dist in P13);
-        # windows-latest matches x86_64-pc-windows-msvc. cmake is preinstalled
-        # on all three runner images (rdkafka's cmake-build needs it);
-        # vendored OpenSSL needs no system package.
-        os: [macos-latest, macos-13, windows-latest]
+        # macos-latest is Apple Silicon (aarch64-apple-darwin);
+        # windows-latest matches x86_64-pc-windows-msvc (cmake preinstalled,
+        # which the Windows-only cmake-build needs); vendored OpenSSL needs
+        # no system package on either. macos-13 (Intel) was removed together
+        # with the x86_64-apple-darwin dist target — its GitHub runners
+        # queue near-indefinitely (see dist-workspace.toml).
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v6
         with:
