@@ -35,6 +35,9 @@ use rdkafka::{Offset, TopicPartitionList};
 /// map operations, never across a broker call.
 pub(crate) struct RebalanceState {
     inner: Mutex<RebalanceStateInner>,
+    /// Completed rebalance rounds: one `post_rebalance` assignment callback
+    /// each, empty assignments included. See [`RebalanceState::assign_rounds`].
+    assign_rounds: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default)]
@@ -53,7 +56,25 @@ impl RebalanceState {
     pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(RebalanceStateInner::default()),
+            assign_rounds: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Number of completed rebalance rounds this consumer has observed — one
+    /// per `post_rebalance` assignment callback, empty assignments included.
+    ///
+    /// This is the observable the static-membership contract keys on (T6): a
+    /// peer restarting under the same `group.instance.id` within the session
+    /// timeout rejoins without a group rebalance, so a *surviving* member's
+    /// count stays put — while any dynamic leave/rejoin bumps it.
+    pub(crate) fn assign_rounds(&self) -> u64 {
+        self.assign_rounds
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn record_assign_round(&self) {
+        self.assign_rounds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, RebalanceStateInner> {
@@ -202,6 +223,7 @@ impl ConsumerContext for KafkaConsumerContext {
         if let Rebalance::Assign(tpl) = rebalance {
             let partitions = partition_keys(tpl);
             self.rebalance.mark_assigned(&partitions);
+            self.rebalance.record_assign_round();
             tracing::info!(?partitions, "Kafka partitions assigned");
         }
     }
@@ -321,10 +343,13 @@ mod tests {
             .context()
             .pre_rebalance(&consumer, &Rebalance::Revoke(&tpl));
         assert!(state.is_revoked("orders", 0));
+        // A revocation alone is half a round; the counter moves on assignment.
+        assert_eq!(state.assign_rounds(), 0);
 
         consumer
             .context()
             .post_rebalance(&consumer, &Rebalance::Assign(&tpl));
         assert!(!state.is_revoked("orders", 0));
+        assert_eq!(state.assign_rounds(), 1);
     }
 }

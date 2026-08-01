@@ -924,6 +924,177 @@ async fn test_consumer_partition_rebalance() {
     shutdown_within(handle_a, 10).await;
 }
 
+/// **T6: static group membership is pinned by contrast.** A consumer that
+/// restarts under the same `group.instance.id` within `session.timeout.ms`
+/// rejoins with its old assignment and the group never rebalances — the
+/// *surviving* member's [`ConsumerHandle::rebalance_rounds`] count is the
+/// observable, because committed offsets cannot distinguish "rejoined
+/// statically" from "full rebalance and reassignment". The dynamic half of the
+/// test performs the identical restart without instance ids and asserts the
+/// surviving member *does* observe extra rounds; the contrast is what proves
+/// `group.instance.id` reached the broker and did its job.
+#[tokio::test]
+#[ignore]
+async fn test_static_membership_rejoin_avoids_rebalance() {
+    let (_container, brokers) = start_kafka().await;
+
+    let admin: rdkafka::admin::AdminClient<rdkafka::client::DefaultClientContext> =
+        ClientConfig::new()
+            .set("bootstrap.servers", &brokers)
+            .create()
+            .unwrap();
+    use rdkafka::admin::{AdminOptions, NewTopic, TopicReplication};
+
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &brokers)
+        .set("message.timeout.ms", "10000")
+        .create()
+        .unwrap();
+
+    let engine = empty_engine();
+
+    // Both halves run the same scenario; `instance_ids` is the only variable.
+    // Returns the surviving member's rebalance rounds (before, after) the
+    // peer's stop + immediate rejoin.
+    async fn restart_scenario(
+        brokers: &str,
+        admin: &rdkafka::admin::AdminClient<rdkafka::client::DefaultClientContext>,
+        producer: &FutureProducer,
+        engine: &Arc<orion::engine::EngineHandle>,
+        label: &str,
+        instance_ids: [Option<&str>; 2],
+    ) -> (u64, u64) {
+        let topic = format!("test-static-{label}-{}", uuid::Uuid::new_v4());
+        let group_id = format!("static-group-{label}-{}", uuid::Uuid::new_v4());
+        let results = admin
+            .create_topics(
+                &[NewTopic::new(&topic, 2, TopicReplication::Fixed(1))],
+                &AdminOptions::new(),
+            )
+            .await
+            .unwrap();
+        for result in &results {
+            assert!(result.is_ok(), "Failed to create topic: {result:?}");
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let config = KafkaIngestConfig {
+            enabled: true,
+            brokers: vec![brokers.to_string()],
+            group_id: group_id.clone(),
+            topics: vec![TopicMapping {
+                topic: topic.clone(),
+                channel: "static-channel".to_string(),
+            }],
+            dlq: DlqConfig {
+                enabled: false,
+                topic: "unused".to_string(),
+            },
+            processing_timeout_ms: 5_000,
+            lag_poll_interval_secs: 0,
+            // The broker-side minimum (6s), so the static half's rejoin
+            // window is short but comfortably wider than the immediate
+            // restart below.
+            session_timeout_ms: 6_000,
+            ..Default::default()
+        };
+
+        let start = |instance_id: Option<&str>| {
+            consumer::start_consumer(
+                &config,
+                engine.clone(),
+                test_registry(),
+                test_datalogic(),
+                None,
+                None,
+                instance_id,
+            )
+            .unwrap()
+        };
+
+        let handle_a = start(instance_ids[0]);
+        let survivor = start(instance_ids[1]);
+
+        // Settle: both members assigned, all of batch 1 processed to commit.
+        for i in 0..6 {
+            let payload = format!(r#"{{"data": {{"batch": 1, "index": {i}}}}}"#);
+            producer
+                .send(
+                    FutureRecord::<str, str>::to(&topic)
+                        .key(&format!("key-{i}"))
+                        .payload(&payload),
+                    Duration::from_secs(5),
+                )
+                .await
+                .expect("Failed to produce message");
+        }
+        wait_for_committed(brokers, &group_id, &topic, 2, 6, 60).await;
+        let rounds_before = survivor.rebalance_rounds();
+
+        // Stop the peer and restart it immediately — inside the session
+        // timeout — under the same identity (or lack of one).
+        shutdown_within(handle_a, 10).await;
+        let handle_a2 = start(instance_ids[0]);
+
+        // The restarted member must actually work its partitions again: batch
+        // 2 fully committed proves the rejoin succeeded on both halves.
+        for i in 0..6 {
+            let payload = format!(r#"{{"data": {{"batch": 2, "index": {i}}}}}"#);
+            producer
+                .send(
+                    FutureRecord::<str, str>::to(&topic)
+                        .key(&format!("key-{i}"))
+                        .payload(&payload),
+                    Duration::from_secs(5),
+                )
+                .await
+                .expect("Failed to produce message");
+        }
+        wait_for_committed(brokers, &group_id, &topic, 2, 12, 60).await;
+        let rounds_after = survivor.rebalance_rounds();
+
+        shutdown_within(handle_a2, 10).await;
+        shutdown_within(survivor, 10).await;
+        (rounds_before, rounds_after)
+    }
+
+    // Static half: same instance id across the restart — the survivor must
+    // never observe another rebalance round.
+    let (static_before, static_after) = restart_scenario(
+        &brokers,
+        &admin,
+        &producer,
+        &engine,
+        "static",
+        [Some("node-a"), Some("node-b")],
+    )
+    .await;
+    assert_eq!(
+        static_after, static_before,
+        "a static member's stop + rejoin within the session timeout must not \
+         rebalance the group (survivor saw {static_before} -> {static_after} rounds)"
+    );
+
+    // Dynamic half: the identical restart without instance ids. The close
+    // sends LeaveGroup and the rejoin is a new member — the survivor must
+    // observe at least one extra round, proving the observable can move and
+    // the static half's stability was group.instance.id at work.
+    let (dyn_before, dyn_after) = restart_scenario(
+        &brokers,
+        &admin,
+        &producer,
+        &engine,
+        "dynamic",
+        [None, None],
+    )
+    .await;
+    assert!(
+        dyn_after > dyn_before,
+        "a dynamic member's stop + rejoin must rebalance the group \
+         (survivor saw {dyn_before} -> {dyn_after} rounds)"
+    );
+}
+
 // ============================================================
 // Broker failure / recovery tests
 // ============================================================

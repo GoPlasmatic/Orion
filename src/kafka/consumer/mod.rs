@@ -82,6 +82,7 @@ pub struct ConsumerHandle {
     join_handle: tokio::task::JoinHandle<()>,
     consumer: Arc<StreamConsumer<KafkaConsumerContext>>,
     topics: HashSet<String>,
+    rebalance: Arc<RebalanceState>,
 }
 
 impl ConsumerHandle {
@@ -136,6 +137,17 @@ impl ConsumerHandle {
     /// Get the set of topics this consumer is subscribed to.
     pub fn topics(&self) -> &HashSet<String> {
         &self.topics
+    }
+
+    /// Completed rebalance rounds this consumer has observed (one assignment
+    /// callback each, empty assignments included).
+    ///
+    /// The observable that makes static membership testable (T6): when a peer
+    /// restarts under the same `group.instance.id` within the session timeout
+    /// it rejoins without a group rebalance, so this count on a *surviving*
+    /// consumer stays put — while a dynamic member's leave + rejoin bumps it.
+    pub fn rebalance_rounds(&self) -> u64 {
+        self.rebalance.assign_rounds()
     }
 }
 
@@ -235,7 +247,7 @@ pub fn start_consumer(
         dlq_topic,
         processing_timeout_ms,
         lag_poll_interval_secs,
-        rebalance,
+        rebalance: rebalance.clone(),
         retry_budget_ms: process::in_place_retry_budget_ms(&config.extra_config),
     };
     let handle = tokio::spawn(consume_loop(ctx, shutdown_rx));
@@ -245,6 +257,7 @@ pub fn start_consumer(
         join_handle: handle,
         consumer,
         topics: topic_set,
+        rebalance,
     })
 }
 
