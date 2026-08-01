@@ -1,7 +1,8 @@
 //! Backend renderers over the same `Cond` IR: SQL (`sql`), MongoDB (`mongo`), and
-//! Elasticsearch (`es`), plus the envelope planning they share: page-size and
-//! skip resolution, the projection rule, and the sort rule (direction + nulls
-//! placement) are decided once here and mapped to each backend's native form.
+//! Elasticsearch (`es`), plus the planning they share: page-size and skip
+//! resolution, the projection rule, the sort rule (direction + nulls
+//! placement), and the document-store upsert split are decided once here and
+//! mapped to each backend's native form.
 
 pub mod es;
 pub mod mongo;
@@ -9,8 +10,9 @@ pub mod sql;
 
 use crate::config::QueryConfig;
 use crate::query::error::QueryError;
-use crate::query::ir::RelRef;
+use crate::query::ir::{self, RelRef};
 use crate::query::spec::{QuerySpec, SortDir, SortKey};
+use crate::query::write::{ConflictAction, ResolvedConflict, WriteError};
 use crate::storage::DbBackend;
 
 /// Resolve the effective page size: an explicit `limit` above `max_limit` is
@@ -88,6 +90,99 @@ pub(crate) fn plan_sort(sort: &[SortKey]) -> Vec<SortPlan<'_>> {
             }
         })
         .collect()
+}
+
+/// Which of a document store's upsert body shapes applies — decided once from
+/// the conflict action and whether an explicit `set` was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpsertMode {
+    /// `action: update` with no explicit `set` — the incoming row replaces the
+    /// existing document's non-key columns (ES: `doc_as_upsert`).
+    Replace,
+    /// `action: update` with an explicit `set`: `set` applies on conflict, the
+    /// remaining inserted columns only on first insert.
+    SetWithInsertDefaults,
+    /// `action: nothing` — insert if absent, never touch an existing document
+    /// (ES: `op_type=create`).
+    InsertOnly,
+}
+
+/// The planned single-document upsert both document stores consume: the one
+/// row, the body-shape mode, and the assignments split into an on-conflict half
+/// and an insert-only half. How each backend renders the split (per-column
+/// `$set`/`$setOnInsert` vs whole-row merge) stays with that backend.
+pub(crate) struct UpsertPlan<'a> {
+    pub row: &'a [ir::Value],
+    pub mode: UpsertMode,
+    /// Assignments applied when the row/document already exists.
+    pub on_conflict: Vec<(&'a str, &'a ir::Value)>,
+    /// Assignments applied only when it is first inserted.
+    pub insert_only: Vec<(&'a str, &'a ir::Value)>,
+}
+
+/// Plan a document-store upsert: enforce the single-row limit (bulk upsert is a
+/// capability error naming `target_backend`) and compute the set / set-on-insert
+/// split from the conflict action.
+pub(crate) fn plan_upsert<'a>(
+    columns: &'a [String],
+    rows: &'a [Vec<ir::Value>],
+    set: &'a [(String, ir::Value)],
+    conflict: &'a ResolvedConflict,
+    target_backend: &str,
+) -> Result<UpsertPlan<'a>, WriteError> {
+    // A single-document upsert keyed on the conflict target. Bulk upsert would
+    // need one write per row; deferred (fail loudly, don't guess).
+    if rows.len() != 1 {
+        return Err(QueryError::FeatureUnsupportedByTarget {
+            feature: "bulk upsert".to_string(),
+            target: target_backend.to_string(),
+        }
+        .into());
+    }
+    let row = &rows[0];
+    let non_target = |col: &String| !conflict.targets.contains(col);
+
+    let (mode, on_conflict, insert_only) = match conflict.action {
+        ConflictAction::Update if set.is_empty() => {
+            // Overwrite every non-target column on conflict.
+            let on_conflict = columns
+                .iter()
+                .zip(row)
+                .filter(|(c, _)| non_target(c))
+                .map(|(c, v)| (c.as_str(), v))
+                .collect();
+            (UpsertMode::Replace, on_conflict, Vec::new())
+        }
+        ConflictAction::Update => {
+            // `set` applies on conflict; inserted columns not in `set` (and not
+            // targets) apply only on insert.
+            let on_conflict = set.iter().map(|(c, v)| (c.as_str(), v)).collect();
+            let insert_only = columns
+                .iter()
+                .zip(row)
+                .filter(|(c, _)| non_target(c) && !set.iter().any(|(s, _)| s == *c))
+                .map(|(c, v)| (c.as_str(), v))
+                .collect();
+            (UpsertMode::SetWithInsertDefaults, on_conflict, insert_only)
+        }
+        ConflictAction::Nothing => {
+            // Insert the row if absent; leave an existing one untouched.
+            let insert_only = columns
+                .iter()
+                .zip(row)
+                .filter(|(c, _)| non_target(c))
+                .map(|(c, v)| (c.as_str(), v))
+                .collect();
+            (UpsertMode::InsertOnly, Vec::new(), insert_only)
+        }
+    };
+
+    Ok(UpsertPlan {
+        row,
+        mode,
+        on_conflict,
+        insert_only,
+    })
 }
 
 /// Refuse an `include` on a document store. F26: `include` hydration exists only

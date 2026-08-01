@@ -19,7 +19,7 @@ use crate::query::bulk::{BulkOutcome, ItemOutcome};
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, EsStorage, FieldRef, Quant, TextOp, Value};
 use crate::query::spec::QuerySpec;
-use crate::query::write::{ConflictAction, ResolvedConflict, ResolvedWrite, WriteError};
+use crate::query::write::{ResolvedConflict, ResolvedWrite, WriteError};
 
 /// ES bounds `from + size` by `index.max_result_window` (default 10k). Beyond it
 /// we raise a capability error rather than return a truncated page.
@@ -361,14 +361,7 @@ fn render_es_upsert(
     set: &[(String, Value)],
     conflict: &ResolvedConflict,
 ) -> Result<EsWrite, WriteError> {
-    // A single-document upsert keyed on `_id`. Bulk upsert would need one
-    // `_update` call per row; deferred (fail loudly, don't guess).
-    if rows.len() != 1 {
-        return Err(WriteError::Query(QueryError::FeatureUnsupportedByTarget {
-            feature: "bulk upsert".to_string(),
-            target: "elasticsearch".to_string(),
-        }));
-    }
+    let plan = super::plan_upsert(columns, rows, set, conflict, "elasticsearch")?;
     // ES has no unique constraints; the only conflict key it can express is the
     // document `_id`.
     if conflict.targets.len() != 1 || conflict.targets[0] != "_id" {
@@ -380,53 +373,54 @@ fn render_es_upsert(
             target: "elasticsearch".to_string(),
         }));
     }
-    let row = &rows[0];
     let idx = columns.iter().position(|c| c == "_id").ok_or_else(|| {
         WriteError::Query(QueryError::InvalidEnvelope(
             "on_conflict target '_id' must be one of the inserted columns".to_string(),
         ))
     })?;
-    let id = id_string(&row[idx], "values")?.ok_or_else(|| {
+    let id = id_string(&plan.row[idx], "values")?.ok_or_else(|| {
         WriteError::Query(QueryError::NotRepresentable {
             what: "a null `_id` in an upsert".to_string(),
             at: "values".to_string(),
         })
     })?;
-    let doc = source_doc(columns, row, "_id");
+    let doc = source_doc(columns, plan.row, "_id");
 
-    Ok(match conflict.action {
-        ConflictAction::Update => {
+    Ok(match plan.mode {
+        super::UpsertMode::Replace => {
             reject_id_in_set(set)?;
-            if set.is_empty() {
-                // Overwrite every non-`_id` column on conflict; index the row
-                // when absent.
-                EsWrite::UpdateDoc {
-                    index: table.to_string(),
-                    id,
-                    body: json!({ "doc": doc, "doc_as_upsert": true }),
-                }
-            } else {
-                // On conflict apply `set`; on insert index the row overlaid with
-                // `set` (Mongo's `$set` + `$setOnInsert` split).
-                let mut set_doc = serde_json::Map::new();
-                for (col, v) in set {
-                    set_doc.insert(col.clone(), to_json(v));
-                }
-                let mut merged = match &doc {
-                    Json::Object(m) => m.clone(),
-                    _ => serde_json::Map::new(),
-                };
-                for (k, v) in &set_doc {
-                    merged.insert(k.clone(), v.clone());
-                }
-                EsWrite::UpdateDoc {
-                    index: table.to_string(),
-                    id,
-                    body: json!({ "doc": Json::Object(set_doc), "upsert": Json::Object(merged) }),
-                }
+            // Overwrite every non-`_id` column on conflict; index the row when
+            // absent. ES expresses the replace as a whole-row `doc_as_upsert`.
+            EsWrite::UpdateDoc {
+                index: table.to_string(),
+                id,
+                body: json!({ "doc": doc, "doc_as_upsert": true }),
             }
         }
-        ConflictAction::Nothing => EsWrite::CreateDoc {
+        super::UpsertMode::SetWithInsertDefaults => {
+            reject_id_in_set(set)?;
+            // The planned on-conflict half becomes `doc`; ES has no per-column
+            // set-on-insert, so the insert side is the whole row overlaid with
+            // `set` (the documented whole-row divergence from Mongo's
+            // `$setOnInsert`).
+            let mut set_doc = serde_json::Map::new();
+            for (col, v) in &plan.on_conflict {
+                set_doc.insert((*col).to_string(), to_json(v));
+            }
+            let mut merged = match &doc {
+                Json::Object(m) => m.clone(),
+                _ => serde_json::Map::new(),
+            };
+            for (k, v) in &set_doc {
+                merged.insert(k.clone(), v.clone());
+            }
+            EsWrite::UpdateDoc {
+                index: table.to_string(),
+                id,
+                body: json!({ "doc": Json::Object(set_doc), "upsert": Json::Object(merged) }),
+            }
+        }
+        super::UpsertMode::InsertOnly => EsWrite::CreateDoc {
             index: table.to_string(),
             id,
             doc,

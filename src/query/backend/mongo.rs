@@ -23,7 +23,7 @@ use crate::query::bulk::{BulkOutcome, ItemOutcome};
 use crate::query::error::QueryError;
 use crate::query::ir::{CmpOp, Cond, FieldRef, MongoStorage, Quant, TextOp, Value};
 use crate::query::spec::QuerySpec;
-use crate::query::write::{ConflictAction, ResolvedConflict, ResolvedWrite, WriteError};
+use crate::query::write::{ResolvedConflict, ResolvedWrite, WriteError};
 
 /// A rendered MongoDB `find`: the collection plus filter and options.
 #[derive(Debug, Clone, PartialEq)]
@@ -346,15 +346,7 @@ fn render_upsert(
     w_set: &[(String, Value)],
     conflict: &ResolvedConflict,
 ) -> Result<MongoWrite, WriteError> {
-    // A single-document upsert keyed on the conflict target. Bulk upsert would
-    // need one updateOne per row; deferred (fail loudly, don't guess).
-    if rows.len() != 1 {
-        return Err(WriteError::Query(QueryError::FeatureUnsupportedByTarget {
-            feature: "bulk upsert".to_string(),
-            target: "mongodb".to_string(),
-        }));
-    }
-    let row = &rows[0];
+    let plan = super::plan_upsert(columns, rows, w_set, conflict, "mongodb")?;
 
     // Filter matches on the conflict-target columns (also applied on insert).
     let mut filter = Document::new();
@@ -364,40 +356,17 @@ fn render_upsert(
                 "on_conflict target '{t}' must be one of the inserted columns"
             )))
         })?;
-        filter.insert(t.as_str(), to_bson(&row[idx]));
+        filter.insert(t.as_str(), to_bson(&plan.row[idx]));
     }
 
+    // The planned split maps straight onto Mongo's per-column update operators.
     let mut set = Document::new();
+    for (col, v) in &plan.on_conflict {
+        set.insert(*col, to_bson(v));
+    }
     let mut set_on_insert = Document::new();
-    match conflict.action {
-        ConflictAction::Update => {
-            if w_set.is_empty() {
-                // Overwrite every non-target column on conflict.
-                for (col, v) in columns.iter().zip(row) {
-                    if !conflict.targets.contains(col) {
-                        set.insert(col.as_str(), to_bson(v));
-                    }
-                }
-            } else {
-                for (col, v) in w_set {
-                    set.insert(col.as_str(), to_bson(v));
-                }
-                // Inserted columns not in `set` (and not targets) apply only on insert.
-                for (col, v) in columns.iter().zip(row) {
-                    if !conflict.targets.contains(col) && !w_set.iter().any(|(c, _)| c == col) {
-                        set_on_insert.insert(col.as_str(), to_bson(v));
-                    }
-                }
-            }
-        }
-        ConflictAction::Nothing => {
-            // Insert the row if absent; leave an existing row untouched.
-            for (col, v) in columns.iter().zip(row) {
-                if !conflict.targets.contains(col) {
-                    set_on_insert.insert(col.as_str(), to_bson(v));
-                }
-            }
-        }
+    for (col, v) in &plan.insert_only {
+        set_on_insert.insert(*col, to_bson(v));
     }
 
     let mut update = Document::new();
