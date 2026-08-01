@@ -224,7 +224,7 @@ a one-shot `migrate` service that completes before either node boots.
 
 ### Two packaged ways to run it
 
-- **Helm chart** (`deploy/helm/orion`) — deploys the cluster shape on
+- **[Helm chart](./kubernetes.md)** (`deploy/helm/orion`) — deploys the cluster shape on
   Kubernetes: 2 replicas by default (optional CPU-based HPA), the pre-upgrade
   migration Job, graceful rolling deploys that surge instead of dipping
   (`maxUnavailable: 0`, `maxSurge: 1`, `/readyz` drain), a PodDisruptionBudget,

@@ -119,10 +119,20 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion/
 docker run -p 8080:8080 ghcr.io/goplasmatic/orion:latest
 ```
 
+**Kubernetes (Helm):** every release publishes the chart to GHCR as an OCI
+artifact; CI lints and renders it on every change. It deploys N replicas in
+cluster mode against a shared PostgreSQL/MySQL and Redis, with a pre-upgrade
+migration Job — see [Kubernetes (Helm)](../topology/kubernetes.md) for the
+full install guide:
+
+```bash
+helm install orion oci://ghcr.io/goplasmatic/charts/orion --version 1.0.0
+```
+
 **From source:**
 
 ```bash
 cargo install --git https://github.com/GoPlasmatic/Orion
 ```
 
-Multi-platform binaries are published for Linux (x86_64, aarch64), macOS (x86_64, aarch64), and Windows (x86_64).
+Multi-platform binaries are published for Linux (x86_64, aarch64), macOS (aarch64 / Apple Silicon), and Windows (x86_64).
