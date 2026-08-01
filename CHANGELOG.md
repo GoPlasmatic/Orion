@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-01
+
 ### Security
 
 - **Admin credential guessing is now metered and throttled.** The middleware
@@ -225,6 +227,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   execution, so the attempt is on the record even when the run itself fails.
   Audit-volume alerts will see traffic from this endpoint for the first
   time (O7).
+
+- **Credential headers are masked before entering workflow metadata.**
+  `authorization`, `cookie`, `proxy-authorization` and `x-api-key` arrive in
+  `metadata.headers` as `"******"` — previously their plaintext values were
+  persisted into `traces.result_json` (async) and `trace_dlq.metadata_json`.
+  Header *presence* is still testable from `validation_logic`. If a channel
+  used `rollout.sticky_header` with a credential header, switch to a
+  non-credential header — all callers now hash to one bucket otherwise.
+- **Trace reads no longer expose the submitter's request context.**
+  `GET /api/v1/data/traces/{id}` strips `context.metadata` (the request
+  header map) from the served message, and `GET /api/v1/data/traces` returns
+  payload-free rows — `input_json`, `result_json` and `task_trace_json` are
+  served only by the single-trace GET. Rows written before this release
+  still hold plaintext headers at rest; the projection covers reads of them.
+- **Async trace reads are scoped to the submitter.** The 202 from
+  `POST /{channel}/async` now carries a one-time-shown `trace_token`;
+  polling `GET /traces/{id}` requires it (`x-trace-token` header or
+  `?token=`) or an admin credential. Update polling clients to pass the
+  token. Sync traces and pre-upgrade rows keep the admin trust model.
+  New migration adds `traces.access_token_hash` on all three backends.
+- **`/health` serves topology detail only to authorized callers** when
+  admin auth is enabled: anonymous callers get status, version, uptime and
+  coarse per-component states; `git_hash`, `build_timestamp`,
+  `workflows_loaded`, the circuit-breaker map, connector load failures and
+  quarantined channels (names and reasons) require the admin key. With auth
+  disabled the body is unchanged.
 
 ### Breaking
 
@@ -1089,6 +1117,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   — which those rows can no longer be, since they no longer derive `Serialize`
   at all (D28).
 
+- **Rate-limit client identity is the TCP peer address.** Forwarded headers
+  (`X-Forwarded-For` / `X-Real-IP`) are honored only when the peer falls inside
+  the new `rate_limit.trusted_proxies` CIDR list, which is **empty by default**.
+  Deployments behind a proxy, load balancer, or ingress that do not configure it
+  will collapse every client into a single bucket. Applies when
+  `rate_limit.enabled = true` (still `false` by default), and to per-channel
+  `key_logic` expressions referencing `client_ip`. A malformed entry is a hard
+  startup error even when rate limiting is disabled.
+- **Metrics labels changed — dashboards and alerts will break silently.**
+  `rate_limit_rejections_total` lost its unbounded `client` label and gained
+  `scope` (channel name, or `admin` / `data` / `operational`). Channel-labelled
+  metrics (`messages_total`, `message_duration_seconds`,
+  `channel_executions_total`) now emit the literal `_unknown` for unregistered
+  channels on the HTTP and queue paths. No metric was renamed or removed.
+- **Channels with unparseable `config_json` or uncompilable `validation_logic`
+  refuse to load, in all modes.** Previously a warning, after which the channel
+  served with its validation, dedup, rate limit, cache, and backpressure guards
+  silently disabled. A stored config that was quietly broken now exits the
+  process at startup, and fails engine reload — plus every admin mutation that
+  triggers one — with `500 CONFIG_ERROR`. Registry rebuilds are all-or-nothing,
+  so a refusal leaves the running engine untouched.
+- **Kafka delivery is at-least-once.** Offsets advance only on successful
+  processing or a *confirmed* DLQ write. With `kafka.dlq.enabled = false` (the
+  default) a poison message now blocks the consumer and retries with capped
+  backoff (1s → 60s) instead of being dropped; because messages are processed
+  sequentially, this halts every subscribed partition on that instance.
+  **Enabling `[kafka.dlq]` is the recommended action.**
+- **Data-plane error bodies are sanitized.** Entries in `errors[]` are reduced
+  to a code, a fixed generic message, and an optional `task_id`; correlate via
+  the top-level `request_id` (also the `x-request-id` header) and read full
+  detail from the persisted trace. Cached responses store the sanitized body.
+- **Response cache keys fold in method, route params, and query string.**
+  Existing cached entries are orphaned — never mis-served — and expire by
+  `cache.ttl_secs` (default 300s).
+- **Open circuit breakers return `503 CIRCUIT_OPEN`** instead of
+  `500 ENGINE_ERROR`. No `Retry-After` header. With `continue_on_error: true`
+  the request still returns `200` with a sanitized `TASK_ERROR`; alert on
+  `circuit_breaker_rejections_total` rather than the status code.
+- **A full trace queue returns `503`** (code `SERVICE_UNAVAILABLE`, message
+  `Trace queue is full …`) on the async submission path instead of blocking
+  indefinitely. Sized by `queue.buffer_size` / `queue.max_queue_memory_bytes`.
+- **Unimplemented secret schemes are rejected.** `vault://`, `aws-sm://`,
+  `gcp-sm://`, and `azure-kv://` in connector configs were passed through and
+  **used as literal passwords**; the connector is now skipped at load with an
+  `ERROR` log. A connector that appeared to work was never authenticating as
+  intended — rotate the credential.
+- **`GET /api/v1/admin/connectors` redacts userinfo inside URL-shaped values**
+  at any depth (`https://user:******@host`), which finally covers `url` and
+  `brokers[]`. Credential-free URLs are still returned in full. Do not
+  round-trip a connector config through `GET` → `PUT`: updates replace
+  `config_json` wholesale and would persist the mask.
+- **`GET /api/v1/admin/audit-logs` rejects unknown query parameters with `400`**
+  instead of silently returning unfiltered results. No other endpoint changed.
+- **`db_read` returns values for `float4`/`REAL` and blob columns** instead of
+  `null`, and errors on genuinely undecodable columns and non-finite floats.
+  Blobs stringify as UTF-8 when valid, else lowercase hex. Also affects
+  `data_query` and `data_write`'s `RETURNING` path. A `null` in a result now
+  means only SQL NULL.
+- **Trace read endpoints require admin auth.** `GET /api/v1/data/traces` and
+  `/traces/{id}` return `401` for previously-open callers when
+  `admin_auth.enabled = true`. No effect when admin auth is disabled.
+- **Rollout bucketing is caller-stable, not random per request** — see Added.
+  A canary now exposes a stable subset of callers rather than re-drawing on
+  every call; aggregate percentages are unchanged.
+- **The Helm chart and HA compose default to `ORION_ENVIRONMENT=production` and require
+  admin API keys.** `helm install` without `adminAuth.apiKeys` or
+  `adminAuth.existingSecret` fails at template time by design
+  (`devStack.enabled=true` is the dev escape hatch); `docker compose -f
+  docker-compose.ha.yml up` aborts without `ORION_ADMIN_API_KEYS`. Note that
+  `environment = "production"` also rejects the CORS wildcard, and the default
+  `cors.allowed_origins` is `["*"]` — set explicit origins before flipping.
+- **Removed:** the unread `backpressure.queue_depth` channel-config field.
+  Stored configs still carrying the key deserialize normally (there is no
+  `deny_unknown_fields`), so this needs no migration.
+- **Removed:** the unread `cors.allowed_methods` and `cors.allowed_headers`
+  channel-config fields. Only `cors.allowed_origins` was ever enforced —
+  per-channel preflight is not implemented — so setting them was a silent
+  no-op. Same no-migration note as above.
+- **Every admin list endpoint shares one pagination envelope.**
+  `GET /api/v1/admin/audit-logs` (and the new trace-DLQ list) now return the
+  flat `{data, total, limit, offset}` shape the workflow/channel/connector
+  lists always used, instead of a nested `{data, pagination: {…}}`.
+- **Malformed admin request bodies are rejected uniformly with 400 + field
+  details.** The four workflow endpoints that still surfaced axum's plain-text
+  422 (`PATCH …/status`, `PUT …/rollout`, `POST …/test`,
+  `POST /workflows/import`) now use the same extractor as every other admin
+  route, and query-string parse failures return the standard JSON error
+  envelope instead of plain text.
+
 ### Added
 
 - **`orion-server preflight` scans the stored estate before an upgrade.** The
@@ -1336,6 +1453,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   objects are allow-listed by name with a written reason. Only the SQLite half
   runs without Docker; the cross-backend comparison is `#[ignore]`d and wired
   into CI, so every failure names the table, the column and both types (D10).
+
+- HTTP connector `retry_non_idempotent` (default `false`): opt POST/PATCH back
+  into the retry loop. Off by default because a timed-out POST may already
+  have been applied — enable only where the endpoint honours an idempotency
+  key the workflow sets in `headers`.
+- Elasticsearch connector `max_response_size` (default 10 MB), matching the
+  HTTP connector's cap.
+- `POST /{channel}/async` responses carry `trace_token`; `GET /traces/{id}`
+  accepts it via the `x-trace-token` header or a `?token=` query parameter.
+- `engine.fail_on_connector_load_error` (default `false`): refuse to start when
+  an enabled connector cannot be loaded, so a bad rollout fails at boot where
+  the orchestrator catches it rather than at request time hours later. Startup
+  only — a hot reload never takes a running process down.
+- `GET /health` reports two new degraded states: `components.connectors` with
+  the failures under `connectors.failed_to_load`, and `components.channels`
+  with the quarantined set under `channels.quarantined`. Both keep the HTTP
+  status at 200 — alert on the fields, not the status code, since a 503 would
+  pull the node out of its load balancer over something nothing in flight may
+  be using.
+- `GET /api/v1/admin/connectors` gives every row a `load_status` (`loaded`,
+  `failed`, `disabled`) plus `load_error` and `load_error_stage`.
+- Environment overrides for the four settings that had none:
+  `ORION_SERVER__COMPRESSION__ENABLED`,
+  `ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS`,
+  `ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS` and `…__DATA_RPS`. The two endpoint
+  limits are optional, so their variables are three-state: unset keeps the
+  config-file value, a number sets it, an empty string clears it.
+- **Kafka SASL/TLS authentication** — `[kafka.auth]` (`security_protocol`,
+  `sasl_mechanism`, `sasl_username`, `sasl_password`, `ssl_ca_location`) plus a
+  `kafka.extra_config` passthrough for arbitrary librdkafka properties, applied
+  to both the consumer and the producer. Orion can now connect to Confluent
+  Cloud, MSK, Aiven, and any secured broker; previously PLAINTEXT was the only
+  reachable configuration. Do not set `enable.auto.commit` via the passthrough —
+  it would defeat the at-least-once guarantee below.
+- **Message data in every connector function** — `db_read`, `db_write`,
+  `cache_read`, `cache_write`, and `mongo_read` now resolve `{"var": "…"}`
+  references in their `key`, `value`, `ttl_secs`, `params`, and `filter` inputs,
+  so keys, bind parameters, and Mongo filters can depend on the message instead
+  of being fixed constants. `data_query`/`data_write` share the same resolver.
+  `connector` and raw `query` text stay literal by design.
+- **Trace DLQ operator API** — `/api/v1/admin/trace-dlq` with paginated list
+  (payload-free projection), get-by-id, requeue, and purge. Failed async traces
+  were previously invisible and unreplayable.
+- **Audit-log filtering** — `action`, `resource_type`, `resource_id`,
+  `principal`, and time-range filters on `GET /api/v1/admin/audit-logs`; unknown
+  query parameters are now rejected with 400 rather than silently ignored. The
+  `details` column is populated (starting with `request_id`) — it was dead
+  before, and writing to it produced malformed SQL.
+- **Audit-log retention** — `audit.retention_days` (default 90, `0` keeps
+  forever) with a lease-gated cleanup job. The table previously grew forever
+  with no supported way to prune it.
+- **Operational metrics** — `trace_dlq_depth`, `trace_dlq_retries_total`,
+  `trace_queue_rejected_total{reason}`, and `trace_persistence_failures_total`.
+  The three conditions most worth alerting on were previously invisible.
+- **Rate-limit proxy trust** — `rate_limit.trusted_proxies` (CIDR list, empty by
+  default). Forwarded headers are honoured only from listed peers; otherwise the
+  TCP peer address is the client identity.
+- **Hashed admin keys** — `admin_auth.api_keys` accepts `sha256:<64-hex>`
+  entries so keys need not sit in config as plaintext. Plaintext still works.
+- **Bounded in-memory cache** — `engine.max_memory_cache_entries` (default
+  100 000, `0` = unbounded) with LRU eviction. The dedup store and response
+  cache were previously unbounded maps reachable from workflow config alone.
+- **`[cluster]` config section** — `enabled`, `redis_url`,
+  `epoch_poll_interval_ms`, `instance_id` (auto-generated UUID when empty).
+  Cluster mode requires Postgres/MySQL storage and a shared Redis; startup
+  refuses SQLite.
+- **Config-change propagation** — every admin mutation (channels, workflows,
+  rollout, connectors, manual reload) advances a `config_epoch` row; each node
+  polls it and resyncs from the DB, so a change made through any node reaches
+  all nodes. This also fixes connector edits, which previously propagated to
+  no other node at all. Circuit-breaker resets fan out over the same bus.
+- **Cluster-shared dedup, response cache, and rate limits** — channels without
+  an explicit cache connector use the shared cluster Redis for idempotency
+  dedup and response caching; per-channel rate limits enforce as a shared
+  Redis fixed window (~configured rate across ALL replicas combined). In
+  cluster mode, a channel whose backend would silently fall back to per-node
+  memory refuses to load instead.
+- **DLQ claim leases + job single-flight** — DLQ retries claim rows via
+  `FOR UPDATE SKIP LOCKED` leases (each entry retried by exactly one node;
+  expired leases self-recover), and trace cleanup / DLQ retry acquire a job
+  lease per tick so only one node runs them. New `queue.dlq_batch_size` /
+  `queue.dlq_lease_secs`.
+- **`storage.auto_migrate`** (default `true`) — set `false` in multi-replica
+  deployments: pending migrations become a hard startup error and
+  `orion-server migrate` runs as a deploy step.
+- **Kafka static membership** — cluster mode sets `group.instance.id` and
+  `kafka.session_timeout_ms` so rolling restarts rejoin without a full group
+  rebalance; epoch-driven consumer restarts are jittered 0–5 s.
+- **Postgres/MySQL storage-backend test binaries** (`storage_postgres`,
+  `storage_mysql`) and a multi-node cluster test binary (`cluster`) running
+  two full nodes against Postgres + Redis testcontainers in CI.
+- **Helm chart** (`deploy/helm/orion`) — cluster-mode Deployment with
+  readyz/healthz probes, pre-upgrade migration Job, HPA, PDB, and an optional
+  throwaway dev Postgres/Redis; validated on a 3-replica kind install.
+- **HA reference compose** (`docker-compose.ha.yml`) — nginx LB → 2× Orion
+  (cluster mode) → shared Postgres + Redis with a one-shot migrate service,
+  plus `deploy/ha/rolling-drill.sh`, a zero-downtime rolling-deploy drill.
+- **Sticky canary rollouts** — the rollout bucket is now a stable hash of the
+  caller identity (`engine.rollout_sticky_header`, else the forwarded client
+  IP), so the same caller gets the same version on every request and replica;
+  previously assignment was random per request.
+- **Per-instance observability** — `service.instance.id` OTel resource
+  attribute and `instance_id` on request spans in cluster mode.
+- Env overrides: `ORION_CLUSTER__*`, `ORION_STORAGE__AUTO_MIGRATE`,
+  `ORION_STORAGE__{MAX,MIN}_CONNECTIONS`, `ORION_STORAGE__IDLE_TIMEOUT_SECS`,
+  `ORION_TRACE_QUEUE__DLQ_{RETRY_ENABLED,MAX_RETRIES,POLL_INTERVAL_SECS,BATCH_SIZE,LEASE_SECS}`,
+  `ORION_KAFKA__SESSION_TIMEOUT_MS`, `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS`,
+  `ORION_KAFKA__TOPICS`, `ORION_KAFKA__DLQ__{ENABLED,TOPIC}`,
+  `ORION_CORS__ALLOWED_ORIGINS`, `ORION_CHANNEL_FILTER__{INCLUDE,EXCLUDE}`,
+  `ORION_ENGINE__ROLLOUT_STICKY_HEADER`.
 
 ### Fixed
 
@@ -1694,6 +1921,184 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `STORAGE_ERROR`.** Both now report `STORAGE_ERROR`, matching every other list
   endpoint. Still a 500 (D18).
 
+- **Channel runtime controls hold (proposal N2, N5).** Responses carrying task
+  errors are no longer cached, so a transient downstream failure is not pinned
+  for the full TTL and replayed to every caller. A `rate_limit.key_logic` that
+  does not compile now quarantines the channel, and an evaluation failure
+  rejects the request with `429` — previously both fell back to `client_ip`,
+  silently turning a per-tenant limit into a per-IP one.
+- **Egress correctness round (proposal F8, F10–F13, F17).** `http_call` no
+  longer retries non-idempotent methods by default — a timed-out POST was
+  re-sent up to 3× with no idempotency key; set the new HTTP-connector
+  `retry_non_idempotent` to restore the old behaviour. Retries are also
+  bounded by a deadline instead of running attempts plus backoff past the
+  channel timeout. `publish_kafka` now publishes to the brokers its
+  connector names rather than always the globally configured cluster.
+  `db_read`/`mongo_read` enforce `query.max_limit` as a hard row cap, every
+  MongoDB path honours `query_timeout_ms`, Elasticsearch responses respect a
+  new `max_response_size` on the ES connector, and evicted connector pools
+  are closed instead of leaking their connections on every connector edit
+  and cluster epoch resync.
+- **Routing and rollout truth (proposal F30, F33, R5, F32).** Channels whose
+  workflows cannot be built — missing or unconvertible workflow, or rollout
+  percentages that don't sum to 100 — are now quarantined with the reason on
+  `/health` instead of silently serving engine errors or blackholing part of
+  the traffic. Workflows with unknown functions are rejected at create;
+  activation requires every referenced connector to exist. The channel
+  include/exclude glob matcher gained real backtracking and boot logs the
+  resolved channel list when filters are configured.
+- **Queue durability round (proposal Q4–Q8, N15, D4).** A DLQ backoff shift
+  overflow no longer kills the retry task (`dlq_max_retries` is now bounded
+  1–16); a DB error on the "mark running" write routes the message to the DLQ
+  instead of dropping it with the trace stuck `pending`; failed persistence
+  writes retry (50ms/250ms) before being counted and dropped, and batch
+  buffers are no longer cleared on error before that retry;
+  `async_workers`/`batch_workers` > 1 now actually run in parallel (per-worker
+  receivers, round-robin fan-out); `trace_storage.batch_size` is bounded at
+  1000 so batch flushes cannot exceed SQLite's bind limit; `task_trace_json`
+  is capped by `queue.max_result_size_bytes` on both paths; and trace
+  retention reclaims pending/running rows older than twice the retention
+  window instead of leaking them forever.
+
+- **Connectors authored the documented way never loaded.** `ConnectorConfig` is
+  internally tagged on `type`, but the type lives in its own column and the API
+  takes it as a sibling `connector_type` — so a config without a redundant
+  `"type"` inside it failed to deserialize and the connector was silently
+  skipped. That is the shape every example, the OpenAPI spec and any admin UI
+  produce. The stored column is now the single source of truth.
+- **A connector `GET` → edit → `PUT` round-trip persisted `"******"` as the
+  credential.** Fields returned masked are now restored from the stored row,
+  and a mask with no stored counterpart is a 400 naming the field instead of a
+  silent credential overwrite.
+- **Per-channel rate limits never applied to REST-routed channels.** The
+  middleware matched the first path segment against channel names; for a REST
+  channel that segment is the route prefix, so the limiter was never found and
+  the channel fell through to the platform-wide limit. Channel resolution now
+  mirrors the data handler exactly, including the `/async` suffix.
+- **One broken channel made the instance unmanageable.** A channel whose stored
+  config no longer parses used to fail *every* admin operation that triggers a
+  reload — activate, archive, delete, rollout — with a 500, and stopped the
+  cluster epoch watcher resyncing all nodes. Such channels are now quarantined
+  individually: still refused at every ingress (with a 503 naming the reason,
+  and routed to the DLQ on the Kafka path), but the rest of the reload
+  succeeds. Boot no longer aborts over one bad row either.
+- **Connectors that failed to load vanished without a signal.** Env
+  substitution, JSON parsing, secret resolution and deserialization failures
+  are now recorded and reported on `/health` and the admin list.
+- **`ORION_RATE_LIMIT__ENABLED=true` with no config file failed startup
+  validation.** `RateLimitConfig` and `AppConfig` derived `Default` while also
+  carrying `#[serde(default = "…")]` attributes with different values, so "the
+  default" depended on how the config was produced. Both now implement
+  `Default` in terms of their `default_*` functions, and the config-docs drift
+  test fails on any future divergence.
+- **The async path and Kafka ingest bypassed every per-channel control.**
+  CORS, `validation_logic`, deduplication, and backpressure lived only in the
+  sync HTTP path, so appending `/async` to a URL defeated a channel's input
+  contract, and `channel_call` skipped the target channel's guards entirely.
+  All ingress paths now share one guard layer, and an async request holds its
+  backpressure permit for the whole of processing, so `max_concurrent` bounds
+  sync and async traffic together.
+- **The response cache could serve one caller's data to another.** The key
+  hashed only the request body, so for a REST channel with a path parameter and
+  an empty body (`GET /orders/{id}`) every id collided onto one entry. Method,
+  route parameters, and query string are now part of the key.
+- **Kafka messages were lost on failure.** Offsets committed unconditionally,
+  so with the DLQ disabled (the default) a workflow error, timeout, or unmapped
+  topic silently discarded the message. Delivery is now at-least-once: offsets
+  advance only on success or a confirmed DLQ write, and UTF-8-decode failures,
+  empty payloads, and unmapped topics are dead-lettered instead of dropped.
+- **Poison messages retried forever.** A failing async trace re-entered the DLQ
+  as a fresh row at `retry_count = 0`, so `dlq_max_retries` could never be
+  reached and each cycle inserted another `traces` row. The retry count now
+  travels with the message and exhausts as documented.
+- **The trace queue blocked instead of shedding.** A full buffer parked the
+  request indefinitely; it now returns 503, as the configuration already
+  documented.
+- **Postgres DLQ retry and exhaustion silently failed.** Clearing a claim lease
+  bound a TEXT parameter to a `timestamp` column (Postgres error 42804) and all
+  three call sites discarded the error, so in cluster mode on Postgres entries
+  never backed off, never exhausted, and were re-claimed forever.
+- **SSRF protection was incomplete.** Redirects were followed without
+  re-validation (reaching cloud metadata via a 302), the validated DNS result
+  was discarded and re-resolved (rebinding), IPv6 private ranges were largely
+  unchecked, and the Elasticsearch connector skipped validation entirely.
+  Redirects are now followed manually with per-hop validation, connections are
+  pinned to validated addresses, and the private-range coverage is complete.
+- **Rate limiting was trivially bypassed.** The client identity came from
+  unvalidated forwarded headers with no peer-address fallback, so direct
+  clients shared one bucket and proxied clients could mint a new identity per
+  request. See `rate_limit.trusted_proxies` above.
+- **Channels with broken configuration served unguarded.** An unparseable
+  `config_json` silently loaded a default (no rate limit, validation, dedup,
+  backpressure, timeout, or cache) and an uncompilable `validation_logic` was
+  dropped with a warning. Both now refuse to load the channel.
+- **`db_read` turned unreadable columns into `null`.** `REAL`/`float4` and blob
+  columns silently read back as null on every SQL read path; genuinely
+  unsupported types now error rather than looking like a NULL value.
+- **Unimplemented secret schemes were used as literal passwords.**
+  `vault://…`, `aws-sm://…`, and friends passed through verbatim as the
+  credential; they are now rejected at connector load.
+- **Credentials embedded in URLs leaked through the admin API.** Masking was a
+  flat key-name denylist that missed `url` and `brokers[]`, so
+  `redis://:PASSWORD@host` was returned in full. Masking is recursive and
+  strips userinfo from URL-shaped values at any depth.
+- **A restart of cluster Redis broke every node permanently.** The shared
+  connection never re-established, silently disabling distributed dedup,
+  response caching, and rate limiting until pods restarted.
+- **An open circuit breaker returned 500 `ENGINE_ERROR`** instead of the
+  documented 503 `CIRCUIT_OPEN`, so callers could not distinguish shed load
+  from a server fault and the DLQ retry classifier never saw it as retryable.
+  Timeouts and 503s are now classified retryable.
+- **Internal error detail leaked to anonymous callers.** Success bodies
+  embedded raw upstream URLs, sqlx errors, and connector names; the data plane
+  now returns a code, a generic message, and a request id, with full detail
+  kept in the persisted trace.
+- **Unbounded Prometheus label cardinality.** Rate-limit rejections were
+  labelled with a spoofable client IP, and channel-labelled metrics accepted any
+  attacker-supplied path segment.
+- **`PUT /channels/{id}` ran no validation at all**, and `PUT /connectors/{id}`
+  skipped config validation unless the type was resent. Both now validate
+  against the stored record.
+- **A CORS list mixing `"*"` with explicit origins passed validation and then
+  panicked at router build**, killing the server at boot; `PATCH` was missing
+  from the allowed methods, making the admin status and rollout endpoints
+  unusable cross-origin.
+- **Admin API keys were compared with an early length check**, leaking key
+  length by timing.
+- **TLS was unusable — `server.tls.enabled = true` panicked at boot.**
+  `RustlsConfig::from_pem_file` failed with *"Could not automatically determine
+  the process-level CryptoProvider"*: rustls 0.23 auto-selects a backend only
+  when exactly one is enabled, and Orion's dependency graph enables both
+  (`axum-server` + `reqwest` pull `rustls/aws-lc-rs`; `mongodb` + `sqlx` pull
+  `rustls/ring`). The server now installs the `aws-lc-rs` provider explicitly
+  before loading certificates. **If you tried HTTPS, hit the panic, and
+  terminated TLS at a proxy instead, it works now.** Covered by new TLS
+  integration tests — the test debt was the bug.
+- **MySQL as Orion's own storage backend never worked** — the migration set
+  used mysql-client `DELIMITER` directives, TEXT columns with defaults, and
+  TEXT primary keys, none of which MySQL/sqlx accept. Rewritten with the
+  VARCHAR/datetime idiom; covered by container tests.
+- **Postgres storage was unusable at runtime** — models decode `i64` but
+  columns were `INT4` (every repository read failed), and chrono timestamps
+  were bound as TEXT, which Postgres rejects against timestamp columns. Both
+  fixed (new `004_bigint_columns.sql`); covered by container tests.
+- **Dedup idempotency keys are now channel-scoped** (`dedup:{channel}:{token}`)
+  — raw tokens previously collided across channels sharing a backend — and a
+  dedup-store outage now fails open (requests allowed, `dedup_backend` error
+  metric) instead of rejecting everything with 409.
+- **Trace read endpoints require admin auth** — `GET /api/v1/data/traces` and
+  `/traces/{id}` return full payloads but were unauthenticated even with
+  `admin_auth.enabled = true`.
+- **Rolling-deploy drain** — on SIGTERM, `/readyz` now flips to 503
+  immediately while the node keeps serving through `shutdown_drain_secs`
+  (so the LB drains it gracefully), then stops accepting and bounds the
+  in-flight wait with `server.shutdown_force_timeout_secs`. Previously TLS
+  stopped accepting instantly and plain HTTP never withdrew readiness.
+- **`queue.dlq_max_retries` is honored** (the enqueue path hardcoded 5) and
+  values `< 1` are rejected at startup; `traces.channel_id` is now populated
+  on every insert path; active-immutability triggers now exist on Postgres
+  and MySQL, not just SQLite.
+
 ### Changed
 
 - **Handler classification moved off the error message and onto the error.**
@@ -1958,445 +2363,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `storage::repositories::helpers::paginate` with a `Page`, and
   `storage::DbRow` for the row bound (D8, D18, D19, D27, D28).
 
-### Removed
-
-- **`src/storage/migration_gen.rs`.** 803 test-only lines that could not
-  produce the shipped schema — no `audit_logs`, `config_epoch` or `job_leases`,
-  four columns missing (`traces.task_trace_json`, `traces.access_token_hash`,
-  `trace_dlq.claimed_by`, `trace_dlq.claimed_until`),
-  `text`/`timestamp` on MySQL where the shipped set needs
-  `varchar(n)`/`datetime` — and whose module doc instructed contributors to
-  regenerate checksum-frozen migrations. CONTRIBUTING.md now documents what the
-  project actually does: copy the newest backend's `001_initial.sql` and adapt
-  the dialect by hand (D12).
-
-## [1.0.0] - 2026-07-27
-
-Multi-instance (HA) support: N replicas of `orion-server` behind a load
-balancer, sharing one Postgres/MySQL + Redis, behave as a single logical
-system. With `cluster.enabled = false` (the default) behavior is unchanged.
-See [Scalability](https://goplasmatic.github.io/Orion/features/scalability.html)
-and [Availability](https://goplasmatic.github.io/Orion/features/availability.html)
-for the cluster architecture.
-
-> **Upgrading from 0.3.0?** Read the
-> [Upgrade Guide](https://goplasmatic.github.io/Orion/getting-started/upgrading.html).
-> It expands every item in Breaking below into what changed, how you'll notice,
-> and what to do — with the SQL and PromQL to check your deployment first.
-
-### Security
-
-- **Credential headers are masked before entering workflow metadata.**
-  `authorization`, `cookie`, `proxy-authorization` and `x-api-key` arrive in
-  `metadata.headers` as `"******"` — previously their plaintext values were
-  persisted into `traces.result_json` (async) and `trace_dlq.metadata_json`.
-  Header *presence* is still testable from `validation_logic`. If a channel
-  used `rollout.sticky_header` with a credential header, switch to a
-  non-credential header — all callers now hash to one bucket otherwise.
-- **Trace reads no longer expose the submitter's request context.**
-  `GET /api/v1/data/traces/{id}` strips `context.metadata` (the request
-  header map) from the served message, and `GET /api/v1/data/traces` returns
-  payload-free rows — `input_json`, `result_json` and `task_trace_json` are
-  served only by the single-trace GET. Rows written before this release
-  still hold plaintext headers at rest; the projection covers reads of them.
-- **Async trace reads are scoped to the submitter.** The 202 from
-  `POST /{channel}/async` now carries a one-time-shown `trace_token`;
-  polling `GET /traces/{id}` requires it (`x-trace-token` header or
-  `?token=`) or an admin credential. Update polling clients to pass the
-  token. Sync traces and pre-upgrade rows keep the admin trust model.
-  New migration adds `traces.access_token_hash` on all three backends.
-- **`/health` serves topology detail only to authorized callers** when
-  admin auth is enabled: anonymous callers get status, version, uptime and
-  coarse per-component states; `git_hash`, `build_timestamp`,
-  `workflows_loaded`, the circuit-breaker map, connector load failures and
-  quarantined channels (names and reasons) require the admin key. With auth
-  disabled the body is unchanged.
-
-### Breaking
-
-- **Rate-limit client identity is the TCP peer address.** Forwarded headers
-  (`X-Forwarded-For` / `X-Real-IP`) are honored only when the peer falls inside
-  the new `rate_limit.trusted_proxies` CIDR list, which is **empty by default**.
-  Deployments behind a proxy, load balancer, or ingress that do not configure it
-  will collapse every client into a single bucket. Applies when
-  `rate_limit.enabled = true` (still `false` by default), and to per-channel
-  `key_logic` expressions referencing `client_ip`. A malformed entry is a hard
-  startup error even when rate limiting is disabled.
-- **Metrics labels changed — dashboards and alerts will break silently.**
-  `rate_limit_rejections_total` lost its unbounded `client` label and gained
-  `scope` (channel name, or `admin` / `data` / `operational`). Channel-labelled
-  metrics (`messages_total`, `message_duration_seconds`,
-  `channel_executions_total`) now emit the literal `_unknown` for unregistered
-  channels on the HTTP and queue paths. No metric was renamed or removed.
-- **Channels with unparseable `config_json` or uncompilable `validation_logic`
-  refuse to load, in all modes.** Previously a warning, after which the channel
-  served with its validation, dedup, rate limit, cache, and backpressure guards
-  silently disabled. A stored config that was quietly broken now exits the
-  process at startup, and fails engine reload — plus every admin mutation that
-  triggers one — with `500 CONFIG_ERROR`. Registry rebuilds are all-or-nothing,
-  so a refusal leaves the running engine untouched.
-- **Kafka delivery is at-least-once.** Offsets advance only on successful
-  processing or a *confirmed* DLQ write. With `kafka.dlq.enabled = false` (the
-  default) a poison message now blocks the consumer and retries with capped
-  backoff (1s → 60s) instead of being dropped; because messages are processed
-  sequentially, this halts every subscribed partition on that instance.
-  **Enabling `[kafka.dlq]` is the recommended action.**
-- **Data-plane error bodies are sanitized.** Entries in `errors[]` are reduced
-  to a code, a fixed generic message, and an optional `task_id`; correlate via
-  the top-level `request_id` (also the `x-request-id` header) and read full
-  detail from the persisted trace. Cached responses store the sanitized body.
-- **Response cache keys fold in method, route params, and query string.**
-  Existing cached entries are orphaned — never mis-served — and expire by
-  `cache.ttl_secs` (default 300s).
-- **Open circuit breakers return `503 CIRCUIT_OPEN`** instead of
-  `500 ENGINE_ERROR`. No `Retry-After` header. With `continue_on_error: true`
-  the request still returns `200` with a sanitized `TASK_ERROR`; alert on
-  `circuit_breaker_rejections_total` rather than the status code.
-- **A full trace queue returns `503`** (code `SERVICE_UNAVAILABLE`, message
-  `Trace queue is full …`) on the async submission path instead of blocking
-  indefinitely. Sized by `queue.buffer_size` / `queue.max_queue_memory_bytes`.
-- **Unimplemented secret schemes are rejected.** `vault://`, `aws-sm://`,
-  `gcp-sm://`, and `azure-kv://` in connector configs were passed through and
-  **used as literal passwords**; the connector is now skipped at load with an
-  `ERROR` log. A connector that appeared to work was never authenticating as
-  intended — rotate the credential.
-- **`GET /api/v1/admin/connectors` redacts userinfo inside URL-shaped values**
-  at any depth (`https://user:******@host`), which finally covers `url` and
-  `brokers[]`. Credential-free URLs are still returned in full. Do not
-  round-trip a connector config through `GET` → `PUT`: updates replace
-  `config_json` wholesale and would persist the mask.
-- **`GET /api/v1/admin/audit-logs` rejects unknown query parameters with `400`**
-  instead of silently returning unfiltered results. No other endpoint changed.
-- **`db_read` returns values for `float4`/`REAL` and blob columns** instead of
-  `null`, and errors on genuinely undecodable columns and non-finite floats.
-  Blobs stringify as UTF-8 when valid, else lowercase hex. Also affects
-  `data_query` and `data_write`'s `RETURNING` path. A `null` in a result now
-  means only SQL NULL.
-- **Trace read endpoints require admin auth.** `GET /api/v1/data/traces` and
-  `/traces/{id}` return `401` for previously-open callers when
-  `admin_auth.enabled = true`. No effect when admin auth is disabled.
-- **Rollout bucketing is caller-stable, not random per request** — see Added.
-  A canary now exposes a stable subset of callers rather than re-drawing on
-  every call; aggregate percentages are unchanged.
-- **The Helm chart and HA compose default to `ORION_ENVIRONMENT=production` and require
-  admin API keys.** `helm install` without `adminAuth.apiKeys` or
-  `adminAuth.existingSecret` fails at template time by design
-  (`devStack.enabled=true` is the dev escape hatch); `docker compose -f
-  docker-compose.ha.yml up` aborts without `ORION_ADMIN_API_KEYS`. Note that
-  `environment = "production"` also rejects the CORS wildcard, and the default
-  `cors.allowed_origins` is `["*"]` — set explicit origins before flipping.
-- **Removed:** the unread `backpressure.queue_depth` channel-config field.
-  Stored configs still carrying the key deserialize normally (there is no
-  `deny_unknown_fields`), so this needs no migration.
-- **Removed:** the unread `cors.allowed_methods` and `cors.allowed_headers`
-  channel-config fields. Only `cors.allowed_origins` was ever enforced —
-  per-channel preflight is not implemented — so setting them was a silent
-  no-op. Same no-migration note as above.
-- **Every admin list endpoint shares one pagination envelope.**
-  `GET /api/v1/admin/audit-logs` (and the new trace-DLQ list) now return the
-  flat `{data, total, limit, offset}` shape the workflow/channel/connector
-  lists always used, instead of a nested `{data, pagination: {…}}`.
-- **Malformed admin request bodies are rejected uniformly with 400 + field
-  details.** The four workflow endpoints that still surfaced axum's plain-text
-  422 (`PATCH …/status`, `PUT …/rollout`, `POST …/test`,
-  `POST /workflows/import`) now use the same extractor as every other admin
-  route, and query-string parse failures return the standard JSON error
-  envelope instead of plain text.
-
-### Added
-
-- HTTP connector `retry_non_idempotent` (default `false`): opt POST/PATCH back
-  into the retry loop. Off by default because a timed-out POST may already
-  have been applied — enable only where the endpoint honours an idempotency
-  key the workflow sets in `headers`.
-- Elasticsearch connector `max_response_size` (default 10 MB), matching the
-  HTTP connector's cap.
-- `POST /{channel}/async` responses carry `trace_token`; `GET /traces/{id}`
-  accepts it via the `x-trace-token` header or a `?token=` query parameter.
-- `engine.fail_on_connector_load_error` (default `false`): refuse to start when
-  an enabled connector cannot be loaded, so a bad rollout fails at boot where
-  the orchestrator catches it rather than at request time hours later. Startup
-  only — a hot reload never takes a running process down.
-- `GET /health` reports two new degraded states: `components.connectors` with
-  the failures under `connectors.failed_to_load`, and `components.channels`
-  with the quarantined set under `channels.quarantined`. Both keep the HTTP
-  status at 200 — alert on the fields, not the status code, since a 503 would
-  pull the node out of its load balancer over something nothing in flight may
-  be using.
-- `GET /api/v1/admin/connectors` gives every row a `load_status` (`loaded`,
-  `failed`, `disabled`) plus `load_error` and `load_error_stage`.
-- Environment overrides for the four settings that had none:
-  `ORION_SERVER__COMPRESSION__ENABLED`,
-  `ORION_ENGINE__CACHE_CLEANUP_INTERVAL_SECS`,
-  `ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS` and `…__DATA_RPS`. The two endpoint
-  limits are optional, so their variables are three-state: unset keeps the
-  config-file value, a number sets it, an empty string clears it.
-- **Kafka SASL/TLS authentication** — `[kafka.auth]` (`security_protocol`,
-  `sasl_mechanism`, `sasl_username`, `sasl_password`, `ssl_ca_location`) plus a
-  `kafka.extra_config` passthrough for arbitrary librdkafka properties, applied
-  to both the consumer and the producer. Orion can now connect to Confluent
-  Cloud, MSK, Aiven, and any secured broker; previously PLAINTEXT was the only
-  reachable configuration. Do not set `enable.auto.commit` via the passthrough —
-  it would defeat the at-least-once guarantee below.
-- **Message data in every connector function** — `db_read`, `db_write`,
-  `cache_read`, `cache_write`, and `mongo_read` now resolve `{"var": "…"}`
-  references in their `key`, `value`, `ttl_secs`, `params`, and `filter` inputs,
-  so keys, bind parameters, and Mongo filters can depend on the message instead
-  of being fixed constants. `data_query`/`data_write` share the same resolver.
-  `connector` and raw `query` text stay literal by design.
-- **Trace DLQ operator API** — `/api/v1/admin/trace-dlq` with paginated list
-  (payload-free projection), get-by-id, requeue, and purge. Failed async traces
-  were previously invisible and unreplayable.
-- **Audit-log filtering** — `action`, `resource_type`, `resource_id`,
-  `principal`, and time-range filters on `GET /api/v1/admin/audit-logs`; unknown
-  query parameters are now rejected with 400 rather than silently ignored. The
-  `details` column is populated (starting with `request_id`) — it was dead
-  before, and writing to it produced malformed SQL.
-- **Audit-log retention** — `audit.retention_days` (default 90, `0` keeps
-  forever) with a lease-gated cleanup job. The table previously grew forever
-  with no supported way to prune it.
-- **Operational metrics** — `trace_dlq_depth`, `trace_dlq_retries_total`,
-  `trace_queue_rejected_total{reason}`, and `trace_persistence_failures_total`.
-  The three conditions most worth alerting on were previously invisible.
-- **Rate-limit proxy trust** — `rate_limit.trusted_proxies` (CIDR list, empty by
-  default). Forwarded headers are honoured only from listed peers; otherwise the
-  TCP peer address is the client identity.
-- **Hashed admin keys** — `admin_auth.api_keys` accepts `sha256:<64-hex>`
-  entries so keys need not sit in config as plaintext. Plaintext still works.
-- **Bounded in-memory cache** — `engine.max_memory_cache_entries` (default
-  100 000, `0` = unbounded) with LRU eviction. The dedup store and response
-  cache were previously unbounded maps reachable from workflow config alone.
-- **`[cluster]` config section** — `enabled`, `redis_url`,
-  `epoch_poll_interval_ms`, `instance_id` (auto-generated UUID when empty).
-  Cluster mode requires Postgres/MySQL storage and a shared Redis; startup
-  refuses SQLite.
-- **Config-change propagation** — every admin mutation (channels, workflows,
-  rollout, connectors, manual reload) advances a `config_epoch` row; each node
-  polls it and resyncs from the DB, so a change made through any node reaches
-  all nodes. This also fixes connector edits, which previously propagated to
-  no other node at all. Circuit-breaker resets fan out over the same bus.
-- **Cluster-shared dedup, response cache, and rate limits** — channels without
-  an explicit cache connector use the shared cluster Redis for idempotency
-  dedup and response caching; per-channel rate limits enforce as a shared
-  Redis fixed window (~configured rate across ALL replicas combined). In
-  cluster mode, a channel whose backend would silently fall back to per-node
-  memory refuses to load instead.
-- **DLQ claim leases + job single-flight** — DLQ retries claim rows via
-  `FOR UPDATE SKIP LOCKED` leases (each entry retried by exactly one node;
-  expired leases self-recover), and trace cleanup / DLQ retry acquire a job
-  lease per tick so only one node runs them. New `queue.dlq_batch_size` /
-  `queue.dlq_lease_secs`.
-- **`storage.auto_migrate`** (default `true`) — set `false` in multi-replica
-  deployments: pending migrations become a hard startup error and
-  `orion-server migrate` runs as a deploy step.
-- **Kafka static membership** — cluster mode sets `group.instance.id` and
-  `kafka.session_timeout_ms` so rolling restarts rejoin without a full group
-  rebalance; epoch-driven consumer restarts are jittered 0–5 s.
-- **Postgres/MySQL storage-backend test binaries** (`storage_postgres`,
-  `storage_mysql`) and a multi-node cluster test binary (`cluster`) running
-  two full nodes against Postgres + Redis testcontainers in CI.
-- **Helm chart** (`deploy/helm/orion`) — cluster-mode Deployment with
-  readyz/healthz probes, pre-upgrade migration Job, HPA, PDB, and an optional
-  throwaway dev Postgres/Redis; validated on a 3-replica kind install.
-- **HA reference compose** (`docker-compose.ha.yml`) — nginx LB → 2× Orion
-  (cluster mode) → shared Postgres + Redis with a one-shot migrate service,
-  plus `deploy/ha/rolling-drill.sh`, a zero-downtime rolling-deploy drill.
-- **Sticky canary rollouts** — the rollout bucket is now a stable hash of the
-  caller identity (`engine.rollout_sticky_header`, else the forwarded client
-  IP), so the same caller gets the same version on every request and replica;
-  previously assignment was random per request.
-- **Per-instance observability** — `service.instance.id` OTel resource
-  attribute and `instance_id` on request spans in cluster mode.
-- Env overrides: `ORION_CLUSTER__*`, `ORION_STORAGE__AUTO_MIGRATE`,
-  `ORION_STORAGE__{MAX,MIN}_CONNECTIONS`, `ORION_STORAGE__IDLE_TIMEOUT_SECS`,
-  `ORION_TRACE_QUEUE__DLQ_{RETRY_ENABLED,MAX_RETRIES,POLL_INTERVAL_SECS,BATCH_SIZE,LEASE_SECS}`,
-  `ORION_KAFKA__SESSION_TIMEOUT_MS`, `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS`,
-  `ORION_KAFKA__TOPICS`, `ORION_KAFKA__DLQ__{ENABLED,TOPIC}`,
-  `ORION_CORS__ALLOWED_ORIGINS`, `ORION_CHANNEL_FILTER__{INCLUDE,EXCLUDE}`,
-  `ORION_ENGINE__ROLLOUT_STICKY_HEADER`.
-
-### Fixed
-
-- **Channel runtime controls hold (proposal N2, N5).** Responses carrying task
-  errors are no longer cached, so a transient downstream failure is not pinned
-  for the full TTL and replayed to every caller. A `rate_limit.key_logic` that
-  does not compile now quarantines the channel, and an evaluation failure
-  rejects the request with `429` — previously both fell back to `client_ip`,
-  silently turning a per-tenant limit into a per-IP one.
-- **Egress correctness round (proposal F8, F10–F13, F17).** `http_call` no
-  longer retries non-idempotent methods by default — a timed-out POST was
-  re-sent up to 3× with no idempotency key; set the new HTTP-connector
-  `retry_non_idempotent` to restore the old behaviour. Retries are also
-  bounded by a deadline instead of running attempts plus backoff past the
-  channel timeout. `publish_kafka` now publishes to the brokers its
-  connector names rather than always the globally configured cluster.
-  `db_read`/`mongo_read` enforce `query.max_limit` as a hard row cap, every
-  MongoDB path honours `query_timeout_ms`, Elasticsearch responses respect a
-  new `max_response_size` on the ES connector, and evicted connector pools
-  are closed instead of leaking their connections on every connector edit
-  and cluster epoch resync.
-- **Routing and rollout truth (proposal F30, F33, R5, F32).** Channels whose
-  workflows cannot be built — missing or unconvertible workflow, or rollout
-  percentages that don't sum to 100 — are now quarantined with the reason on
-  `/health` instead of silently serving engine errors or blackholing part of
-  the traffic. Workflows with unknown functions are rejected at create;
-  activation requires every referenced connector to exist. The channel
-  include/exclude glob matcher gained real backtracking and boot logs the
-  resolved channel list when filters are configured.
-- **Queue durability round (proposal Q4–Q8, N15, D4).** A DLQ backoff shift
-  overflow no longer kills the retry task (`dlq_max_retries` is now bounded
-  1–16); a DB error on the "mark running" write routes the message to the DLQ
-  instead of dropping it with the trace stuck `pending`; failed persistence
-  writes retry (50ms/250ms) before being counted and dropped, and batch
-  buffers are no longer cleared on error before that retry;
-  `async_workers`/`batch_workers` > 1 now actually run in parallel (per-worker
-  receivers, round-robin fan-out); `trace_storage.batch_size` is bounded at
-  1000 so batch flushes cannot exceed SQLite's bind limit; `task_trace_json`
-  is capped by `queue.max_result_size_bytes` on both paths; and trace
-  retention reclaims pending/running rows older than twice the retention
-  window instead of leaking them forever.
-
-- **Connectors authored the documented way never loaded.** `ConnectorConfig` is
-  internally tagged on `type`, but the type lives in its own column and the API
-  takes it as a sibling `connector_type` — so a config without a redundant
-  `"type"` inside it failed to deserialize and the connector was silently
-  skipped. That is the shape every example, the OpenAPI spec and any admin UI
-  produce. The stored column is now the single source of truth.
-- **A connector `GET` → edit → `PUT` round-trip persisted `"******"` as the
-  credential.** Fields returned masked are now restored from the stored row,
-  and a mask with no stored counterpart is a 400 naming the field instead of a
-  silent credential overwrite.
-- **Per-channel rate limits never applied to REST-routed channels.** The
-  middleware matched the first path segment against channel names; for a REST
-  channel that segment is the route prefix, so the limiter was never found and
-  the channel fell through to the platform-wide limit. Channel resolution now
-  mirrors the data handler exactly, including the `/async` suffix.
-- **One broken channel made the instance unmanageable.** A channel whose stored
-  config no longer parses used to fail *every* admin operation that triggers a
-  reload — activate, archive, delete, rollout — with a 500, and stopped the
-  cluster epoch watcher resyncing all nodes. Such channels are now quarantined
-  individually: still refused at every ingress (with a 503 naming the reason,
-  and routed to the DLQ on the Kafka path), but the rest of the reload
-  succeeds. Boot no longer aborts over one bad row either.
-- **Connectors that failed to load vanished without a signal.** Env
-  substitution, JSON parsing, secret resolution and deserialization failures
-  are now recorded and reported on `/health` and the admin list.
-- **`ORION_RATE_LIMIT__ENABLED=true` with no config file failed startup
-  validation.** `RateLimitConfig` and `AppConfig` derived `Default` while also
-  carrying `#[serde(default = "…")]` attributes with different values, so "the
-  default" depended on how the config was produced. Both now implement
-  `Default` in terms of their `default_*` functions, and the config-docs drift
-  test fails on any future divergence.
-- **The async path and Kafka ingest bypassed every per-channel control.**
-  CORS, `validation_logic`, deduplication, and backpressure lived only in the
-  sync HTTP path, so appending `/async` to a URL defeated a channel's input
-  contract, and `channel_call` skipped the target channel's guards entirely.
-  All ingress paths now share one guard layer, and an async request holds its
-  backpressure permit for the whole of processing, so `max_concurrent` bounds
-  sync and async traffic together.
-- **The response cache could serve one caller's data to another.** The key
-  hashed only the request body, so for a REST channel with a path parameter and
-  an empty body (`GET /orders/{id}`) every id collided onto one entry. Method,
-  route parameters, and query string are now part of the key.
-- **Kafka messages were lost on failure.** Offsets committed unconditionally,
-  so with the DLQ disabled (the default) a workflow error, timeout, or unmapped
-  topic silently discarded the message. Delivery is now at-least-once: offsets
-  advance only on success or a confirmed DLQ write, and UTF-8-decode failures,
-  empty payloads, and unmapped topics are dead-lettered instead of dropped.
-- **Poison messages retried forever.** A failing async trace re-entered the DLQ
-  as a fresh row at `retry_count = 0`, so `dlq_max_retries` could never be
-  reached and each cycle inserted another `traces` row. The retry count now
-  travels with the message and exhausts as documented.
-- **The trace queue blocked instead of shedding.** A full buffer parked the
-  request indefinitely; it now returns 503, as the configuration already
-  documented.
-- **Postgres DLQ retry and exhaustion silently failed.** Clearing a claim lease
-  bound a TEXT parameter to a `timestamp` column (Postgres error 42804) and all
-  three call sites discarded the error, so in cluster mode on Postgres entries
-  never backed off, never exhausted, and were re-claimed forever.
-- **SSRF protection was incomplete.** Redirects were followed without
-  re-validation (reaching cloud metadata via a 302), the validated DNS result
-  was discarded and re-resolved (rebinding), IPv6 private ranges were largely
-  unchecked, and the Elasticsearch connector skipped validation entirely.
-  Redirects are now followed manually with per-hop validation, connections are
-  pinned to validated addresses, and the private-range coverage is complete.
-- **Rate limiting was trivially bypassed.** The client identity came from
-  unvalidated forwarded headers with no peer-address fallback, so direct
-  clients shared one bucket and proxied clients could mint a new identity per
-  request. See `rate_limit.trusted_proxies` above.
-- **Channels with broken configuration served unguarded.** An unparseable
-  `config_json` silently loaded a default (no rate limit, validation, dedup,
-  backpressure, timeout, or cache) and an uncompilable `validation_logic` was
-  dropped with a warning. Both now refuse to load the channel.
-- **`db_read` turned unreadable columns into `null`.** `REAL`/`float4` and blob
-  columns silently read back as null on every SQL read path; genuinely
-  unsupported types now error rather than looking like a NULL value.
-- **Unimplemented secret schemes were used as literal passwords.**
-  `vault://…`, `aws-sm://…`, and friends passed through verbatim as the
-  credential; they are now rejected at connector load.
-- **Credentials embedded in URLs leaked through the admin API.** Masking was a
-  flat key-name denylist that missed `url` and `brokers[]`, so
-  `redis://:PASSWORD@host` was returned in full. Masking is recursive and
-  strips userinfo from URL-shaped values at any depth.
-- **A restart of cluster Redis broke every node permanently.** The shared
-  connection never re-established, silently disabling distributed dedup,
-  response caching, and rate limiting until pods restarted.
-- **An open circuit breaker returned 500 `ENGINE_ERROR`** instead of the
-  documented 503 `CIRCUIT_OPEN`, so callers could not distinguish shed load
-  from a server fault and the DLQ retry classifier never saw it as retryable.
-  Timeouts and 503s are now classified retryable.
-- **Internal error detail leaked to anonymous callers.** Success bodies
-  embedded raw upstream URLs, sqlx errors, and connector names; the data plane
-  now returns a code, a generic message, and a request id, with full detail
-  kept in the persisted trace.
-- **Unbounded Prometheus label cardinality.** Rate-limit rejections were
-  labelled with a spoofable client IP, and channel-labelled metrics accepted any
-  attacker-supplied path segment.
-- **`PUT /channels/{id}` ran no validation at all**, and `PUT /connectors/{id}`
-  skipped config validation unless the type was resent. Both now validate
-  against the stored record.
-- **A CORS list mixing `"*"` with explicit origins passed validation and then
-  panicked at router build**, killing the server at boot; `PATCH` was missing
-  from the allowed methods, making the admin status and rollout endpoints
-  unusable cross-origin.
-- **Admin API keys were compared with an early length check**, leaking key
-  length by timing.
-- **TLS was unusable — `server.tls.enabled = true` panicked at boot.**
-  `RustlsConfig::from_pem_file` failed with *"Could not automatically determine
-  the process-level CryptoProvider"*: rustls 0.23 auto-selects a backend only
-  when exactly one is enabled, and Orion's dependency graph enables both
-  (`axum-server` + `reqwest` pull `rustls/aws-lc-rs`; `mongodb` + `sqlx` pull
-  `rustls/ring`). The server now installs the `aws-lc-rs` provider explicitly
-  before loading certificates. **If you tried HTTPS, hit the panic, and
-  terminated TLS at a proxy instead, it works now.** Covered by new TLS
-  integration tests — the test debt was the bug.
-- **MySQL as Orion's own storage backend never worked** — the migration set
-  used mysql-client `DELIMITER` directives, TEXT columns with defaults, and
-  TEXT primary keys, none of which MySQL/sqlx accept. Rewritten with the
-  VARCHAR/datetime idiom; covered by container tests.
-- **Postgres storage was unusable at runtime** — models decode `i64` but
-  columns were `INT4` (every repository read failed), and chrono timestamps
-  were bound as TEXT, which Postgres rejects against timestamp columns. Both
-  fixed (new `004_bigint_columns.sql`); covered by container tests.
-- **Dedup idempotency keys are now channel-scoped** (`dedup:{channel}:{token}`)
-  — raw tokens previously collided across channels sharing a backend — and a
-  dedup-store outage now fails open (requests allowed, `dedup_backend` error
-  metric) instead of rejecting everything with 409.
-- **Trace read endpoints require admin auth** — `GET /api/v1/data/traces` and
-  `/traces/{id}` return full payloads but were unauthenticated even with
-  `admin_auth.enabled = true`.
-- **Rolling-deploy drain** — on SIGTERM, `/readyz` now flips to 503
-  immediately while the node keeps serving through `shutdown_drain_secs`
-  (so the LB drains it gracefully), then stops accepting and bounds the
-  in-flight wait with `server.shutdown_force_timeout_secs`. Previously TLS
-  stopped accepting instantly and plain HTTP never withdrew readiness.
-- **`queue.dlq_max_retries` is honored** (the enqueue path hardcoded 5) and
-  values `< 1` are rejected at startup; `traces.channel_id` is now populated
-  on every insert path; active-immutability triggers now exist on Postgres
-  and MySQL, not just SQLite.
-
-### Changed
-
 - `queue.dlq_max_retries` is now validated as 1–16 and connector
   `retry.max_retries` as ≤ 16 (both are exponents in a doubling backoff);
   `trace_storage.batch_size` is capped at 1000 (the batch INSERT binds ~11
@@ -2413,6 +2379,16 @@ for the cluster architecture.
   cluster mode (the multi-node curl-loop reload workaround is obsolete).
 
 ### Removed
+
+- **`src/storage/migration_gen.rs`.** 803 test-only lines that could not
+  produce the shipped schema — no `audit_logs`, `config_epoch` or `job_leases`,
+  four columns missing (`traces.task_trace_json`, `traces.access_token_hash`,
+  `trace_dlq.claimed_by`, `trace_dlq.claimed_until`),
+  `text`/`timestamp` on MySQL where the shipped set needs
+  `varchar(n)`/`datetime` — and whose module doc instructed contributors to
+  regenerate checksum-frozen migrations. CONTRIBUTING.md now documents what the
+  project actually does: copy the newest backend's `001_initial.sql` and adapt
+  the dialect by hand (D12).
 
 - Unread `backpressure.queue_depth` channel-config field (backpressure
   rejects immediately at `max_concurrent`; there is no wait queue).
