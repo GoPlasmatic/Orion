@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Secret masking fails closed.** Connector configs are masked by
+  *allowlist*: only the structural vocabulary the connector types define is
+  served readable, and every other value — including all `headers` values and
+  any key no denylist anticipated — answers `"******"`. A drift test forces
+  every new connector config field to be classified as readable or masked.
+  Channel configs, previously returned verbatim, now mask `auth.keys` and
+  `auth.secret`, with the full GET → edit → PUT round-trip: masked values
+  restore from the stored config on update, and an unmatched sentinel is
+  refused rather than persisted as the credential. `env://` references pass
+  through unmasked on both surfaces. (H3)
+
 ## [1.0.0] - 2026-08-01
 
 ### Security

@@ -125,7 +125,15 @@ impl TryFrom<&Channel> for ChannelResponse {
                 "transport_config_json",
             )?,
             workflow_id: channel.workflow_id.clone(),
-            config: parse_json_field(&channel.config_json, "channel", id, "config_json")?,
+            // H3: `auth.keys` / `auth.secret` may be stored literal, and this
+            // is the only constructor of the wire shape — masking here makes
+            // it a step no handler can skip, exactly like `mask_connector`.
+            config: {
+                let mut config =
+                    parse_json_field(&channel.config_json, "channel", id, "config_json")?;
+                crate::connector::mask_channel_config(&mut config);
+                config
+            },
             status: channel.status.clone(),
             priority: channel.priority,
             created_at: channel.created_at,

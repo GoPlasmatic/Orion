@@ -325,6 +325,19 @@ fn validate_channel_config_blob(config: &serde_json::Value) -> Result<(), OrionE
     {
         return Ok(());
     }
+    // H3: channel reads mask `auth` credentials, so a config still carrying
+    // the sentinel is a copied-from-a-GET mistake (on create) or a mask the
+    // update path could not match to a stored value. Persisting it would make
+    // "******" the literal credential.
+    if let Some(path) = crate::connector::find_masked_value(config) {
+        return Err(OrionError::invalid_field(
+            format!("channel.config.{path}"),
+            "INVALID",
+            "this field is the masked placeholder the channel read API returns, \
+             not a real value. Send the actual secret, or omit the field to keep \
+             the stored one.",
+        ));
+    }
     let parsed: crate::channel::ChannelConfig =
         serde_json::from_value(config.clone()).map_err(|e| {
             OrionError::invalid_field(

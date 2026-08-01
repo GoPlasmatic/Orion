@@ -4,7 +4,21 @@ Orion enforces security at every layer: secrets are isolated in connectors, inpu
 
 ## Secret Management
 
-Sensitive fields are automatically masked in all API responses. Fields named `token`, `password`, `key`, `secret`, `api_key`, and `connection_string` are returned as `"******"`. Secrets are stored but never exposed through the API.
+Connector configs are masked **by allowlist** in every API response: only the
+structural vocabulary the connector types define — endpoints, timeouts,
+operation gates, identities like `username` — is served readable, and *every
+other value* comes back as `"******"`. A credential under a key no list of
+secret names anticipated (`signing_cert_pem`, a custom header value) therefore
+fails closed instead of shipping in clear. Readable URL values still have
+their in-band secrets redacted (`redis://user:******@host`,
+`?api_key=******`), and `env://` secret *references* pass through unmasked —
+they name a variable, not a value, and must survive `export` → `import`.
+
+Channel configs mask their two credential fields exactly: `auth.keys` and
+`auth.secret`. Both surfaces support the same GET → edit → PUT round-trip —
+a value still reading `"******"` on update is restored from the stored config,
+and a sentinel with nothing to restore from is refused rather than persisted
+as the credential.
 
 ```bash
 # Create a connector with real credentials

@@ -753,7 +753,7 @@ async fn test_connector_get_edit_put_preserves_secrets() {
                 "config": {
                     "url": "https://api.example.com/v1",
                     "method": "POST",
-                    "timeout_secs": 5,
+                    "max_response_size": 1024,
                     "auth": {"type": "bearer", "token": "real-secret-token"}
                 }
             })),
@@ -778,8 +778,11 @@ async fn test_connector_get_edit_put_preserves_secrets() {
         serde_json::from_str(body["data"]["config_json"].as_str().unwrap()).unwrap();
     assert_eq!(config["auth"]["token"], "******", "GET must mask the token");
 
-    // Edit one unrelated field and PUT the whole object back.
-    config["timeout_secs"] = json!(30);
+    // Edit one unrelated (allowlist-readable) field and PUT the whole
+    // object back. It must be a field the read API serves readable — an
+    // unknown key's value comes back masked under the H3 allowlist, so a
+    // client cannot meaningfully edit one from a GET.
+    config["max_response_size"] = json!(2048);
     let resp = app
         .clone()
         .oneshot(json_request(
@@ -804,7 +807,10 @@ async fn test_connector_get_edit_put_preserves_secrets() {
     let body = body_json(resp).await;
     let config: serde_json::Value =
         serde_json::from_str(body["data"]["config_json"].as_str().unwrap()).unwrap();
-    assert_eq!(config["timeout_secs"], 30, "the edit must be persisted");
+    assert_eq!(
+        config["max_response_size"], 2048,
+        "the edit must be persisted"
+    );
 
     // A second read reads `"******"` whether the stored token is the real
     // secret or the mask itself, so it proves nothing on its own. Round-trip

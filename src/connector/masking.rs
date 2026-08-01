@@ -1,26 +1,41 @@
-//! Secret masking for connector configs returned by the admin API.
+//! Secret masking for connector and channel configs returned by the admin
+//! API.
 //!
-//! Two independent rules, applied to the whole config tree rather than to a
-//! fixed list of top-level keys:
+//! **Connector configs mask by allowlist** (H3): a leaf is served readable
+//! only when its key is in [`READABLE_KEYS`] — the structural vocabulary the
+//! connector config structs actually define (endpoints, timeouts, gates,
+//! identities). Everything else is replaced with the mask, so a credential
+//! under a key the denylist never anticipated (`signing_cert_pem`, a custom
+//! header value) fails **closed** instead of shipping in clear. Two
+//! refinements at any depth:
 //!
-//!   1. **By key name** — a scalar under a secret-looking key is replaced
-//!      wholesale. When the key itself names a credential bundle
-//!      (`credentials`, `auth_token`, …) everything beneath it is masked too,
-//!      whatever the child keys are called.
-//!   2. **By value shape** — any string carrying URL userinfo has its password
-//!      component replaced, and any query parameter whose *name* looks secret
-//!      under rule 1 has its value replaced, at any depth. This is what keeps
-//!      `redis://:PASSWORD@host`, `https://user:pass@es:9200` and
-//!      `https://api.example.com/v1?api_key=SECRET` out of
-//!      `GET /api/v1/admin/connectors` while leaving the endpoint itself
-//!      readable, which the admin UI needs.
+//!   - a readable URL-shaped value still has its in-band secrets redacted —
+//!     userinfo password and secret-named query values
+//!     (`redis://:PASSWORD@host`, `?api_key=SECRET`) — so the endpoint stays
+//!     visible without its credentials;
+//!   - a resolvable secret *reference* (`env://NAME`, `vault://…`) survives
+//!     unmasked wherever it appears: the stored config never held the value,
+//!     and masking the pointer would break `GET /export` → `POST /import`.
+//!
+//! **Channel configs mask exactly** ([`mask_channel_config`]): the schema is
+//! closed (`deny_unknown_fields`), and precisely two fields hold credentials —
+//! `auth.keys[*]` and `auth.secret` — so masking names them outright rather
+//! than judging key names.
+//!
+//! **The server-config dump keeps the older denylist walk**
+//! ([`mask_secrets`], O15): `validate-config` prints the whole effective
+//! server config, a tree whose vocabulary is far wider than the connector
+//! structs and which an allowlist would blank wholesale. It is
+//! operator-invoked, local output — not an HTTP response — so the denylist
+//! plus URL redaction remains the right trade there, and the two policies are
+//! deliberate rather than drift.
 //!
 //! Known limitation (S18): a credential embedded in a URL *path* under a
-//! non-secret key — `{"url": "https://hooks.slack.com/services/T00/B00/XX"}`
+//! readable key — `{"url": "https://hooks.slack.com/services/T00/B00/XX"}`
 //! — is not redacted. A path segment carries no name to judge, and masking
 //! every path would blank the endpoint identity the admin UI exists to show.
-//! Store such URLs under a secret-looking key (`webhook`, `webhook_url`, …);
-//! rule 1 then masks the whole value.
+//! Store such URLs under any non-allowlisted key (`webhook_url`, …); the
+//! default-mask then covers the whole value.
 
 use serde_json::Value;
 use std::collections::HashMap;
@@ -78,6 +93,140 @@ fn is_secret_key(key: &str) -> bool {
     let lower = key.to_ascii_lowercase();
     SECRET_KEY_EXACT.contains(&lower.as_str())
         || SECRET_KEY_SUBSTRINGS.iter().any(|p| lower.contains(p))
+}
+
+/// The connector-config allowlist (H3): leaf keys whose values the admin API
+/// serves readable. This is the structural vocabulary of the connector config
+/// structs (`src/connector/config.rs`) — endpoints, protocol/identity fields,
+/// timeouts, sizes, gates — and nothing else. A key absent from this list is
+/// masked *by default*, so a credential under a name no denylist anticipated
+/// fails closed.
+///
+/// Two deliberate exclusions: `connection_string` (a DSN is a credential
+/// bundle, masked whole — the UI never needed it), and every child of
+/// `headers` (header *names* are object keys and stay visible; header
+/// *values* are exactly where callers put bearer tokens, so they are all
+/// masked — put non-secret values behind `env://` references if they must
+/// round-trip an export).
+const READABLE_KEYS: &[&str] = &[
+    // tags & protocol identity
+    "type",
+    "driver",
+    "backend",
+    "method",
+    "username",
+    "header",
+    "sasl_mechanism",
+    "sasl_username",
+    // endpoints (URL-shaped values still get in-band redaction)
+    "url",
+    "brokers",
+    "topic",
+    // limits & timeouts
+    "max_connections",
+    "connect_timeout_ms",
+    "query_timeout_ms",
+    "request_timeout_ms",
+    "max_response_size",
+    "default_ttl_secs",
+    "max_retries",
+    "retry_delay_ms",
+    "retry_non_idempotent",
+    "allow_private_urls",
+    // operation gates
+    "read",
+    "insert",
+    "update",
+    "delete",
+    "upsert",
+    "raw_write",
+    "write",
+    "publish",
+    "methods",
+    // dialect guards
+    "require_schema",
+    "allowed_entities",
+];
+
+fn is_readable_key(key: &str) -> bool {
+    READABLE_KEYS.contains(&key.to_ascii_lowercase().as_str())
+}
+
+/// The connector policy: allowlist walk (see the module doc). Objects recurse
+/// (a container's own name carries no verdict — its leaves answer for
+/// themselves), arrays inherit the parent key so `brokers: [...]` entries are
+/// judged as `brokers`, and every scalar is masked unless its key is
+/// allowlisted — with references surviving and readable URLs redacted.
+fn mask_connector_in_place(value: &mut Value, key: Option<&str>) {
+    match value {
+        Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                mask_connector_in_place(v, Some(k.as_str()));
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                mask_connector_in_place(item, key);
+            }
+        }
+        Value::Null => {}
+        Value::String(s) => {
+            // A reference is a pointer, not the secret — see mask_in_place.
+            if crate::connector::secrets::is_resolvable_reference(s) {
+                return;
+            }
+            if key.is_some_and(is_readable_key) {
+                if let Some(redacted) = redact_url_secrets(s) {
+                    *s = redacted;
+                }
+            } else {
+                *s = MASK.to_string();
+            }
+        }
+        other => {
+            if !key.is_some_and(is_readable_key) {
+                *other = Value::String(MASK.to_string());
+            }
+        }
+    }
+}
+
+/// Mask a channel config in place (H3): exactly `auth.keys[*]` and
+/// `auth.secret`, the two fields of the closed `ChannelConfig` schema that
+/// hold credentials. Resolvable references (`env://NAME`) survive for the
+/// same reason they do on connectors: the stored config never held the
+/// value, and masking the pointer breaks export → import.
+pub fn mask_channel_config(config: &mut Value) {
+    let Some(auth) = config.get_mut("auth") else {
+        return;
+    };
+    if let Some(keys) = auth.get_mut("keys")
+        && let Value::Array(items) = keys
+    {
+        for item in items.iter_mut() {
+            mask_channel_secret_leaf(item);
+        }
+    }
+    if let Some(secret) = auth.get_mut("secret") {
+        mask_channel_secret_leaf(secret);
+    }
+}
+
+fn mask_channel_secret_leaf(value: &mut Value) {
+    match value {
+        Value::String(s) if crate::connector::secrets::is_resolvable_reference(s) => {}
+        Value::Null => {}
+        other => *other = Value::String(MASK.to_string()),
+    }
+}
+
+/// F34 for channels: restore values a client round-tripped through the masked
+/// channel read API. Same mechanics as [`unmask_config`], against the channel
+/// masking policy.
+pub fn unmask_channel_config(incoming: &mut Value, stored: &Value) {
+    let mut masked_stored = stored.clone();
+    mask_channel_config(&mut masked_stored);
+    restore_in_place(incoming, stored, &masked_stored);
 }
 
 /// A URL-shaped string split into the segments masking cares about. One
@@ -379,13 +528,14 @@ pub fn mask_secrets(value: &mut Value) {
     mask_in_place(value, None, false);
 }
 
-/// Mask sensitive fields in a connector's config_json for API responses.
+/// Mask sensitive fields in a connector's config_json for API responses,
+/// under the allowlist policy (H3).
 pub fn mask_connector_secrets(config_json: &str) -> String {
     let Ok(mut val) = serde_json::from_str::<Value>(config_json) else {
         return config_json.to_string();
     };
 
-    mask_secrets(&mut val);
+    mask_connector_in_place(&mut val, None);
 
     serde_json::to_string(&val).unwrap_or_else(|_| config_json.to_string())
 }
@@ -425,7 +575,7 @@ pub fn mask_connector(connector: &crate::storage::models::Connector) -> Connecto
 /// is left alone for [`find_masked_value`] to reject.
 pub fn unmask_config(incoming: &mut Value, stored: &Value) {
     let mut masked_stored = stored.clone();
-    mask_in_place(&mut masked_stored, None, false);
+    mask_connector_in_place(&mut masked_stored, None);
     restore_in_place(incoming, stored, &masked_stored);
 }
 
@@ -570,26 +720,39 @@ mod tests {
         assert_eq!(val["topic"], "orders");
     }
 
+    /// H3 inversion: every header *value* is masked, whatever the name — a
+    /// header value is exactly where callers put bearer tokens, and no name
+    /// list can anticipate which custom header carries one. Header *names*
+    /// (the object keys) stay visible.
     #[test]
     fn nested_secrets_below_the_first_level_are_masked() {
         let config = r#"{"type":"http","url":"https://api.example.com","headers":{"authorization":"Bearer abc","x-tenant":"acme"},"extra":{"deep":{"client_secret":"cs123"}}}"#;
         let masked = mask_connector_secrets(config);
         let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["headers"]["authorization"], "******");
-        assert_eq!(val["headers"]["x-tenant"], "acme");
+        assert_eq!(val["headers"]["x-tenant"], "******");
+        assert!(
+            val["headers"]
+                .as_object()
+                .expect("test")
+                .contains_key("x-tenant"),
+            "header names stay visible; values do not"
+        );
         assert_eq!(val["extra"]["deep"]["client_secret"], "******");
     }
 
+    /// A credential bundle's children are not individually secret-looking;
+    /// under the allowlist they mask by default — as does any key the
+    /// connector structs do not define (`database` is a mongo_read *task*
+    /// input, not a connector field).
     #[test]
     fn credential_bundles_mask_every_child() {
-        // The bundle's children are not individually secret-looking, so only
-        // the propagated flag saves them.
         let config = r#"{"type":"db","credentials":{"id":"AKIAEXAMPLE","value":"wJalrXUtn"},"database":"assets"}"#;
         let masked = mask_connector_secrets(config);
         let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
         assert_eq!(val["credentials"]["id"], "******");
         assert_eq!(val["credentials"]["value"], "******");
-        assert_eq!(val["database"], "assets");
+        assert_eq!(val["database"], "******");
     }
 
     #[test]
@@ -603,6 +766,9 @@ mod tests {
         assert_eq!(val["auth"]["sasl_mechanism"], "PLAIN");
     }
 
+    /// The structural vocabulary stays readable: types, limits, gates. A key
+    /// outside the connector structs' vocabulary (`cache_key_fields` is a
+    /// channel setting) masks by default — that default IS the H3 inversion.
     #[test]
     fn innocuous_keys_are_left_alone() {
         let config = r#"{"type":"db","driver":"postgres","max_connections":10,"query_timeout_ms":5000,"cache_key_fields":["tenant"],"operations":{"read":true,"delete":false},"retry":{"max_retries":3}}"#;
@@ -611,10 +777,22 @@ mod tests {
         assert_eq!(val["driver"], "postgres");
         assert_eq!(val["max_connections"], 10);
         assert_eq!(val["query_timeout_ms"], 5000);
-        assert_eq!(val["cache_key_fields"][0], "tenant");
+        assert_eq!(val["cache_key_fields"][0], "******");
         assert_eq!(val["operations"]["read"], true);
         assert_eq!(val["operations"]["delete"], false);
         assert_eq!(val["retry"]["max_retries"], 3);
+    }
+
+    /// The case the denylist could never win: a credential under a name no
+    /// list anticipated. Under the allowlist it fails closed.
+    #[test]
+    fn a_secret_under_an_unanticipated_key_is_masked() {
+        let config = r#"{"type":"http","url":"https://api.example.com","signing_cert_pem":"-----BEGIN...","tenant_code":"t-42"}"#;
+        let masked = mask_connector_secrets(config);
+        let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
+        assert_eq!(val["signing_cert_pem"], "******");
+        assert_eq!(val["tenant_code"], "******");
+        assert_eq!(val["url"], "https://api.example.com");
     }
 
     #[test]
@@ -723,20 +901,25 @@ mod tests {
         assert_eq!(val["url"], "https://api.example.com");
     }
 
-    /// S18 widened the key denylist; each addition in its intended shape.
+    /// The names S18 added to the denylist all mask under the allowlist too —
+    /// along with everything else outside the structural vocabulary, which is
+    /// the point of the inversion.
     #[test]
     fn extended_denylist_terms_are_masked() {
         let config = r#"{"type":"http","bearer":"b","sentry_dsn":"https://k@sentry.example/1","webhook":"https://hooks.example/T/B/X","pat":"ghp_abc","sig":"xyz","pattern":"/orders/{id}","path":"/v1"}"#;
         let masked = mask_connector_secrets(config);
         let val: serde_json::Value = serde_json::from_str(&masked).expect("test");
-        assert_eq!(val["bearer"], "******");
-        assert_eq!(val["sentry_dsn"], "******");
-        assert_eq!(val["webhook"], "******");
-        assert_eq!(val["pat"], "******");
-        assert_eq!(val["sig"], "******");
-        // "pat"/"sig" are exact matches precisely so these stay readable.
-        assert_eq!(val["pattern"], "/orders/{id}");
-        assert_eq!(val["path"], "/v1");
+        for key in [
+            "bearer",
+            "sentry_dsn",
+            "webhook",
+            "pat",
+            "sig",
+            "pattern",
+            "path",
+        ] {
+            assert_eq!(val[key], "******", "{key}");
+        }
     }
 
     /// F34 round-trip for the query form: a GET → edit → PUT cycle must
@@ -1139,5 +1322,133 @@ mod tests {
         let mut v = json!({"url": "https://user:hunter2@es:9200"});
         mask_secrets(&mut v);
         assert_eq!(v["url"], format!("https://user:{MASK}@es:9200"));
+    }
+
+    // ---------------------------------------------------------------
+    // H3: the allowlist inversion, and channel config masking
+    // ---------------------------------------------------------------
+
+    /// The drift guard the allowlist depends on: every field the connector
+    /// config structs define must be *classified* — on [`READABLE_KEYS`], or
+    /// named here as deliberately masked. A new struct field fails this test
+    /// until someone decides which it is, which is the decision the
+    /// allowlist exists to force.
+    #[test]
+    fn every_connector_struct_field_is_classified() {
+        // `connection_string` is a credential bundle; `auth` (when None it
+        // serializes as a null leaf) holds only credentials and identities,
+        // each covered by behaviour tests.
+        const EXPECTED_MASKED: &[&str] = &["connection_string", "auth"];
+
+        fn walk(v: &Value, out: &mut Vec<String>) {
+            if let Value::Object(map) = v {
+                for (k, child) in map {
+                    match child {
+                        Value::Object(_) => walk(child, out),
+                        _ => out.push(k.clone()),
+                    }
+                }
+            }
+        }
+
+        for sample in [
+            r#"{"type":"http","url":"https://x"}"#,
+            r#"{"type":"kafka","brokers":["b:9092"],"topic":"t"}"#,
+            r#"{"type":"db","connection_string":"postgres://h/db"}"#,
+            r#"{"type":"cache","backend":"memory"}"#,
+            r#"{"type":"es","url":"https://es:9200"}"#,
+        ] {
+            let parsed: crate::connector::ConnectorConfig =
+                serde_json::from_str(sample).expect("sample parses");
+            let serialized = serde_json::to_value(&parsed).expect("serializes");
+            let mut leaf_keys = Vec::new();
+            walk(&serialized, &mut leaf_keys);
+            assert!(!leaf_keys.is_empty());
+            for key in leaf_keys {
+                assert!(
+                    is_readable_key(&key) || EXPECTED_MASKED.contains(&key.as_str()),
+                    "connector field '{key}' is unclassified: add it to READABLE_KEYS \
+                     (safe to serve readable) or to EXPECTED_MASKED in this test \
+                     (a credential, masked by default)"
+                );
+            }
+        }
+    }
+
+    /// Channel masking is exact: the two `auth` credential fields and
+    /// nothing else. `header`, `scheme` and `signature_prefix` are protocol
+    /// shape, not secrets — and `signature_prefix` is precisely the kind of
+    /// name a substring denylist would have caught by accident.
+    #[test]
+    fn channel_auth_material_is_masked_and_nothing_else() {
+        let mut config = json!({
+            "auth": {
+                "mode": "api_key",
+                "header": "x-api-key",
+                "keys": ["sk-live-1", "sk-live-2"],
+                "secret": "whsec_abc",
+                "signature_prefix": "sha256="
+            },
+            "rate_limit": {"requests_per_second": 5},
+            "cache_key_fields": ["data.user_id"]
+        });
+        mask_channel_config(&mut config);
+        assert_eq!(config["auth"]["keys"][0], MASK);
+        assert_eq!(config["auth"]["keys"][1], MASK);
+        assert_eq!(config["auth"]["secret"], MASK);
+        assert_eq!(config["auth"]["header"], "x-api-key");
+        assert_eq!(config["auth"]["signature_prefix"], "sha256=");
+        assert_eq!(config["rate_limit"]["requests_per_second"], 5);
+        assert_eq!(config["cache_key_fields"][0], "data.user_id");
+    }
+
+    /// An `env://` reference in channel auth survives, like on connectors:
+    /// the stored config never held the credential.
+    #[test]
+    fn channel_auth_references_survive_masking() {
+        let mut config = json!({"auth": {"mode": "hmac", "secret": "env://WEBHOOK_SECRET"}});
+        mask_channel_config(&mut config);
+        assert_eq!(config["auth"]["secret"], "env://WEBHOOK_SECRET");
+    }
+
+    /// A channel config with no `auth` block passes through untouched.
+    #[test]
+    fn channel_config_without_auth_is_untouched() {
+        let mut config = json!({"dedup": {"window_secs": 60}});
+        let before = config.clone();
+        mask_channel_config(&mut config);
+        assert_eq!(config, before);
+    }
+
+    /// The channel GET → edit → PUT cycle: masked keys restore from the
+    /// stored config, and a rotated key survives alongside a still-masked
+    /// one.
+    #[tokio::test]
+    async fn channel_unmask_restores_round_tripped_auth() {
+        let stored = json!({"auth": {"mode": "api_key", "keys": ["real-1", "real-2"]}});
+        let mut incoming = stored.clone();
+        mask_channel_config(&mut incoming);
+        assert_eq!(incoming["auth"]["keys"][0], MASK);
+
+        unmask_channel_config(&mut incoming, &stored);
+        assert_eq!(incoming["auth"]["keys"][0], "real-1");
+        assert_eq!(incoming["auth"]["keys"][1], "real-2");
+        assert_eq!(find_masked_value(&incoming), None);
+
+        // Rotation: replace one key, round-trip the other masked.
+        let mut incoming = json!({"auth": {"mode": "api_key", "keys": ["******", "fresh-key"]}});
+        unmask_channel_config(&mut incoming, &stored);
+        assert_eq!(incoming["auth"]["keys"][0], "real-1");
+        assert_eq!(incoming["auth"]["keys"][1], "fresh-key");
+    }
+
+    /// A sentinel with no stored counterpart stays findable for rejection —
+    /// same contract as connectors.
+    #[test]
+    fn channel_unmask_leaves_unmatched_sentinel_for_rejection() {
+        let stored = json!({"auth": {"mode": "api_key", "keys": ["real-1"]}});
+        let mut incoming = json!({"auth": {"mode": "hmac", "secret": "******"}});
+        unmask_channel_config(&mut incoming, &stored);
+        assert_eq!(find_masked_value(&incoming).as_deref(), Some("auth.secret"));
     }
 }

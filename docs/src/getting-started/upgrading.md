@@ -1678,6 +1678,33 @@ Replace each with `env://VAR_NAME` and inject the secret through your
 orchestrator. If such a connector appeared to work before, it was authenticating
 with the literal string `vault://...` as its password — rotate that credential.
 
+### Masking is an allowlist now, and channel auth material is masked too
+
+**What changed.** Connector configs used to be masked by a *denylist* of
+secret-looking key names, so a credential under a name the list never
+anticipated (`signing_cert_pem`, a custom header value) was served in clear by
+`GET /api/v1/admin/connectors`. Masking is inverted: only the structural
+vocabulary the connector types define (endpoints, timeouts, operation gates,
+identity fields) is readable, and every other value answers `"******"`. All
+`headers` *values* are masked — header names stay visible.
+
+Channel configs, which were never masked at all, now mask `auth.keys` and
+`auth.secret`. The update path gained the same round-trip handling connectors
+have: a masked value sent back on `PUT` is restored from the stored config,
+and a sentinel with no stored counterpart is refused with a `400` naming the
+field.
+
+**How you'll notice.** Tooling that read non-secret custom keys out of
+connector configs via the admin API sees `"******"` where it saw values.
+Exports of configs holding *literal* secrets are lossy (they always were for
+denylisted names); `env://` references pass through unmasked and remain the
+portable way to author credentials.
+
+**What to do.** Nothing for configs authored with `env://` references. If a
+custom field must stay readable through the API, it needs to be a real config
+field — or fetch it from your own source of truth rather than the masked
+admin read.
+
 ### Connector reads redact credentials inside URLs
 
 **What changed.** `GET /api/v1/admin/connectors` already masked

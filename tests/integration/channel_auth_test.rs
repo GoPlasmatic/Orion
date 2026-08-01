@@ -368,3 +368,137 @@ async fn a_channel_whose_auth_cannot_be_built_is_quarantined() {
         "a channel whose auth failed to build must not serve traffic"
     );
 }
+
+/// H3: channel reads mask `auth.keys` / `auth.secret`, and the masked shape
+/// round-trips through PUT without corrupting the live credential — the same
+/// F34 cycle connectors have always had, proven end to end against the data
+/// plane: after a GET → edit → PUT, the original key still authenticates.
+#[tokio::test]
+async fn channel_auth_keys_are_masked_on_read_and_survive_a_put_round_trip() {
+    let app = common::test_app().await;
+    let (channel_id, _wf) = common::create_and_activate_channel_full(
+        &app,
+        "masked-rt",
+        common::echo_workflow("masked-rt-wf"),
+        api_key_config("sk-live-9"),
+    )
+    .await;
+
+    // GET masks the key.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            &format!("/api/v1/admin/channels/{channel_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = common::body_json(resp).await;
+    assert_eq!(
+        body["data"]["config"]["auth"]["keys"][0], "******",
+        "the admin read must not return the literal key: {body}"
+    );
+
+    // A new draft, edited from the masked GET shape, PUT back verbatim.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/admin/channels/{channel_id}/versions"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let mut config = body["data"]["config"].clone();
+    config["rate_limit"] = json!({"requests_per_second": 50});
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            &format!("/api/v1/admin/channels/{channel_id}"),
+            Some(json!({"config": config})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "{}",
+        common::body_json(resp).await
+    );
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            &format!("/api/v1/admin/channels/{channel_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // The ORIGINAL key still authenticates: the PUT restored it rather than
+    // persisting the sentinel as the credential.
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/masked-rt",
+            ("x-api-key", "sk-live-9"),
+            json!({"data": {"ok": true}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "the real key must survive the masked round-trip"
+    );
+
+    // And the sentinel itself is not a working credential.
+    let resp = app
+        .clone()
+        .oneshot(request_with_header(
+            "/api/v1/data/masked-rt",
+            ("x-api-key", "******"),
+            json!({"data": {"ok": true}}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+/// A create carrying the sentinel has nothing to restore from — it is a
+/// copied-from-a-GET mistake and must be refused, not persisted as the key.
+#[tokio::test]
+async fn channel_create_rejects_the_mask_sentinel() {
+    let app = common::test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels",
+            Some(json!({
+                "name": "mask-reject",
+                "channel_type": "sync",
+                "protocol": "http",
+                "methods": ["POST"],
+                "route_pattern": "/mask-reject",
+                "workflow_id": "any-wf",
+                "config": {"auth": {"mode": "api_key", "keys": ["******"]}}
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = common::body_json(resp).await;
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("masked placeholder"),
+        "{body}"
+    );
+}

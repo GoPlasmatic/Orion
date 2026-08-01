@@ -106,13 +106,23 @@ pub(crate) async fn update_channel(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
-    OrionJson(req): OrionJson<UpdateChannelRequest>,
+    OrionJson(mut req): OrionJson<UpdateChannelRequest>,
 ) -> Result<Json<Value>, OrionError> {
     // R3: mirror create-time validation. The latest version (404 if the
     // channel is absent) supplies the protocol and current field values for
     // the merged-view checks; when a draft exists it is the latest version,
     // i.e. exactly the row `update_draft` mutates.
     let current = state.channel_repo.get_by_id(&id).await?;
+    // H3: channel reads mask `auth.keys` / `auth.secret`, so a GET → edit →
+    // PUT cycle sends the sentinel back for every credential the caller
+    // never saw. Restore each masked position from the stored config before
+    // validating (which rejects any sentinel left unmatched) — the F34
+    // treatment connectors have always had.
+    if let Some(ref mut config) = req.config
+        && let Ok(stored) = serde_json::from_str::<Value>(&current.config_json)
+    {
+        crate::connector::unmask_channel_config(config, &stored);
+    }
     crate::validation::validate_update_channel(&current, &req)?;
     let channel = state.channel_repo.update_draft(&id, &req).await?;
     audit_log_draft_only(&state.audit_queue, &principal, "update", "channel", &id);
