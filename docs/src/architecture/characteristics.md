@@ -45,7 +45,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
 | [Rate Limiting](../features/scalability.md#rate-limiting) | Token bucket algorithm · Per-client keying via JSONLogic · Platform & per-channel limits |
 | [Backpressure](../features/scalability.md#backpressure) | Semaphore concurrency limits · 503 load shedding · Per-channel configuration |
 | [Async Processing](../features/scalability.md#async-processing) | Multi-worker trace queue · Bounded buffer channels · DLQ retry processor |
-| [Horizontal Scaling](../features/scalability.md#horizontal-scaling) | Stateless instances · Channel include/exclude filters · Multi-database backends |
+| [Horizontal Scaling](../features/scalability.md#horizontal-scaling--cluster-mode) | Cluster mode (N replicas, one logical system) · Shared dedup / rate limits / caches · Multi-database backends |
 
 ## Deployability — C
 
@@ -150,8 +150,8 @@ Orion provides production-grade capabilities across eight architectural dimensio
           children: ['Semaphore concurrency limits', '503 load shedding', 'Per-channel configuration'] },
         { name: 'Async Processing', link: '../features/scalability.html#async-processing',
           children: ['Multi-worker trace queue', 'Bounded buffer channels', 'DLQ retry processor'] },
-        { name: 'Horizontal Scaling', link: '../features/scalability.html#horizontal-scaling',
-          children: ['Stateless instances', 'Channel include/exclude filters', 'Multi-database backends'] }
+        { name: 'Horizontal Scaling', link: '../features/scalability.html#horizontal-scaling--cluster-mode',
+          children: ['Cluster mode: N replicas, one system', 'Shared dedup / limits / caches', 'Multi-database backends'] }
       ]
     },
     {
