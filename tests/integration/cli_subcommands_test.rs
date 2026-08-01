@@ -662,3 +662,29 @@ fn unexpected_task_errors_fail_a_case() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// T7: the one subcommand with no test through the binary. Its *content* is
+/// drift-guarded by `committed_openapi_json_is_up_to_date`, but that test
+/// generates the spec in-process — nothing proved the subcommand itself exits
+/// zero and writes the spec to stdout, which is exactly how CONTRIBUTING
+/// tells contributors to regenerate `docs/openapi.json`.
+#[test]
+fn dump_openapi_writes_the_spec_to_stdout() {
+    let out = Command::new(orion_bin())
+        .arg("dump-openapi")
+        .output()
+        .expect("invoke orion-server dump-openapi");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr={stderr}");
+
+    // Stdout must be the spec and nothing else — a stray log line would
+    // corrupt every `dump-openapi > docs/openapi.json` redirect.
+    let spec: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be a single JSON document");
+    assert_eq!(spec["openapi"], "3.1.0", "spec version: {}", spec["openapi"]);
+    assert!(
+        spec["paths"]["/api/v1/data/{channel}"].is_object(),
+        "the data plane must be documented"
+    );
+}
