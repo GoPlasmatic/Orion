@@ -124,6 +124,11 @@ jobs:
 
       - name: Build
         env:
+          # Plain CC as well as the cc-crate names: librdkafka's configure
+          # build (the unix path — see rdkafka's entry in Cargo.toml) reads
+          # the plain variable, while openssl-sys and friends read the
+          # target-scoped ones.
+          CC: x86_64-buildroot-linux-musl-gcc
           CC_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-gcc
           CXX_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-g++
           AR_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-ar

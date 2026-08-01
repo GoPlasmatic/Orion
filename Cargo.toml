@@ -108,7 +108,16 @@ arc-swap = "1"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 # ssl-vendored statically links OpenSSL into librdkafka so TLS / SASL_SSL /
 # SCRAM work without a system OpenSSL at runtime (kafka.auth support).
-rdkafka = { version = "0.39", default-features = false, features = ["cmake-build", "tokio", "ssl-vendored"] }
+#
+# Deliberately NOT cmake-build on unix: librdkafka 2.12's cmake packaging
+# generates `#define WITH_OAUTHBEARER_OIDC 0` behind an `#ifdef` guard, so
+# `curl/curl.h` is included even with curl disabled — fatal on any sysroot
+# without curl headers (musl; rust-rdkafka#827, librdkafka#5204, guard fixed
+# on librdkafka master). The native configure build defines only what is
+# enabled, so the guard behaves. cmake-build returns below for Windows only,
+# where the configure build cannot run; fold it back into one line once
+# rdkafka-sys bundles librdkafka >= 2.13.
+rdkafka = { version = "0.39", default-features = false, features = ["tokio", "ssl-vendored"] }
 utoipa = { version = "5", features = ["axum_extras", "chrono"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
@@ -146,6 +155,12 @@ strip = true
 
 # Inherits release optimizations but keeps debug symbols so samply / Instruments
 # can resolve function names. Use with `cargo build --profile=profiling`.
+# Windows cannot run librdkafka's configure build, so it keeps cmake-build —
+# features unify additively with the base rdkafka entry above, per target.
+# See that entry for why unix deliberately avoids cmake-build.
+[target.'cfg(windows)'.dependencies]
+rdkafka = { version = "0.39", default-features = false, features = ["cmake-build"] }
+
 [profile.profiling]
 inherits = "release"
 strip = false
