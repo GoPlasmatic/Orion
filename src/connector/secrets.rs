@@ -5,11 +5,16 @@
 //! that scheme replaces the string with the resolved secret before the
 //! connector config is deserialized into its typed form.
 //!
-//! v1.0 ships a single working resolver: `env://VAR_NAME` reads from the
-//! process environment. The schemes reserved for later backends
-//! ([`RESERVED_SCHEMES`]) are registered too, but resolve to a hard error —
-//! a reference that cannot be resolved must never reach the remote system as
-//! its own literal text.
+//! v1.0 ships two working resolvers: `env://VAR_NAME` reads from the process
+//! environment, and `vault://` reads from HashiCorp Vault when the standard
+//! `VAULT_ADDR`/`VAULT_TOKEN` environment is present. The schemes reserved
+//! for later backends ([`RESERVED_SCHEMES`]) are registered too, but resolve
+//! to a hard error — a reference that cannot be resolved must never reach the
+//! remote system as its own literal text. The cloud backends (`aws-sm://`,
+//! `gcp-sm://`, `azure-kv://`) are deliberately deferred: each means adopting
+//! that vendor's SDK tree, a dependency-policy decision (2026-08-01) rather
+//! than missing code — [`SecretResolver`] being async makes any of them a
+//! drop-in when that decision changes.
 //!
 //! ## Relationship to A5
 //!
@@ -181,12 +186,31 @@ impl VaultSecretResolver {
         Self {
             addr: addr.into().trim_end_matches('/').to_string(),
             token: token.into(),
-            client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(5))
-                .build()
-                .expect("reqwest client with static config"),
+            client: vault_http_client(),
         }
     }
+}
+
+/// One HTTP client shared by every [`VaultSecretResolver`] instance.
+///
+/// Resolvers are rebuilt per load so a renewed token is picked up, but the
+/// connection pool has no reason to follow: `default_resolvers()` runs on
+/// every connector load, channel-auth compile and admin validate/test call,
+/// and a fresh pool each time means a new TLS handshake per resolved secret.
+/// Deliberately *not* the engine's shared client (`bootstrap`): that one
+/// carries the SSRF pinning and no-redirect policy for user-supplied URLs,
+/// and `VAULT_ADDR` is operator config that legitimately points at private
+/// addresses the SSRF rules exist to block.
+fn vault_http_client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(5))
+                .build()
+                .expect("reqwest client with static config")
+        })
+        .clone()
 }
 
 #[async_trait::async_trait]
