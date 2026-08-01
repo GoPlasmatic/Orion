@@ -96,19 +96,36 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # musl-tools ships only a C compiler, and rdkafka's cmake configure also
-      # demands x86_64-linux-musl-g++ — librdkafka's project() declares CXX
-      # even though only the C library is ever linked — so the job needs a
-      # full musl cross toolchain. musl.cc's carries both compilers.
-      - name: Install musl cross toolchain (C and C++) and cmake
+      # demands a musl g++ — librdkafka's project() declares CXX even though
+      # only the C library is ever linked — so the job needs a full musl cross
+      # toolchain. Bootlin's carries both compilers; musl.cc, the usual
+      # suggestion, times out from GitHub runners. Cached so the 79MB tarball
+      # is fetched only when the pinned version changes.
+      - name: Cache musl cross toolchain
+        id: musl-tc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/musl-tc/x86-64--musl--stable-2025.08-1
+          key: musl-tc-x86-64--musl--stable-2025.08-1
+
+      - name: Install musl cross toolchain (C and C++)
+        if: steps.musl-tc-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL --retry 3 -o /tmp/musl-tc.tar.xz \
+            https://toolchains.bootlin.com/downloads/releases/toolchains/x86-64/tarballs/x86-64--musl--stable-2025.08-1.tar.xz
+          mkdir -p "$HOME/musl-tc"
+          tar -C "$HOME/musl-tc" -xf /tmp/musl-tc.tar.xz
+          "$HOME/musl-tc/x86-64--musl--stable-2025.08-1/relocate-sdk.sh"
+
+      - name: Install cmake and add the toolchain to PATH
         run: |
           sudo apt-get update && sudo apt-get install -y cmake
-          curl -fsSL --retry 3 https://musl.cc/x86_64-linux-musl-cross.tgz -o /tmp/musl-cross.tgz
-          sudo tar -C /opt -xzf /tmp/musl-cross.tgz
-          echo "/opt/x86_64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+          echo "$HOME/musl-tc/x86-64--musl--stable-2025.08-1/bin" >> "$GITHUB_PATH"
 
       - name: Build
         env:
-          CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
-          CXX_x86_64_unknown_linux_musl: x86_64-linux-musl-g++
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
+          CC_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-gcc
+          CXX_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-g++
+          AR_x86_64_unknown_linux_musl: x86_64-buildroot-linux-musl-ar
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-buildroot-linux-musl-gcc
         run: cargo build --locked --target x86_64-unknown-linux-musl
