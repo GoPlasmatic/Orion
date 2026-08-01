@@ -1429,3 +1429,127 @@ async fn s6_allow_private_urls_lets_a_loopback_db_through() {
     let (status, body) = common::dsl::post(&app, "s6-local-ch", json!({ "data": {} })).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+// ============================================================
+// Connectivity probe: POST /connectors/{id}/test
+// ============================================================
+
+/// A working database connector reports reachable.
+///
+/// `test-connectivity` probes the *configured* storage and Kafka only; a saved
+/// connector could not be checked at all, so bad credentials surfaced at the
+/// first real request instead of when the operator saved them.
+#[tokio::test]
+async fn probing_a_working_db_connector_reports_reachable() {
+    let app = common::test_app().await;
+    let id = common::create_connector(&app, common::db_connector("probe-ok")).await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/admin/connectors/{id}/test"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["reachable"], true, "{body}");
+    assert_eq!(body["data"]["connector_type"], "db");
+    assert_eq!(
+        body["data"]["probe"], "SELECT 1",
+        "the probe names what it did: {body}"
+    );
+}
+
+/// An unreachable backend is a `200` carrying `reachable: false`.
+///
+/// The probe ran and this is its answer — a 5xx would say Orion failed, which
+/// is a different claim and would make the endpoint useless for the case it
+/// exists to report.
+#[tokio::test]
+async fn probing_an_unreachable_db_connector_reports_the_failure() {
+    let app = common::test_app().await;
+    let id = common::create_connector(
+        &app,
+        json!({
+            "name": "probe-broken",
+            "connector_type": "db",
+            "config": {"connection_string": "postgres://nobody@127.0.0.1:1/nope"}
+        }),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/admin/connectors/{id}/test"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "an unreachable backend is a finding, not a server error"
+    );
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["reachable"], false, "{body}");
+    assert!(
+        body["data"]["error"].is_string(),
+        "a failure must say why: {body}"
+    );
+}
+
+/// A connector whose `env://` secret is unset on this host is reported as such.
+///
+/// This is precisely when an operator reaches for the endpoint — the connector
+/// failed to load, so it has no registry entry — which is why the probe reads
+/// the stored row rather than the registry.
+#[tokio::test]
+async fn probing_reports_an_unresolvable_secret() {
+    let app = common::test_app().await;
+    let id = common::create_connector(
+        &app,
+        json!({
+            "name": "probe-secret",
+            "connector_type": "http",
+            "config": {
+                "url": "https://example.com",
+                "auth": {"type": "bearer", "token": "env://ORION_TEST_UNSET_PROBE"}
+            }
+        }),
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/admin/connectors/{id}/test"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["reachable"], false, "{body}");
+    assert_eq!(body["data"]["probe"], "secret resolution", "{body}");
+}
+
+#[tokio::test]
+async fn probing_an_unknown_connector_is_404() {
+    let app = common::test_app().await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/connectors/no-such-connector/test",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}

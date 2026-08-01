@@ -53,6 +53,9 @@ const ENV_OVERRIDES_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/
 const NO_DEFAULT: &[&str] = &[
     // Option<bool>: unset means "enabled outside production" (S17).
     "server.docs.enabled",
+    // Option<bool>: unset means "verbose outside production", the same rule.
+    // An explicit `true` in production is refused at startup.
+    "server.verbose_errors",
     // Option<String>: unset keeps /metrics on the main listener (O12).
     "metrics.bind_addr",
     // Option<String>: unset leaves the librdkafka default untouched.

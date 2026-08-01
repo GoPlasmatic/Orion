@@ -300,9 +300,109 @@ async fn test_metadata_channel_set_on_channel_call() {
 // G1: data-plane responses carry sanitized errors only
 // ============================================================
 
+/// Stand up a failing-`db_read` channel and return the data-plane response body.
+///
+/// The `environment` is the parameter that matters: it selects
+/// `AppConfig::verbose_errors`, and the whole point of the pair of tests below
+/// is that the same failure reads differently either side of that line.
+/// Constructed through `AppConfig` directly rather than `load_config`, so the
+/// production-only startup checks (admin auth, CORS wildcard) do not have to be
+/// satisfied to exercise the production *error* contract.
+async fn failing_task_response(environment: &str) -> serde_json::Value {
+    let mut config = orion::config::AppConfig::default();
+    config.trace_storage.mode = orion::config::TraceStorageMode::Sync;
+    config.environment = environment.to_string();
+    let app = common::test_app_with_config(config).await;
+
+    let workflow = json!({
+        "name": "verbosity WF",
+        "condition": true,
+        "continue_on_error": true,
+        "tasks": [{
+            "id": "t1",
+            "name": "Failing DB read",
+            "continue_on_error": true,
+            "function": {
+                "name": "db_read",
+                "input": {
+                    "connector": "ghost-db-verbosity",
+                    "query": "SELECT 1",
+                    "output": "data.db_result"
+                }
+            }
+        }]
+    });
+    let conn_id = common::create_connector(&app, common::db_connector("ghost-db-verbosity")).await;
+    common::create_and_activate_channel(&app, "verbosity-ch", workflow).await;
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "DELETE",
+            &format!("/api/v1/admin/connectors/{conn_id}"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/verbosity-ch",
+            Some(json!({"data": {"x": 1}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    body_json(resp).await
+}
+
+/// Outside production the caller gets the engine's own message.
+///
+/// The author of the workflow *is* the caller during development, and the
+/// placeholder costs them a second round trip to the trace API to learn what
+/// the first response already knew.
+#[tokio::test]
+async fn test_error_body_is_verbose_outside_production() {
+    let body = failing_task_response("development").await;
+    let errors = body["errors"].as_array().expect("errors array");
+    assert!(!errors.is_empty(), "expected task errors, got: {body}");
+    let message = errors[0]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("ghost-db-verbosity"),
+        "development should surface the real message, got {message:?}"
+    );
+}
+
+/// In production the same failure is sanitized to code + task_id.
+#[tokio::test]
+async fn test_error_body_is_sanitized_in_production() {
+    let body = failing_task_response("production").await;
+    let errors = body["errors"].as_array().expect("errors array");
+    assert!(!errors.is_empty(), "expected task errors, got: {body}");
+    let body_str = serde_json::to_string(&body).unwrap();
+    assert!(
+        !body_str.contains("ghost-db-verbosity"),
+        "connector name must not leak into a production body: {body_str}"
+    );
+    assert!(errors[0]["code"].is_string(), "code is kept: {body}");
+    assert!(
+        errors[0]["task_id"].is_string(),
+        "task_id is kept so the failure is still locatable: {body}"
+    );
+}
+
 #[tokio::test]
 async fn test_error_body_is_sanitized_but_trace_keeps_detail() {
-    let app = common::test_app().await;
+    // Pinned to production: this asserts the G1 *sanitization* contract, which
+    // only holds there. It ran under the development default for as long as
+    // sanitizing was unconditional, and silently stopped testing sanitization
+    // the moment it was not.
+    let mut config = orion::config::AppConfig::default();
+    config.trace_storage.mode = orion::config::TraceStorageMode::Sync;
+    config.environment = "production".to_string();
+    let app = common::test_app_with_config(config).await;
 
     // db_read against a nonexistent connector fails with a message naming
     // the connector — internal detail that must not reach the caller.

@@ -155,6 +155,10 @@ pub struct ChannelRuntimeConfig {
     pub response_cache: Option<Arc<dyn CacheBackend>>,
     /// Trace storage policy after merging the global and per-channel config.
     pub trace_storage: EffectiveTraceConfig,
+    /// Compiled `auth` policy: secrets resolved and keys pre-hashed once at
+    /// load, so the request path never resolves an `env://` reference or
+    /// hashes a stored key. `None` means the channel is unauthenticated.
+    pub auth: Option<crate::channel::auth::CompiledAuth>,
 }
 
 /// A channel the registry refused to load, and why.
@@ -668,6 +672,27 @@ impl ChannelRegistry {
             deps.global_trace_storage,
             parsed_config.tracing.as_ref(),
         );
+
+        // Same posture as N3/N4/N5: a guard that cannot be built quarantines
+        // the channel rather than loading it without the guard. Serving an
+        // `auth`-bearing channel with its authentication silently absent —
+        // because an `env://` secret was not set on this host, say — is the
+        // worst possible reading of the operator's intent.
+        let auth = parsed_config
+            .auth
+            .as_ref()
+            .map(|cfg| {
+                crate::channel::auth::CompiledAuth::compile(cfg).map_err(|e| {
+                    tracing::error!(
+                        channel = %channel.name,
+                        error = %e,
+                        "Refusing to load channel: auth config cannot be compiled"
+                    );
+                    issue(format!("auth: {e}"))
+                })
+            })
+            .transpose()?;
+
         Ok(Arc::new(ChannelRuntimeConfig {
             channel: channel.clone(),
             parsed_config,
@@ -678,6 +703,7 @@ impl ChannelRegistry {
             dedup_store,
             response_cache,
             trace_storage,
+            auth,
         }))
     }
 

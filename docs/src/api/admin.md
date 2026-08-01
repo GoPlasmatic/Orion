@@ -31,6 +31,8 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 | GET | `/api/v1/admin/channels/{id}/versions` | List channel version history |
 | POST | `/api/v1/admin/channels/{id}/versions` | Create new draft version from active channel |
 | POST | `/api/v1/admin/channels/import` | Bulk import channels (as drafts). `?dry_run=true` validates without writing |
+| GET | `/api/v1/admin/channels/export` | Export every matching channel, in the shape `/import` accepts |
+| POST | `/api/v1/admin/channels/validate` | Validate a channel definition without saving |
 
 ## Workflows
 
@@ -60,11 +62,94 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 | PUT | `/api/v1/admin/connectors/{id}` | Update connector |
 | DELETE | `/api/v1/admin/connectors/{id}` | Delete connector |
 | POST | `/api/v1/admin/connectors/import` | Bulk import connectors. `?dry_run=true` validates without writing |
+| GET | `/api/v1/admin/connectors/export` | Export every connector, secrets masked |
+| POST | `/api/v1/admin/connectors/validate` | Validate a connector definition without saving |
+| POST | `/api/v1/admin/connectors/{id}/test` | Probe the connector's backend and report whether it is reachable |
 | POST | `/api/v1/admin/connectors/reload` | Reload all connectors from DB |
 | GET | `/api/v1/admin/connectors/circuit-breakers` | List circuit breaker states |
 | POST | `/api/v1/admin/connectors/circuit-breakers/{key}` | Reset a circuit breaker |
 
 Connector types: `http`, `kafka`, `db` (PostgreSQL/MySQL/SQLite/MongoDB), `cache`, `es` (Elasticsearch). Every connector config accepts an optional `operations` block that en/disables operation types per connector — `read` / `insert` / `update` / `delete` / `upsert` / `raw_write` on `db` and `es`, `read` / `write` on `cache`, `publish` on `kafka`, and a `methods` allow-list on `http`. See [Operation Gates](../features/extensibility.md#operation-gates).
+
+### Testing a connector
+
+`POST /api/v1/admin/connectors/{id}/test` probes the saved connector's backend,
+so wrong credentials surface when they are saved rather than at the first real
+request. It reads the **stored row** with its `env://` references resolved, not
+the registry — a connector that failed to load has no registry entry, and that
+is exactly when this endpoint is useful.
+
+```json
+{ "data": { "reachable": true, "connector_type": "db", "probe": "SELECT 1" } }
+```
+
+A backend that cannot be reached is still a `200`: the probe ran, and
+`reachable: false` with an `error` string is its answer. A `5xx` would claim
+Orion failed, which is a different thing.
+
+| Type | Probe | Touches the backend? |
+|---|---|---|
+| `db` | `SELECT 1` through the shared pool | Yes, read-only |
+| `cache` | reads one probe key | Yes, read-only — nothing is written |
+| `http` | `GET` the configured URL with the connector's auth, 5 s timeout | **Yes — one real request** |
+| `es`, `kafka` | not implemented | No |
+
+The HTTP probe issues a genuine request with genuine credentials, which is the
+point: a wrong bearer token is invisible until traffic hits it. A `401`/`403` is
+reported as **not** reachable — the host answered, but the connector's
+credentials are wrong, and that is the failure the endpoint exists to surface.
+It goes through the same client and SSRF policy as a real `http_call`, so a
+probe cannot pass where traffic would fail. Every call is written to the audit
+log.
+
+Kafka brokers are covered by `orion-server test-connectivity`.
+
+## Export & Promotion
+
+All three primitives export and import, so an estate can live in git rather than
+only in the database: snapshot an environment, diff staging against production,
+review a change before it lands, recover after one.
+
+```bash
+# Snapshot an environment into version control
+for kind in workflows channels connectors; do
+  curl -s "$ORION/api/v1/admin/$kind/export" | jq '.data' > "estate/$kind.json"
+done
+
+# Validate the bundle before it goes anywhere (a CI runner needs no secrets)
+curl -s -X POST "$ORION/api/v1/admin/workflows/import?dry_run=true" \
+  -H 'Content-Type: application/json' --data @estate/workflows.json
+
+# Promote
+curl -s -X POST "$ORION/api/v1/admin/workflows/import" \
+  -H 'Content-Type: application/json' --data @estate/workflows.json
+```
+
+Each `/export` emits the shape its `/import` accepts, so the round trip needs no
+reshaping in between. Exports are **not** a consistent snapshot: pages are
+independent queries, so rows mutated mid-export can be skipped or duplicated.
+Export from a quiet instance if that matters.
+
+### Secrets in an exported bundle
+
+A connector export is masked, which is what makes it safe to commit — and which
+decides how a connector must be authored if it is to survive the trip:
+
+| Authored as | Exports as | Re-imports? |
+|---|---|---|
+| `"token": "env://STRIPE_KEY"` | `"env://STRIPE_KEY"` | **Yes** — a reference names a variable; it is not itself a credential |
+| `"token": "sk_live_..."` | `"******"` | **No** — the import is refused |
+
+The refusal is deliberate. Importing `******` would store it as a real
+credential and fail at the first request instead of here, where the operator is
+looking at the file. **Author connectors with `env://` references** and bundles
+round-trip cleanly; the secret then lives in the deployment environment, which
+is where it belongs.
+
+`POST /{kind}/validate` runs the same validator `POST /{kind}` runs, so
+`valid: true` means create would accept the payload — it is never laxer. An
+`env://` reference that is unset on the validating host is a **warning**, not an
+error, so a CI runner holding no production secrets can still check a bundle.
 
 ## Engine
 
@@ -193,3 +278,16 @@ When a workflow, channel, or connector fails strict validation on create/update,
 ```
 
 The `field` path mirrors the JSON structure the API received, so editors can jump straight to the failing key. The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{id}/test`, and the `orion-server lint` / `dry-run` CLI subcommands.
+
+### Warnings
+
+`POST /workflows/validate` returns `{ "valid", "errors", "warnings" }`. `valid` reflects `errors` only — it means "`POST /workflows` would accept this" — so a workflow can be valid and still carry warnings. Two are reported:
+
+| Warning | Meaning |
+|---|---|
+| `Connector '…' not found in registry` | The task names a connector that does not exist yet. Not an error at create time (connectors and workflows may be authored in either order), but **activation refuses it**. |
+| `reads '…', which no earlier task writes` | A `data.*` path read by a task that no earlier task writes. |
+
+The second one exists because the failure it predicts is invisible at runtime: JSONLogic resolves an unknown `var` to null, so a mistyped path leaves the task running, the workflow succeeding, and the caller receiving a `200` with the field quietly missing.
+
+It is advisory in both directions. Writes are tracked from `parse_json`/`parse_xml` targets, `map` mapping paths, and connector `output` paths, and matched by prefix — writing `data.order` covers a read of `data.order.total`. Reads of `metadata.*`, `payload`, and the element rebinding inside `map`/`reduce` bodies are out of scope and never warn. A value that legitimately arrives another way — a connector response shape, a `continue_on_error` predecessor — can still be flagged, which is why it never blocks creation.

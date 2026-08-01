@@ -17,7 +17,7 @@ pub(super) mod validation;
 mod write;
 
 // Re-export all types so `use crate::config::Foo` keeps working.
-pub use admin_auth::AdminAuthConfig;
+pub use admin_auth::{AdminAuthConfig, constant_time_eq};
 pub use cluster::ClusterConfig;
 pub use engine::EngineConfig;
 pub use env_overrides::known_env_override_keys;
@@ -121,6 +121,19 @@ impl AppConfig {
         self.server
             .docs
             .enabled
+            .unwrap_or_else(|| !self.is_production())
+    }
+
+    /// Whether the data plane returns real task-failure messages instead of the
+    /// generic placeholder.
+    ///
+    /// `server.verbose_errors` when set; otherwise on exactly when the
+    /// environment is not a production variant — the same prefix rule as
+    /// [`AppConfig::docs_enabled`]. `validate` refuses an explicit `true` in
+    /// production, so the `true` branch here is only ever reached outside it.
+    pub fn verbose_errors(&self) -> bool {
+        self.server
+            .verbose_errors
             .unwrap_or_else(|| !self.is_production())
     }
 }

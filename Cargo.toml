@@ -55,7 +55,16 @@ path = "tests/cluster/main.rs"
 harness = true
 
 [dependencies]
-dataflow-rs = "3.1.0"
+# `all-operators` turns on dataflow-rs's passthroughs to the datalogic-rs
+# feature gates: `datetime`, `ext-string`, `ext-array`, `ext-math`,
+# `ext-control` and `error-handling`. Without it datalogic compiles with only
+# the core opcode set, and a workflow cannot call `now`, format a date,
+# uppercase a string or measure a length — see
+# docs/src/reference/workflows.md#available-operators for the resulting
+# vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
+# engine is reached through dataflow-rs, never pinned alongside it), so this is
+# the only lever, and it arrived in dataflow-rs 3.2.
+dataflow-rs = { version = "3.2.0", features = ["all-operators"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
 sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
@@ -78,7 +87,14 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false }
 url = "2"
 ipnet = "2"
 sha2 = "0.10"
+# Channel `auth.mode = "hmac"`: webhook signature verification over the raw
+# request body. Pinned to 0.12 to match `sha2` 0.10 — both track `digest` 0.10,
+# and hmac 0.13 would pull a second digest major into the tree.
+hmac = "0.12"
 hex = "0.4"
+# Webhook signatures are hex (Stripe, GitHub) or base64 (Shopify); both
+# encodings are accepted, so both decoders are needed.
+base64 = "0.22"
 rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
 governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
 dashmap = "6"

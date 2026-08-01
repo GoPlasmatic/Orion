@@ -99,6 +99,25 @@ impl SecretResolver for ReservedSchemeResolver {
     }
 }
 
+/// Whether `s` is a reference to a secret *this build knows how to resolve*.
+///
+/// Used by the masking policy to let a reference survive where a value would
+/// not: `env://STRIPE_KEY` names a variable, it is not a credential, and
+/// masking it breaks `GET /export` → `POST /import` for every connector
+/// authored the recommended way.
+///
+/// The scheme check is the whole point and must stay strict. [`parse_reference`]
+/// alone recognises *any* `scheme://rest`, which includes
+/// `postgres://user:password@host/db` — treating that as a reference would
+/// exempt real credentials from masking. Only `env://` and the reserved schemes
+/// qualify.
+pub fn is_resolvable_reference(s: &str) -> bool {
+    parse_reference(s).is_some_and(|(scheme, reference)| {
+        !reference.is_empty()
+            && (scheme == EnvSecretResolver.scheme() || RESERVED_SCHEMES.contains(&scheme))
+    })
+}
+
 /// Returns the default resolver registry: a working `env://` resolver plus a
 /// rejecting entry for every scheme in [`RESERVED_SCHEMES`].
 pub fn default_resolvers() -> Vec<Box<dyn SecretResolver>> {

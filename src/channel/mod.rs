@@ -1,3 +1,4 @@
+pub mod auth;
 pub mod config;
 pub mod guards;
 pub mod rate_limit_backend;

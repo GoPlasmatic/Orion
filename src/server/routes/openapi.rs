@@ -337,7 +337,7 @@ validation failures.",
             crate::storage::repositories::connectors::CreateConnectorRequest,
             crate::storage::repositories::connectors::UpdateConnectorRequest,
             super::admin::trace_dlq::PurgeTraceDlqRequest,
-            super::admin::workflows::ValidationEnvelope,
+            super::admin::ValidationEnvelope,
             super::data::ProcessRequest,
             super::data::ProcessResponse,
             super::data::ProcessTaskError,
@@ -379,14 +379,25 @@ mod tests {
     /// Every operation the admin-auth middleware guards must advertise the
     /// requirement, and nothing else may.
     ///
-    /// One path enforces auth in its handler rather than the middleware:
-    /// `GET /api/v1/admin/traces/{id}` (R12) accepts *either* an admin
-    /// credential or the per-submission `trace_token`, so it documents a 401
-    /// without being in `is_guarded_path`. It is pinned here explicitly so a
-    /// new unguarded-but-401 route still fails this test until reviewed.
+    /// Three paths answer 401 from somewhere other than the admin middleware,
+    /// and each is listed explicitly so a *new* unguarded-but-401 route still
+    /// fails this test until someone reviews it:
+    ///
+    /// * `GET /api/v1/admin/traces/{id}` (R12) authenticates in its handler,
+    ///   accepting either an admin credential or the per-submission
+    ///   `trace_token`.
+    /// * The two data-plane paths authenticate per *channel*, in the ingress
+    ///   guards, when the channel carries an `auth` block. That is not admin
+    ///   auth and must not advertise a `security` block — the requirement is a
+    ///   property of the individual channel, which this document cannot name —
+    ///   but the 401 is real and belongs in the responses.
     #[test]
     fn security_matches_the_middleware_guard() {
-        const HANDLER_ENFORCED_401: &[&str] = &["/api/v1/admin/traces/{id}"];
+        const HANDLER_ENFORCED_401: &[&str] = &[
+            "/api/v1/admin/traces/{id}",
+            "/api/v1/data/{channel}",
+            "/api/v1/data/{channel}/async",
+        ];
         let spec = spec();
         for (path, item) in &spec.paths.paths {
             let expected = is_guarded_path(path, METRICS_ON_DOCUMENTED_LISTENER);

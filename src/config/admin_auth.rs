@@ -27,6 +27,21 @@ pub struct AdminAuthConfig {
 /// says nothing about the strength of the key behind it.
 const MIN_PLAINTEXT_KEY_LEN: usize = 32;
 
+/// Constant-time comparison of two SHA-256 digests.
+///
+/// Digests are fixed width, so there is no length branch for a timing side
+/// channel to observe (S11). Lives here rather than at either call site because
+/// both credential surfaces need it — the admin middleware
+/// (`server::admin_auth`) and per-channel authentication (`channel::auth`) —
+/// and a security primitive kept in two copies is one a future audit fix lands
+/// in only once.
+pub fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
 /// A configured admin API key, normalized to its SHA-256 digest so the
 /// middleware always compares fixed-width values (S11).
 ///

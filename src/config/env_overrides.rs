@@ -186,6 +186,9 @@ where
     // Option<bool>: an empty value restores the unset default ("enabled
     // outside production").
     ov_opt!(server.docs.enabled: bool);
+    // Option<bool>: an empty value restores the unset default ("verbose
+    // outside production"). An explicit true is refused in production.
+    ov_opt!(server.verbose_errors: bool);
     ov!(server.max_admin_body_size: usize);
 
     // Storage

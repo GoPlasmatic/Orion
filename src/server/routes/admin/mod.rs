@@ -10,11 +10,13 @@ pub(crate) mod workflows;
 use axum::Router;
 use axum::routing::{get, patch, post};
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
 
 use axum::Extension;
 
 use crate::engine::reload_engine;
+use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::state::AppState;
 
@@ -178,6 +180,118 @@ where
         }
     }
     (ok, failed, errors)
+}
+
+// ============================================================
+// The `/validate` response shape, shared by all three entities
+// ============================================================
+//
+// One definition rather than three: `valid` has to mean the same thing on every
+// endpoint, and the fastest way to make it stop meaning that is to let each
+// entity own its own copy.
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ValidationIssue {
+    pub(crate) field: String,
+    pub(crate) message: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ValidationResponse {
+    pub(crate) valid: bool,
+    pub(crate) errors: Vec<ValidationIssue>,
+    pub(crate) warnings: Vec<ValidationIssue>,
+}
+
+/// The `{"data": …}` envelope (R17) around a [`ValidationResponse`]. Typed
+/// rather than a `json!` literal so the declared `body =` below cannot drift
+/// from what the handler actually sends.
+impl ValidationEnvelope {
+    /// The one place `valid` is derived.
+    ///
+    /// The type was hoisted here so `valid` means the same thing on every
+    /// endpoint; leaving each handler to compute `errors.is_empty()` for itself
+    /// left the one field whose meaning must not drift being written in three
+    /// places.
+    pub(crate) fn new(errors: Vec<ValidationIssue>, warnings: Vec<ValidationIssue>) -> Self {
+        Self {
+            data: ValidationResponse {
+                valid: errors.is_empty(),
+                errors,
+                warnings,
+            },
+        }
+    }
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub(crate) struct ValidationEnvelope {
+    pub(crate) data: ValidationResponse,
+}
+
+/// Render an `OrionError` from the create path as `/validate` issues, keeping
+/// the per-field detail where there is any.
+pub(crate) fn issues_from_error(err: OrionError) -> Vec<ValidationIssue> {
+    match err {
+        OrionError::Validation { details, .. } if !details.is_empty() => details
+            .into_iter()
+            .map(|d| ValidationIssue {
+                field: d.path,
+                message: d.message,
+            })
+            .collect(),
+        other => vec![ValidationIssue {
+            field: "(root)".to_string(),
+            message: other.client_message(),
+        }],
+    }
+}
+
+/// Rows per repository call on an export path (D7). An export still returns
+/// everything that matches, but never asks the database for more than this in
+/// one query.
+pub(crate) const EXPORT_PAGE_SIZE: i64 = 500;
+
+/// Page through a repository until a short page says the table is exhausted.
+///
+/// The one paging loop behind all three `/export` endpoints. `fetch` is handed
+/// `(limit, offset)` because the three repositories take three different filter
+/// types and only workflows have a plain `list` — a shared *trait* would have
+/// been a larger change than a shared *loop*, and the loop is the part with the
+/// invariant worth stating once.
+///
+/// Not a snapshot: each page is an independent query with no transaction
+/// spanning them, so rows mutated concurrently between pages can be skipped or
+/// duplicated within a single export response.
+///
+/// Invariant: `page_size` must lie in `1..=1000` — the repositories clamp the
+/// limit they are handed (`clamp_pagination`), so a larger request comes back
+/// as at most 1000 rows, the short-page check misreads that as "exhausted", and
+/// the export silently truncates. Enforced by the `debug_assert!` below.
+pub(crate) async fn collect_pages<T, F, Fut>(
+    page_size: i64,
+    fetch: F,
+) -> Result<Vec<T>, crate::errors::OrionError>
+where
+    F: Fn(i64, i64) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<T>, crate::errors::OrionError>>,
+{
+    debug_assert!(
+        (1..=1000).contains(&page_size),
+        "page_size {page_size} is outside the repository clamp (1..=1000); \
+         a clamped page would silently truncate the export"
+    );
+    let mut out = Vec::new();
+    let mut offset = 0i64;
+    loop {
+        let page = fetch(page_size, offset).await?;
+        let page_len = page.len() as i64;
+        out.extend(page);
+        if page_len < page_size {
+            return Ok(out);
+        }
+        offset += page_size;
+    }
 }
 
 /// The `?dry_run=true` response envelope shared by all three import endpoints.
@@ -377,6 +491,8 @@ pub fn admin_routes(max_body_size: usize) -> Router<AppState> {
             get(channels::list_channels).post(channels::create_channel),
         )
         .route("/import", post(channels::import_channels))
+        .route("/export", get(channels::export_channels))
+        .route("/validate", post(channels::validate_channel))
         .route(
             "/{id}",
             get(channels::get_channel)
@@ -417,12 +533,15 @@ pub fn admin_routes(max_body_size: usize) -> Router<AppState> {
             get(connectors::list_connectors).post(connectors::create_connector),
         )
         .route("/import", post(connectors::import_connectors))
+        .route("/export", get(connectors::export_connectors))
+        .route("/validate", post(connectors::validate_connector))
         .route(
             "/{id}",
             get(connectors::get_connector)
                 .put(connectors::update_connector)
                 .delete(connectors::delete_connector),
         )
+        .route("/{id}/test", post(connectors::test_connector))
         .route("/circuit-breakers", get(connectors::list_circuit_breakers))
         .route(
             "/circuit-breakers/{key}",

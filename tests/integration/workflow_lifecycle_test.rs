@@ -956,3 +956,181 @@ async fn a_failing_dry_run_returns_the_steps_that_ran() {
         "and its writes must be visible in the output, got: {body}"
     );
 }
+
+// ============================================================
+// `/validate` warns about reads nothing writes
+// ============================================================
+
+/// Post a workflow to `/validate` and return the parsed `data` object.
+async fn validate(app: &axum::Router, workflow: serde_json::Value) -> serde_json::Value {
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/validate",
+            Some(workflow),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    body_json(resp).await["data"].clone()
+}
+
+fn warning_fields(data: &serde_json::Value) -> Vec<String> {
+    data["warnings"]
+        .as_array()
+        .expect("warnings array")
+        .iter()
+        .map(|w| w["field"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// A mistyped `var` path is the highest-frequency authoring bug and the least
+/// visible: JSONLogic resolves it to null, the task succeeds, and the caller
+/// gets a `200` with the field quietly absent.
+#[tokio::test]
+async fn validate_warns_about_a_path_no_task_writes() {
+    let app = common::test_app().await;
+    let data = validate(
+        &app,
+        json!({
+            "name": "Typo Workflow",
+            "condition": true,
+            "tasks": [
+                {"id": "parse", "name": "Parse", "function": {
+                    "name": "parse_json", "input": {"source": "payload", "target": "order"}}},
+                {"id": "shape", "name": "Shape", "function": {
+                    "name": "map", "input": {"mappings": [
+                        // `data.oder` — the typo the warning exists for.
+                        {"path": "data.total", "logic": {"var": "data.oder.total"}}
+                    ]}}}
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        data["valid"], true,
+        "an unwritten read is advisory — create still accepts it (R20): {data}"
+    );
+    let warnings = data["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings.iter().any(|w| w["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("data.oder")),
+        "expected a warning naming the mistyped path, got: {warnings:?}"
+    );
+}
+
+/// The correctly spelled version of the same workflow is silent.
+#[tokio::test]
+async fn validate_is_quiet_when_every_read_is_written() {
+    let app = common::test_app().await;
+    let data = validate(
+        &app,
+        json!({
+            "name": "Clean Workflow",
+            "condition": true,
+            "tasks": [
+                {"id": "parse", "name": "Parse", "function": {
+                    "name": "parse_json", "input": {"source": "payload", "target": "order"}}},
+                {"id": "shape", "name": "Shape", "function": {
+                    "name": "map", "input": {"mappings": [
+                        // Written by `parse` (prefix), and by the previous
+                        // mapping within this same task (self-reference).
+                        {"path": "data.total", "logic": {"var": "data.order.total"}},
+                        {"path": "data.doubled", "logic": {"*": [{"var": "data.total"}, 2]}}
+                    ]}}}
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(data["valid"], true);
+    assert!(
+        warning_fields(&data).is_empty(),
+        "a correct workflow must not warn: {data}"
+    );
+}
+
+/// Reads that are not `data.*` are out of scope and must never warn.
+///
+/// `metadata` is populated by the ingress, `payload` by the request, and the
+/// bare `var` inside a `map`/`reduce` body is rebound to the array element —
+/// none of them are writes this walk can see, so warning about them would be
+/// pure noise on correct workflows.
+#[tokio::test]
+async fn validate_does_not_warn_about_metadata_or_iteration_variables() {
+    let app = common::test_app().await;
+    let data = validate(
+        &app,
+        json!({
+            "name": "Metadata Workflow",
+            "condition": true,
+            "tasks": [
+                {"id": "parse", "name": "Parse", "function": {
+                    "name": "parse_json", "input": {"source": "payload", "target": "order"}}},
+                {"id": "shape", "name": "Shape", "function": {
+                    "name": "map", "input": {"mappings": [
+                        {"path": "data.method", "logic": {"var": "metadata.http_method"}},
+                        {"path": "data.id", "logic": {"var": "metadata.params.id"}},
+                        {"path": "data.sum", "logic": {"reduce": [
+                            {"var": "data.order.items"},
+                            {"+": [{"var": "accumulator"}, {"var": "current"}]},
+                            0
+                        ]}}
+                    ]}}}
+            ]
+        }),
+    )
+    .await;
+
+    assert_eq!(data["valid"], true);
+    assert!(
+        warning_fields(&data).is_empty(),
+        "metadata and iteration variables are not unwritten reads: {data}"
+    );
+}
+
+/// A connector task's `output` path counts as a write, so reading what an
+/// `http_call` produced is not a warning.
+#[tokio::test]
+async fn validate_counts_a_connector_output_as_a_write() {
+    let app = common::test_app().await;
+    let data = validate(
+        &app,
+        json!({
+            "name": "Connector Output Workflow",
+            "condition": true,
+            "tasks": [
+                {"id": "parse", "name": "Parse", "function": {
+                    "name": "parse_json", "input": {"source": "payload", "target": "order"}}},
+                {"id": "call", "name": "Call", "function": {
+                    "name": "http_call", "input": {
+                        "connector": "crm", "path": "/x", "output": "data.customer"}}},
+                {"id": "shape", "name": "Shape", "function": {
+                    "name": "map", "input": {"mappings": [
+                        {"path": "data.name", "logic": {"var": "data.customer.name"}}
+                    ]}}}
+            ]
+        }),
+    )
+    .await;
+
+    let unwritten: Vec<_> = data["warnings"]
+        .as_array()
+        .expect("warnings array")
+        .iter()
+        .filter(|w| {
+            w["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("no earlier task writes")
+        })
+        .collect();
+    assert!(
+        unwritten.is_empty(),
+        "an http_call `output` is a write: {unwritten:?}"
+    );
+}

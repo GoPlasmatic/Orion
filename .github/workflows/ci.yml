@@ -126,6 +126,9 @@ jobs:
             ./target/debug/orion-server lint "$f"
           done
 
+      - name: Run example workflow tests (offline, stubbed connectors)
+        run: ./target/debug/orion-server test examples/workflow-tests
+
       - name: Start Postgres (postgres-orders example)
         run: docker compose -f examples/postgres-orders/docker-compose.yml up --wait postgres
 

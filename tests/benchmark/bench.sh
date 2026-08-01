@@ -52,10 +52,17 @@ else
     RED='' GREEN='' YELLOW='' BLUE='' CYAN='' BOLD='' DIM='' RESET=''
 fi
 
-log_info()  { echo -e "${BLUE}[BENCH]${RESET} $*"; }
-log_ok()    { echo -e "${GREEN}[BENCH]${RESET} $*"; }
-log_warn()  { echo -e "${YELLOW}[BENCH]${RESET} $*"; }
-log_error() { echo -e "${RED}[BENCH]${RESET} $*"; }
+# Logs go to stderr, not stdout.
+#
+# `create_workflow` returns the new id by echoing it, so callers read it with
+# `$(...)` — and command substitution captures stdout. A log line emitted
+# anywhere inside that call (a retry notice, a warning) would be captured as
+# part of the id, and the channel built from it then fails to activate with no
+# hint as to why. Keeping the two streams apart is what makes the id reliable.
+log_info()  { echo -e "${BLUE}[BENCH]${RESET} $*" >&2; }
+log_ok()    { echo -e "${GREEN}[BENCH]${RESET} $*" >&2; }
+log_warn()  { echo -e "${YELLOW}[BENCH]${RESET} $*" >&2; }
+log_error() { echo -e "${RED}[BENCH]${RESET} $*" >&2; }
 
 # ═══════════════════════════════════════════════════════════════════
 # DEPENDENCY CHECKS
@@ -129,7 +136,6 @@ start_bench_server() {
 [server]
 host = "127.0.0.1"
 port = $BENCH_PORT
-workers = 4
 
 [storage]
 url = "sqlite:$BENCH_DB_PATH"
@@ -270,7 +276,59 @@ reload_engine() {
     curl -sf -X POST "${BENCH_URL}/api/v1/admin/engine/reload" >/dev/null 2>&1 || true
 }
 
+# Bind a channel to a workflow.
+#
+# 1.0 routes channel -> workflow (`channels.workflow_id`); the workflow fixtures
+# still carry a pre-1.0 `"channel"` field that nothing reads. Without a channel
+# the data plane answers 404 for an unregistered name, so every scenario below
+# measured error responses until this was added.
+create_and_activate_channel() {
+    local channel_name="$1"
+    local workflow_id="$2"
+
+    if [[ -z "$workflow_id" || "$workflow_id" == *" "* ]]; then
+        log_error "Refusing to create channel '$channel_name': bad workflow id '$workflow_id'"
+        return 1
+    fi
+
+    # `protocol: "http"` requires both `methods` and `route_pattern`; a channel
+    # missing either is refused at create.
+    local payload
+    payload=$(jq -n --arg n "$channel_name" --arg w "$workflow_id" \
+        '{channel_id: $n, name: $n, channel_type: "sync", protocol: "http",
+          methods: ["POST"], route_pattern: ("/" + $n), workflow_id: $w}')
+
+    curl -sf -X POST "${BENCH_URL}/api/v1/admin/channels" \
+        -H "Content-Type: application/json" \
+        -d "$payload" >/dev/null 2>&1 || {
+        log_error "Failed to create channel $channel_name"
+        return 1
+    }
+    curl -sf -X PATCH "${BENCH_URL}/api/v1/admin/channels/${channel_name}/status" \
+        -H "Content-Type: application/json" \
+        -d '{"status": "active"}' >/dev/null 2>&1 || {
+        log_error "Failed to activate channel $channel_name"
+        return 1
+    }
+}
+
+# Remove every channel, so a scenario's channel does not outlive it.
+clear_channels() {
+    local channels_json
+    channels_json=$(curl -sf "${BENCH_URL}/api/v1/admin/channels" 2>/dev/null) || return 0
+
+    local ids
+    ids=$(echo "$channels_json" | jq -r '.data[]?.channel_id // empty' 2>/dev/null) || return 0
+
+    while IFS= read -r id; do
+        [[ -z "$id" ]] && continue
+        curl -sf -X DELETE "${BENCH_URL}/api/v1/admin/channels/${id}" >/dev/null 2>&1 || true
+    done <<< "$ids"
+}
+
 clear_workflows() {
+    clear_channels
+
     local workflows_json
     workflows_json=$(curl -sf "${BENCH_URL}/api/v1/admin/workflows" 2>/dev/null) || return 0
 
@@ -439,7 +497,9 @@ scenario_simple() {
     CURRENT_SCENARIO="B_simple_workflow"
 
     clear_workflows
-    create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json" >/dev/null
+    local wf
+    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json")
+    create_and_activate_channel "bench" "$wf"
 
     run_hey POST "${BENCH_URL}/api/v1/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "B: Simple workflow (1 log task)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
@@ -451,7 +511,9 @@ scenario_complex() {
     CURRENT_SCENARIO="C_complex_workflow"
 
     clear_workflows
-    create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_complex_ecommerce.json" >/dev/null
+    local wf
+    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_complex_ecommerce.json")
+    create_and_activate_channel "orders" "$wf"
 
     run_hey POST "${BENCH_URL}/api/v1/data/orders" "$FIXTURES_DIR/data/complex_payload.json"
     record_result "C: Complex workflow (4 tasks)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
@@ -464,6 +526,10 @@ scenario_multi() {
 
     clear_workflows
     import_workflows "$FIXTURES_DIR/workflows/bench_multi_rules.json"
+    local wf
+    wf=$(curl -sf "${BENCH_URL}/api/v1/admin/workflows?status=active" 2>/dev/null \
+        | jq -r '.data[0].workflow_id // empty')
+    create_and_activate_channel "bench" "$wf"
 
     run_hey POST "${BENCH_URL}/api/v1/data/bench" "$FIXTURES_DIR/data/simple_payload.json"
     record_result "D: Multi-workflow channel (12 workflows)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
@@ -474,7 +540,9 @@ scenario_concurrency() {
     log_info "E: Concurrency scaling"
 
     clear_workflows
-    create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json" >/dev/null
+    local wf
+    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json")
+    create_and_activate_channel "bench" "$wf"
 
     for c in 1 10 50 100; do
         CURRENT_SCENARIO="E_concurrency_${c}"
@@ -491,7 +559,9 @@ scenario_reload() {
     CURRENT_SCENARIO="F_reload_under_load"
 
     clear_workflows
-    create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json" >/dev/null
+    local wf
+    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json")
+    create_and_activate_channel "bench" "$wf"
 
     # Start hey in background
     local hey_output_file

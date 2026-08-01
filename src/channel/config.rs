@@ -60,6 +60,16 @@ pub struct ChannelConfig {
     /// optional; unset fields fall back to the global setting.
     #[serde(default)]
     pub tracing: Option<ChannelTracingConfig>,
+
+    /// How the synchronous HTTP response is built. Absent (the default) is the
+    /// fixed `{id, status, data, errors}` envelope with a `200`.
+    #[serde(default)]
+    pub response: Option<ChannelResponseConfig>,
+
+    /// Who may call this channel over HTTP. Absent (the default) is
+    /// unauthenticated, which is what every channel was before 1.0.
+    #[serde(default)]
+    pub auth: Option<ChannelAuthConfig>,
 }
 
 impl ChannelConfig {
@@ -85,6 +95,155 @@ impl ChannelConfig {
     /// stored channel still carrying it.
     pub fn allowed_origins(&self) -> Option<&[String]> {
         self.origin_allow_list.as_deref()
+    }
+}
+
+/// Who may call a channel over HTTP.
+///
+/// Before this existed the data plane had no authentication at all: `admin_auth`
+/// covers `/api/v1/admin` and nothing else, and the two controls the docs
+/// pointed at are not authentication. `origin_allow_list` reads a
+/// client-supplied header, and a `validation_logic` header comparison means the
+/// credential sits in the channel's stored config in plain text and is compared
+/// byte-by-byte with an early exit.
+///
+/// Absent (the default) keeps a channel unauthenticated, so nothing that is
+/// stored today changes behaviour.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChannelAuthConfig {
+    /// Which scheme this channel enforces.
+    pub mode: AuthMode,
+
+    /// **`api_key`** — the accepted keys. Each entry may be a literal or an
+    /// `env://VAR` reference resolved at channel load (the same resolver
+    /// connector secrets use), so production credentials need not sit in the
+    /// stored config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keys: Option<Vec<String>>,
+
+    /// Header carrying the credential. Defaults to `Authorization` for
+    /// `api_key` and `X-Signature` for `hmac`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+
+    /// **`api_key`** — expected prefix on the header value, e.g. `Bearer `.
+    /// Defaults to `Bearer ` when the header is `Authorization`, and to none
+    /// otherwise (an `X-API-Key` header carries a bare key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scheme: Option<String>,
+
+    /// **`hmac`** — the shared secret, literal or `env://VAR`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+
+    /// **`hmac`** — prefix stripped from the signature header before decoding,
+    /// e.g. `sha256=` for GitHub. Defaults to none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature_prefix: Option<String>,
+}
+
+/// The authentication scheme a channel enforces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMode {
+    /// A shared secret presented in a header, compared in constant time.
+    ApiKey,
+    /// An HMAC-SHA256 over the **raw request body**, hex or base64 encoded.
+    /// This is what Stripe, GitHub and Shopify webhooks are authenticated with.
+    Hmac,
+}
+
+/// How a sync channel turns its workflow's output into an HTTP response.
+///
+/// The default (this key absent) is the envelope every channel has always
+/// returned: `{id, status, data, errors}` with a `200`, whatever happened. That
+/// is a fine contract for a workflow whose caller is another workflow, and a
+/// poor one for a REST API — there is no `201` with a `Location`, no `404` for
+/// a record that is not there, no `Content-Type` other than JSON. Every
+/// consumer ends up special-casing "200 means maybe-error, look inside
+/// `errors`", which is exactly the per-service glue channels exist to remove.
+///
+/// `mode = "shaped"` opts a channel into reading `data._orion.response` from
+/// its workflow's output instead. It is opt-in per channel, so an existing
+/// channel's bytes do not change, and so a workflow that happens to produce an
+/// `_orion` key cannot affect a channel that never asked for it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ChannelResponseConfig {
+    /// `envelope` (default) or `shaped`.
+    pub mode: ResponseMode,
+    /// Response headers the workflow is permitted to set, case-insensitive.
+    ///
+    /// Replaces [`DEFAULT_ALLOWED_RESPONSE_HEADERS`] rather than extending it,
+    /// so a channel can narrow the set as well as widen it. Entries in
+    /// [`FORBIDDEN_RESPONSE_HEADERS`] are refused even when listed here — the
+    /// allowlist grants what the workflow may set, it does not override what
+    /// the protocol layer owns.
+    pub allowed_headers: Option<Vec<String>>,
+}
+
+/// Whether a channel returns the standard envelope or a workflow-shaped
+/// response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ResponseMode {
+    /// `{id, status, data, errors}` with a `200`. The pre-1.0 behaviour, and
+    /// still the default.
+    #[default]
+    Envelope,
+    /// Status, headers and body come from `data._orion.response`.
+    Shaped,
+}
+
+/// Response headers a shaped workflow may set when the channel lists none of
+/// its own: the ones a REST handler legitimately needs.
+pub const DEFAULT_ALLOWED_RESPONSE_HEADERS: &[&str] = &[
+    "content-type",
+    "location",
+    "cache-control",
+    "etag",
+    "last-modified",
+    "retry-after",
+    "content-language",
+    "link",
+];
+
+/// Headers a workflow may never set, whatever the channel's allowlist says.
+///
+/// The hop-by-hop set (RFC 9110 §7.6.1) plus `content-length`, because the
+/// framing of the response belongs to the server and not to its body; and
+/// `x-request-id`, which the platform assigns and the trace is correlated by —
+/// a workflow overwriting it would break the one thread tying a response to
+/// its stored trace.
+pub const FORBIDDEN_RESPONSE_HEADERS: &[&str] = &[
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "content-length",
+    "x-request-id",
+];
+
+impl ChannelResponseConfig {
+    /// Whether this channel reads `data._orion.response`.
+    pub fn is_shaped(&self) -> bool {
+        self.mode == ResponseMode::Shaped
+    }
+
+    /// Whether the workflow may set `name` (already lowercased by the caller).
+    pub fn allows_header(&self, name: &str) -> bool {
+        if FORBIDDEN_RESPONSE_HEADERS.contains(&name) {
+            return false;
+        }
+        match self.allowed_headers {
+            Some(ref list) => list.iter().any(|h| h.eq_ignore_ascii_case(name)),
+            None => DEFAULT_ALLOWED_RESPONSE_HEADERS.contains(&name),
+        }
     }
 }
 

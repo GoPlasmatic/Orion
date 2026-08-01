@@ -338,9 +338,22 @@ fn mask_in_place(value: &mut Value, key: Option<&str>, force: bool) {
         }
         Value::Null => {}
         Value::String(s) => {
-            if secret {
+            // A `scheme://NAME` reference is a *pointer* to a secret, not the
+            // secret: the value lives in the process environment and the stored
+            // config never held it. Masking it protects nothing — the variable
+            // name is not a credential — and costs the thing `env://` exists
+            // for: a connector authored this way could not survive
+            // `GET /export` → `POST /import`, because every reference came back
+            // as `******` and the re-imported connector pointed at nothing.
+            //
+            // Deliberately narrow, and the narrowness is load-bearing: the
+            // check is against the schemes Orion actually resolves, not against
+            // "looks like a URL". `postgres://user:password@host/db` parses as
+            // `scheme://rest` too, and exempting it would hand every database
+            // credential straight through the mask.
+            if secret && !crate::connector::secrets::is_resolvable_reference(s) {
                 *s = MASK.to_string();
-            } else if let Some(redacted) = redact_url_secrets(s) {
+            } else if !secret && let Some(redacted) = redact_url_secrets(s) {
                 *s = redacted;
             }
         }
@@ -1068,5 +1081,63 @@ mod tests {
         )
         .expect("test");
         assert_eq!(find_masked_value(&config), None);
+    }
+
+    // -- Secret *references* survive masking; secret *values* do not --
+
+    use serde_json::json;
+
+    /// `env://NAME` names a variable. Masking it protects nothing and breaks
+    /// `GET /export` → `POST /import` for every connector authored the way the
+    /// documentation recommends.
+    #[test]
+    fn a_resolvable_reference_survives_masking() {
+        let mut v = json!({"auth": {"token": "env://STRIPE_KEY"}});
+        mask_secrets(&mut v);
+        assert_eq!(v["auth"]["token"], "env://STRIPE_KEY");
+    }
+
+    /// A scheme reserved for a backend Orion does not yet resolve is still a
+    /// reference, not a credential, so it survives too.
+    #[test]
+    fn a_reserved_scheme_reference_survives_masking() {
+        let mut v = json!({"password": "vault://kv/data/db#password"});
+        mask_secrets(&mut v);
+        assert_eq!(v["password"], "vault://kv/data/db#password");
+    }
+
+    /// The exemption must not widen to "anything with a scheme".
+    ///
+    /// This is the regression that matters: a database URL parses as
+    /// `scheme://rest` exactly like a reference does, and exempting it would
+    /// hand every stored credential through the mask untouched.
+    #[test]
+    fn a_database_url_is_not_a_reference_and_is_still_masked() {
+        let mut v = json!({"connection_string": "postgres://user:hunter2@db/orders"});
+        mask_secrets(&mut v);
+        assert_eq!(
+            v["connection_string"], MASK,
+            "a URL is not a secret reference; masking it is the whole policy"
+        );
+    }
+
+    /// Nor to strings that merely start with a known scheme name.
+    #[test]
+    fn a_malformed_reference_is_still_masked() {
+        for value in ["env://", "environment://X", "env:/NAME", "env-var://NAME"] {
+            let mut v = json!({ "token": value });
+            mask_secrets(&mut v);
+            assert_eq!(v["token"], MASK, "{value} must not read as a reference");
+        }
+    }
+
+    /// The exemption is scoped to secret-looking keys behaving as before for
+    /// everything else: a non-secret key holding a URL still gets its userinfo
+    /// password redacted.
+    #[test]
+    fn url_redaction_under_a_non_secret_key_is_unchanged() {
+        let mut v = json!({"url": "https://user:hunter2@es:9200"});
+        mask_secrets(&mut v);
+        assert_eq!(v["url"], format!("https://user:{MASK}@es:9200"));
     }
 }

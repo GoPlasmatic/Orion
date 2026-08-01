@@ -1,0 +1,6 @@
+{
+  "name": "leaves an order below the threshold alone",
+  "workflow": "../high-value-order/workflow.json",
+  "input": { "order_id": "ORD-1", "total": 50 },
+  "expect": { "data.order.flagged": null, "data.order.total": 50 }
+}

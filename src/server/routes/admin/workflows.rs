@@ -2,7 +2,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use dataflow_rs::datalogic_rs;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
@@ -25,6 +25,7 @@ use super::VersionFilter;
 use super::audit_and_reload;
 use super::audit_log;
 use super::audit_log_draft_only;
+use super::{ValidationEnvelope, ValidationIssue, issues_from_error};
 
 // ============================================================
 // Workflows CRUD
@@ -589,59 +590,29 @@ pub(crate) fn exists_or_err<T>(result: Result<T, OrionError>) -> Result<bool, Or
     }
 }
 
-/// Rows per repository call on the export path (D7). Export still returns
-/// everything that matches, but never asks the database for more than this
-/// in one query.
-const EXPORT_PAGE_SIZE: i64 = 500;
-
-/// Fetch every workflow matching `filter`, `page_size` rows per repository
-/// call, looping until a short page says the table is exhausted (D7).
+/// Fetch every workflow matching `filter`, looping until a short page says the
+/// table is exhausted (D7).
 ///
-/// The filter's own `limit`/`offset` are ignored, as export always has:
-/// its contract is "everything that matches", and the paging here is an
-/// implementation bound, not a client window.
-///
-/// Invariant: `page_size` must lie in `1..=1000` — the repository clamps the
-/// limit it is handed (`clamp_pagination`), so a larger request comes back
-/// as at most 1000 rows, the short-page check misreads that as "exhausted",
-/// and the export silently truncates. Enforced by a `debug_assert!` below.
-///
-/// Not a snapshot: each page is an independent query with no transaction
-/// spanning them, so workflows mutated concurrently between pages can be
-/// skipped or duplicated within a single export response. (The previous
-/// one-query export was per-statement consistent; bounded paging trades
-/// that away.) The `workflow_id` tiebreaker only fixes ordering
-/// nondeterminism, not cross-page mutation.
+/// The filter's own `limit`/`offset` are ignored, as export always has: its
+/// contract is "everything that matches", and the paging is an implementation
+/// bound, not a client window.
 pub(crate) async fn collect_export_pages(
     repo: &dyn crate::storage::repositories::workflows::WorkflowRepository,
     filter: &WorkflowFilter,
     page_size: i64,
 ) -> Result<Vec<WorkflowResponse>, OrionError> {
-    debug_assert!(
-        (1..=1000).contains(&page_size),
-        "page_size {page_size} is outside the repository clamp (1..=1000); \
-         a clamped page would silently truncate the export"
-    );
-    let mut data = Vec::new();
-    let mut offset = 0i64;
-    loop {
+    let rows = super::collect_pages(page_size, |limit, offset| {
         let page_filter = WorkflowFilter {
             status: filter.status.clone(),
             tag: filter.tag.clone(),
-            limit: Some(page_size),
+            limit: Some(limit),
             offset: Some(offset),
             ..Default::default()
         };
-        let page = repo.list(&page_filter).await?;
-        let page_len = page.len() as i64;
-        for workflow in &page {
-            data.push(WorkflowResponse::try_from(workflow)?);
-        }
-        if page_len < page_size {
-            return Ok(data);
-        }
-        offset += page_size;
-    }
+        async move { repo.list(&page_filter).await }
+    })
+    .await?;
+    rows.iter().map(WorkflowResponse::try_from).collect()
 }
 
 #[utoipa::path(
@@ -658,35 +629,18 @@ pub(crate) async fn export_workflows(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<WorkflowFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let data =
-        collect_export_pages(state.workflow_repo.as_ref(), &filter, EXPORT_PAGE_SIZE).await?;
+    let data = collect_export_pages(
+        state.workflow_repo.as_ref(),
+        &filter,
+        super::EXPORT_PAGE_SIZE,
+    )
+    .await?;
     Ok(data_response(data))
 }
 
 // ============================================================
 // Workflow Validation
 // ============================================================
-
-#[derive(Serialize, utoipa::ToSchema)]
-pub(crate) struct ValidationIssue {
-    field: String,
-    message: String,
-}
-
-#[derive(Serialize, utoipa::ToSchema)]
-pub(crate) struct ValidationResponse {
-    valid: bool,
-    errors: Vec<ValidationIssue>,
-    warnings: Vec<ValidationIssue>,
-}
-
-/// The `{"data": …}` envelope (R17) around a [`ValidationResponse`]. Typed
-/// rather than a `json!` literal so the declared `body =` below cannot drift
-/// from what the handler actually sends.
-#[derive(Serialize, utoipa::ToSchema)]
-pub(crate) struct ValidationEnvelope {
-    data: ValidationResponse,
-}
 
 #[utoipa::path(
     post,
@@ -702,8 +656,7 @@ pub(crate) async fn validate_workflow(
     State(state): State<AppState>,
     OrionJson(req): OrionJson<CreateWorkflowRequest>,
 ) -> Result<Json<ValidationEnvelope>, OrionError> {
-    let data = run_validation(&req, &state).await;
-    Ok(Json(ValidationEnvelope { data }))
+    Ok(Json(run_validation(&req, &state).await))
 }
 
 /// R20: `valid: true` must mean `POST /api/v1/admin/workflows` would accept
@@ -723,7 +676,7 @@ pub(crate) async fn validate_workflow(
 /// `id`, a condition that will not compile, a workflow that cannot be converted),
 /// plus genuinely advisory warnings. Stricter is the safe direction for a
 /// pre-flight tool; laxer is the bug.
-async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> ValidationResponse {
+async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> ValidationEnvelope {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
@@ -742,29 +695,7 @@ async fn run_validation(req: &CreateWorkflowRequest, state: &AppState) -> Valida
     validate_workflow_condition(&req.condition, &dl, &mut errors);
     validate_dataflow_conversion(req, &mut errors);
 
-    ValidationResponse {
-        valid: errors.is_empty(),
-        errors,
-        warnings,
-    }
-}
-
-/// Render an `OrionError` from the create path as `/validate` issues, keeping
-/// the per-field detail where there is any.
-fn issues_from_error(err: OrionError) -> Vec<ValidationIssue> {
-    match err {
-        OrionError::Validation { details, .. } if !details.is_empty() => details
-            .into_iter()
-            .map(|d| ValidationIssue {
-                field: d.path,
-                message: d.message,
-            })
-            .collect(),
-        other => vec![ValidationIssue {
-            field: "(root)".to_string(),
-            message: other.client_message(),
-        }],
-    }
+    ValidationEnvelope::new(errors, warnings)
 }
 
 /// `tasks` must be a non-empty array. Create does not check this — a workflow
@@ -780,7 +711,8 @@ fn validate_task_array_shape(req: &CreateWorkflowRequest, errors: &mut Vec<Valid
 }
 
 /// Validate all tasks. Walks the task list once, delegating per-task checks
-/// to [`errors_for_task`] and tracking cross-task duplicate IDs here.
+/// to [`errors_for_task`] and tracking cross-task state — duplicate IDs, and
+/// the running set of context paths earlier tasks have written — here.
 async fn validate_tasks(
     tasks: &[Value],
     dl: &datalogic_rs::Engine,
@@ -789,11 +721,14 @@ async fn validate_tasks(
     warnings: &mut Vec<ValidationIssue>,
 ) {
     let mut seen_ids: HashSet<&str> = HashSet::new();
+    let mut written: Vec<String> = Vec::new();
 
     for (i, task) in tasks.iter().enumerate() {
         let (task_errors, task_warnings) = errors_for_task(i, task, dl, state).await;
         errors.extend(task_errors);
         warnings.extend(task_warnings);
+
+        warn_on_unwritten_reads(i, task, &mut written, warnings);
 
         // Cross-task check: duplicate task IDs.
         let task_id = task.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -803,6 +738,193 @@ async fn validate_tasks(
                 message: format!("Duplicate task id '{task_id}'"),
             });
         }
+    }
+}
+
+/// Most warnings any one workflow reports about unwritten reads.
+///
+/// A workflow whose first task is missing produces one of these per read in
+/// every later task; past a handful the list stops informing and starts burying
+/// the errors above it.
+const MAX_UNWRITTEN_READ_WARNINGS: usize = 10;
+
+/// Warn about `data.*` paths this task reads that nothing has written yet.
+///
+/// A mistyped path is the highest-frequency authoring bug and the least visible
+/// one: JSONLogic resolves an unknown `var` to null, so the task runs, the
+/// workflow succeeds, and the caller gets a `200` with a field quietly missing.
+/// Nothing else in the pipeline is in a position to notice.
+///
+/// **A warning, never an error**, and deliberately so. The reader could be
+/// legitimate in ways this walk cannot see — a `continue_on_error` predecessor
+/// whose write did not happen, a path built by a connector response shape, or
+/// simply a workflow that is correct and a heuristic that is not. `valid: true`
+/// has to keep meaning "create would accept this" (R20), so a false positive
+/// here must cost the author a glance and never a refusal.
+///
+/// Writes are accumulated across the walk and matched by path prefix in both
+/// directions: writing `data.order` covers a read of `data.order.total`
+/// (reading into the object), and writing `data.order.total` covers a read of
+/// `data.order` (reading the object it lives in).
+fn warn_on_unwritten_reads(
+    i: usize,
+    task: &Value,
+    written: &mut Vec<String>,
+    warnings: &mut Vec<ValidationIssue>,
+) {
+    let mut report = |path: &str, field: String| {
+        if warnings.len() >= MAX_UNWRITTEN_READ_WARNINGS
+            || warnings
+                .iter()
+                .any(|w| w.field == field && w.message.contains(path))
+        {
+            return;
+        }
+        warnings.push(ValidationIssue {
+            field,
+            message: format!(
+                "reads '{path}', which no earlier task writes. If this is a typo the \
+                 task will silently see null; if the value arrives another way \
+                 (metadata, a connector response shape, continue_on_error), ignore this."
+            ),
+        });
+    };
+
+    // The task's own condition is evaluated before any of its writes land.
+    if let Some(condition) = task.get("condition") {
+        for path in data_reads(condition) {
+            if !is_written(&path, written) {
+                report(&path, format!("tasks[{i}].condition"));
+            }
+        }
+    }
+
+    // `map` applies its mappings in order and a later one may legitimately read
+    // an earlier one's target, so its writes land as the walk passes them
+    // rather than all at the end.
+    let mappings = task
+        .get("function")
+        .and_then(|f| f.get("input"))
+        .and_then(|input| input.get("mappings"))
+        .and_then(|m| m.as_array());
+
+    if let Some(mappings) = mappings {
+        for (m, mapping) in mappings.iter().enumerate() {
+            if let Some(logic) = mapping.get("logic") {
+                for path in data_reads(logic) {
+                    if !is_written(&path, written) {
+                        report(
+                            &path,
+                            format!("tasks[{i}].function.input.mappings[{m}].logic"),
+                        );
+                    }
+                }
+            }
+            if let Some(path) = mapping.get("path").and_then(|p| p.as_str()) {
+                written.push(path.to_string());
+            }
+        }
+        return;
+    }
+
+    if let Some(input) = task.get("function").and_then(|f| f.get("input")) {
+        for path in data_reads(input) {
+            if !is_written(&path, written) {
+                report(&path, format!("tasks[{i}].function.input"));
+            }
+        }
+    }
+    written.extend(task_writes(task));
+}
+
+/// Whether `path` is covered by something already written, by prefix in either
+/// direction. A bare `data` write is the whole context and covers everything.
+fn is_written(path: &str, written: &[String]) -> bool {
+    written.iter().any(|w| {
+        w == "data"
+            || w == path
+            || path.starts_with(&format!("{w}."))
+            || w.starts_with(&format!("{path}."))
+    })
+}
+
+/// Context paths a task writes, for every function that writes one.
+///
+/// `parse_json`/`parse_xml`/`publish_json`/`publish_xml` take a bare `target`
+/// under `data`; the connector functions take a full dotted `output` path
+/// (`response_path` is the accepted pre-1.0 spelling — see `output_field_test`).
+/// `data_query`/`data_write` default that output to the `data` root when it is
+/// omitted, which is why the default is spelled out rather than skipped.
+fn task_writes(task: &Value) -> Vec<String> {
+    let Some(function) = task.get("function") else {
+        return Vec::new();
+    };
+    let name = function.get("name").and_then(|n| n.as_str()).unwrap_or("");
+    let Some(input) = function.get("input") else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    match name {
+        "parse_json" | "parse_xml" | "publish_json" | "publish_xml" => {
+            if let Some(target) = input.get("target").and_then(|t| t.as_str()) {
+                out.push(format!("data.{target}"));
+            }
+        }
+        _ => {
+            match input
+                .get("output")
+                .or_else(|| input.get("response_path"))
+                .and_then(|o| o.as_str())
+            {
+                Some(path) => out.push(path.to_string()),
+                None if matches!(name, "data_query" | "data_write") => out.push("data".to_string()),
+                None => {}
+            }
+        }
+    }
+    out
+}
+
+/// Every `data.*` path a JSON subtree reads through `var`/`val`.
+///
+/// Only `data.`-rooted reads are collected. `metadata.*`, `payload`, the
+/// element rebinding inside `map`/`filter`/`reduce` (`{"var": "price"}`,
+/// `accumulator`, `current`) and the empty path are all legitimate reads of
+/// something this walk does not track, and warning about them would be noise.
+fn data_reads(value: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_data_reads(value, &mut out);
+    out
+}
+
+fn collect_data_reads(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                if matches!(key.as_str(), "var" | "val") {
+                    // `{"var": "data.x"}` and `{"var": ["data.x", default]}`
+                    // are both spellings of one read.
+                    let path = match child {
+                        Value::String(s) => Some(s.as_str()),
+                        Value::Array(items) => items.first().and_then(|f| f.as_str()),
+                        _ => None,
+                    };
+                    if let Some(path) = path
+                        && (path == "data" || path.starts_with("data."))
+                    {
+                        out.push(path.to_string());
+                    }
+                }
+                collect_data_reads(child, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_data_reads(item, out);
+            }
+        }
+        _ => {}
     }
 }
 

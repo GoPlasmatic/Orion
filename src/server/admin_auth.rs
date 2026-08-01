@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use tokio::time::Instant;
 
 use crate::config::AdminAuthConfig;
+use crate::config::constant_time_eq;
 use crate::errors::OrionError;
 use crate::metrics;
 use crate::server::state::AppState;
@@ -362,15 +363,6 @@ fn extract_api_key(
         // Custom header — use raw value
         Ok(header_value.to_string())
     }
-}
-
-/// Constant-time comparison of two SHA-256 digests. Digests are fixed width,
-/// so there is no length branch for a timing side channel to observe (S11).
-fn constant_time_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    a.iter()
-        .zip(b.iter())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
 }
 
 #[cfg(test)]

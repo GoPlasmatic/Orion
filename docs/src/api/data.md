@@ -93,6 +93,69 @@ ran; a call with no children omits the key.
 Branch on `version`: **v2** (1.0) corrected `nested[]`, which in v1 attached
 every nested sample to every top-level `channel_call`.
 
+## Shaped Responses
+
+By default every sync channel answers `200` with the envelope above, whatever
+happened. That is a workable contract between workflows and an awkward one for a
+REST API: there is no `201` with a `Location`, no `404` for a record that is not
+there, and no content type but JSON — so every consumer ends up special-casing
+"200 means maybe-error, look inside `errors`".
+
+A channel can opt into letting its workflow decide, in its `config_json`:
+
+```json
+{ "response": { "mode": "shaped" } }
+```
+
+The workflow then writes a control block to `data._orion.response`, and Orion
+drains it before responding — it is control, not content, so it never reaches
+the caller's body:
+
+```json
+{
+  "id": "respond", "name": "Respond",
+  "function": { "name": "map", "input": { "mappings": [
+    { "path": "data._orion.response.status",  "logic": 201 },
+    { "path": "data._orion.response.headers", "logic": {
+        "Location": { "cat": ["/orders/", { "var": "data.order.id" }] } } },
+    { "path": "data._orion.response.body_path", "logic": "data.order" }
+  ]}}
+}
+```
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `status` | number | `200` | HTTP status. Out-of-range values fall back to `200`. |
+| `headers` | object | `{}` | Response headers, subject to the allowlist below. |
+| `body_path` | string | whole document | Field to send instead of the entire data document. A leading `data.` is optional. |
+| `raw` | bool | `false` | Send a string field verbatim rather than as a JSON string — how a channel returns CSV, XML or plain text. |
+
+`Content-Type` is `application/json` unless the workflow sets it.
+
+**Header allowlist.** A workflow may set `content-type`, `location`,
+`cache-control`, `etag`, `last-modified`, `retry-after`, `content-language` and
+`link`. Override with `allowed_headers`, which *replaces* that list so a channel
+can narrow it as well as widen it:
+
+```json
+{ "response": { "mode": "shaped", "allowed_headers": ["location"] } }
+```
+
+The hop-by-hop headers, `content-length` and `x-request-id` are refused even
+when listed — response framing belongs to the server, and `x-request-id` is what
+correlates a response with its stored trace. A header that is dropped does not
+fail the request.
+
+**Failures are soft.** A shaped channel whose workflow sets no control block, or
+an unusable one, falls back to the standard envelope rather than erroring: a
+cosmetic authoring slip should not take an endpoint down.
+
+**Interactions.** A cached shaped response replays its status and headers, not
+just its body. Profiling (`?profile=1`) appends `_orion.profile` to the envelope
+only — a shaped body is the workflow's own, with nowhere to put it — though the
+timings still reach the trace and the metrics. Shaping applies to the
+synchronous path; `/async` answers `202` with a trace id as always.
+
 ## Asynchronous Processing
 
 Append `/async` to submit for background processing:

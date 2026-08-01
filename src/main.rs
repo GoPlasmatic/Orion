@@ -32,6 +32,8 @@ EXAMPLES:\n    \
     orion-server migrate --dry-run            Preview pending migrations\n    \
     orion-server lint workflow.json           Validate a workflow JSON file\n    \
     orion-server dry-run -w wf.json -i x.json Dry-run a workflow against an input\n    \
+    orion-server dry-run -w wf.json -i x.json --stubs s.json   ... with canned connector replies\n    \
+    orion-server test ./tests/workflows      Run a directory of workflow test cases\n    \
     orion-server test-connectivity            Probe DB (and Kafka if enabled)\n    \
     orion-server preflight                    Scan stored channels/workflows before upgrading\n    \
     orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n\n\
@@ -81,11 +83,13 @@ enum Command {
     },
     /// Dry-run a workflow against a JSON input file (A6).
     ///
-    /// Boots an in-process engine with just the supplied workflow and
-    /// no connectors, then prints the per-task execution trace from
-    /// dataflow_rs. Useful for testing pure-mapping/log/filter
-    /// workflows; tasks that resolve connectors at runtime will fail
-    /// with `Connector '...' not found`.
+    /// Boots an in-process engine with just the supplied workflow, then prints
+    /// the per-task execution trace from dataflow_rs.
+    ///
+    /// Connector-backed tasks (`http_call`, `db_read`, `data_query`,
+    /// `channel_call`, …) are answered from `--stubs`; nothing reaches a real
+    /// backend. Without a stub file such a task fails naming the stub that
+    /// would satisfy it, so a workflow is never silently half-run.
     DryRun {
         /// Path to a workflow JSON file.
         #[arg(short, long)]
@@ -93,6 +97,28 @@ enum Command {
         /// Path to a JSON file used as the message payload.
         #[arg(short, long)]
         input: String,
+        /// Path to a JSON file of canned connector responses:
+        /// `{"http_call": {"crm": {...}}, "db_read": {"*": [...]}}`.
+        /// The inner key is the task's `connector` (or `channel` for
+        /// `channel_call`); `"*"` matches any.
+        #[arg(short, long)]
+        stubs: Option<String>,
+    },
+    /// Run a directory of workflow test cases (A6).
+    ///
+    /// Each `*.json` case names a workflow, an input, optional connector stubs
+    /// and the values expected in the output:
+    ///
+    ///     {"name": "flags high-value orders", "workflow": "wf.json",
+    ///      "input": {...}, "stubs": {...},
+    ///      "expect": {"data.order.flagged": true}}
+    ///
+    /// Paths inside a case are resolved relative to the case file. Prints a
+    /// per-case diff and exits non-zero on any failure, so it gates CI the way
+    /// `lint`, `validate-config` and `preflight` already do.
+    Test {
+        /// Directory of case files, or a single case file.
+        path: String,
     },
     /// Probe configured backends for reachability (A6).
     ///
@@ -157,9 +183,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Command::Migrate { dry_run }) => return cli::handle_migrate(&config, dry_run).await,
         Some(Command::Lint { workflow }) => return cli::run_lint(&workflow),
-        Some(Command::DryRun { workflow, input }) => {
-            return cli::run_dry_run(&workflow, &input).await;
+        Some(Command::DryRun {
+            workflow,
+            input,
+            stubs,
+        }) => {
+            return cli::run_dry_run(&workflow, &input, stubs.as_deref()).await;
         }
+        Some(Command::Test { path }) => return cli::run_test(&path).await,
         Some(Command::TestConnectivity) => return cli::run_test_connectivity(&config).await,
         Some(Command::DumpOpenapi) => return cli::run_dump_openapi(),
         Some(Command::Preflight) => return cli::run_preflight(&config).await,

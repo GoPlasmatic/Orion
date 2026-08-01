@@ -100,6 +100,36 @@ async fn test_rest_route_no_match_returns_404() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
+/// A *single-segment* name that is not an active channel is a 404 too.
+///
+/// This is the harder case, and the one the OpenAPI description got wrong: the
+/// single-segment fallback used to accept any name and run the engine against
+/// an empty workflow set, answering `200` with the input echoed back. The
+/// registry check in `dynamic_handler` closed that, but the published
+/// description still promised the old behaviour long afterwards — a reader's
+/// first encounter with the data plane contradicting the data plane. Pinned
+/// here so the code cannot drift back without the doc noticing.
+#[tokio::test]
+async fn test_unknown_single_segment_channel_returns_404() {
+    let app = common::test_app().await;
+
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "POST",
+            "/api/v1/data/no-such-channel",
+            Some(serde_json::json!({"data": {"x": 1}})),
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "an unknown channel name must not be served a 200 echo"
+    );
+}
+
 #[tokio::test]
 async fn test_backward_compat_simple_http_channel() {
     let app = common::test_app().await;

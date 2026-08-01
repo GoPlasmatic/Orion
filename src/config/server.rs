@@ -22,6 +22,21 @@ pub struct ServerConfig {
     pub compression: CompressionConfig,
     /// Interactive API documentation (`/docs`, `/api/v1/openapi.json`).
     pub docs: DocsConfig,
+    /// Return real task-failure messages on the data plane instead of the
+    /// generic placeholder.
+    ///
+    /// Unset (the default) means "on outside production", the same
+    /// `environment` prefix rule that gates [`DocsConfig::enabled`]. Read
+    /// through [`crate::config::AppConfig::verbose_errors`], never directly —
+    /// the `Option` is the authored value, not the effective one.
+    ///
+    /// Sanitizing unconditionally is right for production (G1: raw engine
+    /// messages can carry upstream URLs, connector names and driver errors,
+    /// and the data plane is unauthenticated) and wrong for development, where
+    /// it costs a round trip to the trace API to learn what a task did. An
+    /// explicit `true` in production is refused at startup rather than
+    /// honoured — see [`ServerConfig::validate`].
+    pub verbose_errors: Option<bool>,
     /// Maximum request body size for the admin API, in bytes.
     ///
     /// R16: the body limit used to be one global layer set from
@@ -44,6 +59,7 @@ impl Default for ServerConfig {
             tls: TlsConfig::default(),
             compression: CompressionConfig::default(),
             docs: DocsConfig::default(),
+            verbose_errors: None,
             // 8 MB: room for a full workflow export round-trip (the largest
             // legitimate admin body) without inviting one.
             max_admin_body_size: 8 * 1_048_576,
@@ -52,7 +68,23 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
-    pub(crate) fn validate(&self) -> Result<(), OrionError> {
+    pub(crate) fn validate(&self, is_prod: bool) -> Result<(), OrionError> {
+        // Refused rather than downgraded to a warning, for the same reason the
+        // CORS wildcard and a missing production `admin_auth` are: the data
+        // plane is unauthenticated, so honouring this would publish connector
+        // names, upstream URLs and driver errors to anonymous callers. Leaving
+        // it unset already does the right thing in both environments, so an
+        // explicit `true` here is a mistake rather than an informed choice.
+        if is_prod && self.verbose_errors == Some(true) {
+            return Err(OrionError::Config {
+                message: "server.verbose_errors = true is refused in production: raw \
+                          task errors can carry upstream URLs, connector names and \
+                          driver detail, and the data plane is unauthenticated. Leave \
+                          it unset (verbose outside production, sanitized in it) and \
+                          read full messages from the trace"
+                    .to_string(),
+            });
+        }
         require_nonzero(u64::from(self.port), "server.port")?;
         require_nonzero(
             self.max_admin_body_size as u64,
@@ -144,5 +176,57 @@ impl Default for IngestConfig {
         Self {
             max_payload_size: 1_048_576, // 1 MB
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unset is the supported way to get sanitized production errors, so it
+    /// must not be what the production check trips on.
+    #[test]
+    fn verbose_errors_unset_is_allowed_in_production() {
+        let config = ServerConfig::default();
+        assert_eq!(config.verbose_errors, None);
+        assert!(config.validate(true).is_ok());
+    }
+
+    /// Explicitly sanitizing everywhere is a legitimate choice.
+    #[test]
+    fn verbose_errors_false_is_allowed_in_production() {
+        let config = ServerConfig {
+            verbose_errors: Some(false),
+            ..ServerConfig::default()
+        };
+        assert!(config.validate(true).is_ok());
+    }
+
+    /// Outside production an explicit `true` is just the default, restated.
+    #[test]
+    fn verbose_errors_true_is_allowed_outside_production() {
+        let config = ServerConfig {
+            verbose_errors: Some(true),
+            ..ServerConfig::default()
+        };
+        assert!(config.validate(false).is_ok());
+    }
+
+    /// The combination that would publish connector names and driver detail to
+    /// an unauthenticated data plane refuses at startup rather than warning.
+    #[test]
+    fn verbose_errors_true_is_refused_in_production() {
+        let config = ServerConfig {
+            verbose_errors: Some(true),
+            ..ServerConfig::default()
+        };
+        let err = config
+            .validate(true)
+            .expect_err("verbose errors in production must not start");
+        let message = err.to_string();
+        assert!(
+            message.contains("server.verbose_errors"),
+            "the error must name the setting to change: {message}"
+        );
     }
 }

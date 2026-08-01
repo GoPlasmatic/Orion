@@ -50,6 +50,13 @@
                                      # Separate from ingest.max_payload_size, so raising the
                                      # limit for a bulk import does not also raise it for the
                                      # unauthenticated data plane.
+# Return the real task-failure message on the data plane instead of the generic
+# "Task processing failed; full detail is available in the trace". Unset (the
+# default) means on when `environment` is NOT a production variant — the same
+# rule as server.docs.enabled. An explicit true IS REFUSED in production: raw
+# task errors can carry upstream URLs, connector names and driver detail, and
+# the data plane is unauthenticated. Leave it unset.
+# verbose_errors = true
 
 # [server.tls]
 # Terminate HTTPS in Orion itself. Leave disabled when a load balancer or

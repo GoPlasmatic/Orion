@@ -75,9 +75,12 @@ target channel at request time, so no per-channel path exists in this document:
 Append `/async` to submit to the queue instead — see \
 `POST /api/v1/data/{channel}/async`.
 
-This endpoint is unauthenticated: admin auth does not cover the data plane. \
-Per-channel access control is expressed through `validation_logic` and the \
-channel's `origin_allow_list`.",
+Authentication is per channel and off by default: `admin_auth` covers the admin \
+plane only. A channel carrying an `auth` block in its config (`api_key` or \
+`hmac`) authenticates every caller on this path and on `/async` alike; a channel \
+without one is open to anyone who can reach the port. `validation_logic` and \
+`origin_allow_list` complement it but are not authentication — `Origin` is \
+client-supplied.",
     params(
         ("channel" = String, Path, description = "Channel name, or the first segment of a REST channel's registered route pattern."),
         ("profile" = Option<bool>, Query, description = "Set to `1`/`true` to append `_orion.profile` timings to the response. Requires `tracing.debug_profile_enabled = true`; the `X-Orion-Profile` header does the same."),
@@ -94,8 +97,9 @@ the payload — `{\"amount\": 5}` is equivalent to `{\"data\": {\"amount\": 5}}`
     responses(
         (status = 200, description = "Workflow completed. `errors` is empty on success; when tasks failed it carries sanitized `{code, message, task_id}` entries and the envelope gains a `request_id` for correlation with the persisted trace.", body = ProcessResponse),
         (status = 400, description = "Malformed JSON body, empty channel segment, an invalid percent-sequence in the request path, or a channel `validation_logic` rejection (`VALIDATION_ERROR`, with per-field `details`)", body = ErrorResponse),
+        (status = 401, description = "The channel declares `auth` and the request did not satisfy it — absent, wrong, or malformed credential. One message for every cause, so a caller cannot learn which half they had right.", body = ErrorResponse),
         (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
-        (status = 404, description = "No REST route matches the requested method and path. Note that a single-segment path is *not* checked against the channel registry: an unknown name is accepted and the engine returns a `200` envelope with the input echoed back and no errors.", body = ErrorResponse),
+        (status = 404, description = "No channel serves this request: either no REST route matches the requested method and path, or the single-segment name is not an active channel in the registry.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),
@@ -257,6 +261,11 @@ pub(crate) async fn dynamic_handler(
         origin: headers.get("origin").and_then(|v| v.to_str().ok()),
         caller_identity: &client_ip,
         header: &header_lookup,
+        // The bytes as received, not `req.data`. A webhook signature is
+        // computed over the wire body, and `ProcessRequest::from_body` has
+        // already parsed and possibly unwrapped the `data` envelope — signing
+        // over that would never match.
+        raw_body: Some(&body),
         dedup_key_fallback: None,
         // One HTTP request is one delivery: nothing redelivers it, so the
         // claim gets a token nothing can present again and a replay of the
@@ -274,7 +283,12 @@ pub(crate) async fn dynamic_handler(
     .await?
     {
         guards::GuardVerdict::CacheHit(body) => {
-            return Ok(sync::cached_response(body));
+            let shaped = runtime
+                .parsed_config
+                .response
+                .as_ref()
+                .is_some_and(|cfg| cfg.is_shaped());
+            return Ok(sync::cached_response(body, shaped));
         }
         guards::GuardVerdict::Admitted(admission) => admission,
     };
@@ -481,8 +495,9 @@ synchronous endpoint, where the caller already has the answer.",
             body = AsyncSubmitResponse,
         ),
         (status = 400, description = "Malformed JSON body, empty channel segment, an invalid percent-sequence in the request path, or a `validation_logic` rejection", body = ErrorResponse),
+        (status = 401, description = "The channel declares `auth` and the request did not satisfy it — absent, wrong, or malformed credential. One message for every cause, so a caller cannot learn which half they had right.", body = ErrorResponse),
         (status = 403, description = "`Origin` header not in the channel's `origin_allow_list`", body = ErrorResponse),
-        (status = 404, description = "No REST route matches the requested method and path. Note that a single-segment path is *not* checked against the channel registry: an unknown name is accepted and the engine returns a `200` envelope with the input echoed back and no errors.", body = ErrorResponse),
+        (status = 404, description = "No channel serves this request: either no REST route matches the requested method and path, or the single-segment name is not an active channel in the registry.", body = ErrorResponse),
         (status = 409, description = "Deduplication key already seen inside the channel's dedup window", body = ErrorResponse),
         (status = 415, description = "Non-empty body without a JSON `Content-Type`", body = ErrorResponse),
         (status = 429, description = "Rate limit exceeded (global or per-channel)", body = ErrorResponse),

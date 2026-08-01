@@ -112,20 +112,130 @@ engine build time. They appear at two levels:
 - **Task-level `condition`** — decides whether *that task* runs within a matched
   workflow. Use it for branching inside a pipeline.
 
-Common operators (see the [JSONLogic spec](https://jsonlogic.com/operations.html)
-for the full set):
+## Available operators
+
+The table below is the **complete** set Orion compiles. It is not the whole
+JSONLogic spec: datalogic-rs gates its extension operators behind Cargo
+features, and Orion enables them through dataflow-rs's `all-operators` feature
+(`Cargo.toml`).
+
+> **A misspelled operator inside a `map` mapping is not an error.** JSONLogic
+> cannot distinguish `{ "upper": [...] }` used as an operator from a data object
+> that happens to have one key, and mappings are rendered through a templating
+> path that resolves the inner expressions and writes the object through as a
+> *literal*. So `{ "uppr": [...] }` puts `{"uppr": "widget"}` at the target path
+> instead of a string — no error, no failed task, `200` to the caller. **When a
+> mapping yields a JSON object where you expected a scalar, check the operator
+> name against these tables first.**
+>
+> Conditions behave differently: they are compiled and evaluated strictly, so
+> the same misspelling there is a hard error rather than a silent literal.
+
+`tests/integration/jsonlogic_operators_test.rs` asserts this table against the
+engine, so it cannot drift from what actually runs.
+
+### Core
 
 | Operator | Example | Meaning |
 |----------|---------|---------|
-| `var` | `{ "var": "data.order.total" }` | Read a value from the context |
+| `var` / `val` | `{ "var": "data.order.total" }` | Read a value from the context (dotted path) |
 | `==` / `!=` | `{ "==": [{ "var": "data.type" }, "order"] }` | Loose equality |
+| `===` / `!==` | `{ "===": [{ "var": "data.qty" }, 1] }` | Strict equality (no type coercion) |
 | `>` `>=` `<` `<=` | `{ ">": [{ "var": "data.order.total" }, 10000] }` | Comparison |
 | `and` / `or` / `!` | `{ "and": [a, b] }` | Boolean logic |
 | `!!` | `{ "!!": [{ "var": "data.order.id" }] }` | Truthiness (e.g. "is present") |
-| `if` | `{ "if": [cond, then, else] }` | Conditional value |
-| `in` | `{ "in": [{ "var": "data.tier" }, ["vip", "premium"]] }` | Membership |
-| `cat` | `{ "cat": ["Order #", { "var": "data.order.id" }] }` | String concatenation |
+| `if` / `?:` | `{ "if": [cond, then, else] }` | Conditional value |
 | `+` `-` `*` `/` `%` | `{ "*": [{ "var": "data.qty" }, 1.1] }` | Arithmetic |
+| `max` / `min` | `{ "max": [1, 2, 3] }` | Largest / smallest |
+| `cat` | `{ "cat": ["Order #", { "var": "data.order.id" }] }` | String concatenation |
+| `substr` | `{ "substr": [{ "var": "data.code" }, 0, 3] }` | Substring |
+| `in` | `{ "in": [{ "var": "data.tier" }, ["vip", "premium"]] }` | Membership (array or substring) |
+| `merge` | `{ "merge": [[1, 2], [3]] }` | Flatten arrays into one |
+| `map` / `filter` / `reduce` | `{ "map": [{ "var": "data.items" }, { "var": "price" }] }` | Array transforms |
+| `all` / `some` / `none` | `{ "some": [{ "var": "data.items" }, { ">": [{ "var": "qty" }, 0] }] }` | Array predicates |
+| `missing` / `missing_some` | `{ "missing": ["data.order.id"] }` | Report absent paths |
+
+### Dates (`datetime`)
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `now` | `{ "now": [] }` | Current instant, as an RFC 3339 string |
+| `datetime` | `{ "datetime": ["2026-07-31T00:00:00Z"] }` | Build a datetime from an RFC 3339 string |
+| `parse_date` | `{ "parse_date": [{ "var": "data.when" }, "yyyy-MM-dd"] }` | Parse with an explicit format |
+| `format_date` | `{ "format_date": [{ "now": [] }, "yyyy-MM-dd"] }` | Format a datetime |
+| `date_diff` | `{ "date_diff": [a, b, "days"] }` | Whole units between two datetimes |
+| `timestamp` | `{ "timestamp": ["1d"] }` | Build a **duration** from a duration string |
+
+Format strings use the JSONLogic vocabulary — `yyyy`, `MM`, `dd`, `HH`, `mm`,
+`ss` — which is translated to the underlying `strftime` spec, so raw `%Y`-style
+patterns also work. Prefer the `yyyy` form; it is the documented one.
+
+Three sharp edges here, each of which fails quietly rather than loudly:
+
+- **`date_diff` units are plural.** `"days"`, `"hours"`, `"minutes"`,
+  `"seconds"`. An unrecognised unit — including the singular `"day"` — returns
+  `0` rather than an error, which reads exactly like "the dates are the same".
+- **`timestamp` is not a datetime-to-epoch conversion.** It parses a *duration*
+  (`"1d"` → `"1d:0h:0m:0s"`) for use in date arithmetic. Passing it a datetime
+  is an `Invalid duration format` error.
+- **`now` is evaluated per call**, so two `now` mappings in one workflow can
+  land on different instants. Compute it once into a field and read that field
+  if you need a single consistent stamp.
+
+### Strings (`ext-string`)
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `length` | `{ "length": [{ "var": "data.items" }] }` | Length of a string **or** array |
+| `upper` / `lower` | `{ "upper": [{ "var": "data.code" }] }` | Change case |
+| `trim` | `{ "trim": [{ "var": "data.name" }] }` | Strip surrounding whitespace |
+| `split` | `{ "split": [{ "var": "data.csv" }, ","] }` | Split into an array |
+| `starts_with` / `ends_with` | `{ "starts_with": [{ "var": "data.sku" }, "AB-"] }` | Prefix / suffix test |
+
+### Arrays (`ext-array`) and maths (`ext-math`)
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `sort` | `{ "sort": [{ "var": "data.scores" }] }` | Sort ascending |
+| `slice` | `{ "slice": [{ "var": "data.items" }, 0, 2] }` | Sub-array by start/end |
+| `abs` | `{ "abs": [{ "var": "data.delta" }] }` | Absolute value |
+| `ceil` / `floor` | `{ "ceil": [{ "var": "data.price" }] }` | Round up / down |
+
+### Control (`ext-control`, `error-handling`)
+
+| Operator | Example | Meaning |
+|----------|---------|---------|
+| `??` | `{ "??": [{ "var": "data.nickname" }, "anonymous"] }` | Coalesce — first non-null |
+| `type` | `{ "type": [{ "var": "data.price" }] }` | Type name as a string |
+| `exists` | `{ "exists": ["data", "order", "id"] }` | Path presence — **see below** |
+| `switch` / `match` | see below | Multi-way branch |
+| `try` / `throw` | `{ "try": [expr, fallback] }` | Catch / raise an evaluation error |
+
+Two of these take a shape that is easy to get wrong, and both fail **silently**
+with a plausible answer rather than an error:
+
+**`exists` takes path segments, not a dotted path.** Unlike `var`, it does not
+split on `.`, and it evaluates its arguments as literals rather than as
+expressions. `{ "exists": ["data.order.id"] }` looks for a single top-level key
+literally named `data.order.id` and returns `false`; wrapping the argument in a
+`var` returns `false` too, because the *value* is not a path. Spell it out:
+
+```json
+{ "exists": ["data", "order", "id"] }
+```
+
+**`switch` takes an array of `[case, result]` pairs**, not a flat alternating
+list. A flat list is not rejected — the second element is read as the case
+array, fails to match, and the third element is returned as the default arm, so
+you silently get one fixed branch for every input:
+
+```json
+{ "switch": [
+    { "var": "data.tier" },
+    [ ["gold", 20], ["silver", 10] ],
+    0
+] }
+```
 
 ## Error handling
 

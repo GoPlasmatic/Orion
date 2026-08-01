@@ -98,8 +98,15 @@ Migrations for all backends are embedded in the binary and the correct set is se
 | `server.shutdown_drain_secs` | `30` | `ORION_SERVER__SHUTDOWN_DRAIN_SECS` | Raise it if your slowest request legitimately outlives 30 s, so rolling deploys stop cutting them off. |
 | `server.shutdown_force_timeout_secs` | `30` | `ORION_SERVER__SHUTDOWN_FORCE_TIMEOUT_SECS` | Hard cap on waiting after the drain window. `0` waits forever — only with an orchestrator that will eventually SIGKILL. |
 | `server.max_admin_body_size` | `8388608` | `ORION_SERVER__MAX_ADMIN_BODY_SIZE` | Raise for very large bulk imports or workflow exports. Applies to `/api/v1/admin/*` only; the data plane keeps `ingest.max_payload_size`. |
+| `server.verbose_errors` | — | `ORION_SERVER__VERBOSE_ERRORS` | Unset returns real task-failure messages on the data plane when `environment` is not a production variant, and the generic placeholder in it. `false` sanitizes everywhere. **`true` is refused in production** and the server will not start. |
 
 On SIGTERM or SIGINT Orion withdraws readiness first, then stops accepting, then drains. Set both timeouts below your orchestrator's termination grace period, or it kills the process mid-drain.
+
+A failed task answers `200` with the failure in the envelope's `errors` array,
+carrying the task's `code` and `task_id` either way — `verbose_errors` decides
+only whether `message` is the engine's own text or the placeholder. Full detail
+is always in the persisted trace, correlated by the `request_id` the sanitized
+envelope adds.
 
 ### TLS
 

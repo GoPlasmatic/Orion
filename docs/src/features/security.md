@@ -159,6 +159,50 @@ curl -H "X-API-Key: your-secret-key" \
   http://localhost:8080/api/v1/admin/workflows
 ```
 
+**Per-channel authentication:** authenticate callers of a data channel in its `config_json`. `admin_auth` above covers `/api/v1/admin` only — without a channel `auth` block, a channel is reachable by anyone who can reach the port.
+
+Two modes ship. Both are enforced in the ingress guards, so `POST /api/v1/data/{channel}` and `POST /api/v1/data/{channel}/async` are covered identically — an `/async` submission is not a way around the check.
+
+**`api_key`** — a shared secret in a header, compared in constant time against the SHA-256 of each accepted key:
+
+```json
+{
+  "auth": {
+    "mode": "api_key",
+    "keys": ["env://ORDERS_API_KEY", "env://ORDERS_API_KEY_PREVIOUS"],
+    "header": "X-API-Key"
+  }
+}
+```
+
+Listing several keys is what makes rotation possible without a window of refusals: any match authorises. `header` defaults to `Authorization`, in which case the value is expected as `Bearer <key>`; any other header name takes the bare key. Override with `scheme` if you need a different prefix.
+
+**`hmac`** — HMAC-SHA256 over the **raw request body**, which is how Stripe, GitHub and Shopify authenticate webhooks:
+
+```json
+{
+  "auth": {
+    "mode": "hmac",
+    "secret": "env://GITHUB_WEBHOOK_SECRET",
+    "header": "X-Hub-Signature-256",
+    "signature_prefix": "sha256="
+  }
+}
+```
+
+The signature is verified against the bytes exactly as received, before any parsing — re-serializing parsed JSON reorders keys and drops whitespace, and the signature would never match again. Hex (Stripe, GitHub) and base64 (Shopify) encodings are both accepted. `signature_prefix` is stripped before decoding; omit it when the header carries a bare signature.
+
+Any `keys` entry or `secret` may be an `env://VAR` reference, resolved at channel load by the same resolver connector secrets use, so production credentials never sit in the stored config.
+
+Two properties worth stating explicitly:
+
+- **A failure is always `401` with the same message**, whatever the cause. Distinguishing "no header" from "wrong key" from "malformed signature" would tell an unauthenticated caller which half of the credential they had right.
+- **A channel whose `auth` cannot be built is quarantined**, not served unauthenticated. If an `env://` secret is unset on a host, that channel is refused at every ingress there rather than loaded with its authentication silently absent — the same posture a `validation_logic` that no longer compiles gets.
+
+Authentication does **not** apply to the Kafka ingress or to `channel_call`, and the omission is deliberate. A Kafka record carries no HTTP header and no signature over a body the producer never signed; its authentication is the broker connection's (SASL/mTLS). A `channel_call` is a step inside a request that already authenticated at its own ingress, and the calling workflow holds no credential to present — enforcing there would make composition impossible rather than make it safer. A channel reachable both over HTTP and from a topic is therefore authenticated on the HTTP path and broker-authenticated on the Kafka one.
+
+There is no built-in JWT verification yet. For OIDC/JWT, or for mTLS, put a gateway or service mesh in front.
+
 **Per-channel origin allow-list:** restrict which `Origin` values a channel accepts, in its `config_json`:
 
 ```json
@@ -181,7 +225,7 @@ The two are complementary, and it is worth being exact about which one enforces 
 - **`[cors] allowed_origins` governs the browser handshake.** A genuine *preflight* (`OPTIONS` carrying `Access-Control-Request-Method`) from an unlisted origin is answered by the layer and never reaches a channel. But a non-preflighted cross-origin request — a simple `GET`, or a `POST` a browser sends without asking first — is *not* short-circuited: the layer simply omits `Access-Control-Allow-Origin`, the workflow runs server-side, and only the browser discards the response. And a non-browser client (curl, a server-to-server caller, anything setting `Origin` by hand) is unaffected by `[cors]` altogether.
 - **`origin_allow_list` is the server-side check.** It runs in the ingress guards on every request that reaches the handler, browser or not, and refuses `403` before the workflow executes.
 
-So if the point is to keep a workflow from *running* for an unlisted origin, `origin_allow_list` is the control that does it; `[cors]` alone is a browser-side courtesy. Note that neither is authentication: `Origin` is a client-supplied header and any non-browser caller can set it to anything, or omit it — a request with no `Origin` is not checked at all. Use `validation_logic` or a gateway in front of Orion for access control that has to hold against a hostile client.
+So if the point is to keep a workflow from *running* for an unlisted origin, `origin_allow_list` is the control that does it; `[cors]` alone is a browser-side courtesy. Note that neither is authentication: `Origin` is a client-supplied header and any non-browser caller can set it to anything, or omit it — a request with no `Origin` is not checked at all. For access control that holds against a hostile client, use the channel `auth` block above.
 
 The pre-1.0 spelling is refused, not ignored:
 

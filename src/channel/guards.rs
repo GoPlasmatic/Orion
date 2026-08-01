@@ -11,6 +11,7 @@
 //! | Guard | HTTP sync | HTTP `/async` | Kafka | `channel_call` |
 //! |---|---|---|---|---|
 //! | rate limit | ✅ | ✅ | ✅ | ✅ |
+//! | channel `auth` | ✅ | ✅ | ❌ | ❌ |
 //! | origin allow-list | ✅ | ✅ | ❌ | ❌ |
 //! | `validation_logic` | ✅ | ✅ | ✅ | ✅ |
 //! | deduplication | ✅ | ✅ | ✅ | ❌ |
@@ -33,8 +34,8 @@
 //! redelivery ran the workflow twice; `channel_call` applied no rate limit;
 //! and a channel's `timeout_ms` was honoured on two paths of four, so the
 //! same channel timed out at its configured value over HTTP and at the global
-//! `trace_queue.processing_timeout_ms` over Kafka and `/async`. Only the four
-//! `❌` cells that remain are deliberate, and each is justified on
+//! `trace_queue.processing_timeout_ms` over Kafka and `/async`. Every `❌` cell
+//! that remains is deliberate, and each is justified on
 //! [`Transport::guards`].
 //!
 //! A ✅ in the rate-limit row means *the same limiter is consulted*, not that
@@ -78,6 +79,8 @@ pub enum Transport {
 /// reviewable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GuardSet {
+    /// Authenticate the caller against the channel's `auth` config.
+    pub auth: bool,
     /// Reject an `Origin` header the channel does not list (N24: a
     /// server-side allow-list, not CORS negotiation).
     pub origin_allow_list: bool,
@@ -96,7 +99,7 @@ pub struct GuardSet {
 impl Transport {
     /// This transport's row of the guard matrix.
     ///
-    /// The four `false` cells, each for a reason that is a property of the
+    /// Every `false` cell, each for a reason that is a property of the
     /// transport rather than an oversight:
     ///
     /// * **origin allow-list off Kafka and `channel_call`.** The check reads
@@ -119,9 +122,22 @@ impl Transport {
     ///   caching that would pin one workflow run's output across callers
     ///   with none of the request identity (method, path, query) the cache
     ///   key is built from.
+    /// * **authentication off Kafka and `channel_call`.** Both carry a
+    ///   credential the channel's `auth` config cannot describe, and both are
+    ///   already authenticated by the layer that delivered them. A Kafka
+    ///   record's authentication is the broker's (SASL/mTLS on the consumer
+    ///   connection); it has no HTTP headers, and no signature over a body the
+    ///   producer never signed. A `channel_call` is a step *inside* a request
+    ///   that authenticated at its own ingress, and the calling workflow holds
+    ///   no credential to present — enforcing here would make composition
+    ///   impossible rather than make it safer, the same reasoning that leaves
+    ///   deduplication off that transport. A channel that is reachable both
+    ///   over HTTP and from a Kafka topic is therefore authenticated on the
+    ///   HTTP path and broker-authenticated on the Kafka one.
     pub const fn guards(self) -> GuardSet {
         match self {
             Transport::HttpSync => GuardSet {
+                auth: true,
                 origin_allow_list: true,
                 rate_limit: true,
                 validation: true,
@@ -130,6 +146,7 @@ impl Transport {
                 backpressure: true,
             },
             Transport::HttpAsync => GuardSet {
+                auth: true,
                 origin_allow_list: true,
                 rate_limit: true,
                 validation: true,
@@ -138,6 +155,7 @@ impl Transport {
                 backpressure: true,
             },
             Transport::Kafka => GuardSet {
+                auth: false,
                 origin_allow_list: false,
                 rate_limit: true,
                 validation: true,
@@ -146,6 +164,7 @@ impl Transport {
                 backpressure: true,
             },
             Transport::ChannelCall => GuardSet {
+                auth: false,
                 origin_allow_list: false,
                 rate_limit: true,
                 validation: true,
@@ -189,6 +208,14 @@ pub struct GuardRequest<'a> {
     pub caller_identity: &'a str,
     /// Named header lookup (see [`HeaderLookup`]).
     pub header: HeaderLookup<'a>,
+    /// The request body exactly as received, for `auth.mode = "hmac"`.
+    ///
+    /// A webhook signature is computed over these bytes, so verification has to
+    /// see them before anything parses them: re-serializing the parsed JSON
+    /// reorders keys and drops whitespace, and the signature would never match
+    /// again. Only the HTTP transports carry it; the two that authenticate are
+    /// the two that supply it.
+    pub raw_body: Option<&'a [u8]>,
     /// Idempotency key the transport carries out of band, used when the
     /// configured dedup header is absent. Kafka passes the record key.
     pub dedup_key_fallback: Option<&'a str>,
@@ -320,6 +347,12 @@ pub enum GuardVerdict {
 /// Order is deliberate. The rate limit is first so a refusal costs the least
 /// work and so rejected requests (a disallowed origin, a failing predicate)
 /// still consume a token — otherwise an attacker gets unmetered rejections.
+/// Authentication comes straight after it, and before everything else: an
+/// unauthenticated caller must not be able to reach the response-cache lookup
+/// (which would let them probe for which requests are cached) or the dedup
+/// store (where they could claim an idempotency key belonging to a real
+/// caller and have the genuine request answered `409`). Keeping it *after* the
+/// rate limit means credential-stuffing is metered like any other traffic.
 /// Deduplication precedes the response-cache lookup so a replayed
 /// idempotency key is answered `409` rather than served a cached body. The
 /// backpressure permit is acquired last, after the cache lookup, so a cache
@@ -339,6 +372,9 @@ pub async fn apply_guards(req: GuardRequest<'_>) -> Result<GuardVerdict, OrionEr
             req.header,
         )
         .await?;
+    }
+    if set.auth {
+        check_auth(req.channel, req.runtime, req.header, req.raw_body)?;
     }
     if set.origin_allow_list {
         check_allowed_origin(req.channel, req.runtime, req.origin)?;
@@ -467,6 +503,34 @@ fn is_truthy(val: &Value) -> bool {
 /// Reject the request when an `Origin` header is present and the channel's
 /// allow-list does not name it.
 ///
+/// Authenticate the caller against the channel's compiled `auth` policy.
+///
+/// A channel with no `auth` config is unauthenticated, which is what every
+/// channel was before 1.0 and what every stored channel still is until an
+/// operator adds the key. That default is why this guard is a no-op rather
+/// than a refusal when the policy is absent.
+///
+/// The refusal is `401` with one message for every cause. Distinguishing
+/// "no header" from "wrong key" from "malformed signature" would tell an
+/// unauthenticated caller which half of the credential they had right.
+fn check_auth(
+    channel: &str,
+    channel_config: &Option<Arc<ChannelRuntimeConfig>>,
+    header: HeaderLookup<'_>,
+    raw_body: Option<&[u8]>,
+) -> Result<(), OrionError> {
+    let Some(cfg) = channel_config else {
+        return Ok(());
+    };
+    let Some(ref auth) = cfg.auth else {
+        return Ok(());
+    };
+    auth.authenticate(header, raw_body).inspect_err(|_| {
+        metrics::record_message(channel, "unauthorized");
+        tracing::warn!(channel = %channel, "Channel authentication failed");
+    })
+}
+
 /// N24: this is a **server-side origin allow-list**, not CORS. It sets no
 /// `Access-Control-*` header and takes no part in the preflight handshake —
 /// the browser handshake is the platform's `[cors]` section, applied by the
@@ -1235,6 +1299,7 @@ mod tests {
         backpressure_semaphore: Option<Arc<tokio::sync::Semaphore>>,
         dedup_store: Option<Arc<dyn CacheBackend>>,
         response_cache: Option<Arc<dyn CacheBackend>>,
+        auth: Option<crate::channel::auth::CompiledAuth>,
     }
 
     impl Runtime {
@@ -1245,6 +1310,7 @@ mod tests {
                 rate_limit_key_logic: None,
                 validation_logic: None,
                 backpressure_semaphore: None,
+                auth: None,
                 dedup_store: None,
                 response_cache: None,
             }
@@ -1316,6 +1382,24 @@ mod tests {
             self
         }
 
+        /// An `api_key` policy accepting exactly `key`, presented bare in
+        /// `X-API-Key` so tests need no scheme prefix.
+        fn api_key(mut self, key: &str) -> Self {
+            let cfg = crate::channel::config::ChannelAuthConfig {
+                mode: crate::channel::config::AuthMode::ApiKey,
+                keys: Some(vec![key.to_string()]),
+                header: Some("X-API-Key".to_string()),
+                scheme: None,
+                secret: None,
+                signature_prefix: None,
+            };
+            self.auth = Some(
+                crate::channel::auth::CompiledAuth::compile(&cfg).expect("test auth compiles"),
+            );
+            self.parsed_config.auth = Some(cfg);
+            self
+        }
+
         fn build(self) -> Option<Arc<ChannelRuntimeConfig>> {
             let now = chrono::Utc::now().naive_utc();
             Some(Arc::new(ChannelRuntimeConfig {
@@ -1346,6 +1430,7 @@ mod tests {
                 dedup_store: self.dedup_store,
                 response_cache: self.response_cache,
                 trace_storage: EffectiveTraceConfig::resolve(&TraceStorageConfig::default(), None),
+                auth: self.auth,
             }))
         }
     }
@@ -1399,6 +1484,7 @@ mod tests {
             origin: None,
             caller_identity: "10.0.0.1",
             header: NO_HEADERS,
+            raw_body: None,
             dedup_key_fallback: None,
             dedup_owner: None,
             default_timeout_ms: None,
@@ -1443,6 +1529,102 @@ mod tests {
         assert!(!call.deduplication);
         assert!(sync.response_cache);
         assert!(!submit.response_cache && !kafka.response_cache && !call.response_cache);
+        assert!(sync.auth && submit.auth);
+        assert!(!kafka.auth && !call.auth);
+    }
+
+    /// Authentication is enforced on both HTTP ingresses, not just the one a
+    /// test happened to exercise.
+    ///
+    /// `/async` bypassing a guard the sync path applies is the exact shape of
+    /// S1, and it is the shape an authentication guard can least afford: a
+    /// channel that refuses anonymous callers on `POST /orders` while
+    /// accepting them on `POST /orders/async` is not authenticated at all.
+    #[tokio::test]
+    async fn authentication_applies_to_every_http_ingress() {
+        let dl = engine();
+        let data = json!({});
+        let metadata = json!({});
+
+        for transport in [Transport::HttpSync, Transport::HttpAsync] {
+            let runtime = Runtime::new().api_key("s3cret").build();
+            let req = request(transport, &runtime, &dl, &data, &metadata);
+            assert!(
+                apply_guards(req).await.is_err(),
+                "{transport:?} admitted a request presenting no key"
+            );
+
+            let runtime = Runtime::new().api_key("s3cret").build();
+            let present: HeaderLookup<'_> =
+                &|name: &str| (name == "X-API-Key").then(|| "s3cret".to_string());
+            let mut req = request(transport, &runtime, &dl, &data, &metadata);
+            req.header = present;
+            assert!(
+                apply_guards(req).await.is_ok(),
+                "{transport:?} refused a request presenting the right key"
+            );
+        }
+    }
+
+    /// The two transports whose row leaves `auth` off carry no credential to
+    /// present, and are authenticated by the layer that delivered them — the
+    /// broker for Kafka, the originating ingress for `channel_call`. Enforcing
+    /// here would break composition rather than tighten anything.
+    #[tokio::test]
+    async fn authentication_does_not_apply_to_kafka_or_channel_call() {
+        let dl = engine();
+        let data = json!({});
+        let metadata = json!({});
+
+        for transport in [Transport::Kafka, Transport::ChannelCall] {
+            let runtime = Runtime::new().api_key("s3cret").build();
+            let req = request(transport, &runtime, &dl, &data, &metadata);
+            assert!(
+                apply_guards(req).await.is_ok(),
+                "{transport:?} must not require an HTTP credential"
+            );
+        }
+    }
+
+    /// A failed authentication must not reach the guards behind it.
+    ///
+    /// Ordering is the whole control here: if an anonymous caller got as far as
+    /// the dedup store they could claim a real caller's idempotency key and have
+    /// the genuine request answered `409`, and if they reached the response
+    /// cache they could probe which requests are cached. Both are behind
+    /// `check_auth` in `apply_guards`, and this is what says so.
+    #[tokio::test]
+    async fn a_refused_caller_never_reaches_dedup_or_cache() {
+        let dl = engine();
+        let data = json!({});
+        let metadata = json!({});
+
+        // A dedup backend that panics if consulted: reaching it at all is the
+        // failure this test is looking for.
+        let runtime = Runtime::new()
+            .api_key("s3cret")
+            .dedup(
+                Arc::new(StubDedupBackend {
+                    outcome: StubOutcome::BackendError,
+                }),
+                BackendErrorPolicy::Deny,
+            )
+            .build();
+
+        let mut req = request(Transport::HttpSync, &runtime, &dl, &data, &metadata);
+        req.header = IDEMPOTENCY;
+        // `GuardVerdict` is not `Debug`, so `expect_err` is unavailable;
+        // `.err().expect(..)` asserts the same thing without it.
+        let err = apply_guards(req)
+            .await
+            .err()
+            .expect("an unauthenticated caller must be refused");
+        // `Deny` on a dedup backend error is a 503; authentication refuses 401.
+        // Seeing the 503 would mean the dedup guard ran first.
+        assert!(
+            matches!(err, OrionError::Unauthorized(_)),
+            "expected a 401 from the auth guard, got {err:?} — the dedup guard ran first"
+        );
     }
 
     /// The channel's `timeout_ms` wins on every transport; the transport's

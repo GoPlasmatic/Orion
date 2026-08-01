@@ -907,9 +907,9 @@ checksum = "a4ae5f15dda3c708c0ade84bfee31ccab44a3da4f88015ed22f63732abe300c8"
 
 [[package]]
 name = "dataflow-rs"
-version = "3.1.0"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6a9e884aeb6d3cd2a25c1f290d956f7d2409b83c07076b582b160fc4e8777a8"
+checksum = "d3951a4edf083d05cc7c33ef0836496ba87c27a30ef6c44f4ed3a05ae3a62a3d"
 dependencies = [
  "async-trait",
  "bumpalo",
@@ -932,6 +932,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97323909d831c722b2e11223fe0efc1b8fe0dafecbd78ae649ba64b494134f62"
 dependencies = [
  "bumpalo",
+ "chrono",
  "datavalue-rs",
  "itoa",
  "ryu",
@@ -948,6 +949,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "310ca253fcaa6a6cdfaae556e4775b61313efb09f6241151e9d204f989a55f04"
 dependencies = [
  "bumpalo",
+ "chrono",
  "fast-float2",
  "itoa",
  "ryu",
@@ -2719,6 +2721,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-server",
+ "base64",
  "chrono",
  "clap",
  "ctor",
@@ -2727,6 +2730,7 @@ dependencies = [
  "futures",
  "governor",
  "hex",
+ "hmac",
  "ipnet",
  "metrics",
  "metrics-exporter-prometheus",
@@ -5005,9 +5009,9 @@ dependencies = [
 
 [[package]]
 name = "uuid"
-version = "1.23.4"
+version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf80a72845275afea99e7f2b434723d3bc7e38470fcd1c7ed39a599c73319a53"
+checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",

@@ -355,3 +355,83 @@ pub(crate) async fn import_channels(
     );
     Ok(super::import_response(imported, failed, errors))
 }
+
+// ============================================================
+// Channel Export / Validate
+// ============================================================
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/channels/export",
+    tag = "Channels",
+    params(ChannelFilter),
+    responses(
+        (status = 200, description = "Exported channels", body = DataEnvelope<Vec<ChannelResponse>>),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn export_channels(
+    State(state): State<AppState>,
+    OrionQuery(filter): OrionQuery<ChannelFilter>,
+) -> Result<Json<Value>, OrionError> {
+    let repo = state.channel_repo.as_ref();
+    let rows = super::collect_pages(super::EXPORT_PAGE_SIZE, |limit, offset| {
+        let page_filter = ChannelFilter {
+            status: filter.status.clone(),
+            channel_type: filter.channel_type.clone(),
+            protocol: filter.protocol.clone(),
+            limit: Some(limit),
+            offset: Some(offset),
+            ..Default::default()
+        };
+        async move { Ok(repo.list_paginated(&page_filter).await?.data) }
+    })
+    .await?;
+
+    let data: Vec<ChannelResponse> = rows
+        .iter()
+        .map(ChannelResponse::try_from)
+        .collect::<Result<_, _>>()?;
+    Ok(data_response(data))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/channels/validate",
+    tag = "Channels",
+    request_body = CreateChannelRequest,
+    responses(
+        (status = 200, description = "Validation result", body = super::ValidationEnvelope),
+    )
+)]
+#[tracing::instrument(skip(req))]
+pub(crate) async fn validate_channel(
+    OrionJson(req): OrionJson<CreateChannelRequest>,
+) -> Result<Json<super::ValidationEnvelope>, OrionError> {
+    // R20: run the create-path validator verbatim rather than re-deriving its
+    // rules, so `valid: true` cannot come to mean something weaker than
+    // "`POST /channels` would accept this". The workflow validator learned that
+    // lesson the expensive way — a second implementation drifted and reported
+    // valid for payloads create rejected.
+    let errors = match crate::validation::validate_create_channel(&req) {
+        Ok(()) => Vec::new(),
+        Err(e) => super::issues_from_error(e),
+    };
+    let mut warnings = Vec::new();
+
+    // Checks create does not make, because a channel may legitimately be
+    // authored before the workflow it names.
+    if let Some(ref workflow_id) = req.workflow_id
+        && !workflow_id.is_empty()
+    {
+        warnings.push(super::ValidationIssue {
+            field: "workflow_id".to_string(),
+            message: format!(
+                "references workflow '{workflow_id}'; activation refuses a channel whose \
+                 workflow is not active"
+            ),
+        });
+    }
+
+    Ok(Json(super::ValidationEnvelope::new(errors, warnings)))
+}

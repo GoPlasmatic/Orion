@@ -442,3 +442,312 @@ pub(crate) async fn reset_circuit_breaker(
         "found_on_this_node": found,
     })))
 }
+
+// ============================================================
+// Connector Export / Validate
+// ============================================================
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/connectors/export",
+    tag = "Connectors",
+    params(ConnectorFilter),
+    responses(
+        (status = 200, description = "Exported connectors, secrets masked", body = DataEnvelope<Vec<ConnectorResponse>>),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn export_connectors(
+    State(state): State<AppState>,
+    // `ConnectorFilter` carries only pagination, which an export overrides by
+    // definition — accepted so the signature matches the other two exports and
+    // a client can pass the same query string to all three.
+    OrionQuery(_filter): OrionQuery<ConnectorFilter>,
+) -> Result<Json<Value>, OrionError> {
+    let repo = state.connector_repo.as_ref();
+    let rows = super::collect_pages(super::EXPORT_PAGE_SIZE, |limit, offset| {
+        let page_filter = ConnectorFilter {
+            limit: Some(limit),
+            offset: Some(offset),
+        };
+        async move { Ok(repo.list_paginated(&page_filter).await?.data) }
+    })
+    .await?;
+
+    // An export has to emit the shape `/import` accepts, which is not the shape
+    // `GET /connectors` returns: `ConnectorResponse` carries `config_json` as a
+    // *string*, while `CreateConnectorRequest` takes `config` as an object. A
+    // bundle in the read shape parses on import, silently defaults `config` to
+    // `{}`, and fails with a missing-field error naming a key the operator can
+    // see right there in the file.
+    //
+    // Masking still happens first and is not skippable: `mask_connector` is the
+    // only constructor of `ConnectorResponse` and the stored row does not
+    // serialize at all (D27). `env://` references survive it as references, so
+    // a connector authored that way round-trips intact; one holding literal
+    // secrets exports with `******` in their place and needs them re-supplied,
+    // which is the documented trade for a bundle that is safe to commit.
+    let data: Vec<Value> = rows
+        .iter()
+        .map(|connector| {
+            let masked = mask_connector(connector);
+            json!({
+                "id": masked.id,
+                "name": masked.name,
+                "connector_type": masked.connector_type,
+                "config": serde_json::from_str::<Value>(&masked.config_json)
+                    .unwrap_or_else(|_| json!({})),
+                "enabled": masked.enabled,
+            })
+        })
+        .collect();
+    Ok(data_response(data))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/connectors/validate",
+    tag = "Connectors",
+    request_body = CreateConnectorRequest,
+    responses(
+        (status = 200, description = "Validation result", body = super::ValidationEnvelope),
+    )
+)]
+#[tracing::instrument(skip(req))]
+pub(crate) async fn validate_connector(
+    OrionJson(req): OrionJson<CreateConnectorRequest>,
+) -> Result<Json<super::ValidationEnvelope>, OrionError> {
+    // R20 again: the create-path validator verbatim, so `valid: true` keeps
+    // meaning "`POST /connectors` would accept this".
+    let errors = match crate::validation::validate_create_connector(&req) {
+        Ok(()) => Vec::new(),
+        Err(e) => super::issues_from_error(e),
+    };
+
+    // An `env://` reference that is unset on *this* host is a warning, not an
+    // error: a bundle is routinely validated on a machine that holds none of
+    // the production secrets, and refusing there would make the endpoint
+    // useless for exactly the promotion flow it exists to support.
+    let mut warnings = Vec::new();
+    let mut config = req.config.clone();
+    if let Err(e) = crate::connector::secrets::resolve_in_place(
+        &mut config,
+        &crate::connector::secrets::default_resolvers(),
+        "config",
+    ) {
+        warnings.push(super::ValidationIssue {
+            field: "config".to_string(),
+            message: format!(
+                "a secret reference does not resolve on this host: {e}. \
+                 The connector will fail to load where the value is unset."
+            ),
+        });
+    }
+
+    Ok(Json(super::ValidationEnvelope::new(errors, warnings)))
+}
+
+// ============================================================
+// Connector connectivity probe
+// ============================================================
+
+/// What a probe found.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct ProbeResult {
+    /// `true` when the backend answered.
+    reachable: bool,
+    /// Connector type, so a caller need not re-read the connector to know
+    /// which kind of probe ran.
+    connector_type: String,
+    /// What the probe did, named plainly — the operator is entitled to know
+    /// whether their production system was contacted and how.
+    probe: &'static str,
+    /// Failure detail. Present only when `reachable` is false.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct ProbeEnvelope {
+    data: ProbeResult,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/admin/connectors/{id}/test",
+    tag = "Connectors",
+    params(("id" = String, Path, description = "Connector ID")),
+    responses(
+        (status = 200, description = "Probe result. A backend that cannot be reached is \
+            still a 200 — the probe ran and this is its answer; `reachable: false` is the \
+            finding, not a server error.", body = ProbeEnvelope),
+        (status = 404, description = "Connector not found"),
+    )
+)]
+#[tracing::instrument(skip(state, principal))]
+pub(crate) async fn test_connector(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    principal: Option<Extension<AdminPrincipal>>,
+) -> Result<Json<ProbeEnvelope>, OrionError> {
+    let connector = state.connector_repo.get_by_id(&id).await?;
+
+    // Recorded because a probe reaches out to a production system: for HTTP it
+    // issues a real request with the connector's real credentials. That is a
+    // side effect, and the audit trail should say who caused it — the same
+    // reasoning that put `POST /workflows/{id}/test` on the trail (O7).
+    super::audit_log(&state.audit_queue, &principal, "test", "connector", &id);
+
+    // One construction site: `reachable` is derived from the outcome, so a
+    // fourth early exit cannot report a failure as reachable.
+    let result = |probe: &'static str, outcome: Result<(), String>| {
+        Json(ProbeEnvelope {
+            data: ProbeResult {
+                reachable: outcome.is_ok(),
+                connector_type: connector.connector_type.clone(),
+                probe,
+                error: outcome.err(),
+            },
+        })
+    };
+
+    // Probe the *stored* definition with its secrets resolved, rather than the
+    // registry's copy: a connector that failed to load has no registry entry,
+    // and that is exactly when an operator reaches for this endpoint.
+    let mut config_value: Value = serde_json::from_str(&connector.config_json)
+        .map_err(|e| OrionError::internal(format!("stored connector config is not JSON: {e}")))?;
+    if let Err(e) = crate::connector::secrets::resolve_in_place(
+        &mut config_value,
+        &crate::connector::secrets::default_resolvers(),
+        "config",
+    ) {
+        return Ok(result("secret resolution", Err(e.client_message())));
+    }
+
+    // `ConnectorConfig` is internally tagged on `type`, but the type lives in
+    // its own column — inject it exactly as the registry load does, so a
+    // connector authored the documented way (no redundant `"type"` inside
+    // `config`) parses here too.
+    if let Some(obj) = config_value.as_object_mut() {
+        obj.insert(
+            "type".to_string(),
+            Value::String(connector.connector_type.clone()),
+        );
+    }
+    let config = match serde_json::from_value::<crate::connector::ConnectorConfig>(config_value) {
+        Ok(config) => config,
+        Err(e) => {
+            return Ok(result("config parse", Err(e.to_string())));
+        }
+    };
+
+    let (probe, outcome) = probe_connector(&state, &connector.name, &config).await;
+    Ok(result(probe, outcome))
+}
+
+/// Run the probe appropriate to the connector's type.
+///
+/// Every probe is read-only. The HTTP one is the only that touches a third
+/// party, and it is the reason the endpoint is worth having at all: a wrong
+/// bearer token is invisible until the first real request otherwise.
+async fn probe_connector(
+    state: &AppState,
+    name: &str,
+    config: &crate::connector::ConnectorConfig,
+) -> (&'static str, Result<(), String>) {
+    use crate::connector::ConnectorConfig;
+
+    match config {
+        ConnectorConfig::Db(db) => ("SELECT 1", probe_db(state, name, db).await),
+        ConnectorConfig::Cache(cache) => (
+            "cache read of a probe key",
+            probe_cache(state, name, cache).await,
+        ),
+        ConnectorConfig::Http(http) => ("GET the configured URL", probe_http(state, http).await),
+        ConnectorConfig::Es(_) | ConnectorConfig::Kafka(_) => (
+            "not implemented for this connector type",
+            Err(format!(
+                "connectivity probing is not implemented for '{}' connectors yet; \
+                 Kafka brokers are covered by `orion-server test-connectivity`",
+                config.connector_type()
+            )),
+        ),
+    }
+}
+
+/// The cheapest statement every supported SQL backend accepts.
+async fn probe_db(
+    state: &AppState,
+    name: &str,
+    db: &crate::connector::DbConnectorConfig,
+) -> Result<(), String> {
+    let pool = state
+        .sql_pool_cache
+        .get_pool(name, db)
+        .await
+        .map_err(|e| e.client_message())?;
+    sqlx::query("SELECT 1")
+        .execute(&pool)
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// A read, not a write: the probe must not leave anything behind in a store a
+/// workflow shares.
+async fn probe_cache(
+    state: &AppState,
+    name: &str,
+    cache: &crate::connector::CacheConnectorConfig,
+) -> Result<(), String> {
+    let backend = state
+        .cache_pool
+        .get_backend(
+            crate::connector::cache_backend::CachePurpose::Workflow,
+            name,
+            cache,
+        )
+        .await
+        .map_err(|e| e.client_message())?;
+    backend
+        .get("__orion_connectivity_probe__")
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// Issue one request against an HTTP connector's configured URL.
+///
+/// Goes through `http_common::execute_request` — the same function `http_call`
+/// uses — rather than a bare `client.get(url)`. That is the difference between
+/// a probe and a probe that means something: it applies the connector's auth,
+/// its configured headers, its `allow_private_urls` exemption and the
+/// per-hop-revalidated redirect policy. A probe taking a different path could
+/// pass where real traffic fails, or (as a bare GET does) report every
+/// correctly-configured authenticated endpoint as a credential failure because
+/// it never sent the credential.
+async fn probe_http(
+    state: &AppState,
+    http: &crate::connector::HttpConnectorConfig,
+) -> Result<(), String> {
+    let url = crate::engine::functions::http_common::build_url(&http.url, None);
+    match crate::engine::functions::http_common::execute_request(
+        &state.http_client,
+        &reqwest::Method::GET,
+        &url,
+        None,
+        http,
+        None,
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    {
+        Ok(_) => Ok(()),
+        // `execute_request` already turns a 4xx/5xx into an error naming the
+        // status, so an unreachable host and a refused credential both arrive
+        // here with the detail an operator needs. Reporting a 401 as
+        // "reachable" would be technically true and practically useless — a
+        // wrong token is the failure this endpoint exists to surface.
+        Err(e) => Err(e.to_string()),
+    }
+}

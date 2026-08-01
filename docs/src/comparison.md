@@ -53,9 +53,21 @@ channel, and an Orion workflow can kick off a Temporal run via `http_call`.
 
 A gateway **proxies and polices** traffic on its way to your services; it
 deliberately doesn't implement them. Orion **is** the service: the request
-terminates in a workflow that executes your logic. The overlap (rate
-limiting, auth, CORS) exists because Orion channels are self-sufficient. In
-front of a fleet, though, a gateway still earns its place, with Orion as an
+terminates in a workflow that executes your logic. The overlap (rate limiting,
+payload validation, deduplication, origin allow-lists) exists because Orion
+channels police their own ingress.
+
+**Authentication is the exception, and it is the one you must plan for.** The
+admin plane authenticates (`admin_auth`); the data plane does not. A channel can
+inspect headers through `validation_logic` and refuse unlisted origins through
+`origin_allow_list`, but neither is authentication: `Origin` is client-supplied,
+and a `validation_logic` comparison means the credential sits in the channel
+config in plain text. There is no API-key, HMAC-signature or JWT verification
+built in. If your channels are reachable by anything you do not control, put a
+gateway, service mesh or reverse proxy in front and let it authenticate — that
+is the deployment Orion expects today.
+
+For a fleet, a gateway still earns its place regardless, with Orion as an
 upstream that needs far fewer of the gateway's crutches.
 
 ## vs. Drools and RETE rule engines

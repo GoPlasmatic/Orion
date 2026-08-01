@@ -224,6 +224,73 @@ The full lifecycle — create, activate, dry-run, then send live data — in one
 
 See the [CLI reference](https://github.com/GoPlasmatic/Orion-cli) for the full command list, or set up the [MCP Server](./mcp-setup.md) for AI assistant integration.
 
+## Testing Workflows Offline
+
+`orion-server` runs workflows without a server, a database or a network, so a
+workflow can be developed and regression-tested the way any other code is.
+
+Connector-backed tasks — `http_call`, `db_read`, `data_query`, `channel_call`,
+and the rest — are answered from a **stub file** rather than a real backend:
+
+```json
+{
+  "http_call":    { "crm": { "name": "Ada Lovelace" } },
+  "data_query":   { "orders-db": [ { "id": 1, "total": 10 } ] },
+  "channel_call": { "inventory-check": { "in_stock": true } }
+}
+```
+
+The outer key is the function, the inner key is the task's `connector` (or its
+`channel` for `channel_call`), and `"*"` matches any target.
+
+```bash
+orion-server dry-run -w workflow.json -i input.json --stubs stubs.json
+```
+
+A task with no matching stub **fails** and names the stub that would satisfy
+it — a half-stubbed run reporting success would be worse than no stubs at all,
+because it looks like a pass.
+
+> This is the offline counterpart to `POST /workflows/{id}/test`, which runs the
+> same workflow against **live** connectors: it will POST to real webhooks,
+> write to real databases and publish to real topics. Reach for the endpoint
+> when you mean to touch the real systems, and for `dry-run` when you do not.
+
+### A regression suite
+
+`orion-server test` runs a directory of cases and exits non-zero on any failure,
+so a suite gates CI the way `lint`, `validate-config` and `preflight` do.
+
+A case is a `*.case.json` file — the suffix is what separates cases from the
+workflows and fixtures that live beside them:
+
+```json
+{
+  "name": "flags high-value orders",
+  "workflow": "high-value-order.json",
+  "input": { "order_id": "ORD-1", "total": 25000 },
+  "stubs": { "http_call": { "crm": { "name": "Ada" } } },
+  "expect": {
+    "data.order.flagged": true,
+    "data.order.customer_name": "Ada"
+  }
+}
+```
+
+```bash
+$ orion-server test ./workflow-tests
+  ok    flags high-value orders
+  FAIL  leaves small orders alone
+          data.order.flagged: expected false, got true
+
+1 passed, 1 failed (2 case(s))
+```
+
+`workflow` and `stubs_file` are resolved relative to the case file. `expect`
+maps dotted output paths to expected values (a leading `data.` is optional).
+`expect_errors` lists expected task-error codes and defaults to empty — so a
+workflow that starts failing its tasks cannot pass silently.
+
 ## Next Steps
 
 - Connect a real database: [Your First Connector](../getting-started/first-connector.md)

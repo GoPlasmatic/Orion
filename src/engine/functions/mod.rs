@@ -4,6 +4,7 @@ pub mod http_call;
 pub mod http_common;
 pub mod publish_kafka;
 pub mod schema;
+pub mod stub;
 
 pub mod cache_read;
 pub mod cache_write;

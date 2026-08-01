@@ -26,7 +26,7 @@ pub(super) fn require_nonempty(value: &str, field: &str) -> Result<(), OrionErro
 /// method is defined next to its struct; this function only sequences them.
 pub(super) fn validate_config(config: &AppConfig) -> Result<(), OrionError> {
     let is_prod = config.is_production();
-    config.server.validate()?;
+    config.server.validate(is_prod)?;
     config.ingest.validate()?;
     config.storage.validate()?;
     config.logging.validate()?;

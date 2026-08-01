@@ -213,6 +213,167 @@ pub(super) fn response_envelope(
     envelope
 }
 
+/// The reserved path a shaped channel's workflow writes its response control
+/// to: `data._orion.response`.
+///
+/// Under `_orion` because that namespace is already the platform's half of the
+/// document (B3 reserved it at the envelope level for `profile`), so a workflow
+/// output key cannot collide with it by accident.
+const RESPONSE_CONTROL_KEY: &str = "_orion";
+
+/// A shaped response, as drained from `data._orion.response`.
+struct ShapedResponse {
+    status: StatusCode,
+    headers: Vec<(String, String)>,
+    body: String,
+}
+
+/// The cached form of a shaped response.
+///
+/// A shaped hit has to replay the status and headers, not just the body — a
+/// `201 Created` that came back `200` on the second identical request would be
+/// a cache that quietly rewrites the contract. Wrapped under a distinctive key
+/// so a plain envelope body left in the cache from before the channel was
+/// switched to `shaped` fails to parse and falls back, rather than being
+/// misread as a shaped one.
+#[derive(serde::Deserialize)]
+struct CachedShaped {
+    #[serde(rename = "_orion_shaped")]
+    shaped: CachedShapedInner,
+}
+
+#[derive(serde::Deserialize)]
+struct CachedShapedInner {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: String,
+}
+
+/// Write side of [`CachedShaped`], borrowing what it serializes.
+///
+/// The read side has to own its fields (it is deserialized from a cache entry);
+/// the write side has the response in hand and would otherwise clone the whole
+/// body and header list to hand them to serde. Same wire shape, enforced by
+/// `a_cached_shaped_response_replays_its_status_and_headers` round-tripping one
+/// through the other.
+#[derive(serde::Serialize)]
+struct CachedShapedRef<'a> {
+    #[serde(rename = "_orion_shaped")]
+    shaped: CachedShapedInnerRef<'a>,
+}
+
+#[derive(serde::Serialize)]
+struct CachedShapedInnerRef<'a> {
+    status: u16,
+    headers: &'a [(String, String)],
+    body: &'a str,
+}
+
+/// Read `data._orion.response` out of the workflow output, if the workflow set
+/// one, and turn it into a response.
+///
+/// Removing the key is part of the job: it is control, not content, and a
+/// caller receiving `_orion` back in their own body would be receiving the
+/// mechanism rather than the result.
+///
+/// Every failure here is deliberately *soft* — an absent, malformed, or
+/// disallowed field falls back to the platform's own answer rather than 500ing.
+/// A shaped channel whose workflow forgot to set a status should serve the
+/// workflow's data with a `200`, not fail the request; the alternative turns a
+/// cosmetic authoring slip into an outage.
+fn drain_shaped_response(
+    data: &mut Value,
+    cfg: &crate::channel::config::ChannelResponseConfig,
+) -> Option<ShapedResponse> {
+    let obj = data.as_object_mut()?;
+    let namespace = obj.get_mut(RESPONSE_CONTROL_KEY)?.as_object_mut()?;
+    let control = namespace.remove("response")?;
+    // Drop `_orion` entirely once it is empty, so the caller's body is not left
+    // carrying a hollow namespace.
+    let namespace_empty = namespace.is_empty();
+    if namespace_empty {
+        obj.remove(RESPONSE_CONTROL_KEY);
+    }
+
+    let status = control
+        .get("status")
+        .and_then(Value::as_u64)
+        .and_then(|s| u16::try_from(s).ok())
+        .and_then(|s| StatusCode::from_u16(s).ok())
+        .unwrap_or(StatusCode::OK);
+
+    let mut headers = Vec::new();
+    if let Some(map) = control.get("headers").and_then(Value::as_object) {
+        for (name, value) in map {
+            let lower = name.to_ascii_lowercase();
+            let Some(value) = value.as_str() else {
+                continue;
+            };
+            if !cfg.allows_header(&lower) {
+                tracing::warn!(
+                    header = %lower,
+                    "workflow set a response header the channel does not allow; dropping it"
+                );
+                continue;
+            }
+            headers.push((lower, value.to_string()));
+        }
+    }
+
+    // `body_path` names a field of the (already drained) data document to send
+    // instead of the whole thing — the usual case, since the workflow's scratch
+    // fields are rarely the response. `raw` sends a string field verbatim
+    // rather than as a JSON string, which is how a shaped channel returns CSV,
+    // XML or plain text.
+    // Borrowed, not cloned: the selection is only read — `as_str` for the raw
+    // case and `to_string` for the JSON one — so deep-copying the whole output
+    // document to serialize it would be pure waste on every shaped response.
+    let selected: &Value = match control.get("body_path").and_then(Value::as_str) {
+        // A leading `data.` is optional. `message.data()` *is* the `data`
+        // document — a mapping writing `data.order` lands at `order` here — but
+        // authors write the paths with the prefix everywhere else in a
+        // workflow, so accepting both spellings avoids a null body that looks
+        // like a bug in the workflow rather than a mismatch of conventions.
+        Some(path) => path
+            .strip_prefix("data.")
+            .unwrap_or(path)
+            .split('.')
+            .try_fold(&*data, |acc, segment| acc.get(segment))
+            .unwrap_or(&Value::Null),
+        None => data,
+    };
+    let raw = control.get("raw").and_then(Value::as_bool).unwrap_or(false);
+    let body = match (raw, selected.as_str()) {
+        (true, Some(s)) => s.to_string(),
+        _ => serde_json::to_string(selected).unwrap_or_else(|_| "null".to_string()),
+    };
+
+    Some(ShapedResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+/// Build the HTTP response for a shaped channel.
+fn shaped_response(shaped: ShapedResponse) -> Response {
+    // JSON first, then the workflow's headers over the top: `HeaderMap::insert`
+    // replaces, so a workflow-set `content-type` wins without a pre-scan to
+    // find out whether it set one.
+    let mut response = json_response(shaped.status, shaped.body);
+    for (name, value) in &shaped.headers {
+        if let (Ok(name), Ok(value)) = (
+            axum::http::HeaderName::try_from(name.as_str()),
+            axum::http::HeaderValue::try_from(value.as_str()),
+        ) {
+            response.headers_mut().insert(name, value);
+        } else {
+            tracing::warn!(header = %name, "workflow response header is not valid HTTP; dropping it");
+        }
+    }
+    response
+}
+
 /// Serialize a response envelope, mapping the (unreachable in practice)
 /// serializer failure to the one `Internal` message every envelope site used
 /// to spell out for itself.
@@ -225,17 +386,26 @@ fn serialize_envelope(envelope: &Value) -> Result<String, OrionError> {
 const SANITIZED_ERROR_MESSAGE: &str =
     "Task processing failed; full detail is available in the trace";
 
-/// Map engine `ErrorInfo` entries to a client-safe shape: code and task_id
-/// only, with a generic message. Raw messages can embed upstream URLs,
-/// connector names, and driver errors, which must not reach anonymous
-/// data-plane callers — the persisted trace keeps the originals.
-fn sanitize_errors(errors: &[dataflow_rs::ErrorInfo]) -> Vec<Value> {
+/// Map engine `ErrorInfo` entries to the shape the caller sees: code and
+/// task_id, with the message decided by `verbose`.
+///
+/// Sanitized (`verbose = false`) is the production contract: raw messages can
+/// embed upstream URLs, connector names and driver errors, which must not reach
+/// anonymous data-plane callers, and the persisted trace keeps the originals.
+///
+/// Verbose is the development one. Outside production the placeholder is pure
+/// friction — the author of the workflow is the caller, and every failed
+/// iteration otherwise costs a second round trip to the trace API to learn what
+/// the first one already knew. `AppConfig::verbose_errors` picks between them
+/// and refuses the unsafe combination at startup, so this function does not
+/// re-derive the policy; it is handed the answer.
+fn sanitize_errors(errors: &[dataflow_rs::ErrorInfo], verbose: bool) -> Vec<Value> {
     errors
         .iter()
         .map(|e| {
             let mut entry = json!({
                 "code": e.code,
-                "message": SANITIZED_ERROR_MESSAGE,
+                "message": if verbose { e.message.as_str() } else { SANITIZED_ERROR_MESSAGE },
             });
             if let Some(ref task_id) = e.task_id {
                 entry["task_id"] = json!(task_id);
@@ -245,9 +415,28 @@ fn sanitize_errors(errors: &[dataflow_rs::ErrorInfo]) -> Vec<Value> {
         .collect()
 }
 
-/// Serve a response-cache hit: the cached body is already the client-facing
-/// serialization, so it goes out verbatim with no work at all.
-pub(super) fn cached_response(body: String) -> Response {
+/// Serve a response-cache hit.
+///
+/// For an envelope channel the cached string is already the client-facing
+/// serialization and goes out verbatim with no work at all — which is why the
+/// shaped branch is gated on the channel's own config rather than attempted
+/// speculatively. Parsing first and falling back would put a full JSON parse of
+/// every cached body on the one path built to do nothing, and throw it away for
+/// every channel that never opted in.
+///
+/// For a shaped channel the entry is a [`CachedShaped`] carrying the status and
+/// headers alongside the body, because replaying a `201 Created` as a bare
+/// `200` would let the cache silently rewrite the channel's contract on the
+/// second identical request. An entry left over from before the channel was
+/// switched to `shaped` does not parse, and is served as a plain body.
+pub(super) fn cached_response(body: String, shaped: bool) -> Response {
+    if shaped && let Ok(cached) = serde_json::from_str::<CachedShaped>(&body) {
+        return shaped_response(ShapedResponse {
+            status: StatusCode::from_u16(cached.shaped.status).unwrap_or(StatusCode::OK),
+            headers: cached.shaped.headers,
+            body: cached.shaped.body,
+        });
+    }
     json_response(StatusCode::OK, body)
 }
 
@@ -347,9 +536,23 @@ pub(super) async fn process_sync_for_channel(
             metrics::record_message(channel, "ok");
             metrics::record_message_duration(channel, duration_secs);
 
+            // Shaped channels drain their response control out of the workflow
+            // output *before* the envelope is built, so `_orion.response`
+            // reaches neither the caller's body nor the persisted trace as
+            // content. A channel left on the default `envelope` mode never
+            // looks, which is what keeps an incidental `_orion` key in some
+            // workflow's data inert.
+            let mut data_out: Value = message.data().into();
+            let shaped = channel_config
+                .parsed_config
+                .response
+                .as_ref()
+                .filter(|cfg| cfg.is_shaped())
+                .and_then(|cfg| drain_shaped_response(&mut data_out, cfg));
+
             let mut response = response_envelope(
                 message.id(),
-                message.data().into(),
+                data_out,
                 message
                     .errors()
                     .iter()
@@ -373,7 +576,10 @@ pub(super) async fn process_sync_for_channel(
             // second time.
             let has_errors = message.has_errors();
             let public_json = if has_errors {
-                response["errors"] = Value::Array(sanitize_errors(message.errors()));
+                response["errors"] = Value::Array(sanitize_errors(
+                    message.errors(),
+                    state.config.verbose_errors(),
+                ));
                 response["request_id"] =
                     json!(crate::server::request_context::request_id().unwrap_or_default());
                 Some(serialize_envelope(&response)?)
@@ -408,6 +614,33 @@ pub(super) async fn process_sync_for_channel(
             } else {
                 (None, None)
             };
+            // What a cache hit will replay. A shaped channel caches its status
+            // and headers alongside the body, so the second identical request
+            // is answered with the same contract as the first; an envelope
+            // channel caches the client-facing string exactly as before.
+            //
+            // Built only when something will actually store it. `persist_trace_and_cache`
+            // skips the write when there is no cache context or the run carried
+            // errors, and a channel with no response cache is the common case —
+            // so doing this unconditionally spent a full copy of the body plus a
+            // serialize pass, per request, on nothing. Serialized from borrows so
+            // the copy is the one the cache needs rather than a second one.
+            let will_cache = cache_context.is_some() && !has_errors;
+            let shaped_cache_json = shaped.as_ref().filter(|_| will_cache).and_then(|s| {
+                serde_json::to_string(&CachedShapedRef {
+                    shaped: CachedShapedInnerRef {
+                        status: s.status.as_u16(),
+                        headers: &s.headers,
+                        body: &s.body,
+                    },
+                })
+                .ok()
+            });
+            let cache_body = shaped_cache_json
+                .as_deref()
+                .or(public_json.as_deref())
+                .unwrap_or(&response_json);
+
             persist_trace_and_cache(
                 state,
                 &channel_config,
@@ -421,11 +654,19 @@ pub(super) async fn process_sync_for_channel(
                     has_errors,
                     task_trace_json: task_trace_json.as_deref(),
                 },
-                public_json.as_deref().unwrap_or(&response_json),
+                cache_body,
                 &cache_context,
                 profile.as_ref(),
             )
             .await;
+
+            // A shaped channel's body is whatever the workflow chose, so there
+            // is no envelope to append `_orion.profile` to. Profiling still
+            // records its timings (they reach the trace and the metrics); only
+            // the response-body copy is envelope-only.
+            if let Some(shaped) = shaped {
+                return Ok(shaped_response(shaped));
+            }
 
             // Profile mode: rebuild the response with `_orion.profile`
             // appended and re-serialize. Only paid when profiling is on.
@@ -519,42 +760,68 @@ mod tests {
         );
     }
 
-    /// `sanitize_errors` output is what the envelope carries, so it must satisfy
-    /// the `ProcessTaskError` half of the schema too.
-    #[test]
-    fn sanitized_errors_match_their_documented_schema() {
-        use crate::server::routes::data::ProcessTaskError;
-        let info = |code: &str, message: &str, task_id: Option<&str>| {
-            // `ErrorInfo` is `#[non_exhaustive]` as of dataflow-rs 3.1, so the
-            // builder is the only cross-crate construction path.
-            let mut b = dataflow_rs::ErrorInfo::builder(code, message);
-            if let Some(task_id) = task_id {
-                b = b.task_id(task_id);
-            }
-            b.build()
-        };
-        let errors = sanitize_errors(&[
+    /// `ErrorInfo` is `#[non_exhaustive]` as of dataflow-rs 3.1, so the builder
+    /// is the only cross-crate construction path.
+    fn info(code: &str, message: &str, task_id: Option<&str>) -> dataflow_rs::ErrorInfo {
+        let mut b = dataflow_rs::ErrorInfo::builder(code, message);
+        if let Some(task_id) = task_id {
+            b = b.task_id(task_id);
+        }
+        b.build()
+    }
+
+    fn sample_errors() -> Vec<dataflow_rs::ErrorInfo> {
+        vec![
             info(
                 "TASK_FAILED",
                 "raw upstream detail that must not leak",
                 Some("t1"),
             ),
             info("OTHER", "another", None),
-        ]);
-        for e in &errors {
-            let parsed = serde_json::from_value::<ProcessTaskError>(e.clone());
-            assert!(
-                parsed.is_ok(),
-                "sanitized error does not match the schema: {e} — {:?}",
-                parsed.err()
-            );
+        ]
+    }
+
+    /// `sanitize_errors` output is what the envelope carries, so it must satisfy
+    /// the `ProcessTaskError` half of the schema — in *both* verbosity modes,
+    /// since both reach the wire.
+    #[test]
+    fn error_entries_match_their_documented_schema_either_way() {
+        use crate::server::routes::data::ProcessTaskError;
+        for verbose in [false, true] {
+            for e in &sanitize_errors(&sample_errors(), verbose) {
+                let parsed = serde_json::from_value::<ProcessTaskError>(e.clone());
+                assert!(
+                    parsed.is_ok(),
+                    "error entry (verbose={verbose}) does not match the schema: {e} — {:?}",
+                    parsed.err()
+                );
+            }
         }
-        // And the sanitisation itself still holds.
+    }
+
+    /// The production contract: no engine text reaches the caller.
+    #[test]
+    fn sanitized_errors_replace_every_message() {
+        let errors = sanitize_errors(&sample_errors(), false);
         assert!(
             errors
                 .iter()
                 .all(|e| e["message"] == SANITIZED_ERROR_MESSAGE),
             "{errors:?}"
         );
+    }
+
+    /// The development contract: the engine's own text is what the author needs.
+    #[test]
+    fn verbose_errors_keep_the_engine_message() {
+        let errors = sanitize_errors(&sample_errors(), true);
+        assert_eq!(
+            errors[0]["message"],
+            "raw upstream detail that must not leak"
+        );
+        assert_eq!(errors[1]["message"], "another");
+        // Code and task_id are unchanged by verbosity — only `message` moves.
+        assert_eq!(errors[0]["code"], "TASK_FAILED");
+        assert_eq!(errors[0]["task_id"], "t1");
     }
 }

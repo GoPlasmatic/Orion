@@ -227,6 +227,9 @@ impl AsyncFunctionHandler for ChannelCallHandler {
                 origin: None,
                 caller_identity: &calling_channel,
                 header: &header_lookup,
+                // An in-process call presents no credential and signs no body; its
+                // ingress authenticated at the edge (see `Transport::guards`).
+                raw_body: None,
                 dedup_key_fallback: None,
                 // `Transport::ChannelCall` does not deduplicate, so no
                 // claim is taken and the owner is moot.
