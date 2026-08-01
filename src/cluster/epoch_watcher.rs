@@ -47,29 +47,10 @@ fn start_epoch_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
             // A tick succeeds when the epoch was read and, if it had
             // advanced, the resync applied. A failed resync leaves the
             // gauge stale alongside the retry warning (O3).
-            let mut tick_ok = true;
-            let last = state.cluster.last_seen_epoch.load(Ordering::Acquire);
-            if row.epoch > last {
-                tracing::info!(
-                    from = last,
-                    to = row.epoch,
-                    "Config epoch advanced on another node; resyncing from DB"
-                );
-                match crate::engine::resync_from_db(&state).await {
-                    Ok(()) => {
-                        state
-                            .cluster
-                            .last_seen_epoch
-                            .fetch_max(row.epoch, Ordering::AcqRel);
-                    }
-                    Err(e) => {
-                        // Do not advance last_seen — retry on the next tick.
-                        tick_ok = false;
-                        crate::metrics::record_error("epoch_watcher");
-                        tracing::warn!(error = %e, "Epoch watcher: resync failed; will retry");
-                    }
-                }
-            }
+            let tick_ok = advance_config_epoch(&state.cluster.last_seen_epoch, row.epoch, || {
+                crate::engine::resync_from_db(&state)
+            })
+            .await;
 
             let last_breaker = state
                 .cluster
@@ -100,4 +81,90 @@ fn start_epoch_watcher(state: AppState) -> tokio::task::JoinHandle<()> {
             }
         }
     })
+}
+
+/// Apply a freshly-read config epoch: run `resync` if the epoch is ahead of
+/// this node's watermark, and advance the watermark **only on success**.
+/// Returns whether the tick counts as successful.
+///
+/// Extracted from the polling loop (T15) so the advance/retry contract is
+/// testable without a database: the watermark refusing to advance past a
+/// failed resync is the property that makes the watcher self-healing — the
+/// next tick sees the same gap and retries, instead of recording a config it
+/// never applied.
+async fn advance_config_epoch<F, Fut>(
+    last_seen: &std::sync::atomic::AtomicI64,
+    epoch: i64,
+    resync: F,
+) -> bool
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), crate::errors::OrionError>>,
+{
+    let last = last_seen.load(Ordering::Acquire);
+    if epoch <= last {
+        return true;
+    }
+    tracing::info!(
+        from = last,
+        to = epoch,
+        "Config epoch advanced on another node; resyncing from DB"
+    );
+    match resync().await {
+        Ok(()) => {
+            last_seen.fetch_max(epoch, Ordering::AcqRel);
+            true
+        }
+        Err(e) => {
+            // Do not advance last_seen — retry on the next tick.
+            crate::metrics::record_error("epoch_watcher");
+            tracing::warn!(error = %e, "Epoch watcher: resync failed; will retry");
+            false
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::advance_config_epoch;
+    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+
+    /// The self-healing property: a failed resync must leave the watermark
+    /// where it was, so the next tick sees the same gap and retries.
+    #[tokio::test]
+    async fn a_failed_resync_does_not_advance_the_watermark() {
+        let last_seen = AtomicI64::new(5);
+        let ok = advance_config_epoch(&last_seen, 7, || async {
+            Err(crate::errors::OrionError::internal("resync exploded"))
+        })
+        .await;
+        assert!(!ok, "a failed resync is a failed tick");
+        assert_eq!(
+            last_seen.load(Ordering::Acquire),
+            5,
+            "the watermark must not record a config that was never applied"
+        );
+
+        // The retry succeeding is what advances it.
+        let ok = advance_config_epoch(&last_seen, 7, || async { Ok(()) }).await;
+        assert!(ok);
+        assert_eq!(last_seen.load(Ordering::Acquire), 7);
+    }
+
+    /// An epoch at or behind the watermark must not trigger a resync at all —
+    /// resync rebuilds the engine and evicts pools, so a spurious one is not
+    /// harmless.
+    #[tokio::test]
+    async fn an_unchanged_epoch_never_resyncs() {
+        let last_seen = AtomicI64::new(7);
+        let ran = AtomicBool::new(false);
+        let ok = advance_config_epoch(&last_seen, 7, || {
+            ran.store(true, Ordering::SeqCst);
+            async { Ok(()) }
+        })
+        .await;
+        assert!(ok, "nothing to do is a successful tick");
+        assert!(!ran.load(Ordering::SeqCst), "resync must not have run");
+        assert_eq!(last_seen.load(Ordering::Acquire), 7);
+    }
 }

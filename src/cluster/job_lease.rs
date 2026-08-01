@@ -38,3 +38,60 @@ impl JobLeaseGate {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::errors::OrionError;
+    use crate::storage::repositories::cluster::EpochRow;
+    use async_trait::async_trait;
+
+    /// Stub repository whose lease call answers a canned result (T15). The
+    /// other trait methods are unreachable from `JobLeaseGate`.
+    struct StubClusterRepo {
+        lease_result: fn() -> Result<bool, OrionError>,
+    }
+
+    #[async_trait]
+    impl ClusterRepository for StubClusterRepo {
+        async fn bump_epoch(&self) -> Result<i64, OrionError> {
+            unreachable!("not exercised by JobLeaseGate")
+        }
+        async fn get_epoch(&self) -> Result<EpochRow, OrionError> {
+            unreachable!("not exercised by JobLeaseGate")
+        }
+        async fn request_breaker_reset(&self, _key: &str) -> Result<i64, OrionError> {
+            unreachable!("not exercised by JobLeaseGate")
+        }
+        async fn try_acquire_job_lease(
+            &self,
+            _job_name: &str,
+            _holder: &str,
+            _ttl_secs: u64,
+        ) -> Result<bool, OrionError> {
+            (self.lease_result)()
+        }
+    }
+
+    fn gate(lease_result: fn() -> Result<bool, OrionError>) -> JobLeaseGate {
+        JobLeaseGate::new(Arc::new(StubClusterRepo { lease_result }), "node-a".into())
+    }
+
+    /// The invariant the whole single-flight design rests on: a DB error must
+    /// answer "not held", never "held". Guessing "held" on a blip is how two
+    /// nodes end up running the same cleanup tick.
+    #[tokio::test]
+    async fn a_db_error_is_not_held() {
+        let g = gate(|| Err(OrionError::internal("connection reset")));
+        assert!(
+            !g.try_acquire("trace_cleanup", 120).await,
+            "a DB error must skip the tick, not duplicate it"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_repository_answer_passes_through() {
+        assert!(gate(|| Ok(true)).try_acquire("trace_cleanup", 120).await);
+        assert!(!gate(|| Ok(false)).try_acquire("trace_cleanup", 120).await);
+    }
+}
