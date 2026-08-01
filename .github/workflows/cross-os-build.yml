@@ -1,0 +1,76 @@
+# macOS and Windows compile checks (proposal T20).
+#
+# `dist-workspace.toml` ships aarch64-apple-darwin and x86_64-pc-windows-msvc
+# binaries, but every CI job runs on ubuntu — so before this workflow, those
+# two targets were compiled for the FIRST time when the release tag was
+# pushed (`release.yml` gates `build-local-artifacts` off pull requests and
+# no `pr-run-mode` is set). A platform-specific compile error — rdkafka's
+# cmake + vendored-OpenSSL build and path handling are the usual suspects —
+# surfaced mid-release, after the tag existed, with the Homebrew formula
+# depending on the macOS build succeeding.
+#
+# Build only, deliberately: the test suite's container-gated halves need
+# Docker, and the unit suite runs twice on ubuntu already. What tag time
+# needs from these platforms is a successful compile, so that is what is
+# checked — with `--locked`, matching how cargo-dist builds.
+#
+# A separate workflow rather than a ci.yml job so it can be path-filtered:
+# GitHub has no per-job path filter, and most PRs (docs, helm, workflows)
+# should not pay for two extra-cost runners. Consequence: this is NOT part
+# of the tag-time `ci-gate` lookup, which queries ci.yml runs only — the
+# release build itself remains the final proof; this exists to surface the
+# breakage weeks earlier.
+name: Cross-OS Build
+
+on:
+  push:
+    branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
+    paths:
+      - "src/**"
+      - "migrations/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cross-os-build.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "migrations/**"
+      - "build.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/cross-os-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-os-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest is Apple Silicon, matching the aarch64-apple-darwin
+        # dist target; windows-latest matches x86_64-pc-windows-msvc. cmake
+        # is preinstalled on both runner images (rdkafka's cmake-build needs
+        # it); vendored OpenSSL needs no system package.
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked
