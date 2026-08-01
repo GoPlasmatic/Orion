@@ -326,7 +326,8 @@ impl WriteStatement<'_> {
 /// Run an INSERT or UPDATE that must yield the row it wrote (D23).
 ///
 /// Where `RETURNING *` reflects the stored row (see
-/// [`WriteStatement::supports_returning`]) the write and the read are one
+/// `WriteStatement::supports_returning` — a private detail, hence not a doc
+/// link) the write and the read are one
 /// statement; everywhere else the write and the `read_back` SELECT run inside
 /// one transaction, so the row returned is the row this statement produced
 /// and not a later writer's. The 16 mutation sites this replaces ran the

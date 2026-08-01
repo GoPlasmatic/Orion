@@ -102,14 +102,10 @@ async fn audit_log_response_keeps_every_field_the_row_published() {
     // `data[0]` as null on slow CI runners).
     common::create_connector(&app, common::db_connector("wire-shape-audit")).await;
 
-    let mut body = get(&app, "/api/v1/admin/audit-logs").await;
-    for _ in 0..50 {
-        if body["data"][0].is_object() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        body = get(&app, "/api/v1/admin/audit-logs").await;
-    }
+    let body = common::wait_for_body(&app, "/api/v1/admin/audit-logs", |b| {
+        b["data"][0].is_object()
+    })
+    .await;
     let row = &body["data"][0];
     assert_eq!(
         keys(row, "audit log row"),

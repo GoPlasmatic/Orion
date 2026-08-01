@@ -163,10 +163,12 @@ async fn connectors_list_pages_the_same_way() {
 #[tokio::test]
 async fn audit_log_list_pages_the_same_way() {
     let app = common::test_app().await;
-    // One audit row per connector create.
+    // One audit row per connector create — through the async audit queue, so
+    // wait for all three to land before asserting the contract.
     for i in 0..3 {
         common::create_connector(&app, common::db_connector(&format!("page-audit-{i}"))).await;
     }
+    common::wait_for_body(&app, "/api/v1/admin/audit-logs", |b| b["total"] == 3).await;
 
     assert_pagination_contract(&app, "/api/v1/admin/audit-logs", 3).await;
 }
