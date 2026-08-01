@@ -31,7 +31,7 @@ pub(crate) async fn list_traces(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<TraceFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let result = state.trace_repo.list_paginated(&filter).await?;
+    let result = state.repos.traces.list_paginated(&filter).await?;
     // Payload-free projection (S14): `input_json` holds the caller's request
     // body and `result_json`/`task_trace_json` the full engine message, so a
     // list row is every caller's traffic in one response — including rows
@@ -94,7 +94,7 @@ pub(crate) async fn get_trace(
     OrionQuery(query): OrionQuery<TraceAccessQuery>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, OrionError> {
-    let trace = state.trace_repo.get_by_id(&id).await?;
+    let trace = state.repos.traces.get_by_id(&id).await?;
 
     // R12 access rule. Lane 1: a valid admin credential (only meaningful when
     // admin auth is enabled — the middleware no longer guards this route, so

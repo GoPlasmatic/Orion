@@ -448,7 +448,7 @@ async fn async_trace_records_channel_id() {
 #[tokio::test]
 async fn retention_delete_drains_more_rows_than_one_chunk() {
     let state = common::test_state_with_config(orion::config::AppConfig::default()).await;
-    let repo = state.trace_repo.clone();
+    let repo = state.repos.traces.clone();
 
     // Rows older than the retention window, plus a few inside it.
     let old = chrono::Utc::now().naive_utc() - chrono::Duration::hours(200);

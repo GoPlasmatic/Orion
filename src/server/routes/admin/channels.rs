@@ -37,7 +37,7 @@ pub(crate) async fn list_channels(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<ChannelFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let result = state.channel_repo.list_paginated(&filter).await?;
+    let result = state.repos.channels.list_paginated(&filter).await?;
     paginated_into(result, |c| ChannelResponse::try_from(c))
 }
 
@@ -59,7 +59,7 @@ pub(crate) async fn create_channel(
     OrionJson(req): OrionJson<CreateChannelRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_channel(&req)?;
-    let channel = state.channel_repo.create(&req).await?;
+    let channel = state.repos.channels.create(&req).await?;
     audit_log_draft_only(
         &state.audit_queue,
         &principal,
@@ -85,7 +85,7 @@ pub(crate) async fn get_channel(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
-    let channel = state.channel_repo.get_by_id(&id).await?;
+    let channel = state.repos.channels.get_by_id(&id).await?;
     Ok(data_response(ChannelResponse::try_from(&channel)?))
 }
 
@@ -112,7 +112,7 @@ pub(crate) async fn update_channel(
     // channel is absent) supplies the protocol and current field values for
     // the merged-view checks; when a draft exists it is the latest version,
     // i.e. exactly the row `update_draft` mutates.
-    let current = state.channel_repo.get_by_id(&id).await?;
+    let current = state.repos.channels.get_by_id(&id).await?;
     // H3: channel reads mask `auth.keys` / `auth.secret`, so a GET → edit →
     // PUT cycle sends the sentinel back for every credential the caller
     // never saw. Restore each masked position from the stored config before
@@ -124,7 +124,7 @@ pub(crate) async fn update_channel(
         crate::connector::unmask_channel_config(config, &stored);
     }
     crate::validation::validate_update_channel(&current, &req)?;
-    let channel = state.channel_repo.update_draft(&id, &req).await?;
+    let channel = state.repos.channels.update_draft(&id, &req).await?;
     audit_log_draft_only(&state.audit_queue, &principal, "update", "channel", &id);
     Ok(data_response(ChannelResponse::try_from(&channel)?))
 }
@@ -145,7 +145,7 @@ pub(crate) async fn delete_channel(
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
-    state.channel_repo.delete(&id).await?;
+    state.repos.channels.delete(&id).await?;
     audit_and_reload(&state, &principal, "delete", "channel", &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -181,11 +181,11 @@ pub(crate) async fn change_channel_status(
             // question is fully answerable here, and answering it later means
             // answering it wrong: the loser's declared path resolves to the
             // winner's workflow, which is a wrong answer rather than an error.
-            let draft = state.channel_repo.get_by_id(&id).await?;
+            let draft = state.repos.channels.get_by_id(&id).await?;
             ensure_route_is_unclaimed(&state, &draft).await?;
-            state.channel_repo.activate(&id).await?
+            state.repos.channels.activate(&id).await?
         }
-        StatusAction::Archive => state.channel_repo.archive(&id).await?,
+        StatusAction::Archive => state.repos.channels.archive(&id).await?,
     };
     audit_and_reload(
         &state,
@@ -219,7 +219,7 @@ async fn ensure_route_is_unclaimed(
     let Some((route, methods)) = declared_route(draft) else {
         return Ok(());
     };
-    for other in state.channel_repo.list_active().await? {
+    for other in state.repos.channels.list_active().await? {
         if other.channel_id == draft.channel_id {
             continue; // a new version of this same channel replaces itself
         }
@@ -274,9 +274,9 @@ pub(crate) async fn list_channel_versions(
     OrionQuery(filter): OrionQuery<VersionFilter>,
 ) -> Result<Json<Value>, OrionError> {
     // Verify channel exists
-    let _ = state.channel_repo.get_by_id(&id).await?;
+    let _ = state.repos.channels.get_by_id(&id).await?;
 
-    let result = state.channel_repo.list_versions(&id, &filter).await?;
+    let result = state.repos.channels.list_versions(&id, &filter).await?;
     paginated_into(result, |c| ChannelResponse::try_from(c))
 }
 
@@ -296,7 +296,7 @@ pub(crate) async fn create_new_channel_version(
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
-    let channel = state.channel_repo.create_new_version(&id).await?;
+    let channel = state.repos.channels.create_new_version(&id).await?;
     audit_log_draft_only(
         &state.audit_queue,
         &principal,
@@ -334,8 +334,8 @@ pub(crate) async fn import_channels(
     // Each create runs through the same validation + persistence as the
     // singular POST endpoint, so behavior matches.
     super::check_import_batch_size(items.len())?;
-    let repo = state.channel_repo.clone();
-    let probe = state.channel_repo.clone();
+    let repo = state.repos.channels.clone();
+    let probe = state.repos.channels.clone();
     let (imported, failed, errors) = super::import_items::<CreateChannelRequest, _, _, _, _, _, _>(
         items,
         query.dry_run,
@@ -384,7 +384,7 @@ pub(crate) async fn export_channels(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<ChannelFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let repo = state.channel_repo.as_ref();
+    let repo = state.repos.channels.as_ref();
     let rows = super::collect_pages(super::EXPORT_PAGE_SIZE, |limit, offset| {
         let page_filter = ChannelFilter {
             status: filter.status.clone(),

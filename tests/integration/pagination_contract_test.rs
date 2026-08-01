@@ -180,7 +180,8 @@ async fn trace_dlq_list_pages_the_same_way() {
     let state: AppState = common::test_state_with_config(AppConfig::default()).await;
     for i in 0..3 {
         state
-            .trace_dlq_repo
+            .repos
+            .trace_dlq
             .enqueue(&format!("t-{i}"), "orders", "{}", "{}", "boom", 0, 3)
             .await
             .expect("enqueue");

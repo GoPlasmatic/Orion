@@ -151,9 +151,9 @@ impl<'a> HandlerDeps<'a> {
             engine_config: &state.config.engine,
             query_config: &state.config.query,
             write_config: &state.config.write,
-            cache_pool: state.cache_pool.clone(),
-            sql_pool_cache: state.sql_pool_cache.clone(),
-            mongo_pool_cache: state.mongo_pool_cache.clone(),
+            cache_pool: state.caches.cache_pool.clone(),
+            sql_pool_cache: state.caches.sql_pool_cache.clone(),
+            mongo_pool_cache: state.caches.mongo_pool_cache.clone(),
         }
     }
 }

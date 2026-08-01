@@ -996,7 +996,7 @@ async fn mutations_just_before_shutdown_are_still_recorded() {
     let (state, handles) =
         common::test_state_with_handles(orion::config::AppConfig::default()).await;
     let app = orion::server::build_router(state.clone());
-    let repo = state.audit_log_repo.clone();
+    let repo = state.repos.audit_logs.clone();
 
     let resp = app
         .oneshot(json_request(

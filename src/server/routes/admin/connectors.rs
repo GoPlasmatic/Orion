@@ -32,16 +32,16 @@ use super::audit_log;
 async fn reload_connectors(state: &AppState) -> Result<(), OrionError> {
     state
         .connector_registry
-        .reload(state.connector_repo.as_ref())
+        .reload(state.repos.connectors.as_ref())
         .await?;
     state.cluster.bump_config_epoch().await
 }
 
 /// Evict cached connection pools for a connector whose config may have changed.
 async fn evict_connector_pools(state: &AppState, connector_name: &str) {
-    state.sql_pool_cache.evict(connector_name).await;
-    state.cache_pool.evict_pool(connector_name).await;
-    state.mongo_pool_cache.evict(connector_name).await;
+    state.caches.sql_pool_cache.evict(connector_name).await;
+    state.caches.cache_pool.evict_pool(connector_name).await;
+    state.caches.mongo_pool_cache.evict(connector_name).await;
     tracing::debug!(
         connector = connector_name,
         "Evicted cached connection pools"
@@ -60,7 +60,7 @@ async fn active_workflows_using(
     connector_name: &str,
 ) -> Result<Vec<String>, OrionError> {
     let mut users = Vec::new();
-    for workflow in state.workflow_repo.list_active().await? {
+    for workflow in state.repos.workflows.list_active().await? {
         let Ok(tasks) = serde_json::from_str::<serde_json::Value>(&workflow.tasks_json) else {
             continue;
         };
@@ -94,7 +94,7 @@ pub(crate) async fn list_connectors(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<ConnectorFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let result = state.connector_repo.list_paginated(&filter).await?;
+    let result = state.repos.connectors.list_paginated(&filter).await?;
     // F16: a connector that failed to load is simply missing from the
     // registry, so a list that reports only the stored rows shows a healthy
     // fleet while requests using it 500. Join the two views here.
@@ -146,7 +146,7 @@ pub(crate) async fn create_connector(
     OrionJson(req): OrionJson<CreateConnectorRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_connector(&req)?;
-    let connector = state.connector_repo.create(&req).await?;
+    let connector = state.repos.connectors.create(&req).await?;
     audit_log(
         &state.audit_queue,
         &principal,
@@ -174,7 +174,7 @@ pub(crate) async fn get_connector(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
-    let connector = state.connector_repo.get_by_id(&id).await?;
+    let connector = state.repos.connectors.get_by_id(&id).await?;
     let masked = mask_connector(&connector);
     Ok(data_response(masked))
 }
@@ -202,7 +202,7 @@ pub(crate) async fn update_connector(
     // F18: read the stored row unconditionally. It used to be fetched only for
     // a config-bearing update, which is why the pre-update *name* was not in
     // hand when it mattered — see the rename guard and the eviction below.
-    let stored = state.connector_repo.get_by_id(&id).await?;
+    let stored = state.repos.connectors.get_by_id(&id).await?;
     let renamed_from = req
         .name
         .as_deref()
@@ -257,7 +257,7 @@ pub(crate) async fn update_connector(
         };
         crate::validation::validate_connector_config(effective_type, config)?;
     }
-    let connector = state.connector_repo.update(&id, &req).await?;
+    let connector = state.repos.connectors.update(&id, &req).await?;
     // F18: evict under both names. The cache is keyed by connector name, so
     // evicting only the post-update one left the old key holding live TCP
     // connections against the remote database's `max_connections` until the LRU
@@ -289,8 +289,8 @@ pub(crate) async fn delete_connector(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     // Fetch connector name before deletion so we can evict cached pools.
-    let connector = state.connector_repo.get_by_id(&id).await?;
-    state.connector_repo.delete(&id).await?;
+    let connector = state.repos.connectors.get_by_id(&id).await?;
+    state.repos.connectors.delete(&id).await?;
     evict_connector_pools(&state, &connector.name).await;
     audit_log(&state.audit_queue, &principal, "delete", "connector", &id);
     reload_connectors(&state).await?;
@@ -322,8 +322,8 @@ pub(crate) async fn import_connectors(
     OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {
     super::check_import_batch_size(items.len())?;
-    let repo = state.connector_repo.clone();
-    let probe = state.connector_repo.clone();
+    let repo = state.repos.connectors.clone();
+    let probe = state.repos.connectors.clone();
     let (imported, failed, errors) =
         super::import_items::<CreateConnectorRequest, _, _, _, _, _, _>(
             items,
@@ -464,7 +464,7 @@ pub(crate) async fn export_connectors(
     // a client can pass the same query string to all three.
     OrionQuery(_filter): OrionQuery<ConnectorFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let repo = state.connector_repo.as_ref();
+    let repo = state.repos.connectors.as_ref();
     let rows = super::collect_pages(super::EXPORT_PAGE_SIZE, |limit, offset| {
         let page_filter = ConnectorFilter {
             limit: Some(limit),
@@ -593,7 +593,7 @@ pub(crate) async fn test_connector(
     Path(id): Path<String>,
     principal: Option<Extension<AdminPrincipal>>,
 ) -> Result<Json<ProbeEnvelope>, OrionError> {
-    let connector = state.connector_repo.get_by_id(&id).await?;
+    let connector = state.repos.connectors.get_by_id(&id).await?;
 
     // Recorded because a probe reaches out to a production system: for HTTP it
     // issues a real request with the connector's real credentials. That is a
@@ -687,6 +687,7 @@ async fn probe_db(
     db: &crate::connector::DbConnectorConfig,
 ) -> Result<(), String> {
     let pool = state
+        .caches
         .sql_pool_cache
         .get_pool(name, db)
         .await
@@ -706,6 +707,7 @@ async fn probe_cache(
     cache: &crate::connector::CacheConnectorConfig,
 ) -> Result<(), String> {
     let backend = state
+        .caches
         .cache_pool
         .get_backend(
             crate::connector::cache_backend::CachePurpose::Workflow,

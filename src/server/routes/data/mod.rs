@@ -411,7 +411,8 @@ async fn submit_async(
     let token = uuid::Uuid::new_v4().simple().to_string();
     let token_hash = crate::server::admin_auth::hash_trace_token(&token);
     let trace = state
-        .trace_repo
+        .repos
+        .traces
         .create_pending(
             &channel,
             channel_id,

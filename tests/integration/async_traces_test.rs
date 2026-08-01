@@ -514,7 +514,7 @@ async fn test_credential_headers_masked_at_rest_in_async_trace() {
     let trace = poll_trace_until_done(&app, &trace_id, 40, Some(&token)).await;
     assert_eq!(trace["status"], "completed");
 
-    let row = state.trace_repo.get_by_id(&trace_id).await.unwrap();
+    let row = state.repos.traces.get_by_id(&trace_id).await.unwrap();
     let result_json = row
         .result_json
         .expect("completed async trace stores result_json");

@@ -126,7 +126,8 @@ async fn audit_log_response_keeps_every_field_the_row_published() {
 async fn app_with_dlq_entry() -> (axum::Router, String) {
     let state: AppState = common::test_state_with_config(AppConfig::default()).await;
     let entry = state
-        .trace_dlq_repo
+        .repos
+        .trace_dlq
         .enqueue(
             "trace-1",
             "orders",

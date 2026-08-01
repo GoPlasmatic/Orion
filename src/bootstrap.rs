@@ -11,10 +11,6 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::config::{self, LogFormat};
 use crate::connector::ConnectorRegistry;
-use crate::storage::repositories::channels::{ChannelRepository, SqlChannelRepository};
-use crate::storage::repositories::connectors::{ConnectorRepository, SqlConnectorRepository};
-use crate::storage::repositories::traces::{SqlTraceRepository, TraceRepository};
-use crate::storage::repositories::workflows::{SqlWorkflowRepository, WorkflowRepository};
 
 /// Initialise a plain `tracing_subscriber::fmt` subscriber (no OpenTelemetry).
 fn init_fmt_subscriber(level: &str, format: &LogFormat) {
@@ -94,48 +90,10 @@ pub fn init_metrics_handle(
     }
 }
 
-/// The repository set backing `AppState` and the background tasks, all
-/// constructed from the same startup pool.
-pub struct Repositories {
-    pub workflows: Arc<dyn WorkflowRepository>,
-    pub channels: Arc<dyn ChannelRepository>,
-    pub connectors: Arc<dyn ConnectorRepository>,
-    pub traces: Arc<dyn TraceRepository>,
-    pub audit_logs: Arc<dyn crate::storage::repositories::audit_logs::AuditLogRepository>,
-    pub trace_dlq: Arc<dyn crate::storage::repositories::trace_dlq::TraceDlqRepository>,
-}
-
-impl Repositories {
-    /// Create repositories. `storage` supplies the optional at-rest cipher
-    /// for connector configs (H3) — validated at config load, so a bad key
-    /// never reaches this point.
-    pub fn new(
-        pool: &crate::storage::DbPool,
-        storage: &crate::config::StorageConfig,
-    ) -> Result<Self, crate::errors::OrionError> {
-        let cipher = if storage.connector_encryption_key.is_empty() {
-            None
-        } else {
-            Some(Arc::new(
-                crate::storage::config_encryption::ConfigCipher::from_hex(
-                    &storage.connector_encryption_key,
-                )?,
-            ))
-        };
-        Ok(Self {
-            workflows: Arc::new(SqlWorkflowRepository::new(pool.clone())),
-            channels: Arc::new(SqlChannelRepository::new(pool.clone())),
-            connectors: Arc::new(SqlConnectorRepository::with_cipher(pool.clone(), cipher)),
-            traces: Arc::new(SqlTraceRepository::new(pool.clone())),
-            audit_logs: Arc::new(
-                crate::storage::repositories::audit_logs::SqlAuditLogRepository::new(pool.clone()),
-            ),
-            trace_dlq: Arc::new(
-                crate::storage::repositories::trace_dlq::SqlTraceDlqRepository::new(pool.clone()),
-            ),
-        })
-    }
-}
+/// The repository set backing `AppState` and the background tasks. Lives in
+/// `storage::repositories` since R26 (it is also the `repos` group on
+/// `AppStateInner`); re-exported here so bootstrap callers keep their path.
+pub use crate::storage::repositories::Repositories;
 
 /// Construct the Kafka producer and wire it into the engine's
 /// `publish_kafka` handler. Returns `None` when Kafka is disabled or no
@@ -781,15 +739,14 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
     let trusted_proxies = Arc::new(config.rate_limit.parsed_trusted_proxies());
     crate::server::state::AppState::new(crate::server::state::AppStateInner {
         engine,
-        channel_repo: repos.channels,
-        workflow_repo: repos.workflows,
-        connector_repo: repos.connectors,
-        trace_repo: repos.traces,
-        trace_dlq_repo: repos.trace_dlq,
-        audit_log_repo: repos.audit_logs,
+        repos,
         audit_queue,
         connector_registry,
-        cache_pool,
+        caches: crate::server::state::Caches {
+            cache_pool,
+            sql_pool_cache,
+            mongo_pool_cache,
+        },
         channel_registry,
         trace_queue,
         db_pool: pool,
@@ -800,11 +757,11 @@ pub fn build_app_state(params: AppStateParams) -> crate::server::state::AppState
         datalogic,
         rate_limit_state,
         ready,
-        sql_pool_cache,
-        mongo_pool_cache,
-        kafka_consumer_handle: Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle)),
-        kafka_ingest_status: Arc::new(crate::kafka::KafkaIngestStatus::new()),
-        kafka_producer,
+        kafka: crate::server::state::Kafka {
+            producer: kafka_producer,
+            consumer_handle: Arc::new(tokio::sync::Mutex::new(kafka_consumer_handle)),
+            ingest_status: Arc::new(crate::kafka::KafkaIngestStatus::new()),
+        },
         trace_persistence_queue,
         cluster,
         admin_auth_failures: Arc::new(Default::default()),

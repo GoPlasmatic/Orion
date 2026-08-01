@@ -92,7 +92,7 @@ async fn degraded_kafka_ingest_flips_readyz_and_health() {
     assert_eq!(body["components"]["kafka"], "ok", "{body}");
 
     // The K7 signal: a failed consumer restart flags ingestion as degraded.
-    state.kafka_ingest_status.set_degraded(true);
+    state.kafka.ingest_status.set_degraded(true);
 
     let resp = app
         .clone()
@@ -119,7 +119,7 @@ async fn degraded_kafka_ingest_flips_readyz_and_health() {
     assert_eq!(body["components"]["kafka"], "error", "{body}");
 
     // Recovery clears the signal.
-    state.kafka_ingest_status.set_degraded(false);
+    state.kafka.ingest_status.set_degraded(false);
     let resp = app
         .oneshot(json_request("GET", "/readyz", None))
         .await
@@ -206,9 +206,9 @@ async fn failed_consumer_restart_on_reload_degrades_readiness() {
     let body = body_json(resp).await;
     assert_eq!(body["status"], "not_ready");
     assert_eq!(body["components"]["kafka"], "error", "{body}");
-    assert!(state.kafka_ingest_status.is_degraded());
+    assert!(state.kafka.ingest_status.is_degraded());
     assert!(
-        state.kafka_ingest_status.supervisor_active(),
+        state.kafka.ingest_status.supervisor_active(),
         "the failed restart must hand recovery to the supervisor"
     );
 
@@ -238,20 +238,21 @@ async fn restart_supervisor_recovers_a_downed_consumer() {
 
     // Boot started a consumer for the configured topic.
     assert!(
-        state.kafka_consumer_handle.lock().await.is_some(),
+        state.kafka.consumer_handle.lock().await.is_some(),
         "boot must start a consumer for the configured topic"
     );
 
     // Simulate K7's failure mode: a reload shut the consumer down and the
     // restart failed — handle gone, degraded flagged.
     let old_handle = state
-        .kafka_consumer_handle
+        .kafka
+        .consumer_handle
         .lock()
         .await
         .take()
         .expect("handle present");
     old_handle.shutdown().await;
-    state.kafka_ingest_status.set_degraded(true);
+    state.kafka.ingest_status.set_degraded(true);
 
     let resp = app
         .clone()
@@ -283,20 +284,20 @@ async fn restart_supervisor_recovers_a_downed_consumer() {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     assert!(
-        state.kafka_consumer_handle.lock().await.is_some(),
+        state.kafka.consumer_handle.lock().await.is_some(),
         "the supervisor must restore the consumer handle"
     );
-    assert!(!state.kafka_ingest_status.is_degraded());
+    assert!(!state.kafka.ingest_status.is_degraded());
     // The supervisor releases its slot *before* clearing the degraded flag
     // (both while still holding the handle mutex — the TOCTOU fix), so once
     // the flag reads false the slot must read free.
     assert!(
-        !state.kafka_ingest_status.supervisor_active(),
+        !state.kafka.ingest_status.supervisor_active(),
         "a stood-down supervisor must have released its slot"
     );
 
     // Drain the restored consumer so the test leaves nothing running.
-    if let Some(handle) = state.kafka_consumer_handle.lock().await.take() {
+    if let Some(handle) = state.kafka.consumer_handle.lock().await.take() {
         handle.shutdown().await;
     }
 }

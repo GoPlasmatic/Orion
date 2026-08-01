@@ -44,7 +44,7 @@ pub(crate) async fn list_trace_dlq(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<TraceDlqFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let result = state.trace_dlq_repo.list_paginated(&filter).await?;
+    let result = state.repos.trace_dlq.list_paginated(&filter).await?;
 
     let rows: Vec<TraceDlqSummaryResponse> = result
         .data
@@ -74,7 +74,7 @@ pub(crate) async fn get_trace_dlq_entry(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
-    let entry = state.trace_dlq_repo.get_by_id(&id).await?;
+    let entry = state.repos.trace_dlq.get_by_id(&id).await?;
     Ok(data_response(TraceDlqEntryResponse::from(&entry)))
 }
 
@@ -94,7 +94,7 @@ pub(crate) async fn requeue_trace_dlq_entry(
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
-    let entry = state.trace_dlq_repo.requeue(&id).await?;
+    let entry = state.repos.trace_dlq.requeue(&id).await?;
     audit_log(&state.audit_queue, &principal, "requeue", "trace_dlq", &id);
     Ok(data_response(TraceDlqEntryResponse::from(&entry)))
 }
@@ -116,7 +116,8 @@ pub(crate) async fn purge_trace_dlq(
     OrionJson(req): OrionJson<PurgeTraceDlqRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let purged = state
-        .trace_dlq_repo
+        .repos
+        .trace_dlq
         .purge_exhausted(req.older_than_hours)
         .await?;
     audit_log(

@@ -556,7 +556,8 @@ async fn test_trace_get_requires_admin_key_or_token() {
     let token = "r12-capability-token";
     let token_hash = hex::encode(sha2::Sha256::digest(token.as_bytes()));
     let trace = state
-        .trace_repo
+        .repos
+        .traces
         .create_pending("r12-guarded", None, "async", None, Some(&token_hash))
         .await
         .unwrap();

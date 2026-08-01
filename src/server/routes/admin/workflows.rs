@@ -45,7 +45,7 @@ pub(crate) async fn list_workflows(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<WorkflowFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let result = state.workflow_repo.list_paginated(&filter).await?;
+    let result = state.repos.workflows.list_paginated(&filter).await?;
     paginated_into(result, |w| WorkflowResponse::try_from(w))
 }
 
@@ -67,7 +67,7 @@ pub(crate) async fn create_workflow(
     OrionJson(req): OrionJson<CreateWorkflowRequest>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
     crate::validation::validate_create_workflow(&req)?;
-    let workflow = state.workflow_repo.create(&req).await?;
+    let workflow = state.repos.workflows.create(&req).await?;
     audit_log_draft_only(
         &state.audit_queue,
         &principal,
@@ -93,7 +93,7 @@ pub(crate) async fn get_workflow(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, OrionError> {
-    let workflow = state.workflow_repo.get_by_id(&id).await?;
+    let workflow = state.repos.workflows.get_by_id(&id).await?;
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 
@@ -117,7 +117,7 @@ pub(crate) async fn update_workflow(
     OrionJson(req): OrionJson<UpdateWorkflowRequest>,
 ) -> Result<Json<Value>, OrionError> {
     crate::validation::validate_update_workflow(&req)?;
-    let workflow = state.workflow_repo.update_draft(&id, &req).await?;
+    let workflow = state.repos.workflows.update_draft(&id, &req).await?;
     audit_log_draft_only(&state.audit_queue, &principal, "update", "workflow", &id);
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
@@ -138,7 +138,7 @@ pub(crate) async fn delete_workflow(
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
-    state.workflow_repo.delete(&id).await?;
+    state.repos.workflows.delete(&id).await?;
     audit_and_reload(&state, &principal, "delete", "workflow", &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -174,12 +174,12 @@ pub(crate) async fn change_workflow_status(
             // workflows may be authored in either order) — activation is
             // the gate, because from here the workflow serves traffic and
             // a missing connector is a guaranteed runtime 500.
-            let draft = state.workflow_repo.get_by_id(&id).await?;
+            let draft = state.repos.workflows.get_by_id(&id).await?;
             ensure_workflow_connectors_exist(&state, &draft).await?;
             let rollout_pct = req.rollout_percentage.unwrap_or(100);
-            state.workflow_repo.activate(&id, rollout_pct).await?
+            state.repos.workflows.activate(&id, rollout_pct).await?
         }
-        StatusAction::Archive => state.workflow_repo.archive(&id).await?,
+        StatusAction::Archive => state.repos.workflows.archive(&id).await?,
     };
     audit_and_reload(
         &state,
@@ -344,7 +344,8 @@ pub(crate) async fn update_rollout(
     OrionJson(req): OrionJson<RolloutUpdateRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let workflow = state
-        .workflow_repo
+        .repos
+        .workflows
         .update_rollout(&id, req.rollout_percentage)
         .await?;
     audit_and_reload(&state, &principal, "update_rollout", "workflow", &id).await?;
@@ -375,9 +376,9 @@ pub(crate) async fn list_workflow_versions(
     OrionQuery(filter): OrionQuery<VersionFilter>,
 ) -> Result<Json<Value>, OrionError> {
     // Verify workflow exists
-    let _ = state.workflow_repo.get_by_id(&id).await?;
+    let _ = state.repos.workflows.get_by_id(&id).await?;
 
-    let result = state.workflow_repo.list_versions(&id, &filter).await?;
+    let result = state.repos.workflows.list_versions(&id, &filter).await?;
     paginated_into(result, |w| WorkflowResponse::try_from(w))
 }
 
@@ -397,7 +398,7 @@ pub(crate) async fn create_new_workflow_version(
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<Value>), OrionError> {
-    let workflow = state.workflow_repo.create_new_version(&id).await?;
+    let workflow = state.repos.workflows.create_new_version(&id).await?;
     audit_log_draft_only(
         &state.audit_queue,
         &principal,
@@ -439,7 +440,7 @@ pub(crate) async fn test_workflow(
 ) -> Result<Json<Value>, OrionError> {
     use crate::storage::repositories::workflows::workflow_to_dataflow;
 
-    let workflow = state.workflow_repo.get_by_id(&id).await?;
+    let workflow = state.repos.workflows.get_by_id(&id).await?;
 
     // O7: this endpoint runs the workflow's tasks against **live connectors** —
     // it will POST to real webhooks, write to real databases and publish to
@@ -540,8 +541,8 @@ pub(crate) async fn import_workflows(
     // one malformed item aborted the whole batch with a 400 while its two
     // siblings reported it as a single failed entry.
     super::check_import_batch_size(items.len())?;
-    let repo = state.workflow_repo.clone();
-    let probe = state.workflow_repo.clone();
+    let repo = state.repos.workflows.clone();
+    let probe = state.repos.workflows.clone();
     let (imported, failed, errors) =
         super::import_items::<CreateWorkflowRequest, _, _, _, _, _, _>(
             items,
@@ -627,7 +628,7 @@ pub(crate) async fn export_workflows(
     OrionQuery(filter): OrionQuery<WorkflowFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let data = collect_export_pages(
-        state.workflow_repo.as_ref(),
+        state.repos.workflows.as_ref(),
         &filter,
         super::EXPORT_PAGE_SIZE,
     )

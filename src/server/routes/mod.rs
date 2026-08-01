@@ -303,10 +303,10 @@ fn kafka_component(state: &AppState) -> Option<&'static str> {
     if !state.config.kafka.enabled {
         return None;
     }
-    if state.kafka_ingest_status.is_degraded() {
+    if state.kafka.ingest_status.is_degraded() {
         return Some("error");
     }
-    let consumer_dead = match state.kafka_consumer_handle.try_lock() {
+    let consumer_dead = match state.kafka.consumer_handle.try_lock() {
         Ok(guard) => guard.as_ref().is_some_and(|h| h.is_finished()),
         // A reload holds the lock mid-restart. The degraded flag above is
         // the authoritative down signal and it said healthy — a probe must

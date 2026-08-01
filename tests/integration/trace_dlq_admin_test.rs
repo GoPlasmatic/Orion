@@ -15,12 +15,14 @@ const PAYLOAD: &str = r#"{"order":"A-1"}"#;
 /// Two entries: one still retrying, one that has given up.
 async fn seed(state: &AppState) -> (String, String) {
     let pending = state
-        .trace_dlq_repo
+        .repos
+        .trace_dlq
         .enqueue("trace-pending", "orders", PAYLOAD, "{}", "boom", 0, 3)
         .await
         .expect("enqueue pending");
     let exhausted = state
-        .trace_dlq_repo
+        .repos
+        .trace_dlq
         .enqueue("trace-exhausted", "payments", PAYLOAD, "{}", "boom", 3, 3)
         .await
         .expect("enqueue exhausted");

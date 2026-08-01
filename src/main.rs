@@ -354,7 +354,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     bootstrap::join_metrics_listener(metrics_server).await;
 
     // Graceful shutdown
-    if let Some(handle) = state.kafka_consumer_handle.lock().await.take() {
+    if let Some(handle) = state.kafka.consumer_handle.lock().await.take() {
         tracing::info!("Shutting down Kafka consumer...");
         handle.shutdown().await;
     }

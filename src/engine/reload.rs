@@ -31,11 +31,11 @@ pub async fn reload_engine(state: &AppState) -> Result<(), crate::errors::OrionE
 pub async fn resync_from_db(state: &AppState) -> Result<(), crate::errors::OrionError> {
     state
         .connector_registry
-        .reload(state.connector_repo.as_ref())
+        .reload(state.repos.connectors.as_ref())
         .await?;
-    state.sql_pool_cache.evict_all().await;
-    state.mongo_pool_cache.evict_all().await;
-    state.cache_pool.evict_all_pools().await;
+    state.caches.sql_pool_cache.evict_all().await;
+    state.caches.mongo_pool_cache.evict_all().await;
+    state.caches.cache_pool.evict_all_pools().await;
     reload_engine_with_opts(
         state,
         ReloadOpts {
@@ -53,9 +53,9 @@ pub async fn reload_engine_with_opts(
     let start = std::time::Instant::now();
 
     let result = async {
-        let channels = state.channel_repo.list_active().await?;
+        let channels = state.repos.channels.list_active().await?;
         let channels = crate::engine::filter_channels(channels, &state.config.channel_filter);
-        let active_workflows = state.workflow_repo.list_active().await?;
+        let active_workflows = state.repos.workflows.list_active().await?;
         let (workflows, engine_issues) =
             crate::engine::build_engine_workflows(&channels, &active_workflows);
 
@@ -83,7 +83,7 @@ pub async fn reload_engine_with_opts(
             .reload(
                 &channels,
                 &state.connector_registry,
-                &state.cache_pool,
+                &state.caches.cache_pool,
                 &state.datalogic,
                 &state.config.trace_storage,
                 engine_issues,
@@ -139,7 +139,7 @@ async fn restart_kafka_consumer_if_needed(
 
     let new_topic_set: HashSet<String> = all_topics.iter().map(|t| t.topic.clone()).collect();
 
-    let mut handle_guard = state.kafka_consumer_handle.lock().await;
+    let mut handle_guard = state.kafka.consumer_handle.lock().await;
 
     // Optimisation: if topics haven't changed, pause/resume instead of full restart
     if let Some(ref existing_handle) = *handle_guard
@@ -189,14 +189,14 @@ async fn restart_kafka_consumer_if_needed(
                 "Kafka consumer restarted with updated topics"
             );
             *handle_guard = Some(new_handle);
-            state.kafka_ingest_status.set_degraded(false);
+            state.kafka.ingest_status.set_degraded(false);
         }
         Ok(None) => {
             tracing::info!("No Kafka topics configured or from DB, consumer not started");
-            state.kafka_ingest_status.set_degraded(false);
+            state.kafka.ingest_status.set_degraded(false);
         }
         Err(e) => {
-            state.kafka_ingest_status.set_degraded(true);
+            state.kafka.ingest_status.set_degraded(true);
             crate::metrics::record_error("kafka_restart");
             tracing::error!(
                 error = %e,
@@ -223,7 +223,7 @@ fn try_start_ingest(
         state.engine.clone(),
         state.channel_registry.clone(),
         state.datalogic.clone(),
-        state.kafka_producer.clone(),
+        state.kafka.producer.clone(),
         state
             .cluster
             .enabled
@@ -251,7 +251,7 @@ fn try_start_ingest(
 /// slot occupied, spawned nothing, and left the process degraded with no
 /// supervisor until the next reload.
 pub fn spawn_kafka_restart_supervisor(state: &AppState) {
-    if !state.kafka_ingest_status.claim_supervisor() {
+    if !state.kafka.ingest_status.claim_supervisor() {
         return;
     }
     let state = state.clone();
@@ -259,22 +259,22 @@ pub fn spawn_kafka_restart_supervisor(state: &AppState) {
         let mut backoff_ms = crate::kafka::consumer::INITIAL_RETRY_BACKOFF_MS;
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-            let mut handle_guard = state.kafka_consumer_handle.lock().await;
+            let mut handle_guard = state.kafka.consumer_handle.lock().await;
             // Draining: do not resurrect a consumer mid-shutdown. (Checked
             // under the mutex like every other exit, so even this release
             // cannot race a failing reload's claim — and a spawn lost to a
             // drain-window race would only ever supervise a node that is
             // shutting down.)
             if !state.ready.load(std::sync::atomic::Ordering::Acquire) {
-                state.kafka_ingest_status.release_supervisor();
+                state.kafka.ingest_status.release_supervisor();
                 break;
             }
             if handle_guard.is_some() {
                 // Another reload already restarted the consumer.
-                state.kafka_ingest_status.release_supervisor();
+                state.kafka.ingest_status.release_supervisor();
                 break;
             }
-            let channels = match state.channel_repo.list_active().await {
+            let channels = match state.repos.channels.list_active().await {
                 Ok(channels) => {
                     crate::engine::filter_channels(channels, &state.config.channel_filter)
                 }
@@ -296,15 +296,15 @@ pub fn spawn_kafka_restart_supervisor(state: &AppState) {
                     // Slot before flag: both are Release stores, so an
                     // observer that sees the degraded flag cleared also
                     // sees the slot free.
-                    state.kafka_ingest_status.release_supervisor();
-                    state.kafka_ingest_status.set_degraded(false);
+                    state.kafka.ingest_status.release_supervisor();
+                    state.kafka.ingest_status.set_degraded(false);
                     tracing::info!("Kafka consumer restored by restart supervisor");
                     break;
                 }
                 Ok(None) => {
                     // Nothing to ingest any more — idle, not degraded.
-                    state.kafka_ingest_status.release_supervisor();
-                    state.kafka_ingest_status.set_degraded(false);
+                    state.kafka.ingest_status.release_supervisor();
+                    state.kafka.ingest_status.set_degraded(false);
                     tracing::info!("No Kafka topics remain; restart supervisor standing down");
                     break;
                 }

@@ -29,7 +29,7 @@ pub(crate) async fn list_audit_logs(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<AuditLogFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let page = state.audit_log_repo.list_paginated(&filter).await?;
+    let page = state.repos.audit_logs.list_paginated(&filter).await?;
     let rows: Vec<AuditLogEntryResponse> =
         page.data.iter().map(AuditLogEntryResponse::from).collect();
 

@@ -154,7 +154,7 @@ async fn persist_trace_and_cache(
         let trace_store_start = Instant::now();
         route_store_completed(
             &effective_trace,
-            &state.trace_repo,
+            &state.repos.traces,
             &state.trace_persistence_queue,
             trace,
         )

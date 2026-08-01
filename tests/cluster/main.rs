@@ -1531,7 +1531,8 @@ async fn trace_cleanup_ticks_on_both_nodes_delete_exactly_once() {
     // cutoff (the repo always stamps "now"; only these three rows exist yet).
     for _ in 0..3 {
         h.state_a
-            .trace_repo
+            .repos
+            .traces
             .store_completed("cleanup-ch", None, "sync", None, "{}", 1.0, None)
             .await
             .expect("seed expired trace");
@@ -1546,7 +1547,8 @@ async fn trace_cleanup_ticks_on_both_nodes_delete_exactly_once() {
     // One fresh trace that must survive the pass.
     let fresh_id = h
         .state_a
-        .trace_repo
+        .repos
+        .traces
         .store_completed("cleanup-ch", None, "sync", None, "{}", 1.0, None)
         .await
         .expect("seed fresh trace");
@@ -1565,8 +1567,8 @@ async fn trace_cleanup_ticks_on_both_nodes_delete_exactly_once() {
     // Both nodes tick concurrently. Lease acquisition is one atomic
     // UPDATE/INSERT race in the shared Postgres, so exactly one wins.
     let (a, b) = tokio::join!(
-        trace_cleanup_tick(&gate_a, &h.state_a.trace_repo),
-        trace_cleanup_tick(&gate_b, &h.state_b.trace_repo),
+        trace_cleanup_tick(&gate_a, &h.state_a.repos.traces),
+        trace_cleanup_tick(&gate_b, &h.state_b.repos.traces),
     );
 
     assert!(
