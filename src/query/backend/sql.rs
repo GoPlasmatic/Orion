@@ -587,7 +587,7 @@ fn build_write_for<S: SqlxBinder>(dialect: SqlDialect, stmt: &S) -> (String, Sql
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::{EntityRegistry, translate_sql, translate_sql_with_schema};
+    use crate::query::{EntityRegistry, plan_sql};
     use serde_json::{Value as Json, json};
 
     /// The default page bounds used by these goldens (limit 100/1000).
@@ -595,9 +595,21 @@ mod tests {
         QueryConfig::default()
     }
 
+    /// Plan `query` through the production entry point ([`plan_sql`]) and
+    /// return the main `SelectStatement`, so the goldens cannot drift from
+    /// the path the handler actually takes (W23).
+    fn plan_stmt(
+        query: &Json,
+        reg: &EntityRegistry,
+        dialect: SqlDialect,
+        limits: &QueryConfig,
+    ) -> Result<SelectStatement, QueryError> {
+        plan_sql(query, &serde_json::Map::new(), reg, dialect, limits).map(|plan| plan.main)
+    }
+
     /// Render `query` for `dialect` with values inlined, for golden assertions.
     fn sql_for(query: Json, dialect: SqlDialect) -> String {
-        let stmt = translate_sql(&query, &serde_json::Map::new(), dialect, &limits())
+        let stmt = plan_stmt(&query, &EntityRegistry::identity(), dialect, &limits())
             .expect("translation should succeed");
         match dialect {
             SqlDialect::Sqlite => stmt.to_string(SqliteQueryBuilder),
@@ -633,14 +645,8 @@ mod tests {
     }
 
     fn sqlite_schema(query: Json) -> String {
-        let stmt = translate_sql_with_schema(
-            &query,
-            &serde_json::Map::new(),
-            &rel_schema(),
-            SqlDialect::Sqlite,
-            &limits(),
-        )
-        .expect("translation should succeed");
+        let stmt = plan_stmt(&query, &rel_schema(), SqlDialect::Sqlite, &limits())
+            .expect("translation should succeed");
         stmt.to_string(SqliteQueryBuilder)
     }
 
@@ -782,9 +788,9 @@ mod tests {
             sqlite(json!({ "source": "t", "sort": [ { "name": "asc" } ] })),
             r#"SELECT * FROM "t" ORDER BY "name" ASC NULLS FIRST LIMIT 100"#
         );
-        let stmt = translate_sql(
+        let stmt = plan_stmt(
             &json!({ "source": "t", "sort": [ { "name": "asc" } ] }),
-            &serde_json::Map::new(),
+            &EntityRegistry::identity(),
             SqlDialect::Postgres,
             &limits(),
         )
@@ -798,9 +804,9 @@ mod tests {
     #[test]
     fn test_postgres_placeholders_via_build() {
         // Bound-parameter form (execution path): Postgres uses $1 placeholders.
-        let stmt = translate_sql(
+        let stmt = plan_stmt(
             &json!({ "source": "users", "filter": { "==": [{"field": "id"}, 7] } }),
-            &serde_json::Map::new(),
+            &EntityRegistry::identity(),
             SqlDialect::Postgres,
             &limits(),
         )
@@ -816,9 +822,9 @@ mod tests {
     /// invisible sort key emitted to emulate the old inverse rule.
     #[test]
     fn test_mysql_needs_no_null_ordering_emulation() {
-        let stmt = translate_sql(
+        let stmt = plan_stmt(
             &json!({ "source": "t", "sort": [ { "name": "asc" } ] }),
-            &serde_json::Map::new(),
+            &EntityRegistry::identity(),
             SqlDialect::Mysql,
             &limits(),
         )
@@ -831,9 +837,9 @@ mod tests {
 
     #[test]
     fn test_limit_default_applied() {
-        let stmt = translate_sql(
+        let stmt = plan_stmt(
             &json!({ "source": "t" }),
-            &serde_json::Map::new(),
+            &EntityRegistry::identity(),
             SqlDialect::Sqlite,
             &QueryConfig {
                 default_limit: 50,
@@ -849,9 +855,9 @@ mod tests {
 
     #[test]
     fn test_limit_exceeds_max_rejected() {
-        let err = translate_sql(
+        let err = plan_stmt(
             &json!({ "source": "t", "limit": 5000 }),
-            &serde_json::Map::new(),
+            &EntityRegistry::identity(),
             SqlDialect::Sqlite,
             &limits(),
         )
@@ -869,9 +875,9 @@ mod tests {
     /// clamped. The cap used to exist only on Elasticsearch.
     #[test]
     fn test_skip_exceeds_max_rejected() {
-        let err = translate_sql(
+        let err = plan_stmt(
             &json!({ "source": "t", "skip": 51 }),
-            &serde_json::Map::new(),
+            &EntityRegistry::identity(),
             SqlDialect::Sqlite,
             &QueryConfig {
                 max_skip: 50,
@@ -1502,17 +1508,20 @@ mod prop_tests {
                 "filter": { "==": [{ "field": ident.clone() }, 1] },
             });
             for dialect in [SqlDialect::Postgres, SqlDialect::Sqlite, SqlDialect::Mysql] {
-                match crate::query::translate_sql(
+                match crate::query::plan_sql(
                     &query,
                     &serde_json::Map::new(),
+                    &EntityRegistry::identity(),
                     dialect,
                     &QueryConfig::default(),
-                ) {
+                )
+                .map(|plan| plan.main)
+                {
                     Err(_) => {} // boundary rejection — the safe outcome
                     Ok(stmt) => {
                         prop_assert!(
                             !is_hostile(&ident),
-                            "translate_sql accepted a hostile identifier {ident:?}"
+                            "plan_sql accepted a hostile identifier {ident:?}"
                         );
                         let sql = match dialect {
                             SqlDialect::Sqlite => stmt.to_string(SqliteQueryBuilder),

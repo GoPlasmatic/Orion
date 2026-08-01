@@ -28,35 +28,6 @@ use ir::Cond;
 use sea_query::SelectStatement;
 use serde_json::Value as Json;
 
-/// Parse the envelope, lower the filter (identity mode), and render a SQL
-/// `SelectStatement` for `dialect`, enforcing the configured page bounds.
-/// `params` are concrete (already message-resolved) values substituted for
-/// `{"param": ..}` nodes. Test convenience — production goes through
-/// [`plan_sql`], which additionally resolves `include`s.
-#[cfg(test)]
-pub fn translate_sql(
-    query: &Json,
-    params: &Params,
-    dialect: SqlDialect,
-    limits: &QueryConfig,
-) -> Result<SelectStatement, QueryError> {
-    translate_sql_with_schema(query, params, &EntityRegistry::identity(), dialect, limits)
-}
-
-/// Schema-aware variant: resolves fields and relations through `reg` (renames,
-/// type hints, allowlist, and the relation declarations `some`/`all`/`none` need).
-#[cfg(test)]
-pub fn translate_sql_with_schema(
-    query: &Json,
-    params: &Params,
-    reg: &EntityRegistry,
-    dialect: SqlDialect,
-    limits: &QueryConfig,
-) -> Result<SelectStatement, QueryError> {
-    let (spec, cond, root_table) = prepare(query, params, reg)?;
-    backend::sql::render(&spec, &cond, &root_table, dialect, limits)
-}
-
 /// A rendered SQL query plus its `include` plan (related collections to nest).
 #[derive(Debug, Clone)]
 pub struct SqlPlan {
