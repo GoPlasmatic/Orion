@@ -22,7 +22,7 @@ DURATION_SECS="${DURATION_SECS:-25}"
 # The HA compose enforces admin auth (proposal P1). The drill only hits
 # unauthenticated endpoints, so a throwaway key suffices when the caller
 # didn't provide one — compose interpolation needs it set for every command.
-export ORION_ADMIN_API_KEYS="${ORION_ADMIN_API_KEYS:-drill-only-throwaway-admin-key}"
+export ORION_ADMIN_API_KEYS="${ORION_ADMIN_API_KEYS:-drill-only-throwaway-admin-key-padded-past-32}"
 
 cd "$(dirname "$0")/../.."
 

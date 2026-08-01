@@ -95,8 +95,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install musl toolchain
-        run: sudo apt-get update && sudo apt-get install -y musl-tools cmake
+      # musl-tools ships only a C compiler, and rdkafka's cmake configure also
+      # demands x86_64-linux-musl-g++ — librdkafka's project() declares CXX
+      # even though only the C library is ever linked — so the job needs a
+      # full musl cross toolchain. musl.cc's carries both compilers.
+      - name: Install musl cross toolchain (C and C++) and cmake
+        run: |
+          sudo apt-get update && sudo apt-get install -y cmake
+          curl -fsSL --retry 3 https://musl.cc/x86_64-linux-musl-cross.tgz -o /tmp/musl-cross.tgz
+          sudo tar -C /opt -xzf /tmp/musl-cross.tgz
+          echo "/opt/x86_64-linux-musl-cross/bin" >> "$GITHUB_PATH"
 
       - name: Build
+        env:
+          CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
+          CXX_x86_64_unknown_linux_musl: x86_64-linux-musl-g++
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
         run: cargo build --locked --target x86_64-unknown-linux-musl

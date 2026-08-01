@@ -72,7 +72,7 @@ jobs:
 
       - name: Start the HA stack (local image)
         env:
-          ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key
+          ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
         run: |
           docker compose -f docker-compose.ha.yml -f docker-compose.ha.build.yml \
             up -d --wait --no-build
@@ -83,11 +83,11 @@ jobs:
       - name: Stack logs on failure
         if: failure()
         env:
-          ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key
+          ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
         run: docker compose -f docker-compose.ha.yml logs --tail 200
 
       - name: Tear down
         if: always()
         env:
-          ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key
+          ORION_ADMIN_API_KEYS: drill-only-throwaway-admin-key-padded-past-32
         run: docker compose -f docker-compose.ha.yml down -v
