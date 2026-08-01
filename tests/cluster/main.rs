@@ -22,7 +22,8 @@ mod common;
 
 use std::time::Duration;
 
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use serde_json::json;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::{postgres::Postgres, redis::Redis};
@@ -1386,6 +1387,384 @@ async fn postgres_outage_stale_node_keeps_serving_and_recovers() {
     })
     .await;
     assert!(served, "the epoch bus must be live again after recovery");
+}
+
+/// T6 — the response cache is a shared store, not per-node memory: a body
+/// cached by node A must be replayed by node B. With no connector named on
+/// the channel, cluster-mode backend resolution rides the shared cluster
+/// Redis (`registry.rs` resolves `cluster.default_cache`; the guardrail
+/// refuses per-node memory stores outright), and the SHA-256 cache key is
+/// process-independent by design, so both nodes agree on the key.
+///
+/// The proof borrows the single-process `cache_key_fields` mechanism: the
+/// key is scoped to `user_id` only, so an `origin` field marks WHICH
+/// execution produced the stored body without changing the key. Node B's
+/// same-keyed request carries `origin: "node-b"` — an execution would echo
+/// it back, a shared-cache hit replays node A's `"node-a"` body.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn response_cache_is_shared_across_nodes() {
+    let h = two_nodes().await;
+
+    common::create_and_activate_channel_with_config(
+        &h.node_a,
+        "cache-cluster-ch",
+        common::echo_workflow("Cluster Cache WF"),
+        json!({
+            "cache": {
+                "enabled": true,
+                "ttl_secs": 300,
+                "cache_key_fields": ["user_id"]
+            }
+        }),
+    )
+    .await;
+
+    // Node A executes and populates the shared cache. No `eventually` needed:
+    // activation went through node A, whose local reload precedes the reply.
+    // The cache store is awaited on the response path (`persist_trace_and_cache`
+    // runs before the handler returns), so once this 200 is back the Redis
+    // entry exists — node B cannot slip in an execute-and-store first.
+    let resp = h
+        .node_a
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/cache-cluster-ch",
+            Some(json!({"data": {"user_id": "u1", "origin": "node-a"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["data"]["echo"]["origin"], "node-a",
+        "node A's first request must execute (empty cache): {body}"
+    );
+
+    // Same key (`user_id`), different origin, via node B. Non-200 means the
+    // channel has not propagated yet; the first 200 must already be the
+    // shared-cache hit because the entry predates every node B request.
+    let mut served_body = json!(null);
+    let served = eventually(h.poll, async || {
+        let resp = h
+            .node_b
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/data/cache-cluster-ch",
+                Some(json!({"data": {"user_id": "u1", "origin": "node-b"}})),
+            ))
+            .await
+            .unwrap();
+        if resp.status() != StatusCode::OK {
+            return false;
+        }
+        served_body = body_json(resp).await;
+        true
+    })
+    .await;
+    assert!(
+        served,
+        "node B must serve the channel within the poll budget"
+    );
+    assert_eq!(
+        served_body["data"]["echo"]["origin"], "node-a",
+        "node B must replay the body node A cached, not execute: {served_body}"
+    );
+
+    // Control for the proof mechanism itself: a different user_id is a
+    // different key, so node B executes and echoes its own origin — the
+    // marker genuinely distinguishes executions from cache hits.
+    let resp = h
+        .node_b
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/data/cache-cluster-ch",
+            Some(json!({"data": {"user_id": "u2", "origin": "node-b-fresh"}})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let control = body_json(resp).await;
+    assert_eq!(
+        control["data"]["echo"]["origin"], "node-b-fresh",
+        "a different cache key must execute on node B: {control}"
+    );
+}
+
+/// One trace-cleanup tick, exactly as `start_retention_job`'s loop runs it:
+/// consult the lease gate, run one retention pass only when the lease is
+/// held. The production body is interval-driven inside a spawned task
+/// (src/queue/mod.rs) with no test entry point, so the test composes the
+/// identical sequence from the same two public parts the loop uses.
+/// `None` = lease-skip (the tick did not touch the table).
+async fn trace_cleanup_tick(
+    gate: &orion::cluster::JobLeaseGate,
+    repo: &std::sync::Arc<dyn orion::storage::repositories::traces::TraceRepository>,
+) -> Option<u64> {
+    if !gate.try_acquire("trace_cleanup", 120).await {
+        return None;
+    }
+    Some(repo.delete_older_than(24).await.expect("retention pass"))
+}
+
+/// T6 — trace-cleanup single-flight: when two nodes tick at the same moment,
+/// exactly one runs the retention pass and the other's tick is a lease-skip.
+/// Without the `JobLeaseGate` every replica would issue the same DELETE
+/// every tick — invisible via row counts (a second DELETE finds nothing),
+/// which is exactly why the pin is the gate outcome, not the table state:
+/// the loser must never reach the DELETE at all.
+///
+/// The harness's real cleanup tasks are running too, but their first
+/// interval tick is 3600s out (defaults; the immediate tick is skipped), so
+/// the only "trace_cleanup" lease traffic in the test window is ours.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn trace_cleanup_ticks_on_both_nodes_delete_exactly_once() {
+    use orion::cluster::JobLeaseGate;
+
+    let h = two_nodes().await;
+
+    // Seed three completed traces, then backdate them past the 24h retention
+    // cutoff (the repo always stamps "now"; only these three rows exist yet).
+    for _ in 0..3 {
+        h.state_a
+            .trace_repo
+            .store_completed("cleanup-ch", None, "sync", None, "{}", 1.0, None)
+            .await
+            .expect("seed expired trace");
+    }
+    let orion::storage::DbPool::Postgres(pg) = &h.state_a.db_pool else {
+        panic!("postgres expected");
+    };
+    sqlx::query("UPDATE traces SET created_at = LOCALTIMESTAMP - interval '48 hours'")
+        .execute(pg)
+        .await
+        .expect("backdate");
+    // One fresh trace that must survive the pass.
+    let fresh_id = h
+        .state_a
+        .trace_repo
+        .store_completed("cleanup-ch", None, "sync", None, "{}", 1.0, None)
+        .await
+        .expect("seed fresh trace");
+
+    // The same gates bootstrap.rs builds for the cleanup jobs: each node's
+    // cluster repo + instance id.
+    let gate_a = JobLeaseGate::new(
+        h.state_a.cluster.repo.clone(),
+        h.state_a.cluster.instance_id.clone(),
+    );
+    let gate_b = JobLeaseGate::new(
+        h.state_b.cluster.repo.clone(),
+        h.state_b.cluster.instance_id.clone(),
+    );
+
+    // Both nodes tick concurrently. Lease acquisition is one atomic
+    // UPDATE/INSERT race in the shared Postgres, so exactly one wins.
+    let (a, b) = tokio::join!(
+        trace_cleanup_tick(&gate_a, &h.state_a.trace_repo),
+        trace_cleanup_tick(&gate_b, &h.state_b.trace_repo),
+    );
+
+    assert!(
+        a.is_some() ^ b.is_some(),
+        "exactly one node must win the trace_cleanup lease (a={a:?}, b={b:?})"
+    );
+    let deleted = a.or(b).unwrap();
+    assert_eq!(
+        deleted, 3,
+        "the winning tick must delete the three expired traces — once"
+    );
+
+    // The loser's skip left the table to the winner: only the fresh row
+    // remains (a doubled pass could not double-delete, but a pass that also
+    // caught the fresh row, or deleted nothing, shows up here).
+    let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM traces")
+        .fetch_one(pg)
+        .await
+        .expect("count");
+    assert_eq!(count, 1, "only the fresh trace must remain");
+    let (remaining,): (String,) = sqlx::query_as("SELECT id FROM traces")
+        .fetch_one(pg)
+        .await
+        .expect("remaining id");
+    assert_eq!(remaining, fresh_id);
+
+    // Next tick, same order of play as production: the loser is still locked
+    // out while the winner's lease is live, and the incumbent renews cheaply.
+    let (winner, loser) = if a.is_some() {
+        (&gate_a, &gate_b)
+    } else {
+        (&gate_b, &gate_a)
+    };
+    assert!(
+        !loser.try_acquire("trace_cleanup", 120).await,
+        "a live lease must keep the other node skipping"
+    );
+    assert!(
+        winner.try_acquire("trace_cleanup", 120).await,
+        "the incumbent must renew its own lease"
+    );
+}
+
+/// POST with the sticky-rollout identity header the canary test's nodes
+/// bucket on.
+fn post_with_sticky_caller(uri: &str, caller: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("x-canary-caller", caller)
+        .body(Body::from(serde_json::to_string(&body).unwrap()))
+        .unwrap()
+}
+
+/// T6 — sticky rollout across replicas: with a 50/50 canary split active on
+/// both nodes, the SAME sticky identity must get the SAME workflow version
+/// from node A and node B. The bucketing is an unkeyed FNV-1a hash of the
+/// configured sticky header's value (`engine/utils.rs`), deliberately
+/// process-independent — this is the cross-node pin that design carries.
+///
+/// The identities are fixed strings so the buckets are deterministic run to
+/// run: caller-0..9 hash to buckets {19, 8, 41, 30, 75, 64, 97, 86, 31, 20},
+/// which covers both halves of [0, 100) whichever half v2 owns — so the
+/// A==B assertion cannot hold vacuously with every identity on one side.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs Docker; run with: cargo test --test cluster -- --ignored"]
+async fn sticky_rollout_assignment_is_stable_across_nodes() {
+    let h = two_nodes_with(|config| {
+        config.engine.rollout_sticky_header = "x-canary-caller".to_string();
+    })
+    .await;
+
+    // v1 and v2 mark themselves in the response body, so "which version
+    // served this" is readable from `data.version`.
+    let marker_workflow = |marker: &str| {
+        json!({
+            "workflow_id": "canary",
+            "name": "Canary",
+            "condition": true,
+            "tasks": [{
+                "id": "t1",
+                "name": "Mark the version",
+                "function": {
+                    "name": "map",
+                    "input": {"mappings": [{"path": "data.version", "logic": marker}]}
+                }
+            }]
+        })
+    };
+
+    // v1 at 100% on an active channel; then v2 as a new draft, edited to
+    // mark itself, activated at 50% — all via node A (same flow as the
+    // single-process rollout_percentages_split_traffic_across_versions).
+    common::create_and_activate_channel(&h.node_a, "canary-ch", marker_workflow("v1")).await;
+    let resp = h
+        .node_a
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/workflows/canary/versions",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let resp = h
+        .node_a
+        .clone()
+        .oneshot(json_request(
+            "PUT",
+            "/api/v1/admin/workflows/canary",
+            Some(marker_workflow("v2")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let resp = h
+        .node_a
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            "/api/v1/admin/workflows/canary/status",
+            Some(json!({"status": "active", "rollout_percentage": 50})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "body = {}",
+        body_json(resp).await
+    );
+
+    let version_on = |node: axum::Router, caller: String| async move {
+        let resp = node
+            .oneshot(post_with_sticky_caller(
+                "/api/v1/data/canary-ch",
+                &caller,
+                json!({"data": {}}),
+            ))
+            .await
+            .unwrap();
+        if resp.status() != StatusCode::OK {
+            return None;
+        }
+        body_json(resp).await["data"]["version"]
+            .as_str()
+            .map(str::to_string)
+    };
+
+    // Node A applied the split inline; its per-identity answers are the
+    // baseline every later request must reproduce.
+    let identities: Vec<String> = (0..10).map(|i| format!("caller-{i}")).collect();
+    let mut baseline = Vec::with_capacity(identities.len());
+    for id in &identities {
+        let v = version_on(h.node_a.clone(), id.clone())
+            .await
+            .unwrap_or_else(|| panic!("node A must serve {id} right after activation"));
+        baseline.push(v);
+    }
+    assert!(
+        baseline.iter().any(|v| v == "v1") && baseline.iter().any(|v| v == "v2"),
+        "the fixed identity set must land on both sides of the split: {baseline:?}"
+    );
+
+    // Node B serves v1-at-100% until its watcher applies the activation (one
+    // atomic engine swap), so "answers v2 for an identity node A routes to
+    // v2" is exactly "node B has the split".
+    let v2_caller = identities[baseline.iter().position(|v| v == "v2").unwrap()].clone();
+    let propagated = eventually(h.poll, async || {
+        version_on(h.node_b.clone(), v2_caller.clone())
+            .await
+            .as_deref()
+            == Some("v2")
+    })
+    .await;
+    assert!(propagated, "node B must apply the 50% activation of v2");
+
+    // THE pin, twice over: every identity gets its baseline version from
+    // BOTH nodes, and repeatably — same caller, same version, wherever the
+    // LB happens to send the request.
+    for round in 0..2 {
+        for (id, expected) in identities.iter().zip(&baseline) {
+            let b = version_on(h.node_b.clone(), id.clone()).await;
+            assert_eq!(
+                b.as_deref(),
+                Some(expected.as_str()),
+                "round {round}: node B must serve {id} the version node A assigned"
+            );
+            let a = version_on(h.node_a.clone(), id.clone()).await;
+            assert_eq!(
+                a.as_deref(),
+                Some(expected.as_str()),
+                "round {round}: node A must stay sticky for {id}"
+            );
+        }
+    }
 }
 
 /// B3: filesystem backups are refused in cluster mode — the file would land
