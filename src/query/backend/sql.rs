@@ -196,12 +196,7 @@ fn render_expr(cond: &Cond, current_table: &str) -> Result<SimpleExpr, QueryErro
             high_incl,
             negated,
         } => between_expr(field, low, high, *low_incl, *high_incl, *negated)?,
-        Cond::Text {
-            field,
-            op,
-            pattern,
-            ci: _,
-        } => text_expr(field, *op, pattern),
+        Cond::Text { field, op, pattern } => text_expr(field, *op, pattern),
         Cond::Rel { quant, rel, cond } => render_rel(*quant, rel, cond, current_table)?,
     })
 }

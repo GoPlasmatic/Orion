@@ -142,14 +142,9 @@ fn match_doc(cond: &Cond) -> Result<Document, QueryError> {
                 d
             }
         }
-        Cond::Text {
-            field,
-            op,
-            pattern,
-            ci,
-        } => {
-            // W13: `$regex` is case-sensitive unless `$options: "i"` is set —
-            // one of the four behaviours the dialect deliberately does not
+        Cond::Text { field, op, pattern } => {
+            // W13: `$regex` without `$options: "i"` is case-sensitive — one
+            // of the four behaviours the dialect deliberately does not
             // normalise. See the parity table in
             // `docs/src/reference/data-dialect.md`.
             let escaped = regex_escape(pattern);
@@ -160,9 +155,6 @@ fn match_doc(cond: &Cond) -> Result<Document, QueryError> {
             };
             let mut inner = Document::new();
             inner.insert("$regex", Bson::String(regex));
-            if *ci {
-                inner.insert("$options", Bson::String("i".to_string()));
-            }
             doc_kv(field.physical.as_str(), Bson::Document(inner))
         }
         Cond::Rel { quant, rel, cond } => {

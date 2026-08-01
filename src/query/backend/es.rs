@@ -158,28 +158,19 @@ fn query_json(cond: &Cond, prefix: &str) -> Result<Json, QueryError> {
                 clause
             }
         }
-        Cond::Text {
-            field,
-            op,
-            pattern,
-            ci,
-        } => {
-            // W13: `case_insensitive` is emitted when the IR asks for it, but a
-            // `text` field's analyzer has already folded the indexed tokens, so
-            // ES cannot be made case-*sensitive* at query time at all. The
-            // per-backend truth is in the parity table of
+        Cond::Text { field, op, pattern } => {
+            // W13: matching is case-sensitive at query time on `keyword`
+            // fields, but a `text` field's analyzer has already folded the
+            // indexed tokens, so ES cannot be made case-sensitive there at
+            // all. The per-backend truth is in the parity table of
             // `docs/src/reference/data-dialect.md`.
             let f = fname(field, prefix);
             match op {
                 TextOp::StartsWith => {
-                    let mut v = json!({ "value": pattern });
-                    if *ci {
-                        v["case_insensitive"] = Json::Bool(true);
-                    }
-                    json!({ "prefix": { f: v } })
+                    json!({ "prefix": { f: { "value": pattern } } })
                 }
-                TextOp::EndsWith => wildcard(&f, format!("*{}", wildcard_escape(pattern)), *ci),
-                TextOp::Contains => wildcard(&f, format!("*{}*", wildcard_escape(pattern)), *ci),
+                TextOp::EndsWith => wildcard(&f, format!("*{}", wildcard_escape(pattern))),
+                TextOp::Contains => wildcard(&f, format!("*{}*", wildcard_escape(pattern))),
             }
         }
         Cond::Rel { quant, rel, cond } => {
@@ -227,12 +218,8 @@ fn clauses(cs: &[Cond], prefix: &str) -> Result<Vec<Json>, QueryError> {
     cs.iter().map(|c| query_json(c, prefix)).collect()
 }
 
-fn wildcard(field: &str, value: String, ci: bool) -> Json {
-    let mut v = json!({ "value": value });
-    if ci {
-        v["case_insensitive"] = Json::Bool(true);
-    }
-    json!({ "wildcard": { field: v } })
+fn wildcard(field: &str, value: String) -> Json {
+    json!({ "wildcard": { field: { "value": value } } })
 }
 
 fn fname(field: &FieldRef, prefix: &str) -> String {

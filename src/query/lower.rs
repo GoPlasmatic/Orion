@@ -254,7 +254,6 @@ fn lower_in(arg: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Cond, Query
             field: f,
             op: TextOp::Contains,
             pattern: s,
-            ci: false,
         }),
         (Operand::Field(_), Operand::Field(_)) => {
             Err(not_representable("column-to-column 'in'", at))
@@ -304,12 +303,7 @@ fn lower_text(
             ));
         }
     };
-    Ok(Cond::Text {
-        field,
-        op,
-        pattern,
-        ci: false,
-    })
+    Ok(Cond::Text { field, op, pattern })
 }
 
 fn lower_missing(arg: &Json, ctx: &Ctx, entity: &str, at: &str) -> Result<Cond, QueryError> {
@@ -761,7 +755,6 @@ mod tests {
                 field: FieldRef::identity("name"),
                 op: TextOp::Contains,
                 pattern: "smith".into(),
-                ci: false,
             }
         );
     }
@@ -775,7 +768,6 @@ mod tests {
                 field: FieldRef::identity("name"),
                 op: TextOp::StartsWith,
                 pattern: "sm".into(),
-                ci: false,
             }
         );
     }
@@ -865,14 +857,8 @@ mod tests {
                     es: EsStorage::Nested,
                 },
                 cond: Box::new(Cond::Compare {
-                    field: FieldRef {
-                        path: vec!["total".into()],
-                        physical: "total".into(),
-                        ty: crate::query::ir::FieldType::Float,
-                    },
+                    field: FieldRef::identity("total"),
                     op: CmpOp::Gt,
-                    // Literals keep their natural JSON type in v1 (no coercion to
-                    // the column's declared type yet).
                     value: Value::Int(100),
                 }),
             }

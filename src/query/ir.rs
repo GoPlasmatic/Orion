@@ -45,12 +45,14 @@ pub enum Cond {
         high_incl: bool,
         negated: bool,
     },
-    /// Substring / prefix / suffix text match (`LIKE`). `ci` = case-insensitive.
+    /// Substring / prefix / suffix text match (`LIKE`). Case-sensitivity is
+    /// whatever the backend natively does (W13) — the dialect does not
+    /// normalise it; the per-backend truth is in the parity table of
+    /// `docs/src/reference/data-dialect.md`.
     Text {
         field: FieldRef,
         op: TextOp,
         pattern: String,
-        ci: bool,
     },
     /// A relation predicate: `some` / `all` / `none` over a declared relation.
     /// Always an EXISTS-style semi/anti join — the root row count never changes.
@@ -195,45 +197,21 @@ pub enum TextOp {
 
 /// A resolved reference to a column/field.
 ///
-/// In identity mode `physical == path[0]` and `ty == Unknown`; a declared
-/// schema populates renames and type hints.
+/// In identity mode the physical name is the name as written; a schema rename
+/// maps the logical name to a different physical one during lowering.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FieldRef {
-    /// The dotted path as written, e.g. `["address", "city"]`.
-    pub path: Vec<String>,
     /// The resolved physical column name.
     pub physical: String,
-    /// The declared type, driving coercion (Unknown in identity mode).
-    pub ty: FieldType,
 }
 
 impl FieldRef {
     /// Build an identity-mode field reference for a single-segment column name.
     pub fn identity(name: impl Into<String>) -> Self {
-        let name = name.into();
         FieldRef {
-            path: vec![name.clone()],
-            physical: name,
-            ty: FieldType::Unknown,
+            physical: name.into(),
         }
     }
-}
-
-/// The declared type of a field. Only `Unknown` is produced in identity mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FieldType {
-    Bool,
-    Int,
-    Float,
-    Decimal,
-    Text,
-    Keyword,
-    Date,
-    Timestamp,
-    Json,
-    #[default]
-    Unknown,
 }
 
 /// A literal operand value. Only these variants ever become bound parameters,

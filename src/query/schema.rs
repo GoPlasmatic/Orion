@@ -2,8 +2,8 @@
 //!
 //! Declared inline in the `data_query` input (a `schema` field). It is privileged
 //! configuration authored alongside the query — never built from request input —
-//! adding, only when wanted: renames (logical→physical), type hints, a field
-//! allowlist, and the relation declarations that `some`/`all`/`none` require.
+//! adding, only when wanted: renames (logical→physical), a field allowlist,
+//! and the relation declarations that `some`/`all`/`none` require.
 //!
 //! Since 1.0 the default is `UnmappedPolicy::Reject` (F24): a task that
 //! declares no schema reaches nothing, and identity mode — every name passing
@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use serde::Deserialize;
 
 use crate::query::error::QueryError;
-use crate::query::ir::{EsStorage, FieldRef, FieldType, JunctionRef, MongoStorage, RelRef};
+use crate::query::ir::{EsStorage, FieldRef, JunctionRef, MongoStorage, RelRef};
 
 /// The set of entities queryable through the dialect, plus the unmapped policy.
 ///
@@ -69,6 +69,12 @@ pub struct Column {
     /// Physical column name; defaults to the logical key.
     #[serde(default)]
     pub name: Option<String>,
+    /// Declared type hint. Parsed and validated but not consumed (W16): v1
+    /// passes values through with their natural JSON types and no backend
+    /// coerces on the hint. Kept as a declaration because `Column` is
+    /// `deny_unknown_fields` — dropping the key would hard-reject every
+    /// stored schema that declares `"type"`, including the documented
+    /// example. Reserved for value coercion if a later version needs it.
     #[serde(rename = "type", default)]
     pub ty: FieldType,
     #[serde(default = "default_true")]
@@ -81,6 +87,26 @@ pub struct Column {
 
 fn default_true() -> bool {
     true
+}
+
+/// The declared type of a column, as authored in a schema fragment.
+///
+/// Validation-only in v1 (see [`Column::ty`]): an unknown name is a parse
+/// error, but no code path reads the parsed value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldType {
+    Bool,
+    Int,
+    Float,
+    Decimal,
+    Text,
+    Keyword,
+    Date,
+    Timestamp,
+    Json,
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -291,7 +317,7 @@ impl EntityRegistry {
             .collect()
     }
 
-    /// Resolve a caller-named column on `entity` to its physical name and type,
+    /// Resolve a caller-named column on `entity` to its physical name,
     /// honouring renames, the unmapped policy, and whichever per-column flag
     /// (`queryable` / `writable`) `allowed` tests.
     ///
@@ -304,7 +330,7 @@ impl EntityRegistry {
         name: &str,
         at: &str,
         allowed: fn(&Column) -> bool,
-    ) -> Result<(String, FieldType), QueryError> {
+    ) -> Result<String, QueryError> {
         if let Some(col) = self.entities.get(entity).and_then(|e| e.columns.get(name)) {
             if !allowed(col) {
                 return Err(QueryError::InvalidField {
@@ -315,12 +341,12 @@ impl EntityRegistry {
             let physical = col.name.clone().unwrap_or_else(|| name.to_string());
             // W4: a rename target is operator-supplied too.
             validate_identifier(&physical, at)?;
-            return Ok((physical, col.ty));
+            return Ok(physical);
         }
         match self.unmapped {
             UnmappedPolicy::Identity => {
                 validate_identifier(name, at)?;
-                Ok((name.to_string(), FieldType::Unknown))
+                Ok(name.to_string())
             }
             UnmappedPolicy::Reject => Err(QueryError::InvalidField {
                 field: name.to_string(),
@@ -330,32 +356,28 @@ impl EntityRegistry {
     }
 
     /// Resolve a single-segment field on `entity` to a physical [`FieldRef`],
-    /// honouring renames, type hints, and the allowlist.
+    /// honouring renames and the allowlist.
     pub fn resolve_field(
         &self,
         entity: &str,
         name: &str,
         at: &str,
     ) -> Result<FieldRef, QueryError> {
-        let (physical, ty) = self.resolve_column(entity, name, at, |c| c.queryable)?;
-        Ok(FieldRef {
-            path: vec![name.to_string()],
-            physical,
-            ty,
-        })
+        let physical = self.resolve_column(entity, name, at, |c| c.queryable)?;
+        Ok(FieldRef { physical })
     }
 
     /// Resolve a column being written on `entity` to its physical name, honouring
     /// renames, the `writable` flag, and the unmapped policy. Unlike
     /// [`resolve_field`](Self::resolve_field) this checks `writable` (not
-    /// `queryable`) and returns only the physical name.
+    /// `queryable`).
     pub fn resolve_write_column(
         &self,
         entity: &str,
         name: &str,
         at: &str,
     ) -> Result<String, QueryError> {
-        Ok(self.resolve_column(entity, name, at, |c| c.writable)?.0)
+        self.resolve_column(entity, name, at, |c| c.writable)
     }
 
     /// Physical name for a column named by the *schema itself* — a relation's

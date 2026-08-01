@@ -352,7 +352,10 @@ input again, so `include: { "orders": {} }` works against an undeclared
   (`id` → `user_id`, or `id` → `_id` on **both** document stores: neither
   Elasticsearch nor MongoDB maps a logical `id` onto the document key
   implicitly, so targeting it is always an explicit rename).
-- **Types** — drive value coercion where a backend needs the hint.
+- **Types** — declared hints (`int`, `text`, …) that are validated at parse
+  time but not consumed: values keep their natural JSON types end to end in
+  v1, and no backend coerces on the hint. The key is reserved for value
+  coercion in a later version; an unknown type name is still a hard error.
 - **Allowlist** — under `"unmapped": "reject"` (the default), only declared
   entities and columns are usable; `queryable: false` hides a column from
   reads, `writable: false` protects it from writes (generated/identity
