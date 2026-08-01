@@ -13,8 +13,8 @@ use crate::storage::{
 
 use super::helpers::PaginatedResult;
 use super::helpers::{
-    Page, Projection, clamp_pagination, map_duplicate, optional_string_value, paginate,
-    parse_sort_order,
+    Page, Projection, WriteStatement, clamp_pagination, map_duplicate, optional_string_value,
+    paginate, parse_sort_order,
 };
 use super::versioned::{self, VersionedSpec};
 
@@ -27,6 +27,7 @@ fn spec() -> VersionedSpec {
         version_col: Channels::Version.into_iden(),
         status_col: Channels::Status.into_iden(),
         priority_col: Channels::Priority.into_iden(),
+        updated_at_col: Channels::UpdatedAt.into_iden(),
         label: "Channel",
         noun: "channel",
     }
@@ -141,15 +142,6 @@ pub struct SqlChannelRepository {
 }
 
 impl SqlChannelRepository {
-    /// Fetch one specific version — internal helper for the lifecycle
-    /// methods; the admin API only exposes latest/list forms.
-    async fn get_version(&self, channel_id: &str, version: i64) -> Result<Channel, OrionError> {
-        crate::metrics::timed_db_op("channels.get_version", async {
-            versioned::get_version(&self.pool, &spec(), channel_id, version).await
-        })
-        .await
-    }
-
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
@@ -176,8 +168,8 @@ struct ChannelInsertRow<'a> {
     priority: i64,
 }
 
-/// Build the INSERT query for a channel row.
-fn build_channel_insert(row: ChannelInsertRow<'_>) -> (String, sea_query_binder::SqlxValues) {
+/// Build the INSERT statement for a channel row.
+fn build_channel_insert(row: ChannelInsertRow<'_>) -> sea_query::InsertStatement {
     let mut q = Query::insert();
     q.into_table(Channels::Table)
         .columns([
@@ -214,7 +206,7 @@ fn build_channel_insert(row: ChannelInsertRow<'_>) -> (String, sea_query_binder:
             Expr::val(row.status).into(),
             Expr::val(row.priority).into(),
         ]);
-    build_sqlx(&mut q)
+    q
 }
 
 fn build_condition(filter: &ChannelFilter) -> Condition {
@@ -254,7 +246,7 @@ impl ChannelRepository for SqlChannelRepository {
             let consumer_group_val = optional_string_value(req.consumer_group.as_deref());
             let workflow_id_val = optional_string_value(req.workflow_id.as_deref());
 
-            let (sql, values) = build_channel_insert(ChannelInsertRow {
+            let mut insert = build_channel_insert(ChannelInsertRow {
                 channel_id: channel_id.as_str(),
                 version: 1,
                 name: req.name.as_str(),
@@ -272,14 +264,21 @@ impl ChannelRepository for SqlChannelRepository {
                 priority: req.priority,
             });
 
+            // D23: the INSERT and the row it wrote travel together.
             // D16: a duplicate id is the client's mistake, not ours — 409.
-            self.pool.execute_query(&sql, values).await.map_err(|e| {
-                map_duplicate(e, || {
-                    format!("Channel with id '{channel_id}' already exists")
-                })
-            })?;
-
-            self.get_version(&channel_id, 1).await
+            versioned::write_returning_version(
+                &self.pool,
+                &spec(),
+                WriteStatement::Insert(&mut insert),
+                &channel_id,
+                1,
+                |e| {
+                    map_duplicate(e, || {
+                        format!("Channel with id '{channel_id}' already exists")
+                    })
+                },
+            )
+            .await
         })
         .await
     }
@@ -376,29 +375,35 @@ impl ChannelRepository for SqlChannelRepository {
             let consumer_group_val = optional_string_value(consumer_group);
             let workflow_id_val = optional_string_value(workflow_id);
 
-            let (sql, values) = build_sqlx(
-                Query::update()
-                    .table(Channels::Table)
-                    .value(Channels::Name, name)
-                    .value(Channels::Description, description_val)
-                    .value(Channels::MethodsJson, methods_val)
-                    .value(Channels::RoutePattern, route_pattern_val)
-                    .value(Channels::Topic, topic_val)
-                    .value(Channels::ConsumerGroup, consumer_group_val)
-                    .value(
-                        Channels::TransportConfigJson,
-                        transport_config_json.as_str(),
-                    )
-                    .value(Channels::WorkflowId, workflow_id_val)
-                    .value(Channels::ConfigJson, config_json.as_str())
-                    .value(Channels::Priority, priority)
-                    .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
-                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str())),
-            );
+            let mut update = Query::update()
+                .table(Channels::Table)
+                .value(Channels::Name, name)
+                .value(Channels::Description, description_val)
+                .value(Channels::MethodsJson, methods_val)
+                .value(Channels::RoutePattern, route_pattern_val)
+                .value(Channels::Topic, topic_val)
+                .value(Channels::ConsumerGroup, consumer_group_val)
+                .value(
+                    Channels::TransportConfigJson,
+                    transport_config_json.as_str(),
+                )
+                .value(Channels::WorkflowId, workflow_id_val)
+                .value(Channels::ConfigJson, config_json.as_str())
+                .value(Channels::Priority, priority)
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
+                .to_owned();
 
-            self.pool.execute_query(&sql, values).await?;
-
-            self.get_version(channel_id, existing.version).await
+            // D23: the UPDATE and the row it wrote travel together.
+            versioned::write_returning_version(
+                &self.pool,
+                &spec(),
+                WriteStatement::Update(&mut update),
+                channel_id,
+                existing.version,
+                OrionError::Storage,
+            )
+            .await
         })
         .await
     }
@@ -424,8 +429,11 @@ impl ChannelRepository for SqlChannelRepository {
             let draft: Channel = versioned::require_draft_tx(&mut tx, &spec(), channel_id).await?;
 
             // Archive current active versions
-            let (archive_sql, archive_values) =
-                versioned::archive_actives_query(&spec(), channel_id, None);
+            let (archive_sql, archive_values) = build_sqlx(&mut versioned::archive_actives_query(
+                &spec(),
+                channel_id,
+                None,
+            ));
             tx.execute_query(&archive_sql, archive_values).await?;
 
             // Activate the draft
@@ -439,9 +447,14 @@ impl ChannelRepository for SqlChannelRepository {
 
             tx.execute_query(&activate_sql, activate_values).await?;
 
+            // D23: read the promoted row back inside the transaction that
+            // promoted it — this used to run on the pool after `tx.commit()`.
+            let activated =
+                versioned::get_version_tx(&mut tx, &spec(), channel_id, draft.version).await?;
+
             tx.commit().await?;
 
-            self.get_version(channel_id, draft.version).await
+            Ok(activated)
         })
         .await
     }
@@ -469,7 +482,7 @@ impl ChannelRepository for SqlChannelRepository {
             let consumer_group_val = optional_string_value(latest.consumer_group.as_deref());
             let workflow_id_val = optional_string_value(latest.workflow_id.as_deref());
 
-            let (sql, values) = build_channel_insert(ChannelInsertRow {
+            let mut insert = build_channel_insert(ChannelInsertRow {
                 channel_id,
                 version: new_version,
                 name: latest.name.as_str(),
@@ -487,9 +500,16 @@ impl ChannelRepository for SqlChannelRepository {
                 priority: latest.priority,
             });
 
-            self.pool.execute_query(&sql, values).await?;
-
-            self.get_version(channel_id, new_version).await
+            // D23: the INSERT and the row it wrote travel together.
+            versioned::write_returning_version(
+                &self.pool,
+                &spec(),
+                WriteStatement::Insert(&mut insert),
+                channel_id,
+                new_version,
+                OrionError::Storage,
+            )
+            .await
         })
         .await
     }

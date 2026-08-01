@@ -274,6 +274,16 @@ fn lease_claimed_query<'a>(
 
 // -- SQL implementation --
 
+/// `SELECT * FROM trace_dlq WHERE id = ?` — the single-row read shape, shared
+/// by `get_by_id` and the read-back arm of the write-returning paths (D23).
+fn dlq_select(id: &str) -> sea_query::SelectStatement {
+    Query::select()
+        .column(Asterisk)
+        .from(TraceDlq::Table)
+        .and_where(Expr::col(TraceDlq::Id).eq(id))
+        .to_owned()
+}
+
 pub struct SqlTraceDlqRepository {
     pool: DbPool,
 }
@@ -306,53 +316,48 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
                 .checked_add_signed(chrono::Duration::seconds(1))
                 .unwrap_or(chrono::Utc::now().naive_utc());
 
-            let (sql, values) = build_sqlx(
-                Query::insert()
-                    .into_table(TraceDlq::Table)
-                    .columns([
-                        TraceDlq::Id,
-                        TraceDlq::TraceId,
-                        TraceDlq::Channel,
-                        TraceDlq::PayloadJson,
-                        TraceDlq::MetadataJson,
-                        TraceDlq::ErrorMessage,
-                        TraceDlq::RetryCount,
-                        TraceDlq::MaxRetries,
-                        TraceDlq::NextRetryAt,
-                    ])
-                    .values_panic([
-                        Expr::val(id.as_str()).into(),
-                        Expr::val(trace_id).into(),
-                        Expr::val(channel).into(),
-                        Expr::val(payload_json).into(),
-                        Expr::val(metadata_json).into(),
-                        Expr::val(error_message).into(),
-                        Expr::val(retry_count.max(0)).into(),
-                        Expr::val(max_retries).into(),
-                        Expr::val(next_retry).into(),
-                    ]),
-            );
+            let mut insert = Query::insert();
+            insert
+                .into_table(TraceDlq::Table)
+                .columns([
+                    TraceDlq::Id,
+                    TraceDlq::TraceId,
+                    TraceDlq::Channel,
+                    TraceDlq::PayloadJson,
+                    TraceDlq::MetadataJson,
+                    TraceDlq::ErrorMessage,
+                    TraceDlq::RetryCount,
+                    TraceDlq::MaxRetries,
+                    TraceDlq::NextRetryAt,
+                ])
+                .values_panic([
+                    Expr::val(id.as_str()).into(),
+                    Expr::val(trace_id).into(),
+                    Expr::val(channel).into(),
+                    Expr::val(payload_json).into(),
+                    Expr::val(metadata_json).into(),
+                    Expr::val(error_message).into(),
+                    Expr::val(retry_count.max(0)).into(),
+                    Expr::val(max_retries).into(),
+                    Expr::val(next_retry).into(),
+                ]);
 
-            self.pool.execute_query(&sql, values).await?;
-
-            // Fetch the inserted entry. A miss here is a 500, not the 404 the
-            // read paths use (D22): the row was written one statement ago by
-            // this same call, so its absence is server-side inconsistency, not
-            // a caller addressing something that does not exist.
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(TraceDlq::Table)
-                    .and_where(Expr::col(TraceDlq::Id).eq(id.as_str())),
-            );
-
-            self.pool
-                .fetch_one_as::<TraceDlqEntry>(&sql, values)
-                .await
-                .map_err(|e| OrionError::Internal {
+            // D23: the INSERT and the row it wrote travel together. A miss on
+            // the MySQL read-back is a 500, not the 404 the read paths use
+            // (D22): the row was written inside this same transaction, so its
+            // absence is server-side inconsistency, not a caller addressing
+            // something that does not exist.
+            super::helpers::write_returning_row(
+                &self.pool,
+                super::helpers::WriteStatement::Insert(&mut insert),
+                &mut dlq_select(&id),
+                OrionError::Storage,
+                || OrionError::Internal {
                     context: "Failed to fetch inserted DLQ entry".to_string(),
-                    source: Some(Box::new(e)),
-                })
+                    source: None,
+                },
+            )
+            .await
         })
         .await
     }
@@ -475,12 +480,7 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
 
     async fn get_by_id(&self, id: &str) -> Result<TraceDlqEntry, OrionError> {
         crate::metrics::timed_db_op("trace_dlq.get_by_id", async {
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(TraceDlq::Table)
-                    .and_where(Expr::col(TraceDlq::Id).eq(id)),
-            );
+            let (sql, values) = build_sqlx(&mut dlq_select(id));
             super::helpers::fetch_required::<TraceDlqEntry>(&self.pool, &sql, values, || {
                 OrionError::NotFound(format!("DLQ entry '{id}' not found"))
             })
@@ -492,20 +492,25 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
     async fn requeue(&self, id: &str) -> Result<TraceDlqEntry, OrionError> {
         crate::metrics::timed_db_op("trace_dlq.requeue", async {
             let now = chrono::Utc::now().naive_utc();
-            let (sql, values) = build_sqlx(
-                clear_lease(
-                    Query::update()
-                        .table(TraceDlq::Table)
-                        .value(TraceDlq::RetryCount, 0i64)
-                        .value(TraceDlq::NextRetryAt, now),
-                )
-                .and_where(Expr::col(TraceDlq::Id).eq(id)),
-            );
+            let mut update = clear_lease(
+                Query::update()
+                    .table(TraceDlq::Table)
+                    .value(TraceDlq::RetryCount, 0i64)
+                    .value(TraceDlq::NextRetryAt, now),
+            )
+            .and_where(Expr::col(TraceDlq::Id).eq(id))
+            .to_owned();
 
-            if self.pool.execute_query(&sql, values).await? == 0 {
-                return Err(OrionError::NotFound(format!("DLQ entry '{id}' not found")));
-            }
-            self.get_by_id(id).await
+            // D23: the UPDATE and the row it wrote travel together; an id
+            // that matched nothing stays NotFound.
+            super::helpers::write_returning_row(
+                &self.pool,
+                super::helpers::WriteStatement::Update(&mut update),
+                &mut dlq_select(id),
+                OrionError::Storage,
+                || OrionError::NotFound(format!("DLQ entry '{id}' not found")),
+            )
+            .await
         })
         .await
     }

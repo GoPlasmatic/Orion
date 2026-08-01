@@ -69,6 +69,20 @@ pub trait ConnectorRepository: Send + Sync {
 
 // -- SQL implementation --
 
+/// `SELECT * FROM connectors WHERE id = ?` — the single-row read shape,
+/// shared by `get_by_id` and the read-back arm of the write-returning paths.
+fn connector_select(id: &str) -> sea_query::SelectStatement {
+    Query::select()
+        .column(Asterisk)
+        .from(Connectors::Table)
+        .and_where(Expr::col(Connectors::Id).eq(id))
+        .to_owned()
+}
+
+fn connector_not_found(id: &str) -> OrionError {
+    OrionError::NotFound(format!("Connector '{id}' not found"))
+}
+
 pub struct SqlConnectorRepository {
     pool: DbPool,
     /// H3: present when `storage.connector_encryption_key` is set. Writes
@@ -128,47 +142,50 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let config_json = self.store_form(&serde_json::to_string(&req.config)?)?;
 
-            let (sql, values) = build_sqlx(
-                Query::insert()
-                    .into_table(Connectors::Table)
-                    .columns([
-                        Connectors::Id,
-                        Connectors::Name,
-                        Connectors::ConnectorType,
-                        Connectors::ConfigJson,
-                    ])
-                    .values_panic([
-                        id.as_str().into(),
-                        req.name.as_str().into(),
-                        req.connector_type.as_str().into(),
-                        config_json.as_str().into(),
-                    ]),
-            );
+            let mut insert = Query::insert();
+            insert
+                .into_table(Connectors::Table)
+                .columns([
+                    Connectors::Id,
+                    Connectors::Name,
+                    Connectors::ConnectorType,
+                    Connectors::ConfigJson,
+                ])
+                .values_panic([
+                    id.as_str().into(),
+                    req.name.as_str().into(),
+                    req.connector_type.as_str().into(),
+                    config_json.as_str().into(),
+                ]);
 
-            self.pool.execute_query(&sql, values).await.map_err(|e| {
-                super::helpers::map_duplicate(e, || {
-                    format!("Connector with name '{}' already exists", req.name)
-                })
-            })?;
-
-            self.get_by_id(&id).await
+            // D23: the INSERT and the row it wrote travel together. The row
+            // carries the stored (possibly encrypted) form of `config_json`,
+            // so it goes through `open_row` like every other read.
+            let row = super::helpers::write_returning_row(
+                &self.pool,
+                super::helpers::WriteStatement::Insert(&mut insert),
+                &mut connector_select(&id),
+                |e| {
+                    super::helpers::map_duplicate(e, || {
+                        format!("Connector with name '{}' already exists", req.name)
+                    })
+                },
+                || connector_not_found(&id),
+            )
+            .await?;
+            self.open_row(row)
         })
         .await
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Connector, OrionError> {
         crate::metrics::timed_db_op("connectors.get_by_id", async {
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Connectors::Table)
-                    .and_where(Expr::col(Connectors::Id).eq(id)),
-            );
+            let (sql, values) = build_sqlx(&mut connector_select(id));
 
             self.pool
                 .fetch_optional_as::<Connector>(&sql, values)
                 .await?
-                .ok_or_else(|| OrionError::NotFound(format!("Connector '{id}' not found")))
+                .ok_or_else(|| connector_not_found(id))
                 .and_then(|row| self.open_row(row))
         })
         .await
@@ -244,19 +261,26 @@ impl ConnectorRepository for SqlConnectorRepository {
             })?;
             let enabled = req.enabled.unwrap_or(existing.enabled);
 
-            let (sql, values) = build_sqlx(
-                Query::update()
-                    .table(Connectors::Table)
-                    .value(Connectors::Name, name)
-                    .value(Connectors::ConnectorType, connector_type)
-                    .value(Connectors::ConfigJson, &config_json)
-                    .value(Connectors::Enabled, enabled)
-                    .and_where(Expr::col(Connectors::Id).eq(id)),
-            );
+            let mut update = Query::update()
+                .table(Connectors::Table)
+                .value(Connectors::Name, name)
+                .value(Connectors::ConnectorType, connector_type)
+                .value(Connectors::ConfigJson, &config_json)
+                .value(Connectors::Enabled, enabled)
+                .and_where(Expr::col(Connectors::Id).eq(id))
+                .to_owned();
 
-            self.pool.execute_query(&sql, values).await?;
-
-            self.get_by_id(id).await
+            // D23: the UPDATE and the row it wrote travel together; stored
+            // form decrypted through `open_row`, like `create`.
+            let row = super::helpers::write_returning_row(
+                &self.pool,
+                super::helpers::WriteStatement::Update(&mut update),
+                &mut connector_select(id),
+                OrionError::Storage,
+                || connector_not_found(id),
+            )
+            .await?;
+            self.open_row(row)
         })
         .await
     }

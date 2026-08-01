@@ -12,8 +12,8 @@ use crate::storage::{
 };
 
 use super::helpers::{
-    Page, Projection, clamp_pagination, map_duplicate, optional_string_value, paginate,
-    parse_sort_order,
+    Page, Projection, WriteStatement, clamp_pagination, map_duplicate, optional_string_value,
+    paginate, parse_sort_order,
 };
 
 pub use super::helpers::PaginatedResult;
@@ -28,6 +28,7 @@ fn spec() -> VersionedSpec {
         version_col: Workflows::Version.into_iden(),
         status_col: Workflows::Status.into_iden(),
         priority_col: Workflows::Priority.into_iden(),
+        updated_at_col: Workflows::UpdatedAt.into_iden(),
         label: "Workflow",
         noun: "workflow",
     }
@@ -147,15 +148,6 @@ pub struct SqlWorkflowRepository {
 }
 
 impl SqlWorkflowRepository {
-    /// Fetch one specific version — internal helper for the lifecycle
-    /// methods; the admin API only exposes latest/list forms.
-    async fn get_version(&self, workflow_id: &str, version: i64) -> Result<Workflow, OrionError> {
-        crate::metrics::timed_db_op("workflows.get_version", async {
-            versioned::get_version(&self.pool, &spec(), workflow_id, version).await
-        })
-        .await
-    }
-
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
@@ -178,8 +170,8 @@ struct WorkflowInsertRow<'a> {
     continue_on_error: bool,
 }
 
-/// Build the INSERT query for a workflow row.
-fn build_workflow_insert(row: WorkflowInsertRow<'_>) -> (String, sea_query_binder::SqlxValues) {
+/// Build the INSERT statement for a workflow row.
+fn build_workflow_insert(row: WorkflowInsertRow<'_>) -> sea_query::InsertStatement {
     let mut q = Query::insert();
     q.into_table(Workflows::Table)
         .columns([
@@ -208,7 +200,7 @@ fn build_workflow_insert(row: WorkflowInsertRow<'_>) -> (String, sea_query_binde
             Expr::val(row.tags_json).into(),
             Expr::val(row.continue_on_error).into(),
         ]);
-    build_sqlx(&mut q)
+    q
 }
 
 /// Activate the draft version at 100% rollout: archive any existing active
@@ -220,7 +212,11 @@ async fn activate_full_rollout(
     active_versions: &[Workflow],
 ) -> Result<(), OrionError> {
     if !active_versions.is_empty() {
-        let (sql, values) = versioned::archive_actives_query(&spec(), workflow_id, None);
+        let (sql, values) = build_sqlx(&mut versioned::archive_actives_query(
+            &spec(),
+            workflow_id,
+            None,
+        ));
         tx.execute_query(&sql, values).await?;
     }
     let (sql, values) = activate_workflow_version_query(workflow_id, draft_version, 100);
@@ -240,11 +236,11 @@ async fn activate_partial_rollout(
 ) -> Result<(), OrionError> {
     if let Some(primary_active) = active_versions.first() {
         if active_versions.len() > 1 {
-            let (sql, values) = versioned::archive_actives_query(
+            let (sql, values) = build_sqlx(&mut versioned::archive_actives_query(
                 &spec(),
                 workflow_id,
                 Some(primary_active.version),
-            );
+            ));
             tx.execute_query(&sql, values).await?;
         }
         let (sql, values) =
@@ -330,7 +326,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             let description_val = optional_string_value(req.description.as_deref());
 
-            let (sql, values) = build_workflow_insert(WorkflowInsertRow {
+            let mut insert = build_workflow_insert(WorkflowInsertRow {
                 workflow_id: workflow_id.as_str(),
                 version: 1,
                 name: req.name.as_str(),
@@ -344,14 +340,21 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 continue_on_error: req.continue_on_error,
             });
 
+            // D23: the INSERT and the row it wrote travel together.
             // D16: a duplicate id is the client's mistake, not ours — 409.
-            self.pool.execute_query(&sql, values).await.map_err(|e| {
-                map_duplicate(e, || {
-                    format!("Workflow with id '{workflow_id}' already exists")
-                })
-            })?;
-
-            self.get_version(&workflow_id, 1).await
+            versioned::write_returning_version(
+                &self.pool,
+                &spec(),
+                WriteStatement::Insert(&mut insert),
+                &workflow_id,
+                1,
+                |e| {
+                    map_duplicate(e, || {
+                        format!("Workflow with id '{workflow_id}' already exists")
+                    })
+                },
+            )
+            .await
         })
         .await
     }
@@ -454,23 +457,29 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             let description_val = optional_string_value(description);
 
-            let (sql, values) = build_sqlx(
-                Query::update()
-                    .table(Workflows::Table)
-                    .value(Workflows::Name, name)
-                    .value(Workflows::Description, description_val)
-                    .value(Workflows::Priority, priority)
-                    .value(Workflows::ConditionJson, condition_json.as_str())
-                    .value(Workflows::TasksJson, tasks_json.as_str())
-                    .value(Workflows::TagsJson, tags_json.as_str())
-                    .value(Workflows::ContinueOnError, continue_on_error)
-                    .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
-                    .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str())),
-            );
+            let mut update = Query::update()
+                .table(Workflows::Table)
+                .value(Workflows::Name, name)
+                .value(Workflows::Description, description_val)
+                .value(Workflows::Priority, priority)
+                .value(Workflows::ConditionJson, condition_json.as_str())
+                .value(Workflows::TasksJson, tasks_json.as_str())
+                .value(Workflows::TagsJson, tags_json.as_str())
+                .value(Workflows::ContinueOnError, continue_on_error)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
+                .to_owned();
 
-            self.pool.execute_query(&sql, values).await?;
-
-            self.get_version(workflow_id, existing.version).await
+            // D23: the UPDATE and the row it wrote travel together.
+            versioned::write_returning_version(
+                &self.pool,
+                &spec(),
+                WriteStatement::Update(&mut update),
+                workflow_id,
+                existing.version,
+                OrionError::Storage,
+            )
+            .await
         })
         .await
     }
@@ -528,9 +537,14 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .await?;
             }
 
+            // D23: read the promoted row back inside the transaction that
+            // promoted it — this used to run on the pool after `tx.commit()`.
+            let activated =
+                versioned::get_version_tx(&mut tx, &spec(), workflow_id, draft.version).await?;
+
             tx.commit().await?;
 
-            self.get_version(workflow_id, draft.version).await
+            Ok(activated)
         })
         .await
     }
@@ -562,7 +576,8 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     .order_by(Workflows::Version, Order::Desc),
             );
 
-            let active_versions: Vec<Workflow> = tx.fetch_all_as::<Workflow>(&sql, values).await?;
+            let mut active_versions: Vec<Workflow> =
+                tx.fetch_all_as::<Workflow>(&sql, values).await?;
 
             if active_versions.is_empty() {
                 return Err(OrionError::validation(format!(
@@ -572,10 +587,12 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             if active_versions.len() == 1 {
                 if pct == 100 {
-                    // Already at 100% with one version, just confirm
-                    return self
-                        .get_version(workflow_id, active_versions[0].version)
-                        .await;
+                    // Already at 100% with one version, just confirm: nothing
+                    // is written, and the row was read inside this
+                    // transaction, so it is current as-is (D23 — this used to
+                    // re-fetch it from the pool while the tx was still open).
+                    tx.commit().await?;
+                    return Ok(active_versions.swap_remove(0));
                 }
                 return Err(OrionError::validation(
                     "Cannot set partial rollout with only one active version".to_string(),
@@ -600,9 +617,14 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 tx.execute_query(&sql, values).await?;
             }
 
+            // D23: read the adjusted row back inside the transaction that
+            // adjusted it — this used to run on the pool after `tx.commit()`.
+            let updated =
+                versioned::get_version_tx(&mut tx, &spec(), workflow_id, newer.version).await?;
+
             tx.commit().await?;
 
-            self.get_version(workflow_id, newer.version).await
+            Ok(updated)
         })
         .await
     }
@@ -618,7 +640,7 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
             let description_val = optional_string_value(latest.description.as_deref());
 
-            let (sql, values) = build_workflow_insert(WorkflowInsertRow {
+            let mut insert = build_workflow_insert(WorkflowInsertRow {
                 workflow_id,
                 version: new_version,
                 name: latest.name.as_str(),
@@ -632,9 +654,16 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 continue_on_error: latest.continue_on_error,
             });
 
-            self.pool.execute_query(&sql, values).await?;
-
-            self.get_version(workflow_id, new_version).await
+            // D23: the INSERT and the row it wrote travel together.
+            versioned::write_returning_version(
+                &self.pool,
+                &spec(),
+                WriteStatement::Insert(&mut insert),
+                workflow_id,
+                new_version,
+                OrionError::Storage,
+            )
+            .await
         })
         .await
     }

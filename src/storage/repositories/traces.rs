@@ -295,6 +295,20 @@ fn list_page(filter: &TraceFilter) -> Page {
     }
 }
 
+/// `SELECT * FROM traces WHERE id = ?` — the single-row read shape, shared by
+/// `get_by_id` and the read-back arm of the write-returning paths (D23).
+fn trace_select(id: &str) -> sea_query::SelectStatement {
+    Query::select()
+        .column(Asterisk)
+        .from(Traces::Table)
+        .and_where(Expr::col(Traces::Id).eq(id))
+        .to_owned()
+}
+
+fn trace_not_found(id: &str) -> OrionError {
+    OrionError::NotFound(format!("Trace '{id}' not found"))
+}
+
 /// The UPDATE both result-write paths share, for the same reason.
 fn result_update(
     id: &str,
@@ -431,49 +445,49 @@ impl TraceRepository for SqlTraceRepository {
             let channel_id_val = super::helpers::optional_string_value(channel_id);
             let token_hash_val = super::helpers::optional_string_value(access_token_hash);
 
-            let (sql, values) = build_sqlx(
-                Query::insert()
-                    .into_table(Traces::Table)
-                    .columns([
-                        Traces::Id,
-                        Traces::Status,
-                        Traces::Channel,
-                        Traces::ChannelId,
-                        Traces::Mode,
-                        Traces::InputJson,
-                        Traces::AccessTokenHash,
-                    ])
-                    .values_panic([
-                        Expr::val(id.as_str()).into(),
-                        Expr::val("pending").into(),
-                        Expr::val(channel).into(),
-                        Expr::val(channel_id_val).into(),
-                        Expr::val(mode).into(),
-                        Expr::val(input_val).into(),
-                        Expr::val(token_hash_val).into(),
-                    ]),
-            );
+            let mut insert = Query::insert();
+            insert
+                .into_table(Traces::Table)
+                .columns([
+                    Traces::Id,
+                    Traces::Status,
+                    Traces::Channel,
+                    Traces::ChannelId,
+                    Traces::Mode,
+                    Traces::InputJson,
+                    Traces::AccessTokenHash,
+                ])
+                .values_panic([
+                    Expr::val(id.as_str()).into(),
+                    Expr::val("pending").into(),
+                    Expr::val(channel).into(),
+                    Expr::val(channel_id_val).into(),
+                    Expr::val(mode).into(),
+                    Expr::val(input_val).into(),
+                    Expr::val(token_hash_val).into(),
+                ]);
 
-            self.pool.execute_query(&sql, values).await?;
-
-            self.get_by_id(&id).await
+            // D23: the INSERT and the row it wrote travel together.
+            super::helpers::write_returning_row(
+                &self.pool,
+                super::helpers::WriteStatement::Insert(&mut insert),
+                &mut trace_select(&id),
+                OrionError::Storage,
+                || trace_not_found(&id),
+            )
+            .await
         })
         .await
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Trace, OrionError> {
         crate::metrics::timed_db_op("traces.get_by_id", async {
-            let (sql, values) = build_sqlx(
-                Query::select()
-                    .column(Asterisk)
-                    .from(Traces::Table)
-                    .and_where(Expr::col(Traces::Id).eq(id)),
-            );
+            let (sql, values) = build_sqlx(&mut trace_select(id));
 
             self.pool
                 .fetch_optional_as::<Trace>(&sql, values)
                 .await?
-                .ok_or_else(|| OrionError::NotFound(format!("Trace '{id}' not found")))
+                .ok_or_else(|| trace_not_found(id))
         })
         .await
     }
@@ -514,11 +528,16 @@ impl TraceRepository for SqlTraceRepository {
 
             update.and_where(Expr::col(Traces::Id).eq(id));
 
-            let (sql, values) = build_sqlx(&mut update);
-
-            self.pool.execute_query(&sql, values).await?;
-
-            self.get_by_id(id).await
+            // D23: the UPDATE and the row it wrote travel together; an id
+            // that matched nothing stays the NotFound `get_by_id` gave.
+            super::helpers::write_returning_row(
+                &self.pool,
+                super::helpers::WriteStatement::Update(&mut update),
+                &mut trace_select(id),
+                OrionError::Storage,
+                || trace_not_found(id),
+            )
+            .await
         })
         .await
     }

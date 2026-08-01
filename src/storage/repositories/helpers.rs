@@ -286,6 +286,84 @@ where
     }
 }
 
+/// The two statement kinds [`write_returning_row`] accepts.
+pub enum WriteStatement<'a> {
+    Insert(&'a mut sea_query::InsertStatement),
+    Update(&'a mut sea_query::UpdateStatement),
+}
+
+impl WriteStatement<'_> {
+    /// Whether `RETURNING *` on this backend yields the row as stored.
+    ///
+    /// Postgres: yes for both kinds — its `updated_at` maintenance is a
+    /// BEFORE UPDATE trigger, which RETURNING observes. SQLite: INSERTs only;
+    /// its `updated_at` is written by an AFTER UPDATE trigger's *second*
+    /// UPDATE, which RETURNING does not observe, so an UPDATE's returned row
+    /// would carry the pre-update timestamp. MySQL: no RETURNING at all.
+    fn supports_returning(&self, backend: crate::storage::DbBackend) -> bool {
+        match backend {
+            crate::storage::DbBackend::Postgres => true,
+            crate::storage::DbBackend::Sqlite => matches!(self, Self::Insert(_)),
+            crate::storage::DbBackend::Mysql => false,
+        }
+    }
+
+    fn build_returning_all(&mut self) -> (String, sea_query_binder::SqlxValues) {
+        match self {
+            Self::Insert(q) => crate::storage::build_sqlx(q.returning_all()),
+            Self::Update(q) => crate::storage::build_sqlx(q.returning_all()),
+        }
+    }
+
+    fn build(&mut self) -> (String, sea_query_binder::SqlxValues) {
+        match self {
+            Self::Insert(q) => crate::storage::build_sqlx(&mut **q),
+            Self::Update(q) => crate::storage::build_sqlx(&mut **q),
+        }
+    }
+}
+
+/// Run an INSERT or UPDATE that must yield the row it wrote (D23).
+///
+/// Where `RETURNING *` reflects the stored row (see
+/// [`WriteStatement::supports_returning`]) the write and the read are one
+/// statement; everywhere else the write and the `read_back` SELECT run inside
+/// one transaction, so the row returned is the row this statement produced
+/// and not a later writer's. The 16 mutation sites this replaces ran the
+/// read-back as a separate pool query after the write — and in the lifecycle
+/// paths, after `tx.commit()`.
+///
+/// Error mapping stays per-site: driver errors from the write itself go
+/// through `map_write_err` (the create paths map duplicate-key errors to a
+/// 409 via [`map_duplicate`]), and a write that yields no row — an UPDATE
+/// whose predicate matched nothing, or a MySQL read-back miss — becomes
+/// `missing()`.
+pub async fn write_returning_row<T: DbRow>(
+    pool: &DbPool,
+    mut write: WriteStatement<'_>,
+    read_back: &mut sea_query::SelectStatement,
+    map_write_err: impl FnOnce(sqlx::Error) -> OrionError,
+    missing: impl FnOnce() -> OrionError,
+) -> Result<T, OrionError> {
+    if write.supports_returning(crate::storage::get_backend()) {
+        let (sql, values) = write.build_returning_all();
+        pool.fetch_optional_as::<T>(&sql, values)
+            .await
+            .map_err(map_write_err)?
+            .ok_or_else(missing)
+    } else {
+        let mut tx = pool.begin_tx().await.map_err(OrionError::Storage)?;
+        let (sql, values) = write.build();
+        tx.execute_query(&sql, values)
+            .await
+            .map_err(map_write_err)?;
+        let (sql, values) = crate::storage::build_sqlx(read_back);
+        let row = fetch_required_tx(&mut tx, &sql, values, missing).await?;
+        tx.commit().await.map_err(OrionError::Storage)?;
+        Ok(row)
+    }
+}
+
 /// INSERT that silently loses to an existing row: `ON CONFLICT DO NOTHING` on
 /// Postgres/SQLite, `INSERT IGNORE` on MySQL. Returns rows affected (0 = an
 /// existing row won).
@@ -490,6 +568,58 @@ mod tests {
         assert!(sql.contains(r#"SELECT "id", "status""#), "{sql}");
         assert!(!sql.contains('*'), "{sql}");
         assert!(!sql.contains("access_token_hash"), "{sql}");
+    }
+
+    // -- D23: one write, one row back --
+
+    /// The backend dispatch `write_returning_row` rides on. Postgres reflects
+    /// its BEFORE UPDATE `updated_at` trigger in RETURNING; SQLite's is an
+    /// AFTER UPDATE trigger RETURNING cannot see, so only its INSERTs may
+    /// take the single-statement path; MySQL has no RETURNING at all.
+    #[test]
+    fn returning_dispatch_matches_backend_trigger_semantics() {
+        use crate::storage::DbBackend::{Mysql, Postgres, Sqlite};
+        use crate::storage::schema::Traces;
+
+        let mut insert = Query::insert()
+            .into_table(Traces::Table)
+            .columns([Traces::Id])
+            .values_panic(["t1".into()])
+            .to_owned();
+        let mut update = Query::update()
+            .table(Traces::Table)
+            .value(Traces::Status, "completed")
+            .to_owned();
+
+        assert!(WriteStatement::Insert(&mut insert).supports_returning(Postgres));
+        assert!(WriteStatement::Update(&mut update).supports_returning(Postgres));
+        assert!(WriteStatement::Insert(&mut insert).supports_returning(Sqlite));
+        assert!(!WriteStatement::Update(&mut update).supports_returning(Sqlite));
+        assert!(!WriteStatement::Insert(&mut insert).supports_returning(Mysql));
+        assert!(!WriteStatement::Update(&mut update).supports_returning(Mysql));
+    }
+
+    /// The single-statement arm must ask for every column — the callers decode
+    /// the same row types their `SELECT *` read-backs decoded.
+    #[test]
+    fn returning_all_is_appended_to_both_statement_kinds() {
+        use crate::storage::schema::Traces;
+        use sea_query::PostgresQueryBuilder;
+
+        let mut insert = Query::insert()
+            .into_table(Traces::Table)
+            .columns([Traces::Id])
+            .values_panic(["t1".into()])
+            .to_owned();
+        let (sql, _) = insert.returning_all().build(PostgresQueryBuilder);
+        assert!(sql.ends_with("RETURNING *"), "{sql}");
+
+        let mut update = Query::update()
+            .table(Traces::Table)
+            .value(Traces::Status, "completed")
+            .to_owned();
+        let (sql, _) = update.returning_all().build(PostgresQueryBuilder);
+        assert!(sql.ends_with("RETURNING *"), "{sql}");
     }
 
     /// Page bounds reach the statement, and an empty filter constrains
