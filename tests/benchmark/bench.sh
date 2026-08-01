@@ -5,9 +5,12 @@
 # concurrency behavior across 7 scenarios.
 #
 # Usage:
-#   ./tests/benchmark/bench.sh                        # Run all scenarios
+#   ./tests/benchmark/bench.sh                        # Run all local scenarios
 #   ./tests/benchmark/bench.sh baseline simple        # Run specific scenarios
 #   BENCH_RELEASE=1 BENCH_DURATION=30s ./tests/benchmark/bench.sh
+#   ./tests/benchmark/bench.sh cluster                # Opt-in: drive the HA compose
+#                                                     # stack through its LB (needs
+#                                                     # docker-compose.ha.yml up)
 #
 # Dependencies: hey, jq, curl
 # Install hey: brew install hey
@@ -113,6 +116,11 @@ build_orion() {
 BENCH_PID=""
 BENCH_PORT=""
 BENCH_URL=""
+# Extra curl args for the admin API. Empty for the local server (no auth);
+# the cluster scenario points BENCH_URL at a stack that enforces admin auth
+# and sets a Bearer header here. Expanded with the set -u-safe idiom because
+# macOS bash 3.2 treats an empty array as unbound.
+CURL_AUTH=()
 BENCH_TMP_DIR=""
 BENCH_DB_PATH=""
 BENCH_LOG_FILE=""
@@ -223,7 +231,7 @@ stop_bench_server() {
 create_workflow() {
     local workflow_file="$1"
     local response
-    response=$(curl -sf -X POST "${BENCH_URL}/api/v1/admin/workflows" \
+    response=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/workflows" \
         -H "Content-Type: application/json" \
         -d @"$workflow_file" 2>/dev/null) || {
         log_error "Failed to create workflow from $workflow_file"
@@ -241,7 +249,7 @@ create_workflow() {
 
 activate_workflow() {
     local workflow_id="$1"
-    curl -sf -X PATCH "${BENCH_URL}/api/v1/admin/workflows/${workflow_id}/status" \
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v1/admin/workflows/${workflow_id}/status" \
         -H "Content-Type: application/json" \
         -d '{"status": "active"}' >/dev/null 2>&1 || {
         log_error "Failed to activate workflow $workflow_id"
@@ -260,7 +268,7 @@ create_and_activate_workflow() {
 import_workflows() {
     local workflows_file="$1"
     local response
-    response=$(curl -sf -X POST "${BENCH_URL}/api/v1/admin/workflows/import" \
+    response=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/workflows/import" \
         -H "Content-Type: application/json" \
         -d @"$workflows_file" 2>/dev/null) || {
         log_error "Failed to import workflows from $workflows_file"
@@ -273,7 +281,7 @@ import_workflows() {
 
     # Activate all imported (draft) workflows
     local workflows_json
-    workflows_json=$(curl -sf "${BENCH_URL}/api/v1/admin/workflows?status=draft" 2>/dev/null) || return 0
+    workflows_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/workflows?status=draft" 2>/dev/null) || return 0
 
     local ids
     ids=$(echo "$workflows_json" | jq -r '.data[]?.workflow_id // empty' 2>/dev/null) || return 0
@@ -285,7 +293,7 @@ import_workflows() {
 }
 
 reload_engine() {
-    curl -sf -X POST "${BENCH_URL}/api/v1/admin/engine/reload" >/dev/null 2>&1 || true
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/engine/reload" >/dev/null 2>&1 || true
 }
 
 # Bind a channel to a workflow.
@@ -310,13 +318,13 @@ create_and_activate_channel() {
         '{channel_id: $n, name: $n, channel_type: "sync", protocol: "http",
           methods: ["POST"], route_pattern: ("/" + $n), workflow_id: $w}')
 
-    curl -sf -X POST "${BENCH_URL}/api/v1/admin/channels" \
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X POST "${BENCH_URL}/api/v1/admin/channels" \
         -H "Content-Type: application/json" \
         -d "$payload" >/dev/null 2>&1 || {
         log_error "Failed to create channel $channel_name"
         return 1
     }
-    curl -sf -X PATCH "${BENCH_URL}/api/v1/admin/channels/${channel_name}/status" \
+    curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X PATCH "${BENCH_URL}/api/v1/admin/channels/${channel_name}/status" \
         -H "Content-Type: application/json" \
         -d '{"status": "active"}' >/dev/null 2>&1 || {
         log_error "Failed to activate channel $channel_name"
@@ -327,14 +335,14 @@ create_and_activate_channel() {
 # Remove every channel, so a scenario's channel does not outlive it.
 clear_channels() {
     local channels_json
-    channels_json=$(curl -sf "${BENCH_URL}/api/v1/admin/channels" 2>/dev/null) || return 0
+    channels_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/channels" 2>/dev/null) || return 0
 
     local ids
     ids=$(echo "$channels_json" | jq -r '.data[]?.channel_id // empty' 2>/dev/null) || return 0
 
     while IFS= read -r id; do
         [[ -z "$id" ]] && continue
-        curl -sf -X DELETE "${BENCH_URL}/api/v1/admin/channels/${id}" >/dev/null 2>&1 || true
+        curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v1/admin/channels/${id}" >/dev/null 2>&1 || true
     done <<< "$ids"
 }
 
@@ -342,14 +350,14 @@ clear_workflows() {
     clear_channels
 
     local workflows_json
-    workflows_json=$(curl -sf "${BENCH_URL}/api/v1/admin/workflows" 2>/dev/null) || return 0
+    workflows_json=$(curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} "${BENCH_URL}/api/v1/admin/workflows" 2>/dev/null) || return 0
 
     local ids
     ids=$(echo "$workflows_json" | jq -r '.data[]?.workflow_id // empty' 2>/dev/null) || return 0
 
     while IFS= read -r id; do
         [[ -z "$id" ]] && continue
-        curl -sf -X DELETE "${BENCH_URL}/api/v1/admin/workflows/${id}" >/dev/null 2>&1 || true
+        curl -sf ${CURL_AUTH[@]+"${CURL_AUTH[@]}"} -X DELETE "${BENCH_URL}/api/v1/admin/workflows/${id}" >/dev/null 2>&1 || true
     done <<< "$ids"
 
     reload_engine
@@ -654,10 +662,72 @@ scenario_reload() {
     fi
 }
 
+# G: Cluster through the load balancer — the HA compose stack (opt-in)
+#
+# Runs the same simple workflow as B, but through docker-compose.ha.yml's
+# topology: nginx → 2 replicas in cluster mode → shared Postgres + Redis.
+# This is the half the single-process scenarios cannot measure — the
+# per-request price of cluster mode (shared Redis dedup / rate-limit /
+# response-cache round trips ride the hot path) plus the LB hop, and what a
+# second node actually buys. Compare G against B for per-node overhead;
+# re-run against a scaled stack for efficiency at N=2/3.
+#
+# Opt-in and never in the default set: it needs Docker and a running stack,
+# and its numbers are about the topology, not the binary. Start it first:
+#
+#   export ORION_ADMIN_API_KEYS="$(openssl rand -hex 32)"
+#   docker compose -f docker-compose.ha.yml up -d --wait
+scenario_cluster() {
+    log_info "G: Cluster via load balancer (simple workflow)"
+    CURRENT_SCENARIO="G_cluster_lb"
+
+    local cluster_url="${BENCH_CLUSTER_URL:-http://localhost:8080}"
+    local admin_key="${ORION_ADMIN_API_KEYS:-}"
+    admin_key="${admin_key%%,*}" # the stack takes a comma-separated list; one is enough
+
+    if ! curl -sf "${cluster_url}/healthz" >/dev/null 2>&1; then
+        log_error "Nothing healthy at ${cluster_url}. Start the stack first:"
+        log_error '  export ORION_ADMIN_API_KEYS="$(openssl rand -hex 32)"'
+        log_error '  docker compose -f docker-compose.ha.yml up -d --wait'
+        log_error "(or point BENCH_CLUSTER_URL at your load balancer)"
+        return 1
+    fi
+    if [[ -z "$admin_key" ]]; then
+        log_error "ORION_ADMIN_API_KEYS is not set; the HA stack enforces admin auth"
+        return 1
+    fi
+
+    # Aim every admin helper at the cluster, authenticated. The data-plane
+    # load itself needs no credential. The stack is a benchmarking/drill
+    # topology, so clearing its estate is acceptable the same way it is on
+    # the throwaway local server.
+    local saved_url="$BENCH_URL"
+    BENCH_URL="$cluster_url"
+    CURL_AUTH=(-H "Authorization: Bearer ${admin_key}")
+
+    clear_workflows
+    local wf
+    wf=$(create_and_activate_workflow "$FIXTURES_DIR/workflows/bench_simple_log.json")
+    create_and_activate_channel "bench-cluster" "$wf"
+    # Activation propagates over the config epoch (2s poll default). Wait it
+    # out, or the not-yet-synced replica answers 404s into the numbers.
+    sleep 3
+
+    run_hey POST "${cluster_url}/api/v1/data/bench-cluster" "$FIXTURES_DIR/data/simple_payload.json"
+    record_result "G: Cluster via LB (simple workflow)" "$RESULT_RPS" "$RESULT_AVG_MS" "$RESULT_P99_MS" "$RESULT_ERRORS"
+
+    # Leave the stack as found.
+    clear_workflows
+    CURL_AUTH=()
+    BENCH_URL="$saved_url"
+}
+
 # ═══════════════════════════════════════════════════════════════════
 # SCENARIO REGISTRY
 # ═══════════════════════════════════════════════════════════════════
 
+# `cluster` (G) is deliberately absent: it needs Docker and a running HA
+# stack, so it only runs when named explicitly.
 ALL_SCENARIOS=(baseline simple complex multi concurrency reload)
 
 run_scenario() {
@@ -669,9 +739,10 @@ run_scenario() {
         multi)       scenario_multi ;;
         concurrency) scenario_concurrency ;;
         reload)      scenario_reload ;;
+        cluster)     scenario_cluster ;;
         *)
             log_error "Unknown scenario: $name"
-            log_error "Available: ${ALL_SCENARIOS[*]}"
+            log_error "Available: ${ALL_SCENARIOS[*]}, plus opt-in: cluster"
             return 1
             ;;
     esac
@@ -690,19 +761,29 @@ main() {
     echo -e "${DIM}Duration: ${BENCH_DURATION} | Concurrency: ${BENCH_CONCURRENCY} | Profile: ${BUILD_PROFILE}${RESET}"
     echo ""
 
-    check_dependencies
-    build_orion
-    start_bench_server
-
-    # Ensure cleanup on exit
-    trap stop_bench_server EXIT
-
     # Determine which scenarios to run
     local scenarios=()
     if [[ $# -gt 0 ]]; then
         scenarios=("$@")
     else
         scenarios=("${ALL_SCENARIOS[@]}")
+    fi
+
+    # `cluster` drives an external stack through its LB; build and start the
+    # local server only when a local scenario asked for it.
+    local need_local=0
+    local sc
+    for sc in "${scenarios[@]}"; do
+        [[ "$sc" != "cluster" ]] && need_local=1
+    done
+
+    check_dependencies
+    if [[ "$need_local" -eq 1 ]]; then
+        build_orion
+        start_bench_server
+
+        # Ensure cleanup on exit
+        trap stop_bench_server EXIT
     fi
 
     echo ""
