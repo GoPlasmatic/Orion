@@ -466,18 +466,38 @@ flowchart LR
         D["docker run ghcr.io/goplasmatic/orion:latest"]
     end
 
+    subgraph Cluster ["HA Cluster (cluster mode)"]
+        direction TB
+        LB["Load balancer"] --> N["Orion × N replicas"]
+        N --> B["PostgreSQL/MySQL + Redis (shared)"]
+    end
+
     style Standalone fill:#21252b,stroke:#5c6370,color:#abb2bf
     style Sidecar fill:#21252b,stroke:#5c6370,color:#abb2bf
     style Container fill:#21252b,stroke:#5c6370,color:#abb2bf
+    style Cluster fill:#21252b,stroke:#5c6370,color:#abb2bf
     style S fill:#61afef,stroke:#61afef,color:#1e222b
     style App fill:#4b5263,stroke:#5c6370,color:#abb2bf
     style O fill:#61afef,stroke:#61afef,color:#1e222b
     style D fill:#61afef,stroke:#61afef,color:#1e222b
+    style LB fill:#4b5263,stroke:#5c6370,color:#abb2bf
+    style N fill:#61afef,stroke:#61afef,color:#1e222b
+    style B fill:#4b5263,stroke:#5c6370,color:#abb2bf
 ```
 
 Single binary. SQLite by default, no database to provision, no runtime dependencies. Need more scale? Swap to **PostgreSQL** or **MySQL** by changing the `storage.url`. No rebuild needed.
 
-**Same channel definitions work in any topology:** run everything in one instance, split channels across instances with include/exclude filters, or deploy as sidecars. The definition doesn't change; only the deployment config does.
+**Need more than one node? Turn on cluster mode.** N identical replicas behind a load balancer share one PostgreSQL/MySQL and one Redis and behave as a single logical system: a config change made through any node reaches every node in about two seconds, idempotency keys and rate limits hold across the whole fleet (one execution per key, limits counted fleet-wide, cache hits shared), and rolling deploys are zero-downtime — replicas drain gracefully while the rest keep serving. It ships two packaged ways:
+
+```bash
+# Kubernetes — published to GHCR on every release
+helm install orion oci://ghcr.io/goplasmatic/charts/orion
+
+# Anywhere else — nginx + 2 replicas + Postgres + Redis, migrations included
+docker compose -f docker-compose.ha.yml up
+```
+
+**Same channel definitions work in any topology:** one instance, an HA cluster, sidecars — or dedicated capacity by splitting channels across instance pools with include/exclude filters. The definition doesn't change; only the deployment config does.
 
 ## Performance
 
