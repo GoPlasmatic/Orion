@@ -218,9 +218,23 @@ fn match_segments<S: AsRef<str>>(
 }
 
 /// Route table built from active REST channels, sorted by priority.
+///
+/// N20: matching is indexed rather than a full scan. Entries bucket by
+/// `(segment count, first static segment)` — plus a per-count bucket for
+/// routes whose first segment is a parameter, which any first part can
+/// satisfy — so a request consults only the routes that could possibly match
+/// its shape instead of every route in the estate. Bucket contents are entry
+/// indices in table order, and the two candidate lists are merged by index,
+/// so the first hit is still the highest-priority route: the index changes
+/// what is *examined*, never what wins.
 #[derive(Default)]
 pub struct RouteTable {
     entries: Vec<RouteEntry>,
+    /// `(segment_count, first static segment)` → entry indices, ascending.
+    by_first_static: HashMap<(usize, String), Vec<usize>>,
+    /// `segment_count` → indices of entries whose first segment is a
+    /// parameter, ascending.
+    by_param_first: HashMap<usize, Vec<usize>>,
 }
 
 impl RouteTable {
@@ -259,9 +273,37 @@ impl RouteTable {
                 .then_with(|| a.channel_name.cmp(&b.channel_name))
         });
 
-        let table = Self { entries };
+        let table = Self::from_sorted_entries(entries);
         table.warn_on_conflicts();
         table
+    }
+
+    /// Index already-sorted entries. Split from [`Self::build`] so tests can
+    /// construct a table from hand-written entries without skipping the index
+    /// the production path relies on.
+    fn from_sorted_entries(entries: Vec<RouteEntry>) -> Self {
+        let mut by_first_static: HashMap<(usize, String), Vec<usize>> = HashMap::new();
+        let mut by_param_first: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (i, entry) in entries.iter().enumerate() {
+            match entry.segments.first() {
+                Some(RouteSegment::Static(s)) => by_first_static
+                    .entry((entry.segments.len(), s.clone()))
+                    .or_default()
+                    .push(i),
+                // A leading parameter — or a zero-segment route, which cannot
+                // exist past `declared_segments` but costs nothing to file
+                // consistently — matches any first part of its length.
+                Some(RouteSegment::Param(_)) | None => by_param_first
+                    .entry(entry.segments.len())
+                    .or_default()
+                    .push(i),
+            }
+        }
+        Self {
+            entries,
+            by_first_static,
+            by_param_first,
+        }
     }
 
     /// Log every (method × path) collision in the built table.
@@ -307,8 +349,72 @@ impl RouteTable {
             ));
         };
 
-        for entry in &self.entries {
+        // Candidates: routes whose first static segment equals the request's
+        // first part, and routes that open with a parameter — both restricted
+        // to the request's segment count. Each bucket is ascending, so a
+        // two-pointer merge visits candidates in table (priority) order.
+        let empty: Vec<usize> = Vec::new();
+        let static_bucket = path_parts
+            .first()
+            .and_then(|first| {
+                self.by_first_static
+                    .get(&(path_parts.len(), first.as_ref().to_string()))
+            })
+            .unwrap_or(&empty);
+        let param_bucket = self.by_param_first.get(&path_parts.len()).unwrap_or(&empty);
+
+        let (mut a, mut b) = (0, 0);
+        while a < static_bucket.len() || b < param_bucket.len() {
+            let idx = match (static_bucket.get(a), param_bucket.get(b)) {
+                (Some(&x), Some(&y)) if x < y => {
+                    a += 1;
+                    x
+                }
+                (Some(_), Some(&y)) => {
+                    b += 1;
+                    y
+                }
+                (Some(&x), None) => {
+                    a += 1;
+                    x
+                }
+                (None, Some(&y)) => {
+                    b += 1;
+                    y
+                }
+                (None, None) => unreachable!("loop condition"),
+            };
+            let entry = &self.entries[idx];
             // Check method match (empty methods = accept any)
+            if !entry.methods.is_empty()
+                && !entry.methods.iter().any(|m| m.eq_ignore_ascii_case(method))
+            {
+                continue;
+            }
+            if let Some(params) = match_segments(&entry.segments, &path_parts) {
+                return Ok(Some(RouteMatch {
+                    channel_name: entry.channel_name.clone(),
+                    params,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The pre-N20 full scan, kept as the oracle for the equivalence test:
+    /// the index may change what is examined, never what wins.
+    #[cfg(test)]
+    fn match_route_linear(
+        &self,
+        method: &str,
+        path: &str,
+    ) -> Result<Option<RouteMatch>, OrionError> {
+        let Some(path_parts) = decode_path_parts(path) else {
+            return Err(OrionError::validation(
+                "Invalid percent-encoding in request path".to_string(),
+            ));
+        };
+        for entry in &self.entries {
             if !entry.methods.is_empty()
                 && !entry.methods.iter().any(|m| m.eq_ignore_ascii_case(method))
             {
@@ -380,14 +486,12 @@ mod tests {
 
     #[test]
     fn test_route_table_match() {
-        let table = RouteTable {
-            entries: vec![RouteEntry {
-                channel_name: "orders.get".to_string(),
-                methods: vec!["GET".to_string()],
-                segments: parse_route_pattern("/orders/{id}"),
-                priority: 0,
-            }],
-        };
+        let table = RouteTable::from_sorted_entries(vec![RouteEntry {
+            channel_name: "orders.get".to_string(),
+            methods: vec!["GET".to_string()],
+            segments: parse_route_pattern("/orders/{id}"),
+            priority: 0,
+        }]);
         let result = table.match_route("GET", "orders/42").expect("valid path");
         assert!(result.is_some());
         let rm = result.expect("test");
@@ -397,14 +501,12 @@ mod tests {
 
     #[test]
     fn test_route_table_method_mismatch() {
-        let table = RouteTable {
-            entries: vec![RouteEntry {
-                channel_name: "orders.get".to_string(),
-                methods: vec!["GET".to_string()],
-                segments: parse_route_pattern("/orders/{id}"),
-                priority: 0,
-            }],
-        };
+        let table = RouteTable::from_sorted_entries(vec![RouteEntry {
+            channel_name: "orders.get".to_string(),
+            methods: vec!["GET".to_string()],
+            segments: parse_route_pattern("/orders/{id}"),
+            priority: 0,
+        }]);
         assert!(
             table
                 .match_route("POST", "orders/42")
@@ -414,14 +516,12 @@ mod tests {
     }
 
     fn orders_table() -> RouteTable {
-        RouteTable {
-            entries: vec![RouteEntry {
-                channel_name: "orders.get".to_string(),
-                methods: vec!["GET".to_string()],
-                segments: parse_route_pattern("/orders/{id}"),
-                priority: 0,
-            }],
-        }
+        RouteTable::from_sorted_entries(vec![RouteEntry {
+            channel_name: "orders.get".to_string(),
+            methods: vec!["GET".to_string()],
+            segments: parse_route_pattern("/orders/{id}"),
+            priority: 0,
+        }])
     }
 
     /// N10: `%2F` reaches the workflow as a literal `/` inside the param —
@@ -476,22 +576,20 @@ mod tests {
 
     #[test]
     fn test_route_table_priority_ordering() {
-        let table = RouteTable {
-            entries: vec![
-                RouteEntry {
-                    channel_name: "low".to_string(),
-                    methods: vec![],
-                    segments: parse_route_pattern("/items/{id}"),
-                    priority: 0,
-                },
-                RouteEntry {
-                    channel_name: "high".to_string(),
-                    methods: vec![],
-                    segments: parse_route_pattern("/items/{id}"),
-                    priority: 10,
-                },
-            ],
-        };
+        let table = RouteTable::from_sorted_entries(vec![
+            RouteEntry {
+                channel_name: "low".to_string(),
+                methods: vec![],
+                segments: parse_route_pattern("/items/{id}"),
+                priority: 0,
+            },
+            RouteEntry {
+                channel_name: "high".to_string(),
+                methods: vec![],
+                segments: parse_route_pattern("/items/{id}"),
+                priority: 10,
+            },
+        ]);
         // After sorting by priority desc, "high" should be first
         // But since we build the entries manually without sorting here,
         // let's test via RouteTable::build instead
@@ -512,22 +610,61 @@ mod prop_tests {
     use proptest::prelude::*;
 
     fn table() -> RouteTable {
-        RouteTable {
-            entries: vec![
-                RouteEntry {
-                    channel_name: "users.get".to_string(),
-                    methods: vec!["GET".to_string()],
-                    segments: parse_route_pattern("/users/{id}/orders/{oid}"),
-                    priority: 0,
-                },
-                RouteEntry {
-                    channel_name: "static.post".to_string(),
-                    methods: vec!["POST".to_string()],
-                    segments: parse_route_pattern("/a/b/c"),
-                    priority: 0,
-                },
-            ],
-        }
+        RouteTable::from_sorted_entries(vec![
+            RouteEntry {
+                channel_name: "users.get".to_string(),
+                methods: vec!["GET".to_string()],
+                segments: parse_route_pattern("/users/{id}/orders/{oid}"),
+                priority: 0,
+            },
+            RouteEntry {
+                channel_name: "static.post".to_string(),
+                methods: vec!["POST".to_string()],
+                segments: parse_route_pattern("/a/b/c"),
+                priority: 0,
+            },
+        ])
+    }
+
+    /// N20 equivalence: the indexed lookup must answer exactly what the
+    /// pre-index full scan answered, for every request shape — including the
+    /// priority tie-breaks the scan encoded by entry order. A wider table
+    /// than `table()`: overlapping static/param first segments, mixed
+    /// lengths, an any-method route, and equal-shape routes at different
+    /// priorities.
+    fn wide_table() -> RouteTable {
+        RouteTable::from_sorted_entries(vec![
+            RouteEntry {
+                channel_name: "orders.high".to_string(),
+                methods: vec!["GET".to_string()],
+                segments: parse_route_pattern("/orders/{id}"),
+                priority: 10,
+            },
+            RouteEntry {
+                channel_name: "orders.low".to_string(),
+                methods: vec![],
+                segments: parse_route_pattern("/orders/{id}"),
+                priority: 0,
+            },
+            RouteEntry {
+                channel_name: "param.first".to_string(),
+                methods: vec!["GET".to_string()],
+                segments: parse_route_pattern("/{tenant}/orders"),
+                priority: 0,
+            },
+            RouteEntry {
+                channel_name: "deep".to_string(),
+                methods: vec!["POST".to_string()],
+                segments: parse_route_pattern("/a/b/c"),
+                priority: 0,
+            },
+            RouteEntry {
+                channel_name: "single".to_string(),
+                methods: vec!["GET".to_string()],
+                segments: parse_route_pattern("/orders"),
+                priority: 0,
+            },
+        ])
     }
 
     proptest! {
@@ -538,6 +675,54 @@ mod prop_tests {
         #[test]
         fn match_route_is_total(method in ".*", path in ".*") {
             let _ = table().match_route(&method, &path);
+        }
+
+        /// N20: the indexed lookup answers exactly what the pre-index full
+        /// scan answers — same channel, same params, same errors — for
+        /// arbitrary methods and paths against a table with overlapping
+        /// static/param first segments, mixed lengths and priority ties.
+        #[test]
+        fn indexed_match_equals_the_linear_scan(
+            method in "(GET|POST|PUT|.*)",
+            path in "[a-c/{}%2F]{0,24}",
+        ) {
+            let t = wide_table();
+            let indexed = t.match_route(&method, &path);
+            let linear = t.match_route_linear(&method, &path);
+            match (indexed, linear) {
+                (Ok(i), Ok(l)) => {
+                    prop_assert_eq!(
+                        i.as_ref().map(|m| (&m.channel_name, &m.params)),
+                        l.as_ref().map(|m| (&m.channel_name, &m.params))
+                    );
+                }
+                (Err(_), Err(_)) => {}
+                (i, l) => prop_assert!(false, "indexed={i:?} linear={l:?}"),
+            }
+        }
+
+        /// Same equivalence over the realistic shapes the generator above
+        /// under-samples: well-formed multi-segment paths that actually hit
+        /// the routes.
+        #[test]
+        fn indexed_match_equals_the_linear_scan_on_real_shapes(
+            first in "(orders|a|zzz)",
+            second in "[a-z]{1,4}",
+            method in "(GET|POST|DELETE)",
+            depth in 1usize..4,
+        ) {
+            let t = wide_table();
+            let path = match depth {
+                1 => first.clone(),
+                2 => format!("{first}/{second}"),
+                _ => format!("{first}/{second}/c"),
+            };
+            let indexed = t.match_route(&method, &path).expect("valid path");
+            let linear = t.match_route_linear(&method, &path).expect("valid path");
+            prop_assert_eq!(
+                indexed.as_ref().map(|m| (&m.channel_name, &m.params)),
+                linear.as_ref().map(|m| (&m.channel_name, &m.params))
+            );
         }
 
         /// Percent-free params round-trip verbatim: whatever slash-free,
