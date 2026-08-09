@@ -25,3 +25,20 @@ updates:
       actions:
         patterns:
           - "*"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+
+  - package-ecosystem: npm
+    directory: /docs/recordings/ui
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      recording-harness:
+        update-types:
+          - minor
+          - patch

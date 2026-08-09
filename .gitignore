@@ -22,6 +22,14 @@ debug/
 *.swo
 *~
 
+# Claude Code local state
+.claude/settings.local.json
+.claude/worktrees/
+
+# Package tarballs dropped outside target/ (helm package, cargo package)
+*.tgz
+*.crate
+
 # TLS material
 *.pem
 *.key
