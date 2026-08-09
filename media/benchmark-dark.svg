@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 178" width="760" height="178" role="img" aria-label="Bar chart of workflow throughput: simple workflow 7,446 requests per second; 12 workflows on one channel 6,912; complex workflow 6,053.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 178" width="760" height="178" role="img" aria-label="Bar chart of workflow throughput (v1.0.0): simple workflow 5,655 requests per second; loaded estate of 12 channels 5,167; complex workflow 5,151.">
   <g font-family="-apple-system,'Segoe UI',system-ui,Helvetica,Arial,sans-serif">
     <text x="0" y="16" font-size="13" font-weight="600" fill="#ffffff">Requests per second — higher is better</text>
 
@@ -13,23 +13,23 @@
 
     <!-- bars: 448px = 8,000 req/s, 4px rounded data-ends -->
     <g fill="#3987e5">
-      <path d="M234,40 h413 q4,0 4,4 v10 q0,4 -4,4 h-413 z"/>
-      <path d="M234,82 h383 q4,0 4,4 v10 q0,4 -4,4 h-383 z"/>
-      <path d="M234,124 h335 q4,0 4,4 v10 q0,4 -4,4 h-335 z"/>
+      <path d="M234,40 h313 q4,0 4,4 v10 q0,4 -4,4 h-313 z"/>
+      <path d="M234,82 h285 q4,0 4,4 v10 q0,4 -4,4 h-285 z"/>
+      <path d="M234,124 h284 q4,0 4,4 v10 q0,4 -4,4 h-284 z"/>
     </g>
 
     <!-- scenario labels -->
     <g font-size="12.5" fill="#ffffff" text-anchor="end">
       <text x="222" y="53">Simple workflow (1 task)</text>
-      <text x="222" y="95">12 workflows on one channel</text>
+      <text x="222" y="95">Loaded estate (12 channels)</text>
       <text x="222" y="137">Complex workflow (4 tasks)</text>
     </g>
 
     <!-- value labels at data ends -->
     <g font-size="12" font-weight="600" fill="#ffffff">
-      <text x="659" y="53">7,446</text>
-      <text x="629" y="95">6,912</text>
-      <text x="581" y="137">6,053</text>
+      <text x="559" y="53">5,655</text>
+      <text x="531" y="95">5,167</text>
+      <text x="530" y="137">5,151</text>
     </g>
 
     <!-- axis ticks -->

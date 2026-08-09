@@ -505,19 +505,20 @@ docker compose -f docker-compose.ha.yml up
 
 ## Performance
 
-**6K–7K workflow requests/sec** on a single instance, as measured on **v0.2.0** (Apple M-series, release build, 50 concurrent connections). These are the v0.2.0 record, not a 1.0.0 claim — the 1.0.0 numbers, including a cluster scenario, will be re-measured on dedicated hardware for the release:
+**5K–5.7K workflow requests/sec** on a single instance, and a **58K req/s** health-check baseline, as measured on **v1.0.0** (Apple M2 Pro Mac Mini, release build, 30s per scenario, 50 concurrent connections — full raw record with run conditions in [`tests/benchmark/results/v1.0.0/`](tests/benchmark/results/v1.0.0/SUMMARY.md)):
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="media/benchmark-dark.svg">
-  <img src="media/benchmark-light.svg" alt="Throughput by scenario (v0.2.0). Simple workflow: 7,446 req/s; 12 workflows on one channel: 6,912 req/s; complex workflow (4 tasks): 6,053 req/s" width="100%">
+  <img src="media/benchmark-light.svg" alt="Throughput by scenario (v1.0.0). Simple workflow: 5,655 req/s; loaded estate of 12 channels: 5,167 req/s; complex workflow (4 tasks): 5,151 req/s" width="100%">
 </picture>
 
-| Scenario (v0.2.0) | Req/sec | Avg Latency | P99 Latency |
+| Scenario (v1.0.0) | Req/sec | Avg Latency | P99 Latency |
 |----------|--------:|------------:|------------:|
-| Simple workflow (1 task) | 7,446 | 6.7 ms | 16.7 ms |
-| Complex workflow (4 tasks) | 6,053 | 8.2 ms | 25.5 ms |
+| Simple workflow (1 task) | 5,655 | 8.7 ms | 12.6 ms |
+| Loaded estate (12 channels) | 5,167 | 9.6 ms | 18.9 ms |
+| Complex workflow (4 tasks) | 5,151 | 9.7 ms | 22.2 ms |
 
-An earlier third row, *"12 workflows on one channel"* (6,912 req/s), is retired: the 1.0 benchmark audit found it exercised the same code path as the simple workflow, and its 1.0 replacement — a 12-channel estate — measures something the old number is not comparable to. Run `./tests/benchmark/bench.sh` to reproduce the single-instance scenarios, and `./tests/benchmark/bench.sh cluster` to drive the HA compose stack through its load balancer.
+Tail latency improved over the v0.2.0 record (simple-workflow P99 12.6 ms vs 16.7 ms) while straight-line throughput reads lower; the record's `SUMMARY.md` carries the honest comparison, including what changed on the hot path in 1.0 (always-on per-task Prometheus timing) and the capture conditions. Zero errors across every scenario, including 56 engine hot-reloads under sustained load. Run `./tests/benchmark/bench.sh` to reproduce the single-instance scenarios, and `./tests/benchmark/bench.sh cluster` to drive the HA compose stack through its load balancer (not part of this record — the capture host had no Docker).
 
 Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mode, async-first on Tokio.
 
