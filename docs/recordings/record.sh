@@ -19,7 +19,9 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # docs/recordings
 ORION_DIR="$(cd "$HERE/../.." && pwd)"                 # .../Orion
-CLI_DIR="$(cd "$ORION_DIR/../Orion-cli" && pwd)"       # .../Orion-cli
+# Assumes a GoPlasmatic/Orion-cli checkout as a sibling of this repo;
+# override with ORION_CLI_DIR=/path/to/Orion-cli.
+CLI_DIR="$(cd "${ORION_CLI_DIR:-$ORION_DIR/../Orion-cli}" && pwd)"
 
 EXAMPLES="$ORION_DIR/examples/high-value-order"
 CAST_DIR="$ORION_DIR/docs/src/casts"

@@ -30,7 +30,10 @@ ORION_PORT=8090 ./record.sh        # use a different port (the quickstart GIF sh
 ```
 
 `record.sh` uses the debug binaries at `../../target/debug/orion-server` and
-`../../../Orion-cli/target/debug/orion-cli`, building them if they are missing.
+`$ORION_CLI_DIR/target/debug/orion-cli`, building them if they are missing.
+The CLI paths assume a [GoPlasmatic/Orion-cli](https://github.com/GoPlasmatic/Orion-cli)
+checkout as a **sibling of this repo**; point `ORION_CLI_DIR` at a checkout
+anywhere else (the CLI flows land their GIFs in that repo's `media/`).
 
 ## UI recordings (console GIF + screenshots)
 
