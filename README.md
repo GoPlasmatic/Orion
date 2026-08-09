@@ -640,20 +640,12 @@ Using Orion in a project, a company, or a side quest? Add yourself to [ADOPTERS.
 
 ## Contributing
 
-Contributions welcome! Whether it's a bug fix, new connector, documentation improvement, or feature request, we'd love to hear from you.
-
-```bash
-cargo build                              # Build (all features included)
-cargo build --release                    # Release build
-cargo test                               # Run tests
-cargo clippy                             # Lint
-cargo fmt                                # Format
-```
+Contributions welcome! Whether it's a bug fix, new connector, documentation improvement, or feature request, we'd love to hear from you. **[CONTRIBUTING.md](CONTRIBUTING.md)** has everything: dev setup, how to run the container-gated tests, the PR checklist, and commit conventions. The project follows the [Contributor Covenant](CODE_OF_CONDUCT.md); notable changes are tracked in the [CHANGELOG](CHANGELOG.md).
 
 - **Report bugs:** [Open an issue](https://github.com/GoPlasmatic/Orion/issues)
 - **Ask questions:** [GitHub Discussions](https://github.com/GoPlasmatic/Orion/discussions)
 - **Report security issues privately:** see [SECURITY.md](SECURITY.md)
-- **Submit code:** Fork, branch, PR. All tests must pass (`cargo test && cargo clippy`)
+- **Submit code:** Fork, branch, PR — see [CONTRIBUTING.md](CONTRIBUTING.md) for the full gate
 - **Docs recordings:** the README GIFs and mdBook asciinema casts are generated from real sessions. See [`docs/recordings/`](docs/recordings/) to regenerate them.
 
 ## Support the Project
