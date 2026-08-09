@@ -64,7 +64,7 @@ src/
 │   └── functions/       # http_call, channel_call, db_read/write, data_query/write, cache_read/write, mongo_read, publish_kafka
 ├── errors.rs            # OrionError enum → HTTP response mapping
 ├── kafka/               # Kafka producer & consumer
-├── metrics/             # Prometheus metrics collection
+├── metrics.rs           # Prometheus metrics collection
 ├── query/               # Portable data dialect: IR, lowering, schema; backends sql/mongo/es
 ├── queue/               # Async trace/audit processing, DLQ retry
 ├── server/              # HTTP server, middleware, state

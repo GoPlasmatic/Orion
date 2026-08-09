@@ -8,7 +8,7 @@
 //! shape of drift that leaves an operator reading a name the binary no longer
 //! emits.
 //!
-//! `src/metrics/mod.rs` is authoritative: every `counter!` / `gauge!` /
+//! `src/metrics.rs` is authoritative: every `counter!` / `gauge!` /
 //! `histogram!` invocation in the crate lives there, so its macro arguments
 //! are the complete metric surface. This module parses them and asserts:
 //!
@@ -21,14 +21,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-const METRICS_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/metrics/mod.rs");
+const METRICS_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/metrics.rs");
 const OBSERVABILITY_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/docs/src/features/observability.md"
 );
 
 /// `name -> label keys`, parsed from the `counter!` / `gauge!` / `histogram!`
-/// invocations in `src/metrics/mod.rs`.
+/// invocations in `src/metrics.rs`.
 ///
 /// The grammar is fixed by the `metrics` crate:
 /// `macro!("name", "label" => value, …)`. Every invocation in this crate is a
@@ -37,7 +37,7 @@ const OBSERVABILITY_MD: &str = concat!(
 /// argument produces no entry, which surfaces as a "documented but not
 /// emitted" failure below).
 fn emitted_metrics() -> BTreeMap<String, BTreeSet<String>> {
-    let source = std::fs::read_to_string(METRICS_RS).expect("read src/metrics/mod.rs");
+    let source = std::fs::read_to_string(METRICS_RS).expect("read src/metrics.rs");
     let mut out = BTreeMap::new();
     for macro_name in ["counter!", "gauge!", "histogram!"] {
         let mut rest = source.as_str();
@@ -202,7 +202,7 @@ fn documented_labels_match_the_code() {
     }
     assert!(
         mismatches.is_empty(),
-        "label drift between src/metrics/mod.rs and the observability page:\n  {}",
+        "label drift between src/metrics.rs and the observability page:\n  {}",
         mismatches.join("\n  ")
     );
 }

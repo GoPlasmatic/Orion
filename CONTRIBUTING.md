@@ -53,7 +53,7 @@ src/
   engine/              # Dataflow engine & custom function handlers (functions/)
   errors.rs            # OrionError enum -> HTTP response mapping
   kafka/               # Kafka producer & consumer
-  metrics/             # Prometheus metrics collection
+  metrics.rs           # Prometheus metrics collection
   query/               # Portable data dialect (data_query / data_write -> SQL/Mongo/ES)
   queue/               # Async trace processing, DLQ retry
   server/              # Axum routes (routes/), middleware, AppState
