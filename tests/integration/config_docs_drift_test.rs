@@ -257,10 +257,10 @@ fn expected_env_name(path: &str) -> String {
 /// Directories walked for `ORION_*` tokens, plus the loose files at the root.
 ///
 /// `.github` is in scope because a mistyped variable in a workflow fails the
-/// same way a mistyped one in a manifest does, only less visibly. `CHANGELOG.md`
-/// and `proposal.md` are deliberately out: both are historical records that
-/// quote names precisely because they were wrong or have since been renamed,
-/// and rewriting history to satisfy a lint would defeat the point of keeping it.
+/// same way a mistyped one in a manifest does, only less visibly.
+/// `CHANGELOG.md` is deliberately out: a historical record that quotes names
+/// precisely because they were wrong or have since been renamed, and
+/// rewriting history to satisfy a lint would defeat the point of keeping it.
 const PROSE_DIRS: &[&str] = &["docs", "examples", "deploy", ".github"];
 const PROSE_FILES: &[&str] = &[
     "README.md",

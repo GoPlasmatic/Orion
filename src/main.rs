@@ -138,7 +138,7 @@ enum Command {
     /// the checked-in copy: `orion-server dump-openapi > docs/openapi.json`.
     DumpOpenapi,
     /// Package a set of channels + their workflows and connectors, and
-    /// promote the artifact through environments (proposal.md, the K stream).
+    /// promote the artifact through environments (the K-stream design).
     ///
     /// The artifact is one JSON document; git is the registry. `export`
     /// computes the dependency closure from a running instance; `lint` checks

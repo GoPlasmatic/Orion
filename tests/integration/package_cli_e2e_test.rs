@@ -1,6 +1,6 @@
 //! `orion-server package` end to end: two real server processes, an artifact
-//! exported from one and promoted to the other — the §7 walkthrough of
-//! proposal.md as a test.
+//! exported from one and promoted to the other — the documented Dev → Prod
+//! promotion walkthrough as a test.
 //!
 //! Spawned binaries rather than `tower::oneshot`, because the CLI is an HTTP
 //! client: the thing under test includes the wire.

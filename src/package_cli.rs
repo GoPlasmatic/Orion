@@ -1,5 +1,5 @@
-//! `orion-server package` — the packaging half of the promotion design
-//! (proposal.md, the K stream §5).
+//! `orion-server package` — the packaging half of the K-stream promotion
+//! design.
 //!
 //! Packaging lives here, in the CLI, not in the server: the server provides
 //! per-kind primitives (upsert import, activation pre-flight, deferred
@@ -7,7 +7,7 @@
 //! to a running instance's admin API over HTTP (`--server` +
 //! `ORION_ADMIN_TOKEN`), except `lint`, which is fully offline.
 //!
-//! The artifact is one JSON document (proposal §6): a `package` header,
+//! The artifact is one JSON document: a `package` header,
 //! `requires` boundaries, and the three entity arrays in the exact shapes
 //! the `/import` endpoints accept. `package.content_hash` is computed over
 //! the entities' *importable content* — each entry projected through the
@@ -56,7 +56,7 @@ struct PackageMeta {
     exported_at: String,
 }
 
-/// Declared external dependencies (proposal §6): names this package uses but
+/// Declared external dependencies: names this package uses but
 /// deliberately does not contain, so closures stay small. `plan` verifies
 /// they exist and are active in the target.
 #[derive(Debug, Default, Serialize, Deserialize)]
