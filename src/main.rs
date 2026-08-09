@@ -39,10 +39,13 @@ EXAMPLES:\n    \
     orion-server lint workflow.json           Validate a workflow JSON file\n    \
     orion-server dry-run -w wf.json -i x.json Dry-run a workflow against an input\n    \
     orion-server dry-run -w wf.json -i x.json --stubs s.json   ... with canned connector replies\n    \
-    orion-server test ./tests/workflows      Run a directory of workflow test cases\n    \
+    orion-server test examples/workflow-tests Run a directory of workflow test cases\n    \
     orion-server test-connectivity            Probe DB (and Kafka if enabled)\n    \
     orion-server preflight                    Scan stored channels/workflows before upgrading\n    \
-    orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n\n\
+    orion-server dump-openapi > spec.json     Write the OpenAPI 3.1 spec to a file\n    \
+    orion-server package export -s <url> --tag payments --name payments --version 1.0.0 -o pkg.json\n                                              \
+Export a promotion package from an instance\n    \
+    orion-server package apply -s <url> -f pkg.json  Stage, activate and reload the package on a target\n\n\
 ENVIRONMENT VARIABLES:\n    \
     All settings can be overridden via ORION_SECTION__KEY env vars:\n\n    \
     ORION_SERVER__PORT=9090            Override server port\n    \
@@ -112,7 +115,7 @@ enum Command {
     },
     /// Run a directory of workflow test cases (A6).
     ///
-    /// Each `*.json` case names a workflow, an input, optional connector stubs
+    /// Each `*.case.json` case names a workflow, an input, optional connector stubs
     /// and the values expected in the output:
     ///
     ///     {"name": "flags high-value orders", "workflow": "wf.json",
