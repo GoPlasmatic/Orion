@@ -16,7 +16,12 @@ orion-server migrate                               # Run database migrations
 orion-server migrate --dry-run                     # Preview pending migrations
 orion-server lint path/to/workflow.json            # Strict-validate a workflow JSON file
 orion-server dry-run -w workflow.json -i input.json # Execute a workflow against a sample payload
+orion-server dry-run -w wf.json -i in.json --stubs s.json  # ...with connector calls answered from canned responses
+orion-server test examples/workflow-tests          # Run offline *.case.json workflow regression tests
 orion-server test-connectivity                     # Probe DB (and Kafka if enabled)
+orion-server preflight                             # Scan stored channels/workflows before upgrading
+orion-server dump-openapi > openapi.json           # Write the OpenAPI 3.1 spec
+orion-server package <export|lint|plan|apply|diff> # Promote a package between instances (see the Admin API page)
 ```
 
 All subcommands honour `${VAR}` / `${VAR:-default}` substitution in the loaded config file, so the same `config.toml` can be reused across environments.
