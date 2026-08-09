@@ -50,39 +50,46 @@ All capabilities are compiled into a single binary — no feature flags. Behavio
 
 ```
 src/
-├── main.rs              # CLI entrypoint, startup sequence
+├── main.rs              # clap CLI entrypoint; declares the binary-only cli/package_cli modules
+├── bootstrap.rs         # Startup sequence: config → pools → repos → engine → HTTP server
+├── cli.rs               # Diagnostic subcommands: validate-config, migrate, lint, dry-run, test, test-connectivity, dump-openapi
+├── preflight.rs         # `orion-server preflight` — scans the stored estate for upgrade breaks
+├── package_cli.rs       # `orion-server package` — export/lint/plan/apply/diff promotion CLI
 ├── lib.rs               # Public module declarations
-├── channel/             # Channel registry, config, routing, deduplication
+├── channel/             # Channel registry, config, routing, rate limiting, request guards
+├── cluster/             # Multi-node coordination: epoch watcher, job leases
 ├── config/              # Configuration loading & validation
-├── connector/           # Connector types, registry, circuit breakers, pool caching
-├── engine/              # Dataflow engine & custom function handlers
-│   └── functions/       # http_call, channel_call, db_read/write, cache_read/write, etc.
+├── connector/           # Connector types, registry, circuit breakers, pool caching, secret resolution
+├── engine/              # Dataflow engine build/reload, observer, custom function handlers
+│   └── functions/       # http_call, channel_call, db_read/write, data_query/write, cache_read/write, mongo_read, publish_kafka
 ├── errors.rs            # OrionError enum → HTTP response mapping
 ├── kafka/               # Kafka producer & consumer
 ├── metrics/             # Prometheus metrics collection
-├── queue/               # Async trace processing, DLQ retry
-├── server/              # HTTP server, routes, middleware, state
-│   └── routes/          # admin/ (workflows, channels, connectors, engine, audit, backups), data
-├── storage/             # Database abstraction, models, repositories
-│   └── repositories/    # workflows, channels, connectors, traces, trace_dlq, audit_logs
+├── query/               # Portable data dialect: IR, lowering, schema; backends sql/mongo/es
+├── queue/               # Async trace/audit processing, DLQ retry
+├── server/              # HTTP server, middleware, state
+│   └── routes/          # admin/ (workflows, channels, connectors, packages, functions, engine, audit, backups, trace_dlq), data/
+├── storage/             # Database abstraction, content hashing, config encryption
+│   ├── models/          # Row types, DTOs, enums
+│   └── repositories/    # workflows, channels, connectors, packages, traces, trace_dlq, audit_logs, cluster
 └── validation/          # Input validation, SSRF protection
 ```
 
-### Startup Sequence (main.rs)
+### Startup Sequence (main.rs → bootstrap.rs)
 
-CLI args → config (TOML + `ORION_SECTION__KEY` env overrides) → tracing → metrics → detect DB backend from URL → DB pool + migrations → repositories (workflows, channels, connectors, traces, audit_logs) → ConnectorRegistry → HTTP client → engine lock (pre-created for channel_call) → cache pool → external pool caches (SQL, MongoDB) → custom functions → Kafka producer (if enabled) → load active channels + workflows → filter by include/exclude patterns → build engine → populate engine lock → reload ChannelRegistry → Kafka consumer (if enabled, config + DB topics merged) → trace queue workers → trace cleanup → DLQ retry → rate limiter → Axum HTTP server → graceful shutdown on SIGTERM/SIGINT.
+CLI args → config (TOML + `ORION_SECTION__KEY` env overrides) → tracing → metrics → detect DB backend from URL → DB pool + migrations → repositories (workflows, channels, connectors, packages, traces, trace_dlq, audit_logs) → ConnectorRegistry → HTTP client → engine lock (pre-created for channel_call) → cache pool → external pool caches (SQL, MongoDB) → custom functions → Kafka producer (if enabled) → load active channels + workflows → filter by include/exclude patterns → build engine → populate engine lock → reload ChannelRegistry → Kafka consumer (if enabled, config + DB topics merged) → trace queue workers → trace cleanup → DLQ retry → rate limiter → Axum HTTP server → graceful shutdown on SIGTERM/SIGINT.
 
 ### Key Architectural Patterns
 
 - **Channels + Workflows:** Channels are service endpoints (sync/async, REST/HTTP/Kafka) that link to workflows. Workflows are versioned task pipelines with JSONLogic conditions. A channel references a workflow via `workflow_id`.
-- **Repository pattern:** Trait-based (`WorkflowRepository`, `ChannelRepository`, `ConnectorRepository`, `TraceRepository`, `TraceDlqRepository`, `AuditLogRepository`) with SQL implementations. Traits use `async_trait`. All repos are stored as `Arc<dyn Trait>` in `AppState`.
+- **Repository pattern:** Trait-based (`WorkflowRepository`, `ChannelRepository`, `ConnectorRepository`, `PackageRepository`, `TraceRepository`, `TraceDlqRepository`, `AuditLogRepository`, `ClusterRepository`) with SQL implementations. Traits use `async_trait`. All repos are stored as `Arc<dyn Trait>` in `AppState`.
 - **Engine hot-reload:** Engine is `Arc<RwLock<Arc<Engine>>>`. Double-Arc allows swapping the inner engine while readers hold the old one. Reload triggers on status changes (activate/archive), delete, and manually via `POST /api/v1/admin/engine/reload`. Draft creates/updates do not trigger reload. Also rebuilds `ChannelRegistry` and restarts Kafka consumer if topic set changed.
 - **Channel registry:** In-memory `ChannelRegistry` (`channel/registry.rs`) holds `ChannelRuntimeConfig` per active channel — parsed config, rate limiters, compiled validation logic, backpressure semaphores, dedup stores, response caches. Has a `RouteTable` for REST route matching (method + path pattern with parameter extraction). Rebuilt on engine reload.
-- **Custom async functions:** 10 handlers implement `dataflow_rs::engine::functions::AsyncFunctionHandler`, registered in `engine/mod.rs::build_custom_functions()`: `http_call`, `channel_call`, `cache_read`, `cache_write`, `db_read`, `db_write`, `data_query`, `data_write`, `mongo_read`, `publish_kafka`. `data_query`/`data_write` are the portable read/write dialects (backend-neutral filter + envelope → SQL/MongoDB/ES) in `src/query/`; `db_read`/`db_write` are the raw-SQL escape hatch.
+- **Custom async functions:** 10 handlers implement `dataflow_rs::engine::functions::AsyncFunctionHandler`, registered in `engine/handlers.rs::build_custom_functions()` (re-exported from `engine/mod.rs`): `http_call`, `channel_call`, `cache_read`, `cache_write`, `db_read`, `db_write`, `data_query`, `data_write`, `mongo_read`, `publish_kafka`. `data_query`/`data_write` are the portable read/write dialects (backend-neutral filter + envelope → SQL/MongoDB/ES) in `src/query/`; `db_read`/`db_write` are the raw-SQL escape hatch.
 - **Connector registry:** In-memory `RwLock<HashMap<String, Arc<ConnectorConfig>>>` with secret masking on API reads, circuit breakers per connector with LRU eviction. Db/es connector configs carry per-operation gates (`operations: { read, insert, update, delete, upsert, raw_write }`, all default `true`) enforced by the data handlers — e.g. set `"delete": false` to make a connector delete-proof.
 - **Trace queue:** `tokio::sync::mpsc` channel with semaphore-limited concurrency for async trace processing (`queue/mod.rs`). Failed traces go to DLQ table with automatic retry.
 - **Error handling:** `OrionError` enum in `errors.rs` implements `axum::response::IntoResponse`, mapping variants to HTTP status codes. Returns JSON `{"error": {"code": "...", "message": "..."}}`.
-- **AppState** (`server/state.rs`): Central shared state struct. Coherent clusters are grouped into sub-structs (R26): `repos` (`storage::repositories::Repositories` — workflows, channels, connectors, traces, trace_dlq, audit_logs), `kafka` (producer, consumer_handle, ingest_status), and `caches` (cache_pool, sql_pool_cache, mongo_pool_cache). Runtime-singular fields stay flat: engine, connector registry, channel registry, trace/audit queues, config, metrics handle, HTTP client, DataLogic instance, rate limit state, readiness flag, cluster runtime, admin-auth failure tracker, trusted proxies. Passed to all route handlers via Axum's `State` extractor.
+- **AppState** (`server/state.rs`): Central shared state struct. Coherent clusters are grouped into sub-structs (R26): `repos` (`storage::repositories::Repositories` — workflows, channels, connectors, packages, traces, trace_dlq, audit_logs), `kafka` (producer, consumer_handle, ingest_status), and `caches` (cache_pool, sql_pool_cache, mongo_pool_cache). Runtime-singular fields stay flat: engine, connector registry, channel registry, trace/audit queues, config, metrics handle, HTTP client, DataLogic instance, rate limit state, readiness flag, cluster runtime, admin-auth failure tracker, trusted proxies. Passed to all route handlers via Axum's `State` extractor.
 
 ### Middleware Stack (server/mod.rs)
 
@@ -114,11 +121,13 @@ HTTP Request → Axum Router → Data Route Handler
 ### API Structure
 
 - **Admin** (`/api/v1/admin/`):
-  - **Channels:** CRUD, status management (draft/active/archived), versioning
-  - **Workflows:** CRUD, status management, versioning, rollout, dry-run test, import/export, validate
-  - **Connectors:** CRUD, reload, circuit breakers (list/reset)
-  - **Engine:** status, reload
-  - **Audit logs:** list with filtering
+  - **Channels:** CRUD, status management (draft/active/archived; `?dry_run=true` pre-flight, `?reload=defer`), versioning, import/export (`?on_conflict=fail|skip|new_version`), validate, tags (`?tag=` filter). Names are unique per `channel_id`; activation requires an active workflow.
+  - **Workflows:** CRUD, status management, versioning, rollout, dry-run test, import/export, validate, `GET /{id}/dependencies` (connector refs + `channel_call` targets)
+  - **Connectors:** CRUD (`enabled` flag, tags), reload, test, import/export, validate, circuit breakers (list/reset)
+  - **Packages:** promotion receipts — list/get/put; applied versions are content-immutable (same version + different `content_hash` → 409)
+  - **Functions:** `GET /functions` — per-function input schemas for tooling
+  - **Engine:** status, reload (also batches promotions committed with `?reload=defer`)
+  - **Audit logs:** list with filtering; `X-Orion-Change-Context` request header lands in `details`
   - **Backups:** create and list SQLite backups (`VACUUM INTO`, refused in cluster mode). There is **no restore endpoint** — restore is an offline stop/replace-file/start procedure; PostgreSQL and MySQL have no in-product backup and rely on operator snapshot/PITR tooling. See `docs/src/features/maintainability.md`.
 - **Data** (`/api/v1/data/`): Dynamic handler `/{*path}` — resolves to channel via REST route match or name lookup. Supports sync and async (trailing `/async`). Trace list/get endpoints.
 - **Operational:** `GET /health`, `GET /healthz` (liveness), `GET /readyz` (readiness), `GET /metrics`
@@ -126,7 +135,7 @@ HTTP Request → Axum Router → Data Route Handler
 
 ### Database
 
-SQLite (default), PostgreSQL, or MySQL — selected at runtime from `storage.url` scheme. All three migration sets are embedded via `sqlx::migrate!()` and the correct set is chosen at startup based on the detected backend (`DbBackend` enum in `storage/mod.rs`). `DbPool` is an enum wrapping the concrete pool types (`SqlitePool`/`PgPool`/`MySqlPool`) with dispatch helpers for query execution. Tables: `workflows` (composite PK `(workflow_id, version)`), `channels` (composite PK `(channel_id, version)`), `connectors`, `traces`, `trace_dlq`, `audit_logs`. Views: `current_workflows`, `current_channels` (latest version per ID). Triggers enforce single-draft-per-ID and active-immutability constraints. Migrations per backend in `migrations/{sqlite,postgres,mysql}/`.
+SQLite (default), PostgreSQL, or MySQL — selected at runtime from `storage.url` scheme. All three migration sets are embedded via `sqlx::migrate!()` and the correct set is chosen at startup based on the detected backend (`DbBackend` enum in `storage/mod.rs`). `DbPool` is an enum wrapping the concrete pool types (`SqlitePool`/`PgPool`/`MySqlPool`) with dispatch helpers for query execution. Tables: `workflows` (composite PK `(workflow_id, version)`), `channels` (composite PK `(channel_id, version)`), `connectors`, `packages` (promotion receipts), `traces`, `trace_dlq`, `audit_logs`; workflows, channels and connectors carry a `tags_json` column. Views: `current_workflows`, `current_channels` (latest version per ID). Triggers enforce single-draft-per-ID and active-immutability constraints. Migrations per backend in `migrations/{sqlite,postgres,mysql}/`.
 
 ## Testing
 
@@ -136,7 +145,7 @@ SQLite (default), PostgreSQL, or MySQL — selected at runtime from `storage.url
   - `json_request(method, uri, body)` — builds an HTTP `Request<Body>` with JSON content-type
   - `body_json(response)` — extracts and parses the response body as `serde_json::Value`
 - **Pattern for new integration tests:** Clone the app, call `.oneshot(json_request(...))`, assert status, parse body with `body_json()`. See `tests/integration/admin_workflows_test.rs` for examples. Declare the new module in `tests/integration/main.rs`.
-- **Other test binaries:** `tests/cluster/` (multi-node contracts), `tests/storage_postgres.rs`, `tests/storage_mysql.rs`, `tests/schema_parity.rs` (container-gated), plus container-gated modules inside the integration binary listed in `.github/workflows/ci.yml` (kept in sync by `ci_filter_drift_test`).
+- **Other test binaries:** `tests/cluster/` (multi-node contracts), `tests/storage_postgres.rs`, `tests/storage_mysql.rs`, `tests/schema_parity.rs` (container-gated), `tests/metrics_exposition.rs` (isolated for its process-global metrics recorder), plus container-gated modules inside the integration binary listed in `.github/workflows/ci.yml` (kept in sync by `ci_filter_drift_test`).
 - **Benchmarks:** `tests/benchmark/bench.sh` — 6 scenarios using `hey` HTTP load generator.
 
 ## Configuration
@@ -148,8 +157,14 @@ See `config.toml.example`. All settings have sensible defaults. Environment vari
 ```bash
 orion-server                              # Start server
 orion-server -c config.toml               # Start with config
-orion-server validate-config              # Validate config
+orion-server validate-config              # Validate config (--format summary for a short view)
 orion-server migrate                      # Run migrations
 orion-server migrate --dry-run            # Preview migrations
+orion-server lint workflow.json           # Strict-validate a workflow JSON file
+orion-server dry-run -w wf.json -i in.json --stubs s.json  # Execute a workflow offline with canned connector replies
+orion-server test examples/workflow-tests # Run offline *.case.json workflow regression tests
+orion-server test-connectivity            # Probe DB (and Kafka if enabled)
 orion-server preflight                    # Scan stored channels/workflows for 1.0 breaks
+orion-server dump-openapi                 # Print the OpenAPI 3.1 spec
+orion-server package <export|lint|plan|apply|diff>  # Promote a package of channels+workflows+connectors between instances
 ```
