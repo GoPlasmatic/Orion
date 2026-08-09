@@ -9,13 +9,13 @@ Get Orion running on your machine in under a minute.
 
 Choose your preferred method:
 
-**Homebrew** (macOS and Linux):
+**Homebrew** (macOS Apple silicon and Linux — Intel Macs build from source below):
 
 ```bash
 brew install GoPlasmatic/tap/orion-server
 ```
 
-**Shell installer** (Linux/macOS):
+**Shell installer** (Linux, macOS Apple silicon):
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh

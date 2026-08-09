@@ -540,10 +540,10 @@ docker run -p 8080:8080 ghcr.io/goplasmatic/orion:latest
 # Docker Compose (with persistent storage)
 docker compose up  # uses docker-compose.yml from this repo
 
-# macOS (Homebrew — Apple silicon; Intel Macs use the shell installer below)
+# Homebrew (macOS Apple silicon, Linux; Intel Macs build from source via `cargo install` below)
 brew install GoPlasmatic/tap/orion-server
 
-# macOS / Linux (shell installer)
+# macOS (Apple silicon) / Linux (shell installer)
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion/releases/latest/download/orion-server-installer.sh | sh
 
 # Windows (PowerShell)
