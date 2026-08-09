@@ -1,6 +1,6 @@
 # Orion Examples
 
-Ready-to-deploy [channels and workflows](../docs/src/reference/workflows.md) you
+Ready-to-deploy [channels and workflows](https://goplasmatic.github.io/Orion/reference/workflows.html) you
 can POST to a running Orion instance and call immediately.
 
 Most examples are **self-contained and zero-dependency** — they use only the
@@ -109,7 +109,7 @@ need a **connector** (`POST /api/v1/admin/connectors`); `postgres-orders` is
 the worked example of that pattern, and `channel_call` composes channels
 in-process. See:
 
-- [Function Reference](../docs/src/reference/functions.md) — every function's input schema
-- [Workflow Reference](../docs/src/reference/workflows.md) — workflow shape, conditions, and lifecycle
-- [Use Cases & Patterns](../docs/src/tutorials/use-cases.md) — connector-backed and composition walkthroughs
+- [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html) — every function's input schema
+- [Workflow Reference](https://goplasmatic.github.io/Orion/reference/workflows.html) — workflow shape, conditions, and lifecycle
+- [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html) — connector-backed and composition walkthroughs
 - [Orion CLI](https://github.com/GoPlasmatic/Orion-cli) — deploy with `orion-cli workflows create -f workflow.json`
