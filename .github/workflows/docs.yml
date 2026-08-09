@@ -4,7 +4,12 @@ on:
   push:
     branches: [main]
     paths:
-      - "docs/**"
+      # Not the whole of docs/: openapi.json is regenerated on API changes but
+      # is not part of the published book, so it must not redeploy Pages.
+      - "docs/src/**"
+      - "docs/book.toml"
+      - "docs/css/**"
+      - "docs/js/**"
   workflow_dispatch:
 
 permissions:
