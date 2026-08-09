@@ -398,7 +398,9 @@ async fn upsert_connector(
         Err(e) => return Err(e),
     };
 
-    if connector_row_content(&existing)? == connector_req_content(&req) {
+    if crate::storage::content::connector_content(&existing)?
+        == crate::storage::content::connector_request_content(&req)
+    {
         return Ok(ImportAction::Unchanged);
     }
     if !dry_run {
@@ -419,29 +421,6 @@ async fn upsert_connector(
         evict_connector_pools(state, &existing.name).await;
     }
     Ok(ImportAction::Updated)
-}
-
-/// A connector row's importable content in the create-request's vocabulary —
-/// `id` and timestamps excluded (`id` is not part of the artifact contract:
-/// the upsert matches on `name` and keeps the stored id).
-fn connector_row_content(c: &crate::storage::models::Connector) -> Result<Value, OrionError> {
-    Ok(json!({
-        "name": c.name,
-        "connector_type": c.connector_type,
-        "config": serde_json::from_str::<Value>(&c.config_json)?,
-        "enabled": c.enabled,
-        "tags": serde_json::from_str::<Value>(&c.tags_json)?,
-    }))
-}
-
-fn connector_req_content(r: &CreateConnectorRequest) -> Value {
-    json!({
-        "name": r.name,
-        "connector_type": r.connector_type.as_str(),
-        "config": r.config,
-        "enabled": r.enabled.unwrap_or(true),
-        "tags": r.tags,
-    })
 }
 
 // ============================================================
@@ -547,17 +526,9 @@ pub(crate) async fn export_connectors(
     // returns everything that matches; `?tag=` (K6) is honoured.
     OrionQuery(filter): OrionQuery<ConnectorFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let repo = state.repos.connectors.as_ref();
-    let rows = super::collect_pages(super::EXPORT_PAGE_SIZE, |limit, offset| {
-        let page_filter = ConnectorFilter {
-            tag: filter.tag.clone(),
-            limit: Some(limit),
-            offset: Some(offset),
-            ..Default::default()
-        };
-        async move { Ok(repo.list_paginated(&page_filter).await?.data) }
-    })
-    .await?;
+    // K12: one repeatable-read transaction — the export is a consistent
+    // snapshot, not a sequence of independent page queries.
+    let rows = state.repos.connectors.snapshot(&filter).await?;
 
     // An export has to emit the shape `/import` accepts, which is not the shape
     // `GET /connectors` returns: `ConnectorResponse` carries `config_json` as a
@@ -584,6 +555,9 @@ pub(crate) async fn export_connectors(
                     .unwrap_or_else(|_| json!({})),
                 "enabled": masked.enabled,
                 "tags": masked.tags,
+                // K10: over the stored (unmasked) content, like every entity
+                // response — import ignores it like the other extras.
+                "content_hash": masked.content_hash,
             })
         })
         .collect();

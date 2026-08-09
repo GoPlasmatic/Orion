@@ -36,6 +36,10 @@ pub struct WorkflowResponse {
     pub tasks: Value,
     pub tags: Value,
     pub continue_on_error: bool,
+    /// `sha256:…` over the canonical importable content (K10) — the same
+    /// projection the upsert import compares and the package CLI hashes, so
+    /// equal hashes mean "importing one over the other is a no-op".
+    pub content_hash: String,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -65,6 +69,9 @@ impl TryFrom<&Workflow> for WorkflowResponse {
             // corrupt row has to go and look at.
             tags: parse_json_field(&workflow.tags_json, "workflow", id, "tags_json")?,
             continue_on_error: workflow.continue_on_error,
+            content_hash: crate::storage::content::content_hash(
+                &crate::storage::content::workflow_content(workflow)?,
+            ),
             created_at: workflow.created_at,
             updated_at: workflow.updated_at,
         })
@@ -95,6 +102,12 @@ pub struct ChannelResponse {
     /// Wire name `tags`, column `tags_json` (K6) — the same contract
     /// workflows have carried since 0.x.
     pub tags: Value,
+    /// `sha256:…` over the canonical importable content (K10). Computed on
+    /// the stored (unmasked) config: entities authored with `env://`
+    /// references hash identically to their exported artifact; entities
+    /// holding literal secrets hash over what they store, which a masked
+    /// export can never reproduce.
+    pub content_hash: String,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -141,6 +154,9 @@ impl TryFrom<&Channel> for ChannelResponse {
             status: channel.status.clone(),
             priority: channel.priority,
             tags: parse_json_field(&channel.tags_json, "channel", id, "tags_json")?,
+            content_hash: crate::storage::content::content_hash(
+                &crate::storage::content::channel_content(channel)?,
+            ),
             created_at: channel.created_at,
             updated_at: channel.updated_at,
         })
@@ -164,6 +180,11 @@ pub struct ConnectorResponse {
     pub enabled: bool,
     /// Wire name `tags`, column `tags_json` (K6).
     pub tags: Value,
+    /// `sha256:…` over the canonical importable content (K10), computed on
+    /// the stored (unmasked) config — see the note on
+    /// [`ChannelResponse::content_hash`]. Empty for a row whose stored JSON
+    /// no longer parses: corrupt content equals nothing.
+    pub content_hash: String,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -183,6 +204,9 @@ impl From<&Connector> for ConnectorResponse {
             // connector read, list and export.
             tags: serde_json::from_str(&connector.tags_json)
                 .unwrap_or_else(|_| Value::Array(Vec::new())),
+            content_hash: crate::storage::content::connector_content(connector)
+                .map(|v| crate::storage::content::content_hash(&v))
+                .unwrap_or_default(),
             created_at: connector.created_at,
             updated_at: connector.updated_at,
         }
@@ -633,12 +657,19 @@ mod tests {
                 "config_json",
                 "enabled",
                 "tags",
+                "content_hash",
                 "created_at",
                 "updated_at"
             ]
         );
         assert_eq!(value["config_json"], r#"{"password":"******"}"#);
         assert_eq!(value["tags"], serde_json::json!([]));
+        assert!(
+            value["content_hash"]
+                .as_str()
+                .is_some_and(|h| h.starts_with("sha256:")),
+            "{value}"
+        );
         assert_eq!(value["created_at"], "2025-01-01T00:00:00");
     }
 

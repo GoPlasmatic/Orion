@@ -57,6 +57,7 @@ async fn connector_response_keeps_every_field_the_row_published() {
         [
             "config_json",
             "connector_type",
+            "content_hash",
             "created_at",
             "enabled",
             "id",
@@ -81,6 +82,7 @@ async fn connector_response_keeps_every_field_the_row_published() {
         [
             "config_json",
             "connector_type",
+            "content_hash",
             "created_at",
             "enabled",
             "id",
@@ -305,6 +307,7 @@ async fn wire_names_survive_the_column_rename() {
             keys(&body["data"], "workflow"),
             [
                 "condition",
+                "content_hash",
                 "continue_on_error",
                 "created_at",
                 "description",
@@ -355,6 +358,7 @@ async fn wire_names_survive_the_column_rename() {
             "channel_type",
             "config",
             "consumer_group",
+            "content_hash",
             "created_at",
             "description",
             "methods",

@@ -48,6 +48,7 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 | POST | `/api/v1/admin/workflows/{id}/versions` | Create new draft version from active workflow |
 | PATCH | `/api/v1/admin/workflows/{id}/rollout` | Update rollout percentage. `?reload=defer` commits without rebuilding the engine |
 | POST | `/api/v1/admin/workflows/{id}/test` | Dry-run on sample payload |
+| GET | `/api/v1/admin/workflows/{id}/dependencies` | What the tasks reference: connector names (with the referencing function) and static `channel_call` targets, plus a flag when targets resolve dynamically. For closure tooling |
 | POST | `/api/v1/admin/workflows/import` | Bulk import workflows (as drafts). `?dry_run=true` validates without writing; `?on_conflict=fail\|skip\|new_version` picks what an existing id means |
 | GET | `/api/v1/admin/workflows/export` | Export workflows. Filter with `?tag=`, `?status=` |
 | POST | `/api/v1/admin/workflows/validate` | Validate workflow definition |
@@ -130,9 +131,18 @@ curl -s -X POST "$ORION/api/v1/admin/workflows/import" \
 ```
 
 Each `/export` emits the shape its `/import` accepts, so the round trip needs no
-reshaping in between. Exports are **not** a consistent snapshot: pages are
-independent queries, so rows mutated mid-export can be skipped or duplicated.
-Export from a quiet instance if that matters.
+reshaping in between. As of 1.0 each export reads inside **one repeatable-read
+transaction** (K12), so the result is a consistent snapshot — rows mutated
+mid-export can no longer be skipped or duplicated. (On MySQL this relies on
+InnoDB's default REPEATABLE READ isolation; lowering it session-wide weakens
+the guarantee.)
+
+Every entity response also carries `content_hash` (K10): `sha256:…` over the
+canonical *importable content* — the DB-owned fields (`version`, `status`,
+timestamps, `rollout_percentage`) excluded. Equal hashes mean "importing one
+over the other is a no-op", which is how drift is detected without comparing
+bodies. Hashes are computed over stored values, so only `env://`/`vault://`-
+authored entities hash identically to their masked exports.
 
 ### Promoting over an existing estate (`on_conflict`)
 
@@ -180,6 +190,32 @@ running configuration untouched **everywhere** until `POST
 disagree — a deferred activation is not serving yet. Tooling that defers must
 always finish with the explicit reload; an operator making one change should
 simply omit the parameter.
+
+### The `orion-server package` CLI
+
+The flows above are composed, end to end, by the packaging CLI — the
+recommended way to promote an estate:
+
+```bash
+export ORION_ADMIN_TOKEN=…   # sent as the admin bearer token
+
+# Capture a package from Dev: the tagged channels, their workflows, and every
+# connector those workflows reference (closure via /dependencies)
+orion-server package export -s https://dev.orion.internal \
+  --tag pkg:payments --name payments --version 1.4.0 -o payments-1.4.0.json
+
+orion-server package lint  -f payments-1.4.0.json          # offline, CI gate
+orion-server package plan  -s https://qa.orion.internal  -f payments-1.4.0.json
+orion-server package apply -s https://qa.orion.internal  -f payments-1.4.0.json
+orion-server package diff  -s https://prod.orion.internal -f payments-1.4.0.json
+```
+
+`apply` claims the package receipt as `staged`, stages every entity with
+`on_conflict=new_version` (connectors → workflows → channels), activates in
+dependency order with `reload=defer`, reloads the engine once, and flips the
+receipt to `applied`. Re-running an identical artifact is a no-op; a changed
+artifact reusing an applied version is refused — bump the package version.
+Every call is stamped with `X-Orion-Change-Context: package=<name>@<version>`.
 
 ### Grouping a multi-request operation (`X-Orion-Change-Context`)
 

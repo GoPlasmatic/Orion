@@ -26,6 +26,7 @@
 //! immediately; see `init_sqlite_pool`.
 
 pub mod config_encryption;
+pub mod content;
 pub mod models;
 pub mod repositories;
 pub mod schema;

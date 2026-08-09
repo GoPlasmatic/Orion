@@ -19,6 +19,11 @@ use super::helpers::{
 pub use super::helpers::PaginatedResult;
 use super::versioned::{self, VersionedSpec};
 
+/// Rows per query inside a [`WorkflowRepository::snapshot`] (and its two
+/// siblings) — the same bound the route layer's `EXPORT_PAGE_SIZE` carries,
+/// for the same D7 reason.
+pub(crate) const EXPORT_PAGE_SIZE: i64 = 500;
+
 /// The versioned-lifecycle spec shared machinery operates on.
 fn spec() -> VersionedSpec {
     use sea_query::IntoIden;
@@ -115,6 +120,10 @@ pub trait WorkflowRepository: Send + Sync {
         &self,
         filter: &WorkflowFilter,
     ) -> Result<PaginatedResult<Workflow>, OrionError>;
+    /// Every current workflow matching `filter` (`status`/`tag`; the
+    /// filter's own page bounds are ignored), read as one consistent
+    /// snapshot (K12) — the export contract.
+    async fn snapshot(&self, filter: &WorkflowFilter) -> Result<Vec<Workflow>, OrionError>;
     /// Update the draft version of a workflow. Errors if no draft exists.
     async fn update_draft(
         &self,
@@ -429,6 +438,26 @@ impl WorkflowRepository for SqlWorkflowRepository {
                     offset,
                 },
             )
+            .await
+        })
+        .await
+    }
+
+    async fn snapshot(&self, filter: &WorkflowFilter) -> Result<Vec<Workflow>, OrionError> {
+        crate::metrics::timed_db_op("workflows.snapshot", async {
+            super::helpers::snapshot_pages(&self.pool, EXPORT_PAGE_SIZE, |limit, offset| {
+                Query::select()
+                    .column(Asterisk)
+                    .from(CurrentWorkflows::Table)
+                    .cond_where(build_condition(filter))
+                    .order_by(Workflows::Priority, Order::Desc)
+                    .order_by(Workflows::Name, Order::Asc)
+                    // Unique tiebreaker: OFFSET paging needs a total order.
+                    .order_by(Workflows::WorkflowId, Order::Asc)
+                    .limit(limit as u64)
+                    .offset(offset as u64)
+                    .to_owned()
+            })
             .await
         })
         .await

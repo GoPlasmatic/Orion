@@ -3499,6 +3499,75 @@
         ]
       }
     },
+    "/api/v1/admin/workflows/{id}/dependencies": {
+      "get": {
+        "tags": [
+          "Workflows"
+        ],
+        "operationId": "workflow_dependencies",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Workflow ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the workflow's tasks reference (K9): connector names (with the referencing function) and statically-known `channel_call` targets. The API twin of the reference walk activation runs, for tooling that computes a package's dependency closure without re-implementing the task-walk.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_WorkflowDependencies"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Workflow not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
     "/api/v1/admin/workflows/{id}/rollout": {
       "patch": {
         "tags": [
@@ -4507,6 +4576,7 @@
           "status",
           "priority",
           "tags",
+          "content_hash",
           "created_at",
           "updated_at"
         ],
@@ -4523,6 +4593,10 @@
               "string",
               "null"
             ]
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "`sha256:…` over the canonical importable content (K10). Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
           },
           "created_at": {
             "type": "string",
@@ -4653,6 +4727,22 @@
           }
         }
       },
+      "ConnectorDependency": {
+        "type": "object",
+        "required": [
+          "connector",
+          "function"
+        ],
+        "properties": {
+          "connector": {
+            "type": "string"
+          },
+          "function": {
+            "type": "string",
+            "description": "The task function that uses it (`db_read`, `http_call`, …)."
+          }
+        }
+      },
       "ConnectorListItem": {
         "type": "object",
         "description": "One row of `GET /api/v1/admin/connectors`: the stored connector with\nsecrets masked, plus the registry's view of whether it actually loaded.\n\nDeclared separately from [`crate::storage::models::ConnectorResponse`]\nbecause `PaginatedEnvelope<ConnectorResponse>` would under-describe the row\nby exactly the three fields an operator reads the list for.",
@@ -4663,6 +4753,7 @@
           "config_json",
           "enabled",
           "tags",
+          "content_hash",
           "created_at",
           "updated_at",
           "load_status"
@@ -4674,6 +4765,10 @@
           },
           "connector_type": {
             "type": "string"
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "`sha256:…` over the canonical importable content (K10)."
           },
           "created_at": {
             "type": "string"
@@ -4728,6 +4823,7 @@
           "config_json",
           "enabled",
           "tags",
+          "content_hash",
           "created_at",
           "updated_at"
         ],
@@ -4738,6 +4834,10 @@
           },
           "connector_type": {
             "type": "string"
+          },
+          "content_hash": {
+            "type": "string",
+            "description": "`sha256:…` over the canonical importable content (K10), computed on\nthe stored (unmasked) config — see the note on\n[`ChannelResponse::content_hash`]. Empty for a row whose stored JSON\nno longer parses: corrupt content equals nothing."
           },
           "created_at": {
             "type": "string",
@@ -4981,6 +5081,7 @@
               "status",
               "priority",
               "tags",
+              "content_hash",
               "created_at",
               "updated_at"
             ],
@@ -4997,6 +5098,10 @@
                   "string",
                   "null"
                 ]
+              },
+              "content_hash": {
+                "type": "string",
+                "description": "`sha256:…` over the canonical importable content (K10). Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
               },
               "created_at": {
                 "type": "string",
@@ -5146,6 +5251,7 @@
               "config_json",
               "enabled",
               "tags",
+              "content_hash",
               "created_at",
               "updated_at"
             ],
@@ -5156,6 +5262,10 @@
               },
               "connector_type": {
                 "type": "string"
+              },
+              "content_hash": {
+                "type": "string",
+                "description": "`sha256:…` over the canonical importable content (K10), computed on\nthe stored (unmasked) config — see the note on\n[`ChannelResponse::content_hash`]. Empty for a row whose stored JSON\nno longer parses: corrupt content equals nothing."
               },
               "created_at": {
                 "type": "string",
@@ -5635,6 +5745,7 @@
                 "status",
                 "priority",
                 "tags",
+                "content_hash",
                 "created_at",
                 "updated_at"
               ],
@@ -5651,6 +5762,10 @@
                     "string",
                     "null"
                   ]
+                },
+                "content_hash": {
+                  "type": "string",
+                  "description": "`sha256:…` over the canonical importable content (K10). Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
                 },
                 "created_at": {
                   "type": "string",
@@ -5730,6 +5845,7 @@
                 "config_json",
                 "enabled",
                 "tags",
+                "content_hash",
                 "created_at",
                 "updated_at"
               ],
@@ -5740,6 +5856,10 @@
                 },
                 "connector_type": {
                   "type": "string"
+                },
+                "content_hash": {
+                  "type": "string",
+                  "description": "`sha256:…` over the canonical importable content (K10), computed on\nthe stored (unmasked) config — see the note on\n[`ChannelResponse::content_hash`]. Empty for a row whose stored JSON\nno longer parses: corrupt content equals nothing."
                 },
                 "created_at": {
                   "type": "string",
@@ -5827,11 +5947,16 @@
                 "tasks",
                 "tags",
                 "continue_on_error",
+                "content_hash",
                 "created_at",
                 "updated_at"
               ],
               "properties": {
                 "condition": {},
+                "content_hash": {
+                  "type": "string",
+                  "description": "`sha256:…` over the canonical importable content (K10) — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
+                },
                 "continue_on_error": {
                   "type": "boolean"
                 },
@@ -5877,6 +6002,54 @@
           }
         }
       },
+      "DataEnvelope_WorkflowDependencies": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "`GET /api/v1/admin/workflows/{id}/dependencies` (K9).",
+            "required": [
+              "workflow_id",
+              "version",
+              "connectors",
+              "channels",
+              "has_dynamic_channel_calls"
+            ],
+            "properties": {
+              "channels": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Channel names targeted by `channel_call` tasks, statically."
+              },
+              "connectors": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ConnectorDependency"
+                },
+                "description": "Connector names the tasks reference, with the referencing function —\nduplicates collapsed, task order kept."
+              },
+              "has_dynamic_channel_calls": {
+                "type": "boolean",
+                "description": "True when a `channel_call` resolves its target with `channel_logic`\nat runtime — the static `channels` list is then incomplete by\nconstruction, and closure tooling must treat this workflow as having\nunknowable channel dependencies."
+              },
+              "version": {
+                "type": "integer",
+                "format": "int64",
+                "description": "The version whose tasks were walked (the latest)."
+              },
+              "workflow_id": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
       "DataEnvelope_WorkflowResponse": {
         "type": "object",
         "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
@@ -5898,11 +6071,16 @@
               "tasks",
               "tags",
               "continue_on_error",
+              "content_hash",
               "created_at",
               "updated_at"
             ],
             "properties": {
               "condition": {},
+              "content_hash": {
+                "type": "string",
+                "description": "`sha256:…` over the canonical importable content (K10) — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
+              },
               "continue_on_error": {
                 "type": "boolean"
               },
@@ -6423,6 +6601,7 @@
                 "status",
                 "priority",
                 "tags",
+                "content_hash",
                 "created_at",
                 "updated_at"
               ],
@@ -6439,6 +6618,10 @@
                     "string",
                     "null"
                   ]
+                },
+                "content_hash": {
+                  "type": "string",
+                  "description": "`sha256:…` over the canonical importable content (K10). Computed on\nthe stored (unmasked) config: entities authored with `env://`\nreferences hash identically to their exported artifact; entities\nholding literal secrets hash over what they store, which a masked\nexport can never reproduce."
                 },
                 "created_at": {
                   "type": "string",
@@ -6534,6 +6717,7 @@
                 "config_json",
                 "enabled",
                 "tags",
+                "content_hash",
                 "created_at",
                 "updated_at",
                 "load_status"
@@ -6545,6 +6729,10 @@
                 },
                 "connector_type": {
                   "type": "string"
+                },
+                "content_hash": {
+                  "type": "string",
+                  "description": "`sha256:…` over the canonical importable content (K10)."
                 },
                 "created_at": {
                   "type": "string"
@@ -6778,11 +6966,16 @@
                 "tasks",
                 "tags",
                 "continue_on_error",
+                "content_hash",
                 "created_at",
                 "updated_at"
               ],
               "properties": {
                 "condition": {},
+                "content_hash": {
+                  "type": "string",
+                  "description": "`sha256:…` over the canonical importable content (K10) — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
+                },
                 "continue_on_error": {
                   "type": "boolean"
                 },
@@ -7519,6 +7712,45 @@
           }
         }
       },
+      "WorkflowDependencies": {
+        "type": "object",
+        "description": "`GET /api/v1/admin/workflows/{id}/dependencies` (K9).",
+        "required": [
+          "workflow_id",
+          "version",
+          "connectors",
+          "channels",
+          "has_dynamic_channel_calls"
+        ],
+        "properties": {
+          "channels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Channel names targeted by `channel_call` tasks, statically."
+          },
+          "connectors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConnectorDependency"
+            },
+            "description": "Connector names the tasks reference, with the referencing function —\nduplicates collapsed, task order kept."
+          },
+          "has_dynamic_channel_calls": {
+            "type": "boolean",
+            "description": "True when a `channel_call` resolves its target with `channel_logic`\nat runtime — the static `channels` list is then incomplete by\nconstruction, and closure tooling must treat this workflow as having\nunknowable channel dependencies."
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The version whose tasks were walked (the latest)."
+          },
+          "workflow_id": {
+            "type": "string"
+          }
+        }
+      },
       "WorkflowResponse": {
         "type": "object",
         "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the `Workflow` row struct — is what every workflow endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
@@ -7533,11 +7765,16 @@
           "tasks",
           "tags",
           "continue_on_error",
+          "content_hash",
           "created_at",
           "updated_at"
         ],
         "properties": {
           "condition": {},
+          "content_hash": {
+            "type": "string",
+            "description": "`sha256:…` over the canonical importable content (K10) — the same\nprojection the upsert import compares and the package CLI hashes, so\nequal hashes mean \"importing one over the other is a no-op\"."
+          },
           "continue_on_error": {
             "type": "boolean"
           },

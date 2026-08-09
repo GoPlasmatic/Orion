@@ -341,6 +341,108 @@ pub(crate) fn connector_refs(tasks: &Value) -> Vec<ConnectorRef<'_>> {
         .collect()
 }
 
+/// Channel names a workflow's `channel_call` tasks target statically, plus
+/// whether any call resolves its target dynamically (`channel_logic`), in
+/// which case the static list is incomplete by construction.
+pub(crate) fn channel_call_targets(tasks: &Value) -> (Vec<&str>, bool) {
+    let Some(tasks) = tasks.as_array() else {
+        return (Vec::new(), false);
+    };
+    let mut targets = Vec::new();
+    let mut dynamic = false;
+    for task in tasks {
+        let Some(input) = task
+            .get("function")
+            .filter(|f| f.get("name").and_then(|n| n.as_str()) == Some("channel_call"))
+            .and_then(|f| f.get("input"))
+        else {
+            continue;
+        };
+        if let Some(target) = input.get("channel").and_then(|c| c.as_str())
+            && !target.is_empty()
+            && !targets.contains(&target)
+        {
+            targets.push(target);
+        }
+        if input.get("channel_logic").is_some_and(|l| !l.is_null()) {
+            dynamic = true;
+        }
+    }
+    (targets, dynamic)
+}
+
+/// `GET /api/v1/admin/workflows/{id}/dependencies` (K9).
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct WorkflowDependencies {
+    workflow_id: String,
+    /// The version whose tasks were walked (the latest).
+    version: i64,
+    /// Connector names the tasks reference, with the referencing function —
+    /// duplicates collapsed, task order kept.
+    connectors: Vec<ConnectorDependency>,
+    /// Channel names targeted by `channel_call` tasks, statically.
+    channels: Vec<String>,
+    /// True when a `channel_call` resolves its target with `channel_logic`
+    /// at runtime — the static `channels` list is then incomplete by
+    /// construction, and closure tooling must treat this workflow as having
+    /// unknowable channel dependencies.
+    has_dynamic_channel_calls: bool,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub(crate) struct ConnectorDependency {
+    connector: String,
+    /// The task function that uses it (`db_read`, `http_call`, …).
+    function: String,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/admin/workflows/{id}/dependencies",
+    tag = "Workflows",
+    params(("id" = String, Path, description = "Workflow ID")),
+    responses(
+        (status = 200, description = "What the workflow's tasks reference (K9): connector \
+            names (with the referencing function) and statically-known `channel_call` \
+            targets. The API twin of the reference walk activation runs, for tooling \
+            that computes a package's dependency closure without re-implementing the \
+            task-walk.", body = DataEnvelope<WorkflowDependencies>),
+        (status = 404, description = "Workflow not found"),
+    )
+)]
+#[tracing::instrument(skip(state))]
+pub(crate) async fn workflow_dependencies(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, OrionError> {
+    let workflow = state.repos.workflows.get_by_id(&id).await?;
+    let tasks: Value = serde_json::from_str(&workflow.tasks_json).map_err(|e| {
+        OrionError::internal(format!("Corrupt JSON in workflow {id} tasks_json: {e}"))
+    })?;
+
+    let mut connectors: Vec<ConnectorDependency> = Vec::new();
+    for r in connector_refs(&tasks) {
+        if !connectors
+            .iter()
+            .any(|c| c.connector == r.connector && c.function == r.function)
+        {
+            connectors.push(ConnectorDependency {
+                connector: r.connector.to_string(),
+                function: r.function.to_string(),
+            });
+        }
+    }
+    let (channels, has_dynamic_channel_calls) = channel_call_targets(&tasks);
+
+    Ok(data_response(WorkflowDependencies {
+        workflow_id: workflow.workflow_id,
+        version: workflow.version,
+        connectors,
+        channels: channels.into_iter().map(str::to_string).collect(),
+        has_dynamic_channel_calls,
+    }))
+}
+
 /// R5 / F52: every connector a workflow's tasks reference must exist, be of a
 /// type the referencing function can actually use, and carry the extra keys
 /// that type needs — all before the workflow may activate.
@@ -764,7 +866,8 @@ async fn upsert_workflow(
         Err(e) => return Err(e),
     };
 
-    let identical = workflow_row_content(&latest)? == workflow_req_content(&req);
+    let identical = crate::storage::content::workflow_content(&latest)?
+        == crate::storage::content::workflow_request_content(&req);
     if latest.status == EntityStatus::Draft.as_str() {
         if identical {
             return Ok(ImportAction::Unchanged);
@@ -784,33 +887,6 @@ async fn upsert_workflow(
     }
 }
 
-/// A workflow row's importable content, in the create-request's field
-/// vocabulary — the shape [`workflow_req_content`] mirrors, so equality means
-/// "importing this item would store byte-for-byte what is already stored".
-fn workflow_row_content(w: &crate::storage::models::Workflow) -> Result<Value, OrionError> {
-    Ok(json!({
-        "name": w.name,
-        "description": w.description,
-        "priority": w.priority,
-        "condition": serde_json::from_str::<Value>(&w.condition_json)?,
-        "tasks": serde_json::from_str::<Value>(&w.tasks_json)?,
-        "tags": serde_json::from_str::<Value>(&w.tags_json)?,
-        "continue_on_error": w.continue_on_error,
-    }))
-}
-
-fn workflow_req_content(r: &CreateWorkflowRequest) -> Value {
-    json!({
-        "name": r.name,
-        "description": r.description,
-        "priority": r.priority,
-        "condition": r.condition,
-        "tasks": r.tasks,
-        "tags": r.tags,
-        "continue_on_error": r.continue_on_error,
-    })
-}
-
 /// Turn a `get_by_id` result into an existence answer.
 ///
 /// `NotFound` is the "no conflict" answer, not a failure; anything else is a
@@ -821,31 +897,6 @@ pub(crate) fn exists_or_err<T>(result: Result<T, OrionError>) -> Result<bool, Or
         Err(OrionError::NotFound(_)) => Ok(false),
         Err(e) => Err(e),
     }
-}
-
-/// Fetch every workflow matching `filter`, looping until a short page says the
-/// table is exhausted (D7).
-///
-/// The filter's own `limit`/`offset` are ignored, as export always has: its
-/// contract is "everything that matches", and the paging is an implementation
-/// bound, not a client window.
-pub(crate) async fn collect_export_pages(
-    repo: &dyn crate::storage::repositories::workflows::WorkflowRepository,
-    filter: &WorkflowFilter,
-    page_size: i64,
-) -> Result<Vec<WorkflowResponse>, OrionError> {
-    let rows = super::collect_pages(page_size, |limit, offset| {
-        let page_filter = WorkflowFilter {
-            status: filter.status.clone(),
-            tag: filter.tag.clone(),
-            limit: Some(limit),
-            offset: Some(offset),
-            ..Default::default()
-        };
-        async move { repo.list(&page_filter).await }
-    })
-    .await?;
-    rows.iter().map(WorkflowResponse::try_from).collect()
 }
 
 #[utoipa::path(
@@ -862,12 +913,13 @@ pub(crate) async fn export_workflows(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<WorkflowFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let data = collect_export_pages(
-        state.repos.workflows.as_ref(),
-        &filter,
-        super::EXPORT_PAGE_SIZE,
-    )
-    .await?;
+    // K12: one repeatable-read transaction — the export is a consistent
+    // snapshot, not a sequence of independent page queries.
+    let rows = state.repos.workflows.snapshot(&filter).await?;
+    let data: Vec<WorkflowResponse> = rows
+        .iter()
+        .map(WorkflowResponse::try_from)
+        .collect::<Result<_, _>>()?;
     Ok(data_response(data))
 }
 
@@ -1275,21 +1327,24 @@ fn validate_dataflow_conversion(req: &CreateWorkflowRequest, errors: &mut Vec<Va
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::storage::repositories::workflows::{SqlWorkflowRepository, WorkflowRepository};
 
-    /// D7 regression: export must page through the repository in bounded
-    /// pages and still return every matching workflow exactly once. With a
-    /// page size of 2 and 5 rows this loops three times; if the loop stops
-    /// after the first page, or `list` reverts to ignoring its filter, an
-    /// assertion fails. The `timeout` matters: with `list` ignoring its
-    /// limit, every page returns all 5 rows (never a short page), so an
-    /// unbounded call would spin forever — the revert must show up as a red
-    /// test, not a hang. The pre-dedup length check catches overlapping
-    /// pages exporting a row twice, which dedup would otherwise mask.
+    /// D7/K12 regression: the export snapshot must page in bounded queries
+    /// and still return every matching workflow exactly once. With a page
+    /// size of 2 and 5 rows the loop runs three times inside one
+    /// transaction; if it stops after the first page, or the select ignores
+    /// its limit, an assertion fails. The `timeout` matters: a select that
+    /// ignores its limit never returns a short page, so an unbounded call
+    /// would spin forever — the revert must show up as a red test, not a
+    /// hang. The pre-dedup length check catches overlapping pages exporting
+    /// a row twice, which dedup would otherwise mask.
     #[tokio::test]
-    async fn export_pages_until_exhausted() {
-        let repo = SqlWorkflowRepository::new(crate::storage::test_sqlite_pool().await);
+    async fn export_snapshot_pages_until_exhausted() {
+        use crate::storage::schema::{CurrentWorkflows, Workflows};
+        use sea_query::{Asterisk, Order, Query};
+
+        let pool = crate::storage::test_sqlite_pool().await;
+        let repo = SqlWorkflowRepository::new(pool.clone());
         for i in 0..5 {
             let req = serde_json::from_value(serde_json::json!({
                 "workflow_id": format!("wf-exp-{i}"),
@@ -1301,9 +1356,19 @@ mod tests {
             repo.create(&req).await.expect("create");
         }
 
-        let exported = tokio::time::timeout(
+        // The same page shape `snapshot` builds, at a page size small enough
+        // to prove the loop (the repo method's 500 would finish in one page).
+        let exported: Vec<crate::storage::models::Workflow> = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            collect_export_pages(&repo, &WorkflowFilter::default(), 2),
+            crate::storage::repositories::helpers::snapshot_pages(&pool, 2, |limit, offset| {
+                Query::select()
+                    .column(Asterisk)
+                    .from(CurrentWorkflows::Table)
+                    .order_by(Workflows::WorkflowId, Order::Asc)
+                    .limit(limit as u64)
+                    .offset(offset as u64)
+                    .to_owned()
+            }),
         )
         .await
         .expect("export must terminate: an endless loop means paging is broken")

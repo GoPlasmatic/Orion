@@ -286,6 +286,7 @@ validation failures.",
         super::admin::workflows::import_workflows,
         super::admin::workflows::export_workflows,
         super::admin::workflows::validate_workflow,
+        super::admin::workflows::workflow_dependencies,
         // Connectors
         super::admin::connectors::list_connectors,
         super::admin::connectors::create_connector,
@@ -351,6 +352,8 @@ validation failures.",
             super::admin::ValidationEnvelope,
             crate::storage::models::PackageReceiptResponse,
             crate::storage::models::PackageState,
+            super::admin::workflows::WorkflowDependencies,
+            super::admin::workflows::ConnectorDependency,
             crate::storage::repositories::packages::PutPackageReceiptRequest,
             super::admin::packages::PackageDetail,
             super::data::ProcessRequest,
@@ -674,6 +677,8 @@ pub(crate) struct ConnectorListItem {
     enabled: bool,
     /// Selection labels (K6); filter the list with `?tag=`.
     tags: Vec<String>,
+    /// `sha256:…` over the canonical importable content (K10).
+    content_hash: String,
     created_at: String,
     updated_at: String,
     /// `loaded`, `failed`, or `disabled`.

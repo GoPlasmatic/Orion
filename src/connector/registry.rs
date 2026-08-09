@@ -492,6 +492,9 @@ pub(crate) mod test_support {
         async fn get_by_name(&self, _name: &str) -> Result<Connector, OrionError> {
             unreachable!("not used by load_from_repo")
         }
+        async fn snapshot(&self, _filter: &ConnectorFilter) -> Result<Vec<Connector>, OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
     }
 }
 

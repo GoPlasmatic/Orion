@@ -567,7 +567,8 @@ async fn upsert_channel(
         Err(e) => return Err(e),
     };
 
-    let identical = channel_row_content(&latest)? == channel_req_content(&req);
+    let identical = crate::storage::content::channel_content(&latest)?
+        == crate::storage::content::channel_request_content(&req);
     if latest.status == EntityStatus::Draft.as_str() {
         if identical {
             return Ok(ImportAction::Unchanged);
@@ -585,50 +586,6 @@ async fn upsert_channel(
         }
         Ok(ImportAction::NewVersion)
     }
-}
-
-/// A channel row's importable content in the create-request's vocabulary —
-/// the DB-owned fields (`version`, `status`, timestamps) excluded, mirroring
-/// [`channel_req_content`].
-fn channel_row_content(c: &crate::storage::models::Channel) -> Result<Value, OrionError> {
-    let methods = c
-        .methods_json
-        .as_deref()
-        .map(serde_json::from_str::<Value>)
-        .transpose()?;
-    Ok(serde_json::json!({
-        "name": c.name,
-        "description": c.description,
-        "channel_type": c.channel_type,
-        "protocol": c.protocol,
-        "methods": methods,
-        "route_pattern": c.route_pattern,
-        "topic": c.topic,
-        "consumer_group": c.consumer_group,
-        "transport_config": serde_json::from_str::<Value>(&c.transport_config_json)?,
-        "workflow_id": c.workflow_id,
-        "config": serde_json::from_str::<Value>(&c.config_json)?,
-        "priority": c.priority,
-        "tags": serde_json::from_str::<Value>(&c.tags_json)?,
-    }))
-}
-
-fn channel_req_content(r: &CreateChannelRequest) -> Value {
-    serde_json::json!({
-        "name": r.name,
-        "description": r.description,
-        "channel_type": r.channel_type.as_str(),
-        "protocol": r.protocol.as_str(),
-        "methods": r.methods,
-        "route_pattern": r.route_pattern,
-        "topic": r.topic,
-        "consumer_group": r.consumer_group,
-        "transport_config": r.transport_config,
-        "workflow_id": r.workflow_id,
-        "config": r.config,
-        "priority": r.priority,
-        "tags": r.tags,
-    })
 }
 
 // ============================================================
@@ -649,20 +606,9 @@ pub(crate) async fn export_channels(
     State(state): State<AppState>,
     OrionQuery(filter): OrionQuery<ChannelFilter>,
 ) -> Result<Json<Value>, OrionError> {
-    let repo = state.repos.channels.as_ref();
-    let rows = super::collect_pages(super::EXPORT_PAGE_SIZE, |limit, offset| {
-        let page_filter = ChannelFilter {
-            status: filter.status.clone(),
-            channel_type: filter.channel_type.clone(),
-            protocol: filter.protocol.clone(),
-            tag: filter.tag.clone(),
-            limit: Some(limit),
-            offset: Some(offset),
-            ..Default::default()
-        };
-        async move { Ok(repo.list_paginated(&page_filter).await?.data) }
-    })
-    .await?;
+    // K12: one repeatable-read transaction — the export is a consistent
+    // snapshot, not a sequence of independent page queries.
+    let rows = state.repos.channels.snapshot(&filter).await?;
 
     let data: Vec<ChannelResponse> = rows
         .iter()

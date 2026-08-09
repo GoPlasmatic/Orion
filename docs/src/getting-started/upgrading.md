@@ -1184,7 +1184,10 @@ entity written alongside the `"{n} imported"` summary row (K5); channels and
 connectors gained `tags` + `?tag=` filtering, matching workflows (K6); status
 and rollout changes accept `?reload=defer` to batch engine rebuilds (K4); and
 an `X-Orion-Change-Context` request header is recorded in audit `details`
-(K5).
+(K5). The 1.0 API also adds `GET /workflows/{id}/dependencies` (K9),
+`content_hash` on every entity response (K10), exports that read as one
+consistent snapshot (K12), and the `orion-server package` CLI that composes
+all of it — see [Admin API › Export & Promotion](../api/admin.md#export--promotion).
 
 ### Channel names must be unique
 

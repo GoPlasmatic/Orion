@@ -35,7 +35,8 @@ use crate::storage::repositories::workflows::{WorkflowFilter, WorkflowRepository
 /// Rows per repository call. The repositories clamp a limit to `1..=1000`
 /// (`clamp_pagination`), and the loop below treats a short page as "exhausted",
 /// so a larger value would come back clamped and silently stop the scan early —
-/// the same bound `collect_export_pages` documents for the same reason.
+/// the same bound the export snapshot (`snapshot_pages`) documents for the
+/// same reason.
 const PAGE_SIZE: i64 = 500;
 
 /// One thing that will break on upgrade, and what to do about it.

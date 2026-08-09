@@ -84,6 +84,10 @@ pub trait ConnectorRepository: Send + Sync {
     /// lives on — and needs the stored row to compare content and address the
     /// update, which takes the `id`.
     async fn get_by_name(&self, name: &str) -> Result<Connector, OrionError>;
+    /// Every connector matching `filter` (`tag`; the filter's own page
+    /// bounds are ignored), read as one consistent snapshot (K12) — the
+    /// export contract.
+    async fn snapshot(&self, filter: &ConnectorFilter) -> Result<Vec<Connector>, OrionError>;
 }
 
 // -- SQL implementation --
@@ -371,6 +375,36 @@ impl ConnectorRepository for SqlConnectorRepository {
             )
             .await?
                 > 0)
+        })
+        .await
+    }
+
+    async fn snapshot(&self, filter: &ConnectorFilter) -> Result<Vec<Connector>, OrionError> {
+        crate::metrics::timed_db_op("connectors.snapshot", async {
+            let rows: Vec<Connector> = super::helpers::snapshot_pages(
+                &self.pool,
+                super::workflows::EXPORT_PAGE_SIZE,
+                |limit, offset| {
+                    let mut cond = sea_query::Condition::all();
+                    if let Some(ref tag) = filter.tag {
+                        cond = cond.add(
+                            Expr::col(Connectors::TagsJson)
+                                .like(super::helpers::tag_like_pattern(tag.as_str())),
+                        );
+                    }
+                    Query::select()
+                        .column(Asterisk)
+                        .from(Connectors::Table)
+                        .cond_where(cond)
+                        // `name` is unique — a total order by itself.
+                        .order_by(Connectors::Name, Order::Asc)
+                        .limit(limit as u64)
+                        .offset(offset as u64)
+                        .to_owned()
+                },
+            )
+            .await?;
+            rows.into_iter().map(|row| self.open_row(row)).collect()
         })
         .await
     }

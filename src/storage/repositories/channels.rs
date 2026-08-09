@@ -118,6 +118,10 @@ pub trait ChannelRepository: Send + Sync {
         &self,
         filter: &ChannelFilter,
     ) -> Result<PaginatedResult<Channel>, OrionError>;
+    /// Every current channel matching `filter` (`status`/`channel_type`/
+    /// `protocol`/`tag`; the filter's own page bounds are ignored), read as
+    /// one consistent snapshot (K12) — the export contract.
+    async fn snapshot(&self, filter: &ChannelFilter) -> Result<Vec<Channel>, OrionError>;
     /// Update the draft version of a channel. Errors if no draft exists.
     async fn update_draft(
         &self,
@@ -385,6 +389,29 @@ impl ChannelRepository for SqlChannelRepository {
                     order,
                     limit,
                     offset,
+                },
+            )
+            .await
+        })
+        .await
+    }
+
+    async fn snapshot(&self, filter: &ChannelFilter) -> Result<Vec<Channel>, OrionError> {
+        crate::metrics::timed_db_op("channels.snapshot", async {
+            super::helpers::snapshot_pages(
+                &self.pool,
+                super::workflows::EXPORT_PAGE_SIZE,
+                |limit, offset| {
+                    Query::select()
+                        .column(sea_query::Asterisk)
+                        .from(CurrentChannels::Table)
+                        .cond_where(build_condition(filter))
+                        .order_by(Channels::Priority, sea_query::Order::Desc)
+                        // Unique tiebreaker: OFFSET paging needs a total order.
+                        .order_by(Channels::ChannelId, sea_query::Order::Asc)
+                        .limit(limit as u64)
+                        .offset(offset as u64)
+                        .to_owned()
                 },
             )
             .await

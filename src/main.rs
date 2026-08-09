@@ -10,6 +10,7 @@ use clap::Parser;
 use orion::config;
 
 mod cli;
+mod package_cli;
 
 use orion::bootstrap;
 
@@ -136,6 +137,21 @@ enum Command {
     /// Needs no config, database, or running server. Redirect it to refresh
     /// the checked-in copy: `orion-server dump-openapi > docs/openapi.json`.
     DumpOpenapi,
+    /// Package a set of channels + their workflows and connectors, and
+    /// promote the artifact through environments (proposal.md, the K stream).
+    ///
+    /// The artifact is one JSON document; git is the registry. `export`
+    /// computes the dependency closure from a running instance; `lint` checks
+    /// an artifact offline; `plan` pre-flights it against a target with zero
+    /// writes; `apply` stages, activates in dependency order, reloads once
+    /// and records the package receipt; `diff` reports drift between the
+    /// artifact and a running instance. Server calls authenticate with the
+    /// ORION_ADMIN_TOKEN environment variable and are stamped with an
+    /// `X-Orion-Change-Context: package=<name>@<version>` audit context.
+    Package {
+        #[command(subcommand)]
+        command: PackageCommand,
+    },
     /// Scan the stored channels and workflows for anything the 1.0 rules will
     /// refuse, before the upgrade rather than during it.
     ///
@@ -150,6 +166,78 @@ enum Command {
     /// deploy. Config-file and ORION_* problems are reported by
     /// `validate-config`; this reads what only the database knows.
     Preflight,
+}
+
+#[derive(clap::Subcommand)]
+enum PackageCommand {
+    /// Export a package artifact from a running instance: the selected
+    /// channels, their workflows, and every connector those workflows
+    /// reference (closure computed via GET /workflows/{id}/dependencies).
+    /// channel_call targets outside the selection land in `requires`.
+    Export {
+        /// Base URL of the source instance, e.g. https://dev.orion.internal
+        #[arg(short, long)]
+        server: String,
+        /// Select every channel carrying this tag.
+        #[arg(long)]
+        tag: Option<String>,
+        /// Select channels by id (comma-separated or repeated).
+        #[arg(long, value_delimiter = ',')]
+        channels: Vec<String>,
+        /// Package name, e.g. payments.
+        #[arg(long)]
+        name: String,
+        /// Package version, e.g. 1.4.0. Applied versions are immutable —
+        /// any content change needs a bump.
+        #[arg(long)]
+        version: String,
+        /// Write the artifact here instead of stdout.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+    /// Validate an artifact offline: entity shapes (the same validators the
+    /// POST endpoints run), closure completeness against `requires`, and the
+    /// content hash. Exits non-zero on findings — the CI gate that needs no
+    /// server and no secrets.
+    Lint {
+        /// Path to the artifact file.
+        #[arg(short, long)]
+        file: String,
+    },
+    /// Pre-flight an artifact against a target with zero writes: the receipt
+    /// immutability check, per-entity would-be import actions, `requires`
+    /// verification, and every activation gate.
+    Plan {
+        /// Base URL of the target instance.
+        #[arg(short, long)]
+        server: String,
+        /// Path to the artifact file.
+        #[arg(short, long)]
+        file: String,
+    },
+    /// Apply an artifact: claim the receipt as staged, stage all entities
+    /// (connectors → workflows → channels), activate in dependency order
+    /// with one engine reload at the end, then flip the receipt to applied.
+    /// Idempotent — re-running an identical artifact is a no-op.
+    Apply {
+        /// Base URL of the target instance.
+        #[arg(short, long)]
+        server: String,
+        /// Path to the artifact file.
+        #[arg(short, long)]
+        file: String,
+    },
+    /// Report drift between an artifact and a running instance, comparing
+    /// the server's content hashes against the artifact's. Exits non-zero
+    /// when anything differs.
+    Diff {
+        /// Base URL of the instance to compare against.
+        #[arg(short, long)]
+        server: String,
+        /// Path to the artifact file.
+        #[arg(short, long)]
+        file: String,
+    },
 }
 
 #[tokio::main]
@@ -199,6 +287,38 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::TestConnectivity) => return cli::run_test_connectivity(&config).await,
         Some(Command::DumpOpenapi) => return cli::run_dump_openapi(),
         Some(Command::Preflight) => return cli::run_preflight(&config).await,
+        Some(Command::Package { command }) => {
+            return match command {
+                PackageCommand::Export {
+                    server,
+                    tag,
+                    channels,
+                    name,
+                    version,
+                    output,
+                } => {
+                    package_cli::run_export(
+                        &server,
+                        tag.as_deref(),
+                        &channels,
+                        &name,
+                        &version,
+                        output.as_deref(),
+                    )
+                    .await
+                }
+                PackageCommand::Lint { file } => package_cli::run_lint(&file),
+                PackageCommand::Plan { server, file } => {
+                    package_cli::run_plan(&server, &file).await
+                }
+                PackageCommand::Apply { server, file } => {
+                    package_cli::run_apply(&server, &file).await
+                }
+                PackageCommand::Diff { server, file } => {
+                    package_cli::run_diff(&server, &file).await
+                }
+            };
+        }
         None => {} // Continue to start the server
     }
 
