@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-08-01
+## [1.0.0] - 2026-08-09
 
 ### Security
 
@@ -291,6 +291,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   disabled the body is unchanged.
 
 ### Breaking
+
+- **A channel name may belong to only one `channel_id`.** Create, update and
+  import answer **409** when another channel's current version already holds
+  the name, and activation refuses a name another *active* channel holds.
+  Before 1.0 the collision stored cleanly and was resolved silently at
+  runtime: the data plane and `channel_call` address channels by **name**, so
+  one of the two won the registry slot and the other's requests ran the
+  winner's workflow. Enforced at the repository rather than DDL — the
+  invariant is per-id and MySQL cannot express the partial unique index.
+  `orion-server preflight` gains a `channel-names` check that reports every
+  pre-1.0 duplicate before an upgrade. (K7)
+
+- **Channel activation refuses a missing or inactive workflow.**
+  `PATCH /admin/channels/{id}/status` to `active` answers **400** when the
+  channel's `workflow_id` is unset, names a workflow that does not exist, or
+  names one with no active version — the gate the docs and the `/validate`
+  warning always claimed existed. It used to succeed and quarantine the
+  channel at the next engine load: the same outcome, discovered later, with
+  no error to the caller. Activate in dependency order — connectors →
+  workflows → channels — and use `?dry_run=true` on the same endpoint to
+  pre-flight the gate without writing. (K8)
 
 - **The `BAD_REQUEST` error code is retired; every 400 answers
   `VALIDATION_ERROR`.** Two codes existed for one condition, and which one a
@@ -1251,6 +1272,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   envelope instead of plain text.
 
 ### Added
+
+- **`orion-server package` promotes a bundle of connectors, workflows and
+  channels between environments.** Five verbs compose the promotion story:
+  `export` computes a package's closure from a running instance — selected
+  channels (`--tag` / `--channels`), their workflows, and every connector
+  those workflows reference, with out-of-selection `channel_call` targets
+  landing in `requires`; `lint` runs the same create-path validators the
+  POST endpoints run, offline, plus closure-completeness and unique-name
+  checks; `plan` reports per-entity would-be actions with zero writes,
+  running every activation gate — findings that apply's own ordering will
+  satisfy are reported as pending, not failed; `apply` claims a receipt,
+  stages all three kinds, activates in dependency order with deferred
+  reloads, then triggers one engine rebuild — idempotent, and a failed apply
+  leaves the receipt staged and says exactly what is live vs staged; `diff`
+  reports drift between the artifact and the server's content hashes with a
+  non-zero exit on any difference. Every apply call is stamped
+  `X-Orion-Change-Context: package=<name>@<version>`. (K stream;
+  `src/package_cli.rs`)
+
+- **Package receipts make apply idempotent and rollback honest.** A
+  `packages` table on all three backends behind
+  `GET`/`PUT /api/v1/admin/packages*`. The PUT enforces applied-version
+  immutability atomically: the same version with a different `content_hash`
+  answers **409**; staged receipts update in place (only a draft can be
+  updated); an applied version never demotes; and re-putting an older
+  applied version touches it current again — the rollback path. (K14)
+
+- **Upsert import: `?on_conflict=fail|skip|new_version` on all three
+  `/import` endpoints.** `new_version` replaces an existing draft in place,
+  cuts a new draft version over an active entity, and reports
+  content-identical items as `unchanged` (DB-owned fields excluded) — so
+  re-running the same artifact is a no-op. The response gains
+  `unchanged`/`skipped` counts and a per-item `results[]` array; `dry_run`
+  composes and reports the would-be action; in-batch duplicate keys are
+  refused in the upsert modes. The default `on_conflict=fail` behaves
+  exactly as before. A real import also writes one audit row per written
+  entity alongside the `"{n} imported"` summary row, and an
+  `X-Orion-Change-Context` request header is recorded in audit `details`.
+  (K2, K5)
+
+- **Activation pre-flight and deferred reload.** `?dry_run=true` on both
+  `PATCH /{id}/status` endpoints runs every gate the real transition runs —
+  the same functions, so it cannot drift — and answers the `/validate`
+  envelope without writing (K3). `?reload=defer` on status and rollout
+  changes commits the row but skips the engine rebuild and cluster epoch
+  bump, so `POST /engine/reload` batches N entity promotions into one
+  rebuild and one bump (K4).
+
+- **Channels and connectors carry `tags` with `?tag=` filtering, matching
+  workflows.** Tag filtering applies to list and export, and tags
+  participate in the import content comparison (K6).
+  `CreateConnectorRequest` also carries `enabled`, and create/import write
+  the column — a disabled connector no longer promotes as enabled through
+  export→import (K1).
+
+- **Dependency introspection, content hashes, and consistent exports.**
+  `GET /workflows/{id}/dependencies` reports a workflow's connector
+  references (with the referencing function), static `channel_call` targets,
+  and a `has_dynamic_channel_calls` flag when `channel_logic` makes the
+  static list incomplete (K9). Every workflow, channel and connector
+  response carries `content_hash` — sha256 over the canonical importable
+  content, DB-owned fields excluded; one definition in `storage::content`
+  shared by the import unchanged-detection, the DTOs, and the CLI (K10).
+  Every `/export` reads its pages inside one transaction (REPEATABLE READ
+  forced on Postgres), retiring the documented "exports are not a consistent
+  snapshot" caveat (K12).
 
 - **`orion-server preflight` scans the stored estate before an upgrade.** The
   0.3.0 → 1.0.0 guide carries an 18-row checklist, and several rows were only

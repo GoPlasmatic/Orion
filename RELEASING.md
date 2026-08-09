@@ -78,9 +78,15 @@ is its proof; do not tag `v1.0.0` until the rc's verify steps are green.
 6. **Close P12**: record the green run's URL in a commit whose message
    names P12 (the audit trackers are retired; `git log --grep=P12` is the
    index, per CONTRIBUTING's proposal-ID convention).
-7. **For the real release:** set `version = "1.0.0"` back, land, wait for
+7. **Cut the CHANGELOG** (CONTRIBUTING §Cutting a Release, step 2): fold
+   `## [Unreleased]` into the dated release heading, re-stamp the heading's
+   date to the day the tag is actually cut, leave an empty `[Unreleased]` on
+   top, and check the compare links at the foot of the file name the new
+   tag. Do this after the last feature commit lands — an entry dated before
+   its content silently drops whatever shipped in between.
+8. **For the real release:** set `version = "1.0.0"` back, land, wait for
    CI, tag `v1.0.0`.
-8. **Publish the docs:** merge the release branch into `main`. The docs
+9. **Publish the docs:** merge the release branch into `main`. The docs
    site deploys only from `main` (`docs.yml` triggers on `push` to `main`
    for `docs/**`), so until the merge lands the live site still serves the
    pre-1.0 book — no upgrade guide, old version strings. Do this
