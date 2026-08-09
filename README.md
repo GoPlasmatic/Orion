@@ -46,10 +46,14 @@ Open a small internal microservice and count the lines. HTTP server setup, conne
 No code. No Dockerfile. No CI pipeline. Just a running service.
 
 <div align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="media/ui-quickstart-dark.gif">
-    <img src="media/ui-quickstart-light.gif" alt="Import a workflow, validate and dry-run it, create a channel in a form, send a request, and see the live service map, all in the Orion console with no code" width="100%">
-  </picture>
+  <a href="https://goplasmatic.github.io/Orion/getting-started/console.html">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/src/images/ui-console-dark.png">
+      <img src="docs/src/images/ui-console-light.png" alt="The Orion console: import a workflow, validate and dry-run it, create a channel in a form, send a request, and see the live service map, all with no code" width="100%">
+    </picture>
+  </a>
+  <br>
+  <strong><a href="https://goplasmatic.github.io/Orion/getting-started/console.html">▶ Watch the 60-second demo</a></strong>
   <br>
   <em>Zero to a live service in under a minute: declare the logic, validate and dry-run it, give it an endpoint, then send a request. Tracing and metrics are already on. Prefer a terminal? The same flow is four curl calls, below.</em>
 </div>
@@ -200,14 +204,14 @@ graph LR
 Orion is API-first, and everything it does is also point-and-click. [Orion UI](https://github.com/GoPlasmatic/Orion-ui) is the operations console for a running instance. It gives you live dashboards, a system map of every channel → workflow → connector, workflow logic visualization, trace drill-downs, and a data console for firing test requests. Run `docker compose up` next to the server, or `npm run dev`.
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="media/ui-operations-dark.png">
-  <img src="media/ui-operations-light.png" alt="Operations dashboard showing request rate, error rate, latency percentiles, outcomes by channel, top channels, and recent traces for a live Orion instance" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/src/images/ui-operations-dark.png">
+  <img src="docs/src/images/ui-operations-light.png" alt="Operations dashboard showing request rate, error rate, latency percentiles, outcomes by channel, top channels, and recent traces for a live Orion instance" width="100%">
 </picture>
 <em>Operations: live request rate, error rate, latency, and traces for every channel.</em>
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="media/ui-system-map-dark.png">
-  <img src="media/ui-system-map-light.png" alt="System Map showing the orders channel traced through the workflow it runs, rendered as a live topology graph" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/src/images/ui-system-map-dark.png">
+  <img src="docs/src/images/ui-system-map-light.png" alt="System Map showing the orders channel traced through the workflow it runs, rendered as a live topology graph" width="100%">
 </picture>
 <em>System Map: any channel traced through the workflow it runs and the connectors it touches.</em>
 

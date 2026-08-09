@@ -4,8 +4,9 @@
 #
 # A Playwright script (ui/demo-ui-quickstart.mjs) drives a real Orion-ui dev
 # server against a throwaway orion-server and captures, per theme:
-#   - media/ui-quickstart-<theme>.gif                (README hero: the creation loop)
-#   - media/ui-{operations,system-map,workflow-dag,console}-<theme>.png
+#   - docs/src/images/ui-{operations,system-map,workflow-dag,console}-<theme>.png
+#   - docs/src/videos/ui-quickstart-<theme>.webm     (docs site + README demo link)
+#   - ui/out/ui-quickstart-<theme>.gif               (local only, gitignored — upload as a release asset when an animated embed is wanted)
 #
 # Prereqs: node/npm, ffmpeg, curl, lsof, and a sibling Orion-ui checkout
 # (override with ORION_UI_DIR). Builds orion-server if it is missing;
@@ -22,7 +23,6 @@ ORION_DIR="$(cd "$HERE/../.." && pwd)"                 # .../Orion
 UI_DIR="${ORION_UI_DIR:-$(cd "$ORION_DIR/.." && pwd)/Orion-ui}"
 
 EXAMPLES="$ORION_DIR/examples/high-value-order"
-MEDIA="$ORION_DIR/media"
 DOCS_IMAGES="$ORION_DIR/docs/src/images"
 DOCS_VIDEOS="$ORION_DIR/docs/src/videos"
 OUT="$HERE/ui/out"
@@ -110,7 +110,7 @@ split[a][b];[a]palettegen=stats_mode=diff[p];\
   echo "  gif -> $2  ($(du -h "$2" | cut -f1))"
 }
 
-mkdir -p "$MEDIA" "$OUT" "$DOCS_IMAGES" "$DOCS_VIDEOS"
+mkdir -p "$OUT" "$DOCS_IMAGES" "$DOCS_VIDEOS"
 echo "▸ starting Orion-ui dev server…"
 start_ui
 
@@ -128,7 +128,9 @@ for THEME in $THEMES; do
     --examples "$EXAMPLES"
   stop_server
 
-  to_gif "$OUT/$THEME/record.webm" "$MEDIA/ui-quickstart-$THEME.gif"
+  # The GIF stays a local artifact (ui/out is gitignored): 6+ MB per theme is
+  # too heavy to track, so the README links the docs page's webm instead.
+  to_gif "$OUT/$THEME/record.webm" "$OUT/ui-quickstart-$THEME.gif"
   # Docs embed the real video; trim the blank pre-navigation head so the first
   # frame is already themed.
   ffmpeg -y -loglevel error -ss 0.7 -i "$OUT/$THEME/record.webm" \
@@ -136,9 +138,8 @@ for THEME in $THEMES; do
     "$DOCS_VIDEOS/ui-quickstart-$THEME.webm"
   echo "  webm -> $DOCS_VIDEOS/ui-quickstart-$THEME.webm  ($(du -h "$DOCS_VIDEOS/ui-quickstart-$THEME.webm" | cut -f1))"
   for shot in operations system-map workflow-dag console; do
-    cp "$OUT/$THEME/$shot.png" "$MEDIA/ui-$shot-$THEME.png"
     cp "$OUT/$THEME/$shot.png" "$DOCS_IMAGES/ui-$shot-$THEME.png"
-    echo "  png -> $MEDIA/ui-$shot-$THEME.png (+ docs/src/images)"
+    echo "  png -> $DOCS_IMAGES/ui-$shot-$THEME.png"
   done
 done
 

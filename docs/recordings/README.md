@@ -44,9 +44,9 @@ Console request → System Map — and captures, per theme (light + dark):
 
 | Artifact | Files |
 |----------|-------|
-| Hero GIF (creation loop, ~50 s) | `../../media/ui-quickstart-{light,dark}.gif` |
-| Demo video (same recording, webm, mdBook) | `../src/videos/ui-quickstart-{light,dark}.webm` |
-| Screenshots (README + mdBook) | `../../media/` and `../src/images/` — `ui-{operations,system-map,workflow-dag,console}-{light,dark}.png` |
+| Hero GIF (creation loop, ~50 s) | `ui/out/ui-quickstart-{light,dark}.gif` — local only (gitignored); upload as a release asset when an animated embed is wanted |
+| Demo video (same recording, webm, mdBook + README demo link) | `../src/videos/ui-quickstart-{light,dark}.webm` |
+| Screenshots (README + mdBook) | `../src/images/ui-{operations,system-map,workflow-dag,console}-{light,dark}.png` |
 
 The GIFs/screenshots in Orion-ui's README are copies of the same files — sync them
 when regenerating.
