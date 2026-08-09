@@ -30,7 +30,7 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 - [Workflow Reference](https://goplasmatic.github.io/Orion/reference/workflows.html): workflow & task JSON schema, conditions, lifecycle, rollout
 - [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html): every task function's exact input schema
 - [Portable Data Dialect](https://goplasmatic.github.io/Orion/reference/data-dialect.html): backend-neutral query/write envelope (data_query / data_write) across SQL, MongoDB, Elasticsearch
-- [Admin API](https://goplasmatic.github.io/Orion/api/admin.html): workflows, channels, connectors, engine, audit, trace-DLQ, backup endpoints; every error code
+- [Admin API](https://goplasmatic.github.io/Orion/api/admin.html): workflows, channels, connectors, packages, engine, audit, trace-DLQ, backup endpoints; every error code
 - [Data API](https://goplasmatic.github.io/Orion/api/data.html): routing, sync/async processing, traces
 - [Configuration](https://goplasmatic.github.io/Orion/configuration/reference.html): config file, env overrides, database backends
 - [Support & Compatibility](https://goplasmatic.github.io/Orion/reference/support.html): versioning policy, what 1.0 freezes, accepted alternate spellings, platform matrix

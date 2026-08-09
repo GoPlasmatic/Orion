@@ -127,6 +127,11 @@ the storage and cluster suites against real PostgreSQL and MySQL servers.
 
 - **Docker images** — published to `ghcr.io/goplasmatic/orion` for
   `linux/amd64` and `linux/arm64` (Debian trixie-slim base).
+- **Prebuilt binaries** — GitHub release artifacts (shell/PowerShell
+  installers and Homebrew) for `aarch64-apple-darwin`,
+  `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and
+  `x86_64-pc-windows-msvc`. The rationale for what is and is not on that
+  list lives on the [Deployability](../features/deployability.md) page.
 - **From source** — any platform with a Rust 1.88+ toolchain; Linux and macOS
   are exercised routinely, and CI runs on Linux.
 

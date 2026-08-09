@@ -258,6 +258,16 @@ because it looks like a pass.
 > write to real databases and publish to real topics. Reach for the endpoint
 > when you mean to touch the real systems, and for `dry-run` when you do not.
 
+### Promoting between environments
+
+When a service outgrows one instance — dev to staging to production —
+`orion-server package` ships the whole thing as one artifact: `export`
+computes the closure (selected channels, their workflows, every connector
+those workflows reference), `lint` and `plan` check it offline / with zero
+writes, `apply` stages and activates in dependency order with a single engine
+reload, and `diff` reports drift afterwards. See
+[Admin API › the `orion-server package` CLI](../api/admin.md#the-orion-server-package-cli).
+
 ### A regression suite
 
 `orion-server test` runs a directory of cases and exits non-zero on any failure,

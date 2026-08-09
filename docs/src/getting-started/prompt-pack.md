@@ -59,7 +59,8 @@ publish_json, publish_xml, publish_kafka, log.
   "protocol": "rest",                  // rest | http | kafka
   "route_pattern": "/orders",          // REST; supports /orders/{id} params
   "methods": ["POST"],
-  "workflow_id": "kebab-case-id"
+  "workflow_id": "kebab-case-id",
+  "tags": ["pkg:orders"]               // optional selection labels; filter with ?tag=
 }
 
 ## Lifecycle rules (important)

@@ -51,6 +51,8 @@ Three exemptions cover names that *do* carry the separator, or would:
 - **The reserved `ORION_SECRET_*` namespace**, which Orion never interprets as configuration. Use it for values you reference yourself and cannot declare up front — an `env://ORION_SECRET_DB_PASSWORD` connector secret, for instance, since connectors live in the database rather than the config.
 - **`ORION_ENVIRONMENT`**, the one setting that lives at the top level of the config and so has no separator of its own. It is checked by proximity instead: `ORION_ENVIRONMEN` is refused with a suggestion, because a silently ignored `environment` would leave the instance in `development` with the production checks downgraded to warnings.
 
+One more `ORION_*` name is read but is **not** a config setting: `ORION_ADMIN_TOKEN` is the bearer token the [`orion-server package`](../api/admin.md#the-orion-server-package-cli) subcommands send when calling a target instance's admin API. It carries no `__`, so the startup scan leaves it alone, like the `ORION_SERVER_URL` / `ORION_API_KEY` pair `orion-cli` reads.
+
 ## Deployment Environment
 
 One setting changes how strictly everything else is validated.
