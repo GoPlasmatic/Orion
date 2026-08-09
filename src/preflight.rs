@@ -80,6 +80,12 @@ pub async fn scan(
 
 async fn scan_channels(repo: &dyn ChannelRepository) -> Result<Vec<Finding>, OrionError> {
     let mut findings = Vec::new();
+    // K7: channel names must be unique across channel_ids — the create path
+    // refuses new collisions, but rows written before 1.0 can still carry
+    // one, and activation will refuse the loser. Cross-row, so accumulated
+    // over the same paging pass the per-row checks ride.
+    let mut names: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
     let mut offset = 0i64;
     loop {
         let page = repo
@@ -92,12 +98,41 @@ async fn scan_channels(repo: &dyn ChannelRepository) -> Result<Vec<Finding>, Ori
         let page_len = page.data.len() as i64;
         for channel in &page.data {
             findings.extend(check_channel_config(&channel.name, &channel.config_json));
+            names
+                .entry(channel.name.clone())
+                .or_default()
+                .push(channel.channel_id.clone());
         }
         if page_len < PAGE_SIZE {
+            findings.extend(duplicate_name_findings(&names));
             return Ok(findings);
         }
         offset += page_len;
     }
+}
+
+/// K7: one finding per channel name that more than one `channel_id` holds.
+fn duplicate_name_findings(
+    names: &std::collections::BTreeMap<String, Vec<String>>,
+) -> Vec<Finding> {
+    names
+        .iter()
+        .filter(|(_, ids)| ids.len() > 1)
+        .map(|(name, ids)| Finding {
+            check: "channel-names",
+            entity: format!("channel '{name}'"),
+            problem: format!(
+                "{} channels share this name (ids: {}) — the data plane and \
+                 channel_call address channels by name, so only one of them can \
+                 serve, and 1.0 refuses to create or activate the collision",
+                ids.len(),
+                ids.join(", ")
+            ),
+            remedy: "rename all but one (create a new version with a distinct name, \
+                     activate it), or delete the redundant channels"
+                .to_string(),
+        })
+        .collect()
 }
 
 async fn scan_workflows(repo: &dyn WorkflowRepository) -> Result<Vec<Finding>, OrionError> {

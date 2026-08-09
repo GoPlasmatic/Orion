@@ -4,6 +4,7 @@ pub(crate) mod channels;
 pub(crate) mod connectors;
 pub(crate) mod engine;
 pub(crate) mod functions;
+pub(crate) mod packages;
 pub(crate) mod trace_dlq;
 pub(crate) mod workflows;
 
@@ -68,12 +69,66 @@ pub(crate) fn check_import_batch_size(len: usize) -> Result<(), crate::errors::O
     Ok(())
 }
 
-/// The four per-entity operations [`import_items`] drives.
+/// How an `/import` treats an item whose conflict key is already stored (K2).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum OnConflict {
+    /// Refuse the item — a 409-shaped entry in `errors[]`. The pre-K2
+    /// behaviour, and still the default.
+    #[default]
+    Fail,
+    /// Leave the stored entity alone and report the item as `skipped`.
+    Skip,
+    /// Upsert: an existing draft is updated in place; an active entity whose
+    /// content differs gets a new draft version carrying the item's content;
+    /// content-identical items are reported `unchanged` and write nothing.
+    /// This is what makes a re-run of the same artifact a no-op.
+    NewVersion,
+}
+
+/// What one import item did (or, on dry-run, would do).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImportAction {
+    Created,
+    /// A versioned entity's existing draft was replaced with this content.
+    UpdatedDraft,
+    /// A connector (unversioned) was updated in place.
+    Updated,
+    /// A new draft version was created carrying this content.
+    NewVersion,
+    /// Stored content is identical (DB-owned fields excluded); nothing written.
+    Unchanged,
+    /// `on_conflict=skip` and the key exists; nothing written.
+    Skipped,
+}
+
+impl ImportAction {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::UpdatedDraft => "updated_draft",
+            Self::Updated => "updated",
+            Self::NewVersion => "new_version",
+            Self::Unchanged => "unchanged",
+            Self::Skipped => "skipped",
+        }
+    }
+
+    /// Whether this action wrote (or would write) anything.
+    fn is_write(&self) -> bool {
+        matches!(
+            self,
+            Self::Created | Self::UpdatedDraft | Self::Updated | Self::NewVersion
+        )
+    }
+}
+
+/// The per-entity operations [`import_items`] drives.
 ///
-/// A struct rather than four positional parameters: they are all closures with
+/// A struct rather than positional parameters: they are all closures with
 /// interchangeable-looking types, so a transposition at a call site would
 /// compile (the F44 hazard, one layer up).
-pub(crate) struct ImportOps<V, K, E, C> {
+pub(crate) struct ImportOps<V, K, E, C, U> {
     /// The same validation the singular `POST` endpoint runs.
     pub validate: V,
     /// The stored key a duplicate would collide on — `workflow_id`,
@@ -82,8 +137,69 @@ pub(crate) struct ImportOps<V, K, E, C> {
     pub conflict_key: K,
     /// Whether that key is already taken.
     pub exists: E,
-    /// Persist the item.
+    /// Persist the item as a fresh entity.
     pub create: C,
+    /// K2: resolve one item against the store under `on_conflict=new_version`
+    /// — create / update draft / new version / unchanged — writing only when
+    /// its second argument (`dry_run`) is false. Per-kind because the four
+    /// outcomes are made of per-kind repository verbs.
+    pub upsert: U,
+}
+
+/// Everything one `/import` call produced, dry-run or real.
+#[derive(Default)]
+pub(crate) struct ImportOutcome {
+    /// Items that wrote (or would write): created / updated / new version.
+    pub imported: u64,
+    pub failed: u64,
+    /// Content-identical items (K2) — nothing written, and deliberately not
+    /// counted as `imported`: a re-run of the same artifact reports 0 imports.
+    pub unchanged: u64,
+    /// Items skipped under `on_conflict=skip`.
+    pub skipped: u64,
+    /// One `{index, error}` entry per failed item.
+    pub errors: Vec<serde_json::Value>,
+    /// One `{index, id, action}` entry per non-failed item (K2) — the
+    /// per-item report a packaging CLI turns into its plan/apply output.
+    pub results: Vec<serde_json::Value>,
+}
+
+impl ImportOutcome {
+    /// The `(id, action)` of every item that wrote, for the per-entity audit
+    /// rows (K5). Items with no conflict key have no client-visible id to
+    /// audit and are covered by the summary row alone.
+    pub(crate) fn written(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.results.iter().filter_map(|r| {
+            let action = r.get("action")?.as_str()?;
+            if !matches!(
+                action,
+                "created" | "updated" | "updated_draft" | "new_version"
+            ) {
+                return None;
+            }
+            Some((r.get("id")?.as_str()?, action))
+        })
+    }
+
+    fn record(&mut self, index: usize, key: Option<&str>, action: ImportAction) {
+        if action.is_write() {
+            self.imported += 1;
+        } else if action == ImportAction::Unchanged {
+            self.unchanged += 1;
+        } else {
+            self.skipped += 1;
+        }
+        self.results.push(json!({
+            "index": index,
+            "id": key,
+            "action": action.as_str(),
+        }));
+    }
+
+    fn fail(&mut self, index: usize, error: String) {
+        self.failed += 1;
+        self.errors.push(json!({"index": index, "error": error}));
+    }
 }
 
 /// The one per-item driver behind all three `/import` endpoints.
@@ -97,17 +213,25 @@ pub(crate) struct ImportOps<V, K, E, C> {
 /// bulk endpoint that already reports `{imported, failed, errors[]}` — a batch
 /// that reports counts should produce them.
 ///
-/// R15: `?dry_run=true` now reads. It used to skip the database entirely, as
+/// R15: `?dry_run=true` reads. It used to skip the database entirely, as
 /// its own doc comment said — but the stated use case is CI pre-flight, and the
 /// most common real failure is a **name conflict**, which is exactly what a
 /// no-DB dry-run cannot see. A green dry-run therefore said nothing. Conflicts
 /// against stored rows and duplicates *within the batch* are both reported now;
 /// the second was free and previously missed entirely.
-pub(crate) async fn import_items<T, V, K, E, EFut, C, CFut>(
+///
+/// K2: `on_conflict` selects what an already-stored key means — `fail` (the
+/// default), `skip`, or `new_version` (upsert via `ops.upsert`). In the two
+/// non-default modes an in-batch duplicate key is refused in *both* dry-run
+/// and real runs: the second item would silently rewrite what the first just
+/// staged, which is never what a batch author meant. Dry-run reports the
+/// action each item *would* take, which is half of a promotion plan.
+pub(crate) async fn import_items<T, V, K, E, EFut, C, CFut, U, UFut>(
     items: Vec<serde_json::Value>,
     dry_run: bool,
-    ops: ImportOps<V, K, E, C>,
-) -> (u64, u64, Vec<serde_json::Value>)
+    on_conflict: OnConflict,
+    ops: ImportOps<V, K, E, C, U>,
+) -> ImportOutcome
 where
     T: serde::de::DeserializeOwned,
     V: Fn(&T) -> Result<(), crate::errors::OrionError>,
@@ -116,70 +240,118 @@ where
     EFut: std::future::Future<Output = Result<bool, crate::errors::OrionError>>,
     C: Fn(T) -> CFut,
     CFut: std::future::Future<Output = Result<(), crate::errors::OrionError>>,
+    U: Fn(T, bool) -> UFut,
+    UFut: std::future::Future<Output = Result<ImportAction, crate::errors::OrionError>>,
 {
-    let mut ok = 0u64;
-    let mut failed = 0u64;
-    let mut errors = Vec::new();
+    let mut out = ImportOutcome::default();
     let mut seen: Vec<String> = Vec::new();
 
     for (i, item) in items.into_iter().enumerate() {
-        let mut fail = |e: String| {
-            failed += 1;
-            errors.push(json!({"index": i, "error": e}));
-        };
         // Deserialize per item, so a single shape or enum typo is one failed
         // entry rather than a 400 for the whole batch.
         let parsed: T = match serde_json::from_value(item) {
             Ok(v) => v,
             Err(e) => {
-                fail(e.to_string());
+                out.fail(i, e.to_string());
                 continue;
             }
         };
         if let Err(e) = (ops.validate)(&parsed) {
-            fail(e.client_message());
+            out.fail(i, e.client_message());
             continue;
         }
 
-        // Conflict detection. On a real import the store enforces this anyway,
-        // so it runs on dry-run only — where it is the whole point.
-        if dry_run {
-            if let Some(key) = (ops.conflict_key)(&parsed) {
-                if seen.contains(&key) {
-                    fail(format!(
+        let key = (ops.conflict_key)(&parsed);
+
+        // In-batch duplicates are refused in every mode that would otherwise
+        // resolve them silently: under `fail` the store answers anyway (a
+        // real run 409s the second item), and under `skip`/`new_version` the
+        // second item would overwrite what the first staged moments ago.
+        if let Some(ref key) = key {
+            if seen.contains(key) {
+                out.fail(
+                    i,
+                    format!(
                         "'{key}' appears more than once in this batch — the second \
                          item would conflict with the first"
-                    ));
-                    continue;
-                }
-                match (ops.exists)(key.clone()).await {
-                    Ok(true) => {
-                        fail(format!("'{key}' already exists"));
-                        continue;
-                    }
-                    Ok(false) => seen.push(key),
-                    // A probe that could not run must not be reported as a
-                    // clean item: say so and let the operator retry.
-                    Err(e) => {
-                        fail(format!(
-                            "could not check for a conflict: {}",
-                            e.client_message()
-                        ));
-                        continue;
-                    }
-                }
+                    ),
+                );
+                continue;
             }
-            ok += 1;
-            continue;
+            if dry_run || on_conflict != OnConflict::Fail {
+                seen.push(key.clone());
+            }
         }
 
-        if let Err(e) = (ops.create)(parsed).await {
-            fail(e.client_message());
-        } else {
-            ok += 1;
+        match on_conflict {
+            OnConflict::Fail => {
+                // Conflict detection. On a real import the store enforces
+                // this anyway, so the probe runs on dry-run only — where it
+                // is the whole point.
+                if dry_run {
+                    if let Some(ref key) = key {
+                        match (ops.exists)(key.clone()).await {
+                            Ok(true) => {
+                                out.fail(i, format!("'{key}' already exists"));
+                                continue;
+                            }
+                            Ok(false) => {}
+                            // A probe that could not run must not be reported
+                            // as a clean item: say so and let the operator
+                            // retry.
+                            Err(e) => {
+                                out.fail(
+                                    i,
+                                    format!(
+                                        "could not check for a conflict: {}",
+                                        e.client_message()
+                                    ),
+                                );
+                                continue;
+                            }
+                        }
+                    }
+                    out.record(i, key.as_deref(), ImportAction::Created);
+                    continue;
+                }
+                match (ops.create)(parsed).await {
+                    Ok(()) => out.record(i, key.as_deref(), ImportAction::Created),
+                    Err(e) => out.fail(i, e.client_message()),
+                }
+            }
+            OnConflict::Skip => {
+                if let Some(ref key) = key {
+                    match (ops.exists)(key.clone()).await {
+                        Ok(true) => {
+                            out.record(i, Some(key), ImportAction::Skipped);
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            out.fail(
+                                i,
+                                format!("could not check for a conflict: {}", e.client_message()),
+                            );
+                            continue;
+                        }
+                    }
+                }
+                if dry_run {
+                    out.record(i, key.as_deref(), ImportAction::Created);
+                    continue;
+                }
+                match (ops.create)(parsed).await {
+                    Ok(()) => out.record(i, key.as_deref(), ImportAction::Created),
+                    Err(e) => out.fail(i, e.client_message()),
+                }
+            }
+            OnConflict::NewVersion => match (ops.upsert)(parsed, dry_run).await {
+                Ok(action) => out.record(i, key.as_deref(), action),
+                Err(e) => out.fail(i, e.client_message()),
+            },
         }
     }
-    (ok, failed, errors)
+    out
 }
 
 // ============================================================
@@ -298,64 +470,109 @@ where
     }
 }
 
-/// The `?dry_run=true` response envelope shared by all three import endpoints.
-///
-/// Same four fields as [`import_response`], distinguished only by
-/// `dry_run: true` (proposal R18). Pre-1.0 this returned six fields for two
-/// facts — `would_create`/`would_fail` alongside a hardcoded `imported: 0`
-/// and a `failed` that always equalled `would_fail`.
-pub(crate) fn dry_run_response(
-    would_import: u64,
-    would_fail: u64,
-    errors: Vec<serde_json::Value>,
-) -> axum::Json<serde_json::Value> {
-    import_envelope(true, would_import, would_fail, errors)
-}
-
-/// The real-import response envelope shared by all three import endpoints.
+/// The response envelope shared by all three import endpoints, dry-run and
+/// real (R18): the same fields either way, distinguished only by `dry_run`.
+/// Pre-1.0 the dry-run shape returned six fields for two facts —
+/// `would_create`/`would_fail` alongside a hardcoded `imported: 0` and a
+/// `failed` that always equalled `would_fail`.
 pub(crate) fn import_response(
-    imported: u64,
-    failed: u64,
-    errors: Vec<serde_json::Value>,
-) -> axum::Json<serde_json::Value> {
-    import_envelope(false, imported, failed, errors)
-}
-
-fn import_envelope(
     dry_run: bool,
-    imported: u64,
-    failed: u64,
-    errors: Vec<serde_json::Value>,
+    outcome: ImportOutcome,
 ) -> axum::Json<serde_json::Value> {
     axum::Json(json!({
         "data": {
             "dry_run": dry_run,
-            "imported": imported,
-            "failed": failed,
-            "errors": errors,
+            "imported": outcome.imported,
+            "failed": outcome.failed,
+            "unchanged": outcome.unchanged,
+            "skipped": outcome.skipped,
+            "errors": outcome.errors,
+            "results": outcome.results,
         }
     }))
 }
 
 /// Query parameters accepted by all three `/import` endpoints (B6).
 ///
-/// R27: lived in `workflows.rs` while its four sibling helpers
-/// (`check_import_batch_size`, `import_items`, `dry_run_response`,
-/// `import_response`) lived here, so channels and connectors imported it from a
-/// module they otherwise have nothing to do with.
+/// R27: lived in `workflows.rs` while its sibling helpers
+/// (`check_import_batch_size`, `import_items`, `import_response`) lived here,
+/// so channels and connectors imported it from a module they otherwise have
+/// nothing to do with.
 #[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct ImportQuery {
     /// When true, validate each item and report what would happen without
     /// writing. Probes for conflicts against stored rows and for duplicates
-    /// within the batch (R15).
+    /// within the batch (R15), and under `on_conflict=new_version` reports
+    /// the per-item action the real import would take (K2).
     #[serde(default)]
     pub dry_run: bool,
+    /// What an already-stored conflict key means: `fail` (default — the item
+    /// is refused), `skip`, or `new_version` (upsert: update the draft in
+    /// place, or cut a new draft version over an active entity; identical
+    /// content is a no-op). K2.
+    #[serde(default)]
+    pub on_conflict: OnConflict,
+}
+
+/// When an active-set mutation rebuilds the engine (K4).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ReloadMode {
+    /// Rebuild the engine and bump the cluster config epoch as part of this
+    /// request — the default, and the pre-K4 behaviour.
+    #[default]
+    Now,
+    /// Commit the row but leave the running engine (and, in cluster mode,
+    /// every peer) serving the previous configuration until someone calls
+    /// `POST /api/v1/admin/engine/reload`. For a bundle apply this turns
+    /// O(entities) engine rebuilds and epoch bumps into exactly one — the
+    /// caller activates everything with `reload=defer` and finishes with one
+    /// explicit reload, which also bumps the epoch for the peers.
+    Defer,
+}
+
+/// Query parameters accepted by the two `PATCH /{id}/status` endpoints
+/// (K3, K4).
+///
+/// `?dry_run=true` runs every activation (or archive) gate — the same checks
+/// the real transition runs, in the same order — reports the findings as a
+/// [`ValidationEnvelope`], and writes nothing. This is the server-state half
+/// of a promotion plan: route collisions and the active set cannot be
+/// checked client-side, and without a pre-flight a "plan" cannot promise the
+/// matching "apply" will activate.
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct StatusChangeQuery {
+    /// When true, run the transition's gates and report findings without
+    /// writing. The response body is the `/validate` envelope, not the
+    /// entity.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// `now` (default) reloads the engine as part of this request; `defer`
+    /// commits the row and leaves the reload to a later
+    /// `POST /engine/reload` (K4).
+    #[serde(default)]
+    pub reload: ReloadMode,
+}
+
+/// Query parameter accepted by `PATCH /workflows/{id}/rollout` (K4) — the
+/// other active-set mutation a bundle apply performs per entity.
+#[derive(Debug, Default, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct ReloadQuery {
+    /// `now` (default) reloads the engine as part of this request; `defer`
+    /// commits the row and leaves the reload to a later
+    /// `POST /engine/reload` (K4).
+    #[serde(default)]
+    pub reload: ReloadMode,
 }
 
 /// The audit actor when no admin credential was presented — which is every
-/// request when `admin_auth.enabled = false`.
-const ANONYMOUS_PRINCIPAL: &str = "anonymous";
+/// request when `admin_auth.enabled = false`. `pub(crate)` because the
+/// package-receipt PUT records the same principal *in the row*, not only on
+/// the audit trail, and the two spellings must not drift.
+pub(crate) const ANONYMOUS_PRINCIPAL: &str = "anonymous";
 
 /// The request context recorded alongside every audit row (O7).
 ///
@@ -380,6 +597,12 @@ fn request_details() -> Option<String> {
     }
     if let Some(ua) = ctx.user_agent {
         details.insert("user_agent".into(), json!(ua));
+    }
+    // K5: what this mutation was part of, per the caller's own labelling —
+    // the packaging CLI sends `package=<name>@<version>` on every call of an
+    // apply, so the trail groups a multi-request operation without guesswork.
+    if let Some(cc) = ctx.change_context {
+        details.insert("change_context".into(), json!(cc));
     }
     (!details.is_empty()).then(|| serde_json::Value::Object(details).to_string())
 }
@@ -441,12 +664,20 @@ fn audit_log_draft_only(
 /// post-mutation sequence for admin operations that change the active set
 /// (activate / archive / delete / update-rollout). Drafts do NOT reload —
 /// use [`audit_log_draft_only`] in those code paths.
+///
+/// K4: `reload` is [`ReloadMode::Defer`] only where the caller opted in via
+/// query parameter (status changes, rollout); the row is committed and the
+/// audit event recorded, but the engine keeps serving the previous active set
+/// — on this node *and* every peer, since the epoch bump is deferred with the
+/// rebuild — until `POST /engine/reload` runs. Deletes always reload: nothing
+/// batches a delete.
 async fn audit_and_reload(
     state: &AppState,
     principal: &Option<Extension<AdminPrincipal>>,
     action: &str,
     resource_type: &str,
     resource_id: &str,
+    reload: ReloadMode,
 ) -> Result<(), crate::errors::OrionError> {
     audit_log(
         &state.audit_queue,
@@ -455,6 +686,9 @@ async fn audit_and_reload(
         resource_type,
         resource_id,
     );
+    if reload == ReloadMode::Defer {
+        return Ok(());
+    }
     reload_engine(state).await?;
     state.cluster.bump_config_epoch().await
 }
@@ -559,6 +793,15 @@ pub fn admin_routes(max_body_size: usize) -> Router<AppState> {
     let backup_routes =
         Router::new().route("/", post(backups::create_backup).get(backups::list_backups));
 
+    // K14: package receipts — read receipts, and the PUT the packaging CLI
+    // claims/flips around an apply.
+    let package_routes = Router::new()
+        .route("/", get(packages::list_packages))
+        .route(
+            "/{name}",
+            get(packages::get_package).put(packages::put_package),
+        );
+
     Router::new()
         .nest("/channels", channel_routes)
         .nest("/workflows", workflow_routes)
@@ -569,5 +812,6 @@ pub fn admin_routes(max_body_size: usize) -> Router<AppState> {
         .nest("/traces", trace_routes)
         .nest("/trace-dlq", trace_dlq_routes)
         .nest("/backups", backup_routes)
+        .nest("/packages", package_routes)
         .layer(axum::extract::DefaultBodyLimit::max(max_body_size))
 }

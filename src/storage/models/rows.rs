@@ -69,6 +69,10 @@ pub struct Channel {
     pub config_json: String,
     pub status: String,
     pub priority: i64,
+    /// JSON array of tag strings (K6), same contract as
+    /// [`Workflow::tags_json`]: the column is `tags_json`, the wire says
+    /// `tags`.
+    pub tags_json: String,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -101,6 +105,8 @@ pub struct Connector {
     pub connector_type: String,
     pub config_json: String,
     pub enabled: bool,
+    /// JSON array of tag strings (K6); the wire says `tags`.
+    pub tags_json: String,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -205,6 +211,26 @@ pub struct TraceDlqSummary {
     pub retry_count: i64,
     pub max_retries: i64,
     pub next_retry_at: NaiveDateTime,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+// ============================================================
+// Package receipt (K14)
+// ============================================================
+
+/// One package version's receipt: what was applied (or staged) here, with
+/// what content hash, by whom. The applied-immutability rule is enforced
+/// against these rows — see `repositories::packages`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PackageReceipt {
+    pub name: String,
+    pub version: String,
+    pub content_hash: String,
+    /// `staged` (drafts landed, mutable in place) or `applied` (activated,
+    /// immutable — content changes require a version bump).
+    pub state: String,
+    pub principal: String,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }

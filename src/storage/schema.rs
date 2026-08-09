@@ -64,6 +64,7 @@ pub enum Channels {
     ConfigJson,
     Status,
     Priority,
+    TagsJson,
     CreatedAt,
     UpdatedAt,
 }
@@ -80,6 +81,7 @@ pub enum Connectors {
     ConnectorType,
     ConfigJson,
     Enabled,
+    TagsJson,
     CreatedAt,
     UpdatedAt,
 }
@@ -150,6 +152,22 @@ pub enum JobLeases {
     JobName,
     Holder,
     ExpiresAt,
+}
+
+// ============================================================
+// Packages table (K14 receipts)
+// ============================================================
+
+#[derive(Iden)]
+pub enum Packages {
+    Table,
+    Name,
+    Version,
+    ContentHash,
+    State,
+    Principal,
+    CreatedAt,
+    UpdatedAt,
 }
 
 // ============================================================
@@ -257,6 +275,7 @@ mod tests {
             Iden::to_string(&Channels::ConfigJson),
             Iden::to_string(&Channels::Status),
             Iden::to_string(&Channels::Priority),
+            Iden::to_string(&Channels::TagsJson),
             Iden::to_string(&Channels::CreatedAt),
             Iden::to_string(&Channels::UpdatedAt),
         ]
@@ -279,6 +298,7 @@ mod tests {
                 "config_json",
                 "status",
                 "priority",
+                "tags_json",
                 "created_at",
                 "updated_at",
             ]

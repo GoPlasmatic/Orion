@@ -1406,6 +1406,7 @@ mod tests {
             let now = chrono::Utc::now().naive_utc();
             Some(Arc::new(ChannelRuntimeConfig {
                 channel: Channel {
+                    tags_json: "[]".to_string(),
                     channel_id: "ch_test".to_string(),
                     version: 1,
                     name: "test-channel".to_string(),

@@ -61,6 +61,7 @@ async fn connector_response_keeps_every_field_the_row_published() {
             "enabled",
             "id",
             "name",
+            "tags",
             "updated_at"
         ]
     );
@@ -85,6 +86,7 @@ async fn connector_response_keeps_every_field_the_row_published() {
             "id",
             "load_status",
             "name",
+            "tags",
             "updated_at"
         ]
     );
@@ -323,6 +325,19 @@ async fn wire_names_survive_the_column_rename() {
     }
 
     // -- channel: `methods` on the wire --
+    // K8: channel activation refuses a workflow with no active version, so
+    // the workflow goes active before the channel that names it.
+    let resp = app
+        .clone()
+        .oneshot(common::json_request(
+            "PATCH",
+            &format!("/api/v1/admin/workflows/{workflow_id}/status"),
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .expect("activate workflow");
+    assert_eq!(resp.status(), StatusCode::OK);
+
     let channel_id = common::create_rest_channel(
         &app,
         "d26-wire-shape",
@@ -348,6 +363,7 @@ async fn wire_names_survive_the_column_rename() {
             "protocol",
             "route_pattern",
             "status",
+            "tags",
             "topic",
             "transport_config",
             "updated_at",

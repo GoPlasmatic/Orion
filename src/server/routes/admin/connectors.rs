@@ -311,7 +311,11 @@ pub(crate) async fn delete_connector(
         (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
             Each item is handled independently: a malformed or conflicting item becomes one entry in \
             `errors` and the rest of the batch still applies. Dry-run additionally probes for name \
-            conflicts against stored rows and duplicates within the batch, without writing.", body = DataEnvelope<ImportResult>),
+            conflicts against stored rows and duplicates within the batch, without writing. \
+            `?on_conflict=new_version` upserts instead of refusing an existing name (K2): connectors \
+            are unversioned, so an existing connector is updated in place (`updated`), and identical \
+            content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item \
+            outcomes are in `results`.", body = DataEnvelope<ImportResult>),
     )
 )]
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
@@ -324,40 +328,120 @@ pub(crate) async fn import_connectors(
     super::check_import_batch_size(items.len())?;
     let repo = state.repos.connectors.clone();
     let probe = state.repos.connectors.clone();
-    let (imported, failed, errors) =
-        super::import_items::<CreateConnectorRequest, _, _, _, _, _, _>(
-            items,
-            query.dry_run,
-            super::ImportOps {
-                validate: crate::validation::validate_create_connector,
-                // `name` carries the unique constraint here, not `id`.
-                conflict_key: |c: &CreateConnectorRequest| Some(c.name.clone()),
-                exists: |name: String| {
-                    let repo = probe.clone();
-                    async move { repo.exists_by_name(&name).await }
-                },
-                create: |c: CreateConnectorRequest| {
-                    let repo = repo.clone();
-                    async move { repo.create(&c).await.map(|_| ()) }
-                },
+    let upsert_state = state.clone();
+    let outcome = super::import_items::<CreateConnectorRequest, _, _, _, _, _, _, _, _>(
+        items,
+        query.dry_run,
+        query.on_conflict,
+        super::ImportOps {
+            validate: crate::validation::validate_create_connector,
+            // `name` carries the unique constraint here, not `id`.
+            conflict_key: |c: &CreateConnectorRequest| Some(c.name.clone()),
+            exists: |name: String| {
+                let repo = probe.clone();
+                async move { repo.exists_by_name(&name).await }
             },
-        )
-        .await;
+            create: |c: CreateConnectorRequest| {
+                let repo = repo.clone();
+                async move { repo.create(&c).await.map(|_| ()) }
+            },
+            upsert: |c: CreateConnectorRequest, dry_run: bool| {
+                let state = upsert_state.clone();
+                async move { upsert_connector(&state, c, dry_run).await }
+            },
+        },
+    )
+    .await;
     if query.dry_run {
-        return Ok(super::dry_run_response(imported, failed, errors));
+        return Ok(super::import_response(true, outcome));
+    }
+    // K5: one row per written entity, plus the batch summary row.
+    for (id, _action) in outcome.written() {
+        audit_log(&state.audit_queue, &principal, "import", "connector", id);
     }
     audit_log(
         &state.audit_queue,
         &principal,
         "import",
         "connector",
-        &format!("{imported} imported"),
+        &format!("{} imported", outcome.imported),
     );
-    // Reload registry once at the end if anything succeeded.
-    if imported > 0 {
+    // Reload registry once at the end if anything was written.
+    if outcome.imported > 0 {
         reload_connectors(&state).await?;
     }
-    Ok(super::import_response(imported, failed, errors))
+    Ok(super::import_response(false, outcome))
+}
+
+/// K2: one connector item under `on_conflict=new_version`.
+///
+/// Connectors are unversioned, so "new version" degrades to an in-place
+/// update — the same wholesale config replacement `PUT /connectors/{id}`
+/// performs. The item was matched by `name`, so the rename guard cannot
+/// apply; the pool eviction the PUT path runs is preserved here, because a
+/// changed config must not keep serving through a cached connection pool.
+async fn upsert_connector(
+    state: &AppState,
+    req: CreateConnectorRequest,
+    dry_run: bool,
+) -> Result<super::ImportAction, OrionError> {
+    use super::ImportAction;
+
+    let existing = match state.repos.connectors.get_by_name(&req.name).await {
+        Ok(existing) => existing,
+        Err(OrionError::NotFound(_)) => {
+            if !dry_run {
+                state.repos.connectors.create(&req).await?;
+            }
+            return Ok(ImportAction::Created);
+        }
+        Err(e) => return Err(e),
+    };
+
+    if connector_row_content(&existing)? == connector_req_content(&req) {
+        return Ok(ImportAction::Unchanged);
+    }
+    if !dry_run {
+        state
+            .repos
+            .connectors
+            .update(
+                &existing.id,
+                &UpdateConnectorRequest {
+                    name: None, // matched on name — it cannot change here
+                    connector_type: Some(req.connector_type),
+                    config: Some(req.config),
+                    enabled: Some(req.enabled.unwrap_or(true)),
+                    tags: Some(req.tags),
+                },
+            )
+            .await?;
+        evict_connector_pools(state, &existing.name).await;
+    }
+    Ok(ImportAction::Updated)
+}
+
+/// A connector row's importable content in the create-request's vocabulary —
+/// `id` and timestamps excluded (`id` is not part of the artifact contract:
+/// the upsert matches on `name` and keeps the stored id).
+fn connector_row_content(c: &crate::storage::models::Connector) -> Result<Value, OrionError> {
+    Ok(json!({
+        "name": c.name,
+        "connector_type": c.connector_type,
+        "config": serde_json::from_str::<Value>(&c.config_json)?,
+        "enabled": c.enabled,
+        "tags": serde_json::from_str::<Value>(&c.tags_json)?,
+    }))
+}
+
+fn connector_req_content(r: &CreateConnectorRequest) -> Value {
+    json!({
+        "name": r.name,
+        "connector_type": r.connector_type.as_str(),
+        "config": r.config,
+        "enabled": r.enabled.unwrap_or(true),
+        "tags": r.tags,
+    })
 }
 
 // ============================================================
@@ -459,14 +543,14 @@ pub(crate) async fn reset_circuit_breaker(
 #[tracing::instrument(skip(state))]
 pub(crate) async fn export_connectors(
     State(state): State<AppState>,
-    // `ConnectorFilter` carries only pagination, which an export overrides by
-    // definition — accepted so the signature matches the other two exports and
-    // a client can pass the same query string to all three.
-    OrionQuery(_filter): OrionQuery<ConnectorFilter>,
+    // Pagination in the filter is overridden by definition — an export
+    // returns everything that matches; `?tag=` (K6) is honoured.
+    OrionQuery(filter): OrionQuery<ConnectorFilter>,
 ) -> Result<Json<Value>, OrionError> {
     let repo = state.repos.connectors.as_ref();
     let rows = super::collect_pages(super::EXPORT_PAGE_SIZE, |limit, offset| {
         let page_filter = ConnectorFilter {
+            tag: filter.tag.clone(),
             limit: Some(limit),
             offset: Some(offset),
             ..Default::default()
@@ -499,6 +583,7 @@ pub(crate) async fn export_connectors(
                 "config": serde_json::from_str::<Value>(&masked.config_json)
                     .unwrap_or_else(|_| json!({})),
                 "enabled": masked.enabled,
+                "tags": masked.tags,
             })
         })
         .collect();

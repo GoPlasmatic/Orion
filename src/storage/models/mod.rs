@@ -30,15 +30,15 @@ pub mod enums;
 pub mod rows;
 
 pub use dto::{
-    AuditLogEntryResponse, ChannelResponse, ConnectorResponse, TraceDlqEntryResponse,
-    TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
+    AuditLogEntryResponse, ChannelResponse, ConnectorResponse, PackageReceiptResponse,
+    TraceDlqEntryResponse, TraceDlqSummaryResponse, TraceListItemResponse, WorkflowResponse,
 };
 pub use enums::{
     CHANNEL_TYPE_ASYNC, CHANNEL_TYPE_SYNC, ChannelProtocol, ChannelType, EntityStatus,
-    TRACE_MODE_ASYNC, TRACE_MODE_SYNC, TRACE_STATUS_COMPLETED, TRACE_STATUS_FAILED,
+    PackageState, TRACE_MODE_ASYNC, TRACE_MODE_SYNC, TRACE_STATUS_COMPLETED, TRACE_STATUS_FAILED,
     TRACE_STATUS_PENDING, TRACE_STATUS_RUNNING, VALID_CHANNEL_TYPES,
 };
 pub use rows::{
-    AuditLogEntry, Channel, Connector, Trace, TraceDlqEntry, TraceDlqSummary, TraceListRow,
-    Workflow,
+    AuditLogEntry, Channel, Connector, PackageReceipt, Trace, TraceDlqEntry, TraceDlqSummary,
+    TraceListRow, Workflow,
 };

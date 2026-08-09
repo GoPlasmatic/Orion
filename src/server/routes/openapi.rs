@@ -254,6 +254,8 @@ validation failures.",
         (name = "Traces", description = "Execution trace listing and polling"),
         (name = "Trace DLQ", description = "Dead-letter queue inspection, replay, and purge"),
         (name = "Backups", description = "Database backup management (SQLite only)"),
+        (name = "Packages", description = "Package receipts — what package versions are \
+            staged or applied here (K14)"),
         (name = "Data", description = "Data processing"),
         (name = "Operational", description = "Health and metrics"),
     ),
@@ -311,6 +313,10 @@ validation failures.",
         // Backups
         super::admin::backups::create_backup,
         super::admin::backups::list_backups,
+        // Packages (K14)
+        super::admin::packages::list_packages,
+        super::admin::packages::get_package,
+        super::admin::packages::put_package,
         // Data plane (C8) — one catch-all handler, two documented operations
         super::data::dynamic_handler,
         super::data::submit_channel_request_async_docs,
@@ -343,6 +349,10 @@ validation failures.",
             crate::storage::repositories::connectors::UpdateConnectorRequest,
             super::admin::trace_dlq::PurgeTraceDlqRequest,
             super::admin::ValidationEnvelope,
+            crate::storage::models::PackageReceiptResponse,
+            crate::storage::models::PackageState,
+            crate::storage::repositories::packages::PutPackageReceiptRequest,
+            super::admin::packages::PackageDetail,
             super::data::ProcessRequest,
             super::data::ProcessResponse,
             super::data::ProcessTaskError,
@@ -508,6 +518,7 @@ mod tests {
             "TraceDlqEntry",
             "TraceDlqSummary",
             "AuditLogEntry",
+            "PackageReceipt",
         ];
         let spec = spec();
         let schemas = spec
@@ -661,6 +672,8 @@ pub(crate) struct ConnectorListItem {
     /// Connector config with every secret replaced by `******`.
     config_json: String,
     enabled: bool,
+    /// Selection labels (K6); filter the list with `?tag=`.
+    tags: Vec<String>,
     created_at: String,
     updated_at: String,
     /// `loaded`, `failed`, or `disabled`.
@@ -675,19 +688,30 @@ pub(crate) struct ConnectorListItem {
     load_error_stage: Option<String>,
 }
 
-/// Result of a bulk import, in both dry-run and real modes (R18).
+/// Result of a bulk import, in both dry-run and real modes (R18, K2).
 #[derive(serde::Serialize, utoipa::ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct ImportResult {
     /// `true` when the request carried `?dry_run=true`; nothing was written.
     dry_run: bool,
-    /// Items created — or, in a dry run, the count that would be created.
+    /// Items written — created, updated, or given a new version. In a dry
+    /// run, the count that would be written.
     imported: u64,
     /// Items rejected. Non-zero with a **200** status: check this field, not
     /// the status code.
     failed: u64,
+    /// Content-identical items under `on_conflict=new_version` (K2): nothing
+    /// written, not counted in `imported`. Re-importing the same artifact
+    /// therefore reports 0 imports and N unchanged.
+    unchanged: u64,
+    /// Items skipped under `on_conflict=skip` (K2).
+    skipped: u64,
     /// One entry per failed item, carrying its index in the request array.
     errors: Vec<Value>,
+    /// One `{index, id, action}` entry per non-failed item (K2). `action` is
+    /// `created`, `updated_draft`, `updated` (connectors), `new_version`,
+    /// `unchanged`, or `skipped`.
+    results: Vec<Value>,
 }
 
 /// `GET /api/v1/admin/engine/status`.

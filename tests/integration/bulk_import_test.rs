@@ -500,3 +500,321 @@ async fn a_malformed_item_fails_alone_on_every_import_endpoint() {
         );
     }
 }
+
+// ============================================================
+// K2: ?on_conflict= — skip and new_version (upsert) modes
+// ============================================================
+
+/// The full upsert ladder for a versioned entity: created → unchanged
+/// (idempotent re-run) → updated_draft → new_version over an active row.
+#[tokio::test]
+async fn workflow_upsert_ladder() {
+    let app = test_app().await;
+    let uri = "/api/v1/admin/workflows/import?on_conflict=new_version";
+    let item = |message: &str| {
+        json!([{
+            "workflow_id": "wf-upsert",
+            "name": "Upsert",
+            "tasks": [{"id": "t1", "name": "log",
+                       "function": {"name": "log", "input": {"message": message}}}]
+        }])
+    };
+
+    // 1. Absent id → created.
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", uri, Some(item("v1"))))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["results"][0]["action"], "created", "{body}");
+    assert_eq!(body["data"]["imported"], 1);
+
+    // 2. Same content again → unchanged, nothing imported. The idempotency
+    //    a CI re-run rides on.
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", uri, Some(item("v1"))))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["results"][0]["action"], "unchanged", "{body}");
+    assert_eq!(body["data"]["imported"], 0);
+    assert_eq!(body["data"]["unchanged"], 1);
+
+    // 3. Changed content over the existing draft → updated_draft, in place.
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", uri, Some(item("v2"))))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["data"]["results"][0]["action"], "updated_draft",
+        "{body}"
+    );
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/workflows/wf-upsert",
+            None,
+        ))
+        .await
+        .unwrap();
+    let wf = body_json(resp).await;
+    assert_eq!(wf["data"]["version"], 1, "draft updated in place: {wf}");
+    assert_eq!(wf["data"]["tasks"][0]["function"]["input"]["message"], "v2");
+
+    // 4. Activate, then import changed content → a new draft version.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            "/api/v1/admin/workflows/wf-upsert/status",
+            Some(json!({"status": "active"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Active + identical → unchanged (the active row is the comparison).
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", uri, Some(item("v2"))))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["results"][0]["action"], "unchanged", "{body}");
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", uri, Some(item("v3"))))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["data"]["results"][0]["action"], "new_version",
+        "{body}"
+    );
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/workflows/wf-upsert",
+            None,
+        ))
+        .await
+        .unwrap();
+    let wf = body_json(resp).await;
+    assert_eq!(wf["data"]["version"], 2, "{wf}");
+    assert_eq!(wf["data"]["status"], "draft");
+    assert_eq!(wf["data"]["tasks"][0]["function"]["input"]["message"], "v3");
+}
+
+/// Dry-run reports the action the real import would take, and writes nothing.
+#[tokio::test]
+async fn upsert_dry_run_reports_the_would_be_action() {
+    let app = test_app().await;
+    let real = "/api/v1/admin/workflows/import?on_conflict=new_version";
+    let dry = "/api/v1/admin/workflows/import?on_conflict=new_version&dry_run=true";
+    let item = |message: &str| {
+        json!([{
+            "workflow_id": "wf-upsert-dry",
+            "name": "Upsert Dry",
+            "tasks": [{"id": "t1", "name": "log",
+                       "function": {"name": "log", "input": {"message": message}}}]
+        }])
+    };
+
+    for (uri, expected) in [(dry, "created"), (real, "created"), (dry, "unchanged")] {
+        let resp = app
+            .clone()
+            .oneshot(json_request("POST", uri, Some(item("v1"))))
+            .await
+            .unwrap();
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["data"]["results"][0]["action"], expected,
+            "{uri}: {body}"
+        );
+    }
+
+    // The dry run of changed content predicts updated_draft — and left the
+    // stored draft untouched.
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", dry, Some(item("v2"))))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["data"]["results"][0]["action"], "updated_draft",
+        "{body}"
+    );
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "GET",
+            "/api/v1/admin/workflows/wf-upsert-dry",
+            None,
+        ))
+        .await
+        .unwrap();
+    let wf = body_json(resp).await;
+    assert_eq!(wf["data"]["tasks"][0]["function"]["input"]["message"], "v1");
+}
+
+/// `skip` leaves the stored entity alone; the in-batch duplicate is refused
+/// in the upsert-ish modes rather than silently self-overwriting.
+#[tokio::test]
+async fn skip_mode_and_in_batch_duplicates() {
+    let app = test_app().await;
+    let create = json!([{
+        "channel_id": "ch-skip",
+        "name": "ch-skip",
+        "channel_type": "sync",
+        "protocol": "http",
+        "methods": ["POST"],
+        "route_pattern": "/ch-skip",
+    }]);
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels/import",
+            Some(create),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(body_json(resp).await["data"]["imported"], 1);
+
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels/import?on_conflict=skip",
+            Some(json!([
+                {"channel_id": "ch-skip", "name": "renamed",
+                 "channel_type": "sync", "protocol": "http",
+                 "methods": ["POST"], "route_pattern": "/ch-skip"},
+                {"channel_id": "ch-skip-new", "name": "ch-skip-new",
+                 "channel_type": "sync", "protocol": "http",
+                 "methods": ["POST"], "route_pattern": "/ch-skip-new"},
+            ])),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["skipped"], 1, "{body}");
+    assert_eq!(body["data"]["imported"], 1, "{body}");
+    assert_eq!(body["data"]["results"][0]["action"], "skipped");
+    assert_eq!(body["data"]["results"][1]["action"], "created");
+
+    // The skipped channel kept its stored name.
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/channels/ch-skip", None))
+        .await
+        .unwrap();
+    assert_eq!(body_json(resp).await["data"]["name"], "ch-skip");
+
+    // In-batch duplicate under new_version: the second item fails.
+    let resp = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/channels/import?on_conflict=new_version",
+            Some(json!([
+                {"channel_id": "ch-dup", "name": "ch-dup",
+                 "channel_type": "sync", "protocol": "http",
+                 "methods": ["POST"], "route_pattern": "/ch-dup"},
+                {"channel_id": "ch-dup", "name": "ch-dup-again",
+                 "channel_type": "sync", "protocol": "http",
+                 "methods": ["POST"], "route_pattern": "/ch-dup"},
+            ])),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["imported"], 1, "{body}");
+    assert_eq!(body["data"]["failed"], 1, "{body}");
+    assert!(
+        body["data"]["errors"][0]["error"]
+            .as_str()
+            .unwrap()
+            .contains("more than once in this batch"),
+        "{body}"
+    );
+}
+
+/// Connectors are unversioned: upsert updates in place, and the round trip
+/// carries `enabled` (K1) so a disabled connector no longer promotes enabled.
+#[tokio::test]
+async fn connector_upsert_updates_in_place_and_keeps_enabled() {
+    let app = test_app().await;
+    let uri = "/api/v1/admin/connectors/import?on_conflict=new_version";
+    let item = |url: &str| {
+        json!([{
+            "name": "upsert-http",
+            "connector_type": "http",
+            "config": {"url": url},
+            "enabled": false,
+        }])
+    };
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", uri, Some(item("https://one.example"))))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["results"][0]["action"], "created", "{body}");
+
+    // K1: the disabled flag survived the import.
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/connectors/export", None))
+        .await
+        .unwrap();
+    let export = body_json(resp).await;
+    let row = export["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "upsert-http")
+        .expect("exported row");
+    assert_eq!(row["enabled"], false, "K1: {row}");
+
+    // Identical content → unchanged.
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", uri, Some(item("https://one.example"))))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["results"][0]["action"], "unchanged", "{body}");
+
+    // Changed config → updated in place (connectors have no versions).
+    let resp = app
+        .clone()
+        .oneshot(json_request("POST", uri, Some(item("https://two.example"))))
+        .await
+        .unwrap();
+    let body = body_json(resp).await;
+    assert_eq!(body["data"]["results"][0]["action"], "updated", "{body}");
+
+    let resp = app
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/connectors/export", None))
+        .await
+        .unwrap();
+    let export = body_json(resp).await;
+    let row = export["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "upsert-http")
+        .expect("exported row");
+    assert_eq!(row["config"]["url"], "https://two.example", "{row}");
+}

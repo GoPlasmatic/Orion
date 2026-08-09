@@ -982,6 +982,7 @@ mod tests {
     fn test_mask_connector_model() {
         use chrono::NaiveDate;
         let connector = crate::storage::models::Connector {
+            tags_json: "[]".to_string(),
             id: "c1".to_string(),
             name: "test".to_string(),
             connector_type: "http".to_string(),

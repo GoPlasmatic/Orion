@@ -14,7 +14,8 @@ use serde_json::Value;
 
 use super::enums::parse_json_field;
 use super::rows::{
-    AuditLogEntry, Channel, Connector, TraceDlqEntry, TraceDlqSummary, TraceListRow, Workflow,
+    AuditLogEntry, Channel, Connector, PackageReceipt, TraceDlqEntry, TraceDlqSummary,
+    TraceListRow, Workflow,
 };
 use crate::errors::OrionError;
 
@@ -91,6 +92,9 @@ pub struct ChannelResponse {
     pub config: Value,
     pub status: String,
     pub priority: i64,
+    /// Wire name `tags`, column `tags_json` (K6) — the same contract
+    /// workflows have carried since 0.x.
+    pub tags: Value,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -136,6 +140,7 @@ impl TryFrom<&Channel> for ChannelResponse {
             },
             status: channel.status.clone(),
             priority: channel.priority,
+            tags: parse_json_field(&channel.tags_json, "channel", id, "tags_json")?,
             created_at: channel.created_at,
             updated_at: channel.updated_at,
         })
@@ -157,6 +162,8 @@ pub struct ConnectorResponse {
     /// Connector config with every secret replaced by `******`.
     pub config_json: String,
     pub enabled: bool,
+    /// Wire name `tags`, column `tags_json` (K6).
+    pub tags: Value,
     pub created_at: NaiveDateTime,
     pub updated_at: NaiveDateTime,
 }
@@ -169,8 +176,46 @@ impl From<&Connector> for ConnectorResponse {
             connector_type: connector.connector_type.clone(),
             config_json: connector.config_json.clone(),
             enabled: connector.enabled,
+            // Tolerant, unlike the channel/workflow decode: this `From` is
+            // infallible because `mask_connector` (the sole constructor of
+            // the wire shape) must never fail, and tags are advisory
+            // selection labels — a corrupt value must not take down every
+            // connector read, list and export.
+            tags: serde_json::from_str(&connector.tags_json)
+                .unwrap_or_else(|_| Value::Array(Vec::new())),
             created_at: connector.created_at,
             updated_at: connector.updated_at,
+        }
+    }
+}
+
+/// A package receipt as the admin API shows it (K14).
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct PackageReceiptResponse {
+    pub name: String,
+    pub version: String,
+    /// Canonical content hash of the artifact this receipt records, e.g.
+    /// `sha256:…`. Opaque to the server — compared for equality, never parsed.
+    pub content_hash: String,
+    /// `staged` or `applied`.
+    #[schema(example = "applied")]
+    pub state: String,
+    /// Who recorded this receipt (admin key id, or `anonymous`).
+    pub principal: String,
+    pub created_at: NaiveDateTime,
+    pub updated_at: NaiveDateTime,
+}
+
+impl From<&PackageReceipt> for PackageReceiptResponse {
+    fn from(receipt: &PackageReceipt) -> Self {
+        Self {
+            name: receipt.name.clone(),
+            version: receipt.version.clone(),
+            content_hash: receipt.content_hash.clone(),
+            state: receipt.state.clone(),
+            principal: receipt.principal.clone(),
+            created_at: receipt.created_at,
+            updated_at: receipt.updated_at,
         }
     }
 }
@@ -441,6 +486,7 @@ mod tests {
 
     fn sample_channel() -> Channel {
         Channel {
+            tags_json: "[]".to_string(),
             channel_id: "ch-1".to_string(),
             version: 1,
             name: "orders".to_string(),
@@ -568,6 +614,7 @@ mod tests {
     #[test]
     fn connector_response_keeps_the_row_wire_shape() {
         let row = Connector {
+            tags_json: "[]".to_string(),
             id: "c-1".to_string(),
             name: "pg".to_string(),
             connector_type: "db".to_string(),
@@ -585,11 +632,13 @@ mod tests {
                 "connector_type",
                 "config_json",
                 "enabled",
+                "tags",
                 "created_at",
                 "updated_at"
             ]
         );
         assert_eq!(value["config_json"], r#"{"password":"******"}"#);
+        assert_eq!(value["tags"], serde_json::json!([]));
         assert_eq!(value["created_at"], "2025-01-01T00:00:00");
     }
 

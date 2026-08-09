@@ -31,6 +31,13 @@ const MAX_USER_AGENT_LEN: usize = 256;
 /// response header, which `PropagateRequestIdLayer` echoes verbatim.
 const MAX_REQUEST_ID_LEN: usize = 200;
 
+/// The caller-supplied change context (K5): tooling stamps what a mutation
+/// was part of — the packaging CLI sends `package=<name>@<version>` — and the
+/// audit trail records it, making a multi-request apply reconstructible.
+/// Free-form; same cap and reasoning as [`MAX_USER_AGENT_LEN`].
+const CHANGE_CONTEXT: &str = "x-orion-change-context";
+const MAX_CHANGE_CONTEXT_LEN: usize = 256;
+
 /// Request-scoped identity of the caller.
 #[derive(Debug, Clone, Default)]
 pub struct RequestContext {
@@ -45,6 +52,9 @@ pub struct RequestContext {
     pub client_ip: String,
     /// The caller's `user-agent`, truncated. `None` when absent or non-ASCII.
     pub user_agent: Option<String>,
+    /// The caller's `x-orion-change-context` header (K5), truncated. `None`
+    /// when absent or non-ASCII. Recorded verbatim in audit `details`.
+    pub change_context: Option<String>,
 }
 
 tokio::task_local! {
@@ -90,11 +100,18 @@ pub async fn request_context_scope(
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty())
         .map(|v| v[..v.len().min(MAX_USER_AGENT_LEN)].to_string());
+    let change_context = req
+        .headers()
+        .get(CHANGE_CONTEXT)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(|v| v[..v.len().min(MAX_CHANGE_CONTEXT_LEN)].to_string());
     let client_ip = crate::server::rate_limit::extract_client_ip(&req, state.trusted_proxies());
     let ctx = RequestContext {
         request_id,
         client_ip,
         user_agent,
+        change_context,
     };
     REQUEST_CONTEXT.scope(ctx, next.run(req)).await
 }

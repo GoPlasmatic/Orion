@@ -884,6 +884,7 @@ mod tests {
     fn test_channel(name: &str, config_json: &str) -> Channel {
         let now = chrono::Utc::now().naive_utc();
         Channel {
+            tags_json: "[]".to_string(),
             channel_id: format!("ch_{name}"),
             version: 1,
             name: name.to_string(),

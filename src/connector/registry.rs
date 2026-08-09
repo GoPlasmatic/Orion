@@ -448,6 +448,7 @@ pub(crate) mod test_support {
     fn row((name, connector_type, config_json): (&str, &str, &str)) -> Connector {
         let now = chrono::Utc::now().naive_utc();
         Connector {
+            tags_json: "[]".to_string(),
             id: format!("con_{name}"),
             name: name.to_string(),
             connector_type: connector_type.to_string(),
@@ -486,6 +487,9 @@ pub(crate) mod test_support {
             unreachable!("not used by load_from_repo")
         }
         async fn exists_by_name(&self, _name: &str) -> Result<bool, OrionError> {
+            unreachable!("not used by load_from_repo")
+        }
+        async fn get_by_name(&self, _name: &str) -> Result<Connector, OrionError> {
             unreachable!("not used by load_from_repo")
         }
     }

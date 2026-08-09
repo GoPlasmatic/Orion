@@ -34,6 +34,35 @@ impl std::fmt::Display for EntityStatus {
     }
 }
 
+// -- Package receipt state (K14) --
+
+/// A package version's lifecycle state, mirroring the entity lifecycle one
+/// level up: `staged` is the draft analogue (content may be re-put in place),
+/// `applied` is the active analogue (immutable — a content change requires a
+/// package version bump). There is no third state: history rows simply stop
+/// being the newest applied version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageState {
+    Staged,
+    Applied,
+}
+
+impl PackageState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Staged => "staged",
+            Self::Applied => "applied",
+        }
+    }
+}
+
+impl std::fmt::Display for PackageState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 // -- Channel type constants --
 pub const CHANNEL_TYPE_SYNC: &str = "sync";
 pub const CHANNEL_TYPE_ASYNC: &str = "async";

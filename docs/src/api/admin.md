@@ -23,15 +23,15 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/v1/admin/channels` | Create channel (as draft) |
-| GET | `/api/v1/admin/channels` | List channels. Filter with `?status=`, `?channel_type=`, `?protocol=` |
+| GET | `/api/v1/admin/channels` | List channels. Filter with `?status=`, `?channel_type=`, `?protocol=`, `?tag=` |
 | GET | `/api/v1/admin/channels/{id}` | Get channel by ID |
 | PUT | `/api/v1/admin/channels/{id}` | Update draft channel |
 | DELETE | `/api/v1/admin/channels/{id}` | Delete channel (all versions) |
-| PATCH | `/api/v1/admin/channels/{id}/status` | Change status (active/archived) |
+| PATCH | `/api/v1/admin/channels/{id}/status` | Change status (active/archived). Activation refuses a route another active channel claims, a channel whose workflow is missing or not active, and a name another active channel holds. `?dry_run=true` runs the same gates and reports findings without writing; `?reload=defer` commits without rebuilding the engine |
 | GET | `/api/v1/admin/channels/{id}/versions` | List channel version history |
 | POST | `/api/v1/admin/channels/{id}/versions` | Create new draft version from active channel |
-| POST | `/api/v1/admin/channels/import` | Bulk import channels (as drafts). `?dry_run=true` validates without writing |
-| GET | `/api/v1/admin/channels/export` | Export every matching channel, in the shape `/import` accepts |
+| POST | `/api/v1/admin/channels/import` | Bulk import channels (as drafts). `?dry_run=true` validates without writing; `?on_conflict=fail\|skip\|new_version` picks what an existing id means |
+| GET | `/api/v1/admin/channels/export` | Export every matching channel, in the shape `/import` accepts. Filter with `?tag=`, `?status=` |
 | POST | `/api/v1/admin/channels/validate` | Validate a channel definition without saving |
 
 ## Workflows
@@ -43,12 +43,12 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 | GET | `/api/v1/admin/workflows/{id}` | Get workflow by ID |
 | PUT | `/api/v1/admin/workflows/{id}` | Update draft workflow |
 | DELETE | `/api/v1/admin/workflows/{id}` | Delete workflow (all versions) |
-| PATCH | `/api/v1/admin/workflows/{id}/status` | Change status (active/archived) |
+| PATCH | `/api/v1/admin/workflows/{id}/status` | Change status (active/archived). Activation refuses missing/mistyped connector references. `?dry_run=true` runs the same gates and reports findings without writing; `?reload=defer` commits without rebuilding the engine |
 | GET | `/api/v1/admin/workflows/{id}/versions` | List workflow version history |
 | POST | `/api/v1/admin/workflows/{id}/versions` | Create new draft version from active workflow |
-| PATCH | `/api/v1/admin/workflows/{id}/rollout` | Update rollout percentage |
+| PATCH | `/api/v1/admin/workflows/{id}/rollout` | Update rollout percentage. `?reload=defer` commits without rebuilding the engine |
 | POST | `/api/v1/admin/workflows/{id}/test` | Dry-run on sample payload |
-| POST | `/api/v1/admin/workflows/import` | Bulk import workflows (as drafts). `?dry_run=true` validates without writing |
+| POST | `/api/v1/admin/workflows/import` | Bulk import workflows (as drafts). `?dry_run=true` validates without writing; `?on_conflict=fail\|skip\|new_version` picks what an existing id means |
 | GET | `/api/v1/admin/workflows/export` | Export workflows. Filter with `?tag=`, `?status=` |
 | POST | `/api/v1/admin/workflows/validate` | Validate workflow definition |
 
@@ -57,12 +57,12 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/v1/admin/connectors` | Create connector. String fields may use `env://VAR_NAME` to pull values from the process environment |
-| GET | `/api/v1/admin/connectors` | List connectors (secrets masked) |
+| GET | `/api/v1/admin/connectors` | List connectors (secrets masked). Filter with `?tag=` |
 | GET | `/api/v1/admin/connectors/{id}` | Get connector by ID (secrets masked) |
 | PUT | `/api/v1/admin/connectors/{id}` | Update connector |
 | DELETE | `/api/v1/admin/connectors/{id}` | Delete connector |
-| POST | `/api/v1/admin/connectors/import` | Bulk import connectors. `?dry_run=true` validates without writing |
-| GET | `/api/v1/admin/connectors/export` | Export every connector, secrets masked |
+| POST | `/api/v1/admin/connectors/import` | Bulk import connectors. `?dry_run=true` validates without writing; `?on_conflict=fail\|skip\|new_version` picks what an existing name means (connectors are unversioned, so `new_version` updates in place) |
+| GET | `/api/v1/admin/connectors/export` | Export every matching connector, secrets masked. Filter with `?tag=` |
 | POST | `/api/v1/admin/connectors/validate` | Validate a connector definition without saving |
 | POST | `/api/v1/admin/connectors/{id}/test` | Probe the connector's backend and report whether it is reachable |
 | GET | `/api/v1/admin/connectors/circuit-breakers` | List circuit breaker states |
@@ -134,6 +134,62 @@ reshaping in between. Exports are **not** a consistent snapshot: pages are
 independent queries, so rows mutated mid-export can be skipped or duplicated.
 Export from a quiet instance if that matters.
 
+### Promoting over an existing estate (`on_conflict`)
+
+By default an import is create-only: an item whose `workflow_id` /
+`channel_id` / connector `name` is already stored becomes one `errors[]`
+entry. `?on_conflict=` selects what "already stored" means instead (K2):
+
+| Mode | Existing draft | Existing active | Identical content | Connectors (unversioned) |
+|---|---|---|---|---|
+| `fail` (default) | refused | refused | refused | refused |
+| `skip` | `skipped` | `skipped` | `skipped` | `skipped` |
+| `new_version` | draft replaced (`updated_draft`) | new draft version cut with the item's content (`new_version`) | nothing written (`unchanged`) | updated in place (`updated`) |
+
+Content comparison excludes the DB-owned fields (`version`, `status`,
+timestamps, `rollout_percentage`), so re-importing an unmodified export
+reports `unchanged` for everything — **re-running the same artifact is a
+no-op**, which is what makes the import safe to retry from CI. An *archived*
+entity with identical content still gets a new draft version: the point of
+re-importing it is to activate it again. The response's `results` array
+carries one `{index, id, action}` per non-failed item; `?dry_run=true`
+composes with every mode and reports the action the real import would take.
+
+The two upsert-ish modes refuse an id that appears twice in one batch — the
+second item would silently rewrite what the first just staged.
+
+### Activation pre-flight (`dry_run` on status changes)
+
+`PATCH /{kind}/{id}/status?dry_run=true` runs every gate the real transition
+runs — draft existence, connector existence/type/MongoDB-`database` (workflows),
+route collisions and the workflow-active gate (channels), rollout arithmetic —
+and answers the `/validate` envelope (`{"data": {"valid", "errors",
+"warnings"}}`) without writing. Gates that the real request fails as a 4xx are
+reported as `errors` entries in a 200, including "not found", so one pass over
+a whole bundle collects every finding instead of stopping at the first.
+
+### Batching reloads (`reload=defer`)
+
+Every activation, archive, and rollout change normally rebuilds the engine and
+bumps the cluster config epoch — N entities promoted means N full rebuilds on
+this node and N resyncs on every peer. `?reload=defer` on the status and
+rollout endpoints commits the row and records the audit event but leaves the
+running configuration untouched **everywhere** until `POST
+/api/v1/admin/engine/reload`, which rebuilds once and bumps the epoch once
+(K4). Until that reload, the database and the running engine intentionally
+disagree — a deferred activation is not serving yet. Tooling that defers must
+always finish with the explicit reload; an operator making one change should
+simply omit the parameter.
+
+### Grouping a multi-request operation (`X-Orion-Change-Context`)
+
+A promotion is many API calls. Send the same `X-Orion-Change-Context` header
+on each — e.g. `package=payments@1.4.0` — and every audit row the operation
+produces carries it under `details.change_context` (K5), so the trail can be
+filtered back into the operation that caused it. Free-form, truncated at 256
+bytes. Imports additionally write one audit row per entity written, alongside
+the batch summary row.
+
 ### Secrets in an exported bundle
 
 A connector export is masked, which is what makes it safe to commit — and which
@@ -186,8 +242,11 @@ connectors and so is a side-effecting operation, not a dry run.
   cannot be reversed to the key. Hold the config and you can recompute it to
   map a row back to a key you issued; nobody else can go in either direction.
 - `details` — a JSON object with the request context: `request_id` (the same
-  value as the `x-request-id` header and `error.request_id`), `client_ip` and
-  `user_agent`. Both attacker-controlled inputs are truncated before storage
+  value as the `x-request-id` header and `error.request_id`), `client_ip`,
+  `user_agent`, and `change_context` when the request carried an
+  `X-Orion-Change-Context` header (K5) — free-form, truncated at 256 bytes;
+  promotion tooling stamps `package=<name>@<version>` on every call of an
+  apply so the trail groups the whole operation. Both attacker-controlled inputs are truncated before storage
   (256 bytes for `user_agent`, 200 for a supplied `x-request-id`). Fields that
   are unavailable are omitted rather than recorded empty.
 
@@ -227,6 +286,38 @@ clear out entries that will never succeed.
 | POST | `/api/v1/admin/backups` | Create a database backup (SQLite only — `VACUUM INTO` a timestamped file in `storage.backup_dir`) |
 | GET | `/api/v1/admin/backups` | List backup files currently in `storage.backup_dir` |
 
+## Packages
+
+The single package-aware surface of the admin API (K14). Packaging itself —
+computing an artifact's dependency closure, planning, staging, activating —
+lives in client tooling built on the per-kind endpoints above; what the server
+keeps is one **receipt** per package version, because the promotion rule
+cannot be enforced without the target remembering what was applied:
+
+> **An applied package version is immutable.** The same version arriving with
+> a different content hash is refused with a `409`; only a `staged` receipt
+> may change; any content change rides a package version bump.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/admin/packages` | List receipt rows (paginated, `?limit=`/`?offset=`), ordered by package name, newest first within a package |
+| GET | `/api/v1/admin/packages/{name}` | One package's receipts, plus `current` — the newest `applied` version |
+| PUT | `/api/v1/admin/packages/{name}` | Record or advance a receipt. Body: `{"version", "content_hash", "state": "staged"\|"applied"}` |
+
+The intended apply sequence: **claim** the receipt as `staged` (the atomic
+same-version-different-content rejection, doubling as a guard against two
+concurrent applies), stage the artifact's entities via the `/import`
+endpoints, activate them in dependency order (connectors → workflows →
+channels), then flip the receipt to `applied`. A failed apply leaves the
+receipt `staged`, so a corrected re-run at the same version is legal — only a
+draft can be updated. Re-putting an *older* applied version with its own
+original hash is also legal and simply makes it current again (the rollback
+path: entities roll forward carrying the old content; nothing moves backward).
+
+Receipts never touch the engine — no reload, no cluster epoch bump. `state`,
+`content_hash` and `principal` are recorded verbatim; the hash is opaque to
+the server and compared only for equality.
+
 ## Lifecycle
 
 Both channels and workflows follow a **draft → active → archived** lifecycle:
@@ -238,6 +329,20 @@ Both channels and workflows follow a **draft → active → archived** lifecycle
 5. **Archive:** `PATCH /status` with `{"status": "archived"}` removes from the engine
 
 A channel links to a workflow via `workflow_id`. Activating a channel makes it available for data processing; activating a workflow makes its logic available to the engine.
+
+Activation order is enforced, not merely conventional (R5, R7, K8): a workflow
+refuses to activate while a connector its tasks reference is missing or of the
+wrong type, and a channel refuses to activate while its `workflow_id` is unset,
+names a workflow that does not exist, or names one with no active version. The
+working order for a bundle is therefore connectors → workflows → channels —
+the same order `?dry_run=true` lets you verify before writing anything.
+
+**Channel names are unique** (K7): the data plane and `channel_call` address
+channels by name, so a name may belong to only one `channel_id`. Create,
+update and import answer `409` for a name another channel already holds
+(compared against every channel's current version), and activation refuses a
+name another *active* channel holds — the belt for rows that predate the
+gate. `orion-server preflight` reports pre-1.0 duplicates before an upgrade.
 
 ## Authentication
 

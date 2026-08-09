@@ -610,6 +610,7 @@ mod tests {
         assert!(check_varchar_len("channel.topic", &"é".repeat(256)).is_some());
 
         let kafka_req = |topic: String, consumer_group: Option<String>| CreateChannelRequest {
+            tags: vec![],
             channel_id: None,
             name: "kafka-ch".to_string(),
             description: None,
@@ -625,6 +626,7 @@ mod tests {
             priority: 0,
         };
         let rest_req = |route_pattern: String, topic: Option<String>| CreateChannelRequest {
+            tags: vec![],
             channel_id: None,
             name: "rest-ch".to_string(),
             description: None,
@@ -685,6 +687,7 @@ mod tests {
     #[test]
     fn an_update_that_breaks_the_route_pattern_is_rejected() {
         let stored = Channel {
+            tags_json: "[]".to_string(),
             channel_id: "orders".to_string(),
             name: "orders".to_string(),
             version: 1,
@@ -727,6 +730,7 @@ mod tests {
     #[test]
     fn test_validate_create_channel_sync_valid() {
         let req = CreateChannelRequest {
+            tags: vec![],
             channel_id: Some("orders-sync".to_string()),
             name: "Orders Sync".to_string(),
             description: None,
@@ -747,6 +751,7 @@ mod tests {
     #[test]
     fn test_validate_create_channel_sync_missing_methods() {
         let req = CreateChannelRequest {
+            tags: vec![],
             channel_id: None,
             name: "Bad Sync".to_string(),
             description: None,
@@ -767,6 +772,7 @@ mod tests {
     #[test]
     fn test_validate_create_channel_sync_missing_route() {
         let req = CreateChannelRequest {
+            tags: vec![],
             channel_id: None,
             name: "Bad Sync".to_string(),
             description: None,
@@ -787,6 +793,7 @@ mod tests {
     #[test]
     fn test_validate_create_channel_async_valid() {
         let req = CreateChannelRequest {
+            tags: vec![],
             channel_id: None,
             name: "Orders Async".to_string(),
             description: None,
@@ -807,6 +814,7 @@ mod tests {
     #[test]
     fn test_validate_create_channel_async_missing_topic() {
         let req = CreateChannelRequest {
+            tags: vec![],
             channel_id: None,
             name: "Bad Async".to_string(),
             description: None,
@@ -827,6 +835,7 @@ mod tests {
     #[test]
     fn test_validate_create_channel_kafka_valid() {
         let req = CreateChannelRequest {
+            tags: vec![],
             channel_id: None,
             name: "Kafka Channel".to_string(),
             description: None,
@@ -854,6 +863,7 @@ mod tests {
 
     fn stored_rest_channel() -> Channel {
         Channel {
+            tags_json: "[]".to_string(),
             channel_id: "orders".to_string(),
             version: 1,
             name: "Orders".to_string(),
@@ -876,6 +886,7 @@ mod tests {
 
     fn empty_update() -> UpdateChannelRequest {
         UpdateChannelRequest {
+            tags: None,
             name: None,
             description: None,
             methods: None,

@@ -8,10 +8,11 @@ Full CRUD operations for all entities through a RESTful admin API:
 
 | Resource | Endpoints |
 |----------|-----------|
-| **Workflows** | Create, read, update, delete, status management, versioning, rollout, dry-run test, import/export, validate |
-| **Channels** | Create, read, update, delete, status management, versioning |
-| **Connectors** | Create, read, update, delete, reload, circuit breaker inspection/reset |
+| **Workflows** | Create, read, update, delete, status management (with `?dry_run=` pre-flight), versioning, rollout, dry-run test, import/export (with `?on_conflict=` upsert), validate |
+| **Channels** | Create, read, update, delete, status management (with `?dry_run=` pre-flight), versioning, import/export (with `?on_conflict=` upsert), validate |
+| **Connectors** | Create, read, update, delete, import/export, validate, connectivity test, circuit breaker inspection/reset |
 | **Engine** | Status, hot-reload |
+| **Packages** | Package-version receipts: list, get, put — the applied-version immutability gate promotion tooling builds on |
 | **Audit logs** | List with filtering by action, resource type, resource ID, principal, and time range |
 | **Backup** | Create and list SQLite backups (no restore endpoint — see below) |
 

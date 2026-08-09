@@ -251,6 +251,21 @@ pub fn parse_sort_order(sort_order: Option<&str>) -> sea_query::Order {
     }
 }
 
+/// The `LIKE` pattern for "this JSON array of strings contains `tag`" (K6).
+///
+/// One implementation for the three tagged entities (workflows, channels,
+/// connectors): the stored form is `serde_json::to_string(&Vec<String>)`, so
+/// a member is always `"tag"` with the quotes, and matching `%"tag"%` cannot
+/// hit a substring of a longer tag. LIKE wildcards in the tag itself are
+/// escaped.
+pub fn tag_like_pattern(tag: &str) -> String {
+    let escaped = tag
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%\"{escaped}\"%")
+}
+
 /// Run an UPDATE that must yield one scalar: `RETURNING` on Postgres/SQLite;
 /// on MySQL (no `UPDATE ... RETURNING`) execute the update and read the value
 /// back inside the same transaction — the row lock makes the read-back ours.

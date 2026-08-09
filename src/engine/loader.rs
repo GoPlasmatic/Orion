@@ -358,6 +358,7 @@ mod tests {
 
     fn make_channel(name: &str) -> Channel {
         Channel {
+            tags_json: "[]".to_string(),
             channel_id: name.to_string(),
             name: name.to_string(),
             version: 1,

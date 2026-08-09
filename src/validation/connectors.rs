@@ -318,10 +318,12 @@ mod tests {
     #[test]
     fn test_validate_create_connector_with_id() {
         let req = CreateConnectorRequest {
+            tags: vec![],
             id: Some("my-conn-1".to_string()),
             name: "My Connector".to_string(),
             connector_type: ConnectorType::Http,
             config: json!({"url": "https://example.com"}),
+            enabled: None,
         };
         assert!(validate_create_connector(&req).is_ok());
     }
@@ -329,10 +331,12 @@ mod tests {
     #[test]
     fn test_validate_create_connector_invalid_id() {
         let req = CreateConnectorRequest {
+            tags: vec![],
             id: Some("bad id!".to_string()),
             name: "My Connector".to_string(),
             connector_type: ConnectorType::Http,
             config: json!({"url": "https://example.com"}),
+            enabled: None,
         };
         assert!(validate_create_connector(&req).is_err());
     }
@@ -340,10 +344,12 @@ mod tests {
     #[test]
     fn test_validate_create_connector_empty_name() {
         let req = CreateConnectorRequest {
+            tags: vec![],
             id: None,
             name: "".to_string(),
             connector_type: ConnectorType::Http,
             config: json!({"url": "https://example.com"}),
+            enabled: None,
         };
         assert!(validate_create_connector(&req).is_err());
     }
@@ -351,6 +357,7 @@ mod tests {
     #[test]
     fn test_validate_update_connector_with_name() {
         let req = UpdateConnectorRequest {
+            tags: None,
             name: Some("Updated Name".to_string()),
             connector_type: None,
             config: None,
@@ -362,6 +369,7 @@ mod tests {
     #[test]
     fn test_validate_update_connector_invalid_name() {
         let req = UpdateConnectorRequest {
+            tags: None,
             name: Some("   ".to_string()),
             connector_type: None,
             config: None,
@@ -373,6 +381,7 @@ mod tests {
     #[test]
     fn test_validate_update_connector_type_only() {
         let req = UpdateConnectorRequest {
+            tags: None,
             name: None,
             connector_type: Some(ConnectorType::Http),
             config: None,
@@ -384,6 +393,7 @@ mod tests {
     #[test]
     fn test_validate_update_connector_type_and_config() {
         let req = UpdateConnectorRequest {
+            tags: None,
             name: None,
             connector_type: Some(ConnectorType::Http),
             config: Some(json!({"url": "https://example.com"})),
@@ -400,6 +410,7 @@ mod tests {
     #[test]
     fn test_validate_update_connector_defers_config_to_the_handler() {
         let req = UpdateConnectorRequest {
+            tags: None,
             name: None,
             connector_type: Some(ConnectorType::Http),
             config: Some(json!("not an object")),
@@ -416,6 +427,7 @@ mod tests {
     #[test]
     fn test_validate_update_connector_no_fields() {
         let req = UpdateConnectorRequest {
+            tags: None,
             name: None,
             connector_type: None,
             config: None,

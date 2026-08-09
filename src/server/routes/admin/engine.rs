@@ -63,7 +63,15 @@ pub(crate) async fn engine_reload(
     State(state): State<AppState>,
     principal: Option<Extension<AdminPrincipal>>,
 ) -> Result<Json<Value>, OrionError> {
-    audit_and_reload(&state, &principal, "reload", "engine", "manual").await?;
+    audit_and_reload(
+        &state,
+        &principal,
+        "reload",
+        "engine",
+        "manual",
+        super::ReloadMode::Now,
+    )
+    .await?;
 
     let engine = state.engine.load();
     let workflows_count = engine.workflows().len();

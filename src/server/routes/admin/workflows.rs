@@ -139,7 +139,15 @@ pub(crate) async fn delete_workflow(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.repos.workflows.delete(&id).await?;
-    audit_and_reload(&state, &principal, "delete", "workflow", &id).await?;
+    audit_and_reload(
+        &state,
+        &principal,
+        "delete",
+        "workflow",
+        &id,
+        super::ReloadMode::Now,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -151,10 +159,17 @@ pub(crate) async fn delete_workflow(
     patch,
     path = "/api/v1/admin/workflows/{id}/status",
     tag = "Workflows",
-    params(("id" = String, Path, description = "Workflow ID")),
+    params(("id" = String, Path, description = "Workflow ID"), super::StatusChangeQuery),
     request_body = StatusChangeRequest,
     responses(
-        (status = 200, description = "Status updated", body = DataEnvelope<WorkflowResponse>),
+        (status = 200, description = "Status updated. With `?dry_run=true` nothing is \
+            written and the body is instead the `/validate` envelope \
+            (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate \
+            the real transition would run: draft existence, connector existence and \
+            type match, MongoDB `database` presence, and rollout arithmetic (K3). \
+            With `?reload=defer` the row commits but the engine (and every cluster \
+            peer) keeps serving the previous active set until \
+            `POST /engine/reload` (K4).", body = DataEnvelope<WorkflowResponse>),
         (status = 400, description = "Invalid status transition"),
         (status = 404, description = "Workflow not found"),
     )
@@ -162,11 +177,16 @@ pub(crate) async fn delete_workflow(
 #[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn change_workflow_status(
     State(state): State<AppState>,
+    OrionQuery(query): OrionQuery<super::StatusChangeQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
     OrionJson(req): OrionJson<StatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let action = StatusAction::parse(req.status)?;
+    if query.dry_run {
+        let envelope = dry_run_status_change(&state, &id, &action, &req).await?;
+        return Ok(Json(serde_json::to_value(envelope)?));
+    }
     let workflow = match action {
         StatusAction::Activate => {
             // R5: refuse to activate a workflow that cannot run. Connector
@@ -187,9 +207,102 @@ pub(crate) async fn change_workflow_status(
         &format!("status_{}", req.status),
         "workflow",
         &id,
+        query.reload,
     )
     .await?;
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
+}
+
+/// K3: every gate the real transition runs, as findings instead of failures.
+///
+/// The rule that keeps this honest is the `/validate` rule (R20) one endpoint
+/// over: the checks are the *same functions* the real path calls
+/// ([`ensure_workflow_connectors_exist`], the repository's rollout bounds),
+/// so `valid: true` cannot come to mean something weaker than "the
+/// un-dry-run request would succeed". Findings that the real path reports as
+/// a 4xx arrive here as `errors` entries in a 200 — a plan wants the report,
+/// not the failure — including "not found", so a CLI can pre-flight a whole
+/// package without tripping over the first missing entity.
+async fn dry_run_status_change(
+    state: &AppState,
+    id: &str,
+    action: &StatusAction,
+    req: &StatusChangeRequest,
+) -> Result<ValidationEnvelope, OrionError> {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+
+    match action {
+        StatusAction::Activate => {
+            let rollout_pct = req.rollout_percentage.unwrap_or(100);
+            if !(0..=100).contains(&rollout_pct) {
+                errors.push(ValidationIssue {
+                    field: "rollout_percentage".to_string(),
+                    message: "rollout_percentage must be between 0 and 100".to_string(),
+                });
+            }
+            match state.repos.workflows.get_by_id(id).await {
+                Ok(latest) => {
+                    if latest.status != crate::storage::models::EntityStatus::Draft.as_str() {
+                        errors.push(ValidationIssue {
+                            field: "status".to_string(),
+                            message: format!(
+                                "No draft version found for workflow '{id}' — create a new \
+                                 version first"
+                            ),
+                        });
+                    } else if let Err(e) = ensure_workflow_connectors_exist(state, &latest).await {
+                        errors.extend(issues_from_error(e));
+                    }
+                    // A partial rollout with nothing to share traffic with is
+                    // accepted by the real path and quarantined at engine
+                    // load — say so here, where it is still cheap to fix.
+                    if (0..100).contains(&rollout_pct) {
+                        let has_active = state
+                            .repos
+                            .workflows
+                            .list_active()
+                            .await?
+                            .iter()
+                            .any(|w| w.workflow_id == id);
+                        if !has_active {
+                            warnings.push(ValidationIssue {
+                                field: "rollout_percentage".to_string(),
+                                message: format!(
+                                    "partial rollout of {rollout_pct}% with no currently \
+                                     active version: the active set would sum to \
+                                     {rollout_pct}%, and the serving channel is quarantined \
+                                     until rollout percentages sum to 100"
+                                ),
+                            });
+                        }
+                    }
+                }
+                Err(OrionError::NotFound(_)) => errors.push(ValidationIssue {
+                    field: "(root)".to_string(),
+                    message: format!("Workflow '{id}' not found"),
+                }),
+                Err(e) => return Err(e),
+            }
+        }
+        StatusAction::Archive => {
+            let has_active = state
+                .repos
+                .workflows
+                .list_active()
+                .await?
+                .iter()
+                .any(|w| w.workflow_id == id);
+            if !has_active {
+                errors.push(ValidationIssue {
+                    field: "status".to_string(),
+                    message: format!("No active version found for workflow '{id}'"),
+                });
+            }
+        }
+    }
+
+    Ok(ValidationEnvelope::new(errors, warnings))
 }
 
 /// One task's connector reference, as authored.
@@ -329,16 +442,19 @@ async fn ensure_workflow_connectors_exist(
     patch,
     path = "/api/v1/admin/workflows/{id}/rollout",
     tag = "Workflows",
-    params(("id" = String, Path, description = "Workflow ID")),
+    params(("id" = String, Path, description = "Workflow ID"), super::ReloadQuery),
     request_body = RolloutUpdateRequest,
     responses(
-        (status = 200, description = "Rollout percentage updated", body = DataEnvelope<WorkflowResponse>),
+        (status = 200, description = "Rollout percentage updated. With `?reload=defer` \
+            the row commits but the engine keeps serving the previous rollout until \
+            `POST /engine/reload` (K4).", body = DataEnvelope<WorkflowResponse>),
         (status = 400, description = "Invalid rollout configuration"),
     )
 )]
 #[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn update_rollout(
     State(state): State<AppState>,
+    OrionQuery(query): OrionQuery<super::ReloadQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
     OrionJson(req): OrionJson<RolloutUpdateRequest>,
@@ -348,7 +464,15 @@ pub(crate) async fn update_rollout(
         .workflows
         .update_rollout(&id, req.rollout_percentage)
         .await?;
-    audit_and_reload(&state, &principal, "update_rollout", "workflow", &id).await?;
+    audit_and_reload(
+        &state,
+        &principal,
+        "update_rollout",
+        "workflow",
+        &id,
+        query.reload,
+    )
+    .await?;
     Ok(data_response(WorkflowResponse::try_from(&workflow)?))
 }
 
@@ -541,7 +665,11 @@ pub(crate) async fn test_workflow(
         (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
             Each item is handled independently: a malformed or conflicting item becomes one entry in \
             `errors` and the rest of the batch still applies. Dry-run additionally probes for name \
-            conflicts against stored rows and duplicates within the batch, without writing.", body = DataEnvelope<ImportResult>),
+            conflicts against stored rows and duplicates within the batch, without writing. \
+            `?on_conflict=new_version` upserts instead of refusing an existing id (K2): an existing \
+            draft is replaced, an active workflow whose content differs gets a new draft version, \
+            and identical content is reported `unchanged` — re-importing the same artifact is a \
+            no-op. Per-item outcomes are in `results`.", body = DataEnvelope<ImportResult>),
     )
 )]
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
@@ -558,37 +686,129 @@ pub(crate) async fn import_workflows(
     super::check_import_batch_size(items.len())?;
     let repo = state.repos.workflows.clone();
     let probe = state.repos.workflows.clone();
-    let (imported, failed, errors) =
-        super::import_items::<CreateWorkflowRequest, _, _, _, _, _, _>(
-            items,
-            query.dry_run,
-            super::ImportOps {
-                validate: crate::validation::validate_create_workflow,
-                conflict_key: |w: &CreateWorkflowRequest| w.workflow_id.clone(),
-                exists: |id: String| {
-                    let repo = probe.clone();
-                    async move { exists_or_err(repo.get_by_id(&id).await) }
-                },
-                create: |w: CreateWorkflowRequest| {
-                    let repo = repo.clone();
-                    async move { repo.create(&w).await.map(|_| ()) }
-                },
+    let upsert_repo = state.repos.workflows.clone();
+    let outcome = super::import_items::<CreateWorkflowRequest, _, _, _, _, _, _, _, _>(
+        items,
+        query.dry_run,
+        query.on_conflict,
+        super::ImportOps {
+            validate: crate::validation::validate_create_workflow,
+            conflict_key: |w: &CreateWorkflowRequest| w.workflow_id.clone(),
+            exists: |id: String| {
+                let repo = probe.clone();
+                async move { exists_or_err(repo.get_by_id(&id).await) }
             },
-        )
-        .await;
+            create: |w: CreateWorkflowRequest| {
+                let repo = repo.clone();
+                async move { repo.create(&w).await.map(|_| ()) }
+            },
+            upsert: |w: CreateWorkflowRequest, dry_run: bool| {
+                let repo = upsert_repo.clone();
+                async move { upsert_workflow(repo.as_ref(), w, dry_run).await }
+            },
+        },
+    )
+    .await;
     if query.dry_run {
-        return Ok(super::dry_run_response(imported, failed, errors));
+        return Ok(super::import_response(true, outcome));
     }
 
+    // K5: one row per written entity — the trail used to record only
+    // "{n} imported", which could not answer *what* an import created — plus
+    // the summary row that ties the batch together.
+    for (id, _action) in outcome.written() {
+        audit_log_draft_only(&state.audit_queue, &principal, "import", "workflow", id);
+    }
     audit_log_draft_only(
         &state.audit_queue,
         &principal,
         "import",
         "workflow",
-        &format!("{imported} imported"),
+        &format!("{} imported", outcome.imported),
     );
 
-    Ok(super::import_response(imported, failed, errors))
+    Ok(super::import_response(false, outcome))
+}
+
+/// K2: one workflow item under `on_conflict=new_version`.
+///
+/// Content comparison excludes the DB-owned fields (`version`, `status`,
+/// timestamps, `rollout_percentage`), so a re-import of an export is
+/// `unchanged` even though the export carries them. An **archived** workflow
+/// with identical content still gets a new draft version: the point of
+/// re-importing an archived entity is to activate it again, and activation
+/// needs a draft.
+async fn upsert_workflow(
+    repo: &dyn crate::storage::repositories::workflows::WorkflowRepository,
+    req: CreateWorkflowRequest,
+    dry_run: bool,
+) -> Result<super::ImportAction, OrionError> {
+    use super::ImportAction;
+    use crate::storage::models::EntityStatus;
+
+    let Some(id) = req.workflow_id.clone() else {
+        // No id → the store generates one; nothing to conflict with.
+        if !dry_run {
+            repo.create(&req).await?;
+        }
+        return Ok(ImportAction::Created);
+    };
+    let latest = match repo.get_by_id(&id).await {
+        Ok(latest) => latest,
+        Err(OrionError::NotFound(_)) => {
+            if !dry_run {
+                repo.create(&req).await?;
+            }
+            return Ok(ImportAction::Created);
+        }
+        Err(e) => return Err(e),
+    };
+
+    let identical = workflow_row_content(&latest)? == workflow_req_content(&req);
+    if latest.status == EntityStatus::Draft.as_str() {
+        if identical {
+            return Ok(ImportAction::Unchanged);
+        }
+        if !dry_run {
+            repo.replace_draft(&id, &req).await?;
+        }
+        Ok(ImportAction::UpdatedDraft)
+    } else if identical && latest.status == EntityStatus::Active.as_str() {
+        Ok(ImportAction::Unchanged)
+    } else {
+        if !dry_run {
+            repo.create_new_version(&id).await?;
+            repo.replace_draft(&id, &req).await?;
+        }
+        Ok(ImportAction::NewVersion)
+    }
+}
+
+/// A workflow row's importable content, in the create-request's field
+/// vocabulary — the shape [`workflow_req_content`] mirrors, so equality means
+/// "importing this item would store byte-for-byte what is already stored".
+fn workflow_row_content(w: &crate::storage::models::Workflow) -> Result<Value, OrionError> {
+    Ok(json!({
+        "name": w.name,
+        "description": w.description,
+        "priority": w.priority,
+        "condition": serde_json::from_str::<Value>(&w.condition_json)?,
+        "tasks": serde_json::from_str::<Value>(&w.tasks_json)?,
+        "tags": serde_json::from_str::<Value>(&w.tags_json)?,
+        "continue_on_error": w.continue_on_error,
+    }))
+}
+
+fn workflow_req_content(r: &CreateWorkflowRequest) -> Value {
+    json!({
+        "name": r.name,
+        "description": r.description,
+        "priority": r.priority,
+        "condition": r.condition,
+        "tasks": r.tasks,
+        "tags": r.tags,
+        "continue_on_error": r.continue_on_error,
+    })
 }
 
 /// Turn a `get_by_id` result into an existence answer.

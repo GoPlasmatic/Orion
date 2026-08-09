@@ -146,7 +146,15 @@ pub(crate) async fn delete_channel(
     Path(id): Path<String>,
 ) -> Result<StatusCode, OrionError> {
     state.repos.channels.delete(&id).await?;
-    audit_and_reload(&state, &principal, "delete", "channel", &id).await?;
+    audit_and_reload(
+        &state,
+        &principal,
+        "delete",
+        "channel",
+        &id,
+        super::ReloadMode::Now,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -158,22 +166,34 @@ pub(crate) async fn delete_channel(
     patch,
     path = "/api/v1/admin/channels/{id}/status",
     tag = "Channels",
-    params(("id" = String, Path, description = "Channel ID")),
+    params(("id" = String, Path, description = "Channel ID"), super::StatusChangeQuery),
     request_body = ChannelStatusChangeRequest,
     responses(
-        (status = 200, description = "Status updated", body = DataEnvelope<ChannelResponse>),
-        (status = 400, description = "Invalid status transition"),
+        (status = 200, description = "Status updated. With `?dry_run=true` nothing is \
+            written and the body is instead the `/validate` envelope \
+            (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate \
+            the real transition would run: draft existence, route collisions against \
+            active channels, and the workflow-active gate (K3). With `?reload=defer` \
+            the row commits but the engine (and every cluster peer) keeps serving the \
+            previous active set until `POST /engine/reload` (K4).", body = DataEnvelope<ChannelResponse>),
+        (status = 400, description = "Invalid status transition, route collision, or \
+            the channel's workflow is missing or not active (K8)"),
         (status = 404, description = "Channel not found"),
     )
 )]
 #[tracing::instrument(skip(state, req, principal))]
 pub(crate) async fn change_channel_status(
     State(state): State<AppState>,
+    OrionQuery(query): OrionQuery<super::StatusChangeQuery>,
     principal: Option<Extension<AdminPrincipal>>,
     Path(id): Path<String>,
     OrionJson(req): OrionJson<ChannelStatusChangeRequest>,
 ) -> Result<Json<Value>, OrionError> {
     let action = StatusAction::parse(req.status)?;
+    if query.dry_run {
+        let envelope = dry_run_status_change(&state, &id, &action).await?;
+        return Ok(Json(serde_json::to_value(envelope)?));
+    }
     let channel = match action {
         StatusAction::Activate => {
             // R7: refuse a channel whose route another active channel already
@@ -183,6 +203,16 @@ pub(crate) async fn change_channel_status(
             // winner's workflow, which is a wrong answer rather than an error.
             let draft = state.repos.channels.get_by_id(&id).await?;
             ensure_route_is_unclaimed(&state, &draft).await?;
+            // K8: and refuse a channel whose workflow cannot serve. This gate
+            // was documented (and relied on by the promotion flow's ordering)
+            // before it existed in code — the failure used to surface later,
+            // as a reload-time quarantine with no error to the caller.
+            ensure_channel_workflow_is_active(&state, &draft).await?;
+            // K7: and a name another *active* channel holds. Create/update
+            // refuse the collision at write time; this catches rows written
+            // before that gate existed, at the moment the collision would
+            // start losing requests.
+            ensure_name_is_active_unclaimed(&state, &draft).await?;
             state.repos.channels.activate(&id).await?
         }
         StatusAction::Archive => state.repos.channels.archive(&id).await?,
@@ -193,9 +223,137 @@ pub(crate) async fn change_channel_status(
         &format!("status_{}", req.status),
         "channel",
         &id,
+        query.reload,
     )
     .await?;
     Ok(data_response(ChannelResponse::try_from(&channel)?))
+}
+
+/// K8: a channel activates only when the workflow it names has an active
+/// version — the condition `engine/loader.rs` otherwise enforces later, as a
+/// quarantine the activating caller never sees.
+///
+/// The channel-with-no-`workflow_id` case is refused too: the loader
+/// quarantines it identically, so activating it can never serve a request.
+async fn ensure_channel_workflow_is_active(
+    state: &AppState,
+    draft: &crate::storage::models::Channel,
+) -> Result<(), OrionError> {
+    let Some(workflow_id) = draft
+        .workflow_id
+        .as_deref()
+        .filter(|w| !w.trim().is_empty())
+    else {
+        return Err(OrionError::validation(format!(
+            "Cannot activate channel '{}': it names no workflow_id, so it would be \
+             quarantined at load and never serve. Set workflow_id first.",
+            draft.name
+        )));
+    };
+    let has_active = state
+        .repos
+        .workflows
+        .list_active()
+        .await?
+        .iter()
+        .any(|w| w.workflow_id == workflow_id);
+    if !has_active {
+        let detail = match state.repos.workflows.get_by_id(workflow_id).await {
+            Ok(_) => "has no active version",
+            Err(OrionError::NotFound(_)) => "does not exist",
+            Err(e) => return Err(e),
+        };
+        return Err(OrionError::validation(format!(
+            "Cannot activate channel '{}': workflow '{workflow_id}' {detail} — \
+             activate the workflow first",
+            draft.name
+        )));
+    }
+    Ok(())
+}
+
+/// K7: the activation half of the unique-name rule — a name held by another
+/// **active** channel loses the registry slot to the incumbent, so the
+/// activation is refused. The write-time gate (`ensure_name_unclaimed` in the
+/// repository) keeps new collisions out; this one catches rows that predate
+/// it.
+async fn ensure_name_is_active_unclaimed(
+    state: &AppState,
+    draft: &crate::storage::models::Channel,
+) -> Result<(), OrionError> {
+    for other in state.repos.channels.list_active().await? {
+        if other.channel_id != draft.channel_id && other.name == draft.name {
+            return Err(OrionError::Conflict(format!(
+                "Cannot activate channel '{}': active channel id '{}' already uses \
+                 that name, and the data plane addresses channels by name. Rename one \
+                 of the two first.",
+                draft.name, other.channel_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// K3: every gate the real transition runs, as findings instead of failures —
+/// the same functions the un-dry-run path calls, so `valid: true` cannot
+/// drift from "the real request would succeed". "Not found" arrives as an
+/// `errors` entry in a 200, so a CLI can pre-flight a whole package without
+/// tripping over the first missing entity.
+async fn dry_run_status_change(
+    state: &AppState,
+    id: &str,
+    action: &StatusAction,
+) -> Result<super::ValidationEnvelope, OrionError> {
+    let mut errors = Vec::new();
+    let warnings = Vec::new();
+
+    match action {
+        StatusAction::Activate => match state.repos.channels.get_by_id(id).await {
+            Ok(latest) => {
+                if latest.status != crate::storage::models::EntityStatus::Draft.as_str() {
+                    errors.push(super::ValidationIssue {
+                        field: "status".to_string(),
+                        message: format!(
+                            "No draft version found for channel '{id}' — create a new \
+                             version first"
+                        ),
+                    });
+                } else {
+                    if let Err(e) = ensure_route_is_unclaimed(state, &latest).await {
+                        errors.extend(super::issues_from_error(e));
+                    }
+                    if let Err(e) = ensure_channel_workflow_is_active(state, &latest).await {
+                        errors.extend(super::issues_from_error(e));
+                    }
+                    if let Err(e) = ensure_name_is_active_unclaimed(state, &latest).await {
+                        errors.extend(super::issues_from_error(e));
+                    }
+                }
+            }
+            Err(OrionError::NotFound(_)) => errors.push(super::ValidationIssue {
+                field: "(root)".to_string(),
+                message: format!("Channel '{id}' not found"),
+            }),
+            Err(e) => return Err(e),
+        },
+        StatusAction::Archive => {
+            let has_active = state
+                .repos
+                .channels
+                .list_active()
+                .await?
+                .iter()
+                .any(|c| c.channel_id == id);
+            if !has_active {
+                errors.push(super::ValidationIssue {
+                    field: "status".to_string(),
+                    message: format!("No active version found for channel '{id}'"),
+                });
+            }
+        }
+    }
+
+    Ok(super::ValidationEnvelope::new(errors, warnings))
 }
 
 /// R7: refuse to activate a channel whose (method × path) another **active**
@@ -321,7 +479,11 @@ pub(crate) async fn create_new_channel_version(
         (status = 200, description = "Import results with counts (or would-be results when ?dry_run=true). \
             Each item is handled independently: a malformed or conflicting item becomes one entry in \
             `errors` and the rest of the batch still applies. Dry-run additionally probes for id \
-            conflicts against stored rows and duplicates within the batch, without writing.", body = DataEnvelope<ImportResult>),
+            conflicts against stored rows and duplicates within the batch, without writing. \
+            `?on_conflict=new_version` upserts instead of refusing an existing id (K2): an existing \
+            draft is replaced, an active channel whose content differs gets a new draft version, \
+            and identical content is reported `unchanged` — re-importing the same artifact is a \
+            no-op. Per-item outcomes are in `results`.", body = DataEnvelope<ImportResult>),
     )
 )]
 #[tracing::instrument(skip(state, items, principal), fields(count = items.len()))]
@@ -336,9 +498,11 @@ pub(crate) async fn import_channels(
     super::check_import_batch_size(items.len())?;
     let repo = state.repos.channels.clone();
     let probe = state.repos.channels.clone();
-    let (imported, failed, errors) = super::import_items::<CreateChannelRequest, _, _, _, _, _, _>(
+    let upsert_repo = state.repos.channels.clone();
+    let outcome = super::import_items::<CreateChannelRequest, _, _, _, _, _, _, _, _>(
         items,
         query.dry_run,
+        query.on_conflict,
         super::ImportOps {
             validate: crate::validation::validate_create_channel,
             conflict_key: |c: &CreateChannelRequest| c.channel_id.clone(),
@@ -350,20 +514,121 @@ pub(crate) async fn import_channels(
                 let repo = repo.clone();
                 async move { repo.create(&ch).await.map(|_| ()) }
             },
+            upsert: |ch: CreateChannelRequest, dry_run: bool| {
+                let repo = upsert_repo.clone();
+                async move { upsert_channel(repo.as_ref(), ch, dry_run).await }
+            },
         },
     )
     .await;
     if query.dry_run {
-        return Ok(super::dry_run_response(imported, failed, errors));
+        return Ok(super::import_response(true, outcome));
+    }
+    // K5: one row per written entity, plus the batch summary row.
+    for (id, _action) in outcome.written() {
+        audit_log_draft_only(&state.audit_queue, &principal, "import", "channel", id);
     }
     audit_log_draft_only(
         &state.audit_queue,
         &principal,
         "import",
         "channel",
-        &format!("{imported} imported"),
+        &format!("{} imported", outcome.imported),
     );
-    Ok(super::import_response(imported, failed, errors))
+    Ok(super::import_response(false, outcome))
+}
+
+/// K2: one channel item under `on_conflict=new_version` — the same shape as
+/// `upsert_workflow`, over the channel repository's verbs. An **archived**
+/// channel with identical content still gets a new draft version, because
+/// re-activating it needs a draft.
+async fn upsert_channel(
+    repo: &dyn crate::storage::repositories::channels::ChannelRepository,
+    req: CreateChannelRequest,
+    dry_run: bool,
+) -> Result<super::ImportAction, OrionError> {
+    use super::ImportAction;
+    use crate::storage::models::EntityStatus;
+
+    let Some(id) = req.channel_id.clone() else {
+        if !dry_run {
+            repo.create(&req).await?;
+        }
+        return Ok(ImportAction::Created);
+    };
+    let latest = match repo.get_by_id(&id).await {
+        Ok(latest) => latest,
+        Err(OrionError::NotFound(_)) => {
+            if !dry_run {
+                repo.create(&req).await?;
+            }
+            return Ok(ImportAction::Created);
+        }
+        Err(e) => return Err(e),
+    };
+
+    let identical = channel_row_content(&latest)? == channel_req_content(&req);
+    if latest.status == EntityStatus::Draft.as_str() {
+        if identical {
+            return Ok(ImportAction::Unchanged);
+        }
+        if !dry_run {
+            repo.replace_draft(&id, &req).await?;
+        }
+        Ok(ImportAction::UpdatedDraft)
+    } else if identical && latest.status == EntityStatus::Active.as_str() {
+        Ok(ImportAction::Unchanged)
+    } else {
+        if !dry_run {
+            repo.create_new_version(&id).await?;
+            repo.replace_draft(&id, &req).await?;
+        }
+        Ok(ImportAction::NewVersion)
+    }
+}
+
+/// A channel row's importable content in the create-request's vocabulary —
+/// the DB-owned fields (`version`, `status`, timestamps) excluded, mirroring
+/// [`channel_req_content`].
+fn channel_row_content(c: &crate::storage::models::Channel) -> Result<Value, OrionError> {
+    let methods = c
+        .methods_json
+        .as_deref()
+        .map(serde_json::from_str::<Value>)
+        .transpose()?;
+    Ok(serde_json::json!({
+        "name": c.name,
+        "description": c.description,
+        "channel_type": c.channel_type,
+        "protocol": c.protocol,
+        "methods": methods,
+        "route_pattern": c.route_pattern,
+        "topic": c.topic,
+        "consumer_group": c.consumer_group,
+        "transport_config": serde_json::from_str::<Value>(&c.transport_config_json)?,
+        "workflow_id": c.workflow_id,
+        "config": serde_json::from_str::<Value>(&c.config_json)?,
+        "priority": c.priority,
+        "tags": serde_json::from_str::<Value>(&c.tags_json)?,
+    }))
+}
+
+fn channel_req_content(r: &CreateChannelRequest) -> Value {
+    serde_json::json!({
+        "name": r.name,
+        "description": r.description,
+        "channel_type": r.channel_type.as_str(),
+        "protocol": r.protocol.as_str(),
+        "methods": r.methods,
+        "route_pattern": r.route_pattern,
+        "topic": r.topic,
+        "consumer_group": r.consumer_group,
+        "transport_config": r.transport_config,
+        "workflow_id": r.workflow_id,
+        "config": r.config,
+        "priority": r.priority,
+        "tags": r.tags,
+    })
 }
 
 // ============================================================
@@ -390,6 +655,7 @@ pub(crate) async fn export_channels(
             status: filter.status.clone(),
             channel_type: filter.channel_type.clone(),
             protocol: filter.protocol.clone(),
+            tag: filter.tag.clone(),
             limit: Some(limit),
             offset: Some(offset),
             ..Default::default()

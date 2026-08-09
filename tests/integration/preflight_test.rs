@@ -54,6 +54,7 @@ async fn set_workflow_tasks(pool: &DbPool, workflow_id: &str, tasks_json: &str) 
 
 async fn create_channel(repo: &SqlChannelRepository, name: &str) -> String {
     repo.create(&CreateChannelRequest {
+        tags: vec![],
         channel_id: None,
         name: name.to_string(),
         description: None,
@@ -256,4 +257,31 @@ async fn every_finding_is_reported_in_one_pass() {
     assert!(findings[0].entity.starts_with("channel "), "{findings:?}");
     assert!(findings[1].entity.starts_with("channel "), "{findings:?}");
     assert!(findings[2].entity.starts_with("workflow "), "{findings:?}");
+}
+
+/// K7: two channel_ids sharing one name — writable only before 1.0's gates —
+/// surface as a duplicate-name finding.
+#[tokio::test]
+async fn duplicate_channel_names_are_found() {
+    let pool = pool().await;
+    let channels = SqlChannelRepository::new(pool.clone());
+    let workflows = SqlWorkflowRepository::new(pool.clone());
+
+    let _keeper = create_channel(&channels, "orders").await;
+    let renamed = create_channel(&channels, "orders-temp").await;
+    // The create/update paths refuse the collision now, so fabricate the
+    // pre-1.0 state the way 0.3.0 left it: rename the row directly.
+    let (sql, values) = build_sqlx(
+        Query::update()
+            .table(Channels::Table)
+            .value(Channels::Name, "orders")
+            .and_where(Expr::col(Channels::ChannelId).eq(renamed.as_str())),
+    );
+    pool.execute_query(&sql, values).await.expect("rename");
+
+    let findings = preflight::scan(&channels, &workflows).await.expect("scan");
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].check, "channel-names");
+    assert!(findings[0].entity.contains("orders"), "{findings:?}");
+    assert!(findings[0].problem.contains("2 channels"), "{findings:?}");
 }

@@ -59,6 +59,10 @@ pub struct CreateChannelRequest {
     pub config: Value,
     #[serde(default)]
     pub priority: i64,
+    /// Selection labels (K6), same contract as workflow tags — filter with
+    /// `?tag=` on list and export.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 fn default_empty_object() -> Value {
@@ -77,6 +81,7 @@ pub struct UpdateChannelRequest {
     pub workflow_id: Option<String>,
     pub config: Option<Value>,
     pub priority: Option<i64>,
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -90,6 +95,8 @@ pub struct ChannelFilter {
     pub status: Option<String>,
     pub channel_type: Option<String>,
     pub protocol: Option<String>,
+    /// Only channels carrying this tag (K6).
+    pub tag: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     /// Column to sort by: priority (default), name, status, channel_type, protocol, created_at, updated_at.
@@ -116,6 +123,17 @@ pub trait ChannelRepository: Send + Sync {
         &self,
         channel_id: &str,
         req: &UpdateChannelRequest,
+    ) -> Result<Channel, OrionError>;
+    /// Replace the draft's entire content with a create-shaped request (K2).
+    ///
+    /// The upsert import needs full-replacement semantics: `update_draft`
+    /// merges `Option` fields (and cannot clear one, or change
+    /// `channel_type`/`protocol` at all), so an imported draft would never
+    /// converge on the artifact's content. Errors if no draft exists.
+    async fn replace_draft(
+        &self,
+        channel_id: &str,
+        req: &CreateChannelRequest,
     ) -> Result<Channel, OrionError>;
     /// Delete all versions of a channel.
     async fn delete(&self, channel_id: &str) -> Result<(), OrionError>;
@@ -145,6 +163,43 @@ impl SqlChannelRepository {
     pub fn new(pool: DbPool) -> Self {
         Self { pool }
     }
+
+    /// K7: refuse a channel name another `channel_id` already holds.
+    ///
+    /// The data plane and `channel_call` address channels by **name**, and the
+    /// registry keeps one entry per name — a second channel sharing one
+    /// silently races for the slot and loses requests to the winner. Names
+    /// are compared against the *current* version of every other channel (the
+    /// row that serves now or would on next activation).
+    ///
+    /// Enforced here rather than as DDL because the invariant is per-id, not
+    /// per-row — every version of one channel legitimately repeats the name —
+    /// and MySQL cannot express the partial unique index that would encode
+    /// that. Check-then-write, like the route-collision gate: a racing pair
+    /// can slip through, and the activation gate re-checks against the active
+    /// set where it matters.
+    async fn ensure_name_unclaimed(&self, name: &str, own_id: &str) -> Result<(), OrionError> {
+        let (sql, values) = build_sqlx(
+            Query::select()
+                .column(Channels::ChannelId)
+                .from(CurrentChannels::Table)
+                .and_where(Expr::col(Channels::Name).eq(name))
+                .and_where(Expr::col(Channels::ChannelId).ne(own_id))
+                .limit(1),
+        );
+        if let Some((holder,)) = self
+            .pool
+            .fetch_optional_as::<(String,)>(&sql, values)
+            .await?
+        {
+            return Err(OrionError::Conflict(format!(
+                "Channel name '{name}' is already used by channel id '{holder}' — \
+                 channel names must be unique because the data plane and channel_call \
+                 address channels by name"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Fields needed to materialise one row of the `channels` table — used by
@@ -166,6 +221,7 @@ struct ChannelInsertRow<'a> {
     config_json: &'a str,
     status: &'a str,
     priority: i64,
+    tags_json: &'a str,
 }
 
 /// Build the INSERT statement for a channel row.
@@ -188,6 +244,7 @@ fn build_channel_insert(row: ChannelInsertRow<'_>) -> sea_query::InsertStatement
             Channels::ConfigJson,
             Channels::Status,
             Channels::Priority,
+            Channels::TagsJson,
         ])
         .values_panic([
             Expr::val(row.channel_id).into(),
@@ -205,6 +262,7 @@ fn build_channel_insert(row: ChannelInsertRow<'_>) -> sea_query::InsertStatement
             Expr::val(row.config_json).into(),
             Expr::val(row.status).into(),
             Expr::val(row.priority).into(),
+            Expr::val(row.tags_json).into(),
         ]);
     q
 }
@@ -220,6 +278,11 @@ fn build_condition(filter: &ChannelFilter) -> Condition {
     if let Some(ref protocol) = filter.protocol {
         cond = cond.add(Expr::col(Channels::Protocol).eq(protocol.as_str()));
     }
+    if let Some(ref tag) = filter.tag {
+        cond = cond.add(
+            Expr::col(Channels::TagsJson).like(super::helpers::tag_like_pattern(tag.as_str())),
+        );
+    }
     cond
 }
 
@@ -231,6 +294,7 @@ impl ChannelRepository for SqlChannelRepository {
                 .channel_id
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            self.ensure_name_unclaimed(&req.name, &channel_id).await?;
             let methods_json = req
                 .methods
                 .as_ref()
@@ -238,6 +302,7 @@ impl ChannelRepository for SqlChannelRepository {
                 .transpose()?;
             let transport_config_json = serde_json::to_string(&req.transport_config)?;
             let config_json = serde_json::to_string(&req.config)?;
+            let tags_json = serde_json::to_string(&req.tags)?;
 
             let methods_val = optional_string_value(methods_json.as_deref());
             let description_val = optional_string_value(req.description.as_deref());
@@ -262,6 +327,7 @@ impl ChannelRepository for SqlChannelRepository {
                 config_json: config_json.as_str(),
                 status: EntityStatus::Draft.as_str(),
                 priority: req.priority,
+                tags_json: tags_json.as_str(),
             });
 
             // D23: the INSERT and the row it wrote travel together.
@@ -336,6 +402,9 @@ impl ChannelRepository for SqlChannelRepository {
                 versioned::require_draft(&self.pool, &spec(), channel_id).await?;
 
             let name = req.name.as_deref().unwrap_or(&existing.name);
+            if name != existing.name {
+                self.ensure_name_unclaimed(name, channel_id).await?;
+            }
             let description = req
                 .description
                 .as_deref()
@@ -367,6 +436,10 @@ impl ChannelRepository for SqlChannelRepository {
                 Some(c) => serde_json::to_string(c)?,
                 None => existing.config_json.clone(),
             };
+            let tags_json = match &req.tags {
+                Some(t) => serde_json::to_string(t)?,
+                None => existing.tags_json.clone(),
+            };
 
             let description_val = optional_string_value(description);
             let methods_val = optional_string_value(methods_json.as_deref());
@@ -390,11 +463,84 @@ impl ChannelRepository for SqlChannelRepository {
                 .value(Channels::WorkflowId, workflow_id_val)
                 .value(Channels::ConfigJson, config_json.as_str())
                 .value(Channels::Priority, priority)
+                .value(Channels::TagsJson, tags_json.as_str())
                 .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
                 .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
                 .to_owned();
 
             // D23: the UPDATE and the row it wrote travel together.
+            versioned::write_returning_version(
+                &self.pool,
+                &spec(),
+                WriteStatement::Update(&mut update),
+                channel_id,
+                existing.version,
+                OrionError::Storage,
+            )
+            .await
+        })
+        .await
+    }
+
+    async fn replace_draft(
+        &self,
+        channel_id: &str,
+        req: &CreateChannelRequest,
+    ) -> Result<Channel, OrionError> {
+        crate::metrics::timed_db_op("channels.replace_draft", async {
+            let existing: Channel =
+                versioned::require_draft(&self.pool, &spec(), channel_id).await?;
+
+            if req.name != existing.name {
+                self.ensure_name_unclaimed(&req.name, channel_id).await?;
+            }
+
+            let methods_json = req
+                .methods
+                .as_ref()
+                .map(serde_json::to_string)
+                .transpose()?;
+            let transport_config_json = serde_json::to_string(&req.transport_config)?;
+            let config_json = serde_json::to_string(&req.config)?;
+            let tags_json = serde_json::to_string(&req.tags)?;
+
+            let mut update = Query::update()
+                .table(Channels::Table)
+                .value(Channels::Name, req.name.as_str())
+                .value(
+                    Channels::Description,
+                    optional_string_value(req.description.as_deref()),
+                )
+                .value(Channels::ChannelType, req.channel_type.as_str())
+                .value(Channels::Protocol, req.protocol.as_str())
+                .value(
+                    Channels::MethodsJson,
+                    optional_string_value(methods_json.as_deref()),
+                )
+                .value(
+                    Channels::RoutePattern,
+                    optional_string_value(req.route_pattern.as_deref()),
+                )
+                .value(Channels::Topic, optional_string_value(req.topic.as_deref()))
+                .value(
+                    Channels::ConsumerGroup,
+                    optional_string_value(req.consumer_group.as_deref()),
+                )
+                .value(
+                    Channels::TransportConfigJson,
+                    transport_config_json.as_str(),
+                )
+                .value(
+                    Channels::WorkflowId,
+                    optional_string_value(req.workflow_id.as_deref()),
+                )
+                .value(Channels::ConfigJson, config_json.as_str())
+                .value(Channels::Priority, req.priority)
+                .value(Channels::TagsJson, tags_json.as_str())
+                .and_where(Expr::col(Channels::ChannelId).eq(channel_id))
+                .and_where(Expr::col(Channels::Status).eq(EntityStatus::Draft.as_str()))
+                .to_owned();
+
             versioned::write_returning_version(
                 &self.pool,
                 &spec(),
@@ -498,6 +644,7 @@ impl ChannelRepository for SqlChannelRepository {
                 config_json: latest.config_json.as_str(),
                 status: EntityStatus::Draft.as_str(),
                 priority: latest.priority,
+                tags_json: latest.tags_json.as_str(),
             });
 
             // D23: the INSERT and the row it wrote travel together.

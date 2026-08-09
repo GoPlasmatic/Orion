@@ -17,6 +17,16 @@ pub struct CreateConnectorRequest {
     pub connector_type: crate::connector::ConnectorType,
     #[serde(default = "default_config")]
     pub config: serde_json::Value,
+    /// Whether the connector loads into the registry. Defaults to true (K1).
+    ///
+    /// `/export` has always emitted this field; until K1 the create path
+    /// silently dropped it, so a *disabled* connector promoted through
+    /// export → import came back **enabled** in the target environment.
+    pub enabled: Option<bool>,
+    /// Selection labels (K6), same contract as workflow tags — filter with
+    /// `?tag=` on list and export.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 fn default_config() -> serde_json::Value {
@@ -29,11 +39,14 @@ pub struct UpdateConnectorRequest {
     pub connector_type: Option<crate::connector::ConnectorType>,
     pub config: Option<serde_json::Value>,
     pub enabled: Option<bool>,
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize, serde::Serialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ConnectorFilter {
+    /// Only connectors carrying this tag (K6).
+    pub tag: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
     /// Column to sort by: name (default), connector_type, created_at, updated_at.
@@ -65,6 +78,12 @@ pub trait ConnectorRepository: Send + Sync {
     /// collides on. Dry-run used to skip the database entirely and therefore
     /// could not see the single most common real failure.
     async fn exists_by_name(&self, name: &str) -> Result<bool, OrionError>;
+    /// Fetch a connector by its unique `name` (K2).
+    ///
+    /// The upsert import matches on `name` — the column the unique constraint
+    /// lives on — and needs the stored row to compare content and address the
+    /// update, which takes the `id`.
+    async fn get_by_name(&self, name: &str) -> Result<Connector, OrionError>;
 }
 
 // -- SQL implementation --
@@ -141,6 +160,7 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let config_json = self.store_form(&serde_json::to_string(&req.config)?)?;
+            let tags_json = serde_json::to_string(&req.tags)?;
 
             let mut insert = Query::insert();
             insert
@@ -150,12 +170,16 @@ impl ConnectorRepository for SqlConnectorRepository {
                     Connectors::Name,
                     Connectors::ConnectorType,
                     Connectors::ConfigJson,
+                    Connectors::Enabled,
+                    Connectors::TagsJson,
                 ])
                 .values_panic([
                     id.as_str().into(),
                     req.name.as_str().into(),
                     req.connector_type.as_str().into(),
                     config_json.as_str().into(),
+                    req.enabled.unwrap_or(true).into(),
+                    tags_json.as_str().into(),
                 ]);
 
             // D23: the INSERT and the row it wrote travel together. The row
@@ -211,15 +235,21 @@ impl ConnectorRepository for SqlConnectorRepository {
                 Some("desc") => Order::Desc,
                 _ => Order::Asc,
             };
+            // Connectors are unversioned; the one filter is `?tag=` (K6). An
+            // empty `Condition::all()` renders no `WHERE` clause.
+            let mut cond = sea_query::Condition::all();
+            if let Some(ref tag) = filter.tag {
+                cond = cond.add(
+                    Expr::col(Connectors::TagsJson)
+                        .like(super::helpers::tag_like_pattern(tag.as_str())),
+                );
+            }
             let page: PaginatedResult<Connector> = super::helpers::paginate(
                 &self.pool,
                 Page {
                     from: Connectors::Table.into_iden(),
                     projection: Projection::All,
-                    // Connectors are unversioned and unfiltered — the filter
-                    // DTO carries page bounds and sort only. An empty
-                    // `Condition::all()` renders no `WHERE` clause.
-                    cond: sea_query::Condition::all(),
+                    cond,
                     sort: sort_iden.into_iden(),
                     order,
                     limit,
@@ -260,6 +290,10 @@ impl ConnectorRepository for SqlConnectorRepository {
                 None => existing.config_json.clone(),
             })?;
             let enabled = req.enabled.unwrap_or(existing.enabled);
+            let tags_json = match &req.tags {
+                Some(t) => serde_json::to_string(t)?,
+                None => existing.tags_json.clone(),
+            };
 
             let mut update = Query::update()
                 .table(Connectors::Table)
@@ -267,6 +301,7 @@ impl ConnectorRepository for SqlConnectorRepository {
                 .value(Connectors::ConnectorType, connector_type)
                 .value(Connectors::ConfigJson, &config_json)
                 .value(Connectors::Enabled, enabled)
+                .value(Connectors::TagsJson, tags_json.as_str())
                 .and_where(Expr::col(Connectors::Id).eq(id))
                 .to_owned();
 
@@ -336,6 +371,24 @@ impl ConnectorRepository for SqlConnectorRepository {
             )
             .await?
                 > 0)
+        })
+        .await
+    }
+
+    async fn get_by_name(&self, name: &str) -> Result<Connector, OrionError> {
+        crate::metrics::timed_db_op("connectors.get_by_name", async {
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Asterisk)
+                    .from(Connectors::Table)
+                    .and_where(Expr::col(Connectors::Name).eq(name)),
+            );
+
+            self.pool
+                .fetch_optional_as::<Connector>(&sql, values)
+                .await?
+                .ok_or_else(|| OrionError::NotFound(format!("Connector '{name}' not found")))
+                .and_then(|row| self.open_row(row))
         })
         .await
     }

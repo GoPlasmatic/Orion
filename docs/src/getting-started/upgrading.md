@@ -1173,6 +1173,50 @@ a proxy for "this was a dry run" will now be wrong — test `dry_run` instead.
 **Not changed:** all three imports still return **200** even when every item
 failed, so check `failed` rather than the status code.
 
+**Added in 1.0 (K2), additive:** both modes also carry `unchanged`, `skipped`
+and a per-item `results` array, populated by the new `?on_conflict=skip` /
+`?on_conflict=new_version` upsert modes — see
+[Admin API › Export & Promotion](../api/admin.md#promoting-over-an-existing-estate-on_conflict).
+The default `on_conflict=fail` behaves exactly as before.
+
+Also additive in 1.0: a real (non-dry-run) import writes one audit row per
+entity written alongside the `"{n} imported"` summary row (K5); channels and
+connectors gained `tags` + `?tag=` filtering, matching workflows (K6); status
+and rollout changes accept `?reload=defer` to batch engine rebuilds (K4); and
+an `X-Orion-Change-Context` request header is recorded in audit `details`
+(K5).
+
+### Channel names must be unique
+
+**What changed.** A channel name may belong to only one `channel_id` (K7).
+Creating, updating, or importing a channel whose name another channel's
+current version already holds answers **409**, and activation refuses a name
+another *active* channel holds. Before 1.0 the collision stored cleanly and
+was resolved silently at runtime: the data plane and `channel_call` address
+channels by **name**, so one of the two won the registry slot and the other's
+requests ran the winner's workflow.
+
+**What to do.** Run `orion-server preflight` before upgrading — it reports
+every name held by more than one `channel_id` (`channel-names` check). Rename
+all but one (new version with a distinct name, activate it) or delete the
+redundant channels. An estate without duplicates — any estate that worked
+predictably — is unaffected.
+
+### Channel activation now requires an active workflow
+
+**What changed.** `PATCH /admin/channels/{id}/status` with `{"status":
+"active"}` answers **400** when the channel's `workflow_id` is unset, names a
+workflow that does not exist, or names one with no active version (K8). It
+used to succeed and quarantine the channel at the next engine load — the same
+outcome, discovered later, with no error to the caller. The docs and the
+`/validate` warning always claimed this gate existed; now it does.
+
+**What to do.** Activate in dependency order — connectors → workflows →
+channels — which is what any working deployment script already did, since an
+out-of-order channel never served. A script that relied on activate-then-fix
+ordering must activate the workflow first. `?dry_run=true` on the same
+endpoint pre-flights the gate without writing.
+
 ### `data_write` takes its envelope under `write`
 
 **What changed.** The mutation envelope is now nested, mirroring

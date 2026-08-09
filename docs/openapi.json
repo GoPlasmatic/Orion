@@ -289,6 +289,15 @@
             }
           },
           {
+            "name": "tag",
+            "in": "query",
+            "description": "Only channels carrying this tag (K6).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -475,6 +484,15 @@
             }
           },
           {
+            "name": "tag",
+            "in": "query",
+            "description": "Only channels carrying this tag (K6).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -563,10 +581,19 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15).",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15), and under `on_conflict=new_version` reports\nthe per-item action the real import would take (K2).",
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "on_conflict",
+            "in": "query",
+            "description": "What an already-stored conflict key means: `fail` (default — the item\nis refused), `skip`, or `new_version` (upsert: update the draft in\nplace, or cut a new draft version over an active entity; identical\ncontent is a no-op). K2.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/OnConflict"
             }
           }
         ],
@@ -585,7 +612,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for id conflicts against stored rows and duplicates within the batch, without writing.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for id conflicts against stored rows and duplicates within the batch, without writing. `?on_conflict=new_version` upserts instead of refusing an existing id (K2): an existing draft is replaced, an active channel whose content differs gets a new draft version, and identical content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item outcomes are in `results`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -914,6 +941,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "When true, run the transition's gates and report findings without\nwriting. The response body is the `/validate` envelope, not the\nentity.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "requestBody": {
@@ -928,7 +973,7 @@
         },
         "responses": {
           "200": {
-            "description": "Status updated",
+            "description": "Status updated. With `?dry_run=true` nothing is written and the body is instead the `/validate` envelope (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate the real transition would run: draft existence, route collisions against active channels, and the workflow-active gate (K3). With `?reload=defer` the row commits but the engine (and every cluster peer) keeps serving the previous active set until `POST /engine/reload` (K4).",
             "content": {
               "application/json": {
                 "schema": {
@@ -938,7 +983,7 @@
             }
           },
           "400": {
-            "description": "Invalid status transition",
+            "description": "Invalid status transition, route collision, or the channel's workflow is missing or not active (K8)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1151,6 +1196,15 @@
         ],
         "operationId": "list_connectors",
         "parameters": [
+          {
+            "name": "tag",
+            "in": "query",
+            "description": "Only connectors carrying this tag (K6).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "limit",
             "in": "query",
@@ -1421,6 +1475,15 @@
         "operationId": "export_connectors",
         "parameters": [
           {
+            "name": "tag",
+            "in": "query",
+            "description": "Only connectors carrying this tag (K6).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -1509,10 +1572,19 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15).",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15), and under `on_conflict=new_version` reports\nthe per-item action the real import would take (K2).",
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "on_conflict",
+            "in": "query",
+            "description": "What an already-stored conflict key means: `fail` (default — the item\nis refused), `skip`, or `new_version` (upsert: update the draft in\nplace, or cut a new draft version over an active entity; identical\ncontent is a no-op). K2.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/OnConflict"
             }
           }
         ],
@@ -1531,7 +1603,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for name conflicts against stored rows and duplicates within the batch, without writing.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for name conflicts against stored rows and duplicates within the batch, without writing. `?on_conflict=new_version` upserts instead of refusing an existing name (K2): connectors are unversioned, so an existing connector is updated in place (`updated`), and identical content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item outcomes are in `results`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2029,6 +2101,232 @@
           },
           "401": {
             "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/packages": {
+      "get": {
+        "tags": [
+          "Packages"
+        ],
+        "operationId": "list_packages",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size, clamped to [1, 1000] (default 50).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Pagination offset (default 0).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated receipt rows, ordered by package name, newest first within a package.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaginatedEnvelope_PackageReceiptResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/packages/{name}": {
+      "get": {
+        "tags": [
+          "Packages"
+        ],
+        "operationId": "get_package",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The package's receipts, with `current` naming the newest applied version.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_PackageDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No receipts recorded for this package",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Unexpected internal error (`INTERNAL_ERROR`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "admin_bearer": []
+          },
+          {
+            "admin_api_key": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Packages"
+        ],
+        "operationId": "put_package",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Package name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutPackageReceiptRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The receipt as stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DataEnvelope_PackageReceiptResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid name, version, content hash, or state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid admin API key. Only returned when `admin_auth.enabled` is true.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The version is already applied with different content (an applied package version is immutable — bump the package version), already applied and asked to go back to staged, or was written by a concurrent request.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2856,10 +3154,19 @@
           {
             "name": "dry_run",
             "in": "query",
-            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15).",
+            "description": "When true, validate each item and report what would happen without\nwriting. Probes for conflicts against stored rows and for duplicates\nwithin the batch (R15), and under `on_conflict=new_version` reports\nthe per-item action the real import would take (K2).",
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "on_conflict",
+            "in": "query",
+            "description": "What an already-stored conflict key means: `fail` (default — the item\nis refused), `skip`, or `new_version` (upsert: update the draft in\nplace, or cut a new draft version over an active entity; identical\ncontent is a no-op). K2.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/OnConflict"
             }
           }
         ],
@@ -2878,7 +3185,7 @@
         },
         "responses": {
           "200": {
-            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for name conflicts against stored rows and duplicates within the batch, without writing.",
+            "description": "Import results with counts (or would-be results when ?dry_run=true). Each item is handled independently: a malformed or conflicting item becomes one entry in `errors` and the rest of the batch still applies. Dry-run additionally probes for name conflicts against stored rows and duplicates within the batch, without writing. `?on_conflict=new_version` upserts instead of refusing an existing id (K2): an existing draft is replaced, an active workflow whose content differs gets a new draft version, and identical content is reported `unchanged` — re-importing the same artifact is a no-op. Per-item outcomes are in `results`.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3207,6 +3514,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "requestBody": {
@@ -3221,7 +3537,7 @@
         },
         "responses": {
           "200": {
-            "description": "Rollout percentage updated",
+            "description": "Rollout percentage updated. With `?reload=defer` the row commits but the engine keeps serving the previous rollout until `POST /engine/reload` (K4).",
             "content": {
               "application/json": {
                 "schema": {
@@ -3286,6 +3602,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "description": "When true, run the transition's gates and report findings without\nwriting. The response body is the `/validate` envelope, not the\nentity.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "reload",
+            "in": "query",
+            "description": "`now` (default) reloads the engine as part of this request; `defer`\ncommits the row and leaves the reload to a later\n`POST /engine/reload` (K4).",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/ReloadMode"
+            }
           }
         ],
         "requestBody": {
@@ -3300,7 +3634,7 @@
         },
         "responses": {
           "200": {
-            "description": "Status updated",
+            "description": "Status updated. With `?dry_run=true` nothing is written and the body is instead the `/validate` envelope (`{\"data\": {\"valid\", \"errors\", \"warnings\"}}`) reporting every gate the real transition would run: draft existence, connector existence and type match, MongoDB `database` presence, and rollout arithmetic (K3). With `?reload=defer` the row commits but the engine (and every cluster peer) keeps serving the previous active set until `POST /engine/reload` (K4).",
             "content": {
               "application/json": {
                 "schema": {
@@ -4172,6 +4506,7 @@
           "config",
           "status",
           "priority",
+          "tags",
           "created_at",
           "updated_at"
         ],
@@ -4218,6 +4553,9 @@
           },
           "status": {
             "type": "string"
+          },
+          "tags": {
+            "description": "Wire name `tags`, column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
           },
           "topic": {
             "type": [
@@ -4324,6 +4662,7 @@
           "connector_type",
           "config_json",
           "enabled",
+          "tags",
           "created_at",
           "updated_at",
           "load_status"
@@ -4367,6 +4706,13 @@
           "name": {
             "type": "string"
           },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Selection labels (K6); filter the list with `?tag=`."
+          },
           "updated_at": {
             "type": "string"
           }
@@ -4381,6 +4727,7 @@
           "connector_type",
           "config_json",
           "enabled",
+          "tags",
           "created_at",
           "updated_at"
         ],
@@ -4404,6 +4751,9 @@
           },
           "name": {
             "type": "string"
+          },
+          "tags": {
+            "description": "Wire name `tags`, column `tags_json` (K6)."
           },
           "updated_at": {
             "type": "string",
@@ -4477,6 +4827,13 @@
               "null"
             ]
           },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Selection labels (K6), same contract as workflow tags — filter with\n`?tag=` on list and export."
+          },
           "topic": {
             "type": [
               "string",
@@ -4503,6 +4860,13 @@
           "connector_type": {
             "$ref": "#/components/schemas/ConnectorType"
           },
+          "enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the connector loads into the registry. Defaults to true (K1).\n\n`/export` has always emitted this field; until K1 the create path\nsilently dropped it, so a *disabled* connector promoted through\nexport → import came back **enabled** in the target environment."
+          },
           "id": {
             "type": [
               "string",
@@ -4511,6 +4875,13 @@
           },
           "name": {
             "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Selection labels (K6), same contract as workflow tags — filter with\n`?tag=` on list and export."
           }
         }
       },
@@ -4609,6 +4980,7 @@
               "config",
               "status",
               "priority",
+              "tags",
               "created_at",
               "updated_at"
             ],
@@ -4655,6 +5027,9 @@
               },
               "status": {
                 "type": "string"
+              },
+              "tags": {
+                "description": "Wire name `tags`, column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
               },
               "topic": {
                 "type": [
@@ -4770,6 +5145,7 @@
               "connector_type",
               "config_json",
               "enabled",
+              "tags",
               "created_at",
               "updated_at"
             ],
@@ -4793,6 +5169,9 @@
               },
               "name": {
                 "type": "string"
+              },
+              "tags": {
+                "description": "Wire name `tags`, column `tags_json` (K6)."
               },
               "updated_at": {
                 "type": "string",
@@ -4914,12 +5293,15 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "Result of a bulk import, in both dry-run and real modes (R18).",
+            "description": "Result of a bulk import, in both dry-run and real modes (R18, K2).",
             "required": [
               "dry_run",
               "imported",
               "failed",
-              "errors"
+              "unchanged",
+              "skipped",
+              "errors",
+              "results"
             ],
             "properties": {
               "dry_run": {
@@ -4940,8 +5322,116 @@
               "imported": {
                 "type": "integer",
                 "format": "int64",
-                "description": "Items created — or, in a dry run, the count that would be created.",
+                "description": "Items written — created, updated, or given a new version. In a dry\nrun, the count that would be written.",
                 "minimum": 0
+              },
+              "results": {
+                "type": "array",
+                "items": {},
+                "description": "One `{index, id, action}` entry per non-failed item (K2). `action` is\n`created`, `updated_draft`, `updated` (connectors), `new_version`,\n`unchanged`, or `skipped`."
+              },
+              "skipped": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Items skipped under `on_conflict=skip` (K2).",
+                "minimum": 0
+              },
+              "unchanged": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Content-identical items under `on_conflict=new_version` (K2): nothing\nwritten, not counted in `imported`. Re-importing the same artifact\ntherefore reports 0 imports and N unchanged.",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_PackageDetail": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "`GET /api/v1/admin/packages/{name}` — one package's receipts.",
+            "required": [
+              "name",
+              "versions"
+            ],
+            "properties": {
+              "current": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/PackageReceiptResponse",
+                    "description": "The newest `applied` receipt — what this deployment currently runs.\n`null` while every receipt is still `staged`."
+                  }
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "versions": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PackageReceiptResponse"
+                },
+                "description": "Every receipt for this package, newest first."
+              }
+            }
+          }
+        }
+      },
+      "DataEnvelope_PackageReceiptResponse": {
+        "type": "object",
+        "description": "The `{\"data\": …}` envelope every admin 2xx carries (R17).\n\nGeneric so each resource gets a described response without a hand-written\nwrapper struct per endpoint. utoipa inlines the type parameter, so\n`DataEnvelope<WorkflowResponse>` publishes the full shape. Before R22, 44\nof the 48 2xx responses had no `content` block at all.",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "object",
+            "description": "A package receipt as the admin API shows it (K14).",
+            "required": [
+              "name",
+              "version",
+              "content_hash",
+              "state",
+              "principal",
+              "created_at",
+              "updated_at"
+            ],
+            "properties": {
+              "content_hash": {
+                "type": "string",
+                "description": "Canonical content hash of the artifact this receipt records, e.g.\n`sha256:…`. Opaque to the server — compared for equality, never parsed."
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "name": {
+                "type": "string"
+              },
+              "principal": {
+                "type": "string",
+                "description": "Who recorded this receipt (admin key id, or `anonymous`)."
+              },
+              "state": {
+                "type": "string",
+                "description": "`staged` or `applied`.",
+                "example": "applied"
+              },
+              "updated_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "version": {
+                "type": "string"
               }
             }
           }
@@ -5144,6 +5634,7 @@
                 "config",
                 "status",
                 "priority",
+                "tags",
                 "created_at",
                 "updated_at"
               ],
@@ -5191,6 +5682,9 @@
                 "status": {
                   "type": "string"
                 },
+                "tags": {
+                  "description": "Wire name `tags`, column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
+                },
                 "topic": {
                   "type": [
                     "string",
@@ -5235,6 +5729,7 @@
                 "connector_type",
                 "config_json",
                 "enabled",
+                "tags",
                 "created_at",
                 "updated_at"
               ],
@@ -5258,6 +5753,9 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "tags": {
+                  "description": "Wire name `tags`, column `tags_json` (K6)."
                 },
                 "updated_at": {
                   "type": "string",
@@ -5700,12 +6198,15 @@
       },
       "ImportResult": {
         "type": "object",
-        "description": "Result of a bulk import, in both dry-run and real modes (R18).",
+        "description": "Result of a bulk import, in both dry-run and real modes (R18, K2).",
         "required": [
           "dry_run",
           "imported",
           "failed",
-          "errors"
+          "unchanged",
+          "skipped",
+          "errors",
+          "results"
         ],
         "properties": {
           "dry_run": {
@@ -5726,10 +6227,108 @@
           "imported": {
             "type": "integer",
             "format": "int64",
-            "description": "Items created — or, in a dry run, the count that would be created.",
+            "description": "Items written — created, updated, or given a new version. In a dry\nrun, the count that would be written.",
+            "minimum": 0
+          },
+          "results": {
+            "type": "array",
+            "items": {},
+            "description": "One `{index, id, action}` entry per non-failed item (K2). `action` is\n`created`, `updated_draft`, `updated` (connectors), `new_version`,\n`unchanged`, or `skipped`."
+          },
+          "skipped": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Items skipped under `on_conflict=skip` (K2).",
+            "minimum": 0
+          },
+          "unchanged": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Content-identical items under `on_conflict=new_version` (K2): nothing\nwritten, not counted in `imported`. Re-importing the same artifact\ntherefore reports 0 imports and N unchanged.",
             "minimum": 0
           }
         }
+      },
+      "PackageDetail": {
+        "type": "object",
+        "description": "`GET /api/v1/admin/packages/{name}` — one package's receipts.",
+        "required": [
+          "name",
+          "versions"
+        ],
+        "properties": {
+          "current": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/PackageReceiptResponse",
+                "description": "The newest `applied` receipt — what this deployment currently runs.\n`null` while every receipt is still `staged`."
+              }
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "versions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PackageReceiptResponse"
+            },
+            "description": "Every receipt for this package, newest first."
+          }
+        }
+      },
+      "PackageReceiptResponse": {
+        "type": "object",
+        "description": "A package receipt as the admin API shows it (K14).",
+        "required": [
+          "name",
+          "version",
+          "content_hash",
+          "state",
+          "principal",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "content_hash": {
+            "type": "string",
+            "description": "Canonical content hash of the artifact this receipt records, e.g.\n`sha256:…`. Opaque to the server — compared for equality, never parsed."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string"
+          },
+          "principal": {
+            "type": "string",
+            "description": "Who recorded this receipt (admin key id, or `anonymous`)."
+          },
+          "state": {
+            "type": "string",
+            "description": "`staged` or `applied`.",
+            "example": "applied"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "PackageState": {
+        "type": "string",
+        "description": "A package version's lifecycle state, mirroring the entity lifecycle one\nlevel up: `staged` is the draft analogue (content may be re-put in place),\n`applied` is the active analogue (immutable — a content change requires a\npackage version bump). There is no third state: history rows simply stop\nbeing the newest applied version.",
+        "enum": [
+          "staged",
+          "applied"
+        ]
       },
       "PaginatedEnvelope_AuditLogEntryResponse": {
         "type": "object",
@@ -5823,6 +6422,7 @@
                 "config",
                 "status",
                 "priority",
+                "tags",
                 "created_at",
                 "updated_at"
               ],
@@ -5869,6 +6469,9 @@
                 },
                 "status": {
                   "type": "string"
+                },
+                "tags": {
+                  "description": "Wire name `tags`, column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
                 },
                 "topic": {
                   "type": [
@@ -5930,6 +6533,7 @@
                 "connector_type",
                 "config_json",
                 "enabled",
+                "tags",
                 "created_at",
                 "updated_at",
                 "load_status"
@@ -5973,7 +6577,84 @@
                 "name": {
                   "type": "string"
                 },
+                "tags": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Selection labels (K6); filter the list with `?tag=`."
+                },
                 "updated_at": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Total rows matching the filter, ignoring `limit`/`offset`."
+          }
+        }
+      },
+      "PaginatedEnvelope_PackageReceiptResponse": {
+        "type": "object",
+        "description": "The paginated envelope: `data` plus the three counters, and nothing else.",
+        "required": [
+          "data",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A package receipt as the admin API shows it (K14).",
+              "required": [
+                "name",
+                "version",
+                "content_hash",
+                "state",
+                "principal",
+                "created_at",
+                "updated_at"
+              ],
+              "properties": {
+                "content_hash": {
+                  "type": "string",
+                  "description": "Canonical content hash of the artifact this receipt records, e.g.\n`sha256:…`. Opaque to the server — compared for equality, never parsed."
+                },
+                "created_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "principal": {
+                  "type": "string",
+                  "description": "Who recorded this receipt (admin key id, or `anonymous`)."
+                },
+                "state": {
+                  "type": "string",
+                  "description": "`staged` or `applied`.",
+                  "example": "applied"
+                },
+                "updated_at": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "version": {
                   "type": "string"
                 }
               }
@@ -6293,6 +6974,29 @@
             "description": "Age cut-off in hours: exhausted entries whose `failed_at` is older than\nthis are deleted. Required rather than defaulted — purging is\ndestructive and an omitted age must not silently mean \"everything\".",
             "example": 168,
             "minimum": 0
+          }
+        }
+      },
+      "PutPackageReceiptRequest": {
+        "type": "object",
+        "description": "Body of `PUT /api/v1/admin/packages/{name}`.",
+        "required": [
+          "version",
+          "content_hash",
+          "state"
+        ],
+        "properties": {
+          "content_hash": {
+            "type": "string",
+            "description": "Canonical content hash of the artifact, e.g. `sha256:…`. Compared for\nequality against later PUTs of the same version; never parsed."
+          },
+          "state": {
+            "$ref": "#/components/schemas/PackageState",
+            "description": "`staged` before the artifact's entities are activated, `applied` after."
+          },
+          "version": {
+            "type": "string",
+            "description": "Package version this receipt records, e.g. `1.4.0`."
           }
         }
       },
@@ -6662,6 +7366,15 @@
               "null"
             ]
           },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "topic": {
             "type": [
               "string",
@@ -6702,6 +7415,15 @@
               "string",
               "null"
             ]
+          },
+          "tags": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -6935,6 +7657,10 @@
     {
       "name": "Backups",
       "description": "Database backup management (SQLite only)"
+    },
+    {
+      "name": "Packages",
+      "description": "Package receipts — what package versions are staged or applied here (K14)"
     },
     {
       "name": "Data",

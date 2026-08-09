@@ -121,6 +121,17 @@ pub trait WorkflowRepository: Send + Sync {
         workflow_id: &str,
         req: &UpdateWorkflowRequest,
     ) -> Result<Workflow, OrionError>;
+    /// Replace the draft's entire content with a create-shaped request (K2).
+    ///
+    /// The upsert import needs full-replacement semantics: `update_draft`
+    /// merges `Option` fields, so a field the incoming artifact *omits* would
+    /// keep its old value and the imported draft would never converge on the
+    /// artifact's content. Errors if no draft exists.
+    async fn replace_draft(
+        &self,
+        workflow_id: &str,
+        req: &CreateWorkflowRequest,
+    ) -> Result<Workflow, OrionError>;
     /// Delete all versions of a workflow.
     async fn delete(&self, workflow_id: &str) -> Result<(), OrionError>;
     /// List all active workflows for engine loading.
@@ -303,11 +314,9 @@ fn build_condition(filter: &WorkflowFilter) -> Condition {
         cond = cond.add(Expr::col(Workflows::Status).eq(status.as_str()));
     }
     if let Some(ref tag) = filter.tag {
-        let escaped = tag
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        cond = cond.add(Expr::col(Workflows::TagsJson).like(format!("%\"{escaped}\"%")));
+        cond = cond.add(
+            Expr::col(Workflows::TagsJson).like(super::helpers::tag_like_pattern(tag.as_str())),
+        );
     }
     cond
 }
@@ -471,6 +480,46 @@ impl WorkflowRepository for SqlWorkflowRepository {
                 .to_owned();
 
             // D23: the UPDATE and the row it wrote travel together.
+            versioned::write_returning_version(
+                &self.pool,
+                &spec(),
+                WriteStatement::Update(&mut update),
+                workflow_id,
+                existing.version,
+                OrionError::Storage,
+            )
+            .await
+        })
+        .await
+    }
+
+    async fn replace_draft(
+        &self,
+        workflow_id: &str,
+        req: &CreateWorkflowRequest,
+    ) -> Result<Workflow, OrionError> {
+        crate::metrics::timed_db_op("workflows.replace_draft", async {
+            let existing: Workflow =
+                versioned::require_draft(&self.pool, &spec(), workflow_id).await?;
+
+            let condition_json = serde_json::to_string(&req.condition)?;
+            let tasks_json = serde_json::to_string(&req.tasks)?;
+            let tags_json = serde_json::to_string(&req.tags)?;
+            let description_val = optional_string_value(req.description.as_deref());
+
+            let mut update = Query::update()
+                .table(Workflows::Table)
+                .value(Workflows::Name, req.name.as_str())
+                .value(Workflows::Description, description_val)
+                .value(Workflows::Priority, req.priority)
+                .value(Workflows::ConditionJson, condition_json.as_str())
+                .value(Workflows::TasksJson, tasks_json.as_str())
+                .value(Workflows::TagsJson, tags_json.as_str())
+                .value(Workflows::ContinueOnError, req.continue_on_error)
+                .and_where(Expr::col(Workflows::WorkflowId).eq(workflow_id))
+                .and_where(Expr::col(Workflows::Status).eq(EntityStatus::Draft.as_str()))
+                .to_owned();
+
             versioned::write_returning_version(
                 &self.pool,
                 &spec(),

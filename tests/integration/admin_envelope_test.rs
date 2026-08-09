@@ -238,7 +238,15 @@ async fn import_dry_run_and_real_run_share_one_shape() {
     );
     assert_eq!(
         dry_keys,
-        &["dry_run", "errors", "failed", "imported"],
+        &[
+            "dry_run",
+            "errors",
+            "failed",
+            "imported",
+            "results",
+            "skipped",
+            "unchanged"
+        ],
         "unexpected import field set"
     );
 
@@ -248,6 +256,13 @@ async fn import_dry_run_and_real_run_share_one_shape() {
     assert_eq!(dry["data"]["failed"], 0);
     assert_eq!(real["data"]["dry_run"], false);
     assert_eq!(real["data"]["imported"], 1);
+    // K2: both runs carry the same per-item report.
+    for (uri, body, _) in &shapes {
+        assert_eq!(
+            body["data"]["results"][0]["action"], "created",
+            "{uri}: per-item action"
+        );
+    }
 }
 
 /// The single-trace read is the one admin endpoint whose envelope the rest of
