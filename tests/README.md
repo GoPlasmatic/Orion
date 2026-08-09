@@ -2,9 +2,11 @@
 
 ## Test Binaries
 
-The suite is split into five test binaries. The storage backend is pinned per
+The suite is split into six test binaries. The storage backend is pinned per
 process (a global `DB_BACKEND` OnceLock), which is why the Postgres/MySQL
-storage tests and the cluster tests cannot live in the integration binary.
+storage tests and the cluster tests cannot live in the integration binary —
+and the metrics recorder is process-global too, which is why the rendered
+`/metrics` exposition gets a binary of its own.
 
 | Binary | Location | Backend | Docker |
 |--------|----------|---------|--------|
@@ -13,6 +15,13 @@ storage tests and the cluster tests cannot live in the integration binary.
 | `storage_postgres` | `tests/storage_postgres.rs` | Postgres testcontainer | required (all `#[ignore]`) |
 | `storage_mysql` | `tests/storage_mysql.rs` | MySQL testcontainer | required (all `#[ignore]`) |
 | `schema_parity` | `tests/schema_parity.rs` | all three | only for the cross-backend test |
+| `metrics_exposition` | `tests/metrics_exposition.rs` | in-memory SQLite | not needed |
+
+`metrics_exposition` (T37) asserts the rendered `/metrics` body, which the
+integration binary can never do: the recorder is process-global, so whichever
+app boots first in that binary gets the real `PrometheusHandle` and every
+later one a no-op — a race. This binary exists to *be* the first app
+deterministically: one test, one process, the real recorder.
 
 `schema_parity` (D10) migrates each backend from scratch and asserts the three
 schemas agree — columns with their normalised types and nullability, every
@@ -150,6 +159,9 @@ BENCH_RELEASE=1 ./tests/benchmark/bench.sh
 ```
 
 Each run writes a `SUMMARY.md` plus raw per-scenario `hey` output to
-`tests/benchmark/results/`. The directory is gitignored; results are local
-snapshots, not checked in. The headline numbers live in the README's
+`tests/benchmark/results/`. Scratch runs stay local — `.gitignore` ignores
+the directory — but each release's record is committed to a
+`results/vX.Y.Z/` directory that `.gitignore` re-includes explicitly (see
+the tracked `results/v0.2.0/`, and `RELEASING.md` for the release-session
+procedure). The headline numbers live in the README's
 [Performance](../README.md#performance) section.

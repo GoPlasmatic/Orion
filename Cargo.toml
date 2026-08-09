@@ -45,10 +45,11 @@ path = "src/lib.rs"
 # The SQLite-backed integration tests are consolidated into a single binary so
 # the suite links once instead of ~43 times. New test files go in
 # tests/integration/ and are declared as modules in tests/integration/main.rs.
-# Four more test binaries exist: `cluster` below, plus the auto-discovered
-# tests/storage_postgres.rs, tests/storage_mysql.rs and tests/schema_parity.rs
-# (separate binaries because the storage backend is pinned per process by a
-# OnceLock; schema_parity sidesteps it entirely via `migrator_for`).
+# Five more test binaries exist: `cluster` below, plus the auto-discovered
+# tests/storage_postgres.rs, tests/storage_mysql.rs, tests/schema_parity.rs
+# and tests/metrics_exposition.rs (separate binaries because the storage
+# backend is pinned per process by a OnceLock — schema_parity sidesteps it
+# entirely via `migrator_for` — and the metrics recorder is process-global).
 [[test]]
 name = "integration"
 path = "tests/integration/main.rs"
