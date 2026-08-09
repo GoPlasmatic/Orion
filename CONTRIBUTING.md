@@ -1,6 +1,8 @@
 # Contributing to Orion
 
-Contributions are welcome! Whether it's a bug fix, new feature, documentation improvement, or test — we appreciate the help.
+Contributions are welcome! Whether it's a bug fix, new feature, documentation improvement, or test — we appreciate the help. By participating you agree to our [Code of Conduct](CODE_OF_CONDUCT.md).
+
+(`CLAUDE.md` at the repository root is context for AI coding agents working in this repo — human contributors can ignore it.)
 
 ## Getting Started
 
@@ -91,6 +93,10 @@ code.
    ```bash
    cargo fmt && cargo clippy && cargo test
    ```
+   With [`just`](https://github.com/casey/just) installed, `just check` runs
+   the full CI-equivalent gate (fmt, clippy with `-D warnings`, tests,
+   doc-tests, rustdoc) in one command — the `justfile` at the repo root also
+   carries `just test-containers`, `just openapi` and `just docs`.
    If you changed the HTTP API (routes or request/response schemas), regenerate
    the checked-in OpenAPI spec — a test fails if it's stale:
    ```bash
@@ -168,7 +174,9 @@ Add unit tests inline in the relevant module using `#[cfg(test)]` blocks. See `s
 
 Tests that need a real backend (PostgreSQL, MySQL, MongoDB, Elasticsearch,
 Kafka, Redis, or a multi-node cluster) are `#[ignore]`d, so `cargo test` skips
-them locally. CI runs every one of them; run them yourself with Docker up:
+them locally. CI runs every one of them; run them yourself with Docker up
+([`tests/README.md`](tests/README.md) explains the six-binary layout, why the
+backend is pinned per process, and how the CI filters are kept drift-free):
 
 ```bash
 cargo test --test storage_postgres -- --ignored     # testcontainers spin up the DB

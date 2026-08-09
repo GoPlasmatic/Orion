@@ -10,7 +10,8 @@
 
 ## Checklist
 
-- [ ] `cargo fmt && cargo clippy && cargo test` pass cleanly
+- [ ] `cargo fmt && cargo clippy && cargo test` pass cleanly (or `just check`
+      for the full CI-equivalent gate)
 - [ ] New functionality has tests
 - [ ] If HTTP routes or request/response schemas changed: regenerated the
       OpenAPI spec (`cargo run -- dump-openapi > docs/openapi.json` — a test

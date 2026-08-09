@@ -1,0 +1,37 @@
+# Common developer tasks — `just --list` shows everything.
+# Recipes mirror what CI actually runs (.github/workflows/ci.yml), so a green
+# `just check` locally means the PR gate will agree.
+
+# The full pre-PR gate in one command.
+check:
+    cargo fmt --check
+    cargo clippy --all-targets -- -D warnings
+    cargo test
+    cargo test --doc
+    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib
+
+# Regenerate the committed OpenAPI spec after changing routes or
+# request/response schemas (a test fails while it is stale).
+openapi:
+    cargo run -- dump-openapi > docs/openapi.json
+
+# Container-gated suites (need Docker; each starts its own testcontainers).
+test-containers:
+    cargo test --test integration -- --ignored data_parity_test data_roundtrip_test postgres_test mysql_test mongodb_test es_test connector_redis_test db_column_types_test dynamic_inputs_test
+    cargo test --test integration -- --ignored kafka_test
+    cargo test --test storage_postgres -- --ignored
+    cargo test --test storage_mysql -- --ignored
+    cargo test --test schema_parity -- --ignored
+    cargo test --test cluster -- --ignored --test-threads=1
+
+# Build the documentation book (needs mdbook).
+docs:
+    mdbook build docs
+
+# Format the tree in place.
+fmt:
+    cargo fmt
+
+# Offline workflow regression tests (the examples' *.case.json suite).
+workflow-tests:
+    cargo run -- test examples/workflow-tests
