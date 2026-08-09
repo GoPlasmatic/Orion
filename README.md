@@ -262,7 +262,7 @@ graph TD
 
 Every AI-generated workflow gets version history, draft-before-activate, dry-run testing, rollout control, structured `FieldError` validation feedback, and audit trails. It's the same governance hand-written workflows get. Roll back to any previous version instantly.
 
-Need to ship a bundle of workflows, channels, or connectors at once (e.g. promoting from staging)? Use the bulk import endpoints. `POST /api/v1/admin/{workflows,channels,connectors}/import?dry_run=true` validates the whole batch first, then drop `dry_run` to commit.
+Need to promote a bundle of workflows, channels, and connectors between environments? `orion-server package` is the promotion story: `export` computes the dependency closure from a source instance into one JSON artifact (git is the registry), `lint` and `plan` check it with zero writes, `apply` stages and activates everything in dependency order with a single engine reload and a version-immutable package receipt, and `diff` reports drift. The bulk import endpoints (`POST /api/v1/admin/{workflows,channels,connectors}/import?dry_run=true`, then drop `dry_run` to commit) remain the low-level primitive when you need to script a single batch. See [Admin API › Export & Promotion](https://goplasmatic.github.io/Orion/api/admin.html#export--promotion).
 
 See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html#ai-workflow--cicd) for CI/CD integration and GitHub Actions examples.
 
@@ -558,7 +558,7 @@ cargo install --git https://github.com/GoPlasmatic/Orion.git
 
 Verify with `orion-server --version`. Swagger UI available at `http://localhost:8080/docs`. See [Configuration](https://goplasmatic.github.io/Orion/configuration/reference.html) for deployment options.
 
-The server binary also ships diagnostic subcommands you can run without booting the HTTP listener:
+The server binary also ships diagnostic and promotion subcommands you can run without booting the HTTP listener:
 
 ```bash
 orion-server validate-config -c config.toml         # Parse + validate the config file
@@ -572,6 +572,11 @@ orion-server test examples/workflow-tests           # Run offline *.case.json wo
 orion-server test-connectivity                      # Probe DB (and Kafka if enabled)
 orion-server preflight                              # Scan stored channels/workflows before upgrading
 orion-server dump-openapi > docs/openapi.json       # Write the OpenAPI 3.1 spec (checked in for offline use / client gen)
+orion-server package export -s https://dev.example.com --tag payments --name payments --version 1.4.0 -o payments.json  # Export a package: selected channels + their workflows + referenced connectors
+orion-server package lint -f payments.json          # Validate the artifact offline — no server, no secrets
+orion-server package plan -s https://prod.example.com -f payments.json   # Pre-flight against a target instance, zero writes
+orion-server package apply -s https://prod.example.com -f payments.json  # Stage, activate in dependency order, one reload — idempotent, receipt-tracked
+orion-server package diff -s https://prod.example.com -f payments.json   # Drift report; non-zero exit on any difference
 ```
 
 `${VAR}` / `${VAR:-default}` placeholders inside `config.toml` are substituted from the environment when any of these subcommands load the config, so the same file works across dev, staging, and prod without templating.
@@ -602,7 +607,7 @@ See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full comma
 | [Workflow Reference](https://goplasmatic.github.io/Orion/reference/workflows.html) | Workflow & task JSON schema, conditions, error handling, lifecycle, and rollout |
 | [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html) | Every built-in task function and its exact `input` schema |
 | [Portable Data Dialect](https://goplasmatic.github.io/Orion/reference/data-dialect.html) | Backend-neutral query/write envelope for `data_query`/`data_write`, with one filter dialect across SQL, MongoDB, and Elasticsearch |
-| [Admin API](https://goplasmatic.github.io/Orion/api/admin.html) | Workflows, channels, connectors, engine, audit, and backup endpoints |
+| [Admin API](https://goplasmatic.github.io/Orion/api/admin.html) | Workflows, channels, connectors, packages, engine, audit, and backup endpoints |
 | [Data API](https://goplasmatic.github.io/Orion/api/data.html) | Data routing, sync/async processing, traces, and operational endpoints |
 | [Configuration](https://goplasmatic.github.io/Orion/configuration/reference.html) | Config file, env vars, database backends, deployment |
 | [Connectors & Extensibility](https://goplasmatic.github.io/Orion/features/extensibility.html) | HTTP, DB, Cache, Storage, MongoDB, Elasticsearch, Kafka: auth, retry, circuit breakers |
