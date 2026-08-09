@@ -22,7 +22,7 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/channels` | Create channel (as draft) |
+| POST | `/api/v1/admin/channels` | Create channel (as draft). Optional `tags: ["..."]` — selection labels read back by `?tag=` filters and package export |
 | GET | `/api/v1/admin/channels` | List channels. Filter with `?status=`, `?channel_type=`, `?protocol=`, `?tag=` |
 | GET | `/api/v1/admin/channels/{id}` | Get channel by ID |
 | PUT | `/api/v1/admin/channels/{id}` | Update draft channel |
@@ -38,7 +38,7 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/workflows` | Create workflow (as draft; optional `id` field for custom IDs) |
+| POST | `/api/v1/admin/workflows` | Create workflow (as draft; optional `id` field for custom IDs, optional `tags: ["..."]` selection labels read back by `?tag=` filters and package export) |
 | GET | `/api/v1/admin/workflows` | List workflows. Filter with `?tag=`, `?status=` |
 | GET | `/api/v1/admin/workflows/{id}` | Get workflow by ID |
 | PUT | `/api/v1/admin/workflows/{id}` | Update draft workflow |
@@ -57,7 +57,7 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/v1/admin/connectors` | Create connector. String fields may use `env://VAR_NAME` to pull values from the process environment |
+| POST | `/api/v1/admin/connectors` | Create connector. String fields may use `env://VAR_NAME` to pull values from the process environment. Optional `tags: ["..."]` (selection labels for `?tag=` and package export) and `enabled` (default `true`; a disabled connector is never loaded into the registry, and export → import preserves the flag) |
 | GET | `/api/v1/admin/connectors` | List connectors (secrets masked). Filter with `?tag=` |
 | GET | `/api/v1/admin/connectors/{id}` | Get connector by ID (secrets masked) |
 | PUT | `/api/v1/admin/connectors/{id}` | Update connector |
