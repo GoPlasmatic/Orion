@@ -162,28 +162,26 @@ pub(crate) struct ImportOutcome {
     /// One `{index, id, action}` entry per non-failed item (K2) — the
     /// per-item report a packaging CLI turns into its plan/apply output.
     pub results: Vec<serde_json::Value>,
+    /// Ids of the items that wrote, collected as `record` classifies them —
+    /// so the K5 audit filter cannot drift from [`ImportAction::is_write`]
+    /// the way a re-parse of `results` strings could.
+    written: Vec<String>,
 }
 
 impl ImportOutcome {
-    /// The `(id, action)` of every item that wrote, for the per-entity audit
-    /// rows (K5). Items with no conflict key have no client-visible id to
-    /// audit and are covered by the summary row alone.
-    pub(crate) fn written(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.results.iter().filter_map(|r| {
-            let action = r.get("action")?.as_str()?;
-            if !matches!(
-                action,
-                "created" | "updated" | "updated_draft" | "new_version"
-            ) {
-                return None;
-            }
-            Some((r.get("id")?.as_str()?, action))
-        })
+    /// The id of every written item, for the per-entity audit rows (K5).
+    /// Items with no conflict key have no client-visible id to audit and are
+    /// covered by the summary row alone.
+    pub(crate) fn written(&self) -> impl Iterator<Item = &str> {
+        self.written.iter().map(String::as_str)
     }
 
     fn record(&mut self, index: usize, key: Option<&str>, action: ImportAction) {
         if action.is_write() {
             self.imported += 1;
+            if let Some(key) = key {
+                self.written.push(key.to_string());
+            }
         } else if action == ImportAction::Unchanged {
             self.unchanged += 1;
         } else {
@@ -244,7 +242,7 @@ where
     UFut: std::future::Future<Output = Result<ImportAction, crate::errors::OrionError>>,
 {
     let mut out = ImportOutcome::default();
-    let mut seen: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (i, item) in items.into_iter().enumerate() {
         // Deserialize per item, so a single shape or enum typo is one failed
@@ -279,79 +277,78 @@ where
                 continue;
             }
             if dry_run || on_conflict != OnConflict::Fail {
-                seen.push(key.clone());
+                seen.insert(key.clone());
             }
         }
 
-        match on_conflict {
-            OnConflict::Fail => {
-                // Conflict detection. On a real import the store enforces
-                // this anyway, so the probe runs on dry-run only — where it
-                // is the whole point.
-                if dry_run {
-                    if let Some(ref key) = key {
-                        match (ops.exists)(key.clone()).await {
-                            Ok(true) => {
-                                out.fail(i, format!("'{key}' already exists"));
-                                continue;
-                            }
-                            Ok(false) => {}
-                            // A probe that could not run must not be reported
-                            // as a clean item: say so and let the operator
-                            // retry.
-                            Err(e) => {
-                                out.fail(
-                                    i,
-                                    format!(
-                                        "could not check for a conflict: {}",
-                                        e.client_message()
-                                    ),
-                                );
-                                continue;
-                            }
-                        }
-                    }
-                    out.record(i, key.as_deref(), ImportAction::Created);
-                    continue;
-                }
-                match (ops.create)(parsed).await {
-                    Ok(()) => out.record(i, key.as_deref(), ImportAction::Created),
-                    Err(e) => out.fail(i, e.client_message()),
-                }
-            }
-            OnConflict::Skip => {
-                if let Some(ref key) = key {
-                    match (ops.exists)(key.clone()).await {
-                        Ok(true) => {
-                            out.record(i, Some(key), ImportAction::Skipped);
-                            continue;
-                        }
-                        Ok(false) => {}
-                        Err(e) => {
-                            out.fail(
-                                i,
-                                format!("could not check for a conflict: {}", e.client_message()),
-                            );
-                            continue;
-                        }
-                    }
-                }
-                if dry_run {
-                    out.record(i, key.as_deref(), ImportAction::Created);
-                    continue;
-                }
-                match (ops.create)(parsed).await {
-                    Ok(()) => out.record(i, key.as_deref(), ImportAction::Created),
-                    Err(e) => out.fail(i, e.client_message()),
-                }
-            }
-            OnConflict::NewVersion => match (ops.upsert)(parsed, dry_run).await {
+        if on_conflict == OnConflict::NewVersion {
+            match (ops.upsert)(parsed, dry_run).await {
                 Ok(action) => out.record(i, key.as_deref(), action),
                 Err(e) => out.fail(i, e.client_message()),
-            },
+            }
+            continue;
+        }
+
+        // Fail and Skip differ only in what a stored key means; the probe
+        // runs whenever that answer is needed — always under `skip`, and on
+        // dry-run under `fail` (a real `fail` run lets the store's own
+        // constraint answer, which is R15's whole point in reverse).
+        if let Some(ref key) = key
+            && (dry_run || on_conflict == OnConflict::Skip)
+        {
+            match (ops.exists)(key.clone()).await {
+                Ok(true) => {
+                    if on_conflict == OnConflict::Skip {
+                        out.record(i, Some(key), ImportAction::Skipped);
+                    } else {
+                        out.fail(i, format!("'{key}' already exists"));
+                    }
+                    continue;
+                }
+                Ok(false) => {}
+                // A probe that could not run must not be reported as a clean
+                // item: say so and let the operator retry.
+                Err(e) => {
+                    out.fail(
+                        i,
+                        format!("could not check for a conflict: {}", e.client_message()),
+                    );
+                    continue;
+                }
+            }
+        }
+        if dry_run {
+            out.record(i, key.as_deref(), ImportAction::Created);
+        } else {
+            match (ops.create)(parsed).await {
+                Ok(()) => out.record(i, key.as_deref(), ImportAction::Created),
+                Err(e) => out.fail(i, e.client_message()),
+            }
         }
     }
     out
+}
+
+/// K2: what `on_conflict=new_version` does with an item whose id is already
+/// stored, given the latest version's status and whether the stored content
+/// equals the item's. One definition for both versioned kinds, because it
+/// carries the one non-obvious invariant: an **archived** entity with
+/// identical content still gets a new draft version — the point of
+/// re-importing an archived entity is to activate it again, and activation
+/// needs a draft.
+pub(crate) fn versioned_upsert_action(status: &str, identical: bool) -> ImportAction {
+    use crate::storage::models::EntityStatus;
+    if status == EntityStatus::Draft.as_str() {
+        if identical {
+            ImportAction::Unchanged
+        } else {
+            ImportAction::UpdatedDraft
+        }
+    } else if identical && status == EntityStatus::Active.as_str() {
+        ImportAction::Unchanged
+    } else {
+        ImportAction::NewVersion
+    }
 }
 
 // ============================================================

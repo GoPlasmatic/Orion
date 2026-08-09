@@ -17,7 +17,7 @@ use crate::errors::OrionError;
 use crate::server::admin_auth::AdminPrincipal;
 use crate::server::extract::{OrionJson, OrionQuery};
 use crate::server::routes::openapi::{DataEnvelope, PaginatedEnvelope};
-use crate::server::routes::response_helpers::{data_response, paginated_response};
+use crate::server::routes::response_helpers::{data_response, paginated_into};
 use crate::server::state::AppState;
 use crate::storage::models::{PackageReceiptResponse, PackageState};
 use crate::storage::repositories::helpers::{VersionFilter, clamp_pagination};
@@ -45,12 +45,7 @@ const MAX_HASH_LEN: usize = 128;
 
 /// A receipt key: non-empty, bounded, and drawn from a charset that stays
 /// unambiguous in URLs, shell commands and audit rows.
-fn validate_key_field(
-    field: &str,
-    value: &str,
-    max_len: usize,
-    extra: &[char],
-) -> Result<(), OrionError> {
+fn validate_key_field(field: &str, value: &str, max_len: usize) -> Result<(), OrionError> {
     if value.trim().is_empty() {
         return Err(OrionError::validation(format!("{field} must not be empty")));
     }
@@ -62,7 +57,7 @@ fn validate_key_field(
     }
     if let Some(bad) = value
         .chars()
-        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') || extra.contains(c)))
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
     {
         return Err(OrionError::validation(format!(
             "{field} contains unsupported character '{bad}' — use letters, digits, \
@@ -73,10 +68,15 @@ fn validate_key_field(
 }
 
 fn validate_put(name: &str, req: &PutPackageReceiptRequest) -> Result<(), OrionError> {
-    validate_key_field("package name", name, MAX_NAME_LEN, &[])?;
-    validate_key_field("version", &req.version, MAX_VERSION_LEN, &[])?;
-    // `sha256:…` is the expected spelling, so ':' is allowed here and only here.
-    validate_key_field("content_hash", &req.content_hash, MAX_HASH_LEN, &[':'])?;
+    validate_key_field("package name", name, MAX_NAME_LEN)?;
+    validate_key_field("version", &req.version, MAX_VERSION_LEN)?;
+    // `sha256:<hex>` is the expected spelling — strip the one legitimate ':'
+    // and hold the rest to the shared charset.
+    validate_key_field(
+        "content_hash",
+        &req.content_hash.replacen(':', "", 1),
+        MAX_HASH_LEN,
+    )?;
     Ok(())
 }
 
@@ -97,17 +97,9 @@ pub(crate) async fn list_packages(
 ) -> Result<Json<Value>, OrionError> {
     let (limit, offset) = clamp_pagination(filter.limit, filter.offset);
     let result = state.repos.packages.list(limit, offset).await?;
-    let rows: Vec<PackageReceiptResponse> = result
-        .data
-        .iter()
-        .map(PackageReceiptResponse::from)
-        .collect();
-    Ok(paginated_response(
-        rows,
-        result.total,
-        result.limit,
-        result.offset,
-    ))
+    paginated_into(result, |r| {
+        Ok::<_, OrionError>(PackageReceiptResponse::from(r))
+    })
 }
 
 #[utoipa::path(

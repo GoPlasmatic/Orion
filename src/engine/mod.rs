@@ -21,6 +21,7 @@ pub mod handlers;
 pub mod loader;
 pub mod observer;
 pub mod profile;
+pub mod refs;
 pub mod reload;
 pub mod runner;
 pub mod utils;
@@ -31,6 +32,7 @@ pub use handlers::{
 };
 pub use loader::{CUSTOM_HANDLER_FUNCTIONS, build_engine_workflows, filter_channels};
 pub use observer::MetricsObserver;
+pub use refs::{ConnectorRef, channel_call_targets, connector_refs};
 pub use reload::{
     ReloadOpts, reload_engine, reload_engine_with_opts, resync_from_db,
     spawn_kafka_restart_supervisor,

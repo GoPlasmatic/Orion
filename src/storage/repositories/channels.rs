@@ -149,6 +149,16 @@ pub trait ChannelRepository: Send + Sync {
     async fn archive(&self, channel_id: &str) -> Result<Channel, OrionError>;
     /// Create a new draft version by copying the latest version.
     async fn create_new_version(&self, channel_id: &str) -> Result<Channel, OrionError>;
+    /// The id of a *different* active channel holding `name`, if any (K7).
+    ///
+    /// The activation-time half of the unique-name rule: the write-time gate
+    /// keeps new collisions out, and this catches rows that predate it — as
+    /// one indexed `LIMIT 1` probe, not a scan of the active set.
+    async fn active_name_holder(
+        &self,
+        name: &str,
+        own_id: &str,
+    ) -> Result<Option<String>, OrionError>;
     /// List all versions of a channel.
     async fn list_versions(
         &self,
@@ -400,7 +410,7 @@ impl ChannelRepository for SqlChannelRepository {
         crate::metrics::timed_db_op("channels.snapshot", async {
             super::helpers::snapshot_pages(
                 &self.pool,
-                super::workflows::EXPORT_PAGE_SIZE,
+                super::helpers::EXPORT_PAGE_SIZE,
                 |limit, offset| {
                     Query::select()
                         .column(sea_query::Asterisk)
@@ -695,6 +705,30 @@ impl ChannelRepository for SqlChannelRepository {
     ) -> Result<PaginatedResult<Channel>, OrionError> {
         crate::metrics::timed_db_op("channels.list_versions", async {
             versioned::list_versions(&self.pool, &spec(), channel_id, filter).await
+        })
+        .await
+    }
+
+    async fn active_name_holder(
+        &self,
+        name: &str,
+        own_id: &str,
+    ) -> Result<Option<String>, OrionError> {
+        crate::metrics::timed_db_op("channels.active_name_holder", async {
+            let (sql, values) = build_sqlx(
+                Query::select()
+                    .column(Channels::ChannelId)
+                    .from(Channels::Table)
+                    .and_where(Expr::col(Channels::Name).eq(name))
+                    .and_where(Expr::col(Channels::ChannelId).ne(own_id))
+                    .and_where(Expr::col(Channels::Status).eq(EntityStatus::Active.as_str()))
+                    .limit(1),
+            );
+            Ok(self
+                .pool
+                .fetch_optional_as::<(String,)>(&sql, values)
+                .await?
+                .map(|(id,)| id))
         })
         .await
     }

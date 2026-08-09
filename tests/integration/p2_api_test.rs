@@ -3,28 +3,15 @@
 //! snapshot (K12) is covered by `export_snapshot_pages_until_exhausted` in
 //! the workflows route module and the export round-trip suite.
 
-use crate::common::{body_json, json_request, test_app};
+use crate::common::{self, body_json, json_request, test_app};
 use axum::http::StatusCode;
-use serde_json::{Value, json};
+use serde_json::json;
 use tower::ServiceExt;
-
-async fn create_workflow(app: &axum::Router, body: Value) -> String {
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/workflows", Some(body)))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
 
 #[tokio::test]
 async fn dependencies_reports_connectors_and_channel_calls() {
     let app = test_app().await;
-    let id = create_workflow(
+    let id = common::create_and_return_workflow_id(
         &app,
         json!({
             "workflow_id": "deps-wf",
@@ -93,12 +80,12 @@ async fn content_hash_tracks_importable_content_only() {
     let app = test_app().await;
     let tasks = json!([{"id": "t1", "name": "log",
                         "function": {"name": "log", "input": {"message": "same"}}}]);
-    let a = create_workflow(
+    let a = common::create_and_return_workflow_id(
         &app,
         json!({"workflow_id": "hash-a", "name": "Hash", "tasks": tasks}),
     )
     .await;
-    let b = create_workflow(
+    let b = common::create_and_return_workflow_id(
         &app,
         json!({"workflow_id": "hash-b", "name": "Hash", "tasks": tasks}),
     )

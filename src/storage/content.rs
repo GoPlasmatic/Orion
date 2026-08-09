@@ -199,6 +199,78 @@ mod tests {
         assert_ne!(content_hash(&a), content_hash(&c));
     }
 
+    /// The channel and connector pairs get the same agreement proof as the
+    /// workflow pair below: a field added to a `Create*Request` but forgotten
+    /// in its projection would otherwise compile clean and make the upsert
+    /// report `unchanged` for imports that differ in that field.
+    #[test]
+    fn channel_and_connector_projections_agree() {
+        let now = chrono::NaiveDateTime::default();
+
+        let req: crate::storage::repositories::channels::CreateChannelRequest =
+            serde_json::from_value(json!({
+                "channel_id": "ch-1",
+                "name": "Hash Ch",
+                "channel_type": "sync",
+                "protocol": "rest",
+                "methods": ["POST"],
+                "route_pattern": "/hash",
+                "workflow_id": "wf-1",
+                "config": {"a": 1},
+                "priority": 2,
+                "tags": ["t"],
+            }))
+            .expect("channel request");
+        let row = Channel {
+            channel_id: "ch-1".to_string(),
+            version: 4, // DB-owned: must not affect the projection
+            name: "Hash Ch".to_string(),
+            description: None,
+            channel_type: "sync".to_string(),
+            protocol: "rest".to_string(),
+            methods_json: Some(r#"["POST"]"#.to_string()),
+            route_pattern: Some("/hash".to_string()),
+            topic: None,
+            consumer_group: None,
+            transport_config_json: "{}".to_string(),
+            workflow_id: Some("wf-1".to_string()),
+            config_json: r#"{"a":1}"#.to_string(),
+            status: "active".to_string(),
+            priority: 2,
+            tags_json: r#"["t"]"#.to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        assert_eq!(
+            channel_content(&row).expect("channel content"),
+            channel_request_content(&req)
+        );
+
+        let req: crate::storage::repositories::connectors::CreateConnectorRequest =
+            serde_json::from_value(json!({
+                "name": "hash-conn",
+                "connector_type": "http",
+                "config": {"url": "https://example.com"},
+                "enabled": false,
+                "tags": ["t"],
+            }))
+            .expect("connector request");
+        let row = Connector {
+            id: "generated".to_string(), // excluded: upsert matches on name
+            name: "hash-conn".to_string(),
+            connector_type: "http".to_string(),
+            config_json: r#"{"url":"https://example.com"}"#.to_string(),
+            enabled: false,
+            tags_json: r#"["t"]"#.to_string(),
+            created_at: now,
+            updated_at: now,
+        };
+        assert_eq!(
+            connector_content(&row).expect("connector content"),
+            connector_request_content(&req)
+        );
+    }
+
     /// A row and the create request that produced it project identically —
     /// the invariant the K2 `unchanged` detection and K10 hashes ride on.
     #[test]

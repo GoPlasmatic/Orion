@@ -8,19 +8,6 @@ use axum::http::StatusCode;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-async fn create_workflow(app: &axum::Router, body: Value) -> String {
-    let resp = app
-        .clone()
-        .oneshot(json_request("POST", "/api/v1/admin/workflows", Some(body)))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    body_json(resp).await["data"]["workflow_id"]
-        .as_str()
-        .unwrap()
-        .to_string()
-}
-
 async fn patch_status(app: &axum::Router, uri: &str, status: &str) -> (StatusCode, Value) {
     let resp = app
         .clone()
@@ -34,7 +21,9 @@ async fn patch_status(app: &axum::Router, uri: &str, status: &str) -> (StatusCod
 #[tokio::test]
 async fn workflow_activation_dry_run_reports_without_writing() {
     let app = test_app().await;
-    let id = create_workflow(&app, common::simple_log_workflow("Dry Run Green")).await;
+    let id =
+        common::create_and_return_workflow_id(&app, common::simple_log_workflow("Dry Run Green"))
+            .await;
 
     // Green: a clean draft would activate.
     let (code, body) = patch_status(
@@ -74,7 +63,7 @@ async fn workflow_activation_dry_run_reports_without_writing() {
 #[tokio::test]
 async fn workflow_activation_dry_run_finds_the_missing_connector() {
     let app = test_app().await;
-    let id = create_workflow(
+    let id = common::create_and_return_workflow_id(
         &app,
         common::workflow_with_tasks(
             "Dry Run Missing Connector",
@@ -135,7 +124,8 @@ async fn dry_run_reports_a_missing_entity_as_a_finding() {
 #[tokio::test]
 async fn channel_activation_gates_on_an_active_workflow() {
     let app = test_app().await;
-    let workflow_id = create_workflow(&app, common::simple_log_workflow("K8 Gate")).await;
+    let workflow_id =
+        common::create_and_return_workflow_id(&app, common::simple_log_workflow("K8 Gate")).await;
 
     let resp = app
         .clone()

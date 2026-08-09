@@ -58,6 +58,18 @@ pub struct ConnectorFilter {
     pub sort_order: Option<String>,
 }
 
+/// The one connector filter: `?tag=` (K6). Shared by `list_paginated` and
+/// `snapshot`, the pattern the two versioned repositories already use.
+fn build_condition(filter: &ConnectorFilter) -> sea_query::Condition {
+    let mut cond = sea_query::Condition::all();
+    if let Some(ref tag) = filter.tag {
+        cond = cond.add(
+            Expr::col(Connectors::TagsJson).like(super::helpers::tag_like_pattern(tag.as_str())),
+        );
+    }
+    cond
+}
+
 // -- Repository trait --
 
 #[async_trait]
@@ -241,13 +253,7 @@ impl ConnectorRepository for SqlConnectorRepository {
             };
             // Connectors are unversioned; the one filter is `?tag=` (K6). An
             // empty `Condition::all()` renders no `WHERE` clause.
-            let mut cond = sea_query::Condition::all();
-            if let Some(ref tag) = filter.tag {
-                cond = cond.add(
-                    Expr::col(Connectors::TagsJson)
-                        .like(super::helpers::tag_like_pattern(tag.as_str())),
-                );
-            }
+            let cond = build_condition(filter);
             let page: PaginatedResult<Connector> = super::helpers::paginate(
                 &self.pool,
                 Page {
@@ -383,19 +389,12 @@ impl ConnectorRepository for SqlConnectorRepository {
         crate::metrics::timed_db_op("connectors.snapshot", async {
             let rows: Vec<Connector> = super::helpers::snapshot_pages(
                 &self.pool,
-                super::workflows::EXPORT_PAGE_SIZE,
+                super::helpers::EXPORT_PAGE_SIZE,
                 |limit, offset| {
-                    let mut cond = sea_query::Condition::all();
-                    if let Some(ref tag) = filter.tag {
-                        cond = cond.add(
-                            Expr::col(Connectors::TagsJson)
-                                .like(super::helpers::tag_like_pattern(tag.as_str())),
-                        );
-                    }
                     Query::select()
                         .column(Asterisk)
                         .from(Connectors::Table)
-                        .cond_where(cond)
+                        .cond_where(build_condition(filter))
                         // `name` is unique — a total order by itself.
                         .order_by(Connectors::Name, Order::Asc)
                         .limit(limit as u64)
@@ -418,11 +417,11 @@ impl ConnectorRepository for SqlConnectorRepository {
                     .and_where(Expr::col(Connectors::Name).eq(name)),
             );
 
-            self.pool
-                .fetch_optional_as::<Connector>(&sql, values)
-                .await?
-                .ok_or_else(|| OrionError::NotFound(format!("Connector '{name}' not found")))
-                .and_then(|row| self.open_row(row))
+            super::helpers::fetch_required::<Connector>(&self.pool, &sql, values, || {
+                OrionError::NotFound(format!("Connector '{name}' not found"))
+            })
+            .await
+            .and_then(|row| self.open_row(row))
         })
         .await
     }

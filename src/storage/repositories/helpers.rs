@@ -251,6 +251,10 @@ pub fn parse_sort_order(sort_order: Option<&str>) -> sea_query::Order {
     }
 }
 
+/// Rows per query inside the three repository `snapshot` methods — bounded
+/// per D7, and within the `1..=1000` window [`snapshot_pages`] asserts.
+pub(crate) const EXPORT_PAGE_SIZE: i64 = 500;
+
 /// Read every matching row in bounded pages **inside one transaction** (K12).
 ///
 /// The export endpoints used to page with independent pool queries, so rows

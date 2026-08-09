@@ -74,6 +74,17 @@ pub fn current() -> Option<RequestContext> {
     REQUEST_CONTEXT.try_with(|ctx| ctx.clone()).ok()
 }
 
+/// A header's value, truncated to `max_len` bytes. `None` when absent, empty
+/// or non-ASCII — `HeaderValue::to_str` only succeeds for visible ASCII, so
+/// every char is one byte and the slice is always on a char boundary.
+fn ascii_header(req: &Request, name: &str, max_len: usize) -> Option<String> {
+    req.headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(|v| v[..v.len().min(max_len)].to_string())
+}
+
 /// Middleware that scopes the per-request task-local [`REQUEST_CONTEXT`].
 ///
 /// Must run inside `SetRequestIdLayer` so the `x-request-id` header is already
@@ -84,9 +95,8 @@ pub async fn request_context_scope(
     req: Request,
     next: Next,
 ) -> Response {
-    // `HeaderValue::to_str` only succeeds for visible ASCII, so every char in
-    // both of the values below is one byte and the slices are always on a char
-    // boundary.
+    // Same ASCII/byte-boundary reasoning as `ascii_header`, spelled inline
+    // because the request id keeps an empty-string (not None) representation.
     let request_id = req
         .headers()
         .get("x-request-id")
@@ -94,18 +104,8 @@ pub async fn request_context_scope(
         .map(|v| &v[..v.len().min(MAX_REQUEST_ID_LEN)])
         .unwrap_or("")
         .to_string();
-    let user_agent = req
-        .headers()
-        .get(USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-        .filter(|v| !v.is_empty())
-        .map(|v| v[..v.len().min(MAX_USER_AGENT_LEN)].to_string());
-    let change_context = req
-        .headers()
-        .get(CHANGE_CONTEXT)
-        .and_then(|v| v.to_str().ok())
-        .filter(|v| !v.is_empty())
-        .map(|v| v[..v.len().min(MAX_CHANGE_CONTEXT_LEN)].to_string());
+    let user_agent = ascii_header(&req, USER_AGENT, MAX_USER_AGENT_LEN);
+    let change_context = ascii_header(&req, CHANGE_CONTEXT, MAX_CHANGE_CONTEXT_LEN);
     let client_ip = crate::server::rate_limit::extract_client_ip(&req, state.trusted_proxies());
     let ctx = RequestContext {
         request_id,

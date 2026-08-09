@@ -67,33 +67,35 @@ struct Requires {
     connectors: Vec<String>,
 }
 
+/// Project every entry of one entity array through its import shape. Fails on
+/// an entry that does not parse as that shape — such an artifact could not
+/// apply anyway.
+fn project_entries<T: serde::de::DeserializeOwned>(
+    entries: &[Value],
+    label: &str,
+    project: impl Fn(&T) -> Value,
+) -> Result<Vec<Value>, CliError> {
+    entries
+        .iter()
+        .map(|entry| {
+            let req: T = serde_json::from_value(entry.clone())
+                .map_err(|e| format!("{label} entry does not parse as an import item: {e}"))?;
+            Ok(project(&req))
+        })
+        .collect()
+}
+
 /// The package-level hash: each entity array projected entry-by-entry
 /// through the shared importable-content canonicalization, then hashed as
-/// one document. Fails on an entry that does not parse as its import shape —
-/// such an artifact could not apply anyway.
+/// one document.
 fn artifact_content_hash(artifact: &PackageArtifact) -> Result<String, CliError> {
-    let mut connectors = Vec::new();
-    for entry in &artifact.connectors {
-        let req: CreateConnectorRequest = serde_json::from_value(entry.clone())
-            .map_err(|e| format!("connector entry does not parse as an import item: {e}"))?;
-        connectors.push(content::connector_request_content(&req));
-    }
-    let mut workflows = Vec::new();
-    for entry in &artifact.workflows {
-        let req: CreateWorkflowRequest = serde_json::from_value(entry.clone())
-            .map_err(|e| format!("workflow entry does not parse as an import item: {e}"))?;
-        workflows.push(content::workflow_request_content(&req));
-    }
-    let mut channels = Vec::new();
-    for entry in &artifact.channels {
-        let req: CreateChannelRequest = serde_json::from_value(entry.clone())
-            .map_err(|e| format!("channel entry does not parse as an import item: {e}"))?;
-        channels.push(content::channel_request_content(&req));
-    }
     Ok(content::content_hash(&json!({
-        "connectors": connectors,
-        "workflows": workflows,
-        "channels": channels,
+        "connectors": project_entries::<CreateConnectorRequest>(
+            &artifact.connectors, "connector", content::connector_request_content)?,
+        "workflows": project_entries::<CreateWorkflowRequest>(
+            &artifact.workflows, "workflow", content::workflow_request_content)?,
+        "channels": project_entries::<CreateChannelRequest>(
+            &artifact.channels, "channel", content::channel_request_content)?,
     })))
 }
 
@@ -101,7 +103,26 @@ fn artifact_content_hash(artifact: &PackageArtifact) -> Result<String, CliError>
 // Admin-API client
 // ============================================================
 
+/// A non-2xx admin-API response, kept structured so callers can branch on
+/// `status`/`code` instead of matching prose that a server-side rewording
+/// would silently break.
+#[derive(Debug)]
+struct ApiError {
+    status: u16,
+    code: String,
+    message: String,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HTTP {} {}: {}", self.status, self.code, self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
 struct AdminClient {
+    /// Server base plus the `/api/v1/admin` prefix every CLI call shares.
     base: String,
     token: Option<String>,
     /// Sent as `X-Orion-Change-Context` on every call (K5), so the audit
@@ -113,7 +134,7 @@ struct AdminClient {
 impl AdminClient {
     fn new(server: &str, change_context: String) -> Self {
         Self {
-            base: server.trim_end_matches('/').to_string(),
+            base: format!("{}/api/v1/admin", server.trim_end_matches('/')),
             token: std::env::var("ORION_ADMIN_TOKEN")
                 .ok()
                 .filter(|t| !t.is_empty()),
@@ -133,16 +154,24 @@ impl AdminClient {
         req
     }
 
-    /// Send, insist on 2xx, and unwrap the `{"data": …}` envelope.
+    /// Insist on 2xx and unwrap the `{"data": …}` envelope; a failure is a
+    /// typed [`ApiError`].
+    fn unwrap_envelope(status: reqwest::StatusCode, body: Value) -> Result<Value, CliError> {
+        if !status.is_success() {
+            return Err(Box::new(ApiError {
+                status: status.as_u16(),
+                code: body["error"]["code"].as_str().unwrap_or("").to_string(),
+                message: body["error"]["message"].as_str().unwrap_or("").to_string(),
+            }));
+        }
+        Ok(body.get("data").cloned().unwrap_or(body))
+    }
+
     async fn json(&self, req: reqwest::RequestBuilder) -> Result<Value, CliError> {
         let resp = req.send().await?;
         let status = resp.status();
         let body: Value = resp.json().await.unwrap_or(Value::Null);
-        if !status.is_success() {
-            let message = body["error"]["message"].as_str().unwrap_or("").to_string();
-            return Err(format!("HTTP {status}: {message}").into());
-        }
-        Ok(body.get("data").cloned().unwrap_or(body))
+        Self::unwrap_envelope(status, body)
     }
 
     /// Like [`Self::json`] but 404 comes back as `Ok(None)`.
@@ -153,11 +182,7 @@ impl AdminClient {
             return Ok(None);
         }
         let body: Value = resp.json().await.unwrap_or(Value::Null);
-        if !status.is_success() {
-            let message = body["error"]["message"].as_str().unwrap_or("").to_string();
-            return Err(format!("HTTP {status}: {message}").into());
-        }
-        Ok(Some(body.get("data").cloned().unwrap_or(body)))
+        Self::unwrap_envelope(status, body).map(Some)
     }
 
     async fn get(&self, path: &str) -> Result<Value, CliError> {
@@ -170,6 +195,21 @@ fn read_artifact(path: &str) -> Result<PackageArtifact, CliError> {
     let artifact: PackageArtifact = serde_json::from_str(&raw)
         .map_err(|e| format!("'{path}' is not a package artifact: {e}"))?;
     Ok(artifact)
+}
+
+/// The receipt endpoint for this artifact's package.
+fn receipt_path(artifact: &PackageArtifact) -> String {
+    format!("/packages/{}", artifact.package.name)
+}
+
+/// Collect the `name` field of every row in an exported entity array.
+fn names_of(export: &Value, field: &str) -> std::collections::HashSet<String> {
+    export
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|row| row[field].as_str().map(str::to_string))
+        .collect()
 }
 
 // ============================================================
@@ -193,15 +233,16 @@ pub(crate) async fn run_export(
     let mut channels: Vec<Value> = Vec::new();
     if let Some(tag) = tag {
         let listed = client
-            .get(&format!(
-                "/api/v1/admin/channels/export?tag={}",
-                urlencode(tag)
-            ))
+            .json(
+                client
+                    .request(reqwest::Method::GET, "/channels/export")
+                    .query(&[("tag", tag)]),
+            )
             .await?;
         channels.extend(listed.as_array().cloned().unwrap_or_default());
     }
     for id in channel_ids {
-        channels.push(client.get(&format!("/api/v1/admin/channels/{id}")).await?);
+        channels.push(client.get(&format!("/channels/{id}")).await?);
     }
     if channels.is_empty() {
         return Err("the selector matched no channels".into());
@@ -216,7 +257,7 @@ pub(crate) async fn run_export(
     for channel in &channels {
         match channel["workflow_id"].as_str() {
             Some(wf) if !wf.is_empty() => {
-                if !workflow_ids.contains(&wf.to_string()) {
+                if !workflow_ids.iter().any(|w| w == wf) {
                     workflow_ids.push(wf.to_string());
                 }
             }
@@ -230,11 +271,9 @@ pub(crate) async fn run_export(
     let mut connector_names: Vec<String> = Vec::new();
     let mut required_channels: Vec<String> = Vec::new();
     for id in &workflow_ids {
-        workflows.push(client.get(&format!("/api/v1/admin/workflows/{id}")).await?);
+        workflows.push(client.get(&format!("/workflows/{id}")).await?);
         // 3. The dependency closure, from the server's own walk (K9).
-        let deps = client
-            .get(&format!("/api/v1/admin/workflows/{id}/dependencies"))
-            .await?;
+        let deps = client.get(&format!("/workflows/{id}/dependencies")).await?;
         for c in deps["connectors"].as_array().into_iter().flatten() {
             if let Some(name) = c["connector"].as_str()
                 && !connector_names.iter().any(|n| n == name)
@@ -261,7 +300,7 @@ pub(crate) async fn run_export(
     }
 
     // 4. The referenced connectors, from one export sweep.
-    let all_connectors = client.get("/api/v1/admin/connectors/export").await?;
+    let all_connectors = client.get("/connectors/export").await?;
     let mut connectors = Vec::new();
     let mut required_connectors: Vec<String> = Vec::new();
     for name in &connector_names {
@@ -327,18 +366,6 @@ pub(crate) async fn run_export(
         None => println!("{rendered}"),
     }
     Ok(())
-}
-
-fn urlencode(s: &str) -> String {
-    s.chars()
-        .flat_map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
-                vec![c]
-            } else {
-                format!("%{:02X}", c as u32).chars().collect()
-            }
-        })
-        .collect()
 }
 
 // ============================================================
@@ -457,31 +484,28 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
     }
 
     // Closure: every task reference resolves inside the package or is a
-    // declared boundary in `requires`.
+    // declared boundary in `requires` — via the same walk the server's gates
+    // and the K9 endpoint use, so a new connector-bearing function cannot
+    // leave lint checking stale rules.
     for (workflow_id, tasks) in &workflow_tasks {
-        for task in tasks.as_array().into_iter().flatten() {
-            let Some(function) = task.get("function") else {
-                continue;
-            };
-            let fn_name = function.get("name").and_then(|n| n.as_str()).unwrap_or("");
-            let input = function.get("input");
-            if orion::engine::CONNECTOR_FUNCTIONS.contains(&fn_name)
-                && let Some(connector) = input
-                    .and_then(|i| i.get("connector"))
-                    .and_then(|c| c.as_str())
-                && !connector_names.iter().any(|n| n == connector)
-                && !artifact.requires.connectors.iter().any(|n| n == connector)
+        for r in orion::engine::connector_refs(tasks) {
+            if !connector_names.iter().any(|n| n == r.connector)
+                && !artifact
+                    .requires
+                    .connectors
+                    .iter()
+                    .any(|n| n == r.connector)
             {
                 errors.push(format!(
-                    "workflow '{workflow_id}': connector '{connector}' is neither in the \
-                     package nor declared in requires.connectors"
+                    "workflow '{workflow_id}': connector '{}' is neither in the \
+                     package nor declared in requires.connectors",
+                    r.connector
                 ));
             }
-            if fn_name == "channel_call"
-                && let Some(target) = input
-                    .and_then(|i| i.get("channel"))
-                    .and_then(|c| c.as_str())
-                && !channel_names.iter().any(|n| n == target)
+        }
+        let (targets, dynamic) = orion::engine::channel_call_targets(tasks);
+        for target in targets {
+            if !channel_names.iter().any(|n| n == target)
                 && !artifact.requires.channels.iter().any(|n| n == target)
             {
                 errors.push(format!(
@@ -489,6 +513,12 @@ pub(crate) fn run_lint(file: &str) -> Result<(), CliError> {
                      in the package nor declared in requires.channels"
                 ));
             }
+        }
+        if dynamic {
+            eprintln!(
+                "warning: workflow '{workflow_id}' resolves channel_call targets \
+                 dynamically — closure checking cannot cover those calls"
+            );
         }
     }
 
@@ -527,10 +557,7 @@ async fn check_receipt(
     artifact: &PackageArtifact,
 ) -> Result<ReceiptState, CliError> {
     let receipts = client
-        .json_opt(client.request(
-            reqwest::Method::GET,
-            &format!("/api/v1/admin/packages/{}", artifact.package.name),
-        ))
+        .json_opt(client.request(reqwest::Method::GET, &receipt_path(artifact)))
         .await?;
     let Some(receipts) = receipts else {
         return Ok(ReceiptState::Fresh);
@@ -579,38 +606,37 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
         ReceiptState::Fresh => {}
     }
 
-    // `requires` boundaries must exist in the target.
+    // `requires` boundaries must exist in the target — each set fetched once
+    // (the exports are unpaginated K12 snapshots, so no listing clamp can
+    // hide a boundary on a large estate).
     let mut failures = 0usize;
-    for name in &artifact.requires.connectors {
-        let found = client
-            .get("/api/v1/admin/connectors/export")
-            .await?
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|c| c["name"].as_str() == Some(name));
-        if !found {
-            eprintln!("error: required connector '{name}' does not exist in the target");
-            failures += 1;
+    if !artifact.requires.connectors.is_empty() {
+        let stored = names_of(&client.get("/connectors/export").await?, "name");
+        for name in &artifact.requires.connectors {
+            if !stored.contains(name) {
+                eprintln!("error: required connector '{name}' does not exist in the target");
+                failures += 1;
+            }
         }
     }
-    for name in &artifact.requires.channels {
-        let listed = client
-            .get("/api/v1/admin/channels?status=active&limit=1000")
+    if !artifact.requires.channels.is_empty() {
+        let active = client
+            .json(
+                client
+                    .request(reqwest::Method::GET, "/channels/export")
+                    .query(&[("status", "active")]),
+            )
             .await?;
-        if !listed
-            .as_array()
-            .into_iter()
-            .flatten()
-            .any(|c| c["name"].as_str() == Some(name))
-        {
-            eprintln!("error: required channel '{name}' is not active in the target");
-            failures += 1;
+        let active = names_of(&active, "name");
+        for name in &artifact.requires.channels {
+            if !active.contains(name) {
+                eprintln!("error: required channel '{name}' is not active in the target");
+                failures += 1;
+            }
         }
     }
 
     // Per-entity actions from the servers' own dry-runs (K2).
-    let provided = provided_names(&artifact);
     for (kind, items) in [
         ("connectors", &artifact.connectors),
         ("workflows", &artifact.workflows),
@@ -624,9 +650,7 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
                 client
                     .request(
                         reqwest::Method::POST,
-                        &format!(
-                            "/api/v1/admin/{kind}/import?dry_run=true&on_conflict=new_version"
-                        ),
+                        &format!("/{kind}/import?dry_run=true&on_conflict=new_version"),
                     )
                     .json(items),
             )
@@ -648,17 +672,31 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
         }
     }
 
-    // Activation gates (K3), evaluated against the *current* state. A
-    // finding that names something this package itself provides is expected
-    // to clear during apply's ordered activation, and is reported as such
-    // rather than counted as a failure.
-    for (kind, id) in activation_intents(&artifact) {
+    // Activation gates (K3), evaluated against the *current* state — so a
+    // finding can name something that only exists once apply's ordered
+    // staging and activation have run. Those are reported as pending, not
+    // failures. Classification is by message (the dry-run envelope carries no
+    // machine code yet), kept deliberately narrow: only existence-shaped
+    // findings qualify, and a referenced dependency must be one this package
+    // provides *of the kind apply's ordering resolves* — a type mismatch or
+    // route collision mentions package names too, and apply cannot fix those.
+    let provided_connectors: Vec<String> = artifact
+        .connectors
+        .iter()
+        .filter_map(|c| c["name"].as_str().map(str::to_string))
+        .collect();
+    let provided_workflows: Vec<String> = artifact
+        .workflows
+        .iter()
+        .filter_map(|w| w["workflow_id"].as_str().map(str::to_string))
+        .collect();
+    for (kind, id, _) in activation_intents(&artifact) {
         let outcome = client
             .json(
                 client
                     .request(
                         reqwest::Method::PATCH,
-                        &format!("/api/v1/admin/{kind}/{id}/status?dry_run=true"),
+                        &format!("/{kind}/{id}/status?dry_run=true"),
                     )
                     .json(&json!({"status": "active"})),
             )
@@ -671,12 +709,29 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
                 continue;
             }
         };
+        let resolved_by_order = if kind == "workflows" {
+            &provided_connectors
+        } else {
+            &provided_workflows
+        };
         for finding in outcome["errors"].as_array().into_iter().flatten() {
             let message = finding["message"].as_str().unwrap_or("");
-            if provided.iter().any(|name| message.contains(name.as_str()))
-                || message.contains("not found")
-                || message.contains("No draft version")
-            {
+            let existence = ["not found", "No draft version", "has no active version"]
+                .iter()
+                .any(|phrase| message.contains(phrase));
+            let pending =
+                // The planned entity itself is absent or draft-less — staging
+                // creates it before activation runs.
+                message.starts_with(&format!("Workflow '{id}' not found"))
+                    || message.starts_with(&format!("Channel '{id}' not found"))
+                    || message.contains("No draft version")
+                    // A reference apply's ordering satisfies: quoted, and of
+                    // the dependency kind activated before this entity.
+                    || (existence
+                        && resolved_by_order
+                            .iter()
+                            .any(|name| message.contains(&format!("'{name}'"))));
+            if pending {
                 println!("  {kind:<10} {id:<28} gate pending apply order: {message}");
             } else {
                 eprintln!("error: {kind} '{id}' would not activate: {message}");
@@ -705,39 +760,28 @@ fn verify_hash(artifact: &PackageArtifact) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Names this package will create or activate — used to downgrade plan
-/// findings that apply's ordering satisfies.
-fn provided_names(artifact: &PackageArtifact) -> Vec<String> {
-    let mut names = Vec::new();
-    for entry in &artifact.connectors {
-        if let Some(n) = entry["name"].as_str() {
-            names.push(n.to_string());
-        }
-    }
-    for entry in &artifact.workflows {
-        if let Some(n) = entry["workflow_id"].as_str() {
-            names.push(n.to_string());
-        }
-    }
-    names
-}
-
-/// `(kind, id)` of every entity the artifact marks `activate: true`, in
-/// dependency order: workflows before the channels that name them.
-fn activation_intents(artifact: &PackageArtifact) -> Vec<(&'static str, String)> {
+/// `(kind, id, rollout)` of every entity the artifact marks `activate: true`,
+/// in dependency order: workflows before the channels that name them. The one
+/// place the intent fields are read, so plan and apply cannot disagree on
+/// their spelling.
+fn activation_intents(artifact: &PackageArtifact) -> Vec<(&'static str, String, Option<i64>)> {
     let mut intents = Vec::new();
     for entry in &artifact.workflows {
         if entry["activate"] == true
             && let Some(id) = entry["workflow_id"].as_str()
         {
-            intents.push(("workflows", id.to_string()));
+            intents.push((
+                "workflows",
+                id.to_string(),
+                entry["rollout_percentage"].as_i64(),
+            ));
         }
     }
     for entry in &artifact.channels {
         if entry["activate"] == true
             && let Some(id) = entry["channel_id"].as_str()
         {
-            intents.push(("channels", id.to_string()));
+            intents.push(("channels", id.to_string(), None));
         }
     }
     intents
@@ -766,10 +810,7 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
     client
         .json(
             client
-                .request(
-                    reqwest::Method::PUT,
-                    &format!("/api/v1/admin/packages/{}", artifact.package.name),
-                )
+                .request(reqwest::Method::PUT, &receipt_path(&artifact))
                 .json(&json!({
                     "version": artifact.package.version,
                     "content_hash": artifact.package.content_hash,
@@ -795,7 +836,7 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
                 client
                     .request(
                         reqwest::Method::POST,
-                        &format!("/api/v1/admin/{kind}/import?on_conflict=new_version"),
+                        &format!("/{kind}/import?on_conflict=new_version"),
                     )
                     .json(items),
             )
@@ -824,15 +865,9 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
     // Phase 3 — activate in dependency order with the reload deferred (K4):
     // one engine rebuild and one cluster epoch bump at the end, not one per
     // entity.
-    for (kind, id) in activation_intents(&artifact) {
+    for (kind, id, rollout) in activation_intents(&artifact) {
         let mut body = json!({"status": "active"});
-        if kind == "workflows"
-            && let Some(pct) = artifact
-                .workflows
-                .iter()
-                .find(|w| w["workflow_id"].as_str() == Some(id.as_str()))
-                .and_then(|w| w["rollout_percentage"].as_i64())
-        {
+        if let Some(pct) = rollout {
             body["rollout_percentage"] = json!(pct);
         }
         let result = client
@@ -840,16 +875,22 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
                 client
                     .request(
                         reqwest::Method::PATCH,
-                        &format!("/api/v1/admin/{kind}/{id}/status?reload=defer"),
+                        &format!("/{kind}/{id}/status?reload=defer"),
                     )
                     .json(&body),
             )
             .await;
         match result {
             Ok(_) => println!("activated {kind} '{id}'"),
-            // An entity that is already active has no draft to promote —
-            // `unchanged` staging left it as it was, which is the goal state.
-            Err(e) if e.to_string().contains("No draft version") => {
+            // Staging just succeeded, so the entity exists; a 404 on its
+            // activation can only be "no draft version" — the `unchanged`
+            // staging left it active as-is, which is the goal state. Matched
+            // on the status, not the message, so a rewording cannot turn
+            // this benign no-op into a mid-package abort.
+            Err(e)
+                if e.downcast_ref::<ApiError>()
+                    .is_some_and(|api| api.status == 404) =>
+            {
                 println!("{kind} '{id}' is already active (unchanged)");
             }
             Err(e) => {
@@ -868,7 +909,7 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
 
     // Phase 4 — one reload, one epoch bump.
     client
-        .json(client.request(reqwest::Method::POST, "/api/v1/admin/engine/reload"))
+        .json(client.request(reqwest::Method::POST, "/engine/reload"))
         .await
         .map_err(|e| format!("entities are active but the engine reload failed: {e}"))?;
 
@@ -876,10 +917,7 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
     client
         .json(
             client
-                .request(
-                    reqwest::Method::PUT,
-                    &format!("/api/v1/admin/packages/{}", artifact.package.name),
-                )
+                .request(reqwest::Method::PUT, &receipt_path(&artifact))
                 .json(&json!({
                     "version": artifact.package.version,
                     "content_hash": artifact.package.content_hash,
@@ -901,66 +939,74 @@ pub(crate) async fn run_diff(server: &str, file: &str) -> Result<(), CliError> {
     let package = format!("{}@{}", artifact.package.name, artifact.package.version);
     let client = AdminClient::new(server, format!("package={package} diff"));
 
-    let mut differences = 0usize;
-    let report = |entity: &str, state: &str, count: &mut usize| {
-        println!("  {state:<10} {entity}");
-        if state != "unchanged" {
-            *count += 1;
-        }
-    };
-
     // Server-side content hashes (K10) against the artifact's per-entity
-    // projections — the same canonicalization on both sides.
-    let all_connectors = client.get("/api/v1/admin/connectors/export").await?;
-    for entry in &artifact.connectors {
-        let req: CreateConnectorRequest = serde_json::from_value(entry.clone())?;
-        let expected = content::content_hash(&content::connector_request_content(&req));
-        let stored = all_connectors
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|c| c["name"].as_str() == Some(req.name.as_str()))
-            .cloned();
-        let label = format!("connector '{}'", req.name);
-        match stored {
-            None => report(&label, "missing", &mut differences),
-            Some(row) if row["content_hash"].as_str() == Some(expected.as_str()) => {
-                report(&label, "unchanged", &mut differences)
-            }
-            Some(_) => report(&label, "changed", &mut differences),
-        }
-    }
-    for (kind, entries, id_field) in [
-        ("workflow", &artifact.workflows, "workflow_id"),
-        ("channel", &artifact.channels, "channel_id"),
+    // projections — the same canonicalization on both sides. One export
+    // sweep per kind rather than one GET per entity: the exports are K12
+    // snapshots and already carry `content_hash`, which is all diff compares.
+    let mut rows: Vec<(String, &'static str)> = Vec::new();
+    for (kind, entries, key_field, export_path) in [
+        (
+            "connector",
+            &artifact.connectors,
+            "name",
+            "/connectors/export",
+        ),
+        (
+            "workflow",
+            &artifact.workflows,
+            "workflow_id",
+            "/workflows/export",
+        ),
+        (
+            "channel",
+            &artifact.channels,
+            "channel_id",
+            "/channels/export",
+        ),
     ] {
+        if entries.is_empty() {
+            continue;
+        }
+        let export = client.get(export_path).await?;
         for entry in entries {
-            let Some(id) = entry[id_field].as_str() else {
+            let Some(key) = entry[key_field].as_str() else {
                 continue;
             };
-            let expected = if kind == "workflow" {
-                let req: CreateWorkflowRequest = serde_json::from_value(entry.clone())?;
-                content::content_hash(&content::workflow_request_content(&req))
-            } else {
-                let req: CreateChannelRequest = serde_json::from_value(entry.clone())?;
-                content::content_hash(&content::channel_request_content(&req))
-            };
-            let stored = client
-                .json_opt(
-                    client.request(reqwest::Method::GET, &format!("/api/v1/admin/{kind}s/{id}")),
-                )
-                .await?;
-            let label = format!("{kind} '{id}'");
-            match stored {
-                None => report(&label, "missing", &mut differences),
-                Some(row) if row["content_hash"].as_str() == Some(expected.as_str()) => {
-                    report(&label, "unchanged", &mut differences)
+            let expected = match kind {
+                "connector" => {
+                    let req: CreateConnectorRequest = serde_json::from_value(entry.clone())?;
+                    content::content_hash(&content::connector_request_content(&req))
                 }
-                Some(_) => report(&label, "changed", &mut differences),
-            }
+                "workflow" => {
+                    let req: CreateWorkflowRequest = serde_json::from_value(entry.clone())?;
+                    content::content_hash(&content::workflow_request_content(&req))
+                }
+                _ => {
+                    let req: CreateChannelRequest = serde_json::from_value(entry.clone())?;
+                    content::content_hash(&content::channel_request_content(&req))
+                }
+            };
+            let stored = export
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|row| row[key_field].as_str() == Some(key));
+            let state = match stored {
+                None => "missing",
+                Some(row) if row["content_hash"].as_str() == Some(expected.as_str()) => "unchanged",
+                Some(_) => "changed",
+            };
+            rows.push((format!("{kind} '{key}'"), state));
         }
     }
 
+    for (label, state) in &rows {
+        println!("  {state:<10} {label}");
+    }
+    let differences = rows
+        .iter()
+        .filter(|(_, state)| *state != "unchanged")
+        .count();
     if differences > 0 {
         Err(format!(
             "{differences} entity(ies) differ between '{file}' and {server} — the \

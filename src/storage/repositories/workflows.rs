@@ -19,11 +19,6 @@ use super::helpers::{
 pub use super::helpers::PaginatedResult;
 use super::versioned::{self, VersionedSpec};
 
-/// Rows per query inside a [`WorkflowRepository::snapshot`] (and its two
-/// siblings) — the same bound the route layer's `EXPORT_PAGE_SIZE` carries,
-/// for the same D7 reason.
-pub(crate) const EXPORT_PAGE_SIZE: i64 = 500;
-
 /// The versioned-lifecycle spec shared machinery operates on.
 fn spec() -> VersionedSpec {
     use sea_query::IntoIden;
@@ -445,19 +440,23 @@ impl WorkflowRepository for SqlWorkflowRepository {
 
     async fn snapshot(&self, filter: &WorkflowFilter) -> Result<Vec<Workflow>, OrionError> {
         crate::metrics::timed_db_op("workflows.snapshot", async {
-            super::helpers::snapshot_pages(&self.pool, EXPORT_PAGE_SIZE, |limit, offset| {
-                Query::select()
-                    .column(Asterisk)
-                    .from(CurrentWorkflows::Table)
-                    .cond_where(build_condition(filter))
-                    .order_by(Workflows::Priority, Order::Desc)
-                    .order_by(Workflows::Name, Order::Asc)
-                    // Unique tiebreaker: OFFSET paging needs a total order.
-                    .order_by(Workflows::WorkflowId, Order::Asc)
-                    .limit(limit as u64)
-                    .offset(offset as u64)
-                    .to_owned()
-            })
+            super::helpers::snapshot_pages(
+                &self.pool,
+                super::helpers::EXPORT_PAGE_SIZE,
+                |limit, offset| {
+                    Query::select()
+                        .column(Asterisk)
+                        .from(CurrentWorkflows::Table)
+                        .cond_where(build_condition(filter))
+                        .order_by(Workflows::Priority, Order::Desc)
+                        .order_by(Workflows::Name, Order::Asc)
+                        // Unique tiebreaker: OFFSET paging needs a total order.
+                        .order_by(Workflows::WorkflowId, Order::Asc)
+                        .limit(limit as u64)
+                        .offset(offset as u64)
+                        .to_owned()
+                },
+            )
             .await
         })
         .await

@@ -6,13 +6,7 @@
 
 use std::process::Command;
 
-fn orion_bin() -> String {
-    // Resolved at compile time: cargo guarantees CARGO_BIN_EXE_<name> to `env!`
-    // for integration tests (stable since Rust 1.43). Reading it at runtime via
-    // std::env::var is fragile — cargo only began exporting it into the test
-    // process environment in toolchains newer than 1.88.
-    env!("CARGO_BIN_EXE_orion-server").to_string()
-}
+use crate::common::orion_bin;
 
 fn write_temp(content: &str, suffix: &str) -> String {
     let mut path = std::env::temp_dir();

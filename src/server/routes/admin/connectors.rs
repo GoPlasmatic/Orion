@@ -356,7 +356,7 @@ pub(crate) async fn import_connectors(
         return Ok(super::import_response(true, outcome));
     }
     // K5: one row per written entity, plus the batch summary row.
-    for (id, _action) in outcome.written() {
+    for id in outcome.written() {
         audit_log(&state.audit_queue, &principal, "import", "connector", id);
     }
     audit_log(

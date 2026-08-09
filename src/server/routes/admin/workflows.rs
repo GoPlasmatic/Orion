@@ -305,71 +305,10 @@ async fn dry_run_status_change(
     Ok(ValidationEnvelope::new(errors, warnings))
 }
 
-/// One task's connector reference, as authored.
-pub(crate) struct ConnectorRef<'a> {
-    /// The task's `function.name`, always one of `CONNECTOR_FUNCTIONS`.
-    pub function: &'a str,
-    pub connector: &'a str,
-    /// The task's whole `function.input` object, for the cross-field rules.
-    pub input: &'a Value,
-}
-
-/// Every connector a workflow's tasks reference, in task order.
-///
-/// Shared by the activation check below and the connector-rename guard in
-/// `admin/connectors.rs` (F18), which needs the same walk to answer "is any
-/// active workflow pointing at this name?".
-pub(crate) fn connector_refs(tasks: &Value) -> Vec<ConnectorRef<'_>> {
-    let Some(tasks) = tasks.as_array() else {
-        return Vec::new();
-    };
-    tasks
-        .iter()
-        .filter_map(|task| {
-            let function = task.get("function")?;
-            let name = function.get("name")?.as_str()?;
-            if !crate::engine::CONNECTOR_FUNCTIONS.contains(&name) {
-                return None;
-            }
-            let input = function.get("input")?;
-            Some(ConnectorRef {
-                function: name,
-                connector: input.get("connector")?.as_str()?,
-                input,
-            })
-        })
-        .collect()
-}
-
-/// Channel names a workflow's `channel_call` tasks target statically, plus
-/// whether any call resolves its target dynamically (`channel_logic`), in
-/// which case the static list is incomplete by construction.
-pub(crate) fn channel_call_targets(tasks: &Value) -> (Vec<&str>, bool) {
-    let Some(tasks) = tasks.as_array() else {
-        return (Vec::new(), false);
-    };
-    let mut targets = Vec::new();
-    let mut dynamic = false;
-    for task in tasks {
-        let Some(input) = task
-            .get("function")
-            .filter(|f| f.get("name").and_then(|n| n.as_str()) == Some("channel_call"))
-            .and_then(|f| f.get("input"))
-        else {
-            continue;
-        };
-        if let Some(target) = input.get("channel").and_then(|c| c.as_str())
-            && !target.is_empty()
-            && !targets.contains(&target)
-        {
-            targets.push(target);
-        }
-        if input.get("channel_logic").is_some_and(|l| !l.is_null()) {
-            dynamic = true;
-        }
-    }
-    (targets, dynamic)
-}
+// The task-reference walk lives in `crate::engine::refs` so the K9 endpoint,
+// the gates here, the rename guard in `admin/connectors.rs`, and the package
+// CLI's offline lint all share one implementation.
+pub(crate) use crate::engine::refs::{channel_call_targets, connector_refs};
 
 /// `GET /api/v1/admin/workflows/{id}/dependencies` (K9).
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -818,7 +757,7 @@ pub(crate) async fn import_workflows(
     // K5: one row per written entity — the trail used to record only
     // "{n} imported", which could not answer *what* an import created — plus
     // the summary row that ties the batch together.
-    for (id, _action) in outcome.written() {
+    for id in outcome.written() {
         audit_log_draft_only(&state.audit_queue, &principal, "import", "workflow", id);
     }
     audit_log_draft_only(
@@ -832,21 +771,15 @@ pub(crate) async fn import_workflows(
     Ok(super::import_response(false, outcome))
 }
 
-/// K2: one workflow item under `on_conflict=new_version`.
-///
-/// Content comparison excludes the DB-owned fields (`version`, `status`,
-/// timestamps, `rollout_percentage`), so a re-import of an export is
-/// `unchanged` even though the export carries them. An **archived** workflow
-/// with identical content still gets a new draft version: the point of
-/// re-importing an archived entity is to activate it again, and activation
-/// needs a draft.
+/// K2: one workflow item under `on_conflict=new_version`. The decision table
+/// (including the archived-entity invariant) is [`super::versioned_upsert_action`];
+/// this supplies the workflow repository's verbs.
 async fn upsert_workflow(
     repo: &dyn crate::storage::repositories::workflows::WorkflowRepository,
     req: CreateWorkflowRequest,
     dry_run: bool,
 ) -> Result<super::ImportAction, OrionError> {
     use super::ImportAction;
-    use crate::storage::models::EntityStatus;
 
     let Some(id) = req.workflow_id.clone() else {
         // No id → the store generates one; nothing to conflict with.
@@ -868,23 +801,20 @@ async fn upsert_workflow(
 
     let identical = crate::storage::content::workflow_content(&latest)?
         == crate::storage::content::workflow_request_content(&req);
-    if latest.status == EntityStatus::Draft.as_str() {
-        if identical {
-            return Ok(ImportAction::Unchanged);
+    let action = super::versioned_upsert_action(&latest.status, identical);
+    if !dry_run {
+        match action {
+            ImportAction::UpdatedDraft => {
+                repo.replace_draft(&id, &req).await?;
+            }
+            ImportAction::NewVersion => {
+                repo.create_new_version(&id).await?;
+                repo.replace_draft(&id, &req).await?;
+            }
+            _ => {}
         }
-        if !dry_run {
-            repo.replace_draft(&id, &req).await?;
-        }
-        Ok(ImportAction::UpdatedDraft)
-    } else if identical && latest.status == EntityStatus::Active.as_str() {
-        Ok(ImportAction::Unchanged)
-    } else {
-        if !dry_run {
-            repo.create_new_version(&id).await?;
-            repo.replace_draft(&id, &req).await?;
-        }
-        Ok(ImportAction::NewVersion)
     }
+    Ok(action)
 }
 
 /// Turn a `get_by_id` result into an existence answer.

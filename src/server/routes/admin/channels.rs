@@ -281,15 +281,18 @@ async fn ensure_name_is_active_unclaimed(
     state: &AppState,
     draft: &crate::storage::models::Channel,
 ) -> Result<(), OrionError> {
-    for other in state.repos.channels.list_active().await? {
-        if other.channel_id != draft.channel_id && other.name == draft.name {
-            return Err(OrionError::Conflict(format!(
-                "Cannot activate channel '{}': active channel id '{}' already uses \
-                 that name, and the data plane addresses channels by name. Rename one \
-                 of the two first.",
-                draft.name, other.channel_id
-            )));
-        }
+    if let Some(holder) = state
+        .repos
+        .channels
+        .active_name_holder(&draft.name, &draft.channel_id)
+        .await?
+    {
+        return Err(OrionError::Conflict(format!(
+            "Cannot activate channel '{}': active channel id '{holder}' already uses \
+             that name, and the data plane addresses channels by name. Rename one \
+             of the two first.",
+            draft.name
+        )));
     }
     Ok(())
 }
@@ -525,7 +528,7 @@ pub(crate) async fn import_channels(
         return Ok(super::import_response(true, outcome));
     }
     // K5: one row per written entity, plus the batch summary row.
-    for (id, _action) in outcome.written() {
+    for id in outcome.written() {
         audit_log_draft_only(&state.audit_queue, &principal, "import", "channel", id);
     }
     audit_log_draft_only(
@@ -538,17 +541,15 @@ pub(crate) async fn import_channels(
     Ok(super::import_response(false, outcome))
 }
 
-/// K2: one channel item under `on_conflict=new_version` — the same shape as
-/// `upsert_workflow`, over the channel repository's verbs. An **archived**
-/// channel with identical content still gets a new draft version, because
-/// re-activating it needs a draft.
+/// K2: one channel item under `on_conflict=new_version`. The decision table
+/// (including the archived-entity invariant) is [`super::versioned_upsert_action`];
+/// this supplies the channel repository's verbs.
 async fn upsert_channel(
     repo: &dyn crate::storage::repositories::channels::ChannelRepository,
     req: CreateChannelRequest,
     dry_run: bool,
 ) -> Result<super::ImportAction, OrionError> {
     use super::ImportAction;
-    use crate::storage::models::EntityStatus;
 
     let Some(id) = req.channel_id.clone() else {
         if !dry_run {
@@ -569,23 +570,20 @@ async fn upsert_channel(
 
     let identical = crate::storage::content::channel_content(&latest)?
         == crate::storage::content::channel_request_content(&req);
-    if latest.status == EntityStatus::Draft.as_str() {
-        if identical {
-            return Ok(ImportAction::Unchanged);
+    let action = super::versioned_upsert_action(&latest.status, identical);
+    if !dry_run {
+        match action {
+            ImportAction::UpdatedDraft => {
+                repo.replace_draft(&id, &req).await?;
+            }
+            ImportAction::NewVersion => {
+                repo.create_new_version(&id).await?;
+                repo.replace_draft(&id, &req).await?;
+            }
+            _ => {}
         }
-        if !dry_run {
-            repo.replace_draft(&id, &req).await?;
-        }
-        Ok(ImportAction::UpdatedDraft)
-    } else if identical && latest.status == EntityStatus::Active.as_str() {
-        Ok(ImportAction::Unchanged)
-    } else {
-        if !dry_run {
-            repo.create_new_version(&id).await?;
-            repo.replace_draft(&id, &req).await?;
-        }
-        Ok(ImportAction::NewVersion)
     }
+    Ok(action)
 }
 
 // ============================================================
