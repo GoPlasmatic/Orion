@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0] - 2026-08-09
 
+**Highlights.** The promotion story: an `orion-server package` CLI
+(export / lint / plan / apply / diff) over a new receipts API, upsert
+import, activation pre-flight and deferred reload. Secret references
+(`vault://`, `aws-sm://`, `gcp-sm://`, `env://`) resolve at load time so
+stored configs never hold credentials. `orion-server preflight` scans a
+stored estate for upgrade breaks before you upgrade. MySQL joins SQLite and
+PostgreSQL as a runtime-selected backend, and multi-node cluster mode runs
+on PostgreSQL/MySQL. Every workflow task is timed in Prometheus. The error
+code surface was cleaned up before the 1.x line freezes it. The full record
+follows.
+
 ### Security
 
 - **`vault://` secret references resolve.** With the standard `VAULT_ADDR` +
