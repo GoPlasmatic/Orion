@@ -43,6 +43,7 @@ src/
   bootstrap.rs         # Startup sequence: config -> pools -> repos -> engine -> server
   cli.rs               # CLI subcommands (migrate, lint, dry-run, test, preflight, ...)
   preflight.rs         # `orion-server preflight`: scan stored entities for 1.0 breaks
+  package_cli.rs       # `orion-server package`: export/lint/plan/apply/diff promotion CLI
   channel/             # Channel registry, config, routing, deduplication, auth guards
   cluster/             # Cluster mode: config-epoch watcher, background-job leases
   config/              # Configuration loading (TOML + ORION_SECTION__KEY env overrides)
@@ -63,11 +64,23 @@ tests/
   schema_parity.rs     # Cross-backend schema comparison (container-gated)
   storage_postgres.rs  # PostgreSQL repository suite (container-gated)
   storage_mysql.rs     # MySQL repository suite (container-gated)
+  metrics_exposition.rs # Rendered /metrics assertions (own process — the recorder is global)
   benchmark/           # bench.sh + fixtures (hey-based performance scenarios)
 migrations/            # SQLite / Postgres / MySQL migrations (embedded at compile time)
 deploy/                # Helm chart (helm/orion), HA compose drill (ha/)
 docs/                  # mdBook documentation (published to GitHub Pages)
 ```
+
+## Your First Contribution
+
+Issues labeled [`good first issue`](https://github.com/GoPlasmatic/Orion/labels/good%20first%20issue)
+are scoped to be finishable without knowing the whole codebase, and
+[`help wanted`](https://github.com/GoPlasmatic/Orion/labels/help%20wanted)
+marks work we'd love a hand with. Not sure where something lives? Ask in
+[Discussions](https://github.com/GoPlasmatic/Orion/discussions) and a
+maintainer will point you at the right module. Documentation fixes are real
+contributions — the book under `docs/src/` ships with the same review bar as
+code.
 
 ## Making Changes
 
@@ -198,6 +211,10 @@ the comment exists rather than a note about it. Resolve one with:
 ```bash
 git log --grep=N10          # the commit that closed it, with the full rationale
 ```
+
+The IDs are a historical record — safe to ignore entirely when reading or
+writing code. Chasing one needs the full history: on a shallow clone run
+`git fetch --unshallow` first.
 
 Every commit that closed an item names it in the message body, so the history is
 the index. The `proposal.md` trackers that held open items are retired — both
