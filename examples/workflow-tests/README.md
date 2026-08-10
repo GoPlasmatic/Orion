@@ -18,7 +18,7 @@ case rather than a workflow or a fixture, so all three can live side by side.
 ```json
 {
   "name": "flags an order above the threshold",
-  "workflow": "../high-value-order/workflow.json",
+  "workflow": "../packages/high-value-order/workflow.json",
   "input": { "order_id": "ORD-9182", "total": 25000 },
   "stubs": { "http_call": { "crm": { "name": "Ada" } } },
   "expect": {

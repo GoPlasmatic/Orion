@@ -1,31 +1,38 @@
 #!/usr/bin/env bash
 #
-# Deploy and run one Orion example end-to-end.
+# Deploy and run one example package end-to-end.
 #
-#   ./deploy.sh <example-dir> [base-url]
+#   ./deploy.sh <package> [base-url]
 #
-# Creates + activates the workflow, creates + activates the channel (and
-# creates the connector first, if the example ships a connector.json), then
-# POSTs request.json and prints the response. Idempotent: re-running against
-# the same instance skips objects that already exist. Requires curl and
-# python3.
+# A package is the set of entities that ship together — here the channel, the
+# workflow, and the connector when the package needs one. The script creates
+# + activates the workflow, creates + activates the channel (and creates the
+# connector first, if the package ships a connector.json), then POSTs
+# request.json and prints the response. Idempotent: re-running against the
+# same instance skips objects that already exist. Requires curl and python3.
 #
 # Example:
 #   ./deploy.sh high-value-order
 #   ./deploy.sh order-classification http://localhost:8080
 set -euo pipefail
 
+cd "$(dirname "$0")"
+
 DIR="${1:-}"
 BASE="${2:-http://localhost:8080}"
 ADMIN="$BASE/api/v1/admin"
 
+DIR="${DIR%/}"
+# Accept a bare package name (`high-value-order`) or its path (`packages/high-value-order`).
+if [[ -n "$DIR" && ! -d "$DIR" && -d "packages/$DIR" ]]; then
+  DIR="packages/$DIR"
+fi
+
 if [[ -z "$DIR" || ! -d "$DIR" ]]; then
-  echo "usage: ./deploy.sh <example-dir> [base-url]" >&2
+  echo "usage: ./deploy.sh <package> [base-url]" >&2
   echo "example: ./deploy.sh high-value-order" >&2
   exit 1
 fi
-
-DIR="${DIR%/}"
 WF_FILE="$DIR/workflow.json"
 CH_FILE="$DIR/channel.json"
 REQ_FILE="$DIR/request.json"

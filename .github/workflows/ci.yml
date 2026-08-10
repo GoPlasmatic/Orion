@@ -135,15 +135,15 @@ jobs:
 
       - name: Lint example workflows
         run: |
-          for f in examples/*/workflow.json; do
+          for f in examples/packages/*/workflow.json; do
             ./target/debug/orion-server lint "$f"
           done
 
       - name: Run example workflow tests (offline, stubbed connectors)
         run: ./target/debug/orion-server test examples/workflow-tests
 
-      - name: Start Postgres (postgres-orders example)
-        run: docker compose -f examples/postgres-orders/docker-compose.yml up --wait postgres
+      - name: Start Postgres (postgres-orders package)
+        run: docker compose -f examples/packages/postgres-orders/docker-compose.yml up --wait postgres
 
       - name: Start Orion
         run: |
@@ -163,10 +163,10 @@ jobs:
           ./examples/quickstart.sh
           ./examples/quickstart.sh
 
-      - name: Deploy every example end-to-end (twice — idempotency)
+      - name: Deploy every example package end-to-end (twice — idempotency)
         run: |
           cd examples
-          for d in */; do
+          for d in packages/*/; do
             [ -f "$d/workflow.json" ] || continue
             ./deploy.sh "${d%/}"
             ./deploy.sh "${d%/}"

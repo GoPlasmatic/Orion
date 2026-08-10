@@ -1,5 +1,6 @@
 {
   "channel_id": "order-tiers",
+  "tags": ["pkg:order-classification"],
   "name": "order-tiers",
   "channel_type": "sync",
   "protocol": "http",

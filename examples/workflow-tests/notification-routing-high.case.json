@@ -1,6 +1,6 @@
 {
   "name": "high severity routes to every channel",
-  "workflow": "../notification-routing/workflow.json",
+  "workflow": "../packages/notification-routing/workflow.json",
   "input": { "message": "Disk usage at 92%", "severity": "high" },
   "expect": {
     "data.notification.logged": true,

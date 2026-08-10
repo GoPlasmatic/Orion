@@ -1,5 +1,6 @@
 {
   "workflow_id": "record-order",
+  "tags": ["pkg:postgres-orders"],
   "name": "Record Order (Postgres)",
   "description": "Insert an order with data_write, then return the customer with their order history via data_query + include.",
   "condition": true,

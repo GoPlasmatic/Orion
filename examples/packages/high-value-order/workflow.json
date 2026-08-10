@@ -1,5 +1,6 @@
 {
   "workflow_id": "high-value-order",
+  "tags": ["pkg:high-value-order"],
   "name": "High-Value Order",
   "condition": true,
   "tasks": [

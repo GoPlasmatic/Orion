@@ -1,6 +1,6 @@
 {
   "name": "raises a critical alert above 90 degrees",
-  "workflow": "../iot-sensor-alert/workflow.json",
+  "workflow": "../packages/iot-sensor-alert/workflow.json",
   "input": { "temperature": 95, "sensor_id": "SENSOR-42" },
   "expect": { "data.reading.severity": "critical", "data.reading.alert": true }
 }

@@ -1,5 +1,6 @@
 {
   "workflow_id": "notification-routing",
+  "tags": ["pkg:notification-routing"],
   "name": "Notification Router",
   "condition": true,
   "tasks": [

@@ -1,6 +1,6 @@
 {
   "name": "normalizes a provider payload into the common schema",
-  "workflow": "../webhook-transform/workflow.json",
+  "workflow": "../packages/webhook-transform/workflow.json",
   "input": { "origin": "github", "type": "push", "body": { "ref": "refs/heads/main" } },
   "expect": {
     "data.normalized.source": "github",

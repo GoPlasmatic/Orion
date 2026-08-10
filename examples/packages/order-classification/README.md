@@ -12,5 +12,5 @@ From the repository root, with a server on `http://localhost:8080`:
 
 That creates and activates the workflow and channel, POSTs `request.json` to
 `POST /api/v1/data/order-tiers`, and prints the response. See
-[`examples/README.md`](../README.md) for the file layout, a step-by-step curl
+[`examples/README.md`](../../README.md) for the file layout, a step-by-step curl
 walkthrough, and the full example list.

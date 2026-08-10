@@ -635,7 +635,7 @@ reads the storage URL through `secretKeyRef` in every case.
   The Secret the server replicas read is a normal release resource and is
   removed as usual.
 - `docker-compose.yml`, `docker-compose.ha.yml` and
-  `examples/postgres-orders/docker-compose.yml` now pin
+  `examples/packages/postgres-orders/docker-compose.yml` now pin
   `ghcr.io/goplasmatic/orion:${ORION_VERSION:-1.0.0}` instead of `:latest`. Set
   `ORION_VERSION` to move. Local HA builds moved to an override file that
   retags them `orion:local`, so `docker compose build` can no longer clobber

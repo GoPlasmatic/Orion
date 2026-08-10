@@ -1,6 +1,6 @@
 {
   "name": "flags an order above the threshold",
-  "workflow": "../high-value-order/workflow.json",
+  "workflow": "../packages/high-value-order/workflow.json",
   "input": { "order_id": "ORD-9182", "total": 25000 },
   "expect": {
     "data.order.flagged": true,

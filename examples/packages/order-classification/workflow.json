@@ -1,5 +1,6 @@
 {
   "workflow_id": "order-classification",
+  "tags": ["pkg:order-classification"],
   "name": "Order Classification",
   "condition": true,
   "tasks": [

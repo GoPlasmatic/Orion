@@ -1,6 +1,6 @@
 {
   "name": "a provider that sends no body still normalizes (var is null-safe)",
-  "workflow": "../webhook-transform/workflow.json",
+  "workflow": "../packages/webhook-transform/workflow.json",
   "input": { "origin": "stripe", "type": "invoice.paid" },
   "expect": {
     "data.normalized.source": "stripe",

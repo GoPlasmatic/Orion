@@ -1,5 +1,6 @@
 {
   "channel_id": "record-order",
+  "tags": ["pkg:postgres-orders"],
   "name": "record-order",
   "channel_type": "sync",
   "protocol": "rest",

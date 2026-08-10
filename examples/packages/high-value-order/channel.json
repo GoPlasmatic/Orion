@@ -1,5 +1,6 @@
 {
   "channel_id": "high-value-orders",
+  "tags": ["pkg:high-value-order"],
   "name": "high-value-orders",
   "channel_type": "sync",
   "protocol": "http",

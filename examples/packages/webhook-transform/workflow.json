@@ -1,5 +1,6 @@
 {
   "workflow_id": "webhook-transform",
+  "tags": ["pkg:webhook-transform"],
   "name": "Webhook Transform Pipeline",
   "condition": true,
   "tasks": [

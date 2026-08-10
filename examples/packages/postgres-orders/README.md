@@ -3,7 +3,7 @@
 The other examples are deliberately zero-dependency. This one shows the part
 of Orion they can't: a workflow talking to a real database through a
 **connector**, using the portable data dialect
-([`data_query` / `data_write`](../../docs/src/reference/data-dialect.md)).
+([`data_query` / `data_write`](../../../docs/src/reference/data-dialect.md)).
 
 `POST /record-order` does two things in one pipeline:
 
@@ -19,7 +19,7 @@ Elasticsearch instead of Postgres and the same workflow JSON runs unchanged.
 
 ```bash
 docker compose up -d          # Postgres (seeded) + Orion
-cd .. && ./deploy.sh postgres-orders
+cd ../.. && ./deploy.sh postgres-orders
 ```
 
 Or run a locally installed `orion-server` against just the database:
@@ -28,11 +28,11 @@ Or run a locally installed `orion-server` against just the database:
 docker compose up -d postgres
 ORDERS_DB_URL=postgres://orion:orion@localhost:5432/orion_orders orion-server
 # in another terminal:
-cd .. && ./deploy.sh postgres-orders
+cd ../.. && ./deploy.sh postgres-orders
 ```
 
 > Requires Orion ≥ 1.0.0 — the dialect envelope changed shape for 1.0 (see
-> the [upgrade guide](../../docs/src/getting-started/upgrading.md)), and this
+> the [upgrade guide](../../../docs/src/getting-started/upgrading.md)), and this
 > example is written against the 1.0 form.
 
 Expected response (ids vary):

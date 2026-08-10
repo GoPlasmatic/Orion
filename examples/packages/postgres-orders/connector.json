@@ -1,5 +1,6 @@
 {
   "id": "orders-db",
+  "tags": ["pkg:postgres-orders"],
   "name": "orders-db",
   "connector_type": "db",
   "config": {

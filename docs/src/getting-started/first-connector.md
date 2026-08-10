@@ -12,13 +12,14 @@ configured once through the admin API, referenced by name from any workflow,
 with credentials, pooling, retries, and circuit breaking handled by the
 runtime.
 
-> **Fast path:** this tutorial is shipped as a runnable example. From a repo
-> clone: `cd examples/postgres-orders && docker compose up -d && cd .. &&
-> ./deploy.sh postgres-orders`. The steps below build the same thing by hand.
+> **Fast path:** this tutorial is shipped as a runnable example package. From
+> a repo clone: `cd examples/packages/postgres-orders && docker compose up -d
+> && cd ../.. && ./deploy.sh postgres-orders`. The steps below build the same
+> thing by hand.
 
 ## 1. Start a database
 
-From the repo's [`examples/postgres-orders/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/postgres-orders)
+From the repo's [`examples/packages/postgres-orders/`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/postgres-orders)
 directory (which ships a compose file and seed data — two `customers`, three
 `orders`):
 

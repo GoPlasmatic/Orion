@@ -1,5 +1,6 @@
 {
   "channel_id": "sensors",
+  "tags": ["pkg:iot-sensor-alert"],
   "name": "sensors",
   "channel_type": "sync",
   "protocol": "http",
