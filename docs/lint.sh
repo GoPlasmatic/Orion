@@ -6,6 +6,15 @@
 # DOCS2_PHASE gated the checks that only became true as the 2.0 restructure
 # landed. The restructure is complete, so it sits at its final value; leave it
 # there unless a check is deliberately being relaxed.
+#
+# docs/src/llms.txt is CURATED, NOT GENERATED — a settled decision, not an
+# unfinished one. Its preamble, its per-entry descriptions and its two
+# non-chapter entries are editorial: they are written for a retrieval model
+# choosing one page, and no generator produces them from SUMMARY.md. Checks 3,
+# 8, 9 and 10 are what keep a hand-maintained index honest — every chapter is
+# listed, every listed page resolves, nothing lists a page that no longer has a
+# chapter, and no entry describes a page by a title it has lost. Descriptions
+# stay uncompared on purpose; that is the part a human is better at.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -99,6 +108,33 @@ if [ "$DOCS2_PHASE" -ge 4 ]; then
     grep -qF "goplasmatic.github.io/Orion/${html}" docs/src/llms.txt \
       || err "llms.txt: no entry for SUMMARY chapter $p"
   done < <(grep -oE '\(\./[A-Za-z0-9_./-]+\.md\)' docs/src/SUMMARY.md | sed 's/^(\.\///; s/)$//')
+fi
+
+## 9.  No llms.txt entry points at a page that has no chapter. Check 3 accepts
+##     a redirect, so a retired page's entry would otherwise survive there
+##     indefinitely; check 8 only ever walks SUMMARY → llms.txt, never back.
+## 10. An entry's link text matches its chapter's SUMMARY title, so a rename
+##     cannot leave the curated index naming a page something it is not.
+##
+##     Both skip anything that is not a book page: the raw OpenAPI spec, the
+##     GitHub repo and llms-full.txt are deliberate non-chapter entries, and
+##     none of them ends in .html.
+if [ "$DOCS2_PHASE" -ge 4 ]; then
+  while IFS= read -r entry; do
+    title=${entry%%](*}; title=${title#*[}
+    url=${entry#*](}; url=${url%)}
+    p=${url#https://goplasmatic.github.io/Orion/}
+    p=${p%%#*}
+    case "$p" in *.html) ;; *) continue ;; esac
+    chapter=$(grep -F "](./${p%.html}.md)" docs/src/SUMMARY.md || true)
+    if [ -z "$chapter" ]; then
+      err "llms.txt: entry for a page with no SUMMARY chapter: $p"
+      continue
+    fi
+    chapter_title=${chapter%%](*}; chapter_title=${chapter_title#*[}
+    [ "$title" = "$chapter_title" ] \
+      || err "llms.txt: entry titled '$title' but SUMMARY calls $p '$chapter_title'"
+  done < <(grep -oE '^- \[[^]]+\]\(https://goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+\)' docs/src/llms.txt)
 fi
 
 if [ "$fail" -eq 0 ]; then
