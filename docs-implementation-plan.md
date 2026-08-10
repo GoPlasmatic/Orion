@@ -15,7 +15,7 @@ are pruned; git history of this file carries the full record.
 >   three doc-pinned test suites repointed. Integration suite 635/635.
 > - Phase 2a `e435b540` — cli-setup → install.md; the AI trio → `ai/`;
 >   upgrading → `operate/upgrading-to-1.0.md`; SUMMARY parts + redirects.
-> - Phase 2b `PENDING` — install split (install + first-service),
+> - Phase 2b `2131624c` — install split (install + first-service),
 >   test-and-promote, six concept pages, introduction/comparison rewrites, the
 >   AI trio revised, `operate/upgrades.md`, examples ownership inversion,
 >   Architecture dissolved early. Book builds on mdBook 0.5.2; docs-lint and a
