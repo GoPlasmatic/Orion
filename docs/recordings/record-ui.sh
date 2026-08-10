@@ -22,7 +22,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # docs/recordings
 ORION_DIR="$(cd "$HERE/../.." && pwd)"                 # .../Orion
 UI_DIR="${ORION_UI_DIR:-$(cd "$ORION_DIR/.." && pwd)/Orion-ui}"
 
-EXAMPLES="$ORION_DIR/examples/high-value-order"
+EXAMPLES="$ORION_DIR/examples/packages/high-value-order"
 DOCS_IMAGES="$ORION_DIR/docs/src/images"
 DOCS_VIDEOS="$ORION_DIR/docs/src/videos"
 OUT="$HERE/ui/out"

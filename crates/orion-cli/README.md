@@ -17,7 +17,7 @@
 ## Quick Start
 
 <div align="center">
-  <img src="media/cli-lifecycle.gif" alt="orion-cli creating and activating a workflow, dry-running it, then sending live data" width="100%">
+  <img src="../../docs/media/cli-lifecycle.gif" alt="orion-cli creating and activating a workflow, dry-running it, then sending live data" width="100%">
   <br>
   <em>Create, activate, dry-run and send — the full lifecycle from one terminal.</em>
 </div>
@@ -311,7 +311,7 @@ orion-cli --output json functions list
 Orion includes a built-in [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) server, enabling AI assistants like Claude Desktop and Cursor to manage your Orion instance directly.
 
 <div align="center">
-  <img src="media/mcp.gif" alt="A real MCP stdio JSON-RPC session: handshake, tool discovery across 46 tools, then a live tool call" width="100%">
+  <img src="../../docs/media/mcp.gif" alt="A real MCP stdio JSON-RPC session: handshake, tool discovery across 46 tools, then a live tool call" width="100%">
   <br>
   <em>A real stdio JSON-RPC session — the same transport Claude Desktop and Cursor use.</em>
 </div>

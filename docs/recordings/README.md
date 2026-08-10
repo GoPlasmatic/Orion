@@ -8,9 +8,9 @@ artifacts from that single cast:
 
 | Flow | Script | GIF (READMEs) | Cast (mdBook player) |
 |------|--------|---------------|----------------------|
-| Quickstart (curl/HTTP) | `demo-quickstart.sh` | `../../media/quickstart.gif` | `../src/casts/quickstart.cast` |
-| CLI lifecycle | `demo-cli-lifecycle.sh` | `../../../Orion-cli/media/cli-lifecycle.gif` | `../src/casts/cli-lifecycle.cast` |
-| MCP session | `demo-mcp.sh` | `../../../Orion-cli/media/mcp.gif` | `../src/casts/mcp.cast` |
+| Quickstart (curl/HTTP) | `demo-quickstart.sh` | `../media/quickstart.gif` | `../src/casts/quickstart.cast` |
+| CLI lifecycle | `demo-cli-lifecycle.sh` | `../media/cli-lifecycle.gif` | `../src/casts/cli-lifecycle.cast` |
+| MCP session | `demo-mcp.sh` | `../media/mcp.gif` | `../src/casts/mcp.cast` |
 
 Recording the cast once and rendering the GIF from it (via `agg`) means the GIF and
 the interactive player can never drift apart.
@@ -29,11 +29,10 @@ DRY=1 ./record.sh                  # run the demo scripts live (no recording) to
 ORION_PORT=8090 ./record.sh        # use a different port (the quickstart GIF shows :8080)
 ```
 
-`record.sh` uses the debug binaries at `../../target/debug/orion-server` and
-`$ORION_CLI_DIR/target/debug/orion-cli`, building them if they are missing.
-The CLI paths assume a [GoPlasmatic/Orion-cli](https://github.com/GoPlasmatic/Orion-cli)
-checkout as a **sibling of this repo**; point `ORION_CLI_DIR` at a checkout
-anywhere else (the CLI flows land their GIFs in that repo's `media/`).
+`record.sh` uses the workspace debug binaries at `../../target/debug/`
+(`orion-server` and `orion-cli`, both built from this tree), building them
+if they are missing. All three GIFs land in `docs/media/` — the single
+media folder every README references.
 
 ## UI recordings (console GIF + screenshots)
 

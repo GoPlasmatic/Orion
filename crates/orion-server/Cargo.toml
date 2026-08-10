@@ -14,8 +14,9 @@ readme = "../../README.md"
 keywords = ["workflow", "runtime", "declarative", "microservices", "jsonlogic"]
 categories = ["web-programming", "web-programming::http-server"]
 # Allowlist: the crate tarball ships only what `cargo install` needs. Anything
-# not listed here (media/, docs/, tests/, deploy/, internal notes) stays out —
-# crates.io enforces a 10 MiB upload limit and media/ alone is ~15 MB.
+# not listed here (docs/media/ GIFs, docs/, tests/, internal notes) stays out —
+# crates.io enforces a 10 MiB upload limit, and README media never belongs in
+# a source tarball.
 include = [
     "/src/**",
     "/migrations/**",

@@ -133,8 +133,8 @@ produces numbers worse than none.
    layout. `.gitignore` ignores scratch runs under `results/` and
    re-includes each release directory explicitly; the `v1.0.0` line is
    already there (future releases add their own line).
-6. **Publish:** regenerate `media/benchmark-light.svg` /
-   `media/benchmark-dark.svg` from the new numbers (same style, both color
+6. **Publish:** regenerate `docs/media/benchmark-light.svg` /
+   `docs/media/benchmark-dark.svg` from the new numbers (same style, both color
    schemes), and replace the README's Performance section numbers — table,
    alt text, and the "measured on v0.2.0" framing — with the 1.0.0 numbers
    including cluster scaling efficiency.

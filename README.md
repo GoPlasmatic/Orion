@@ -77,7 +77,7 @@ The script talks to the same admin API you'd use in production. It creates a **w
 <summary><b>What the script does: the four API calls, spelled out</b></summary>
 
 <div align="center">
-  <img src="media/quickstart.gif" alt="Define a workflow and channel over HTTP, then send a request and get a governed response, all in under a minute" width="100%">
+  <img src="docs/media/quickstart.gif" alt="Define a workflow and channel over HTTP, then send a request and get a governed response, all in under a minute" width="100%">
 </div>
 
 Create the workflow, with the business logic as JSON (a parse task, then a conditional flag task):
@@ -435,8 +435,8 @@ docker compose -f docker-compose.ha.yml up
 **5K–5.7K workflow requests/sec** on a single instance, and a **58K req/s** health-check baseline, as measured on **v1.0.0** (Apple M2 Pro Mac Mini, release build, 30s per scenario, 50 concurrent connections — full raw record with run conditions in [`tests/benchmark/results/v1.0.0/`](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)):
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="media/benchmark-dark.svg">
-  <img src="media/benchmark-light.svg" alt="Throughput by scenario (v1.0.0). Simple workflow: 5,655 req/s; loaded estate of 12 channels: 5,167 req/s; complex workflow (4 tasks): 5,151 req/s" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/benchmark-dark.svg">
+  <img src="docs/media/benchmark-light.svg" alt="Throughput by scenario (v1.0.0). Simple workflow: 5,655 req/s; loaded estate of 12 channels: 5,167 req/s; complex workflow (4 tasks): 5,151 req/s" width="100%">
 </picture>
 
 | Scenario (v1.0.0) | Req/sec | Avg Latency | P99 Latency |
