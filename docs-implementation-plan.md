@@ -29,7 +29,7 @@ are pruned; git history of this file carries the full record.
 >   tutorials/use-cases.md retired; SUMMARY at proposal §3's final shape;
 >   `DOCS2_PHASE=4`, so llms.txt now covers every chapter.
 >
-> - Phase 5 `PENDING` — style sweep: `TODO(docs2)` markers to zero, Related
+> - Phase 5 `f9a4e5cc` — style sweep: `TODO(docs2)` markers to zero, Related
 >   blocks on every chapter, H3 depth restored, the worst sentences split, and
 >   the three persona journeys verified to link end to end with no dead ends.
 >
