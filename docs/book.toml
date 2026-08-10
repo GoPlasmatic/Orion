@@ -23,9 +23,12 @@ edit-url-template = "https://github.com/GoPlasmatic/Orion/edit/main/docs/{path}"
 enable = true
 level = 0
 
-# Docs 2.0 restructure (docs-implementation-plan.md §4). Keys are absolute
+# Redirects for every URL the docs 2.0 restructure retired. Keys are absolute
 # paths from the site root; values are relative to the redirecting page (the
 # site serves under the /Orion/ subpath, so absolute values would escape it).
+# Nothing here may be removed: these are the only thing keeping old inbound
+# links alive, and docs/lint.sh checks that hard site links resolve to a live
+# page or an entry below.
 [output.html.redirect]
 # Phase 1 — reference estate
 "/api/admin.html" = "../reference/admin-api.html"

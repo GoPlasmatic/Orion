@@ -320,9 +320,8 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
-      # Enforcement arm of the docs restructure (docs-implementation-plan.md
-      # T6.1): include/link integrity, redirect coverage for hard site links,
-      # and the one-owner-per-fact guard greps.
+      # The docs estate's structural guard: include/link integrity, redirect
+      # coverage for hard site links, and the one-owner-per-fact guard greps.
       - name: Docs lint
         run: bash docs/lint.sh
 

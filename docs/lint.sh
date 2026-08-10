@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# docs-lint — enforcement arm of docs-implementation-plan.md T6.1.
+# docs-lint — the docs estate's structural guard: include and link integrity,
+# redirect coverage for hard site links, and the one-owner-per-fact greps that
+# stop a fact being restated in two places.
 #
-# Some checks only hold once a later migration phase has landed; they are
-# gated on DOCS2_PHASE. Bump it in the phase PR that makes the check true.
+# DOCS2_PHASE gated the checks that only became true as the 2.0 restructure
+# landed. The restructure is complete, so it sits at its final value; leave it
+# there unless a check is deliberately being relaxed.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
