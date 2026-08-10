@@ -9,6 +9,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::OrionClient;
+use orion_client::paths;
 
 use super::stats::RequestResult;
 
@@ -28,7 +29,7 @@ pub async fn run_benchmark(
     let mut join_set = JoinSet::new();
 
     let body = serde_json::json!({ "data": payload });
-    let url_path = format!("/api/v1/data/{channel}");
+    let url_path = paths::data(channel);
     let wall_start = Instant::now();
 
     for _ in 0..num_requests {

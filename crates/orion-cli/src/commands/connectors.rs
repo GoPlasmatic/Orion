@@ -7,6 +7,7 @@ use tabled::Tabled;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Args)]
 #[command(
@@ -190,7 +191,7 @@ impl ConnectorsCmd {
                     client,
                     format,
                     quiet,
-                    "/api/v1/admin/connectors/import",
+                    paths::CONNECTORS_IMPORT,
                     "connector",
                     file,
                     *dry_run,
@@ -216,7 +217,7 @@ async fn list(
         ("offset", offset.map(|o| o.to_string())),
     ]);
 
-    let resp: Value = client.get(&format!("/api/v1/admin/connectors{qs}")).await?;
+    let resp: Value = client.get(&format!("{}{qs}", paths::CONNECTORS)).await?;
     let connectors = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -259,9 +260,7 @@ async fn list(
 }
 
 async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str) -> Result<i32> {
-    let resp: Value = client
-        .get(&format!("/api/v1/admin/connectors/{id}"))
-        .await?;
+    let resp: Value = client.get(&paths::connector(id)).await?;
 
     if quiet {
         println!("{id}");
@@ -308,7 +307,7 @@ async fn create(
     quiet: bool,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client.post("/api/v1/admin/connectors", body).await?;
+    let resp: Value = client.post(paths::CONNECTORS, body).await?;
     let conn = &resp["data"];
 
     if quiet {
@@ -337,9 +336,7 @@ async fn update(
     id: &str,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client
-        .put(&format!("/api/v1/admin/connectors/{id}"), body)
-        .await?;
+    let resp: Value = client.put(&paths::connector(id), body).await?;
 
     if quiet {
         println!("{id}");
@@ -366,9 +363,7 @@ async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Resul
         return Ok(0);
     }
 
-    client
-        .delete_request(&format!("/api/v1/admin/connectors/{id}"))
-        .await?;
+    client.delete_request(&paths::connector(id)).await?;
 
     if !quiet {
         println!("{} Connector {id} deleted", "OK".green().bold());
@@ -378,9 +373,7 @@ async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Resul
 
 async fn toggle(client: &OrionClient, quiet: bool, id: &str, enabled: bool) -> Result<i32> {
     let body = serde_json::json!({ "enabled": enabled });
-    let resp: Value = client
-        .put(&format!("/api/v1/admin/connectors/{id}"), &body)
-        .await?;
+    let resp: Value = client.put(&paths::connector(id), &body).await?;
 
     if !quiet {
         let conn = &resp["data"];
@@ -399,9 +392,7 @@ async fn toggle(client: &OrionClient, quiet: bool, id: &str, enabled: bool) -> R
 }
 
 async fn circuit_breakers(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Result<i32> {
-    let resp: Value = client
-        .get("/api/v1/admin/connectors/circuit-breakers")
-        .await?;
+    let resp: Value = client.get(paths::CIRCUIT_BREAKERS).await?;
 
     if quiet {
         let enabled = resp["enabled"].as_bool().unwrap_or(false);
@@ -447,9 +438,7 @@ async fn circuit_breakers(client: &OrionClient, format: &OutputFormat, quiet: bo
 }
 
 async fn reset_breaker(client: &OrionClient, quiet: bool, key: &str) -> Result<i32> {
-    let _: Value = client
-        .post_empty(&format!("/api/v1/admin/connectors/circuit-breakers/{key}"))
-        .await?;
+    let _: Value = client.post_empty(&paths::circuit_breaker(key)).await?;
 
     if !quiet {
         println!("{} Circuit breaker '{key}' reset", "OK".green().bold());
@@ -458,9 +447,7 @@ async fn reset_breaker(client: &OrionClient, quiet: bool, key: &str) -> Result<i
 }
 
 async fn test(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str) -> Result<i32> {
-    let resp: Value = client
-        .post_empty(&format!("/api/v1/admin/connectors/{id}/test"))
-        .await?;
+    let resp: Value = client.post_empty(&paths::connector_test(id)).await?;
     let probe = &resp["data"];
     let reachable = probe["reachable"].as_bool().unwrap_or(false);
     let supported = probe["supported"].as_bool().unwrap_or(false);
@@ -513,9 +500,7 @@ async fn validate(
     quiet: bool,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client
-        .post("/api/v1/admin/connectors/validate", body)
-        .await?;
+    let resp: Value = client.post(paths::CONNECTORS_VALIDATE, body).await?;
     let resp = resp.get("data").cloned().unwrap_or(resp);
     let valid = resp["valid"].as_bool().unwrap_or(false);
 
@@ -545,7 +530,7 @@ async fn validate(
 async fn export(client: &OrionClient, tag: &Option<String>) -> Result<i32> {
     let qs = utils::build_query_string(&[("tag", tag.clone())]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/connectors/export{qs}"))
+        .get(&format!("{}{qs}", paths::CONNECTORS_EXPORT))
         .await?;
     let connectors = resp.get("data").unwrap_or(&resp);
     println!("{}", serde_json::to_string_pretty(connectors)?);

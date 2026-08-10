@@ -1,12 +1,14 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use colored::Colorize;
+use orion_api::{STATUS_ACTIVE, STATUS_ARCHIVED};
 use serde_json::Value;
 use tabled::Tabled;
 
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils::{self, colorize_status, truncate};
+use orion_client::paths;
 
 #[derive(Args)]
 #[command(
@@ -231,12 +233,12 @@ impl ChannelsCmd {
                 id,
                 dry_run,
                 defer_reload,
-            } => change_status(client, quiet, id, "active", *dry_run, *defer_reload).await,
+            } => change_status(client, quiet, id, STATUS_ACTIVE, *dry_run, *defer_reload).await,
             ChannelsSubcommand::Archive {
                 id,
                 dry_run,
                 defer_reload,
-            } => change_status(client, quiet, id, "archived", *dry_run, *defer_reload).await,
+            } => change_status(client, quiet, id, STATUS_ARCHIVED, *dry_run, *defer_reload).await,
             ChannelsSubcommand::Validate { file, data, stdin } => {
                 let body = utils::read_json_input(file.as_deref(), data.as_deref(), *stdin)?;
                 validate(client, format, quiet, &body).await
@@ -253,7 +255,7 @@ impl ChannelsCmd {
                     client,
                     format,
                     quiet,
-                    "/api/v1/admin/channels/import",
+                    paths::CHANNELS_IMPORT,
                     "channel",
                     file,
                     *dry_run,
@@ -286,7 +288,7 @@ async fn list(
         ("offset", offset.map(|o| o.to_string())),
     ]);
 
-    let resp: Value = client.get(&format!("/api/v1/admin/channels{qs}")).await?;
+    let resp: Value = client.get(&format!("{}{qs}", paths::CHANNELS)).await?;
     let channels = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -333,7 +335,7 @@ async fn get_channel(
     quiet: bool,
     id: &str,
 ) -> Result<i32> {
-    let resp: Value = client.get(&format!("/api/v1/admin/channels/{id}")).await?;
+    let resp: Value = client.get(&paths::channel(id)).await?;
 
     if quiet {
         println!("{id}");
@@ -409,7 +411,7 @@ async fn create(
     quiet: bool,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client.post("/api/v1/admin/channels", body).await?;
+    let resp: Value = client.post(paths::CHANNELS, body).await?;
     let ch = &resp["data"];
 
     if quiet {
@@ -438,9 +440,7 @@ async fn update(
     id: &str,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client
-        .put(&format!("/api/v1/admin/channels/{id}"), body)
-        .await?;
+    let resp: Value = client.put(&paths::channel(id), body).await?;
     let ch = &resp["data"];
 
     if quiet {
@@ -468,9 +468,7 @@ async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Resul
         return Ok(0);
     }
 
-    client
-        .delete_request(&format!("/api/v1/admin/channels/{id}"))
-        .await?;
+    client.delete_request(&paths::channel(id)).await?;
 
     if !quiet {
         println!("{} Channel {id} deleted", "OK".green().bold());
@@ -492,7 +490,7 @@ async fn change_status(
     ]);
     let body = serde_json::json!({ "status": status });
     let resp: Value = client
-        .patch(&format!("/api/v1/admin/channels/{id}/status{qs}"), &body)
+        .patch(&format!("{}{qs}", paths::channel_status(id)), &body)
         .await?;
 
     if !quiet {
@@ -525,9 +523,7 @@ async fn versions(
     quiet: bool,
     id: &str,
 ) -> Result<i32> {
-    let resp: Value = client
-        .get(&format!("/api/v1/admin/channels/{id}/versions"))
-        .await?;
+    let resp: Value = client.get(&paths::channel_versions(id)).await?;
     let vers = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -568,9 +564,7 @@ async fn new_version(
     quiet: bool,
     id: &str,
 ) -> Result<i32> {
-    let resp: Value = client
-        .post_empty(&format!("/api/v1/admin/channels/{id}/versions"))
-        .await?;
+    let resp: Value = client.post_empty(&paths::channel_versions(id)).await?;
     let ch = &resp["data"];
 
     if quiet {
@@ -598,7 +592,7 @@ async fn validate(
     quiet: bool,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client.post("/api/v1/admin/channels/validate", body).await?;
+    let resp: Value = client.post(paths::CHANNELS_VALIDATE, body).await?;
     let resp = resp.get("data").cloned().unwrap_or(resp);
 
     let valid = resp["valid"].as_bool().unwrap_or(false);
@@ -633,7 +627,7 @@ async fn export(
 ) -> Result<i32> {
     let qs = utils::build_query_string(&[("status", status.clone()), ("tag", tag.clone())]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/channels/export{qs}"))
+        .get(&format!("{}{qs}", paths::CHANNELS_EXPORT))
         .await?;
     let channels = resp.get("data").unwrap_or(&resp);
     println!("{}", serde_json::to_string_pretty(channels)?);

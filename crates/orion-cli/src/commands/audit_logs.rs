@@ -7,6 +7,7 @@ use tabled::Tabled;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Args)]
 pub struct AuditLogsCmd {
@@ -70,7 +71,7 @@ async fn list(
         ("offset", offset.map(|o| o.to_string())),
     ]);
 
-    let resp: Value = client.get(&format!("/api/v1/admin/audit-logs{qs}")).await?;
+    let resp: Value = client.get(&format!("{}{qs}", paths::AUDIT_LOGS)).await?;
     let entries = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {

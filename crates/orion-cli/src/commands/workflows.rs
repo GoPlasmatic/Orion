@@ -1,12 +1,14 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use colored::Colorize;
+use orion_api::{STATUS_ACTIVE, STATUS_ARCHIVED};
 use serde_json::Value;
 use tabled::Tabled;
 
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils::{self, colorize_status, truncate};
+use orion_client::paths;
 
 #[derive(Args)]
 #[command(
@@ -264,12 +266,12 @@ impl WorkflowsCmd {
                 id,
                 dry_run,
                 defer_reload,
-            } => change_status(client, quiet, id, "active", *dry_run, *defer_reload).await,
+            } => change_status(client, quiet, id, STATUS_ACTIVE, *dry_run, *defer_reload).await,
             WorkflowsSubcommand::Archive {
                 id,
                 dry_run,
                 defer_reload,
-            } => change_status(client, quiet, id, "archived", *dry_run, *defer_reload).await,
+            } => change_status(client, quiet, id, STATUS_ARCHIVED, *dry_run, *defer_reload).await,
             WorkflowsSubcommand::Dependencies { id } => {
                 dependencies(client, format, quiet, id).await
             }
@@ -304,7 +306,7 @@ impl WorkflowsCmd {
                     client,
                     format,
                     quiet,
-                    "/api/v1/admin/workflows/import",
+                    paths::WORKFLOWS_IMPORT,
                     "workflow",
                     file,
                     *dry_run,
@@ -326,7 +328,7 @@ async fn list(
 ) -> Result<i32> {
     let qs = utils::build_query_string(&[("status", status.clone()), ("tag", tag.clone())]);
 
-    let resp: Value = client.get(&format!("/api/v1/admin/workflows{qs}")).await?;
+    let resp: Value = client.get(&format!("{}{qs}", paths::WORKFLOWS)).await?;
     let workflows = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -376,7 +378,7 @@ async fn get_workflow(
     verbose: bool,
     id: &str,
 ) -> Result<i32> {
-    let resp: Value = client.get(&format!("/api/v1/admin/workflows/{id}")).await?;
+    let resp: Value = client.get(&paths::workflow(id)).await?;
 
     if quiet {
         println!("{id}");
@@ -445,7 +447,7 @@ async fn create(
     quiet: bool,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client.post("/api/v1/admin/workflows", body).await?;
+    let resp: Value = client.post(paths::WORKFLOWS, body).await?;
     let wf = &resp["data"];
 
     if quiet {
@@ -474,9 +476,7 @@ async fn update(
     id: &str,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client
-        .put(&format!("/api/v1/admin/workflows/{id}"), body)
-        .await?;
+    let resp: Value = client.put(&paths::workflow(id), body).await?;
     let wf = &resp["data"];
 
     if quiet {
@@ -504,9 +504,7 @@ async fn delete(client: &OrionClient, quiet: bool, yes: bool, id: &str) -> Resul
         return Ok(0);
     }
 
-    client
-        .delete_request(&format!("/api/v1/admin/workflows/{id}"))
-        .await?;
+    client.delete_request(&paths::workflow(id)).await?;
 
     if !quiet {
         println!("{} Workflow {id} deleted", "OK".green().bold());
@@ -528,7 +526,7 @@ async fn change_status(
     ]);
     let body = serde_json::json!({ "status": status });
     let resp: Value = client
-        .patch(&format!("/api/v1/admin/workflows/{id}/status{qs}"), &body)
+        .patch(&format!("{}{qs}", paths::workflow_status(id)), &body)
         .await?;
 
     if !quiet {
@@ -569,9 +567,7 @@ async fn test_workflow(
         body["metadata"] = meta.clone();
     }
 
-    let resp: Value = client
-        .post(&format!("/api/v1/admin/workflows/{id}/test"), &body)
-        .await?;
+    let resp: Value = client.post(&paths::workflow_test(id), &body).await?;
     // v1.0 wraps the WorkflowTestResult in the {"data": …} admin envelope.
     let resp = resp.get("data").cloned().unwrap_or(resp);
 
@@ -625,9 +621,7 @@ async fn validate(
     quiet: bool,
     body: &Value,
 ) -> Result<i32> {
-    let resp: Value = client
-        .post("/api/v1/admin/workflows/validate", body)
-        .await?;
+    let resp: Value = client.post(paths::WORKFLOWS_VALIDATE, body).await?;
     let resp = resp.get("data").cloned().unwrap_or(resp);
 
     if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
@@ -676,9 +670,7 @@ async fn validate(
 
 async fn rollout(client: &OrionClient, quiet: bool, id: &str, percentage: i64) -> Result<i32> {
     let body = serde_json::json!({ "rollout_percentage": percentage });
-    let resp: Value = client
-        .patch(&format!("/api/v1/admin/workflows/{id}/rollout"), &body)
-        .await?;
+    let resp: Value = client.patch(&paths::workflow_rollout(id), &body).await?;
 
     if !quiet {
         let wf = &resp["data"];
@@ -698,9 +690,7 @@ async fn versions(
     quiet: bool,
     id: &str,
 ) -> Result<i32> {
-    let resp: Value = client
-        .get(&format!("/api/v1/admin/workflows/{id}/versions"))
-        .await?;
+    let resp: Value = client.get(&paths::workflow_versions(id)).await?;
     let vers = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -742,9 +732,7 @@ async fn new_version(
     quiet: bool,
     id: &str,
 ) -> Result<i32> {
-    let resp: Value = client
-        .post_empty(&format!("/api/v1/admin/workflows/{id}/versions"))
-        .await?;
+    let resp: Value = client.post_empty(&paths::workflow_versions(id)).await?;
     let wf = &resp["data"];
 
     if quiet {
@@ -802,7 +790,7 @@ async fn export(
     let qs = utils::build_query_string(&[("status", status.clone()), ("tag", tag.clone())]);
 
     let resp: Value = client
-        .get(&format!("/api/v1/admin/workflows/export{qs}"))
+        .get(&format!("{}{qs}", paths::WORKFLOWS_EXPORT))
         .await?;
     let workflows = resp.get("data").unwrap_or(&resp);
     println!("{}", serde_json::to_string_pretty(workflows)?);
@@ -813,7 +801,7 @@ async fn diff(client: &OrionClient, file: &str) -> Result<i32> {
     let content = std::fs::read_to_string(file)?;
     let local_workflows: Vec<Value> = serde_json::from_str(&content)?;
 
-    let resp: Value = client.get("/api/v1/admin/workflows/export").await?;
+    let resp: Value = client.get(paths::WORKFLOWS_EXPORT).await?;
     let server_workflows = resp["data"].as_array().cloned().unwrap_or_default();
 
     let mut new_count = 0;
@@ -889,9 +877,7 @@ async fn dependencies(
     quiet: bool,
     id: &str,
 ) -> Result<i32> {
-    let resp: Value = client
-        .get(&format!("/api/v1/admin/workflows/{id}/dependencies"))
-        .await?;
+    let resp: Value = client.get(&paths::workflow_dependencies(id)).await?;
     let deps = &resp["data"];
 
     if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {

@@ -23,6 +23,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
+use orion_client::{OrionClient, StatusCode, paths, query_string};
+
 use orion::storage::content;
 use orion::storage::repositories::channels::CreateChannelRequest;
 use orion::storage::repositories::connectors::CreateConnectorRequest;
@@ -108,91 +110,25 @@ fn artifact_content_hash(artifact: &PackageArtifact) -> Result<String, CliError>
 // Admin-API client
 // ============================================================
 
-/// A non-2xx admin-API response, kept structured so callers can branch on
-/// `status`/`code` instead of matching prose that a server-side rewording
-/// would silently break.
-#[derive(Debug)]
-struct ApiError {
-    status: u16,
-    code: String,
-    message: String,
-}
-
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "HTTP {} {}: {}", self.status, self.code, self.message)
+/// The shared `orion-client` transport, configured for promotion runs: no
+/// request timeout (bulk imports of a large package may run long — the
+/// historical behavior of this CLI), `ORION_ADMIN_TOKEN` as the bearer
+/// credential, and the operation's `X-Orion-Change-Context` on every call
+/// (K5) so the audit trail groups the whole promotion.
+///
+/// The typed [`orion_client::ClientError`] this client returns replaces the
+/// `ApiError` that used to live here — callers still branch on `status()`
+/// instead of matching prose, and its `HTTP {status} {code}: {message}`
+/// Display is the same line this CLI has always printed.
+fn admin_client(server: &str, change_context: String) -> Result<OrionClient, CliError> {
+    let mut client = OrionClient::with_timeout(server, None)?;
+    if let Some(token) = std::env::var("ORION_ADMIN_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty())
+    {
+        client = client.with_api_key(token, None);
     }
-}
-
-impl std::error::Error for ApiError {}
-
-struct AdminClient {
-    /// Server base plus the `/api/v1/admin` prefix every CLI call shares.
-    base: String,
-    token: Option<String>,
-    /// Sent as `X-Orion-Change-Context` on every call (K5), so the audit
-    /// trail groups the whole operation.
-    change_context: String,
-    http: reqwest::Client,
-}
-
-impl AdminClient {
-    fn new(server: &str, change_context: String) -> Self {
-        Self {
-            base: format!("{}/api/v1/admin", server.trim_end_matches('/')),
-            token: std::env::var("ORION_ADMIN_TOKEN")
-                .ok()
-                .filter(|t| !t.is_empty()),
-            change_context,
-            http: reqwest::Client::new(),
-        }
-    }
-
-    fn request(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
-        let mut req = self
-            .http
-            .request(method, format!("{}{path}", self.base))
-            .header("x-orion-change-context", &self.change_context);
-        if let Some(token) = &self.token {
-            req = req.bearer_auth(token);
-        }
-        req
-    }
-
-    /// Insist on 2xx and unwrap the `{"data": …}` envelope; a failure is a
-    /// typed [`ApiError`].
-    fn unwrap_envelope(status: reqwest::StatusCode, body: Value) -> Result<Value, CliError> {
-        if !status.is_success() {
-            return Err(Box::new(ApiError {
-                status: status.as_u16(),
-                code: body["error"]["code"].as_str().unwrap_or("").to_string(),
-                message: body["error"]["message"].as_str().unwrap_or("").to_string(),
-            }));
-        }
-        Ok(body.get("data").cloned().unwrap_or(body))
-    }
-
-    async fn json(&self, req: reqwest::RequestBuilder) -> Result<Value, CliError> {
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body: Value = resp.json().await.unwrap_or(Value::Null);
-        Self::unwrap_envelope(status, body)
-    }
-
-    /// Like [`Self::json`] but 404 comes back as `Ok(None)`.
-    async fn json_opt(&self, req: reqwest::RequestBuilder) -> Result<Option<Value>, CliError> {
-        let resp = req.send().await?;
-        let status = resp.status();
-        if status == reqwest::StatusCode::NOT_FOUND {
-            return Ok(None);
-        }
-        let body: Value = resp.json().await.unwrap_or(Value::Null);
-        Self::unwrap_envelope(status, body).map(Some)
-    }
-
-    async fn get(&self, path: &str) -> Result<Value, CliError> {
-        self.json(self.request(reqwest::Method::GET, path)).await
-    }
+    Ok(client.with_change_context(change_context))
 }
 
 fn read_artifact(path: &str) -> Result<PackageArtifact, CliError> {
@@ -204,7 +140,25 @@ fn read_artifact(path: &str) -> Result<PackageArtifact, CliError> {
 
 /// The receipt endpoint for this artifact's package.
 fn receipt_path(artifact: &PackageArtifact) -> String {
-    format!("/packages/{}", artifact.package.name)
+    paths::package(&artifact.package.name)
+}
+
+/// The `/import` endpoint for one of the three entity kinds the artifact
+/// carries. The kinds are a closed set spelled by this module's own loops.
+fn import_path_for(kind: &str) -> &'static str {
+    match kind {
+        "connectors" => paths::CONNECTORS_IMPORT,
+        "workflows" => paths::WORKFLOWS_IMPORT,
+        _ => paths::CHANNELS_IMPORT,
+    }
+}
+
+/// The `PATCH …/status` endpoint for an activation intent's kind.
+fn status_path_for(kind: &str, id: &str) -> String {
+    match kind {
+        "workflows" => paths::workflow_status(id),
+        _ => paths::channel_status(id),
+    }
 }
 
 /// Collect the `name` field of every row in an exported entity array.
@@ -232,22 +186,22 @@ pub(crate) async fn run_export(
     if tag.is_none() && channel_ids.is_empty() {
         return Err("select the package's channels with --tag or --channels".into());
     }
-    let client = AdminClient::new(server, format!("package={name}@{version} export"));
+    let client = admin_client(server, format!("package={name}@{version} export"))?;
 
     // 1. The selected channels.
     let mut channels: Vec<Value> = Vec::new();
     if let Some(tag) = tag {
-        let listed = client
-            .json(
-                client
-                    .request(reqwest::Method::GET, "/channels/export")
-                    .query(&[("tag", tag)]),
-            )
+        let listed: Value = client
+            .get_data(&format!(
+                "{}{}",
+                paths::CHANNELS_EXPORT,
+                query_string(&[("tag", Some(tag.to_string()))])
+            ))
             .await?;
         channels.extend(listed.as_array().cloned().unwrap_or_default());
     }
     for id in channel_ids {
-        channels.push(client.get(&format!("/channels/{id}")).await?);
+        channels.push(client.get_data(&paths::channel(id)).await?);
     }
     if channels.is_empty() {
         return Err("the selector matched no channels".into());
@@ -276,9 +230,9 @@ pub(crate) async fn run_export(
     let mut connector_names: Vec<String> = Vec::new();
     let mut required_channels: Vec<String> = Vec::new();
     for id in &workflow_ids {
-        workflows.push(client.get(&format!("/workflows/{id}")).await?);
+        workflows.push(client.get_data(&paths::workflow(id)).await?);
         // 3. The dependency closure, from the server's own walk (K9).
-        let deps = client.get(&format!("/workflows/{id}/dependencies")).await?;
+        let deps: Value = client.get_data(&paths::workflow_dependencies(id)).await?;
         for c in deps["connectors"].as_array().into_iter().flatten() {
             if let Some(name) = c["connector"].as_str()
                 && !connector_names.iter().any(|n| n == name)
@@ -305,7 +259,7 @@ pub(crate) async fn run_export(
     }
 
     // 4. The referenced connectors, from one export sweep.
-    let all_connectors = client.get("/connectors/export").await?;
+    let all_connectors: Value = client.get_data(paths::CONNECTORS_EXPORT).await?;
     let mut connectors = Vec::new();
     let mut required_connectors: Vec<String> = Vec::new();
     for name in &connector_names {
@@ -558,12 +512,10 @@ enum ReceiptState {
 }
 
 async fn check_receipt(
-    client: &AdminClient,
+    client: &OrionClient,
     artifact: &PackageArtifact,
 ) -> Result<ReceiptState, CliError> {
-    let receipts = client
-        .json_opt(client.request(reqwest::Method::GET, &receipt_path(artifact)))
-        .await?;
+    let receipts: Option<Value> = client.get_data_opt(&receipt_path(artifact)).await?;
     let Some(receipts) = receipts else {
         return Ok(ReceiptState::Fresh);
     };
@@ -590,7 +542,7 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
     let artifact = read_artifact(file)?;
     verify_hash(&artifact)?;
     let package = format!("{}@{}", artifact.package.name, artifact.package.version);
-    let client = AdminClient::new(server, format!("package={package} plan"));
+    let client = admin_client(server, format!("package={package} plan"))?;
 
     // The immutability gate first: a reused applied version is dead on
     // arrival, and nothing below can change that.
@@ -616,7 +568,7 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
     // hide a boundary on a large estate).
     let mut failures = 0usize;
     if !artifact.requires.connectors.is_empty() {
-        let stored = names_of(&client.get("/connectors/export").await?, "name");
+        let stored = names_of(&client.get_data(paths::CONNECTORS_EXPORT).await?, "name");
         for name in &artifact.requires.connectors {
             if !stored.contains(name) {
                 eprintln!("error: required connector '{name}' does not exist in the target");
@@ -625,12 +577,12 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
         }
     }
     if !artifact.requires.channels.is_empty() {
-        let active = client
-            .json(
-                client
-                    .request(reqwest::Method::GET, "/channels/export")
-                    .query(&[("status", "active")]),
-            )
+        let active: Value = client
+            .get_data(&format!(
+                "{}{}",
+                paths::CHANNELS_EXPORT,
+                query_string(&[("status", Some(orion_api::STATUS_ACTIVE.to_string()))])
+            ))
             .await?;
         let active = names_of(&active, "name");
         for name in &artifact.requires.channels {
@@ -650,14 +602,13 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
         if items.is_empty() {
             continue;
         }
-        let outcome = client
-            .json(
-                client
-                    .request(
-                        reqwest::Method::POST,
-                        &format!("/{kind}/import?dry_run=true&on_conflict=new_version"),
-                    )
-                    .json(items),
+        let outcome: Value = client
+            .post_data(
+                &format!(
+                    "{}?dry_run=true&on_conflict=new_version",
+                    import_path_for(kind)
+                ),
+                &Value::Array(items.to_vec()),
             )
             .await?;
         for result in outcome["results"].as_array().into_iter().flatten() {
@@ -697,13 +648,9 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
         .collect();
     for (kind, id, _) in activation_intents(&artifact) {
         let outcome = client
-            .json(
-                client
-                    .request(
-                        reqwest::Method::PATCH,
-                        &format!("/{kind}/{id}/status?dry_run=true"),
-                    )
-                    .json(&json!({"status": "active"})),
+            .patch_data::<Value>(
+                &format!("{}?dry_run=true", status_path_for(kind, &id)),
+                &json!({"status": orion_api::STATUS_ACTIVE}),
             )
             .await;
         let outcome = match outcome {
@@ -800,7 +747,7 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
     let artifact = read_artifact(file)?;
     verify_hash(&artifact)?;
     let package = format!("{}@{}", artifact.package.name, artifact.package.version);
-    let client = AdminClient::new(server, format!("package={package}"));
+    let client = admin_client(server, format!("package={package}"))?;
 
     // Phase 1 — claim the receipt as staged. This is the atomic
     // same-version-different-content rejection (K14), and doubles as the
@@ -813,14 +760,13 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
         return Ok(());
     }
     client
-        .json(
-            client
-                .request(reqwest::Method::PUT, &receipt_path(&artifact))
-                .json(&json!({
-                    "version": artifact.package.version,
-                    "content_hash": artifact.package.content_hash,
-                    "state": "staged",
-                })),
+        .put_data::<Value>(
+            &receipt_path(&artifact),
+            &json!({
+                "version": artifact.package.version,
+                "content_hash": artifact.package.content_hash,
+                "state": "staged",
+            }),
         )
         .await
         .map_err(|e| format!("could not claim the receipt: {e}"))?;
@@ -836,14 +782,10 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
         if items.is_empty() {
             continue;
         }
-        let outcome = client
-            .json(
-                client
-                    .request(
-                        reqwest::Method::POST,
-                        &format!("/{kind}/import?on_conflict=new_version"),
-                    )
-                    .json(items),
+        let outcome: Value = client
+            .post_data(
+                &format!("{}?on_conflict=new_version", import_path_for(kind)),
+                &Value::Array(items.to_vec()),
             )
             .await?;
         let failed = outcome["failed"].as_u64().unwrap_or(0);
@@ -871,18 +813,14 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
     // one engine rebuild and one cluster epoch bump at the end, not one per
     // entity.
     for (kind, id, rollout) in activation_intents(&artifact) {
-        let mut body = json!({"status": "active"});
+        let mut body = json!({"status": orion_api::STATUS_ACTIVE});
         if let Some(pct) = rollout {
             body["rollout_percentage"] = json!(pct);
         }
         let result = client
-            .json(
-                client
-                    .request(
-                        reqwest::Method::PATCH,
-                        &format!("/{kind}/{id}/status?reload=defer"),
-                    )
-                    .json(&body),
+            .patch_data::<Value>(
+                &format!("{}?reload=defer", status_path_for(kind, &id)),
+                &body,
             )
             .await;
         match result {
@@ -892,10 +830,7 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
             // staging left it active as-is, which is the goal state. Matched
             // on the status, not the message, so a rewording cannot turn
             // this benign no-op into a mid-package abort.
-            Err(e)
-                if e.downcast_ref::<ApiError>()
-                    .is_some_and(|api| api.status == 404) =>
-            {
+            Err(e) if e.status() == Some(StatusCode::NOT_FOUND) => {
                 println!("{kind} '{id}' is already active (unchanged)");
             }
             Err(e) => {
@@ -914,20 +849,19 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
 
     // Phase 4 — one reload, one epoch bump.
     client
-        .json(client.request(reqwest::Method::POST, "/engine/reload"))
+        .post_data_empty::<Value>(paths::ENGINE_RELOAD)
         .await
         .map_err(|e| format!("entities are active but the engine reload failed: {e}"))?;
 
     // Phase 5 — flip the receipt.
     client
-        .json(
-            client
-                .request(reqwest::Method::PUT, &receipt_path(&artifact))
-                .json(&json!({
-                    "version": artifact.package.version,
-                    "content_hash": artifact.package.content_hash,
-                    "state": "applied",
-                })),
+        .put_data::<Value>(
+            &receipt_path(&artifact),
+            &json!({
+                "version": artifact.package.version,
+                "content_hash": artifact.package.content_hash,
+                "state": "applied",
+            }),
         )
         .await?;
 
@@ -942,7 +876,7 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
 pub(crate) async fn run_diff(server: &str, file: &str) -> Result<(), CliError> {
     let artifact = read_artifact(file)?;
     let package = format!("{}@{}", artifact.package.name, artifact.package.version);
-    let client = AdminClient::new(server, format!("package={package} diff"));
+    let client = admin_client(server, format!("package={package} diff"))?;
 
     // Server-side content hashes (K10) against the artifact's per-entity
     // projections — the same canonicalization on both sides. One export
@@ -954,25 +888,25 @@ pub(crate) async fn run_diff(server: &str, file: &str) -> Result<(), CliError> {
             "connector",
             &artifact.connectors,
             "name",
-            "/connectors/export",
+            paths::CONNECTORS_EXPORT,
         ),
         (
             "workflow",
             &artifact.workflows,
             "workflow_id",
-            "/workflows/export",
+            paths::WORKFLOWS_EXPORT,
         ),
         (
             "channel",
             &artifact.channels,
             "channel_id",
-            "/channels/export",
+            paths::CHANNELS_EXPORT,
         ),
     ] {
         if entries.is_empty() {
             continue;
         }
-        let export = client.get(export_path).await?;
+        let export: Value = client.get_data(export_path).await?;
         for entry in entries {
             let Some(key) = entry[key_field].as_str() else {
                 continue;

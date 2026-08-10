@@ -1,8 +1,10 @@
 use anyhow::{Context, Result, bail};
 use colored::Colorize;
+use orion_api::STATUS_ACTIVE;
 use serde_json::Value;
 
 use crate::client::OrionClient;
+use orion_client::paths;
 
 use super::fixtures::{ScenarioConfig, parse_payload};
 
@@ -49,7 +51,7 @@ pub async fn create_resources(
         eprint!("  Reloading engine... ");
     }
     let _: Value = client
-        .post_empty("/api/v1/admin/engine/reload")
+        .post_empty(paths::ENGINE_RELOAD)
         .await
         .context("Failed to reload engine")?;
 
@@ -68,7 +70,7 @@ async fn create_and_activate_workflow(client: &OrionClient, workflow_json: &str)
         serde_json::from_str(workflow_json).context("Failed to parse workflow fixture")?;
 
     let resp: Value = client
-        .post("/api/v1/admin/workflows", &body)
+        .post(paths::WORKFLOWS, &body)
         .await
         .context("Failed to create workflow")?;
 
@@ -77,12 +79,9 @@ async fn create_and_activate_workflow(client: &OrionClient, workflow_json: &str)
         .ok_or_else(|| anyhow::anyhow!("No workflow_id in response"))?
         .to_string();
 
-    let status_body = serde_json::json!({"status": "active"});
+    let status_body = serde_json::json!({"status": STATUS_ACTIVE});
     let _: Value = client
-        .patch(
-            &format!("/api/v1/admin/workflows/{workflow_id}/status"),
-            &status_body,
-        )
+        .patch(&paths::workflow_status(&workflow_id), &status_body)
         .await
         .context("Failed to activate workflow")?;
 
@@ -94,28 +93,25 @@ async fn import_workflows(client: &OrionClient, workflows_json: &str) -> Result<
         serde_json::from_str(workflows_json).context("Failed to parse multi-workflow fixture")?;
 
     let _: Value = client
-        .post("/api/v1/admin/workflows/import", &body)
+        .post(paths::WORKFLOWS_IMPORT, &body)
         .await
         .context("Failed to import workflows")?;
 
     // List draft workflows and activate each
     let list: Value = client
-        .get("/api/v1/admin/workflows?status=draft")
+        .get(format!("{}?status=draft", paths::WORKFLOWS).as_str())
         .await
         .context("Failed to list draft workflows")?;
 
     let drafts = list["data"].as_array().cloned().unwrap_or_default();
 
     let mut ids = Vec::new();
-    let status_body = serde_json::json!({"status": "active"});
+    let status_body = serde_json::json!({"status": STATUS_ACTIVE});
 
     for wf in &drafts {
         if let Some(id) = wf["workflow_id"].as_str() {
             let _: Value = client
-                .patch(
-                    &format!("/api/v1/admin/workflows/{id}/status"),
-                    &status_body,
-                )
+                .patch(&paths::workflow_status(id), &status_body)
                 .await
                 .with_context(|| format!("Failed to activate workflow {id}"))?;
             ids.push(id.to_string());
@@ -130,7 +126,7 @@ async fn wait_for_ready(client: &OrionClient) -> Result<()> {
     let timeout = std::time::Duration::from_secs(15);
 
     loop {
-        match client.get::<Value>("/health").await {
+        match client.get::<Value>(paths::HEALTH).await {
             Ok(resp) => {
                 if resp["status"].as_str() == Some("ok") {
                     return Ok(());
@@ -150,12 +146,12 @@ async fn wait_for_ready(client: &OrionClient) -> Result<()> {
 
 pub async fn verify_workflow(client: &OrionClient, workflow_id: &str) -> Result<()> {
     let resp: Value = client
-        .get(&format!("/api/v1/admin/workflows/{workflow_id}"))
+        .get(&paths::workflow(workflow_id))
         .await
         .with_context(|| format!("Workflow '{workflow_id}' not found"))?;
 
     let status = resp["data"]["status"].as_str().unwrap_or("unknown");
-    if status != "active" {
+    if status != STATUS_ACTIVE {
         bail!("Workflow '{workflow_id}' is not active (status: {status}). Activate it first.");
     }
 

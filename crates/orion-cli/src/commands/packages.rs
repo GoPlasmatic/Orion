@@ -7,6 +7,7 @@ use tabled::Tabled;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Args)]
 #[command(long_about = "Inspect package promotion receipts (v1.0).\n\n\
@@ -80,7 +81,7 @@ async fn list(
         ("limit", limit.map(|l| l.to_string())),
         ("offset", offset.map(|o| o.to_string())),
     ]);
-    let resp: Value = client.get(&format!("/api/v1/admin/packages{qs}")).await?;
+    let resp: Value = client.get(&format!("{}{qs}", paths::PACKAGES)).await?;
     let packages = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -119,9 +120,7 @@ async fn list(
 }
 
 async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, name: &str) -> Result<i32> {
-    let resp: Value = client
-        .get(&format!("/api/v1/admin/packages/{name}"))
-        .await?;
+    let resp: Value = client.get(&paths::package(name)).await?;
     let detail = &resp["data"];
 
     if quiet {

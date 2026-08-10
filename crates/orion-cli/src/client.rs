@@ -1,223 +1,162 @@
-use anyhow::{Context, Result, bail};
-use reqwest::Client;
+//! The CLI's view of [`orion_client::OrionClient`]: same transport, plus the
+//! presentation this binary owns — actionable hints, the `[CODE] message`
+//! error format, and field-error rendering.
+//!
+//! The transport itself (auth, envelope parsing, typed errors) lives in the
+//! shared `orion-client` crate — the same client the server's `package`
+//! subcommand drives. This wrapper only translates its typed
+//! [`ClientError`] into the terminal-ready `anyhow` messages the CLI has
+//! always printed.
+
+use anyhow::Result;
+use orion_api::codes;
+use orion_client::{ClientError, StatusCode};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub struct OrionClient {
-    base_url: String,
-    http: Client,
-    api_key: Option<String>,
-    api_key_header: Option<String>,
+    inner: orion_client::OrionClient,
 }
 
 impl OrionClient {
     pub fn new(base_url: &str) -> Result<Self> {
-        let base_url = base_url.trim_end_matches('/').to_string();
-        let http = Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .context("Failed to create HTTP client")?;
-        Ok(Self {
-            base_url,
-            http,
-            api_key: None,
-            api_key_header: None,
-        })
+        let inner = orion_client::OrionClient::new(base_url)
+            .map_err(|e| anyhow::anyhow!(e).context("Failed to create HTTP client"))?;
+        Ok(Self { inner })
     }
 
     pub fn base_url(&self) -> &str {
-        &self.base_url
+        self.inner.base_url()
     }
 
-    pub fn with_api_key(mut self, api_key: String, header: Option<String>) -> Self {
-        self.api_key = Some(api_key);
-        self.api_key_header = header;
-        self
-    }
-
-    fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match (&self.api_key, &self.api_key_header) {
-            (Some(key), Some(header)) if !header.eq_ignore_ascii_case("authorization") => {
-                req.header(header, key)
-            }
-            (Some(key), _) => req.header("Authorization", format!("Bearer {key}")),
-            _ => req,
+    pub fn with_api_key(self, api_key: String, header: Option<String>) -> Self {
+        Self {
+            inner: self.inner.with_api_key(api_key, header),
         }
     }
 
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let url = format!("{}{path}", self.base_url);
-        let resp = self
-            .apply_auth(self.http.get(&url))
-            .send()
-            .await
-            .with_context(|| Self::connection_hint(&url))?;
-        self.handle_response(resp).await
+        self.inner.get(path).await.map_err(render)
     }
 
     pub async fn get_text(&self, path: &str) -> Result<String> {
-        let url = format!("{}{path}", self.base_url);
-        let resp = self
-            .apply_auth(self.http.get(&url))
-            .send()
-            .await
-            .with_context(|| Self::connection_hint(&url))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            bail!("Request failed ({status}): {body}");
-        }
-        resp.text().await.context("Failed to read response body")
+        self.inner.get_text(path).await.map_err(render)
     }
 
     pub async fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
-        let url = format!("{}{path}", self.base_url);
-        let resp = self
-            .apply_auth(self.http.post(&url))
-            .json(body)
-            .send()
-            .await
-            .with_context(|| Self::connection_hint(&url))?;
-        self.handle_response(resp).await
+        self.inner.post(path, body).await.map_err(render)
     }
 
     pub async fn post_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let url = format!("{}{path}", self.base_url);
-        let resp = self
-            .apply_auth(self.http.post(&url))
-            .send()
-            .await
-            .with_context(|| Self::connection_hint(&url))?;
-        self.handle_response(resp).await
+        self.inner.post_empty(path).await.map_err(render)
     }
 
     pub async fn put<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
-        let url = format!("{}{path}", self.base_url);
-        let resp = self
-            .apply_auth(self.http.put(&url))
-            .json(body)
-            .send()
-            .await
-            .with_context(|| Self::connection_hint(&url))?;
-        self.handle_response(resp).await
+        self.inner.put(path, body).await.map_err(render)
     }
 
     pub async fn patch<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
-        let url = format!("{}{path}", self.base_url);
-        let resp = self
-            .apply_auth(self.http.patch(&url))
-            .json(body)
-            .send()
-            .await
-            .with_context(|| Self::connection_hint(&url))?;
-        self.handle_response(resp).await
+        self.inner.patch(path, body).await.map_err(render)
     }
 
     pub async fn delete_request(&self, path: &str) -> Result<()> {
-        let url = format!("{}{path}", self.base_url);
-        let resp = self
-            .apply_auth(self.http.delete(&url))
-            .send()
-            .await
-            .with_context(|| Self::connection_hint(&url))?;
-        Self::check_error(resp).await?;
-        Ok(())
+        self.inner.delete(path).await.map_err(render)
     }
+}
 
-    async fn handle_response<T: DeserializeOwned>(&self, resp: reqwest::Response) -> Result<T> {
-        let resp = Self::check_error(resp).await?;
-        resp.json::<T>()
-            .await
-            .context("Failed to parse response JSON")
-    }
-
-    fn connection_hint(url: &str) -> String {
-        format!(
-            "Failed to connect to {url}\n  \
-             Hint: Is the server running? Check with 'orion-cli config show' or use '--server <url>'"
-        )
-    }
-
-    fn error_hint(code: &str) -> &'static str {
-        match code {
-            "AUTH_FAILED" | "UNAUTHORIZED" => {
-                "\n  Hint: Check your --api-key or ORION_API_KEY environment variable"
+/// Translate a typed transport error into the message this CLI has always
+/// printed: `[CODE] message`, indented field errors, `request_id`, then an
+/// actionable hint keyed on the shared `orion_api::codes` registry.
+fn render(err: ClientError) -> anyhow::Error {
+    match err {
+        ClientError::Connect { url, source } => {
+            anyhow::anyhow!(source).context(connection_hint(&url))
+        }
+        ClientError::Api { error, .. } => {
+            let code = if error.code.is_empty() {
+                "UNKNOWN"
+            } else {
+                error.code.as_str()
+            };
+            let msg = if error.message.is_empty() {
+                "Unknown error"
+            } else {
+                error.message.as_str()
+            };
+            let mut out = format!("[{code}] {msg}");
+            out.push_str(&format_field_errors(&error.details));
+            if let Some(request_id) = &error.request_id {
+                out.push_str(&format!("\n  request_id: {request_id}"));
             }
-            "NOT_FOUND" => {
-                "\n  Hint: Verify the resource ID exists with the corresponding 'list' command"
-            }
-            "VALIDATION_ERROR" | "INVALID_INPUT" => {
-                "\n  Hint: Check the JSON structure. Use 'orion-cli workflows validate -f <file>' to validate"
-            }
-            "CONFLICT" | "ALREADY_EXISTS" => {
-                "\n  Hint: A resource with this ID or name may already exist"
-            }
-            _ => "",
+            out.push_str(error_hint(code));
+            anyhow::anyhow!(out)
+        }
+        ClientError::Http { status, .. } if status == StatusCode::UNAUTHORIZED => {
+            anyhow::anyhow!(
+                "Unauthorized ({status})\n  Hint: Check your --api-key or ORION_API_KEY environment variable"
+            )
+        }
+        ClientError::Http { status, .. } => anyhow::anyhow!("Request failed ({status})"),
+        ClientError::Decode { source } => {
+            anyhow::anyhow!(source).context("Failed to parse response JSON")
+        }
+        ClientError::Transport { source } => {
+            anyhow::anyhow!(source).context("Failed to read response body")
         }
     }
+}
 
-    async fn check_error(resp: reqwest::Response) -> Result<reqwest::Response> {
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body: Value = resp.json().await.unwrap_or_default();
-            if let Some(err) = body.get("error") {
-                let code = err["code"].as_str().unwrap_or("UNKNOWN");
-                let msg = err["message"].as_str().unwrap_or("Unknown error");
-                let mut out = format!("[{code}] {msg}");
-                out.push_str(&Self::format_field_errors(err.get("details")));
-                if let Some(request_id) = err.get("request_id").and_then(|r| r.as_str()) {
-                    out.push_str(&format!("\n  request_id: {request_id}"));
-                }
-                out.push_str(Self::error_hint(code));
-                bail!("{out}");
-            }
-            if status == reqwest::StatusCode::UNAUTHORIZED {
-                bail!(
-                    "Unauthorized ({status})\n  Hint: Check your --api-key or ORION_API_KEY environment variable"
-                );
-            }
-            bail!("Request failed ({status})");
-        }
-        Ok(resp)
-    }
+fn connection_hint(url: &str) -> String {
+    format!(
+        "Failed to connect to {url}\n  \
+         Hint: Is the server running? Check with 'orion-cli config show' or use '--server <url>'"
+    )
+}
 
-    /// Render the v0.2 structured `error.details[]` array (field-pathed
-    /// validation errors) as indented lines. Returns an empty string when the
-    /// server is v0.1 or the array is absent/empty.
-    fn format_field_errors(details: Option<&Value>) -> String {
-        let Some(items) = details.and_then(|d| d.as_array()) else {
-            return String::new();
-        };
-        if items.is_empty() {
-            return String::new();
+// Keyed on the shared `orion_api::codes` registry — the codes the server
+// actually emits.
+fn error_hint(code: &str) -> &'static str {
+    match code {
+        codes::UNAUTHORIZED => {
+            "\n  Hint: Check your --api-key or ORION_API_KEY environment variable"
         }
-        let mut out = String::new();
-        for item in items {
-            let path = item["path"].as_str().unwrap_or("");
-            let message = item["message"].as_str().unwrap_or("");
-            out.push_str("\n  - ");
-            if !path.is_empty() {
-                out.push_str(&format!("{path}: "));
-            }
-            out.push_str(message);
-            let expected = item.get("expected").filter(|v| !v.is_null());
-            let got = item.get("got").filter(|v| !v.is_null());
-            match (expected, got) {
-                (Some(exp), Some(got)) => {
-                    out.push_str(&format!(
-                        " (expected {}, got {})",
-                        compact_value(exp),
-                        compact_value(got)
-                    ));
-                }
-                (Some(exp), None) => out.push_str(&format!(" (expected {})", compact_value(exp))),
-                (None, Some(got)) => out.push_str(&format!(" (got {})", compact_value(got))),
-                (None, None) => {}
-            }
+        codes::NOT_FOUND => {
+            "\n  Hint: Verify the resource ID exists with the corresponding 'list' command"
         }
-        out
+        codes::VALIDATION_ERROR => {
+            "\n  Hint: Check the JSON structure. Use 'orion-cli workflows validate -f <file>' to validate"
+        }
+        codes::CONFLICT => "\n  Hint: A resource with this ID or name may already exist",
+        _ => "",
     }
+}
+
+/// Render the structured `error.details[]` array (field-pathed validation
+/// errors) as indented lines. Returns an empty string when the server is
+/// v0.1 or the array is empty.
+fn format_field_errors(details: &[orion_api::FieldError]) -> String {
+    let mut out = String::new();
+    for item in details {
+        out.push_str("\n  - ");
+        if !item.path.is_empty() {
+            out.push_str(&format!("{}: ", item.path));
+        }
+        out.push_str(&item.message);
+        match (&item.expected, &item.got) {
+            (Some(exp), Some(got)) => {
+                out.push_str(&format!(
+                    " (expected {}, got {})",
+                    compact_value(exp),
+                    compact_value(got)
+                ));
+            }
+            (Some(exp), None) => out.push_str(&format!(" (expected {})", compact_value(exp))),
+            (None, Some(got)) => out.push_str(&format!(" (got {})", compact_value(got))),
+            (None, None) => {}
+        }
+    }
+    out
 }
 
 /// Render a JSON value compactly for inline error messages: strings unquoted,

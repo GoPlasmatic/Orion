@@ -69,59 +69,10 @@ pub(crate) fn check_import_batch_size(len: usize) -> Result<(), crate::errors::O
     Ok(())
 }
 
-/// How an `/import` treats an item whose conflict key is already stored (K2).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum OnConflict {
-    /// Refuse the item — a 409-shaped entry in `errors[]`. The pre-K2
-    /// behaviour, and still the default.
-    #[default]
-    Fail,
-    /// Leave the stored entity alone and report the item as `skipped`.
-    Skip,
-    /// Upsert: an existing draft is updated in place; an active entity whose
-    /// content differs gets a new draft version carrying the item's content;
-    /// content-identical items are reported `unchanged` and write nothing.
-    /// This is what makes a re-run of the same artifact a no-op.
-    NewVersion,
-}
-
-/// What one import item did (or, on dry-run, would do).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ImportAction {
-    Created,
-    /// A versioned entity's existing draft was replaced with this content.
-    UpdatedDraft,
-    /// A connector (unversioned) was updated in place.
-    Updated,
-    /// A new draft version was created carrying this content.
-    NewVersion,
-    /// Stored content is identical (DB-owned fields excluded); nothing written.
-    Unchanged,
-    /// `on_conflict=skip` and the key exists; nothing written.
-    Skipped,
-}
-
-impl ImportAction {
-    pub(crate) fn as_str(&self) -> &'static str {
-        match self {
-            Self::Created => "created",
-            Self::UpdatedDraft => "updated_draft",
-            Self::Updated => "updated",
-            Self::NewVersion => "new_version",
-            Self::Unchanged => "unchanged",
-            Self::Skipped => "skipped",
-        }
-    }
-
-    /// Whether this action wrote (or would write) anything.
-    fn is_write(&self) -> bool {
-        matches!(
-            self,
-            Self::Created | Self::UpdatedDraft | Self::Updated | Self::NewVersion
-        )
-    }
-}
+// The import vocabulary — `OnConflict` (the `?on_conflict=` values) and
+// `ImportAction` (the `results[].action` values) — is wire contract and lives
+// in the shared `orion-api` crate; re-exported here under the pre-1.0 paths.
+pub(crate) use orion_api::{ImportAction, ImportItemError, ImportItemResult, OnConflict};
 
 /// The per-entity operations [`import_items`] drives.
 ///
@@ -158,10 +109,10 @@ pub(crate) struct ImportOutcome {
     /// Items skipped under `on_conflict=skip`.
     pub skipped: u64,
     /// One `{index, error}` entry per failed item.
-    pub errors: Vec<serde_json::Value>,
+    pub errors: Vec<ImportItemError>,
     /// One `{index, id, action}` entry per non-failed item (K2) — the
     /// per-item report a packaging CLI turns into its plan/apply output.
-    pub results: Vec<serde_json::Value>,
+    pub results: Vec<ImportItemResult>,
     /// Ids of the items that wrote, collected as `record` classifies them —
     /// so the K5 audit filter cannot drift from [`ImportAction::is_write`]
     /// the way a re-parse of `results` strings could.
@@ -187,16 +138,19 @@ impl ImportOutcome {
         } else {
             self.skipped += 1;
         }
-        self.results.push(json!({
-            "index": index,
-            "id": key,
-            "action": action.as_str(),
-        }));
+        self.results.push(ImportItemResult {
+            index: index as u64,
+            id: key.map(str::to_string),
+            action: action.as_str().to_string(),
+        });
     }
 
     fn fail(&mut self, index: usize, error: String) {
         self.failed += 1;
-        self.errors.push(json!({"index": index, "error": error}));
+        self.errors.push(ImportItemError {
+            index: index as u64,
+            error,
+        });
     }
 }
 
@@ -425,17 +379,18 @@ pub(crate) fn import_response(
     dry_run: bool,
     outcome: ImportOutcome,
 ) -> axum::Json<serde_json::Value> {
-    axum::Json(json!({
-        "data": {
-            "dry_run": dry_run,
-            "imported": outcome.imported,
-            "failed": outcome.failed,
-            "unchanged": outcome.unchanged,
-            "skipped": outcome.skipped,
-            "errors": outcome.errors,
-            "results": outcome.results,
-        }
-    }))
+    // Built as the shared `ImportResult` — the type the CLI deserializes and
+    // the OpenAPI document publishes — so the three cannot drift.
+    let report = orion_api::ImportResult {
+        dry_run,
+        imported: outcome.imported,
+        failed: outcome.failed,
+        unchanged: outcome.unchanged,
+        skipped: outcome.skipped,
+        errors: outcome.errors,
+        results: outcome.results,
+    };
+    axum::Json(json!({ "data": report }))
 }
 
 /// Query parameters accepted by all three `/import` endpoints (B6).

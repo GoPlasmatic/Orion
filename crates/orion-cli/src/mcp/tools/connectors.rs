@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::client::OrionClient;
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ConnectorsListParams {
@@ -63,7 +64,7 @@ pub async fn list(client: &OrionClient, params: ConnectorsListParams) -> Result<
         ("offset", params.offset.map(|o| o.to_string())),
     ]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/connectors{qs}"))
+        .get(&format!("{}{qs}", paths::CONNECTORS))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -71,7 +72,7 @@ pub async fn list(client: &OrionClient, params: ConnectorsListParams) -> Result<
 
 pub async fn get(client: &OrionClient, params: ConnectorsGetParams) -> Result<String, String> {
     let resp: Value = client
-        .get(&format!("/api/v1/admin/connectors/{}", params.id))
+        .get(&paths::connector(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -84,7 +85,7 @@ pub async fn create(
     let body: Value = serde_json::from_str(&params.connector_json)
         .map_err(|e| format!("Invalid connector JSON: {e}"))?;
     let resp: Value = client
-        .post("/api/v1/admin/connectors", &body)
+        .post(paths::CONNECTORS, &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -97,7 +98,7 @@ pub async fn update(
     let body: Value = serde_json::from_str(&params.connector_json)
         .map_err(|e| format!("Invalid connector JSON: {e}"))?;
     let resp: Value = client
-        .put(&format!("/api/v1/admin/connectors/{}", params.id), &body)
+        .put(&paths::connector(&params.id), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -108,7 +109,7 @@ pub async fn delete(
     params: ConnectorsDeleteParams,
 ) -> Result<String, String> {
     client
-        .delete_request(&format!("/api/v1/admin/connectors/{}", params.id))
+        .delete_request(&paths::connector(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     Ok(format!("Connector {} deleted successfully", params.id))
@@ -120,7 +121,7 @@ pub async fn enable(
 ) -> Result<String, String> {
     let body = serde_json::json!({ "enabled": true });
     let resp: Value = client
-        .put(&format!("/api/v1/admin/connectors/{}", params.id), &body)
+        .put(&paths::connector(&params.id), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -132,7 +133,7 @@ pub async fn disable(
 ) -> Result<String, String> {
     let body = serde_json::json!({ "enabled": false });
     let resp: Value = client
-        .put(&format!("/api/v1/admin/connectors/{}", params.id), &body)
+        .put(&paths::connector(&params.id), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -144,7 +145,7 @@ pub async fn import(
 ) -> Result<String, String> {
     super::import_resource(
         client,
-        "/api/v1/admin/connectors/import",
+        paths::CONNECTORS_IMPORT,
         "connector",
         &params.connectors_json,
         params.dry_run.unwrap_or(false),
@@ -154,7 +155,7 @@ pub async fn import(
 
 pub async fn test(client: &OrionClient, params: ConnectorsGetParams) -> Result<String, String> {
     let resp: Value = client
-        .post_empty(&format!("/api/v1/admin/connectors/{}/test", params.id))
+        .post_empty(&paths::connector_test(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())

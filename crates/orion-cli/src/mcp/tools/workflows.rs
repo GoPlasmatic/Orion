@@ -1,9 +1,11 @@
+use orion_api::{STATUS_ACTIVE, STATUS_ARCHIVED};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::client::OrionClient;
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WorkflowsListParams {
@@ -113,7 +115,7 @@ pub async fn list(client: &OrionClient, params: WorkflowsListParams) -> Result<S
         ("offset", params.offset.map(|o| o.to_string())),
     ]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/workflows{qs}"))
+        .get(&format!("{}{qs}", paths::WORKFLOWS))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -121,7 +123,7 @@ pub async fn list(client: &OrionClient, params: WorkflowsListParams) -> Result<S
 
 pub async fn get(client: &OrionClient, params: WorkflowsGetParams) -> Result<String, String> {
     let resp: Value = client
-        .get(&format!("/api/v1/admin/workflows/{}", params.id))
+        .get(&paths::workflow(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -131,7 +133,7 @@ pub async fn create(client: &OrionClient, params: WorkflowsCreateParams) -> Resu
     let body: Value = serde_json::from_str(&params.workflow_json)
         .map_err(|e| format!("Invalid workflow JSON: {e}"))?;
     let resp: Value = client
-        .post("/api/v1/admin/workflows", &body)
+        .post(paths::WORKFLOWS, &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -141,7 +143,7 @@ pub async fn update(client: &OrionClient, params: WorkflowsUpdateParams) -> Resu
     let body: Value = serde_json::from_str(&params.workflow_json)
         .map_err(|e| format!("Invalid workflow JSON: {e}"))?;
     let resp: Value = client
-        .put(&format!("/api/v1/admin/workflows/{}", params.id), &body)
+        .put(&paths::workflow(&params.id), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -149,7 +151,7 @@ pub async fn update(client: &OrionClient, params: WorkflowsUpdateParams) -> Resu
 
 pub async fn delete(client: &OrionClient, params: WorkflowsDeleteParams) -> Result<String, String> {
     client
-        .delete_request(&format!("/api/v1/admin/workflows/{}", params.id))
+        .delete_request(&paths::workflow(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     Ok(format!("Workflow {} deleted successfully", params.id))
@@ -159,20 +161,20 @@ pub async fn activate(
     client: &OrionClient,
     params: WorkflowsStatusParams,
 ) -> Result<String, String> {
-    change_status(client, &params.id, "active").await
+    change_status(client, &params.id, STATUS_ACTIVE).await
 }
 
 pub async fn archive(
     client: &OrionClient,
     params: WorkflowsStatusParams,
 ) -> Result<String, String> {
-    change_status(client, &params.id, "archived").await
+    change_status(client, &params.id, STATUS_ARCHIVED).await
 }
 
 async fn change_status(client: &OrionClient, id: &str, status: &str) -> Result<String, String> {
     let body = serde_json::json!({ "status": status });
     let resp: Value = client
-        .patch(&format!("/api/v1/admin/workflows/{id}/status"), &body)
+        .patch(&paths::workflow_status(id), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -190,10 +192,7 @@ pub async fn test(client: &OrionClient, params: WorkflowsTestParams) -> Result<S
     }
 
     let resp: Value = client
-        .post(
-            &format!("/api/v1/admin/workflows/{}/test", params.id),
-            &body,
-        )
+        .post(&paths::workflow_test(&params.id), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -207,7 +206,7 @@ pub async fn export(client: &OrionClient, params: WorkflowsExportParams) -> Resu
         ("offset", params.offset.map(|o| o.to_string())),
     ]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/workflows/export{qs}"))
+        .get(&format!("{}{qs}", paths::WORKFLOWS_EXPORT))
         .await
         .map_err(|e| e.to_string())?;
     let data = resp.get("data").unwrap_or(&resp);
@@ -217,7 +216,7 @@ pub async fn export(client: &OrionClient, params: WorkflowsExportParams) -> Resu
 pub async fn import(client: &OrionClient, params: WorkflowsImportParams) -> Result<String, String> {
     super::import_resource(
         client,
-        "/api/v1/admin/workflows/import",
+        paths::WORKFLOWS_IMPORT,
         "workflow",
         &params.workflows_json,
         params.dry_run.unwrap_or(false),
@@ -232,7 +231,7 @@ pub async fn validate(
     let body: Value = serde_json::from_str(&params.workflow_json)
         .map_err(|e| format!("Invalid workflow JSON: {e}"))?;
     let resp: Value = client
-        .post("/api/v1/admin/workflows/validate", &body)
+        .post(paths::WORKFLOWS_VALIDATE, &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -244,10 +243,7 @@ pub async fn rollout(
 ) -> Result<String, String> {
     let body = serde_json::json!({ "rollout_percentage": params.rollout_percentage });
     let resp: Value = client
-        .patch(
-            &format!("/api/v1/admin/workflows/{}/rollout", params.id),
-            &body,
-        )
+        .patch(&paths::workflow_rollout(&params.id), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -258,7 +254,7 @@ pub async fn versions(
     params: WorkflowsVersionsParams,
 ) -> Result<String, String> {
     let resp: Value = client
-        .get(&format!("/api/v1/admin/workflows/{}/versions", params.id))
+        .get(&paths::workflow_versions(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -269,7 +265,7 @@ pub async fn create_version(
     params: WorkflowsVersionsParams,
 ) -> Result<String, String> {
     let resp: Value = client
-        .post_empty(&format!("/api/v1/admin/workflows/{}/versions", params.id))
+        .post_empty(&paths::workflow_versions(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -280,10 +276,7 @@ pub async fn dependencies(
     params: WorkflowsGetParams,
 ) -> Result<String, String> {
     let resp: Value = client
-        .get(&format!(
-            "/api/v1/admin/workflows/{}/dependencies",
-            params.id
-        ))
+        .get(&paths::workflow_dependencies(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())

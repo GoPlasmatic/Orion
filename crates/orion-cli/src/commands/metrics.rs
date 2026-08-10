@@ -3,6 +3,7 @@ use clap::Args;
 use colored::Colorize;
 
 use crate::client::OrionClient;
+use orion_client::paths;
 
 #[derive(Args)]
 pub struct MetricsCmd {
@@ -13,7 +14,7 @@ pub struct MetricsCmd {
 
 impl MetricsCmd {
     pub async fn run(&self, client: &OrionClient) -> Result<i32> {
-        let text = client.get_text("/metrics").await?;
+        let text = client.get_text(paths::METRICS).await?;
 
         if self.raw {
             print!("{text}");

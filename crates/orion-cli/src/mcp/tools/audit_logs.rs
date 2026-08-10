@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::client::OrionClient;
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AuditLogsListParams {
@@ -21,7 +22,7 @@ pub async fn list(client: &OrionClient, params: AuditLogsListParams) -> Result<S
         ("offset", params.offset.map(|o| o.to_string())),
     ]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/audit-logs{qs}"))
+        .get(&format!("{}{qs}", paths::AUDIT_LOGS))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())

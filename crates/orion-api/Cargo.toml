@@ -1,0 +1,28 @@
+[package]
+name = "orion-api"
+# No release cycle of its own: no tag names this crate and nothing installs
+# it directly. crates-publish.yml publishes it as a *rider* — automatically,
+# right before a binary crate whose tag shipped a version of it that isn't on
+# crates.io yet (crates.io refuses a crate whose dependency it doesn't host).
+# The one rule that follows: BUMP THIS VERSION with any change to this crate,
+# or the rider skips and the published binary resolves the older content.
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Wire contract for the Orion declarative services runtime — the response DTOs, domain enums, error envelope, and import report shared by orion-server and orion-cli"
+license.workspace = true
+repository.workspace = true
+homepage = "https://goplasmatic.github.io/Orion/"
+keywords = ["workflow", "runtime", "api", "types"]
+categories = ["api-bindings", "data-structures"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+utoipa = { version = "5", features = ["chrono"], optional = true }
+
+[features]
+# The server enables this to publish the shared types in its OpenAPI document.
+# Clients (orion-cli) leave it off and pay for none of utoipa.
+utoipa = ["dep:utoipa"]

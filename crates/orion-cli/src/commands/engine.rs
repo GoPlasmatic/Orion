@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Args)]
 pub struct EngineCmd {
@@ -42,7 +43,7 @@ impl EngineCmd {
 }
 
 async fn status(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Result<i32> {
-    let resp: Value = client.get("/api/v1/admin/engine/status").await?;
+    let resp: Value = client.get(paths::ENGINE_STATUS).await?;
     // v1.0 wraps admin responses in {"data": …}; tolerate the bare pre-1.0 shape.
     let resp = resp.get("data").cloned().unwrap_or(resp);
 
@@ -89,7 +90,7 @@ async fn reload(client: &OrionClient, quiet: bool, yes: bool) -> Result<i32> {
         return Ok(0);
     }
 
-    let resp: Value = client.post_empty("/api/v1/admin/engine/reload").await?;
+    let resp: Value = client.post_empty(paths::ENGINE_RELOAD).await?;
     let resp = resp.get("data").cloned().unwrap_or(resp);
 
     if !quiet {

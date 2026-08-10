@@ -3,6 +3,7 @@ use colored::Colorize;
 use serde_json::Value;
 
 use crate::client::OrionClient;
+use orion_client::paths;
 
 use super::setup::BenchmarkResources;
 
@@ -18,9 +19,7 @@ pub async fn remove_resources(
 
     for res in resources {
         for id in &res.workflow_ids {
-            if let Err(e) = client
-                .delete_request(&format!("/api/v1/admin/workflows/{id}"))
-                .await
+            if let Err(e) = client.delete_request(&paths::workflow(id)).await
                 && !quiet
             {
                 eprintln!("\n  Warning: failed to delete workflow {id}: {e}");
@@ -29,9 +28,7 @@ pub async fn remove_resources(
     }
 
     // Reload engine after cleanup
-    let _ = client
-        .post_empty::<Value>("/api/v1/admin/engine/reload")
-        .await;
+    let _ = client.post_empty::<Value>(paths::ENGINE_RELOAD).await;
 
     if !quiet {
         eprintln!("{}", "done".green());
@@ -51,7 +48,7 @@ pub async fn cleanup_all_bench_resources(client: &OrionClient, quiet: bool) -> R
     }
 
     let resp: Value = client
-        .get("/api/v1/admin/workflows")
+        .get(paths::WORKFLOWS)
         .await
         .context("Failed to list workflows")?;
 
@@ -63,10 +60,7 @@ pub async fn cleanup_all_bench_resources(client: &OrionClient, quiet: bool) -> R
         let is_bench = name.starts_with("Bench ") || name.starts_with("Multi Rule ");
 
         if is_bench && let Some(id) = wf["workflow_id"].as_str() {
-            if let Err(e) = client
-                .delete_request(&format!("/api/v1/admin/workflows/{id}"))
-                .await
-            {
+            if let Err(e) = client.delete_request(&paths::workflow(id)).await {
                 if !quiet {
                     eprintln!("  Warning: failed to delete {name} ({id}): {e}");
                 }
@@ -80,9 +74,7 @@ pub async fn cleanup_all_bench_resources(client: &OrionClient, quiet: bool) -> R
     }
 
     // Reload engine
-    let _ = client
-        .post_empty::<Value>("/api/v1/admin/engine/reload")
-        .await;
+    let _ = client.post_empty::<Value>(paths::ENGINE_RELOAD).await;
 
     if !quiet {
         if deleted > 0 {

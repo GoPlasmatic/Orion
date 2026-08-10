@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::client::OrionClient;
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DlqListParams {
@@ -31,7 +32,7 @@ pub async fn list(client: &OrionClient, params: DlqListParams) -> Result<String,
         ("offset", params.offset.map(|o| o.to_string())),
     ]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/trace-dlq{qs}"))
+        .get(&format!("{}{qs}", paths::TRACE_DLQ))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -39,7 +40,7 @@ pub async fn list(client: &OrionClient, params: DlqListParams) -> Result<String,
 
 pub async fn get(client: &OrionClient, params: DlqEntryParams) -> Result<String, String> {
     let resp: Value = client
-        .get(&format!("/api/v1/admin/trace-dlq/{}", params.id))
+        .get(&paths::trace_dlq_entry(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -47,7 +48,7 @@ pub async fn get(client: &OrionClient, params: DlqEntryParams) -> Result<String,
 
 pub async fn requeue(client: &OrionClient, params: DlqEntryParams) -> Result<String, String> {
     let resp: Value = client
-        .post_empty(&format!("/api/v1/admin/trace-dlq/{}/requeue", params.id))
+        .post_empty(&paths::trace_dlq_requeue(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())

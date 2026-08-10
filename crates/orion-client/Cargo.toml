@@ -1,0 +1,27 @@
+[package]
+name = "orion-client"
+# Same rider policy as orion-api: no release cycle of its own, no tag ever
+# names it. crates-publish.yml publishes it automatically right before a
+# binary crate whose tag ships a version of it that isn't on crates.io yet.
+# BUMP THIS VERSION with any change to this crate, or the rider skips and the
+# published binary resolves the older content.
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "HTTP client for the Orion declarative services runtime admin and data APIs — the one transport shared by orion-cli and the server's package promotion CLI"
+license.workspace = true
+repository.workspace = true
+homepage = "https://goplasmatic.github.io/Orion/"
+keywords = ["workflow", "runtime", "api", "client"]
+categories = ["api-bindings", "web-programming::http-client"]
+
+[dependencies]
+orion-api = { version = "1.0.0", path = "../orion-api" }
+# Same spec as the binaries so the shared lockfile carries one reqwest tree.
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

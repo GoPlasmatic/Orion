@@ -3,6 +3,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::client::OrionClient;
+use orion_client::paths;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DataSendSyncParams {
@@ -42,7 +43,7 @@ fn build_data_body(data: &str, metadata: &Option<String>) -> Result<Value, Strin
 pub async fn send_sync(client: &OrionClient, params: DataSendSyncParams) -> Result<String, String> {
     let body = build_data_body(&params.data, &params.metadata)?;
     let resp: Value = client
-        .post(&format!("/api/v1/data/{}", params.channel), &body)
+        .post(&paths::data(&params.channel), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -54,7 +55,7 @@ pub async fn send_async(
 ) -> Result<String, String> {
     let body = build_data_body(&params.data, &params.metadata)?;
     let resp: Value = client
-        .post(&format!("/api/v1/data/{}/async", params.channel), &body)
+        .post(&paths::data_async(&params.channel), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())

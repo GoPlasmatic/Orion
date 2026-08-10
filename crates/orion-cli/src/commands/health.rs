@@ -5,9 +5,10 @@ use serde_json::Value;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils;
+use orion_client::paths;
 
 pub async fn run(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Result<i32> {
-    let resp: Value = client.get("/health").await?;
+    let resp: Value = client.get(paths::HEALTH).await?;
 
     if quiet {
         let status = resp["status"].as_str().unwrap_or("unknown");

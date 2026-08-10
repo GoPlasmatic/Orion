@@ -1,5 +1,9 @@
 use anyhow::{Result, bail};
 use colored::Colorize;
+use orion_api::{
+    ImportResult, STATUS_ACTIVE, STATUS_ARCHIVED, STATUS_DRAFT, TRACE_STATUS_COMPLETED,
+    TRACE_STATUS_FAILED, TRACE_STATUS_PENDING, TRACE_STATUS_RUNNING,
+};
 use serde_json::Value;
 use std::io::Read;
 
@@ -15,19 +19,16 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-/// Colorize a lifecycle status (draft/active/archived).
+/// Colorize an entity lifecycle status (draft/active/archived) or a trace
+/// status (pending/running/completed/failed), matched against the shared
+/// `orion-api` vocabulary. `"ok"` is CLI-local: the health command's summary.
 pub fn colorize_status(status: &str) -> String {
     match status {
-        "active" | "completed" | "ok" => status.green().to_string(),
-        "draft" | "running" | "pending" => {
-            if status == "pending" {
-                status.yellow().to_string()
-            } else {
-                status.blue().to_string()
-            }
-        }
-        "failed" => status.red().to_string(),
-        "archived" => status.dimmed().to_string(),
+        STATUS_ACTIVE | TRACE_STATUS_COMPLETED | "ok" => status.green().to_string(),
+        TRACE_STATUS_PENDING => status.yellow().to_string(),
+        STATUS_DRAFT | TRACE_STATUS_RUNNING => status.blue().to_string(),
+        TRACE_STATUS_FAILED => status.red().to_string(),
+        STATUS_ARCHIVED => status.dimmed().to_string(),
         other => other.to_string(),
     }
 }
@@ -108,11 +109,17 @@ pub async fn run_import(
     // shape so the CLI still reads older servers.
     let result = resp.get("data").cloned().unwrap_or(resp);
 
-    let is_dry = result["dry_run"].as_bool().unwrap_or(dry_run);
-    let success = result["imported"].as_u64().unwrap_or(0);
-    let fail = result["failed"].as_u64().unwrap_or(0);
-    let unchanged = result["unchanged"].as_u64().unwrap_or(0);
-    let skipped = result["skipped"].as_u64().unwrap_or(0);
+    // The typed report from orion-api — the same type the server serializes.
+    // Every field defaults, so a pre-1.0 report still parses; a response that
+    // isn't even object-shaped falls back to all-zero counts, exactly as the
+    // per-field `unwrap_or(0)` reads did before.
+    let report: ImportResult = serde_json::from_value(result.clone()).unwrap_or_default();
+    // A pre-1.0 report without the field echoes what was requested.
+    let is_dry = report.dry_run || dry_run;
+    let success = report.imported;
+    let fail = report.failed;
+    let unchanged = report.unchanged;
+    let skipped = report.skipped;
     let exit = if fail > 0 { 1 } else { 0 };
 
     if quiet {
@@ -155,26 +162,14 @@ pub async fn run_import(
         }
     );
 
-    if let Some(errors) = result.get("errors").and_then(|e| e.as_array()) {
-        for err in errors {
-            let idx = err["index"].as_u64().unwrap_or(0);
-            let msg = err["error"].as_str().unwrap_or("unknown");
-            println!("  {} #{idx}: {msg}", "ERR".red());
-        }
+    for err in &report.errors {
+        println!("  {} #{}: {}", "ERR".red(), err.index, err.error);
     }
 
     Ok(exit)
 }
 
 /// Build a URL query string from key-value pairs, skipping `None` values.
-pub fn build_query_string(params: &[(&str, Option<String>)]) -> String {
-    let parts: Vec<String> = params
-        .iter()
-        .filter_map(|(k, v)| v.as_ref().map(|val| format!("{k}={val}")))
-        .collect();
-    if parts.is_empty() {
-        String::new()
-    } else {
-        format!("?{}", parts.join("&"))
-    }
-}
+/// The one implementation lives in `orion-client`; this re-export keeps the
+/// CLI's historical call sites working.
+pub use orion_client::query_string as build_query_string;

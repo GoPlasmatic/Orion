@@ -2,8 +2,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
+use orion_api::{STATUS_ACTIVE, STATUS_ARCHIVED};
+
 use crate::client::OrionClient;
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChannelsListParams {
@@ -78,7 +81,7 @@ pub async fn list(client: &OrionClient, params: ChannelsListParams) -> Result<St
         ("offset", params.offset.map(|o| o.to_string())),
     ]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/channels{qs}"))
+        .get(&format!("{}{qs}", paths::CHANNELS))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -86,7 +89,7 @@ pub async fn list(client: &OrionClient, params: ChannelsListParams) -> Result<St
 
 pub async fn get(client: &OrionClient, params: ChannelsGetParams) -> Result<String, String> {
     let resp: Value = client
-        .get(&format!("/api/v1/admin/channels/{}", params.id))
+        .get(&paths::channel(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -96,7 +99,7 @@ pub async fn create(client: &OrionClient, params: ChannelsCreateParams) -> Resul
     let body: Value = serde_json::from_str(&params.channel_json)
         .map_err(|e| format!("Invalid channel JSON: {e}"))?;
     let resp: Value = client
-        .post("/api/v1/admin/channels", &body)
+        .post(paths::CHANNELS, &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -106,7 +109,7 @@ pub async fn update(client: &OrionClient, params: ChannelsUpdateParams) -> Resul
     let body: Value = serde_json::from_str(&params.channel_json)
         .map_err(|e| format!("Invalid channel JSON: {e}"))?;
     let resp: Value = client
-        .put(&format!("/api/v1/admin/channels/{}", params.id), &body)
+        .put(&paths::channel(&params.id), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -114,7 +117,7 @@ pub async fn update(client: &OrionClient, params: ChannelsUpdateParams) -> Resul
 
 pub async fn delete(client: &OrionClient, params: ChannelsDeleteParams) -> Result<String, String> {
     client
-        .delete_request(&format!("/api/v1/admin/channels/{}", params.id))
+        .delete_request(&paths::channel(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     Ok(format!("Channel {} deleted successfully", params.id))
@@ -124,17 +127,17 @@ pub async fn activate(
     client: &OrionClient,
     params: ChannelsStatusParams,
 ) -> Result<String, String> {
-    change_status(client, &params.id, "active").await
+    change_status(client, &params.id, STATUS_ACTIVE).await
 }
 
 pub async fn archive(client: &OrionClient, params: ChannelsStatusParams) -> Result<String, String> {
-    change_status(client, &params.id, "archived").await
+    change_status(client, &params.id, STATUS_ARCHIVED).await
 }
 
 async fn change_status(client: &OrionClient, id: &str, status: &str) -> Result<String, String> {
     let body = serde_json::json!({ "status": status });
     let resp: Value = client
-        .patch(&format!("/api/v1/admin/channels/{id}/status"), &body)
+        .patch(&paths::channel_status(id), &body)
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -145,7 +148,7 @@ pub async fn versions(
     params: ChannelsVersionsParams,
 ) -> Result<String, String> {
     let resp: Value = client
-        .get(&format!("/api/v1/admin/channels/{}/versions", params.id))
+        .get(&paths::channel_versions(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -156,7 +159,7 @@ pub async fn create_version(
     params: ChannelsVersionsParams,
 ) -> Result<String, String> {
     let resp: Value = client
-        .post_empty(&format!("/api/v1/admin/channels/{}/versions", params.id))
+        .post_empty(&paths::channel_versions(&params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -165,7 +168,7 @@ pub async fn create_version(
 pub async fn import(client: &OrionClient, params: ChannelsImportParams) -> Result<String, String> {
     super::import_resource(
         client,
-        "/api/v1/admin/channels/import",
+        paths::CHANNELS_IMPORT,
         "channel",
         &params.channels_json,
         params.dry_run.unwrap_or(false),

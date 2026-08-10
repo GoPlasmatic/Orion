@@ -43,7 +43,7 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
-      # Two publishable packages share this repo. A package-prefixed tag
+      # Two releasable packages share this repo. A package-prefixed tag
       # (orion-cli-v0.3.0, orion-server-v1.1.0) publishes that package; a
       # bare v* tag stays the server's, matching its pre-monorepo history.
       - name: Determine package from tag
@@ -53,6 +53,34 @@ jobs:
             orion-cli-*) echo "package=orion-cli" >> "$GITHUB_OUTPUT" ;;
             *)           echo "package=orion-server" >> "$GITHUB_OUTPUT" ;;
           esac
+
+      # The shared library crates (orion-api, orion-client) have no release
+      # cycle of their own — no tag ever names them. They ride along here:
+      # crates.io refuses a crate whose dependency isn't on crates.io, so
+      # whichever binary tag ships first with a not-yet-published version
+      # publishes it in passing. Each is skipped when its version already
+      # exists, which makes the step idempotent across the server and CLI
+      # tags that share it. `cargo publish` blocks until the index has the
+      # crate, so each subsequent publish can resolve it immediately. Listed
+      # in dependency order: orion-client depends on orion-api.
+      #
+      # Corollary (the one rule this places on development): any change to a
+      # rider crate must bump its version. A same-version change would be
+      # skipped here and the binary would publish against the older crates.io
+      # content while the repo builds against the newer local content.
+      - name: Publish rider crates (only unpublished versions)
+        run: |
+          for crate in orion-api orion-client; do
+            version="$(cargo pkgid -p "${crate}" | sed 's/.*[@#]//')"
+            if curl -fsS -A "orion-release (github.com/GoPlasmatic/Orion)" \
+                "https://crates.io/api/v1/crates/${crate}/${version}" > /dev/null; then
+              echo "${crate} ${version} already on crates.io — skipping"
+            else
+              cargo publish --locked -p "${crate}"
+            fi
+          done
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 
       - name: Publish
         run: cargo publish --locked -p "${{ steps.pkg.outputs.package }}"

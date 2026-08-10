@@ -7,6 +7,7 @@ use tabled::Tabled;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Args)]
 #[command(
@@ -111,7 +112,7 @@ async fn list(
         ("limit", limit.map(|l| l.to_string())),
         ("offset", offset.map(|o| o.to_string())),
     ]);
-    let resp: Value = client.get(&format!("/api/v1/admin/trace-dlq{qs}")).await?;
+    let resp: Value = client.get(&format!("{}{qs}", paths::TRACE_DLQ)).await?;
     let entries = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -155,7 +156,7 @@ async fn list(
 }
 
 async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str) -> Result<i32> {
-    let resp: Value = client.get(&format!("/api/v1/admin/trace-dlq/{id}")).await?;
+    let resp: Value = client.get(&paths::trace_dlq_entry(id)).await?;
     let entry = &resp["data"];
 
     if quiet {
@@ -201,9 +202,7 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
 }
 
 async fn requeue(client: &OrionClient, quiet: bool, id: &str) -> Result<i32> {
-    let resp: Value = client
-        .post_empty(&format!("/api/v1/admin/trace-dlq/{id}/requeue"))
-        .await?;
+    let resp: Value = client.post_empty(&paths::trace_dlq_requeue(id)).await?;
 
     if !quiet {
         let entry = &resp["data"];
@@ -227,7 +226,7 @@ async fn purge(client: &OrionClient, quiet: bool, yes: bool, older_than_hours: i
     }
 
     let body = serde_json::json!({ "older_than_hours": older_than_hours });
-    let resp: Value = client.post("/api/v1/admin/trace-dlq/purge", &body).await?;
+    let resp: Value = client.post(paths::TRACE_DLQ_PURGE, &body).await?;
     let purged = resp["data"]["purged"].as_i64().unwrap_or(0);
 
     if quiet {

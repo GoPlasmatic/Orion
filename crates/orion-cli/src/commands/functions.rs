@@ -7,6 +7,7 @@ use tabled::Tabled;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Args)]
 #[command(
@@ -50,7 +51,7 @@ impl FunctionsCmd {
 }
 
 async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Result<i32> {
-    let resp: Value = client.get("/api/v1/admin/functions").await?;
+    let resp: Value = client.get(paths::FUNCTIONS).await?;
     let functions = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {

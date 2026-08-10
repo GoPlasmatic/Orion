@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Args)]
 #[command(
@@ -95,9 +96,9 @@ impl SendCmd {
         }
 
         let path = if self.profile {
-            format!("/api/v1/data/{channel}?profile=1")
+            format!("{}?profile=1", paths::data(channel))
         } else {
-            format!("/api/v1/data/{channel}")
+            paths::data(channel)
         };
         let resp: Value = client.post(&path, &body).await?;
 
@@ -162,9 +163,7 @@ impl SendCmd {
             body["metadata"] = serde_json::from_str(meta)?;
         }
 
-        let resp: Value = client
-            .post(&format!("/api/v1/data/{channel}/async"), &body)
-            .await?;
+        let resp: Value = client.post(&paths::data_async(channel), &body).await?;
 
         let trace_id = resp["trace_id"].as_str().unwrap_or("");
         // v1.0 always returns a trace_token alongside the id; polling with
@@ -306,9 +305,9 @@ async fn poll_trace(
     let start = std::time::Instant::now();
     let timeout = std::time::Duration::from_secs(timeout_secs);
     let path = if trace_token.is_empty() {
-        format!("/api/v1/admin/traces/{trace_id}")
+        paths::trace(trace_id)
     } else {
-        format!("/api/v1/admin/traces/{trace_id}?token={trace_token}")
+        format!("{}?token={trace_token}", paths::trace(trace_id))
     };
 
     loop {

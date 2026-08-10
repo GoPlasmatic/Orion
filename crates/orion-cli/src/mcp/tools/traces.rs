@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::client::OrionClient;
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TracesListParams {
@@ -44,7 +45,7 @@ pub async fn list(client: &OrionClient, params: TracesListParams) -> Result<Stri
         ("sort_order", params.sort_order),
     ]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/traces{qs}"))
+        .get(&format!("{}{qs}", paths::TRACES))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -53,7 +54,7 @@ pub async fn list(client: &OrionClient, params: TracesListParams) -> Result<Stri
 pub async fn get(client: &OrionClient, params: TracesGetParams) -> Result<String, String> {
     let qs = utils::build_query_string(&[("token", params.token)]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/traces/{}{qs}", params.id))
+        .get(&format!("{}{qs}", paths::trace(&params.id)))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())

@@ -2899,6 +2899,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
+name = "orion-api"
+version = "1.0.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "utoipa",
+]
+
+[[package]]
 name = "orion-cli"
 version = "0.2.1"
 dependencies = [
@@ -2908,7 +2918,8 @@ dependencies = [
  "clap_complete",
  "colored",
  "dirs",
- "reqwest",
+ "orion-api",
+ "orion-client",
  "rmcp",
  "schemars 1.2.1",
  "serde",
@@ -2920,6 +2931,18 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "orion-client"
+version = "1.0.0"
+dependencies = [
+ "orion-api",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -2948,6 +2971,8 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "orion-api",
+ "orion-client",
  "proptest",
  "rand 0.10.1",
  "rcgen",

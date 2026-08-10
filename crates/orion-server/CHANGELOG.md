@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Shared wire-contract and transport crates.** The response DTOs, domain
+  enums, error envelope (with a stable `error.code` registry) and the
+  bulk-import report moved to the workspace's `orion-api` crate, and the
+  admin-API HTTP client behind `orion-server package` moved to
+  `orion-client` — the same crates orion-cli builds on, so a client can no
+  longer drift from the server's wire shapes. Server code paths re-export
+  everything under their old names and the wire is byte-compatible; the one
+  spec-visible improvement is that the OpenAPI document now describes
+  `ImportResult.errors[]`/`results[]` with typed
+  `ImportItemError`/`ImportItemResult` components instead of untyped arrays.
+  Neither library crate is released on its own: crates-publish ships them as
+  skip-if-published riders right before a binary crate.
+
 ## [1.0.0] - 2026-08-09
 
 **Highlights.** The promotion story: an `orion-server package` CLI

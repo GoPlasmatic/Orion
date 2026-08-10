@@ -693,31 +693,12 @@ pub(crate) struct ConnectorListItem {
     load_error_stage: Option<String>,
 }
 
-/// Result of a bulk import, in both dry-run and real modes (R18, K2).
-#[derive(serde::Serialize, utoipa::ToSchema)]
-#[allow(dead_code)]
-pub(crate) struct ImportResult {
-    /// `true` when the request carried `?dry_run=true`; nothing was written.
-    dry_run: bool,
-    /// Items written — created, updated, or given a new version. In a dry
-    /// run, the count that would be written.
-    imported: u64,
-    /// Items rejected. Non-zero with a **200** status: check this field, not
-    /// the status code.
-    failed: u64,
-    /// Content-identical items under `on_conflict=new_version` (K2): nothing
-    /// written, not counted in `imported`. Re-importing the same artifact
-    /// therefore reports 0 imports and N unchanged.
-    unchanged: u64,
-    /// Items skipped under `on_conflict=skip` (K2).
-    skipped: u64,
-    /// One entry per failed item, carrying its index in the request array.
-    errors: Vec<Value>,
-    /// One `{index, id, action}` entry per non-failed item (K2). `action` is
-    /// `created`, `updated_draft`, `updated` (connectors), `new_version`,
-    /// `unchanged`, or `skipped`.
-    results: Vec<Value>,
-}
+// Result of a bulk import (R18, K2). This used to be a schema-only mirror of
+// what `import_response` built with `json!`; the shared `orion-api` type is
+// now both the runtime shape and the published schema, so the mirror is gone
+// and the two cannot drift. Re-exported so `#[utoipa::path]` bodies keep
+// referencing it by its old path.
+pub(crate) use orion_api::ImportResult;
 
 /// `GET /api/v1/admin/engine/status`.
 #[derive(serde::Serialize, utoipa::ToSchema)]

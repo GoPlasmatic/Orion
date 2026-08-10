@@ -4,6 +4,7 @@ use serde_json::Value;
 
 use crate::client::OrionClient;
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PackagesListParams {
@@ -25,7 +26,7 @@ pub async fn list(client: &OrionClient, params: PackagesListParams) -> Result<St
         ("offset", params.offset.map(|o| o.to_string())),
     ]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/packages{qs}"))
+        .get(&format!("{}{qs}", paths::PACKAGES))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())
@@ -33,7 +34,7 @@ pub async fn list(client: &OrionClient, params: PackagesListParams) -> Result<St
 
 pub async fn get(client: &OrionClient, params: PackagesGetParams) -> Result<String, String> {
     let resp: Value = client
-        .get(&format!("/api/v1/admin/packages/{}", params.name))
+        .get(&paths::package(&params.name))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())

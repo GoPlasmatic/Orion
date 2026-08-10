@@ -7,6 +7,7 @@ use tabled::Tabled;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Args)]
 #[command(
@@ -186,7 +187,7 @@ async fn list(
         ("offset", offset.map(|o| o.to_string())),
     ]);
 
-    let resp: Value = client.get(&format!("/api/v1/admin/traces{qs}")).await?;
+    let resp: Value = client.get(&format!("{}{qs}", paths::TRACES)).await?;
     let traces = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {
@@ -243,9 +244,7 @@ async fn get(
     token: Option<&str>,
 ) -> Result<i32> {
     let qs = utils::build_query_string(&[("token", token.map(str::to_string))]);
-    let resp: Value = client
-        .get(&format!("/api/v1/admin/traces/{id}{qs}"))
-        .await?;
+    let resp: Value = client.get(&format!("{}{qs}", paths::trace(id))).await?;
     // v1.0 wraps the TraceDetail in the {"data": …} admin envelope.
     let resp = resp.get("data").cloned().unwrap_or(resp);
 
@@ -337,9 +336,7 @@ async fn wait(
     }
 
     loop {
-        let resp: Value = client
-            .get(&format!("/api/v1/admin/traces/{id}{qs}"))
-            .await?;
+        let resp: Value = client.get(&format!("{}{qs}", paths::trace(id))).await?;
         let resp = resp.get("data").cloned().unwrap_or(resp);
 
         let status = resp["status"].as_str().unwrap_or("unknown");

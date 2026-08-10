@@ -7,6 +7,7 @@ use tabled::Tabled;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 use crate::utils;
+use orion_client::paths;
 
 #[derive(Args)]
 pub struct BackupsCmd {
@@ -58,7 +59,7 @@ async fn create(
         return Ok(0);
     }
 
-    let resp: Value = client.post_empty("/api/v1/admin/backups").await?;
+    let resp: Value = client.post_empty(paths::BACKUPS).await?;
 
     if quiet {
         let filename = resp["data"]["filename"].as_str().unwrap_or("");
@@ -86,7 +87,7 @@ async fn create(
 }
 
 async fn list(client: &OrionClient, format: &OutputFormat, quiet: bool) -> Result<i32> {
-    let resp: Value = client.get("/api/v1/admin/backups").await?;
+    let resp: Value = client.get(paths::BACKUPS).await?;
     let backups = resp["data"].as_array().cloned().unwrap_or_default();
 
     if quiet {

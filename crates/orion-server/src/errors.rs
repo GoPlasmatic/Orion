@@ -1,46 +1,15 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
-use serde_json::{Value, json};
 
-/// Per-field validation detail returned in the `error.details[]` array.
-///
-/// `path` is a dotted/indexed pointer into the offending request body
-/// (e.g. `channel.protocol`, `tasks[2].function.input.connector`).
-/// `code` is a stable machine-readable identifier such as `REQUIRED`,
-/// `ENUM_MISMATCH`, or `INVALID_FORMAT`.
-#[derive(Debug, Clone, Serialize)]
-pub struct FieldError {
-    pub path: String,
-    pub code: &'static str,
-    pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expected: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub got: Option<Value>,
-}
+// The wire half of this module — the `{"error": {...}}` envelope, the
+// per-field detail shape, and the stable `error.code` registry — lives in the
+// shared `orion-api` crate so the CLI reads the same definitions the server
+// writes. `FieldError` is re-exported under its pre-1.0 path; everything else
+// in this file (the `OrionError` domain, status mapping, redaction policy)
+// stays server-side on purpose.
+use orion_api::{ErrorBody, ErrorEnvelope, codes};
 
-impl FieldError {
-    pub fn new(path: impl Into<String>, code: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            path: path.into(),
-            code,
-            message: message.into(),
-            expected: None,
-            got: None,
-        }
-    }
-
-    pub fn with_expected(mut self, expected: impl Into<Value>) -> Self {
-        self.expected = Some(expected.into());
-        self
-    }
-
-    pub fn with_got(mut self, got: impl Into<Value>) -> Self {
-        self.got = Some(got.into());
-        self
-    }
-}
+pub use orion_api::FieldError;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OrionError {
@@ -173,7 +142,7 @@ impl OrionError {
     /// common single-field case use [`OrionError::invalid_field`].
     pub fn validation(message: impl Into<String>) -> Self {
         OrionError::Validation {
-            code: "VALIDATION_ERROR",
+            code: codes::VALIDATION_ERROR,
             message: message.into(),
             details: Vec::new(),
         }
@@ -188,7 +157,7 @@ impl OrionError {
     ) -> Self {
         let message = message.into();
         OrionError::Validation {
-            code: "VALIDATION_ERROR",
+            code: codes::VALIDATION_ERROR,
             message: message.clone(),
             details: vec![FieldError::new(path, code, message)],
         }
@@ -210,39 +179,41 @@ impl OrionError {
     /// internal detail separately via `log_internal_detail`.
     pub fn response_parts(&self) -> (StatusCode, &'static str, String) {
         match self {
-            OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, "NOT_FOUND", msg.clone()),
+            OrionError::NotFound(msg) => (StatusCode::NOT_FOUND, codes::NOT_FOUND, msg.clone()),
             OrionError::Validation { code, message, .. } => {
                 (StatusCode::BAD_REQUEST, code, message.clone())
             }
             OrionError::Unauthorized(msg) => {
-                (StatusCode::UNAUTHORIZED, "UNAUTHORIZED", msg.clone())
+                (StatusCode::UNAUTHORIZED, codes::UNAUTHORIZED, msg.clone())
             }
-            OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, "FORBIDDEN", msg.clone()),
-            OrionError::Conflict(msg) => (StatusCode::CONFLICT, "CONFLICT", msg.clone()),
+            OrionError::Forbidden(msg) => (StatusCode::FORBIDDEN, codes::FORBIDDEN, msg.clone()),
+            OrionError::Conflict(msg) => (StatusCode::CONFLICT, codes::CONFLICT, msg.clone()),
             OrionError::UnsupportedMediaType(msg) => (
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                "UNSUPPORTED_MEDIA_TYPE",
+                codes::UNSUPPORTED_MEDIA_TYPE,
                 msg.clone(),
             ),
             OrionError::MethodNotAllowed(msg) => (
                 StatusCode::METHOD_NOT_ALLOWED,
-                "METHOD_NOT_ALLOWED",
+                codes::METHOD_NOT_ALLOWED,
                 msg.clone(),
             ),
             OrionError::ServiceUnavailable(msg) => (
                 StatusCode::SERVICE_UNAVAILABLE,
-                "SERVICE_UNAVAILABLE",
+                codes::SERVICE_UNAVAILABLE,
                 msg.clone(),
             ),
-            OrionError::RateLimited(msg) | OrionError::RateLimitKeyUnavailable(msg) => {
-                (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED", msg.clone())
-            }
+            OrionError::RateLimited(msg) | OrionError::RateLimitKeyUnavailable(msg) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                codes::RATE_LIMITED,
+                msg.clone(),
+            ),
             OrionError::Timeout {
                 channel,
                 timeout_ms,
             } => (
                 StatusCode::GATEWAY_TIMEOUT,
-                "TIMEOUT",
+                codes::TIMEOUT,
                 format!(
                     "Workflow execution on channel '{channel}' exceeded {timeout_ms}ms timeout"
                 ),
@@ -256,7 +227,7 @@ impl OrionError {
             // byte counts and nothing sensitive.
             OrionError::ResponseTooLarge(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "RESPONSE_TOO_LARGE",
+                codes::RESPONSE_TOO_LARGE,
                 msg.clone(),
             ),
             // G2: `Internal` and `Config` used to return their message verbatim.
@@ -266,17 +237,17 @@ impl OrionError {
             // credentials could round-trip into a 500 body.
             OrionError::Internal { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
+                codes::INTERNAL_ERROR,
                 "An internal error occurred".to_string(),
             ),
             OrionError::Config { .. } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "CONFIG_ERROR",
+                codes::CONFIG_ERROR,
                 "A configuration error occurred".to_string(),
             ),
             OrionError::Storage(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "STORAGE_ERROR",
+                codes::STORAGE_ERROR,
                 "An internal storage error occurred".to_string(),
             ),
             OrionError::Engine(e) => engine_error_response(e),
@@ -293,7 +264,7 @@ impl OrionError {
             // surfaced (`log_internal_detail` records it).
             OrionError::Serialization(_) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "SERIALIZATION_ERROR",
+                codes::SERIALIZATION_ERROR,
                 "An internal serialization error occurred".to_string(),
             ),
         }
@@ -357,33 +328,27 @@ impl IntoResponse for OrionError {
     fn into_response(self) -> Response {
         // Pull the validation details out before consuming `self` in the match,
         // since the response body needs them as a separate JSON field.
-        let validation_details = match &self {
-            OrionError::Validation { details, .. } if !details.is_empty() => Some(details.clone()),
-            _ => None,
+        let details = match &self {
+            OrionError::Validation { details, .. } => details.clone(),
+            _ => Vec::new(),
         };
 
         self.log_internal_detail();
         let (status, code, message) = self.response_parts();
 
-        let mut error_obj = serde_json::Map::new();
-        error_obj.insert("code".to_string(), Value::String(code.to_string()));
-        error_obj.insert("message".to_string(), Value::String(message));
-
-        if let Some(details) = validation_details
-            && let Ok(details_value) = serde_json::to_value(&details)
-        {
-            error_obj.insert("details".to_string(), details_value);
-        }
-
-        // Best-effort embed of the request_id set by the per-request scope
-        // middleware. Omitted when the task-local isn't in scope (e.g. unit
-        // tests calling IntoResponse directly) or when the inbound request
-        // had no x-request-id header for the SetRequestIdLayer to populate.
-        if let Some(rid) = crate::server::request_context::request_id() {
-            error_obj.insert("request_id".to_string(), Value::String(rid));
-        }
-
-        let body = json!({ "error": Value::Object(error_obj) });
+        // The shared envelope's serde attributes carry the compat rules this
+        // used to spell imperatively: `details` is omitted when empty (v0.1
+        // clients), `request_id` when the per-request scope isn't populated
+        // (e.g. unit tests calling IntoResponse directly, or an inbound
+        // request with no x-request-id for the SetRequestIdLayer).
+        let body = ErrorEnvelope {
+            error: ErrorBody {
+                code: code.to_string(),
+                message,
+                details,
+                request_id: crate::server::request_context::request_id(),
+            },
+        };
 
         let mut response = (status, axum::Json(body)).into_response();
         // A 429 always carries `retry-after`. It used to be added by the rate
@@ -492,15 +457,17 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
     // `to_string()` here can never leak the operator-only `detail`.
     if let Some(k) = e.kind() {
         let (status, code) = match k {
-            kind::CIRCUIT_OPEN => (StatusCode::SERVICE_UNAVAILABLE, "CIRCUIT_OPEN"),
-            kind::CONNECTOR_DETAIL => (StatusCode::BAD_REQUEST, "VALIDATION_ERROR"),
-            kind::CHANNEL_RATE_LIMITED => (StatusCode::TOO_MANY_REQUESTS, "RATE_LIMITED"),
-            kind::CHANNEL_FORBIDDEN => (StatusCode::FORBIDDEN, "FORBIDDEN"),
-            kind::CHANNEL_CONFLICT => (StatusCode::CONFLICT, "CONFLICT"),
-            kind::CHANNEL_UNAVAILABLE => (StatusCode::SERVICE_UNAVAILABLE, "SERVICE_UNAVAILABLE"),
+            kind::CIRCUIT_OPEN => (StatusCode::SERVICE_UNAVAILABLE, codes::CIRCUIT_OPEN),
+            kind::CONNECTOR_DETAIL => (StatusCode::BAD_REQUEST, codes::VALIDATION_ERROR),
+            kind::CHANNEL_RATE_LIMITED => (StatusCode::TOO_MANY_REQUESTS, codes::RATE_LIMITED),
+            kind::CHANNEL_FORBIDDEN => (StatusCode::FORBIDDEN, codes::FORBIDDEN),
+            kind::CHANNEL_CONFLICT => (StatusCode::CONFLICT, codes::CONFLICT),
+            kind::CHANNEL_UNAVAILABLE => {
+                (StatusCode::SERVICE_UNAVAILABLE, codes::SERVICE_UNAVAILABLE)
+            }
             _ => {
                 tracing::error!(kind = %k, "unhandled service error kind; mapped to 500");
-                (StatusCode::INTERNAL_SERVER_ERROR, "ENGINE_ERROR")
+                (StatusCode::INTERNAL_SERVER_ERROR, codes::ENGINE_ERROR)
             }
         };
         return (status, code, e.to_string());
@@ -512,12 +479,14 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
         // verbatim, because they are what makes a misconfigured workflow
         // diagnosable from the response. Anything naming a connector goes
         // through `connector_detail_error` and is handled above.
-        DataflowError::Validation(msg) => {
-            (StatusCode::BAD_REQUEST, "VALIDATION_ERROR", msg.clone())
-        }
+        DataflowError::Validation(msg) => (
+            StatusCode::BAD_REQUEST,
+            codes::VALIDATION_ERROR,
+            msg.clone(),
+        ),
         // G13: same wire code as `OrionError::Timeout` — a caller keying on
         // the 504 `code` must not have to know which layer timed out.
-        DataflowError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, "TIMEOUT", msg.clone()),
+        DataflowError::Timeout(msg) => (StatusCode::GATEWAY_TIMEOUT, codes::TIMEOUT, msg.clone()),
         other => {
             // Surface unhandled DataflowError variants so a dataflow-rs upgrade
             // that adds new variants doesn't silently degrade them to a generic
@@ -526,7 +495,7 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
             tracing::error!(error = ?other, "unhandled DataflowError variant; mapped to 500");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "ENGINE_ERROR",
+                codes::ENGINE_ERROR,
                 "An internal engine error occurred".to_string(),
             )
         }
@@ -536,6 +505,7 @@ fn engine_error_response(e: &dataflow_rs::DataflowError) -> (StatusCode, &'stati
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn test_not_found_status() {

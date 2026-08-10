@@ -4564,7 +4564,7 @@
       },
       "ChannelResponse": {
         "type": "object",
-        "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the `Channel` row struct — is what every channel endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+        "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the server's `Channel` row struct — is what every channel\nendpoint returns.",
         "required": [
           "channel_id",
           "version",
@@ -4587,7 +4587,9 @@
           "channel_type": {
             "type": "string"
           },
-          "config": {},
+          "config": {
+            "description": "Channel config with `auth.keys` / `auth.secret` values masked (H3) —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
+          },
           "consumer_group": {
             "type": [
               "string",
@@ -4629,7 +4631,7 @@
             "type": "string"
           },
           "tags": {
-            "description": "Wire name `tags`, column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
+            "description": "Wire name `tags`, stored column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
           },
           "topic": {
             "type": [
@@ -4815,7 +4817,7 @@
       },
       "ConnectorResponse": {
         "type": "object",
-        "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but the\nonly supported way to build one is [`crate::connector::mask_connector`],\nwhich replaces every secret with `******` first. The row struct it is built\nfrom carries the *unmasked* config, and cannot be serialized (D27), so a\nhandler that forgets to mask no longer compiles.",
+        "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but\nwith every secret replaced by `******`: the server's `mask_connector` is\nthe only supported way to build one, and the unmasked row struct cannot be\nserialized (D27), so a handler that forgets to mask does not compile.",
         "required": [
           "id",
           "name",
@@ -4853,7 +4855,7 @@
             "type": "string"
           },
           "tags": {
-            "description": "Wire name `tags`, column `tags_json` (K6)."
+            "description": "Wire name `tags`, stored column `tags_json` (K6)."
           },
           "updated_at": {
             "type": "string",
@@ -5069,7 +5071,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the `Channel` row struct — is what every channel endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+            "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the server's `Channel` row struct — is what every channel\nendpoint returns.",
             "required": [
               "channel_id",
               "version",
@@ -5092,7 +5094,9 @@
               "channel_type": {
                 "type": "string"
               },
-              "config": {},
+              "config": {
+                "description": "Channel config with `auth.keys` / `auth.secret` values masked (H3) —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
+              },
               "consumer_group": {
                 "type": [
                   "string",
@@ -5134,7 +5138,7 @@
                 "type": "string"
               },
               "tags": {
-                "description": "Wire name `tags`, column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
+                "description": "Wire name `tags`, stored column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
               },
               "topic": {
                 "type": [
@@ -5243,7 +5247,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but the\nonly supported way to build one is [`crate::connector::mask_connector`],\nwhich replaces every secret with `******` first. The row struct it is built\nfrom carries the *unmasked* config, and cannot be serialized (D27), so a\nhandler that forgets to mask no longer compiles.",
+            "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but\nwith every secret replaced by `******`: the server's `mask_connector` is\nthe only supported way to build one, and the unmasked row struct cannot be\nserialized (D27), so a handler that forgets to mask does not compile.",
             "required": [
               "id",
               "name",
@@ -5281,7 +5285,7 @@
                 "type": "string"
               },
               "tags": {
-                "description": "Wire name `tags`, column `tags_json` (K6)."
+                "description": "Wire name `tags`, stored column `tags_json` (K6)."
               },
               "updated_at": {
                 "type": "string",
@@ -5403,7 +5407,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "Result of a bulk import, in both dry-run and real modes (R18, K2).",
+            "description": "Result of a bulk import, in both dry-run and real modes (R18, K2) — the\nbody under `{\"data\": …}` that all three `/import` endpoints answer with.",
             "required": [
               "dry_run",
               "imported",
@@ -5420,7 +5424,9 @@
               },
               "errors": {
                 "type": "array",
-                "items": {},
+                "items": {
+                  "$ref": "#/components/schemas/ImportItemError"
+                },
                 "description": "One entry per failed item, carrying its index in the request array."
               },
               "failed": {
@@ -5437,8 +5443,10 @@
               },
               "results": {
                 "type": "array",
-                "items": {},
-                "description": "One `{index, id, action}` entry per non-failed item (K2). `action` is\n`created`, `updated_draft`, `updated` (connectors), `new_version`,\n`unchanged`, or `skipped`."
+                "items": {
+                  "$ref": "#/components/schemas/ImportItemResult"
+                },
+                "description": "One `{index, id, action}` entry per non-failed item (K2)."
               },
               "skipped": {
                 "type": "integer",
@@ -5733,7 +5741,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the `Channel` row struct — is what every channel endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+              "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the server's `Channel` row struct — is what every channel\nendpoint returns.",
               "required": [
                 "channel_id",
                 "version",
@@ -5756,7 +5764,9 @@
                 "channel_type": {
                   "type": "string"
                 },
-                "config": {},
+                "config": {
+                  "description": "Channel config with `auth.keys` / `auth.secret` values masked (H3) —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
+                },
                 "consumer_group": {
                   "type": [
                     "string",
@@ -5798,7 +5808,7 @@
                   "type": "string"
                 },
                 "tags": {
-                  "description": "Wire name `tags`, column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
+                  "description": "Wire name `tags`, stored column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
                 },
                 "topic": {
                   "type": [
@@ -5837,7 +5847,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but the\nonly supported way to build one is [`crate::connector::mask_connector`],\nwhich replaces every secret with `******` first. The row struct it is built\nfrom carries the *unmasked* config, and cannot be serialized (D27), so a\nhandler that forgets to mask no longer compiles.",
+              "description": "A connector as the admin API shows it.\n\n`config_json` stays a string — it is the stored document verbatim — but\nwith every secret replaced by `******`: the server's `mask_connector` is\nthe only supported way to build one, and the unmasked row struct cannot be\nserialized (D27), so a handler that forgets to mask does not compile.",
               "required": [
                 "id",
                 "name",
@@ -5875,7 +5885,7 @@
                   "type": "string"
                 },
                 "tags": {
-                  "description": "Wire name `tags`, column `tags_json` (K6)."
+                  "description": "Wire name `tags`, stored column `tags_json` (K6)."
                 },
                 "updated_at": {
                   "type": "string",
@@ -5935,7 +5945,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the `Workflow` row struct — is what every workflow endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+              "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the server's `Workflow` row struct — is what every workflow\nendpoint returns.",
               "required": [
                 "workflow_id",
                 "version",
@@ -6059,7 +6069,7 @@
         "properties": {
           "data": {
             "type": "object",
-            "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the `Workflow` row struct — is what every workflow endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+            "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the server's `Workflow` row struct — is what every workflow\nendpoint returns.",
             "required": [
               "workflow_id",
               "version",
@@ -6374,9 +6384,53 @@
           }
         }
       },
+      "ImportItemError": {
+        "type": "object",
+        "description": "One entry of `errors[]`: a failed item, by its index in the request array.",
+        "required": [
+          "index",
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "ImportItemResult": {
+        "type": "object",
+        "description": "One entry of `results[]`: what a non-failed item did (K2).\n\n`action` stays a `String` on the wire so a client one release behind the\nserver still parses a report whose vocabulary grew; compare it against\n[`ImportAction::as_str`] values.",
+        "required": [
+          "index",
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "`created`, `updated_draft`, `updated` (connectors), `new_version`,\n`unchanged`, or `skipped`."
+          },
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The item's conflict key (`workflow_id`, `channel_id`, connector\n`name`), or `null` when the item named none and the store generated\none."
+          },
+          "index": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "ImportResult": {
         "type": "object",
-        "description": "Result of a bulk import, in both dry-run and real modes (R18, K2).",
+        "description": "Result of a bulk import, in both dry-run and real modes (R18, K2) — the\nbody under `{\"data\": …}` that all three `/import` endpoints answer with.",
         "required": [
           "dry_run",
           "imported",
@@ -6393,7 +6447,9 @@
           },
           "errors": {
             "type": "array",
-            "items": {},
+            "items": {
+              "$ref": "#/components/schemas/ImportItemError"
+            },
             "description": "One entry per failed item, carrying its index in the request array."
           },
           "failed": {
@@ -6410,8 +6466,10 @@
           },
           "results": {
             "type": "array",
-            "items": {},
-            "description": "One `{index, id, action}` entry per non-failed item (K2). `action` is\n`created`, `updated_draft`, `updated` (connectors), `new_version`,\n`unchanged`, or `skipped`."
+            "items": {
+              "$ref": "#/components/schemas/ImportItemResult"
+            },
+            "description": "One `{index, id, action}` entry per non-failed item (K2)."
           },
           "skipped": {
             "type": "integer",
@@ -6589,7 +6647,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the `Channel` row struct — is what every channel endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+              "description": "API-friendly representation of a Channel with parsed JSON fields.\n\nThis — not the server's `Channel` row struct — is what every channel\nendpoint returns.",
               "required": [
                 "channel_id",
                 "version",
@@ -6612,7 +6670,9 @@
                 "channel_type": {
                   "type": "string"
                 },
-                "config": {},
+                "config": {
+                  "description": "Channel config with `auth.keys` / `auth.secret` values masked (H3) —\nthe server's conversion is the only constructor of this shape, so\nmasking is a step no handler can skip."
+                },
                 "consumer_group": {
                   "type": [
                     "string",
@@ -6654,7 +6714,7 @@
                   "type": "string"
                 },
                 "tags": {
-                  "description": "Wire name `tags`, column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
+                  "description": "Wire name `tags`, stored column `tags_json` (K6) — the same contract\nworkflows have carried since 0.x."
                 },
                 "topic": {
                   "type": [
@@ -6954,7 +7014,7 @@
             "type": "array",
             "items": {
               "type": "object",
-              "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the `Workflow` row struct — is what every workflow endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+              "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the server's `Workflow` row struct — is what every workflow\nendpoint returns.",
               "required": [
                 "workflow_id",
                 "version",
@@ -7407,7 +7467,7 @@
       },
       "TraceListItem": {
         "type": "object",
-        "description": "One row of `GET /api/v1/admin/traces` — payload-free by design (S14).\n\nThe narrower sibling of the single-trace read, for the same reason\n[`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a\nlisting that carried `input_json`/`result_json` would return every caller's\nrequest body and the full engine message in one response. The row it\nconverts from ([`TraceListRow`]) already omits those columns at the\n`SELECT`, so this type is the second half of that guarantee rather than a\nfilter applied after the fact.\n\nPublished as `TraceListItem`, the name the spec has always used for this\ncomponent: the Rust type gained the `…Response` suffix every dto here\ncarries, but a component rename would break clients generated against the\nold spec — the upgrade guide tracks those as a compat surface.",
+        "description": "One row of `GET /api/v1/admin/traces` — payload-free by design (S14).\n\nThe narrower sibling of the single-trace read, for the same reason\n[`TraceDlqSummaryResponse`] is narrower than [`TraceDlqEntryResponse`]: a\nlisting that carried `input_json`/`result_json` would return every\ncaller's request body and the full engine message in one response. The\nserver's `SELECT` already omits those columns, so this type is the second\nhalf of that guarantee rather than a filter applied after the fact.\n\nPublished as `TraceListItem`, the name the spec has always used for this\ncomponent: the Rust type gained the `…Response` suffix every dto here\ncarries, but a component rename would break clients generated against the\nold spec — the upgrade guide tracks those as a compat surface.",
         "required": [
           "id",
           "channel",
@@ -7753,7 +7813,7 @@
       },
       "WorkflowResponse": {
         "type": "object",
-        "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the `Workflow` row struct — is what every workflow endpoint\nreturns, so it is what the OpenAPI document describes (R22).",
+        "description": "API-friendly representation of a Workflow with parsed JSON fields.\n\nThis — not the server's `Workflow` row struct — is what every workflow\nendpoint returns.",
         "required": [
           "workflow_id",
           "version",

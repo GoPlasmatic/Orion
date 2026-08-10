@@ -49,7 +49,7 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 ### Module Layout
 
 - `src/main.rs` — Entry point, clap CLI definition with global flags (`--server`, `--output`, `--quiet`, `--verbose`, `--no-color`, `--yes`)
-- `src/client.rs` — `OrionClient` HTTP wrapper around reqwest (30s timeout, JSON request/response, structured error handling)
+- `src/client.rs` — thin presentation adapter over the shared `orion-client` crate's `OrionClient` (the transport itself — auth, 30s timeout, envelope parsing, typed `ClientError` — lives there); this wrapper translates typed errors into the CLI's terminal messages (hints, `[CODE] message`, field errors). Endpoint paths come from `orion_client::paths`, never format strings.
 - `src/config.rs` — `OrionConfig` loaded from `~/.orion/config.toml` (server_url, default_output), includes `resolve_server_url()` for MCP
 - `src/output.rs` — Output formatting: `print_table()` (tabled with rounded borders), `print_value()` (JSON/YAML)
 - `src/commands/` — One file per command group, each defining clap subcommands and `execute()` async functions
@@ -89,7 +89,7 @@ Shared bulk-import logic lives in `utils::run_import()` (CLI) and `mcp::tools::i
 
 ### Dependencies
 
-Core: `clap` (derive) for CLI, `reqwest` (rustls-tls) for HTTP, `tokio` for async, `serde`/`serde_json`/`serde_yaml`/`toml` for serialization, `anyhow` for errors, `colored` + `tabled` for terminal output. MCP: `rmcp` (server, transport-io, transport-streamable-http-server), `schemars`, `tracing`/`tracing-subscriber`, `axum`.
+Core: `clap` (derive) for CLI, `tokio` for async, `serde`/`serde_json`/`serde_yaml`/`toml` for serialization, `anyhow` for errors, `colored` + `tabled` for terminal output, and the two workspace library crates: `orion-api` for the shared wire contract — the error envelope (`ErrorEnvelope`, `codes`), status vocabulary (`STATUS_ACTIVE`…), and the typed `ImportResult` are the same definitions the server serializes — and `orion-client` for the HTTP transport (`OrionClient`, `paths`, `query_string`; it owns reqwest — the CLI has no direct HTTP dependency). MCP: `rmcp` (server, transport-io, transport-streamable-http-server), `schemars`, `tracing`/`tracing-subscriber`, `axum`.
 
 ### CI/CD
 

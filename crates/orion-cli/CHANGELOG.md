@@ -30,6 +30,14 @@ every PR).
 
 ### Changed
 
+- **Shared workspace crates under the hood** — the wire contract
+  (`orion-api`: error envelope, status vocabulary, typed import report) and
+  the HTTP transport (`orion-client`: auth, envelope parsing, every endpoint
+  path) are now the same code the server serializes with and drives its own
+  `package` promotion CLI through. Error hints key on the server's real
+  error-code registry — the `AUTH_FAILED`/`INVALID_INPUT`/`ALREADY_EXISTS`
+  hint branches matched codes the server never emits and are gone. Rendered
+  output is unchanged.
 - **v1.0 response envelope** — every admin 2xx wraps its payload in
   `{"data": …}`; engine status/reload, workflow test/validate, import
   results, and trace reads unwrap it (older bare responses still parse).
