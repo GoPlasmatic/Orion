@@ -180,6 +180,23 @@ pub fn start_dlq_retry(
                             error = %e,
                             "DLQ retry: failed to resubmit, scheduling next retry"
                         );
+                        // The pending trace minted for this attempt will never
+                        // be processed (the next attempt mints its own row) —
+                        // settle it or it counts as backlog forever.
+                        if let Err(e) = trace_repo
+                            .update_status(
+                                &new_trace.id,
+                                crate::storage::models::TRACE_STATUS_FAILED,
+                                Some("DLQ resubmission shed: trace queue at capacity"),
+                            )
+                            .await
+                        {
+                            tracing::error!(
+                                trace_id = %new_trace.id,
+                                error = %e,
+                                "DLQ retry: failed to settle pending trace after shed"
+                            );
+                        }
                         let new_retry_count = entry.retry_count + 1;
                         // Both writes clear the claim lease. Swallowing their
                         // errors is what let D1's postgres type mismatch stay
@@ -360,7 +377,12 @@ mod tests {
     // Mock TraceRepository (only create_pending needed)
     // ----------------------------------------------------------------
 
-    struct MockTraceRepo;
+    #[derive(Default)]
+    struct MockTraceRepo {
+        /// `(trace_id, status)` of every `update_status` call — the shed
+        /// path must settle the pending trace it minted.
+        settled: std::sync::Mutex<Vec<(String, String)>>,
+    }
 
     fn make_trace(id: &str, channel: &str) -> Trace {
         let now = chrono::Utc::now().naive_utc();
@@ -400,11 +422,17 @@ mod tests {
         }
         async fn update_status(
             &self,
-            _id: &str,
-            _status: &str,
+            id: &str,
+            status: &str,
             _error_message: Option<&str>,
         ) -> Result<Trace, OrionError> {
-            unimplemented!()
+            self.settled
+                .lock()
+                .expect("test")
+                .push((id.to_string(), status.to_string()));
+            let mut trace = make_trace(id, "mock");
+            trace.status = status.to_string();
+            Ok(trace)
         }
         async fn set_result(
             &self,
@@ -503,7 +531,7 @@ mod tests {
     async fn test_successful_retry_removes_from_dlq() {
         let entry = make_dlq_entry("e1", r#"{"key":"value"}"#, 0, 5);
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
+        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
         let (queue, mut rx) = make_test_queue(10);
 
         let handle = start_dlq_retry(
@@ -544,7 +572,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_depth_is_refreshed_every_tick() {
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
+        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
         let (queue, _rx) = make_test_queue(10);
 
         let handle = start_dlq_retry(
@@ -588,7 +616,7 @@ mod tests {
                 .expect("test runtime")
                 .block_on(async {
                     let dlq_repo = Arc::new(MockDlqRepo::new(vec![]));
-                    let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
+                    let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
                     let (queue, _rx) = make_test_queue(10);
                     let job = start_dlq_retry(
                         DlqRetryOptions {
@@ -622,7 +650,7 @@ mod tests {
     async fn test_resubmission_carries_originating_retry_count() {
         let entry = make_dlq_entry("e5", r#"{"ok":true}"#, 2, 5);
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
+        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
         let (queue, mut rx) = make_test_queue(10);
 
         let handle = start_dlq_retry(
@@ -655,7 +683,7 @@ mod tests {
     async fn test_corrupt_payload_marks_exhausted() {
         let entry = make_dlq_entry("e2", "not valid json!!!", 0, 5);
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
+        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
         let (queue, _rx) = make_test_queue(10);
 
         let handle = start_dlq_retry(
@@ -691,7 +719,7 @@ mod tests {
         // Entry at max_retries - 1, so one more failure should exhaust it
         let entry = make_dlq_entry("e3", r#"{"ok":true}"#, 4, 5);
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
+        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo::default());
         let queue = make_closed_queue();
 
         let handle = start_dlq_retry(
@@ -727,7 +755,8 @@ mod tests {
         // Entry at retry_count=1, max_retries=5 — plenty of room for backoff
         let entry = make_dlq_entry("e4", r#"{"ok":true}"#, 1, 5);
         let dlq_repo = Arc::new(MockDlqRepo::new(vec![entry]));
-        let trace_repo: Arc<dyn TraceRepository> = Arc::new(MockTraceRepo);
+        let mock_traces = Arc::new(MockTraceRepo::default());
+        let trace_repo: Arc<dyn TraceRepository> = mock_traces.clone();
         let queue = make_closed_queue();
 
         let handle = start_dlq_retry(
@@ -759,5 +788,11 @@ mod tests {
         );
         let (id, _next_retry_at) = &state.retried[0];
         assert_eq!(id, "e4");
+
+        // The pending trace minted for the shed attempt must be settled —
+        // unsettled it would sit `pending` forever as phantom backlog.
+        let settled = mock_traces.settled.lock().expect("test");
+        assert_eq!(settled.len(), 1, "shed attempt must settle its trace");
+        assert_eq!(settled[0].1, crate::storage::models::TRACE_STATUS_FAILED);
     }
 }

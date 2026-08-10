@@ -517,10 +517,8 @@ impl TraceDlqRepository for SqlTraceDlqRepository {
 
     async fn purge_exhausted(&self, older_than_hours: u64) -> Result<u64, OrionError> {
         crate::metrics::timed_db_op("trace_dlq.purge_exhausted", async {
-            let cutoff = chrono::Utc::now()
-                .naive_utc()
-                .checked_sub_signed(chrono::Duration::hours(older_than_hours as i64))
-                .unwrap_or(chrono::NaiveDateTime::MIN);
+            let cutoff =
+                super::helpers::cutoff_hours_ago(chrono::Utc::now().naive_utc(), older_than_hours);
 
             // D6: chunked — see `delete_chunked`.
             super::helpers::delete_chunked(

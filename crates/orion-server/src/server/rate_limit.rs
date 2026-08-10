@@ -89,10 +89,12 @@ pub(crate) fn client_ip_from_parts(
     // IPv6 (`::ffff:1.2.3.4`), which would never match an IPv4 CIDR.
     match peer.map(|p| p.ip().to_canonical()) {
         Some(ip) if peer_is_trusted(&ip, trusted_proxies) => {
-            forwarded_client_ip(headers).unwrap_or_else(|| ip.to_string())
+            forwarded_client_ip(headers, trusted_proxies).unwrap_or_else(|| ip.to_string())
         }
         Some(ip) => ip.to_string(),
-        None => forwarded_client_ip(headers).unwrap_or_else(|| "unknown".to_string()),
+        None => {
+            forwarded_client_ip(headers, trusted_proxies).unwrap_or_else(|| "unknown".to_string())
+        }
     }
 }
 
@@ -100,14 +102,51 @@ fn peer_is_trusted(peer: &IpAddr, trusted_proxies: &[IpNet]) -> bool {
     trusted_proxies.iter().any(|net| net.contains(peer))
 }
 
-/// Client IP claimed by proxy headers: first `X-Forwarded-For` hop, else
-/// `X-Real-IP` (shared policy in `engine::utils`). Only meaningful when the
-/// direct peer is a trusted proxy.
-fn forwarded_client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
-    crate::engine::utils::first_forwarded_value(|name| {
-        headers.get(name).and_then(|v| v.to_str().ok())
-    })
-    .map(str::to_string)
+/// Client IP claimed by `X-Forwarded-For`, resolved right to left (S8).
+///
+/// Each proxy appends the peer it accepted from, so the rightmost hop is the
+/// only one written by our own trusted proxy — everything further left is
+/// whatever the client chose to send. Walk from the right, skip hops that are
+/// themselves trusted proxies (chained LB/CDN), and take the first hop
+/// outside the trust list; if every hop is trusted, the leftmost one is the
+/// origin. Taking the leftmost hop unconditionally would let any client
+/// behind a real proxy mint a fresh rate-limit identity per request and
+/// plant a chosen IP in audit logs. Falls back to `X-Real-IP` — proxy-set,
+/// not appended-to — when no usable XFF hop exists.
+fn forwarded_client_ip(
+    headers: &axum::http::HeaderMap,
+    trusted_proxies: &[IpNet],
+) -> Option<String> {
+    let xff_client = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|xff| {
+            let mut candidate = None;
+            for hop in xff
+                .split(',')
+                .map(str::trim)
+                .filter(|h| !h.is_empty())
+                .rev()
+            {
+                candidate = Some(hop);
+                let trusted = hop
+                    .parse::<IpAddr>()
+                    .is_ok_and(|ip| peer_is_trusted(&ip.to_canonical(), trusted_proxies));
+                if !trusted {
+                    break;
+                }
+            }
+            candidate
+        });
+    if let Some(hop) = xff_client {
+        return Some(hop.to_string());
+    }
+    headers
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 /// Determine the route group from the matched path.
@@ -215,11 +254,12 @@ mod tests {
 
     #[test]
     fn test_extract_client_ip_from_xff() {
+        // Rightmost hop: the only one a proxy (not the client) appended.
         let req = Request::builder()
             .header("x-forwarded-for", "192.168.1.1, 10.0.0.1")
             .body(Body::empty())
             .expect("test");
-        assert_eq!(extract_client_ip(&req, &[]), "192.168.1.1");
+        assert_eq!(extract_client_ip(&req, &[]), "10.0.0.1");
     }
 
     #[test]
@@ -290,12 +330,40 @@ mod tests {
 
     #[test]
     fn test_trusted_peer_uses_forwarded_header() {
+        // Chained trusted proxies: 10.0.0.1 is itself trusted, so the walk
+        // continues left to the real client.
         let req = Request::builder()
             .header("x-forwarded-for", "1.2.3.4, 10.0.0.1")
             .body(Body::empty())
             .expect("test");
         let req = with_peer(req, "10.0.0.7:5000");
         assert_eq!(extract_client_ip(&req, &nets(&["10.0.0.0/8"])), "1.2.3.4");
+    }
+
+    /// S8: the leftmost XFF hop is client-supplied — a trusted proxy only
+    /// *appends*. A spoofed prefix must not become the identity.
+    #[test]
+    fn test_trusted_peer_ignores_client_supplied_xff_prefix() {
+        let req = Request::builder()
+            .header("x-forwarded-for", "6.6.6.6, 198.51.100.7")
+            .body(Body::empty())
+            .expect("test");
+        let req = with_peer(req, "10.0.0.7:5000");
+        assert_eq!(
+            extract_client_ip(&req, &nets(&["10.0.0.0/8"])),
+            "198.51.100.7"
+        );
+    }
+
+    #[test]
+    fn test_all_trusted_xff_resolves_to_leftmost() {
+        // Every hop trusted: the leftmost is the origin.
+        let req = Request::builder()
+            .header("x-forwarded-for", "10.0.0.2, 10.0.0.3")
+            .body(Body::empty())
+            .expect("test");
+        let req = with_peer(req, "10.0.0.7:5000");
+        assert_eq!(extract_client_ip(&req, &nets(&["10.0.0.0/8"])), "10.0.0.2");
     }
 
     #[test]

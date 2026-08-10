@@ -36,7 +36,7 @@ Then work through this list. Each row links to the section with the detail.
 | 3 | [Audit stored channel configs](#3-channels-with-broken-stored-config-now-refuse-to-load) | Always — this one can stop the server from booting |
 | 3b | [Remove unknown keys from channel configs](#unknown-keys-in-a-channel-config-are-now-refused) | Any stored channel config carries a key Orion does not recognise — including the pre-1.0 `cors` and `backpressure.max_concurrent` spellings, `queue_depth`, and typos that were silently ignored before |
 | 4 | [Enable the Kafka DLQ](#4-kafka-delivery-is-now-at-least-once) | `kafka.enabled = true` |
-| 5 | [Size every ingress against the channel's guards](#every-ingress-applies-the-channels-rate-limit-dedup-and-backpressure) | Any channel declaring `rate_limit`, `deduplication`, `backpressure` or `timeout_ms` is reached over Kafka, `/async`, or `channel_call` — **this one silently throttles or suppresses live traffic** |
+| 5 | [Size every ingress against the channel's guards](#every-ingress-applies-the-channels-rate-limit-dedup-and-backpressure) | Any channel declaring `rate_limit`, `deduplication`, `backpressure` or `timeout_ms` is reached over Kafka, `/async`, or `channel_call` — **this one silently throttles or suppresses live traffic**. Also: the platform `[rate_limit]` budget now [stacks on the channel's own limit](#the-platform-limiter-and-the-channels-now-stack) instead of being bypassed by it |
 | 6 | [Supply admin API keys](#5-deployment-defaults-helm-and-ha-compose-now-require-admin-keys) | You deploy via the Helm chart or `docker-compose.ha.yml` |
 | 7 | [Back up before migrating](#6-database-migrations) | You are on PostgreSQL |
 | 7b | [Re-point anything reading `workflows.tags` or `channels.methods`](#two-json-columns-were-renamed) | You query Orion's tables directly — dashboards, ETL, reporting views, hand-maintained restores |
@@ -91,7 +91,10 @@ literal string `"unknown"` when neither was present. Any client could mint a
 fresh bucket by sending a made-up header. The identity is now the **TCP peer
 address**, and forwarded headers are honoured *only* when the peer address
 falls inside the new `rate_limit.trusted_proxies` list. That list is **empty by
-default**, which means "trust nothing".
+default**, which means "trust nothing". When the peer *is* trusted, the client
+is resolved from the **right end** of `X-Forwarded-For` — the hop your proxy
+appended — skipping hops that are themselves trusted proxies; the leftmost
+elements are whatever the client sent and are never used as the identity.
 
 **How you'll notice.** If Orion sits behind a proxy, LB, ingress controller, or
 service mesh, the TCP peer is always that hop — so **every client collapses
@@ -520,6 +523,29 @@ intended as an HTTP-only control, either remove it or give it a `key_logic`
 that distinguishes the ingress: the default bucket key is the topic on Kafka
 and the client IP over HTTP, so the same limit is a per-caller rate on each
 ingress rather than one shared cap.
+
+### The platform limiter and the channel's now stack
+
+**What changed.** The pre-1.0 middleware skipped the platform `[rate_limit]`
+data budget for a request whose target channel declared its own `rate_limit`
+block and that limiter admitted the request — a channel-level limit *replaced*
+the platform one. The two now layer: every `/api/v1/data` request is metered
+against the platform budget (`endpoints.data_rps`, else `default_rps`) first,
+and against the channel's own limit in the ingress guards second. A channel
+deliberately configured with a higher rate than the platform default used to
+be served at the channel's rate; it is now clamped to the platform's.
+
+**How you'll notice.** With `rate_limit.enabled = true`, a high-volume channel
+whose `rate_limit.requests_per_second` exceeds `endpoints.data_rps` (or
+`default_rps`) starts answering `429` at the platform rate after the upgrade —
+`orion_rate_limit_rejections_total{group="data"}` climbs while the channel's
+own limit never trips.
+
+**What to do.** Treat the platform budget as a backstop *above* every
+channel's limit rather than a default that channels override: raise
+`rate_limit.endpoints.data_rps` (or `default_rps`) to at least the largest
+per-channel `requests_per_second`. Both limiters key by client IP by default,
+so the comparison is per caller.
 
 ---
 

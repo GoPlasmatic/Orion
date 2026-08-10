@@ -612,11 +612,22 @@ pub(crate) async fn run_plan(server: &str, file: &str) -> Result<(), CliError> {
             )
             .await?;
         for result in outcome["results"].as_array().into_iter().flatten() {
-            println!(
-                "  {kind:<10} {:<28} {}",
-                result["id"].as_str().unwrap_or("(generated)"),
-                result["action"].as_str().unwrap_or("?"),
-            );
+            let id = result["id"].as_str().unwrap_or("(generated)");
+            let action = result["action"].as_str().unwrap_or("?");
+            // The hash excludes rollout, so `unchanged` can still carry a
+            // rollout intent — apply lands it via the rollout endpoint; say
+            // so, or a rollout-only package looks like a full no-op here.
+            let rollout_note = if kind == "workflows" && action == "unchanged" {
+                activation_intents(&artifact)
+                    .into_iter()
+                    .find(|(k, i, pct)| *k == kind && i == id && pct.is_some())
+                    .and_then(|(_, _, pct)| pct)
+                    .map(|pct| format!(" (rollout will be set to {pct}%)"))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            println!("  {kind:<10} {id:<28} {action}{rollout_note}");
         }
         for error in outcome["errors"].as_array().into_iter().flatten() {
             eprintln!(
@@ -827,11 +838,34 @@ pub(crate) async fn run_apply(server: &str, file: &str) -> Result<(), CliError> 
             Ok(_) => println!("activated {kind} '{id}'"),
             // Staging just succeeded, so the entity exists; a 404 on its
             // activation can only be "no draft version" — the `unchanged`
-            // staging left it active as-is, which is the goal state. Matched
-            // on the status, not the message, so a rewording cannot turn
-            // this benign no-op into a mid-package abort.
+            // staging left it active as-is. Matched on the status, not the
+            // message, so a rewording cannot turn this benign no-op into a
+            // mid-package abort. One thing `unchanged` does NOT cover: the
+            // content hash deliberately excludes `rollout_percentage`, so a
+            // rollout-only change hashes as unchanged and must land through
+            // the rollout endpoint or it is silently dropped while apply
+            // reports success.
             Err(e) if e.status() == Some(StatusCode::NOT_FOUND) => {
-                println!("{kind} '{id}' is already active (unchanged)");
+                if let Some(pct) = rollout {
+                    client
+                        .patch_data::<Value>(
+                            &format!("{}?reload=defer", paths::workflow_rollout(&id)),
+                            &json!({"rollout_percentage": pct}),
+                        )
+                        .await
+                        .map_err(|e| {
+                            format!(
+                                "setting rollout for {kind} '{id}' failed: {e}. Everything \
+                                 before it is active but the engine has NOT been reloaded; \
+                                 the receipt stays staged — fix the cause and re-run apply \
+                                 (idempotent), or run POST /engine/reload to serve what did \
+                                 activate"
+                            )
+                        })?;
+                    println!("{kind} '{id}' is already active (unchanged); rollout set to {pct}%");
+                } else {
+                    println!("{kind} '{id}' is already active (unchanged)");
+                }
             }
             Err(e) => {
                 eprintln!("error: activating {kind} '{id}': {e}");

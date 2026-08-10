@@ -85,7 +85,17 @@ impl CircuitBreaker {
             STATE_OPEN => {
                 let opened = self.opened_at.load(Ordering::Acquire);
                 let now = self.now_ms();
-                let cooldown_ms = (self.config.recovery_timeout_secs * 1000) as i64;
+                // Saturate, then clamp into i64: a huge configured timeout
+                // means "never auto-recover". The unclamped `* 1000 as i64`
+                // wrapped negative for large values, which made the cooldown
+                // elapse instantly — the breaker half-opened the moment it
+                // opened, exactly when it was configured most conservatively
+                // (and the multiplication panicked in debug builds).
+                let cooldown_ms = self
+                    .config
+                    .recovery_timeout_secs
+                    .saturating_mul(1000)
+                    .min(i64::MAX as u64) as i64;
                 if now - opened >= cooldown_ms {
                     // Only one thread wins the CAS; it also mints the single
                     // probe permit for this half-open window, so the losers
@@ -241,6 +251,18 @@ mod tests {
         assert!(cb.record_failure()); // 3rd failure trips it
         assert_eq!(cb.state_name(), "open");
         assert!(!cb.check()); // should reject
+    }
+
+    /// A huge recovery timeout means "never auto-recover" — it must not
+    /// overflow into a negative cooldown that half-opens the breaker the
+    /// instant it opens.
+    #[test]
+    fn huge_recovery_timeout_stays_open() {
+        let cb = CircuitBreaker::new(test_config(1, u64::MAX));
+        assert!(cb.record_failure());
+        assert_eq!(cb.state_name(), "open");
+        assert!(!cb.check(), "an unelapsed cooldown must keep rejecting");
+        assert_eq!(cb.state_name(), "open");
     }
 
     #[test]

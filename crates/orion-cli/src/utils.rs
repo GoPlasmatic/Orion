@@ -10,13 +10,19 @@ use std::io::Read;
 use crate::client::OrionClient;
 use crate::output::{self, OutputFormat};
 
-/// Truncate a string to `max` characters, appending "..." if truncated.
+/// Truncate a string to at most `max` bytes, appending "..." if truncated.
+/// The cut lands on a char boundary — names, descriptions, and upstream
+/// error messages are user-authored, and a raw byte slice panics when the
+/// index falls inside a multi-byte UTF-8 character.
 pub fn truncate(s: &str, max: usize) -> String {
-    if s.len() > max {
-        format!("{}...", &s[..max - 3])
-    } else {
-        s.to_string()
+    if s.len() <= max {
+        return s.to_string();
     }
+    let mut cut = max.saturating_sub(3);
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}...", &s[..cut])
 }
 
 /// Colorize an entity lifecycle status (draft/active/archived) or a trace
@@ -173,3 +179,26 @@ pub async fn run_import(
 /// The one implementation lives in `orion-client`; this re-export keeps the
 /// CLI's historical call sites working.
 pub use orion_client::query_string as build_query_string;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_ascii() {
+        assert_eq!(truncate("short", 25), "short");
+        assert_eq!(truncate("abcdefghij", 8), "abcde...");
+    }
+
+    #[test]
+    fn truncate_backs_off_to_a_char_boundary() {
+        // 21 ASCII bytes, then 'é' (2 bytes) spanning indices 21–22: a raw
+        // byte slice at 22 panics with "not a char boundary".
+        let s = "aaaaaaaaaaaaaaaaaaaaaéxxxx";
+        assert_eq!(truncate(s, 25), "aaaaaaaaaaaaaaaaaaaaa...");
+        // Cut inside a 4-byte emoji.
+        assert_eq!(truncate("ab🦀cdefgh", 6), "ab...");
+        // Degenerate budgets must not underflow or panic.
+        assert_eq!(truncate("🦀🦀", 2), "...");
+    }
+}

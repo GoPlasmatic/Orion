@@ -103,12 +103,31 @@ pub fn data_async(channel: &str) -> String {
 pub const HEALTH: &str = "/health";
 pub const METRICS: &str = "/metrics";
 
+/// RFC 3986 unreserved characters stay literal; everything else — including
+/// `&`, `=`, `+`, `%` and `#` — is percent-encoded, so a user-supplied
+/// filter value (tags have no server-side charset restriction) can never
+/// restructure the query it rides in or decode to a different value.
+const QUERY_COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
 /// Build a URL query string from key-value pairs, skipping `None` values.
-/// Returns `""` when nothing is set, `"?k=v&k2=v2"` otherwise.
+/// Returns `""` when nothing is set, `"?k=v&k2=v2"` otherwise. Keys and
+/// values are percent-encoded.
 pub fn query_string(params: &[(&str, Option<String>)]) -> String {
     let parts: Vec<String> = params
         .iter()
-        .filter_map(|(k, v)| v.as_ref().map(|val| format!("{k}={val}")))
+        .filter_map(|(k, v)| {
+            v.as_ref().map(|val| {
+                format!(
+                    "{}={}",
+                    percent_encoding::utf8_percent_encode(k, QUERY_COMPONENT),
+                    percent_encoding::utf8_percent_encode(val, QUERY_COMPONENT)
+                )
+            })
+        })
         .collect();
     if parts.is_empty() {
         String::new()
@@ -146,6 +165,27 @@ mod tests {
                 ("limit", Some("10".to_string())),
             ]),
             "?status=active&limit=10"
+        );
+    }
+
+    #[test]
+    fn query_string_encodes_reserved_characters() {
+        // A tag like "env=prod&team=pay" must stay one value — unencoded it
+        // splits into extra parameters the server silently drops.
+        assert_eq!(
+            query_string(&[("tag", Some("env=prod&team=pay".to_string()))]),
+            "?tag=env%3Dprod%26team%3Dpay"
+        );
+        // '+' would decode server-side as a space; '%' must not start an
+        // accidental escape; spaces and non-ASCII round-trip.
+        assert_eq!(
+            query_string(&[("tag", Some("v1+hotfix 100%é".to_string()))]),
+            "?tag=v1%2Bhotfix%20100%25%C3%A9"
+        );
+        // Unreserved characters pass through untouched.
+        assert_eq!(
+            query_string(&[("tag", Some("a-b_c.d~e".to_string()))]),
+            "?tag=a-b_c.d~e"
         );
     }
 }

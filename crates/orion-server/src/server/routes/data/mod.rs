@@ -428,10 +428,10 @@ async fn submit_async(
     )
         .into_response();
 
-    state
+    let submitted = state
         .trace_queue
         .submit(crate::queue::QueueMessage {
-            trace_id,
+            trace_id: trace_id.clone(),
             channel,
             payload: data,
             metadata,
@@ -439,7 +439,32 @@ async fn submit_async(
             profile_requested,
             backpressure_permit,
         })
-        .await?;
+        .await;
+    if let Err(e) = submitted {
+        // Shed. The pending row is already committed, the caller gets a 503
+        // and never sees this trace_id — left unsettled, the row would sit
+        // `pending` forever: one phantom backlog entry per shed request,
+        // gone only when retention deletes it. Settle it as failed
+        // (best-effort: this write hits the same DB that just served
+        // `create_pending`).
+        if let Err(update_err) = state
+            .repos
+            .traces
+            .update_status(
+                &trace_id,
+                crate::storage::models::TRACE_STATUS_FAILED,
+                Some("Submission shed: trace queue at capacity"),
+            )
+            .await
+        {
+            tracing::error!(
+                trace_id = %trace_id,
+                error = %update_err,
+                "Failed to settle pending trace after queue shed"
+            );
+        }
+        return Err(e);
+    }
 
     Ok(response)
 }

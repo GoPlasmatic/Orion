@@ -218,7 +218,17 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
     // upgrades `Off` to `Sync` here, matching the pending row the submission
     // path already wrote. Dropping the result while the row exists would leave
     // the trace stuck at `pending` forever.
-    let channel_runtime = ctx.channel_registry.get_by_name(&msg.channel);
+    // F35 on the dequeue path: `require_serviceable`, like every other
+    // ingress — `get_by_name` answers `None` for a quarantined channel,
+    // indistinguishable from an unregistered name, and the message would
+    // run against the engine with the channel's own timeout and trace
+    // policy silently replaced by global defaults. The refusal is handled
+    // below, once the DLQ candidate exists to fail into.
+    let (channel_runtime, quarantine_reason) =
+        match ctx.channel_registry.require_serviceable(&msg.channel) {
+            Ok(runtime) => (runtime, None),
+            Err(e) => (None, Some(e.to_string())),
+        };
     // O1: unregistered channel names (arbitrary path segments on the async
     // route) must not become Prometheus label values.
     let channel_registered = channel_runtime.is_some();
@@ -273,6 +283,17 @@ async fn process_trace(item: QueuedItem, ctx: ProcessingContext) {
         metadata: &msg.metadata,
         retry_count: dlq_retry_count,
     };
+
+    // A quarantined channel is refused rather than executed. The trace
+    // fails into the DLQ, so already-queued messages are replayable once
+    // the operator fixes the channel's stored config — and the retry count
+    // converges (Q3) instead of the DLQ retry loop spinning forever.
+    if let Some(reason) = quarantine_reason {
+        metrics::record_message(metrics_channel, "error");
+        metrics::record_error("channel_quarantined");
+        handle_failure(&ctx, trace_mode, &dlq, &reason).await;
+        return;
+    }
 
     // Mark as running. In sync mode this blocks; in async/batch it enqueues;
     // in off mode it's a no-op since no DB row exists.

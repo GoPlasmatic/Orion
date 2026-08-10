@@ -25,11 +25,17 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 /// First forwarded client IP: the first `x-forwarded-for` hop, else
-/// `x-real-ip`. Shape-agnostic over the header lookup so `HeaderMap` and
-/// metadata-JSON callers share one policy.
-pub(crate) fn first_forwarded_value<'a>(
-    mut get: impl FnMut(&str) -> Option<&'a str>,
-) -> Option<&'a str> {
+/// `x-real-ip`.
+///
+/// Rollout-bucketing policy ONLY — never a security identity. The leftmost
+/// hop is client-supplied, which is tolerable here for the same reason the
+/// unkeyed hash above is: a caller choosing its identity chooses only its
+/// own canary bucket, which the sticky header already lets any caller do.
+/// It is also the hop that stays per-client behind chained proxies, where
+/// the rightmost hop would collapse every caller into one bucket. The
+/// rate-limit / audit identity must NOT use this — see the trusted-proxy
+/// aware, rightmost-hop resolution in `server::rate_limit`.
+fn first_forwarded_value<'a>(mut get: impl FnMut(&str) -> Option<&'a str>) -> Option<&'a str> {
     if let Some(xff) = get("x-forwarded-for")
         && let Some(first) = xff.split(',').next().map(str::trim)
         && !first.is_empty()

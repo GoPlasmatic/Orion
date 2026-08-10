@@ -182,8 +182,12 @@ fn redirect_target(
 }
 
 /// Read a (non-redirect) response body as JSON, enforcing `max_size`.
+///
+/// The limit is enforced *while streaming*: a chunked response with no
+/// `Content-Length` must not get to sit fully in memory before the size
+/// check — that is the exact OOM the limit exists to prevent.
 async fn read_json_response(
-    response: reqwest::Response,
+    mut response: reqwest::Response,
     url: &url::Url,
     max_size: usize,
 ) -> dataflow_rs::Result<Value> {
@@ -202,32 +206,39 @@ async fn read_json_response(
     }
 
     if !status.is_success() {
-        let body_bytes = response.bytes().await.unwrap_or_default();
-        // Truncate error body to max_size
-        let body_text = String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(max_size)]);
+        // Read at most `max_size` bytes of the error body for the message;
+        // anything beyond that is dropped, never buffered. Read errors end
+        // the body early (the status alone still makes a useful error).
+        let mut body_bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.ok().flatten() {
+            let room = max_size.saturating_sub(body_bytes.len());
+            let take = chunk.len().min(room);
+            body_bytes.extend_from_slice(&chunk[..take]);
+            if take < chunk.len() {
+                break;
+            }
+        }
+        let body_text = String::from_utf8_lossy(&body_bytes);
         return Err(DataflowError::http(
             status.as_u16(),
             format!("HTTP {status} from {url}: {body_text}"),
         ));
     }
 
-    let body_bytes = response.bytes().await.map_err(|e| {
+    let mut body_bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| {
         DataflowError::function_execution(
             format!("Failed to read response body from {url}: {e}"),
             None,
         )
-    })?;
-
-    if body_bytes.len() > max_size {
-        return Err(DataflowError::function_execution(
-            format!(
-                "Response body from {} is {} bytes, exceeding limit of {} bytes",
-                url,
-                body_bytes.len(),
-                max_size
-            ),
-            None,
-        ));
+    })? {
+        if body_bytes.len() + chunk.len() > max_size {
+            return Err(DataflowError::function_execution(
+                format!("Response body from {url} exceeds limit of {max_size} bytes"),
+                None,
+            ));
+        }
+        body_bytes.extend_from_slice(&chunk);
     }
 
     let response_body: Value = serde_json::from_slice(&body_bytes).map_err(|e| {

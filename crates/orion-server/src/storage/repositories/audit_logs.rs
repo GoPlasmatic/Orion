@@ -203,9 +203,7 @@ impl AuditLogRepository for SqlAuditLogRepository {
 
     async fn delete_older_than(&self, days: u64) -> Result<u64, OrionError> {
         crate::metrics::timed_db_op("audit_logs.delete_older_than", async {
-            let cutoff = chrono::Duration::try_days(days as i64)
-                .and_then(|d| chrono::Utc::now().naive_utc().checked_sub_signed(d))
-                .unwrap_or(chrono::NaiveDateTime::MIN);
+            let cutoff = super::helpers::cutoff_days_ago(chrono::Utc::now().naive_utc(), days);
 
             // D6: chunked — see `delete_chunked`.
             super::helpers::delete_chunked(

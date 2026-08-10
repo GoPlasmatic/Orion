@@ -149,21 +149,29 @@ pub struct StubHandler {
 }
 
 impl StubHandler {
-    /// Where this task's result would be written.
+    /// Where this task's result would be written — mirroring the real
+    /// handlers exactly, because an offline run that writes to a different
+    /// place than production reports the wrong verdict in both directions.
     ///
-    /// `output` with the pre-1.0 `response_path` still accepted (F43), and the
-    /// dialect functions' documented `"data"` default. A function with no
-    /// output path writes nothing — `cache_write` and `db_write` legitimately
-    /// have none — and its stub exists only to keep the task from failing.
+    /// Every function this generic stub serves resolves its destination via
+    /// `extract_output_path`: the `output` field, defaulting to `"data"` (as
+    /// their published schemas document). `cache_write` is the one that
+    /// writes nothing — its stub exists only to keep the task from failing.
+    /// `response_path` is deliberately not consulted: none of these
+    /// functions' production handlers read it (the pre-1.0 spelling survives
+    /// only where the real config declares it as an alias — `http_call` and
+    /// `channel_call`, which have their own typed stubs).
     fn output_path(&self, input: &Value) -> Option<String> {
-        input
-            .get("output")
-            .or_else(|| input.get("response_path"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                matches!(self.function, "data_query" | "data_write").then(|| "data".to_string())
-            })
+        if self.function == "cache_write" {
+            return None;
+        }
+        Some(
+            input
+                .get("output")
+                .and_then(Value::as_str)
+                .unwrap_or("data")
+                .to_string(),
+        )
     }
 }
 
@@ -346,30 +354,45 @@ mod tests {
 
     #[test]
     fn the_output_path_follows_each_functions_convention() {
-        let http = StubHandler {
-            function: "http_call",
+        let stub = |function| StubHandler {
+            function,
             stubs: Arc::new(StubTable::new()),
         };
+
+        let read = stub("db_read");
         assert_eq!(
-            http.output_path(&json!({"output": "data.x"})),
+            read.output_path(&json!({"output": "data.x"})),
             Some("data.x".to_string())
         );
-        // F43: the pre-1.0 spelling still resolves.
+        // An omitted `output` defaults to the data root, exactly like the
+        // real handler (`extract_output_path`) and its published schema —
+        // a stub writing nothing here fails workflows that pass in
+        // production.
+        assert_eq!(read.output_path(&json!({})), Some("data".to_string()));
+        // `response_path` is not a spelling the real connector handlers
+        // read; honoring it here passed workflows offline that production
+        // does not run that way.
         assert_eq!(
-            http.output_path(&json!({"response_path": "data.y"})),
-            Some("data.y".to_string())
+            read.output_path(&json!({"response_path": "data.y"})),
+            Some("data".to_string())
         );
-        assert_eq!(http.output_path(&json!({})), None);
 
-        let query = StubHandler {
-            function: "data_query",
-            stubs: Arc::new(StubTable::new()),
-        };
-        assert_eq!(
-            query.output_path(&json!({})),
-            Some("data".to_string()),
-            "the dialect functions default to the data root"
-        );
+        for function in [
+            "cache_read",
+            "mongo_read",
+            "db_write",
+            "data_query",
+            "data_write",
+        ] {
+            assert_eq!(
+                stub(function).output_path(&json!({})),
+                Some("data".to_string()),
+                "{function} defaults to the data root"
+            );
+        }
+
+        // The one generic-stubbed function whose real handler writes nothing.
+        assert_eq!(stub("cache_write").output_path(&json!({})), None);
     }
 
     /// A stub whose `Input` type does not match the real handler's fails the

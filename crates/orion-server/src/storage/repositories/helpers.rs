@@ -308,13 +308,35 @@ pub async fn snapshot_pages<T: DbRow>(
 /// connectors): the stored form is `serde_json::to_string(&Vec<String>)`, so
 /// a member is always `"tag"` with the quotes, and matching `%"tag"%` cannot
 /// hit a substring of a longer tag. LIKE wildcards in the tag itself are
-/// escaped.
-pub fn tag_like_pattern(tag: &str) -> String {
+/// escaped — and the escape character rides along as an explicit `ESCAPE`
+/// clause, because SQLite (the default backend) has no default LIKE escape:
+/// without it the backslashes are matched literally and a tag containing
+/// `_`, `%` or `\` never matches its own stored value.
+pub fn tag_like_pattern(tag: &str) -> sea_query::LikeExpr {
     let escaped = tag
         .replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_");
-    format!("%\"{escaped}\"%")
+    sea_query::LikeExpr::new(format!("%\"{escaped}\"%")).escape('\\')
+}
+
+/// Retention/purge cutoff `now - hours`, saturating on any out-of-range
+/// input: an API-supplied huge value means "older than longer ago than
+/// representable" and yields `NaiveDateTime::MIN` (matches nothing) — never
+/// a wrapped-negative duration, which would put the cutoff in the *future*
+/// and match everything, and never the `Duration::hours` panic. A bare
+/// `as i64` cast fails both ways (`u64::MAX as i64 == -1`).
+pub fn cutoff_hours_ago(now: chrono::NaiveDateTime, hours: u64) -> chrono::NaiveDateTime {
+    chrono::Duration::try_hours(i64::try_from(hours).unwrap_or(i64::MAX))
+        .and_then(|d| now.checked_sub_signed(d))
+        .unwrap_or(chrono::NaiveDateTime::MIN)
+}
+
+/// [`cutoff_hours_ago`], in days.
+pub fn cutoff_days_ago(now: chrono::NaiveDateTime, days: u64) -> chrono::NaiveDateTime {
+    chrono::Duration::try_days(i64::try_from(days).unwrap_or(i64::MAX))
+        .and_then(|d| now.checked_sub_signed(d))
+        .unwrap_or(chrono::NaiveDateTime::MIN)
 }
 
 /// Run an UPDATE that must yield one scalar: `RETURNING` on Postgres/SQLite;

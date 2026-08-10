@@ -737,9 +737,7 @@ impl TraceRepository for SqlTraceRepository {
     async fn delete_older_than(&self, hours: u64) -> Result<u64, OrionError> {
         crate::metrics::timed_db_op("traces.delete_older_than", async {
             let now = chrono::Utc::now().naive_utc();
-            let cutoff = now
-                .checked_sub_signed(chrono::Duration::hours(hours as i64))
-                .unwrap_or(chrono::NaiveDateTime::MIN);
+            let cutoff = super::helpers::cutoff_hours_ago(now, hours);
             // D4: rows stuck in `pending`/`running` (queue submit failed,
             // worker died mid-flight) previously matched no retention
             // predicate and leaked forever — an unbounded leak on the
@@ -747,9 +745,7 @@ impl TraceRepository for SqlTraceRepository {
             // Real processing is bounded by processing_timeout_ms (seconds),
             // so anything non-terminal at twice the retention window is
             // unambiguously dead.
-            let stuck_cutoff = now
-                .checked_sub_signed(chrono::Duration::hours((hours as i64).saturating_mul(2)))
-                .unwrap_or(chrono::NaiveDateTime::MIN);
+            let stuck_cutoff = super::helpers::cutoff_hours_ago(now, hours.saturating_mul(2));
 
             // D6: chunked, not one unbounded statement — the first tick after
             // retention is enabled can span millions of rows.

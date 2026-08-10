@@ -26,7 +26,7 @@ use stats::BenchmarkReport;
         Built-in scenarios:\n  \
         simple    1 log task — baseline pipeline overhead\n  \
         complex   4-task ecommerce workflow — conditional + enrichment\n  \
-        multi     12 workflows on same channel — fan-out at scale",
+        multi     12 workflows, each behind its own channel — populated estate",
     after_help = "Examples:\n  \
         orion-cli benchmark\n  \
         orion-cli benchmark --scenario simple -n 500 -c 20\n  \

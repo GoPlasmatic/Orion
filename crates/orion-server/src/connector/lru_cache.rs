@@ -104,7 +104,12 @@ impl<V: Clone> LruCache<V> {
         let mut entries = self.entries.write().await;
         if let Some(existing) = entries.get(key) {
             existing.touch();
-            return Ok(existing.value.clone());
+            let winner = existing.value.clone();
+            // The race-losing value never enters the cache — hand it to the
+            // evict handler (F17) like any other removed value, or a fully
+            // connected pool/client silently leaks its connections.
+            self.dispose(value);
+            return Ok(winner);
         }
 
         // LRU eviction when at capacity
@@ -187,6 +192,46 @@ mod tests {
         // evict_all drains the remaining two.
         cache.evict_all().await;
         assert_eq!(closed.load(AtomicOrdering::SeqCst), 4);
+    }
+
+    /// F17, insert-race branch: the loser's freshly created value never
+    /// enters the cache, so it too must reach the evict handler — it is a
+    /// fully connected pool.
+    #[tokio::test]
+    async fn evict_handler_fires_for_race_losing_value() {
+        let closed = Arc::new(AtomicUsize::new(0));
+        let closed_ref = closed.clone();
+        let cache: Arc<LruCache<u32>> =
+            Arc::new(LruCache::with_evict_handler(4, "test", move |_v| {
+                closed_ref.fetch_add(1, AtomicOrdering::SeqCst);
+            }));
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+
+        let mut handles = Vec::new();
+        for v in [1u32, 2u32] {
+            let cache = cache.clone();
+            let barrier = barrier.clone();
+            handles.push(tokio::spawn(async move {
+                let val: Result<u32, ()> = cache
+                    .get_or_create("key", || async move {
+                        barrier.wait().await;
+                        Ok(v)
+                    })
+                    .await;
+                val.expect("test")
+            }));
+        }
+        let (a, b) = (
+            handles.remove(0).await.expect("test"),
+            handles.remove(0).await.expect("test"),
+        );
+
+        assert_eq!(a, b, "both callers must see the winner's value");
+        assert_eq!(
+            closed.load(AtomicOrdering::SeqCst),
+            1,
+            "the race loser's value must be disposed, not dropped"
+        );
     }
 
     #[tokio::test]

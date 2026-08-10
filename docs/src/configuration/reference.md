@@ -402,7 +402,7 @@ Platform-level limits, applied per client identity. Per-channel limits are separ
 | `rate_limit.endpoints.admin_rps` | `20` | `ORION_RATE_LIMIT__ENDPOINTS__ADMIN_RPS` | Separate limit for the admin API. Set the variable to an empty string to clear it, which makes the admin plane use `default_rps`. |
 | `rate_limit.endpoints.data_rps` | — | `ORION_RATE_LIMIT__ENDPOINTS__DATA_RPS` | Separate limit for the data plane; unset means it uses `default_rps`. Set the variable to an empty string to clear it. |
 
-**`trusted_proxies` changes behaviour for every proxied deployment.** The direct peer IP is authoritative. `X-Forwarded-For` and `X-Real-IP` are honoured *only* when the peer address falls inside one of these CIDR blocks (bare IPs are accepted and treated as `/32` or `/128`). The default is empty, which means **forwarded headers are never trusted**.
+**`trusted_proxies` changes behaviour for every proxied deployment.** The direct peer IP is authoritative. `X-Forwarded-For` and `X-Real-IP` are honoured *only* when the peer address falls inside one of these CIDR blocks (bare IPs are accepted and treated as `/32` or `/128`). The default is empty, which means **forwarded headers are never trusted**. When the peer is trusted, the client is the **rightmost** `X-Forwarded-For` hop that is not itself a trusted proxy — the hop your own proxy appended. The leftmost elements arrive from the client verbatim and are never used, so a forged prefix cannot mint an identity.
 
 The consequence in both directions:
 

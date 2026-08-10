@@ -1057,6 +1057,13 @@ mod tests {
             .cond_where(cond)
             .build(sea_query::SqliteQueryBuilder);
         assert!(sql.contains("LIKE"));
+        // SQLite has no default LIKE escape character: without an explicit
+        // ESCAPE clause the backslashes in the pattern match literally and
+        // a tag containing `_`/`%`/`\` never matches its stored form.
+        assert!(
+            sql.contains("ESCAPE"),
+            "escaped wildcards need an explicit ESCAPE clause: {sql}"
+        );
     }
 
     #[test]
@@ -1169,6 +1176,43 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), 3, "pages must neither overlap nor skip rows");
+    }
+
+    /// K6 on the default backend: a tag containing a LIKE wildcard must
+    /// round-trip through the filter. Runs against real SQLite because the
+    /// bug was invisible in SQL-text assertions — the pattern escaped `_`
+    /// but no ESCAPE clause was emitted, so the filter matched nothing.
+    #[tokio::test]
+    async fn test_tag_filter_matches_tags_with_wildcard_chars_on_sqlite() {
+        let repo = SqlWorkflowRepository::new(crate::storage::test_sqlite_pool().await);
+        for (id, tag) in [("wf-tagged", "my_tag"), ("wf-other", "myXtag")] {
+            let req: CreateWorkflowRequest = serde_json::from_value(serde_json::json!({
+                "workflow_id": id,
+                "name": id,
+                "tags": [tag],
+                "tasks": [{"id": "t1", "name": "Log",
+                           "function": {"name": "log", "input": {"message": "x"}}}],
+            }))
+            .expect("request");
+            repo.create(&req).await.expect("create");
+        }
+
+        // Exactly the workflow tagged `my_tag`: zero hits means the ESCAPE
+        // clause is missing (the escaped pattern matched literally); two
+        // hits means `_` leaked through as a single-character wildcard.
+        let hit = repo
+            .list(&WorkflowFilter {
+                tag: Some("my_tag".to_string()),
+                ..Default::default()
+            })
+            .await
+            .expect("list");
+        assert_eq!(
+            hit.iter()
+                .map(|w| w.workflow_id.as_str())
+                .collect::<Vec<_>>(),
+            ["wf-tagged"]
+        );
     }
 
     #[test]

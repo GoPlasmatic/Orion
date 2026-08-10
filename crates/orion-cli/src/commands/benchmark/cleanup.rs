@@ -18,6 +18,14 @@ pub async fn remove_resources(
     }
 
     for res in resources {
+        // Channels first — they reference the workflows.
+        for name in &res.channel_names {
+            if let Err(e) = client.delete_request(&paths::channel(name)).await
+                && !quiet
+            {
+                eprintln!("\n  Warning: failed to delete channel {name}: {e}");
+            }
+        }
         for id in &res.workflow_ids {
             if let Err(e) = client.delete_request(&paths::workflow(id)).await
                 && !quiet
@@ -47,13 +55,34 @@ pub async fn cleanup_all_bench_resources(client: &OrionClient, quiet: bool) -> R
         );
     }
 
+    // Benchmark channels first — they reference the workflows. Channel ids
+    // are the fixed names setup creates: `bench`, `orders`, `bench-N`.
+    let mut deleted = 0;
+    if let Ok(resp) = client.get::<Value>(paths::CHANNELS).await {
+        for ch in resp["data"].as_array().cloned().unwrap_or_default() {
+            let id = ch["channel_id"].as_str().unwrap_or("");
+            let is_bench = id == "bench" || id == "orders" || id.starts_with("bench-");
+            if is_bench {
+                if let Err(e) = client.delete_request(&paths::channel(id)).await {
+                    if !quiet {
+                        eprintln!("  Warning: failed to delete channel {id}: {e}");
+                    }
+                } else {
+                    deleted += 1;
+                    if !quiet {
+                        eprintln!("  Deleted channel: {id}");
+                    }
+                }
+            }
+        }
+    }
+
     let resp: Value = client
         .get(paths::WORKFLOWS)
         .await
         .context("Failed to list workflows")?;
 
     let workflows = resp["data"].as_array().cloned().unwrap_or_default();
-    let mut deleted = 0;
 
     for wf in &workflows {
         let name = wf["name"].as_str().unwrap_or("");
@@ -79,7 +108,7 @@ pub async fn cleanup_all_bench_resources(client: &OrionClient, quiet: bool) -> R
     if !quiet {
         if deleted > 0 {
             eprintln!(
-                "{} Cleaned up {deleted} benchmark workflow(s)",
+                "{} Cleaned up {deleted} benchmark resource(s)",
                 "OK".green().bold()
             );
         } else {

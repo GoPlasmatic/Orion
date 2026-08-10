@@ -14,7 +14,7 @@ pub enum Scenario {
     Simple,
     /// 4-task ecommerce workflow — conditional + enrichment
     Complex,
-    /// 12 workflows on same channel — fan-out / rule evaluation
+    /// 12 workflows, each behind its own channel — populated-estate routing
     Multi,
     /// Run all scenarios sequentially
     All,
@@ -49,7 +49,7 @@ const COMPLEX_CONFIG: ScenarioConfig = ScenarioConfig {
 
 const MULTI_CONFIG: ScenarioConfig = ScenarioConfig {
     name: "multi",
-    description: "Multi-workflow channel (12 workflows)",
+    description: "Loaded estate (12 workflows, 12 channels)",
     workflow_json: MULTI_WORKFLOWS,
     is_import: true,
     channel: "bench",
