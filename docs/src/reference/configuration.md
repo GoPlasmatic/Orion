@@ -6,25 +6,10 @@ Defaults on this page are checked against `src/config/*.rs` by an integration te
 
 ## CLI Commands
 
-```bash
-orion-server                                       # Start the server (default)
-orion-server -c config.toml                        # Start with a config file
-orion-server validate-config                       # Validate + print the full effective config (TOML, secrets masked)
-orion-server validate-config -c config.toml        # Same, for a specific config file
-orion-server validate-config --format summary      # Short human summary (also: --format json)
-orion-server migrate                               # Run database migrations
-orion-server migrate --dry-run                     # Preview pending migrations
-orion-server lint path/to/workflow.json            # Strict-validate a workflow JSON file
-orion-server dry-run -w workflow.json -i input.json # Execute a workflow against a sample payload
-orion-server dry-run -w wf.json -i in.json --stubs s.json  # ...with connector calls answered from canned responses
-orion-server test examples/workflow-tests          # Run offline *.case.json workflow regression tests
-orion-server test-connectivity                     # Probe DB (and Kafka if enabled)
-orion-server preflight                             # Scan stored channels/workflows before upgrading
-orion-server dump-openapi > openapi.json           # Write the OpenAPI 3.1 spec
-orion-server package <export|lint|plan|apply|diff> # Promote a package between instances (see the Admin API page)
-```
-
-All subcommands honour `${VAR}` / `${VAR:-default}` substitution in the loaded config file, so the same `config.toml` can be reused across environments.
+Every `orion-server` subcommand — and the whole `orion-cli` surface — is
+documented in the [CLI Reference](./cli.md). All subcommands honor `${VAR}` /
+`${VAR:-default}` substitution in the loaded config file, so the same
+`config.toml` can be reused across environments.
 
 ## How Settings Are Resolved
 
@@ -56,7 +41,7 @@ Three exemptions cover names that *do* carry the separator, or would:
 - **The reserved `ORION_SECRET_*` namespace**, which Orion never interprets as configuration. Use it for values you reference yourself and cannot declare up front — an `env://ORION_SECRET_DB_PASSWORD` connector secret, for instance, since connectors live in the database rather than the config.
 - **`ORION_ENVIRONMENT`**, the one setting that lives at the top level of the config and so has no separator of its own. It is checked by proximity instead: `ORION_ENVIRONMEN` is refused with a suggestion, because a silently ignored `environment` would leave the instance in `development` with the production checks downgraded to warnings.
 
-One more `ORION_*` name is read but is **not** a config setting: `ORION_ADMIN_TOKEN` is the bearer token the [`orion-server package`](./admin-api.md#the-orion-server-package-cli) subcommands send when calling a target instance's admin API. It carries no `__`, so the startup scan leaves it alone, like the `ORION_SERVER_URL` / `ORION_API_KEY` pair `orion-cli` reads.
+One more `ORION_*` name is read but is **not** a config setting: `ORION_ADMIN_TOKEN` is the bearer token the [`orion-server package`](./cli.md#package) subcommands send when calling a target instance's admin API. It carries no `__`, so the startup scan leaves it alone, like the `ORION_SERVER_URL` / `ORION_API_KEY` pair `orion-cli` reads.
 
 ## Deployment Environment
 
@@ -239,6 +224,10 @@ Three surfaces report this:
 
 ### Circuit Breaker
 
+Fields below configure the global breaker; trip conditions and per-instance
+behavior are specified in
+[Connector Types › Circuit breakers](./connectors.md#circuit-breakers).
+
 Sheds load to a failing dependency: after `failure_threshold` consecutive failures the breaker opens and calls return `503 CIRCUIT_OPEN` immediately, until `recovery_timeout_secs` elapses and a probe is admitted.
 
 | Setting | Default | Env var | When to change |
@@ -409,7 +398,7 @@ The consequence in both directions:
 - **Behind a load balancer with this unset**, every request appears to come from the balancer, so all clients share a single rate-limit bucket and the limit effectively applies to your whole fleet at once. List the balancer's subnet — `trusted_proxies = ["10.0.0.0/8"]` — to get per-client limiting back.
 - **List a network you do not control** and clients on it can spoof `X-Forwarded-For` to mint a fresh bucket per request, which is exactly no rate limiting at all. List only the addresses of proxies you operate.
 
-**It applies even with `rate_limit.enabled = false`.** The key is spelled under `[rate_limit]`, but what it configures is "may a forwarded header name the client" — and four things resolve the caller's address with it: the platform rate limiter, the failed-admin-auth backoff, the `details.client_ip` of every audit row, and, since 1.0, a channel's own `rate_limit` block, which the channel guards enforce on every ingress whether or not the platform limiter is running. So on a proxied deployment with rate limiting off — the default — leaving this empty means every audit row records the load balancer's address rather than the caller's, and every client behind the proxy shares one per-channel bucket.
+**It applies even with `rate_limit.enabled = false`.** The key is spelled under `[rate_limit]`, but what it configures is "may a forwarded header name the client", and four consumers resolve the caller's address with it: the platform rate limiter, the failed-admin-auth backoff, audit rows' `client_ip`, and per-channel `rate_limit` blocks. The full reasoning is in [Design Notes › Why forwarded headers are ignored by default](./design-notes.md#why-forwarded-headers-are-ignored-by-default).
 
 Both endpoint limits are optional, so their environment variables are three-state: unset leaves the config-file value alone, a number sets the limit, and an empty string clears it back to "use `default_rps`".
 

@@ -9,8 +9,11 @@ by reading the code — the answers are in §2 and change a few details of the p
 Phases map to PRs. Each phase leaves the book building and deployable
 (`mdbook build docs` with `create-missing = false` is the gate on every PR).
 
-> **Status (2026-08-10):** Phase 0 ✅ complete (committed on `v1.0.0`).
-> Phase 1 in progress. Decisions D1–D5: proceeding with the stated defaults.
+> **Status (2026-08-10):** Phase 0 ✅ (`1edad10c`). Phase 1a ✅ (`6bc77413`).
+> Phase 1b ✅ — all nine new reference pages live, four pages revised, every
+> planned cross-page cut applied, three doc-pinned test suites repointed.
+> **Phase 1 complete.** Next: Phase 2 (spine, concepts, Build-with-AI).
+> Decisions D1–D5: proceeding with the stated defaults.
 
 ---
 
@@ -295,7 +298,35 @@ Creates the owners that every later page links to instead of inlining.
   Exception: admin-api's ~140-line promotion essay **stays in place, marked with a
   comment**, until operate/promotion.md exists (Phase 3) — no duplicate ownership
   window.
-- [ ] **T1.2 New reference pages** (extraction sources per proposal §5):
+- [x] **T1.2 New reference pages**: ✅ done. All nine pages drafted against code
+  (not just against the old docs) and integrated; cross-page cuts applied to
+  security/scalability/availability/resilience/extensibility/observability/
+  configuration/admin-api/data-api. Discoveries folded in along the way:
+  - **Stale internals corrected everywhere:** the engine is
+    `Arc<EngineHandle>`/`ArcSwap`, not `Arc<RwLock<Arc<Engine>>>` (fixed in
+    availability.md, overview.md, repo CLAUDE.md); the verified guard order is
+    rate limit → auth → origin → validation → dedup → cache → backpressure
+    (CLAUDE.md corrected).
+  - **errors.md** documents four wire facts the old docs missed (`request_id`
+    on the error body, `expected`/`got` on FieldError, the sync envelope's
+    `id`, `Retry-After: 1` on 429) — registry is an exact 17-code match.
+  - **channel-config.md** documents code-verified defaults never written down
+    (`burst = rps/2+1`, dedup/cache 300 s windows) and killed two wrong
+    claims: security.md's `headers.*`/`query.*`/`path.*` validation-context
+    list and extensibility.md's pre-1.0 "Simple HTTP" stub.
+  - **support.md fix:** `response_path` is an accepted alias on *both*
+    `http_call` and `channel_call`.
+  - "How a rename fails, by surface" + its cost rationale parked in
+    upgrading.md (interim home; moves to operate/upgrades.md in Phase 2).
+    The 0.3.x dialect asides were already covered by upgrading.md — dropped.
+  - **Doc-pinned tests repointed:** `jsonlogic_operators_test` (→
+    expressions.md, plus Cargo.toml comment + a fragment redirect),
+    `config_docs_drift_test` (→ reference/configuration.md, excuse-list
+    paths), `metrics_docs_drift_test` (→ reference/metrics.md — the new sole
+    owner). The repo's own `docs_link_test` validates links **and anchors**
+    in CI, which covers the anchor-checking gap noted in T6.1 — the lychee
+    follow-up is now optional.
+  Original spec:
   `channel-config.md` (assembled from security/scalability/availability/resilience/
   data.md fragments — the #1 gap; include the two mini-contexts from §2.4),
   `connectors.md` (per-type field tables; retry spec per §2.1; masking per §2.2;
@@ -319,9 +350,21 @@ Creates the owners that every later page links to instead of inlining.
   grep missed — guard now covers both spellings), extensibility.md's wrong
   idempotent-method list (claimed HEAD/OPTIONS/TRACE; code allows GET/PUT/DELETE),
   upgrading.md's literal `docs/src/configuration/reference.md` path.
-- [ ] **T1.5 Acceptance:** build clean; lychee link-check over `docs/book` green;
-  llms.txt parity check green; redirect files exist in `docs/book/api/` etc.
-  (`test -f docs/book/api/admin.html` after build and grep it for the redirect target).
+- [x] **T1.5 Acceptance:** ✅ `mdbook build` clean, `docs/lint.sh` OK, full
+  integration suite 635/635 (includes `docs_link_test`'s link+anchor sweep,
+  the config/metrics/jsonlogic drift tests, and the schema-parity families).
+
+**Code-hygiene follow-ups discovered in Phase 1b** (small, non-blocking):
+- orion-cli clap help says "run 'engine reload' after to apply" on
+  activate/archive, but the server auto-reloads on status changes.
+- `crates/orion-server/src/query/error.rs` error string says "behaviour"
+  (quoted verbatim by data-dialect.md) — decide on American spelling in
+  runtime strings.
+- `engine/functions/schema.rs:77` comment "Only `http_call.output` has one"
+  describes the FieldSchema alias mechanism but reads as contradicting the
+  serde surface (`channel_call` also accepts `response_path`).
+- `config_docs_drift_test` excuse-list still names
+  `docs/src/features/deployability.md` — update when Phase 3 dissolves it.
 
 ### Phase 2 — Spine, Concepts, Build-with-AI (PR 3)
 

@@ -4,7 +4,11 @@ Orion supports zero-downtime engine reloads, percentage-based canary rollouts, f
 
 ## Hot-Reload
 
-The engine is held in memory as `Arc<RwLock<Arc<Engine>>>`. A reload swaps the inner `Arc<Engine>` while existing readers continue using the old one. Zero dropped requests.
+A reload builds the new engine off to the side, then publishes it with one
+atomic swap — in-flight requests finish on the engine they started with, and
+there is no window in which a reader is held off. Zero dropped requests. The
+mechanism is described in
+[Design Notes › How hot reload swaps the engine](../reference/design-notes.md#how-hot-reload-swaps-the-engine).
 
 **Trigger a reload:**
 
@@ -123,86 +127,27 @@ curl -s -X POST http://localhost:8080/api/v1/admin/workflows/import \
 
 ## Performance
 
-**Response caching:** cache responses for identical requests to reduce redundant workflow execution:
+**Response caching:** a channel can cache responses for identical requests
+and skip workflow execution entirely. The configuration (`cache.enabled`,
+`ttl_secs`, `cache_key_fields`), the four-part cache key, and the
+no-fields-resolved bypass are specified in
+[Channel Configuration › Response caching](../reference/channel-config.md#response-caching).
 
-```json
-{
-  "cache": {
-    "enabled": true,
-    "ttl_secs": 60,
-    "cache_key_fields": ["data.user_id", "data.action"]
-  }
-}
-```
+> [!NOTE]
+> Request headers are never part of the cache key, by design. If a response
+> varies by anything a header carries, that thing must appear in the payload —
+> or the channel must not cache. The reasoning is in
+> [Design Notes › Why response-cache keys ignore headers](../reference/design-notes.md#why-response-cache-keys-ignore-headers).
 
-Each entry in `cache_key_fields` names a field of the request payload, written either as a literal key (`user_id`), a dotted path into a nested object (`user.id`), or with an explicit `data.` prefix (`data.user_id`) — all three resolve. Omit `cache_key_fields` entirely to key on the whole payload.
-
-A request that resolves **none** of the declared fields has no distinguishing key, so it bypasses the cache: the workflow runs and nothing is stored. Orion logs a warning naming the channel and the fields when that happens — it almost always means the field names do not match the payload shape, and the alternative would be to serve one caller's response to every other caller on the channel.
-
-Cached responses are returned directly without executing the workflow. The cache backend is in-memory by default; Redis-backed caching is available via a cache connector. In cluster mode, channels without an explicit connector use the shared cluster Redis — cache hits are shared across replicas instead of each node warming its own.
-
-### What the cache key covers
-
-The key is derived from exactly four things:
-
-| Part | Always included |
-|---|---|
-| Channel name | Yes — entries are scoped per channel |
-| HTTP method | Yes |
-| Route parameters (`metadata.params`) | Yes, order-independent |
-| Query string (`metadata.query`) | Yes, order-independent |
-| Request payload | The whole payload, or the subset named by `cache_key_fields` |
-
-**Request headers are never part of the cache key, by design.** Orion does not
-inspect headers to decide cache identity and will not grow a `cache_key_headers`
-setting. A cached entry is shared by every caller whose method, route, query and
-payload agree, whatever headers they sent.
-
-The consequence is the one rule to design around: **if a response varies by
-anything a header carries, that thing must appear in the payload, or the channel
-must not cache.** A channel whose workflow reads `metadata.headers` — via
-`validation_logic` or a task — and lets it change the response body is a channel
-whose cache will serve one caller's body to another. Fold the distinguishing
-value into the payload and name it in `cache_key_fields`, or leave `cache`
-disabled.
-
-This is a deliberate boundary rather than a gap. Orion is single-tenant by
-design, and the key strategy is the workflow author's to define, expressed in
-the payload they control — not inferred by the runtime from transport headers
-whose meaning it cannot know.
-
-**Request deduplication:** prevent duplicate processing using idempotency keys:
-
-```json
-{
-  "deduplication": {
-    "header": "Idempotency-Key",
-    "window_secs": 300
-  }
-}
-```
-
-When a request with the same idempotency key arrives within the window, it returns `409 Conflict` instead of re-processing. Keys are scoped per channel. In cluster mode the dedup store is the shared cluster Redis by default, so the window holds across all replicas.
-
-**Kafka ingest is deduplicated too**, which matters most there: Kafka is at-least-once by design, so a rebalance or a lost offset commit replays records the workflow already ran. The key is the record header named by `header` if the producer sets one, else the **record key** — the natural idempotency key. A record recognised as a duplicate is skipped and its offset committed; nothing is dead-lettered, because nothing failed. Set a record key (or the header) per logical event, not per entity: a key shared by every event for one customer would suppress all but the first.
-
-"Recognised as a duplicate" means something precise, and the distinction is what keeps deduplication from eating traffic. The key is claimed *before* the workflow runs — that is the only point at which the check is atomic against a concurrent delivery — and it is marked **settled** only once the record's offset is committed, whether that was a successful run or a dead-letter write. A record that is refused, times out, or fails without a confirmed DLQ write leaves its offset uncommitted, so Kafka redelivers it; the redelivery presents the same record coordinates the unsettled claim was made under, is recognised as the *same* delivery rather than a second one, and runs. Only a delivery that arrives after the key was settled is skipped. Without that distinction the first attempt's own claim would refuse its retry, the ingress would read the refusal as "already handled", and the record would be committed having never run — the failure mode deduplication is supposed to prevent, inverted.
-
-The residual is the transport's, not the guard's: a record whose workflow completed but whose offset commit was lost is redelivered and *is* suppressed (its key was settled), while one that never reached a committed outcome is reprocessed. Deduplication narrows at-least-once; it does not make Kafka exactly-once.
-
-Deduplication does **not** apply to `channel_call`. An in-process call is a step inside a request that was already deduplicated at its own ingress and carries no key of its own, so it would inherit the parent's — and a workflow that calls one channel once per line item would see its second call refused as a duplicate.
-
-**Backend outages** are resolved by the channel's `on_backend_error` policy. The default, `"allow"`, fails open: if the dedup store cannot answer (a Redis blip, say), the request proceeds without the idempotency check — availability wins. Payment-style workloads where a duplicate execution is worse than a refused request can set `"on_backend_error": "deny"` to fail closed: the request is refused with `503 Service Unavailable` (never `409` — the key is unverifiable, not a known duplicate) until the backend recovers:
-
-```json
-{
-  "deduplication": {
-    "header": "Idempotency-Key",
-    "window_secs": 300,
-    "on_backend_error": "deny"
-  }
-}
-```
+**Request deduplication:** a request repeating an idempotency key inside the
+channel's window is answered `409` instead of re-processed; Kafka ingest is
+deduplicated too, keyed by record header or record key. Configuration and
+semantics are in
+[Channel Configuration › Deduplication](../reference/channel-config.md#deduplication).
+Duplicate delivery of an unfinished attempt re-runs it; only a settled key
+suppresses — deduplication narrows at-least-once, it does not make Kafka
+exactly-once. The claim/settle mechanism behind that guarantee is in
+[Design Notes › Deduplication: claim, then settle](../reference/design-notes.md#deduplication-claim-then-settle).
 
 **Connection pool caching:** external database and MongoDB connector pools are cached and reused across requests, with configurable pool sizes and idle timeouts:
 

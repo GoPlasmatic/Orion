@@ -1069,6 +1069,41 @@ matters.
 
 ---
 
+## How a rename fails, by surface
+
+<!-- Moved from reference/support.md (docs-implementation-plan.md T1.2); the
+standing home becomes operate/upgrades.md in Phase 2. -->
+
+The two surfaces fail differently, because they are edited at different times by
+different people:
+
+| Surface | Owner | How a stale name fails |
+|---|---|---|
+| Config file and `ORION_*` environment | Operator, edited at deploy time | **Startup error** naming the replacement. Unknown keys are refused (`deny_unknown_fields` throughout), and every renamed environment variable is listed in a retired-names table so the message says what to set instead. |
+| Channel config and workflow JSON | Author, stored in the database | **Refused at create/update**, and **quarantined at load** if already stored — the channel is refused at every ingress rather than served with a guard missing. |
+
+Nobody hand-edits stored channel and workflow rows during an upgrade, which is
+why that surface cannot rely on a startup error the way the config file does.
+Quarantine is the equivalent: loud, fail-closed, and visible on `/health` and
+the admin surface.
+
+<details><summary>Why old spellings are refused rather than accepted</summary>
+
+The cost of a silently-accepted old name decides this. `cors` →
+`origin_allow_list` is the clearest case: had the old key parsed and been
+dropped, every channel using it would have served with no origin allow-list,
+indistinguishable from a channel that deliberately checks nothing. The failure
+would have been silent, permanent, and a security regression. The same argument
+applies to `backpressure.max_concurrent`, whose replacement means something
+different (per node, not per cluster) — accepting it under the new field would
+admit N× the intended concurrency.
+
+</details>
+
+Run `orion-server preflight` before upgrading. It reads the stored estate and
+the environment and names every entity that will fail, so the failures above
+are something you see before the rollout rather than during it.
+
 ## 8. Smaller behaviour changes
 
 ### Every admin response is now wrapped in `data`

@@ -72,7 +72,7 @@ harness = true
 # `ext-control` and `error-handling`. Without it datalogic compiles with only
 # the core opcode set, and a workflow cannot call `now`, format a date,
 # uppercase a string or measure a length — see
-# docs/src/reference/workflows.md#available-operators for the resulting
+# docs/src/reference/expressions.md#available-operators for the resulting
 # vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
 # engine is reached through dataflow-rs, never pinned alongside it), so this is
 # the only lever, and it arrived in dataflow-rs 3.2.

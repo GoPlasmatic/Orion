@@ -41,9 +41,9 @@ use tower::ServiceExt;
 use crate::common;
 use crate::common::{body_json, json_request};
 
-const WORKFLOWS_MD: &str = concat!(
+const EXPRESSIONS_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/reference/workflows.md"
+    "/../../docs/src/reference/expressions.md"
 );
 
 /// Every operator Orion supports, with an expression that exercises it and the
@@ -269,11 +269,11 @@ const OPERATORS: &[OperatorCase] = &[
 /// at the next `## ` heading so prose elsewhere in the file cannot contribute
 /// names.
 fn documented_operators() -> BTreeSet<String> {
-    let md = std::fs::read_to_string(WORKFLOWS_MD).expect("read docs/src/reference/workflows.md");
+    let md = std::fs::read_to_string(EXPRESSIONS_MD).expect("read docs/src/reference/expressions.md");
     let heading = "## Available operators";
     let start = md
         .find(heading)
-        .expect("workflows.md must document the operator vocabulary");
+        .expect("expressions.md must document the operator vocabulary");
     let section = &md[start + heading.len()..];
     let end = section.find("\n## ").unwrap_or(section.len());
 
@@ -364,13 +364,13 @@ fn documented_operators_match_the_supported_set() {
     assert!(
         undocumented.is_empty(),
         "operators supported but absent from the 'Available operators' tables in \
-         docs/src/reference/workflows.md: {undocumented:?}"
+         docs/src/reference/expressions.md: {undocumented:?}"
     );
 
     let invented: Vec<&String> = documented.difference(&supported).collect();
     assert!(
         invented.is_empty(),
-        "docs/src/reference/workflows.md documents operators this build does not \
+        "docs/src/reference/expressions.md documents operators this build does not \
          support: {invented:?}. A reader will write these and get either an error \
          or a silent object literal."
     );
@@ -380,7 +380,7 @@ fn documented_operators_match_the_supported_set() {
 /// spelling that works everywhere `var` is accepted silently reports absent.
 ///
 /// Pinned because it is the documented footgun, and because a future datalogic
-/// that starts splitting on `.` would make the warning in workflows.md wrong.
+/// that starts splitting on `.` would make the warning in expressions.md wrong.
 #[test]
 fn exists_needs_segments_not_a_dotted_path() {
     assert_eq!(
@@ -416,7 +416,7 @@ fn an_unsupported_operator_is_rejected_in_a_condition() {
 /// through as an object literal — no error, no failed task, `200` to the
 /// caller.
 ///
-/// This is the behaviour the warning in `docs/src/reference/workflows.md`
+/// This is the behaviour the warning in `docs/src/reference/expressions.md`
 /// describes, and the reason the operator table is worth testing at all: a
 /// misspelling degrades output silently rather than failing loudly. Exercised
 /// end to end through a real channel because the leniency comes from the

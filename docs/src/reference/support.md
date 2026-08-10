@@ -31,7 +31,7 @@ Orion follows [semantic versioning](https://semver.org):
 - **Patch** (`1.0.x`) — bug and security fixes. No config, API, or database
   schema changes beyond what the fix requires; always safe to roll forward.
 - **Minor** (`1.x.0`) — new capabilities, new configuration keys (with
-  defaults that preserve existing behaviour), additive database migrations,
+  defaults that preserve existing behavior), additive database migrations,
   and possibly an MSRV bump (see below).
 - **Major** (`2.0.0`) — reserved for breaking changes to the Admin/Data APIs,
   configuration semantics, or workflow/channel definitions.
@@ -42,53 +42,24 @@ line. Endpoint additions and new optional fields are not considered breaking.
 
 ## Deprecations
 
-**1.0.0 ships no deprecated spellings.** Where 1.0 renamed a key, the pre-1.0
-name is refused, not quietly accepted — there is no compatibility window to
-track and nothing scheduled for removal in a 1.x minor.
+**1.0.0 accepts no pre-1.0 spellings.** Where 1.0 renamed a key, the old name
+is refused, never silently accepted — there is no compatibility window and
+nothing is scheduled for removal in a 1.x minor. Deprecations introduced
+*after* 1.0 are announced in a minor release with the old spelling still
+working, and removed no earlier than the next major.
 
-That is a deliberate choice, and the reason is what a silently-accepted old name
-costs. `cors` → `origin_allow_list` is the clearest case: had the old key parsed
-and been dropped, every channel using it would have served with no origin
-allow-list, indistinguishable from a channel that deliberately checks nothing.
-The failure would have been silent, permanent, and a security regression. The
-same argument applies to `backpressure.max_concurrent`, whose replacement means
-something different (per node, not per cluster) — accepting it under the new
-field would admit N× the intended concurrency.
-
-Deprecations introduced *after* 1.0 follow the normal rule: announced in a minor
-release with the old spelling still working, removed no earlier than the next
-major.
-
-### How a rename fails, by surface
-
-The two surfaces fail differently, because they are edited at different times by
-different people:
-
-| Surface | Owner | How a stale name fails |
-|---|---|---|
-| Config file and `ORION_*` environment | Operator, edited at deploy time | **Startup error** naming the replacement. Unknown keys are refused (`deny_unknown_fields` throughout), and every renamed environment variable is listed in a retired-names table so the message says what to set instead. |
-| Channel config and workflow JSON | Author, stored in the database | **Refused at create/update**, and **quarantined at load** if already stored — the channel is refused at every ingress rather than served with a guard missing. |
-
-Nobody hand-edits stored channel and workflow rows during an upgrade, which is
-why that surface cannot rely on a startup error the way the config file does.
-Quarantine is the equivalent: loud, fail-closed, and visible on `/health` and
-the admin surface.
-
-Run [`orion-server preflight`](../getting-started/upgrading.md) before upgrading.
-It reads the stored estate and the environment and names every entity that will
-fail, so the failures above are something you see before the rollout rather than
-during it.
+How a refused name fails on each surface — a startup error for the config file
+and environment, refusal at create/update and quarantine at load for stored
+channels and workflows — is covered in
+[Upgrading to 1.0.0](../getting-started/upgrading.md), along with
+`orion-server preflight`, which names every affected entity before a rollout.
 
 ### Accepted alternate spellings
 
-One spelling is accepted in addition to the documented one, and it is not a
-deprecation with a removal date:
-
-- **`http_call.response_path`** — an alias for `output`, carried by the
-  `HttpCallConfig` struct in `dataflow-rs`, which Orion does not own. `output` is
-  the documented spelling and the one every other function uses; supplying both
-  is a duplicate-field error. It will stop being accepted if and when dataflow-rs
-  removes it.
+One alias exists: **`response_path`**, the pre-1.0 name of the `output` field
+on [`http_call`](./functions.md#http_call) and
+[`channel_call`](./functions.md#channel_call). It is not a deprecation with a
+removal date; supplying both spellings in one input is a duplicate-field error.
 
 ## Upgrade guarantees
 

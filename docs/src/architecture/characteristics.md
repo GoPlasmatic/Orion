@@ -61,7 +61,7 @@ Orion provides production-grade capabilities across eight architectural dimensio
 | Area | Capabilities |
 |------|-------------|
 | [Connectors](../features/extensibility.md#connectors) | HTTP & Webhooks · Kafka pub/sub · Database (SQL) · Cache (Memory & Redis) · Elasticsearch · MongoDB (NoSQL) |
-| [Custom Functions](../features/extensibility.md#custom-functions) | Async function handlers · Built-in function library · JSONLogic expressions |
+| [Task Functions](../reference/functions.md) | Async function handlers · Built-in function library · JSONLogic expressions |
 | [Channel Protocols](../features/extensibility.md#channel-protocols) | REST with route matching (sync) · Simple HTTP (sync) · Kafka (async) |
 
 ## Availability — C

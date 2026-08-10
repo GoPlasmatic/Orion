@@ -13,6 +13,8 @@ fails closed instead of shipping in clear. Readable URL values still have
 their in-band secrets redacted (`redis://user:******@host`,
 `?api_key=******`), and `env://` secret *references* pass through unmasked —
 they name a variable, not a value, and must survive `export` → `import`.
+The normative masking rules live in
+[Connector Types › Secret masking](../reference/connectors.md#secret-masking).
 
 Secret **references** resolve at load time, so stored configs never hold the
 value: `env://NAME` reads the process environment, and `vault://<api-path>#<field>`
@@ -58,27 +60,11 @@ Workflows reference connectors by name (`"connector": "payments-api"`). They nev
 
 ## Input Validation
 
-Each channel can define JSONLogic validation rules evaluated against incoming requests before workflow execution:
-
-```json
-{
-  "validation_logic": {
-    "and": [
-      { "!!": [{ "var": "data.order_id" }] },
-      { ">": [{ "var": "data.amount" }, 0] }
-    ]
-  }
-}
-```
-
-If validation fails, the request is rejected with `400 Bad Request` before any workflow logic runs.
-
-Validation rules have access to:
-
-- `data.*`: request body fields
-- `headers.*`: HTTP headers
-- `query.*`: query string parameters
-- `path.*`: path parameters (for REST channels)
+Each channel can define a JSONLogic `validation_logic` rule, evaluated before
+workflow execution; a failing request is rejected with `400` before any
+workflow logic runs. The rule's evaluation context and configuration are
+specified in
+[Channel Configuration › Validation](../reference/channel-config.md#validation).
 
 **Payload size limits** are enforced globally to prevent oversized requests:
 
@@ -191,81 +177,18 @@ curl -H "X-API-Key: your-secret-key" \
   http://localhost:8080/api/v1/admin/workflows
 ```
 
-**Per-channel authentication:** authenticate callers of a data channel in its `config_json`. `admin_auth` above covers `/api/v1/admin` only — without a channel `auth` block, a channel is reachable by anyone who can reach the port.
+**Per-channel authentication:** callers of a data channel authenticate in its
+`config_json` `auth` block — `api_key` mode or `hmac` webhook verification,
+with `env://` secrets and uniform-`401` behavior. The full contract, including
+the Kafka and `channel_call` exemptions, is in
+[Channel Configuration › Authentication](../reference/channel-config.md#authentication).
+There is no built-in JWT verification; for OIDC/JWT or mTLS, front Orion with
+a gateway or service mesh.
 
-Two modes ship. Both are enforced in the ingress guards, so `POST /api/v1/data/{channel}` and `POST /api/v1/data/{channel}/async` are covered identically — an `/async` submission is not a way around the check.
-
-**`api_key`** — a shared secret in a header, compared in constant time against the SHA-256 of each accepted key:
-
-```json
-{
-  "auth": {
-    "mode": "api_key",
-    "keys": ["env://ORDERS_API_KEY", "env://ORDERS_API_KEY_PREVIOUS"],
-    "header": "X-API-Key"
-  }
-}
-```
-
-Listing several keys is what makes rotation possible without a window of refusals: any match authorises. `header` defaults to `Authorization`, in which case the value is expected as `Bearer <key>`; any other header name takes the bare key. Override with `scheme` if you need a different prefix.
-
-**`hmac`** — HMAC-SHA256 over the **raw request body**, which is how Stripe, GitHub and Shopify authenticate webhooks:
-
-```json
-{
-  "auth": {
-    "mode": "hmac",
-    "secret": "env://GITHUB_WEBHOOK_SECRET",
-    "header": "X-Hub-Signature-256",
-    "signature_prefix": "sha256="
-  }
-}
-```
-
-The signature is verified against the bytes exactly as received, before any parsing — re-serializing parsed JSON reorders keys and drops whitespace, and the signature would never match again. Hex (Stripe, GitHub) and base64 (Shopify) encodings are both accepted. `signature_prefix` is stripped before decoding; omit it when the header carries a bare signature.
-
-Any `keys` entry or `secret` may be an `env://VAR` reference, resolved at channel load by the same resolver connector secrets use, so production credentials never sit in the stored config.
-
-Two properties worth stating explicitly:
-
-- **A failure is always `401` with the same message**, whatever the cause. Distinguishing "no header" from "wrong key" from "malformed signature" would tell an unauthenticated caller which half of the credential they had right.
-- **A channel whose `auth` cannot be built is quarantined**, not served unauthenticated. If an `env://` secret is unset on a host, that channel is refused at every ingress there rather than loaded with its authentication silently absent — the same posture a `validation_logic` that no longer compiles gets.
-
-Authentication does **not** apply to the Kafka ingress or to `channel_call`, and the omission is deliberate. A Kafka record carries no HTTP header and no signature over a body the producer never signed; its authentication is the broker connection's (SASL/mTLS). A `channel_call` is a step inside a request that already authenticated at its own ingress, and the calling workflow holds no credential to present — enforcing there would make composition impossible rather than make it safer. A channel reachable both over HTTP and from a topic is therefore authenticated on the HTTP path and broker-authenticated on the Kafka one.
-
-There is no built-in JWT verification yet. For OIDC/JWT, or for mTLS, put a gateway or service mesh in front.
-
-**Per-channel origin allow-list:** restrict which `Origin` values a channel accepts, in its `config_json`:
-
-```json
-{
-  "origin_allow_list": ["https://app.example.com", "https://admin.example.com"]
-}
-```
-
-A request whose `Origin` header is present and unlisted is refused `403`. `"*"` allows any origin; omitting the key checks nothing.
-
-**This is not CORS**, and it was called `cors.allowed_origins` until 1.0, which is why it needed renaming. It performs no handshake: it sets no `Access-Control-Allow-Origin` and takes no part in a preflight. The browser handshake is the platform CORS layer's job, configured in the `[cors]` section:
-
-```toml
-[cors]
-allowed_origins = ["*"]    # Browser CORS policy, all routes
-```
-
-The two are complementary, and it is worth being exact about which one enforces what:
-
-- **`[cors] allowed_origins` governs the browser handshake.** A genuine *preflight* (`OPTIONS` carrying `Access-Control-Request-Method`) from an unlisted origin is answered by the layer and never reaches a channel. But a non-preflighted cross-origin request — a simple `GET`, or a `POST` a browser sends without asking first — is *not* short-circuited: the layer simply omits `Access-Control-Allow-Origin`, the workflow runs server-side, and only the browser discards the response. And a non-browser client (curl, a server-to-server caller, anything setting `Origin` by hand) is unaffected by `[cors]` altogether.
-- **`origin_allow_list` is the server-side check.** It runs in the ingress guards on every request that reaches the handler, browser or not, and refuses `403` before the workflow executes.
-
-So if the point is to keep a workflow from *running* for an unlisted origin, `origin_allow_list` is the control that does it; `[cors]` alone is a browser-side courtesy. Note that neither is authentication: `Origin` is a client-supplied header and any non-browser caller can set it to anything, or omit it — a request with no `Origin` is not checked at all. For access control that holds against a hostile client, use the channel `auth` block above.
-
-The pre-1.0 spelling is refused, not ignored:
-
-```json
-{ "cors": { "allowed_origins": ["https://app.example.com"] } }
-```
-
-A stored channel still carrying it fails to parse and is quarantined at load — refused at every ingress rather than served. Accepting the key and dropping it would leave the channel with no allow-list at all, indistinguishable from one that deliberately checks nothing, so every unlisted origin would be admitted silently. `orion-server preflight` names every stored channel still using it.
+**Per-channel origin allow-list:** `origin_allow_list` is the server-side
+origin check; the browser CORS handshake belongs to the platform `[cors]`
+layer. Both, and how they differ, are specified in
+[Channel Configuration › CORS & origins](../reference/channel-config.md#cors--origins).
 
 ## Data Safety
 
@@ -312,42 +235,11 @@ unless the call carries `"all": true` **and** the server enables
 `write.allow_unfiltered` — a double opt-in against accidental table truncation.
 Bulk inserts over `write.max_rows` are rejected, never silently truncated.
 
-**Per-connector operation gates:** every connector type's config can disable
-operation types outright, all defaulting to allowed. A gated call fails with a
-validation error naming the op and connector, so a connector can be made
-read-only (or insert-only, delete-proof, …) in configuration, regardless of
-what any workflow asks for:
-
-| Type | Gates |
-|------|-------|
-| `db`, `es` | `read`, `insert`, `update`, `delete`, `upsert`, `raw_write` |
-| `cache` | `read`, `write` |
-| `kafka` | `publish` |
-| `http` | `methods` — an allow-list; empty allows every method |
-
-```json
-{
-  "name": "orders-db-readonly",
-  "connector_type": "db",
-  "config": {
-    "type": "db",
-    "connection_string": "postgres://…",
-    "operations": { "insert": false, "update": false, "delete": false, "upsert": false, "raw_write": false }
-  }
-}
-```
-
-```json
-{
-  "name": "partner-api-readonly",
-  "connector_type": "http",
-  "config": { "type": "http", "url": "https://partner.example.com/v1", "operations": { "methods": ["GET"] } }
-}
-```
-
-A gate key the type does not have — `{"writes": false}` on a cache — is a 400,
-not a 201 with an open gate; and `cache`'s `write` covers every write through
-the connector, including a channel dedup store or response cache backed by it.
+**Per-connector operation gates:** every connector type can disable operation
+types in its config — making a connector read-only, insert-only, or
+delete-proof regardless of what any workflow asks for. The per-type gate
+vocabulary is specified in
+[Connector Types › Operation gates](../reference/connectors.md#operation-gates).
 
 **URL validation:** connector URLs are validated at creation time. Combined with SSRF protection, this prevents workflows from making requests to unexpected destinations.
 

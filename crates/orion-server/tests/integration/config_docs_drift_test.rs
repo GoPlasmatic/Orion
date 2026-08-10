@@ -1,7 +1,7 @@
 //! Documentation drift guard for the configuration surface (proposal C2).
 //!
 //! Three documents describe the same structs and had drifted apart:
-//! `docs/src/configuration/reference.md` claimed `storage.max_connections = 25`,
+//! `docs/src/reference/configuration.md` claimed `storage.max_connections = 25`,
 //! `config.toml.example` claimed `10`, and `StorageConfig::default()` — the only
 //! one that runs — is `50`. This module makes the code authoritative and fails
 //! the build when either document disagrees with it again.
@@ -30,7 +30,7 @@
 //! (`#   key = value`) marks it as an illustrative snippet and excludes it, which
 //! is how worked examples live in the file without pretending to be defaults.
 //!
-//! `docs/src/configuration/reference.md` is read from its settings tables: a row
+//! `docs/src/reference/configuration.md` is read from its settings tables: a row
 //! whose first cell is a backticked dotted path is a setting row, and its second
 //! and third cells are the default and the env override.
 
@@ -41,7 +41,7 @@ use orion::config::AppConfig;
 // The docs tree lives at the repo root, two levels above this crate.
 const REFERENCE_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/configuration/reference.md"
+    "/../../docs/src/reference/configuration.md"
 );
 const EXAMPLE_TOML: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/config.toml.example");
 const ENV_OVERRIDES_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/env_overrides.rs");
@@ -303,17 +303,17 @@ const NOT_A_SERVER_SETTING: &[(&str, &str, &str)] = &[
     ),
     (
         "ORION_SERVER__PORTT",
-        "docs/src/configuration/reference.md",
+        "docs/src/reference/configuration.md",
         "the worked example of the misspelling C4d refuses",
     ),
     (
         "ORION_ENVIRONMEN",
-        "docs/src/configuration/reference.md",
+        "docs/src/reference/configuration.md",
         "the worked example of the top-level near-miss C4d also refuses",
     ),
     (
         "ORION_SERVER_PORT",
-        "docs/src/configuration/reference.md",
+        "docs/src/reference/configuration.md",
         "the worked example of the one shape C4d cannot refuse — a setting typed \
          with a single underscore, which is also exactly the service link a \
          Service named `orion-server` produces",
@@ -818,13 +818,13 @@ fn config_example_documents_every_setting() {
 #[test]
 fn reference_page_matches_struct_defaults() {
     let settings: Vec<Documented> = reference_settings().into_iter().map(|(s, _)| s).collect();
-    assert_values_match("docs/src/configuration/reference.md", &settings);
+    assert_values_match("docs/src/reference/configuration.md", &settings);
 }
 
 #[test]
 fn reference_page_documents_every_setting() {
     let settings: Vec<Documented> = reference_settings().into_iter().map(|(s, _)| s).collect();
-    assert_coverage("docs/src/configuration/reference.md", &settings);
+    assert_coverage("docs/src/reference/configuration.md", &settings);
 }
 
 /// The env-var column is checked three ways: the name must be the one the

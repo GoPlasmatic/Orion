@@ -171,7 +171,7 @@ Same channel definitions work in any topology: run everything in one instance, s
     { "id": "handler", "label": "Data Route Handler", "type": "gateway" },
     { "id": "resolve", "label": "Route Resolution", "sublabel": "pattern match → channel", "type": "gateway" },
     { "id": "registry", "label": "Channel Registry", "sublabel": "dedup · rate limit · validation", "type": "ci" },
-    { "id": "engine", "label": "Engine", "sublabel": "RwLock<Arc<Engine>>", "type": "observability" },
+    { "id": "engine", "label": "Engine", "sublabel": "atomic swap", "type": "observability" },
     { "id": "matcher", "label": "Workflow Matcher", "sublabel": "JSONLogic + rollout", "type": "gateway" },
     { "id": "pipeline", "label": "Task Pipeline", "sublabel": "ordered execution", "type": "gateway" },
     { "id": "resp", "label": "JSON Response", "type": "channel" }
@@ -185,8 +185,8 @@ Same channel definitions work in any topology: run everything in one instance, s
 ```
 
 1. **Route Resolution:** REST pattern matching finds the channel, or falls back to name lookup
-2. **Ingress guards:** one function (`channel::guards::apply_guards`) enforces the channel's declared contract — rate limit, origin allow-list, `validation_logic`, deduplication, response cache, backpressure and `timeout_ms` — against runtime state held in the channel registry. Which guards run is a per-transport `GuardSet`, so an `/async` submission, a Kafka record and an in-process `channel_call` get the same contract as a synchronous request, minus only what their transport cannot have (no origin on Kafka, no cached body for a `202`).
-3. **Engine:** the workflow engine sits behind a double-Arc (`Arc<RwLock<Arc<Engine>>>`) allowing zero-downtime swaps
+2. **Ingress guards:** one pipeline enforces the channel's declared contract — auth, rate limit, origin allow-list, `validation_logic`, deduplication, response cache, backpressure and `timeout_ms`. Which guards run is decided per transport, so an `/async` submission, a Kafka record and an in-process `channel_call` get the same contract as a synchronous request, minus only what their transport cannot have. Order and rationale: [Design Notes › The guard pipeline](../reference/design-notes.md#the-guard-pipeline).
+3. **Engine:** reloads build a new engine off to the side and publish it with one atomic swap — in-flight requests finish on the engine they started with ([Design Notes](../reference/design-notes.md#how-hot-reload-swaps-the-engine))
 4. **Workflow Matcher:** evaluates JSONLogic conditions and rollout percentages to pick the right workflow
 5. **Task Pipeline:** executes functions in order (parse, map, filter, http_call, db_read, etc.)
 

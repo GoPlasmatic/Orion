@@ -12,7 +12,7 @@
 //! `histogram!` invocation in the crate lives there, so its macro arguments
 //! are the complete metric surface. This module parses them and asserts:
 //!
-//! 1. Every emitted metric appears in the observability page's tables.
+//! 1. Every emitted metric appears in the metrics reference page's tables.
 //! 2. No table row invents a metric the binary does not emit — which is what
 //!    a rename with a missed doc update looks like.
 //! 3. The documented labels are exactly the labels the code passes.
@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const METRICS_RS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/src/metrics.rs");
 const OBSERVABILITY_MD: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/src/features/observability.md"
+    "/../../docs/src/reference/metrics.md"
 );
 
 /// `name -> label keys`, parsed from the `counter!` / `gauge!` / `histogram!`
@@ -123,11 +123,11 @@ fn string_literals(s: &str) -> Vec<String> {
     out
 }
 
-/// `name -> label keys` from every metrics table on the observability page: a
+/// `name -> label keys` from every metrics table on the metrics reference page: a
 /// row whose first cell is a backticked `orion_*` name, with the third cell
 /// holding its backticked labels (or the em dash for none).
 fn documented_metrics() -> BTreeMap<String, BTreeSet<String>> {
-    let doc = std::fs::read_to_string(OBSERVABILITY_MD).expect("read observability.md");
+    let doc = std::fs::read_to_string(OBSERVABILITY_MD).expect("read metrics.md");
     let mut out = BTreeMap::new();
     for line in doc.lines() {
         let line = line.trim();
@@ -168,7 +168,7 @@ fn every_emitted_metric_is_documented() {
         .collect();
     assert!(
         missing.is_empty(),
-        "these metrics are emitted but absent from docs/src/features/observability.md: {missing:?}"
+        "these metrics are emitted but absent from docs/src/reference/metrics.md: {missing:?}"
     );
 }
 
@@ -202,7 +202,7 @@ fn documented_labels_match_the_code() {
     }
     assert!(
         mismatches.is_empty(),
-        "label drift between src/metrics.rs and the observability page:\n  {}",
+        "label drift between src/metrics.rs and the metrics reference page:\n  {}",
         mismatches.join("\n  ")
     );
 }

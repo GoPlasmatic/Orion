@@ -4,23 +4,14 @@ Orion protects your services from cascading failures, transient errors, and over
 
 ## Circuit Breakers
 
-Every connector gets automatic circuit breaker protection. When failures exceed a threshold, the breaker opens and short-circuits requests to prevent cascading failures.
-
-| State | Behavior |
-|-------|----------|
-| **Closed** | Normal operation; requests flow through |
-| **Open** | Requests rejected immediately (503) after failure threshold exceeded |
-| **Half-Open** | After cooldown, one probe request allowed to test recovery |
-
-The circuit breaker uses a lock-free state machine with per-connector isolation. Configure globally:
-
-```toml
-[engine.circuit_breaker]
-enabled = true
-failure_threshold = 5          # Failures before tripping the breaker
-recovery_timeout_secs = 30     # Cooldown before half-open probe
-max_breakers = 10000           # Max breaker instances (LRU eviction)
-```
+Connector calls run through circuit breakers when the global breaker is
+enabled (`[engine.circuit_breaker]`, off by default). When failures exceed the
+threshold, the breaker opens and short-circuits requests to prevent cascading
+failures. Trip conditions, per-`channel:connector` isolation, and eviction are
+specified in
+[Connector Types › Circuit breakers](../reference/connectors.md#circuit-breakers);
+the config fields live in the
+[Configuration Reference](../reference/configuration.md).
 
 Inspect and reset breakers via the admin API:
 
@@ -34,52 +25,22 @@ curl -s -X POST http://localhost:8080/api/v1/admin/connectors/circuit-breakers/{
 
 ## Retry-Backoff
 
-All HTTP connectors support automatic retries with exponential backoff, capped at 60 seconds:
-
-```json
-{
-  "retry": {
-    "max_retries": 5,
-    "retry_delay_ms": 500
-  }
-}
-```
-
-Delay doubles on each retry: 500ms → 1s → 2s → 4s → ... → capped at 60s.
-
-Retries are configured per HTTP connector, so each external service can have its own retry policy. The mechanism retries only retryable failures — network errors, timeouts, 5xx responses, and 429/408 — and gives up immediately on any other 4xx client error.
-
-Only HTTP connectors have a `retry` block. Database, Elasticsearch, cache and
-Kafka calls are never re-driven: an operation that timed out may already have
-been applied, so a blind re-send duplicates it. Bound those with their own
-timeouts and let the circuit breaker below shed load from a failing dependency.
+HTTP connectors retry retryable failures with exponential backoff; no other
+connector type is ever re-driven — an operation that timed out may already
+have been applied. The full contract (defaults, the idempotent-method rule,
+what counts as retryable) is specified in
+[Connector Types › Retries](../reference/connectors.md#retries-http-only).
 
 ## Timeouts
 
 Timeouts are enforced at multiple levels to prevent runaway requests:
 
-**Per-channel timeout:** set in the channel's `config_json` to limit workflow execution time:
-
-```json
-{
-  "timeout_ms": 5000
-}
-```
-
-If the workflow exceeds this limit, the request returns `504 Gateway Timeout`.
-
-The channel's `timeout_ms` governs **every** ingress: a synchronous request, an `/async` submission, a Kafka record, and an in-process `channel_call` are all bounded by it. Where a channel declares none, each ingress falls back to its own default — no deadline at all on the synchronous path, `trace_queue.processing_timeout_ms` for `/async`, `kafka.processing_timeout_ms` for Kafka, and `engine.default_channel_call_timeout_ms` for `channel_call`. A `channel_call` task may still override with its own `timeout_ms`, which outranks the target channel's.
-
-**On two of those ingresses the channel may only shorten the deadline, never lengthen it.** `kafka.processing_timeout_ms` and `trace_queue.processing_timeout_ms` are not merely defaults: they are ceilings, and the channel value is clamped to them.
-
-| Ingress | Channel declares none | Channel declares more than the transport allows |
-|---|---|---|
-| synchronous HTTP | runs to completion | honoured — nothing else waits on it |
-| `/async` | `trace_queue.processing_timeout_ms` | clamped to `trace_queue.processing_timeout_ms` |
-| Kafka | `kafka.processing_timeout_ms` | clamped to `kafka.processing_timeout_ms` |
-| `channel_call` | `engine.default_channel_call_timeout_ms` | honoured — the task's own `timeout_ms` outranks it anyway |
-
-The reason is that on those two paths the deadline protects something shared. A Kafka dispatch blocks the consumer's poll loop, so a channel asking for ten minutes on a topic would take the consumer past librdkafka's `max.poll.interval.ms` (300 s by default) and get it evicted from its group mid-record. An `/async` dispatch occupies one of a fixed number of queue workers, so an over-long channel deadline starves every other channel's queued work. `timeout_ms` is channel configuration and is not validated against either ceiling, so the clamp is what keeps a config change from becoming an outage. Raise the transport setting if a channel genuinely needs longer there.
+**Per-channel timeout:** a channel's `timeout_ms` bounds workflow execution
+on every ingress; `/async` and Kafka ceilings clamp it. Per-ingress defaults
+and the clamp table are specified in
+[Channel Configuration › Timeouts](../reference/channel-config.md#timeouts);
+the reasoning behind the clamp is in
+[Design Notes › Kafka's timeout clamp](../reference/design-notes.md#kafkas-timeout-clamp).
 
 **Per-connector query timeout:** for database connectors:
 

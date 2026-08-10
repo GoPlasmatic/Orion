@@ -50,7 +50,7 @@ List endpoints add the three pagination counters alongside it, and nothing else:
 Pre-1.0 responses differed for ten handlers — the [upgrade guide](../getting-started/upgrading.md) has the full list.
 
 Errors follow one structure across both planes — see
-[Error Response Format](#error-response-format).
+[Errors & Response Envelopes](./errors.md#the-error-envelope).
 
 ## Lifecycle
 
@@ -165,7 +165,7 @@ simply omit the parameter.
 | GET | `/api/v1/admin/connectors/circuit-breakers` | List circuit breaker states |
 | POST | `/api/v1/admin/connectors/circuit-breakers/{key}` | Reset a circuit breaker |
 
-Connector types: `http`, `kafka`, `db` (PostgreSQL/MySQL/SQLite/MongoDB), `cache`, `es` (Elasticsearch). Every connector config accepts an optional `operations` block that en/disables operation types per connector — `read` / `insert` / `update` / `delete` / `upsert` / `raw_write` on `db` and `es`, `read` / `write` on `cache`, `publish` on `kafka`, and a `methods` allow-list on `http`. See [Operation Gates](../features/extensibility.md#operation-gates).
+Connector types: `http`, `kafka`, `db` (PostgreSQL/MySQL/SQLite/MongoDB), `cache`, `es` (Elasticsearch). Every connector config accepts an optional `operations` block that en/disables operation types per connector — `read` / `insert` / `update` / `delete` / `upsert` / `raw_write` on `db` and `es`, `read` / `write` on `cache`, `publish` on `kafka`, and a `methods` allow-list on `http`. Per-type fields and gates are specified in [Connector Types](./connectors.md#operation-gates).
 
 ### Testing a connector
 
@@ -438,67 +438,8 @@ Receipts never touch the engine — no reload, no cluster epoch bump. `state`,
 `content_hash` and `principal` are recorded verbatim; the hash is opaque to
 the server and compared only for equality.
 
-## Error Response Format
+## Errors
 
-All error responses follow a consistent structure:
-
-```json
-{
-  "error": {
-    "code": "NOT_FOUND",
-    "message": "Workflow with id '...' not found"
-  }
-}
-```
-
-Every code the server emits, on both the admin and data planes:
-
-| Code | HTTP Status | Description |
-|------|-------------|-------------|
-| `VALIDATION_ERROR` | 400 | Invalid input — malformed body, failed strict validation, bad query parameter |
-| `UNAUTHORIZED` | 401 | Missing or invalid credentials |
-| `FORBIDDEN` | 403 | Access denied — e.g. a read-only admin key on a mutating method, or a channel auth failure |
-| `NOT_FOUND` | 404 | Resource not found |
-| `METHOD_NOT_ALLOWED` | 405 | The path exists but not for this HTTP method |
-| `CONFLICT` | 409 | Duplicate or conflicting state — e.g. a second draft, or an import collision |
-| `UNSUPPORTED_MEDIA_TYPE` | 415 | Invalid content type |
-| `RATE_LIMITED` | 429 | Too many requests |
-| `INTERNAL_ERROR` | 500 | Internal server error |
-| `ENGINE_ERROR` | 500 | Workflow execution failed inside the engine for a reason the server does not surface (the detail is in the server log) |
-| `STORAGE_ERROR` | 500 | A database operation failed (detail in the server log) |
-| `SERIALIZATION_ERROR` | 500 | A stored row could not be decoded or a response could not be serialized — a server-side fault, never client input (detail in the server log) |
-| `CONFIG_ERROR` | 500 | A configuration problem surfaced at request time (detail in the server log) |
-| `RESPONSE_TOO_LARGE` | 500 | The workflow's result exceeded `trace_queue.max_result_size_bytes` — the request cannot succeed until that cap or the result changes |
-| `SERVICE_UNAVAILABLE` | 503 | Backpressure shed the request, a guard's backend failed closed, or the service is shutting down |
-| `CIRCUIT_OPEN` | 503 | The target connector's circuit breaker is open; retry after it recovers |
-| `TIMEOUT` | 504 | Workflow execution exceeded the channel's timeout |
-
-When a workflow, channel, or connector fails strict validation on create/update, the envelope is extended with a `details` array of field-pathed errors (kept omitted for single-message errors so v0.1 clients aren't broken):
-
-```json
-{
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Workflow validation failed",
-    "details": [
-      { "path": "tasks[0].function.input.connector", "code": "REQUIRED", "message": "is required" },
-      { "path": "tasks[2].function.input.method",    "code": "INVALID",  "message": "expected string, got number" }
-    ]
-  }
-}
-```
-
-The `path` mirrors the JSON structure the API received, so editors can jump straight to the failing key. The same envelope is returned by `POST /workflows/validate`, `POST /workflows/{id}/test`, and the `orion-server lint` / `dry-run` CLI subcommands.
-
-### Warnings
-
-`POST /workflows/validate` returns `{ "valid", "errors", "warnings" }`. `valid` reflects `errors` only — it means "`POST /workflows` would accept this" — so a workflow can be valid and still carry warnings. Two are reported:
-
-| Warning | Meaning |
-|---|---|
-| `Connector '…' not found in registry` | The task names a connector that does not exist yet. Not an error at create time (connectors and workflows may be authored in either order), but **activation refuses it**. |
-| `reads '…', which no earlier task writes` | A `data.*` path read by a task that no earlier task writes. |
-
-The second one exists because the failure it predicts is invisible at runtime: JSONLogic resolves an unknown `var` to null, so a mistyped path leaves the task running, the workflow succeeding, and the caller receiving a `200` with the field quietly missing.
-
-It is advisory in both directions. Writes are tracked from `parse_json`/`parse_xml` targets, `map` mapping paths, and connector `output` paths, and matched by prefix — writing `data.order` covers a read of `data.order.total`. Reads of `metadata.*`, `payload`, and the element rebinding inside `map`/`reduce` bodies are out of scope and never warn. A value that legitimately arrives another way — a connector response shape, a `continue_on_error` predecessor — can still be flagged, which is why it never blocks creation.
+Every error code, the shared error envelope, field-pathed validation
+`details`, and the two validation warnings are specified in
+[Errors & Response Envelopes](./errors.md).

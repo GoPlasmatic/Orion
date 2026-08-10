@@ -48,6 +48,7 @@ curl -s -X GET http://localhost:8080/api/v1/data/orders/ORD-123/items/ITEM-1
 
 ```json
 {
+  "id": "550e8400-e29b-41d4-a716-446655440000",
   "status": "ok",
   "data": {
     "order": { "order_id": "ORD-123", "total": 25000, "flagged": true }
@@ -55,6 +56,10 @@ curl -s -X GET http://localhost:8080/api/v1/data/orders/ORD-123/items/ITEM-1
   "errors": []
 }
 ```
+
+The full envelope contract — including how failed tasks appear in `errors[]`
+and the conditional `request_id` field — is specified in
+[Errors & Response Envelopes](./errors.md#the-sync-result-envelope).
 
 ### Per-request profiling
 
@@ -95,66 +100,11 @@ exist in stored traces and attribute `nested[]` differently.
 
 ## Shaped Responses
 
-By default every sync channel answers `200` with the envelope above, whatever
-happened. That is a workable contract between workflows and an awkward one for a
-REST API: there is no `201` with a `Location`, no `404` for a record that is not
-there, and no content type but JSON — so every consumer ends up special-casing
-"200 means maybe-error, look inside `errors`".
-
-A channel can opt into letting its workflow decide, in its `config_json`:
-
-```json
-{ "response": { "mode": "shaped" } }
-```
-
-The workflow then writes a control block to `data._orion.response`, and Orion
-drains it before responding — it is control, not content, so it never reaches
-the caller's body:
-
-```json
-{
-  "id": "respond", "name": "Respond",
-  "function": { "name": "map", "input": { "mappings": [
-    { "path": "data._orion.response.status",  "logic": 201 },
-    { "path": "data._orion.response.headers", "logic": {
-        "Location": { "cat": ["/orders/", { "var": "data.order.id" }] } } },
-    { "path": "data._orion.response.body_path", "logic": "data.order" }
-  ]}}
-}
-```
-
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `status` | number | `200` | HTTP status. Out-of-range values fall back to `200`. |
-| `headers` | object | `{}` | Response headers, subject to the allowlist below. |
-| `body_path` | string | whole document | Field to send instead of the entire data document. A leading `data.` is optional. |
-| `raw` | bool | `false` | Send a string field verbatim rather than as a JSON string — how a channel returns CSV, XML or plain text. |
-
-`Content-Type` is `application/json` unless the workflow sets it.
-
-**Header allowlist.** A workflow may set `content-type`, `location`,
-`cache-control`, `etag`, `last-modified`, `retry-after`, `content-language` and
-`link`. Override with `allowed_headers`, which *replaces* that list so a channel
-can narrow it as well as widen it:
-
-```json
-{ "response": { "mode": "shaped", "allowed_headers": ["location"] } }
-```
-
-The hop-by-hop headers, `content-length` and `x-request-id` are refused even
-when listed — response framing belongs to the server, and `x-request-id` is what
-correlates a response with its stored trace. A header that is dropped does not
-fail the request.
-
-**Failures are soft.** A shaped channel whose workflow sets no control block, or
-an unusable one, falls back to the standard envelope rather than erroring: a
-cosmetic authoring slip should not take an endpoint down.
-
-**Interactions.** A cached shaped response replays its status and headers, not
-just its body. Profiling (`?profile=1`) appends `_orion.profile` to the envelope
-only — a shaped body is the workflow's own, with nowhere to put it — though the
-timings still reach the trace and the metrics. Shaping applies to the
-synchronous path; `/async` answers `202` with a trace id as always.
+A channel can let its workflow set the HTTP status, headers, and body of its
+response by opting in with `response.mode: "shaped"` in its `config_json`.
+The full contract — the `data._orion.response` control block, the header
+allowlist, soft-failure and caching semantics — is specified in
+[Channel Configuration › Response shaping](./channel-config.md#response-shaping).
 
 ## Asynchronous Processing
 
@@ -175,9 +125,9 @@ curl -s -X POST http://localhost:8080/api/v1/data/orders/async \
 }
 ```
 
-The token is shown once, here — only its hash is stored. It scopes the poll
-to this submission: without it (or an admin credential), the trace is not
-readable, so one caller can never read another's async result.
+The token is shown once — only its hash is stored — and scopes the poll to
+this submission. The ack and failure semantics are specified in
+[Errors & Response Envelopes](./errors.md#the-async-acknowledgment).
 
 **Poll for the result** (header form, or `?token=` for clients that cannot
 set headers):
@@ -208,13 +158,12 @@ curl -s "http://localhost:8080/api/v1/admin/traces?mode=async"
 
 The page envelope is `{data, limit, offset}`. Two things are conditional:
 
-- **`total` is opt-in.** Counting the filtered set is a full scan on
-  PostgreSQL and InnoDB. Ask for it with `?include_total=true` when you
+- **`total` is opt-in.** Ask for it with `?include_total=true` when you
   actually need it.
 - **`next_cursor`** appears when the page is in the default `created_at`
   ordering and may have a successor. Pass it back as `?cursor=` to get the
-  next page without an `OFFSET` the database has to count past — the only
-  paging mode that stays flat as the table grows. Treat the value as opaque.
+  next page — the only paging mode that stays flat as the table grows. Treat
+  the value as opaque.
 
 ```bash
 # First page
@@ -226,8 +175,9 @@ curl -s "http://localhost:8080/api/v1/admin/traces?limit=100&cursor=175390000012
 ```
 
 `cursor` is rejected with a 400 alongside `offset` (two paging modes) or with
-`sort_by` set to anything but `created_at` — `updated_at` is rewritten in place
-by every status change, so a cursor over it would skip rows.
+`sort_by` set to anything but `created_at`. The reasoning — why offset paging
+degrades and why `updated_at` cannot carry a cursor — is in
+[Design Notes › Cursor paging](./design-notes.md#cursor-paging).
 
 Get a specific trace (async traces need their `trace_token`; sync traces
 follow the admin trust model):
