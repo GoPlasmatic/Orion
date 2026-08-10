@@ -61,10 +61,21 @@ fi
 stray=$(git grep -lE '18 functions|18 built-in' -- docs/src 2>/dev/null | grep -v 'reference/functions.md' || true)
 [ -z "$stray" ] || err "function count '18' stated outside reference/functions.md: $stray"
 
-## 6. No internal review IDs in user docs. The 1.0 upgrade guide is exempt
-##    until its Phase 2 restructure decides how to cite change IDs.
-if git grep -nE '\((K|R|F|N|S)[0-9]+(, ?(K|R|F|N|S)[0-9]+)*\)' -- docs/src ':!docs/src/getting-started/upgrading.md' ':!docs/src/operate/upgrading-to-1.0.md' >/dev/null 2>&1; then
-  git grep -nE '\((K|R|F|N|S)[0-9]+' -- docs/src ':!docs/src/getting-started/upgrading.md' ':!docs/src/operate/upgrading-to-1.0.md' >&2
+## 6. No internal review IDs in user docs. The audit IDs (K…, R…, F…, N…, S…)
+##    are repo-internal: they resolve to nothing a reader can open. Every page
+##    is in scope — the 1.0 upgrade guide's old blanket exemption expired with
+##    its restructure and its ten IDs are gone.
+##
+##    One occurrence survives, deliberately. The upgrade guide quotes
+##    `config/retired_env.rs`'s refusal message verbatim, and that string
+##    carries a `(K4)` the binary prints at operators. Quote the binary or
+##    change the binary; do not paraphrase it into a doc that then disagrees
+##    with what the terminal says. Drop this filter if that string ever loses
+##    its ID.
+hits=$(git grep -nE '\((K|R|F|N|S)[0-9]+(, ?(K|R|F|N|S)[0-9]+)*\)' -- docs/src \
+       | grep -v 'removed in 1.0 (K4)' || true)
+if [ -n "$hits" ]; then
+  printf '%s\n' "$hits" >&2
   err 'internal review IDs in user docs'
 fi
 

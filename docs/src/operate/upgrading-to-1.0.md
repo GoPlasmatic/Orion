@@ -1796,21 +1796,21 @@ a proxy for "this was a dry run" will now be wrong — test `dry_run` instead.
 **Not changed:** all three imports still return **200** even when every item
 failed, so check `failed` rather than the status code.
 
-**Added in 1.0 (K2), additive:** both modes also carry `unchanged`, `skipped`
+**Added in 1.0, additive:** both modes also carry `unchanged`, `skipped`
 and a per-item `results` array, populated by the new `?on_conflict=skip` /
 `?on_conflict=new_version` upsert modes — see
 [Admin API › Export & Promotion](../reference/admin-api.md#promoting-over-an-existing-estate-on_conflict).
 The default `on_conflict=fail` behaves exactly as before.
 
 Also additive in 1.0: a real (non-dry-run) import writes one audit row per
-entity written alongside the `"{n} imported"` summary row (K5); channels and
-connectors gained `tags` + `?tag=` filtering, matching workflows (K6); status
-and rollout changes accept `?reload=defer` to batch engine rebuilds (K4); and
-an `X-Orion-Change-Context` request header is recorded in audit `details`
-(K5). The 1.0 API also adds `GET /workflows/{id}/dependencies` (K9),
-`content_hash` on every entity response (K10), exports that read as one
-consistent snapshot (K12), and the `orion-server package` CLI that composes
-all of it — see [Admin API › Export & Promotion](../reference/admin-api.md#export--promotion).
+entity written alongside the `"{n} imported"` summary row; channels and
+connectors gained `tags` + `?tag=` filtering, matching workflows; status and
+rollout changes accept `?reload=defer` to batch engine rebuilds; and an
+`X-Orion-Change-Context` request header is recorded in audit `details`. The 1.0
+API also adds `GET /workflows/{id}/dependencies`, `content_hash` on every
+entity response, exports that read as one consistent snapshot, and the
+`orion-server package` CLI that composes all of it — see
+[Admin API › Export & Promotion](../reference/admin-api.md#export--promotion).
 
 ### `db_read` returns values for float and blob columns
 
@@ -2195,7 +2195,7 @@ with an unparseable config and, for the two renames, the key to use instead.
 
 ### Channel names must be unique
 
-**What changed.** A channel name may belong to only one `channel_id` (K7).
+**What changed.** A channel name may belong to only one `channel_id`.
 Creating, updating, or importing a channel whose name another channel's
 current version already holds answers **409**, and activation refuses a name
 another *active* channel holds. Before 1.0 the collision stored cleanly and
@@ -2213,7 +2213,7 @@ predictably — is unaffected.
 
 **What changed.** `PATCH /admin/channels/{id}/status` with `{"status":
 "active"}` answers **400** when the channel's `workflow_id` is unset, names a
-workflow that does not exist, or names one with no active version (K8). It
+workflow that does not exist, or names one with no active version. It
 used to succeed and quarantine the channel at the next engine load — the same
 outcome, discovered later, with no error to the caller. The docs and the
 `/validate` warning always claimed this gate existed; now it does.
