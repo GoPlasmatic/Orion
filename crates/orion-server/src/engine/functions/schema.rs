@@ -74,12 +74,13 @@ pub struct FieldSchema {
     pub resolvable: bool,
     /// A second accepted spelling for this field, or `None`.
     ///
-    /// Only `http_call.output` has one (`response_path`, the pre-1.0 name),
-    /// and it is a real serde alias on dataflow-rs's `HttpCallConfig` rather
-    /// than an Orion convention — so supplying **both** is a duplicate-field
-    /// parse error upstream, not a precedence rule. `check_fields` reports
-    /// that here instead of letting the workflow load and quarantine its
-    /// channel.
+    /// Two fields have one, both spelled `response_path` (the pre-1.0 name of
+    /// `output`): `http_call.output`, via a serde alias on dataflow-rs's
+    /// `HttpCallConfig`, and `channel_call.output`, via an alias on Orion's
+    /// own struct. A serde alias cannot express precedence, so supplying
+    /// **both** spellings is a duplicate-field parse error rather than an
+    /// "`output` wins" rule. `check_fields` reports that here instead of
+    /// letting the workflow load and quarantine its channel.
     pub alias: Option<&'static str>,
 }
 

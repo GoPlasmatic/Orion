@@ -13,8 +13,8 @@ use orion_client::paths;
 #[derive(Args)]
 #[command(
     long_about = "Manage workflows -- processing pipelines that transform and route data.\n\n\
-        Lifecycle: draft -> activate -> engine reload -> live\n\
-        Workflows are created in draft status. Activate them, then reload the engine to apply.\n\n\
+        Lifecycle: draft -> activate -> live\n\
+        Workflows are created in draft status. Activating one reloads the engine automatically; pass --defer to batch several changes behind one reload.\n\n\
         With --quiet, list prints one ID per line, get prints the ID, and mutating commands print the resource ID or suppress output."
 )]
 pub struct WorkflowsCmd {
@@ -76,7 +76,7 @@ enum WorkflowsSubcommand {
         /// Workflow ID
         id: String,
     },
-    /// Activate a draft workflow (run 'engine reload' after to apply)
+    /// Activate a draft workflow (the engine reloads automatically)
     Activate {
         /// Workflow ID
         id: String,
@@ -87,7 +87,7 @@ enum WorkflowsSubcommand {
         #[arg(long)]
         defer_reload: bool,
     },
-    /// Archive an active workflow (run 'engine reload' after to apply)
+    /// Archive an active workflow (the engine reloads automatically)
     Archive {
         /// Workflow ID
         id: String,

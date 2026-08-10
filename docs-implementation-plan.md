@@ -90,15 +90,28 @@ grep -oE "goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+" \
 
 ---
 
-## Code-hygiene follow-ups (small, non-blocking, any phase)
+## Code-hygiene follow-ups
 
-- [ ] orion-cli clap help says "run 'engine reload' after to apply" on
-  activate/archive; the server auto-reloads on status changes.
+- [x] orion-cli clap help told operators to "run 'engine reload' after to
+  apply" on activate/archive; the server auto-reloads on status changes. Fixed
+  in six places — the four subcommand help strings plus both command-group
+  `long_about` lifecycle lines, which said `draft -> activate -> engine reload
+  -> live`. The `--defer` help is unchanged and still correct.
 - [ ] `crates/orion-server/src/query/error.rs` runtime string says
-  "behaviour" (quoted verbatim by data-dialect.md) — decide on American
-  spelling in runtime strings.
-- [ ] `engine/functions/schema.rs:77` comment reads as contradicting the
-  serde surface (`channel_call` also accepts the `response_path` alias).
+  "behaviour" (quoted verbatim by data-dialect.md). **Not a defect — a
+  convention call.** British spelling is the codebase's majority (30 files vs
+  15), and only three runtime/test strings carry it. Leave it, or normalise the
+  whole codebase; a one-string change would make the inconsistency worse.
+- [x] `engine/functions/schema.rs` comment claimed only `http_call.output`
+  carries the `response_path` alias. `channel_call.output` carries one too
+  (`channel_call.rs:50`). Comment corrected.
+
+**One live doc bug found while closing the above.**
+`reference/workflows.md` claimed "`output` wins when both are present" for the
+`response_path` alias. A serde alias cannot express precedence: supplying both
+spellings is a duplicate-field refusal, which `reference/support.md` already
+stated correctly and `output_field_test.rs` asserts. workflows.md now says the
+same thing and links support.md as the owner.
 
 ## Follow-ups worth funding later
 
@@ -118,8 +131,8 @@ grep -oE "goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+" \
 
 - **Interim duplication windows: closed.** features/* and topology/* are
   gone; every operator narrative now links its reference owner instead of
-  restating it. The rule still stands for Phase 4: never edit a fact in two
-  places, the reference page is the owner.
+  restating it. The rule stands for anything added later: never edit a fact in
+  two places, the reference page is the owner.
 - **Forward links: none.** `TODO(docs2)` is at zero. Any future parked
   reference should reuse the marker so the same grep keeps working.
 - **Tests that pin doc paths:** before each rename phase run

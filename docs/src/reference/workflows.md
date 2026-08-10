@@ -106,7 +106,9 @@ exactly three areas your JSONLogic can read:
 Every connector function writes its result to a dotted path named `output`; a
 `map` task uses its mapping `path` instead. Orion creates the path inside the
 context if it does not exist. `http_call` and `channel_call` also accept the
-pre-1.0 spelling `response_path`; `output` wins when both are present.
+pre-1.0 spelling `response_path`. Supplying **both** in one input is a
+duplicate-field error, not a precedence rule — see
+[Support & Compatibility](./support.md#accepted-alternate-spellings).
 
 ### Request metadata
 

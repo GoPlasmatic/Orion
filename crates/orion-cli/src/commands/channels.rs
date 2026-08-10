@@ -15,7 +15,7 @@ use orion_client::paths;
     long_about = "Manage channels -- service endpoints that receive data and route it to a workflow.\n\n\
         Channels define how data enters the system (REST routes, HTTP endpoints, Kafka topics).\n\
         Each channel links to a workflow that processes the incoming data.\n\
-        Lifecycle: draft -> activate -> engine reload -> live\n\n\
+        Lifecycle: draft -> activate -> live (activation reloads the engine automatically)\n\n\
         With --quiet, list prints one ID per line, mutating commands print the resource ID."
 )]
 pub struct ChannelsCmd {
@@ -86,7 +86,7 @@ enum ChannelsSubcommand {
         /// Channel ID
         id: String,
     },
-    /// Activate a draft channel (run 'engine reload' after to apply)
+    /// Activate a draft channel (the engine reloads automatically)
     Activate {
         /// Channel ID
         id: String,
@@ -97,7 +97,7 @@ enum ChannelsSubcommand {
         #[arg(long)]
         defer_reload: bool,
     },
-    /// Archive an active channel (run 'engine reload' after to apply)
+    /// Archive an active channel (the engine reloads automatically)
     Archive {
         /// Channel ID
         id: String,
