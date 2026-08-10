@@ -37,7 +37,7 @@ Responses wrap the resource in a `data` envelope:
 ```
 
 Validation failures return `400` with a structured error envelope — see the
-[Admin API](../api/admin.md#error-response-format) for the `FieldError` format.
+[Admin API](./admin-api.md#error-response-format) for the `FieldError` format.
 
 ## Tasks
 
@@ -274,7 +274,7 @@ Each `workflow_id` has one or more **versions**, identified by the composite key
   draft version, edit it, and activate it.
 - **archived** — retired; kept for history and instant rollback.
 
-Endpoints (see the [Admin API](../api/admin.md#workflows) for full details):
+Endpoints (see the [Admin API](./admin-api.md#workflows) for full details):
 
 | Action | Endpoint |
 |--------|----------|

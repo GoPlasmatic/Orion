@@ -27,7 +27,7 @@ literal credential.
 For defence in depth below the API, `storage.connector_encryption_key`
 encrypts `connectors.config_json` at rest (AES-256-GCM) — a database dump or
 backup then carries an opaque envelope rather than credentials. See the
-[Config Reference](../configuration/reference.md).
+[Config Reference](../reference/configuration.md).
 
 Channel configs mask their two credential fields exactly: `auth.keys` and
 `auth.secret`. Both surfaces support the same GET → edit → PUT round-trip —

@@ -320,6 +320,12 @@ jobs:
       - name: Build book
         run: mdbook build docs
 
+      # Enforcement arm of the docs restructure (docs-implementation-plan.md
+      # T6.1): include/link integrity, redirect coverage for hard site links,
+      # and the one-owner-per-fact guard greps.
+      - name: Docs lint
+        run: bash docs/lint.sh
+
   # The chart's guards — two `{{- fail }}`s, two `required`s and
   # values.schema.json — only fire at render time, so before this job a typo
   # shipped undetected until a user's `helm install` (proposal T13). Lint and

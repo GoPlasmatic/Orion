@@ -260,7 +260,7 @@ workflows, every connector those workflows reference), `lint` and `plan` check
 it offline / with zero writes, `apply` stages and activates in dependency
 order with a single engine reload, and `diff` reports drift afterwards. See
 [Packages & Promotion](../topology/packages.md) for the full flow, and
-[Admin API › the `orion-server package` CLI](../api/admin.md#the-orion-server-package-cli)
+[Admin API › the `orion-server package` CLI](../reference/admin-api.md#the-orion-server-package-cli)
 for the API detail.
 
 ### A regression suite
@@ -301,6 +301,6 @@ workflow that starts failing its tasks cannot pass silently.
 ## Next Steps
 
 - Connect a real database: [Your First Connector](../getting-started/first-connector.md)
-- Browse the [API Reference](../api/admin.md) for all available endpoints
+- Browse the [API Reference](../reference/admin-api.md) for all available endpoints
 - Explore [Production Features](../features/observability.md) for observability, security, and resilience
-- See the [Config Reference](../configuration/reference.md) for all configuration options
+- See the [Config Reference](../reference/configuration.md) for all configuration options

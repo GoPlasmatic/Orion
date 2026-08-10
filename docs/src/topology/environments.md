@@ -92,7 +92,7 @@ activate → hot-reload* — no redeploy, no container rebuild.
   `/docs`.
 
 See also: [Maintainability](../features/maintainability.md) (Admin APIs, CI/CD,
-dry-run) and the [Admin API reference](../api/admin.md).
+dry-run) and the [Admin API reference](../reference/admin-api.md).
 
 ---
 
@@ -339,4 +339,4 @@ Start from the packaged topologies — the Helm chart (`deploy/helm/orion`, see 
 README) on Kubernetes, or `docker-compose.ha.yml` elsewhere — and adjust. For
 packaging, containerization, and the full set of config keys, see
 [Deployability](../features/deployability.md) and the
-[Configuration Reference](../configuration/reference.md).
+[Configuration Reference](../reference/configuration.md).

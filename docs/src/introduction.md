@@ -73,8 +73,8 @@ The channels, workflows, and connectors that make up one service form a **packag
 
 - [**Workflow Reference**](./reference/workflows.md): the workflow & task JSON schema, conditions, error handling, lifecycle, and rollout.
 - [**Function Reference**](./reference/functions.md): every built-in task function and its exact `input` schema.
-- [**Admin API**](./api/admin.md) & [**Data API**](./api/data.md): the full REST surface for managing and calling services.
-- [**Configuration**](./configuration/reference.md): config file, environment variables, database backends, and deployment.
+- [**Admin API**](./reference/admin-api.md) & [**Data API**](./reference/data-api.md): the full REST surface for managing and calling services.
+- [**Configuration**](./reference/configuration.md): config file, environment variables, database backends, and deployment.
 
 ## How it works
 

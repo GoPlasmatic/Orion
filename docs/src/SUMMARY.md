@@ -38,22 +38,16 @@
 - [Availability](./features/availability.md)
 - [Maintainability](./features/maintainability.md)
 
-# API Reference
-
-- [Admin API](./api/admin.md)
-- [Data API](./api/data.md)
-
-# Reference
-
-- [Workflow Reference](./reference/workflows.md)
-- [Function Reference](./reference/functions.md)
-- [Portable Data Dialect](./reference/data-dialect.md)
-- [Support & Compatibility](./reference/support.md)
-
 # Tutorials
 
 - [Use Cases & Patterns](./tutorials/use-cases.md)
 
-# Configuration
+# Reference
 
-- [Config Reference](./configuration/reference.md)
+- [Admin API](./reference/admin-api.md)
+- [Data API](./reference/data-api.md)
+- [Workflow Schema](./reference/workflows.md)
+- [Task Functions](./reference/functions.md)
+- [Portable Data Dialect](./reference/data-dialect.md)
+- [Configuration Reference](./reference/configuration.md)
+- [Support & Compatibility](./reference/support.md)

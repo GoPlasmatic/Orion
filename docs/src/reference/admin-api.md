@@ -1,8 +1,39 @@
 # Admin API
 
-All admin endpoints are under `/api/v1/admin/`. When admin authentication is enabled, requests must include a valid bearer token or API key.
+All admin endpoints are under `/api/v1/admin/`. When
+[admin authentication](#authentication) is enabled, requests must include a
+valid API key. Success and error bodies follow the
+[response envelopes](#response-envelopes) below.
 
-## Success Response Format
+## Authentication
+
+Admin API endpoints require an API key when `admin_auth.enabled` is true.
+The server reads the key from **exactly one header** — the one named by
+`admin_auth.header`, which defaults to `Authorization` (with or without a
+`Bearer ` prefix):
+
+```bash
+# Default configuration (admin_auth.header = "Authorization")
+curl -H "Authorization: Bearer your-secret-key" \
+  http://localhost:8080/api/v1/admin/workflows
+```
+
+To use a custom header instead, set `admin_auth.header` — and note this
+*replaces* the default, it does not add a second accepted header. With
+`header = "X-API-Key"`, an `Authorization: Bearer` credential is no longer
+read:
+
+```bash
+# Requires admin_auth.header = "X-API-Key" in config
+curl -H "X-API-Key: your-secret-key" \
+  http://localhost:8080/api/v1/admin/workflows
+```
+
+Configure via `[admin_auth]` in config or `ORION_ADMIN_AUTH__ENABLED=true`
+environment variable. Keys listed under `admin_auth.read_only_api_keys`
+authorise `GET`/`HEAD` only; every mutating method answers `403`.
+
+## Response envelopes
 
 Every admin 2xx body puts its payload under a top-level `data` key — one shape, so one unwrapping function works everywhere:
 
@@ -16,7 +47,64 @@ List endpoints add the three pagination counters alongside it, and nothing else:
 { "data": [ ... ], "total": 137, "limit": 50, "offset": 0 }
 ```
 
-This is uniform as of 1.0. Before that, ten handlers — engine status and reload, the circuit-breaker list and reset, DLQ purge, workflow test and validate, the three bulk imports — returned their fields bare at the top level. See the [upgrade guide](../getting-started/upgrading.md) for the full list.
+Pre-1.0 responses differed for ten handlers — the [upgrade guide](../getting-started/upgrading.md) has the full list.
+
+Errors follow one structure across both planes — see
+[Error Response Format](#error-response-format).
+
+## Lifecycle
+
+Both channels and workflows follow a **draft → active → archived** lifecycle:
+
+1. **Create:** entities are created as `draft` (not loaded into the engine)
+2. **Update:** only draft versions can be updated via `PUT`
+3. **Activate:** `PATCH /status` with `{"status": "active"}` loads the entity into the engine
+4. **New version:** `POST /versions` creates a new draft version from the active entity
+5. **Archive:** `PATCH /status` with `{"status": "archived"}` removes from the engine
+
+A channel links to a workflow via `workflow_id`. Activating a channel makes it available for data processing; activating a workflow makes its logic available to the engine.
+
+Activation order is enforced, not merely conventional: a workflow
+refuses to activate while a connector its tasks reference is missing or of the
+wrong type, and a channel refuses to activate while its `workflow_id` is unset,
+names a workflow that does not exist, or names one with no active version. The
+working order for a bundle is therefore connectors → workflows → channels —
+the same order `?dry_run=true` lets you verify before writing anything.
+
+**Channel names are unique**: the data plane and `channel_call` address
+channels by name, so a name may belong to only one `channel_id`. Create,
+update and import answer `409` for a name another channel already holds
+(compared against every channel's current version), and activation also
+refuses a name another *active* channel holds, which covers rows created
+before this rule existed. `orion-server preflight` reports pre-1.0 duplicates
+before an upgrade.
+
+## Status changes
+
+Two query parameters compose with every status and rollout transition:
+
+### Activation pre-flight (`dry_run`)
+
+`PATCH /{kind}/{id}/status?dry_run=true` runs every gate the real transition
+runs — draft existence, connector existence/type/MongoDB-`database` (workflows),
+route collisions and the workflow-active gate (channels), rollout arithmetic —
+and answers the `/validate` envelope (`{"data": {"valid", "errors",
+"warnings"}}`) without writing. Gates that the real request fails as a 4xx are
+reported as `errors` entries in a 200, including "not found", so one pass over
+a whole bundle collects every finding instead of stopping at the first.
+
+### Batching reloads (`reload=defer`)
+
+Every activation, archive, and rollout change normally rebuilds the engine and
+bumps the cluster config epoch — N entities promoted means N full rebuilds on
+this node and N resyncs on every peer. `?reload=defer` on the status and
+rollout endpoints commits the row and records the audit event but leaves the
+running configuration untouched **everywhere** until `POST
+/api/v1/admin/engine/reload`, which rebuilds once and bumps the epoch once.
+Until that reload, the database and the running engine intentionally
+disagree — a deferred activation is not serving yet. Tooling that defers must
+always finish with the explicit reload; an operator making one change should
+simply omit the parameter.
 
 ## Channels
 
@@ -27,12 +115,20 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 | GET | `/api/v1/admin/channels/{id}` | Get channel by ID |
 | PUT | `/api/v1/admin/channels/{id}` | Update draft channel |
 | DELETE | `/api/v1/admin/channels/{id}` | Delete channel (all versions) |
-| PATCH | `/api/v1/admin/channels/{id}/status` | Change status (active/archived). Activation refuses a route another active channel claims, a channel whose workflow is missing or not active, and a name another active channel holds. `?dry_run=true` runs the same gates and reports findings without writing; `?reload=defer` commits without rebuilding the engine |
+| PATCH | `/api/v1/admin/channels/{id}/status` | Change status (active/archived) — see below |
 | GET | `/api/v1/admin/channels/{id}/versions` | List channel version history |
 | POST | `/api/v1/admin/channels/{id}/versions` | Create new draft version from active channel |
 | POST | `/api/v1/admin/channels/import` | Bulk import channels (as drafts). `?dry_run=true` validates without writing; `?on_conflict=fail\|skip\|new_version` picks what an existing id means |
 | GET | `/api/v1/admin/channels/export` | Export every matching channel, in the shape `/import` accepts. Filter with `?tag=`, `?status=` |
 | POST | `/api/v1/admin/channels/validate` | Validate a channel definition without saving |
+
+`PATCH /{id}/status` on a channel:
+
+- Activation refuses a route another active channel claims.
+- Activation refuses a channel whose workflow is missing or not active.
+- Activation refuses a name another active channel holds.
+- `?dry_run=true` and `?reload=defer` compose as described under
+  [Status changes](#status-changes).
 
 ## Workflows
 
@@ -43,7 +139,7 @@ This is uniform as of 1.0. Before that, ten handlers — engine status and reloa
 | GET | `/api/v1/admin/workflows/{id}` | Get workflow by ID |
 | PUT | `/api/v1/admin/workflows/{id}` | Update draft workflow |
 | DELETE | `/api/v1/admin/workflows/{id}` | Delete workflow (all versions) |
-| PATCH | `/api/v1/admin/workflows/{id}/status` | Change status (active/archived). Activation refuses missing/mistyped connector references. `?dry_run=true` runs the same gates and reports findings without writing; `?reload=defer` commits without rebuilding the engine |
+| PATCH | `/api/v1/admin/workflows/{id}/status` | Change status (active/archived). Activation refuses missing/mistyped connector references. `?dry_run=true` / `?reload=defer` — see [Status changes](#status-changes) |
 | GET | `/api/v1/admin/workflows/{id}/versions` | List workflow version history |
 | POST | `/api/v1/admin/workflows/{id}/versions` | Create new draft version from active workflow |
 | PATCH | `/api/v1/admin/workflows/{id}/rollout` | Update rollout percentage. `?reload=defer` commits without rebuilding the engine |
@@ -84,8 +180,8 @@ is exactly when this endpoint is useful.
 ```
 
 A backend that cannot be reached is still a `200`: the probe ran, and
-`reachable: false` with an `error` string is its answer. A `5xx` would claim
-Orion failed, which is a different thing. For the kinds with no probe
+`reachable: false` with an `error` string is its answer — the failure is the
+backend's, not Orion's. For the kinds with no probe
 (`es`, `kafka`, and a `db` connector pointing at MongoDB via a `mongodb://`
 URL), `supported: false` distinguishes the permanent capability gap from an
 outage — key monitoring on `supported && !reachable`, not on `reachable`
@@ -108,6 +204,10 @@ probe cannot pass where traffic would fail. Every call is written to the audit
 log.
 
 Kafka brokers are covered by `orion-server test-connectivity`.
+
+<!-- TODO(docs2): the Export & Promotion walkthrough, the package CLI section,
+and Secrets in an exported bundle move to operate/promotion.md in Phase 3
+(docs-implementation-plan.md T3.2). The on_conflict matrix stays here. -->
 
 ## Export & Promotion
 
@@ -134,13 +234,13 @@ curl -s -X POST "$ORION/api/v1/admin/workflows/import" \
 ```
 
 Each `/export` emits the shape its `/import` accepts, so the round trip needs no
-reshaping in between. As of 1.0 each export reads inside **one repeatable-read
-transaction** (K12), so the result is a consistent snapshot — rows mutated
-mid-export can no longer be skipped or duplicated. (On MySQL this relies on
+reshaping in between. Each export reads inside **one repeatable-read
+transaction**, so the result is a consistent snapshot — rows mutated
+mid-export cannot be skipped or duplicated. (On MySQL this relies on
 InnoDB's default REPEATABLE READ isolation; lowering it session-wide weakens
 the guarantee.)
 
-Every entity response also carries `content_hash` (K10): `sha256:…` over the
+Every entity response also carries `content_hash`: `sha256:…` over the
 canonical *importable content* — the DB-owned fields (`version`, `status`,
 timestamps, `rollout_percentage`) excluded. Equal hashes mean "importing one
 over the other is a no-op", which is how drift is detected without comparing
@@ -151,7 +251,7 @@ authored entities hash identically to their masked exports.
 
 By default an import is create-only: an item whose `workflow_id` /
 `channel_id` / connector `name` is already stored becomes one `errors[]`
-entry. `?on_conflict=` selects what "already stored" means instead (K2):
+entry. `?on_conflict=` selects what "already stored" means instead:
 
 | Mode | Existing draft | Existing active | Identical content | Connectors (unversioned) |
 |---|---|---|---|---|
@@ -170,29 +270,6 @@ composes with every mode and reports the action the real import would take.
 
 The two upsert-ish modes refuse an id that appears twice in one batch — the
 second item would silently rewrite what the first just staged.
-
-### Activation pre-flight (`dry_run` on status changes)
-
-`PATCH /{kind}/{id}/status?dry_run=true` runs every gate the real transition
-runs — draft existence, connector existence/type/MongoDB-`database` (workflows),
-route collisions and the workflow-active gate (channels), rollout arithmetic —
-and answers the `/validate` envelope (`{"data": {"valid", "errors",
-"warnings"}}`) without writing. Gates that the real request fails as a 4xx are
-reported as `errors` entries in a 200, including "not found", so one pass over
-a whole bundle collects every finding instead of stopping at the first.
-
-### Batching reloads (`reload=defer`)
-
-Every activation, archive, and rollout change normally rebuilds the engine and
-bumps the cluster config epoch — N entities promoted means N full rebuilds on
-this node and N resyncs on every peer. `?reload=defer` on the status and
-rollout endpoints commits the row and records the audit event but leaves the
-running configuration untouched **everywhere** until `POST
-/api/v1/admin/engine/reload`, which rebuilds once and bumps the epoch once
-(K4). Until that reload, the database and the running engine intentionally
-disagree — a deferred activation is not serving yet. Tooling that defers must
-always finish with the explicit reload; an operator making one change should
-simply omit the parameter.
 
 ### The `orion-server package` CLI
 
@@ -225,7 +302,7 @@ Every call is stamped with `X-Orion-Change-Context: package=<name>@<version>`.
 
 A promotion is many API calls. Send the same `X-Orion-Change-Context` header
 on each — e.g. `package=payments@1.4.0` — and every audit row the operation
-produces carries it under `details.change_context` (K5), so the trail can be
+produces carries it under `details.change_context`, so the trail can be
 filtered back into the operation that caused it. Free-form, truncated at 256
 bytes. Imports additionally write one audit row per entity written, alongside
 the batch summary row.
@@ -284,7 +361,7 @@ connectors and so is a side-effecting operation, not a dry run.
 - `details` — a JSON object with the request context: `request_id` (the same
   value as the `x-request-id` header and `error.request_id`), `client_ip`,
   `user_agent`, and `change_context` when the request carried an
-  `X-Orion-Change-Context` header (K5) — free-form, truncated at 256 bytes;
+  `X-Orion-Change-Context` header — free-form, truncated at 256 bytes;
   promotion tooling stamps `package=<name>@<version>` on every call of an
   apply so the trail groups the whole operation. Both attacker-controlled inputs are truncated before storage
   (256 bytes for `user_agent`, 200 for a supplied `x-request-id`). Fields that
@@ -331,7 +408,7 @@ clear out entries that will never succeed.
 A **package** is the channels, workflows, and connectors of one service,
 promoted between instances as a versioned unit
 ([Packages & Promotion](../topology/packages.md)). This is the single
-package-aware surface of the admin API (K14). Packaging itself —
+package-aware surface of the admin API. Packaging itself —
 computing an artifact's dependency closure, planning, staging, activating —
 lives in client tooling built on the per-kind endpoints above; what the server
 keeps is one **receipt** per package version, because the promotion rule
@@ -360,60 +437,6 @@ path: entities roll forward carrying the old content; nothing moves backward).
 Receipts never touch the engine — no reload, no cluster epoch bump. `state`,
 `content_hash` and `principal` are recorded verbatim; the hash is opaque to
 the server and compared only for equality.
-
-## Lifecycle
-
-Both channels and workflows follow a **draft → active → archived** lifecycle:
-
-1. **Create:** entities are created as `draft` (not loaded into the engine)
-2. **Update:** only draft versions can be updated via `PUT`
-3. **Activate:** `PATCH /status` with `{"status": "active"}` loads the entity into the engine
-4. **New version:** `POST /versions` creates a new draft version from the active entity
-5. **Archive:** `PATCH /status` with `{"status": "archived"}` removes from the engine
-
-A channel links to a workflow via `workflow_id`. Activating a channel makes it available for data processing; activating a workflow makes its logic available to the engine.
-
-Activation order is enforced, not merely conventional (R5, R7, K8): a workflow
-refuses to activate while a connector its tasks reference is missing or of the
-wrong type, and a channel refuses to activate while its `workflow_id` is unset,
-names a workflow that does not exist, or names one with no active version. The
-working order for a bundle is therefore connectors → workflows → channels —
-the same order `?dry_run=true` lets you verify before writing anything.
-
-**Channel names are unique** (K7): the data plane and `channel_call` address
-channels by name, so a name may belong to only one `channel_id`. Create,
-update and import answer `409` for a name another channel already holds
-(compared against every channel's current version), and activation refuses a
-name another *active* channel holds — the belt for rows that predate the
-gate. `orion-server preflight` reports pre-1.0 duplicates before an upgrade.
-
-## Authentication
-
-Admin API endpoints require an API key when `admin_auth.enabled` is true.
-The server reads the key from **exactly one header** — the one named by
-`admin_auth.header`, which defaults to `Authorization` (with or without a
-`Bearer ` prefix):
-
-```bash
-# Default configuration (admin_auth.header = "Authorization")
-curl -H "Authorization: Bearer your-secret-key" \
-  http://localhost:8080/api/v1/admin/workflows
-```
-
-To use a custom header instead, set `admin_auth.header` — and note this
-*replaces* the default, it does not add a second accepted header. With
-`header = "X-API-Key"`, an `Authorization: Bearer` credential is no longer
-read:
-
-```bash
-# Requires admin_auth.header = "X-API-Key" in config
-curl -H "X-API-Key: your-secret-key" \
-  http://localhost:8080/api/v1/admin/workflows
-```
-
-Configure via `[admin_auth]` in config or `ORION_ADMIN_AUTH__ENABLED=true`
-environment variable. Keys listed under `admin_auth.read_only_api_keys`
-authorise `GET`/`HEAD` only; every mutating method answers `403`.
 
 ## Error Response Format
 

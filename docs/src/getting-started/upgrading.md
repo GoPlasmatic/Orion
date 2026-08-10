@@ -4,7 +4,7 @@ This page is for operators upgrading an existing Orion deployment from
 **0.3.0** (the previous release) to **1.0.0**. It covers only what *breaks* or
 *changes behaviour*. New capabilities are in the
 [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/CHANGELOG.md); new
-configuration keys are in the [Config Reference](../configuration/reference.md).
+configuration keys are in the [Config Reference](../reference/configuration.md).
 
 Every item below is written as **what changed → how you'll notice → what to
 do**. Nothing here requires a workflow or channel rewrite; the changes are in
@@ -983,7 +983,7 @@ affect:
 Before upgrading, list the `__`-carrying `ORION_*` names in your deployment
 manifests — a Deployment's `env:`/`envFrom:`, a Compose `environment:` block, a
 systemd unit, the shell you launch the binary from — and check each against
-`docs/src/configuration/reference.md`:
+`docs/src/reference/configuration.md`:
 
 ```bash
 env | grep -oE '^ORION_[A-Z0-9_]+' | grep '__'
@@ -1202,7 +1202,7 @@ failed, so check `failed` rather than the status code.
 **Added in 1.0 (K2), additive:** both modes also carry `unchanged`, `skipped`
 and a per-item `results` array, populated by the new `?on_conflict=skip` /
 `?on_conflict=new_version` upsert modes — see
-[Admin API › Export & Promotion](../api/admin.md#promoting-over-an-existing-estate-on_conflict).
+[Admin API › Export & Promotion](../reference/admin-api.md#promoting-over-an-existing-estate-on_conflict).
 The default `on_conflict=fail` behaves exactly as before.
 
 Also additive in 1.0: a real (non-dry-run) import writes one audit row per
@@ -1213,7 +1213,7 @@ an `X-Orion-Change-Context` request header is recorded in audit `details`
 (K5). The 1.0 API also adds `GET /workflows/{id}/dependencies` (K9),
 `content_hash` on every entity response (K10), exports that read as one
 consistent snapshot (K12), and the `orion-server package` CLI that composes
-all of it — see [Admin API › Export & Promotion](../api/admin.md#export--promotion).
+all of it — see [Admin API › Export & Promotion](../reference/admin-api.md#export--promotion).
 
 ### Channel names must be unique
 
@@ -2628,7 +2628,7 @@ key_path  = "/etc/orion/tls/server.key"
 
 ## Getting help
 
-- [Config Reference](../configuration/reference.md) — every key, with defaults
+- [Config Reference](../reference/configuration.md) — every key, with defaults
 - [Observability](../features/observability.md) — the full metrics list
 - [Maintainability](../features/maintainability.md) — backup, restore, and audit logs
 - [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/CHANGELOG.md)

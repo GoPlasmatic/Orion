@@ -51,7 +51,7 @@ Any string field inside a connector's `config` may use an `env://VAR_NAME` refer
 
 If `STRIPE_API_KEY` is not set in the process environment, startup (or the create/update call) fails with a structured error pointing at the field — production credentials never have to be POSTed into the admin API or stored in the database. The same `env://` scheme works on every string field in every connector type.
 
-Name these variables anything you like, with one restriction: Orion refuses to start on an `ORION_*` variable that is not one of its own settings ([why](../configuration/reference.md#misspellings-are-startup-errors-not-silent-no-ops)), so a secret that must live in the `ORION_` namespace needs the reserved `ORION_SECRET_` prefix — `env://ORION_SECRET_STRIPE_API_KEY`. The same applies to a `${VAR}` placeholder inside a connector's `config_json`: unlike a placeholder in the config file, Orion cannot see it while the config is loading (connectors live in the database), so an `ORION_*` name there has to be `ORION_SECRET_*` too.
+Name these variables anything you like, with one restriction: Orion refuses to start on an `ORION_*` variable that is not one of its own settings ([why](../reference/configuration.md#misspellings-are-startup-errors-not-silent-no-ops)), so a secret that must live in the `ORION_` namespace needs the reserved `ORION_SECRET_` prefix — `env://ORION_SECRET_STRIPE_API_KEY`. The same applies to a `${VAR}` placeholder inside a connector's `config_json`: unlike a placeholder in the config file, Orion cannot see it while the config is loading (connectors live in the database), so an `ORION_*` name there has to be `ORION_SECRET_*` too.
 
 ### HTTP Connector
 
@@ -79,7 +79,7 @@ REST API calls, webhooks, and external service integration:
 | `method` | `""` | Default HTTP method |
 | `headers` | `{}` | Default headers applied to every request |
 | `auth` | `null` | Authentication config (bearer, basic, or apikey) |
-| `retry` | 3 retries, 1000ms | Retry with exponential backoff. Idempotent methods only (GET, HEAD, PUT, DELETE, OPTIONS, TRACE) |
+| `retry` | 3 retries, 1000ms | Retry with exponential backoff. Idempotent methods only (GET, PUT, DELETE) |
 | `retry_non_idempotent` | `false` | Also retry POST/PATCH. A timed-out POST may already have been applied — enable only when the endpoint honours an idempotency key |
 | `max_response_size` | 10 MB | Maximum response body size to prevent OOM |
 | `allow_private_urls` | `false` | Allow requests to private/internal IPs (SSRF protection) |

@@ -90,8 +90,8 @@ client that does not want to hard-code each key can just walk it. `nested[]`
 lists the handler calls that ran *inside* a `channel_call`, matched by when they
 ran; a call with no children omits the key.
 
-Branch on `version`: **v2** (1.0) corrected `nested[]`, which in v1 attached
-every nested sample to every top-level `channel_call`.
+Branch on `version` when parsing: **v2** is current. v1 profiles may still
+exist in stored traces and attribute `nested[]` differently.
 
 ## Shaped Responses
 
@@ -209,8 +209,8 @@ curl -s "http://localhost:8080/api/v1/admin/traces?mode=async"
 The page envelope is `{data, limit, offset}`. Two things are conditional:
 
 - **`total` is opt-in.** Counting the filtered set is a full scan on
-  PostgreSQL and InnoDB, and it used to be paid on every page. Ask for it with
-  `?include_total=true` when you actually need it.
+  PostgreSQL and InnoDB. Ask for it with `?include_total=true` when you
+  actually need it.
 - **`next_cursor`** appears when the page is in the default `created_at`
   ordering and may have a successor. Pass it back as `?cursor=` to get the
   next page without an `OFFSET` the database has to count past — the only
@@ -240,11 +240,48 @@ List rows are payload-free projections — `input_json`, `result_json` and
 `task_trace_json` are served only by the single-trace GET, and the served
 message omits the submitter's request context (`context.metadata`).
 
+### The trace object
+
+**Statuses:** `pending` → `running` → `completed` | `failed`. There is no
+partial status; a partially-failed bulk write is a *task-level* outcome inside
+`result_json`, not a trace status.
+
+**List rows** (`GET /traces`) carry exactly: `id`, `channel`, `channel_id`,
+`mode`, `status`, `error_message`, `duration_ms`, `started_at`,
+`completed_at`, `created_at`, `updated_at`. Payload fields are deliberately
+withheld.
+
+**The detail response** (`GET /traces/{id}`) always carries `id`, `status`,
+`mode`, `channel`, `channel_id`, `created_at`, and adds conditionally:
+
+| Field | Present when | Notes |
+|---|---|---|
+| `message` | `status = completed` | The result document; the submitter's request context (`context.metadata`) is stripped |
+| `error` | `status = failed` | Note the name — list rows call this `error_message` |
+| `started_at` / `completed_at` / `duration_ms` | once processing started/finished | |
+| `task_trace_json` | per-task tracing was on for the channel | See below |
+
+**`task_trace_json`** is the engine's execution trace, recorded per task when
+the channel opts in with `config.tracing.task_details` (default `false`). Its
+top level is `{ "steps": [...] }`, plus `"truncated": true` when the snapshot
+cap (`trace_queue.max_result_size_bytes`) cut it short. Each step entry:
+
+| Field | Type | Notes |
+|---|---|---|
+| `workflow_id` | string | Always present |
+| `task_id` | string \| null | `null` for workflow-level skips |
+| `result` | `"executed"` \| `"skipped"` | The only two outcomes — errors surface on the trace, not the step |
+| `message` | object | Snapshot of the message (`id`, `payload`, `context`, `audit_trail`, `errors`); request headers are redacted |
+| `mapping_contexts` | array | `map` tasks only — per-mapping context snapshots |
+| `started_at` | string | Executed steps only |
+| `duration_us` | number | **Microseconds**, executed steps only |
+| `changes` | array | Per-task diff entries `{path, old_value, new_value}` |
+
 ## Operational Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/health` | Health check (200 OK / 503 degraded). Checks DB, engine, uptime |
+| GET | `/health` | Aggregated health. `200` while serving — including `degraded` components such as quarantined channels, reported per component; `503` when a core check (DB, engine) fails. With admin auth enabled, per-channel quarantine reasons require an admin credential |
 | GET | `/healthz` | Kubernetes liveness probe. Always returns 200 |
 | GET | `/readyz` | Kubernetes readiness probe. 503 if DB, engine, startup, cluster Redis (cluster mode), or Kafka ingestion (when enabled) not ready |
 | GET | `/metrics` | Prometheus metrics (when enabled) |

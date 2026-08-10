@@ -22,3 +22,13 @@ edit-url-template = "https://github.com/GoPlasmatic/Orion/edit/main/docs/{path}"
 [output.html.fold]
 enable = true
 level = 0
+
+# Docs 2.0 restructure (docs-implementation-plan.md §4). Keys are absolute
+# paths from the site root; values are relative to the redirecting page (the
+# site serves under the /Orion/ subpath, so absolute values would escape it).
+[output.html.redirect]
+# Phase 1 — reference estate
+"/api/admin.html" = "../reference/admin-api.html"
+"/api/data.html" = "../reference/data-api.html"
+"/api/data.html#route-resolution" = "../reference/data-api.html#route-resolution"
+"/configuration/reference.html" = "../reference/configuration.html"

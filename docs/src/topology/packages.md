@@ -107,7 +107,7 @@ theory that a channel you didn't select belongs to somebody else's package.
 > endpoints take the same tags: `GET /workflows/export?tag=…` emits exactly
 > what `POST /workflows/import` accepts, with `?status=` to narrow further.
 > You give up the closure computation, the receipt, and the single-reload
-> apply — see [Admin API › Export & Promotion](../api/admin.md#export--promotion)
+> apply — see [Admin API › Export & Promotion](../reference/admin-api.md#export--promotion)
 > for that flow and its `on_conflict` modes.
 
 ## The promotion flow
@@ -148,7 +148,7 @@ Properties worth relying on:
 ## Version receipts on the target
 
 The target instance remembers what was applied — one **receipt** per package
-version, inspectable over the [Packages API](../api/admin.md#packages) or the
+version, inspectable over the [Packages API](../reference/admin-api.md#packages) or the
 CLI:
 
 ```bash
@@ -172,7 +172,7 @@ instance's deployment environment where it belongs:
 { "name": "stripe", "config": { "token": "env://STRIPE_KEY", … } }
 ```
 
-See [Admin API › Secrets in an exported bundle](../api/admin.md#secrets-in-an-exported-bundle)
+See [Admin API › Secrets in an exported bundle](../reference/admin-api.md#secrets-in-an-exported-bundle)
 for the full rules, including how `lint` treats a reference that is unset on
 the machine running it (a warning, not an error — CI needs no production
 secrets).

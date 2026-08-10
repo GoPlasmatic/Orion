@@ -21,7 +21,7 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 - [The Console (Orion UI)](https://goplasmatic.github.io/Orion/getting-started/console.html): no-code UI over the admin API
 - [Your First Connector](https://goplasmatic.github.io/Orion/getting-started/first-connector.html): PostgreSQL + the portable data dialect
 - [Prompt Pack](https://goplasmatic.github.io/Orion/getting-started/prompt-pack.html): self-contained context block for driving Orion from any LLM
-- [MCP Server Setup](https://goplasmatic.github.io/Orion/tutorials/mcp-setup.html): 46 MCP tools via orion-cli
+- [MCP Server Setup](https://goplasmatic.github.io/Orion/tutorials/mcp-setup.html): MCP tools covering the full admin API, via orion-cli
 - [Orion + Claude Code](https://goplasmatic.github.io/Orion/tutorials/claude-code.html): driving Orion from Claude Code with the MCP server
 - [Upgrading to 1.0.0](https://goplasmatic.github.io/Orion/getting-started/upgrading.html): every 0.3.0 → 1.0.0 break, with the preflight scanner that finds them
 
@@ -30,9 +30,9 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 - [Workflow Reference](https://goplasmatic.github.io/Orion/reference/workflows.html): workflow & task JSON schema, conditions, lifecycle, rollout
 - [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html): every task function's exact input schema
 - [Portable Data Dialect](https://goplasmatic.github.io/Orion/reference/data-dialect.html): backend-neutral query/write envelope (data_query / data_write) across SQL, MongoDB, Elasticsearch
-- [Admin API](https://goplasmatic.github.io/Orion/api/admin.html): workflows, channels, connectors, packages, engine, audit, trace-DLQ, backup endpoints; every error code
-- [Data API](https://goplasmatic.github.io/Orion/api/data.html): routing, sync/async processing, traces
-- [Configuration](https://goplasmatic.github.io/Orion/configuration/reference.html): config file, env overrides, database backends
+- [Admin API](https://goplasmatic.github.io/Orion/reference/admin-api.html): workflows, channels, connectors, packages, engine, audit, trace-DLQ, backup endpoints; every error code
+- [Data API](https://goplasmatic.github.io/Orion/reference/data-api.html): routing, sync/async processing, traces
+- [Configuration](https://goplasmatic.github.io/Orion/reference/configuration.html): config file, env overrides, database backends
 - [Support & Compatibility](https://goplasmatic.github.io/Orion/reference/support.html): versioning policy, what 1.0 freezes, accepted alternate spellings, platform matrix
 - [OpenAPI 3.1 spec](https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/openapi.json): machine-readable API description
 

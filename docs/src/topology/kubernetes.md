@@ -144,7 +144,7 @@ for the full annotated list:
 | `networkPolicy.enabled` | `false` | Ingress on the HTTP/metrics ports + egress rules you declare; with no egress rules the pod gets DNS and nothing else (fail-closed). The network-level pairing for `allow_private_urls` |
 | `strategy` | `RollingUpdate`, `maxUnavailable: 0`, `maxSurge: 1` | Deploys never drop below `replicaCount` Ready replicas |
 | `persistence.enabled` | `false` | PVC at `/app/data` for single-node SQLite installs |
-| `extraEnv` | `[]` | Additional `ORION_*` overrides (see the [Config Reference](../configuration/reference.md)) |
+| `extraEnv` | `[]` | Additional `ORION_*` overrides (see the [Config Reference](../reference/configuration.md)) |
 | `devStack.enabled` | `false` | Throwaway in-namespace Postgres + Redis — dev/demo only |
 | `tests.enabled` | `true` | Render the `helm test` hooks |
 
@@ -255,5 +255,5 @@ under `/app/data/backups` — see
 - [Dev & Prod Environments](./environments.md) — the topology this chart deploys
 - [Deployability](../features/deployability.md) — all distribution channels
 - [Scalability](../features/scalability.md) and [Availability](../features/availability.md) — cluster-mode behavior
-- [Config Reference](../configuration/reference.md) — every `ORION_*` key `extraEnv` can set
+- [Config Reference](../reference/configuration.md) — every `ORION_*` key `extraEnv` can set
 - [Chart source](https://github.com/GoPlasmatic/Orion/tree/main/deploy/helm/orion) — templates, `values.yaml`, `values.schema.json`

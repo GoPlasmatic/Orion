@@ -279,7 +279,14 @@ independently of the restructure.
 
 Creates the owners that every later page links to instead of inlining.
 
-- [ ] **T1.1 Moves:** `api/admin.md` → `reference/admin-api.md`;
+- [x] **T1.1 Moves:** ✅ done (PR 2a). Deviations/notes: admin-api gained a
+  dedicated "Status changes" section (dry_run + reload=defer moved out of
+  Export & Promotion; both PATCH table cells now link it); the promotion essay
+  is parked behind a `TODO(docs2)` comment as planned; data-api's `/health`
+  row was corrected against §2.3 (200-degraded vs 503 was conflated) and the
+  §2.6 trace-object reference was added; "Shaped Responses" remains in
+  data-api until channel-config.md lands in T1.2. Original plan text:
+  `api/admin.md` → `reference/admin-api.md`;
   `api/data.md` → `reference/data-api.md`;
   `configuration/reference.md` → `reference/configuration.md`.
   Apply the §4-of-the-proposal surgery on each (auth first; unpack table cells; strip
@@ -303,12 +310,15 @@ Creates the owners that every later page links to instead of inlining.
   `reference/workflows.md` narrows (schema + data-context per §2.4);
   `reference/functions.md` and `data-dialect.md` revised in place;
   `support.md` trimmed (rename-policy text parked until operate/upgrades.md exists).
-- [ ] **T1.3 SUMMARY.md:** collapse "API Reference"/"Reference"/"Configuration" into
-  one Reference part (new pages listed; parts for later phases not yet added).
-- [ ] **T1.4 Mechanics:** first redirect entries (§4 Phase-1 block); rewrite
-  README/examples links that point at `api/*` and `configuration/*`;
-  **add the docs-lint CI job** (T6.1) and the llms.txt generator (T6.2) so every later
-  phase inherits enforcement.
+- [x] **T1.3 SUMMARY.md:** ✅ done — one Reference part (interim: the one-page
+  Tutorials section moved above it; dissolves in Phase 4).
+- [x] **T1.4 Mechanics:** ✅ done (PR 2a) — Phase-1 redirect block in book.toml
+  (values made relative, the site serves under the `/Orion/` subpath);
+  README/examples/llms.txt links rewritten; `docs/lint.sh` + CI step added.
+  Extra fixes while sweeping: llms.txt's "46 MCP tools" (a spelling the Phase-0
+  grep missed — guard now covers both spellings), extensibility.md's wrong
+  idempotent-method list (claimed HEAD/OPTIONS/TRACE; code allows GET/PUT/DELETE),
+  upgrading.md's literal `docs/src/configuration/reference.md` path.
 - [ ] **T1.5 Acceptance:** build clean; lychee link-check over `docs/book` green;
   llms.txt parity check green; redirect files exist in `docs/book/api/` etc.
   (`test -f docs/book/api/admin.html` after build and grep it for the redirect target).
@@ -396,7 +406,14 @@ Creates the owners that every later page links to instead of inlining.
 
 ### Phase 6 — Tooling (built during Phase 1, listed separately for clarity)
 
-- [ ] **T6.1 docs-lint CI step** (extend the existing book job in `ci.yml`):
+- [x] **T6.1 docs-lint CI step**: ✅ done as `docs/lint.sh` + a step in the
+  ci.yml book job. Deviations: pure bash (no lychee dependency yet — anchor
+  validation is the one gap, listed as a Phase 5 follow-up); later-phase
+  guards are gated by a `DOCS2_PHASE` variable in the script (internals guard
+  activates at ≥3, SUMMARY↔llms parity at ≥4); the review-ID guard exempts the
+  1.0 upgrade guide until its Phase 2 restructure. Bonus invariant beyond the
+  plan: every hard site link in README/examples/llms.txt must resolve to a
+  live page **or** a book.toml redirect entry. Original spec:
   1. `mdbook build docs` (already present — catches missing SUMMARY files via
      `create-missing = false`, and bad redirect config via unknown-key errors).
   2. Link check over `docs/book/**/*.html` with lychee (internal + anchors;
@@ -411,10 +428,12 @@ Creates the owners that every later page links to instead of inlining.
      - forbidden internals outside `reference/design-notes.md`:
        `Arc<RwLock`, `tokio::sync::mpsc`, `apply_guards`, `CatchPanicLayer`,
        `arena-mode`
-- [ ] **T6.2 llms.txt generator:** small script (`docs/gen-llms.sh` or a `just` target)
-  deriving llms.txt from SUMMARY.md — same grep pattern docs.yml already uses for
-  llms-full.txt; committed output, CI-checked (T6.1.4). Drop or fragment-map any
-  `#fragment` links per §1.2.1.
+- [x] **T6.2 llms.txt generator:** ✅ done, **recast**: llms.txt turns out to be a
+  curated index (hand-written one-line descriptions per entry), so blind
+  generation from SUMMARY would destroy its value. Instead: llms.txt stays
+  curated; lint check 3 guarantees every URL in it stays live-or-redirected,
+  and lint check 8 (gated to Phase ≥4, when the ToC is final) enforces that
+  every SUMMARY chapter has an llms.txt entry. No generator script needed.
 
 ---
 

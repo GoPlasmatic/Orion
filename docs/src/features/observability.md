@@ -67,7 +67,7 @@ bind_addr = "127.0.0.1:9090"    # unauthenticated; the address is the access con
 
 `bind_addr` moves the endpoint onto its own plain-HTTP listener and removes it
 from the main one. See
-[the configuration reference](../configuration/reference.md#logging-and-metrics).
+[the configuration reference](../reference/configuration.md#logging-and-metrics).
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
@@ -157,7 +157,7 @@ sample_rate = 1.0    # 0.0 (none) to 1.0 (all)
 
 > **Two sampling knobs.** `tracing.sample_rate` above governs OTLP span
 > export. Trace *persistence* sampling —
-> [`trace_storage.sample_rate`](../configuration/reference.md#trace-persistence)
+> [`trace_storage.sample_rate`](../reference/configuration.md#trace-persistence)
 > — applies to **sync traces only**: an async submission's trace row is how
 > its result is delivered to the caller, so async traces always persist
 > regardless of the sample rate. Bound async trace storage with

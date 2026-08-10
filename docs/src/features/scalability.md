@@ -48,7 +48,7 @@ They do not, by default, share a *bucket*. The bucket key is the caller identity
 
 A Kafka record refused by the limit is *not* dead-lettered: the offset is left uncommitted and the consumer's capped retry backoff becomes the throttle, so throughput is shaped rather than traffic discarded. The one exception is a `key_logic` that cannot be evaluated against the record at all — that is a defect in the expression and will fail identically on every redelivery, so the record is dead-lettered rather than left to block its partition. (Over HTTP both answer `429`.)
 
-Behind a proxy, load balancer, or ingress, set `rate_limit.trusted_proxies` even if you never enable the platform limiter: it is what decides whether `X-Forwarded-For` may name the client, and with it unset every client behind the proxy keys on the proxy's own address and collapses into one bucket. See [`trusted_proxies`](../configuration/reference.md#rate-limiting).
+Behind a proxy, load balancer, or ingress, set `rate_limit.trusted_proxies` even if you never enable the platform limiter: it is what decides whether `X-Forwarded-For` may name the client, and with it unset every client behind the proxy keys on the proxy's own address and collapses into one bucket. See [`trusted_proxies`](../reference/configuration.md#rate-limiting).
 
 **Per-client keying:** use JSONLogic to compute rate limit keys from request data, enabling per-user or per-tenant limits:
 

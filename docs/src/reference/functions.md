@@ -216,7 +216,7 @@ Like `publish_json`, but serializes to an XML string.
 These reference a [connector](../features/extensibility.md#connectors) by name —
 credentials and endpoints live in the connector, not the workflow. Orion
 validates their `input` at workflow create/update time and exposes the schema
-via [`GET /api/v1/admin/functions`](../api/admin.md#functions). Every connector
+via [`GET /api/v1/admin/functions`](./admin-api.md#functions). Every connector
 call is wrapped in a [circuit breaker](../features/resilience.md).
 
 ### `http_call`
