@@ -340,17 +340,18 @@ start_server() {
     ORION_LOG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-XXXXXX.log")
     ORION_CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/orion-e2e-XXXXXX.toml")
 
+    # Orion 1.0 config schema: storage.url (not path), trace_queue (not
+    # queue), and [server] no longer takes a workers count.
     cat > "$ORION_CONFIG_FILE" <<TOMLEOF
 [server]
 host = "127.0.0.1"
 port = $port
-workers = 2
 
 [storage]
-path = "$ORION_DB_PATH"
+url = "sqlite:$ORION_DB_PATH?mode=rwc"
 max_connections = 5
 
-[queue]
+[trace_queue]
 workers = 2
 buffer_size = 100
 
