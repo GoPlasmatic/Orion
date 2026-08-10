@@ -269,7 +269,8 @@ const OPERATORS: &[OperatorCase] = &[
 /// at the next `## ` heading so prose elsewhere in the file cannot contribute
 /// names.
 fn documented_operators() -> BTreeSet<String> {
-    let md = std::fs::read_to_string(EXPRESSIONS_MD).expect("read docs/src/reference/expressions.md");
+    let md =
+        std::fs::read_to_string(EXPRESSIONS_MD).expect("read docs/src/reference/expressions.md");
     let heading = "## Available operators";
     let start = md
         .find(heading)

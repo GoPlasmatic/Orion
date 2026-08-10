@@ -57,7 +57,10 @@ if git grep -nE '46 (MCP )?tools|6,000' -- docs/src README.md ':!docs/src/casts'
   err 'hand-maintained magic number (46 tools / 6,000+)'
 fi
 
-## 5. The function count is stated in exactly one place.
+## 5. The function count is stated in exactly one place. Whether the number is
+##    *correct* is asserted by functions_docs_drift_test against the schema
+##    registry and the page's own summary table — this check only stops the
+##    number being restated somewhere it would later drift.
 stray=$(git grep -lE '18 functions|18 built-in' -- docs/src 2>/dev/null | grep -v 'reference/functions.md' || true)
 [ -z "$stray" ] || err "function count '18' stated outside reference/functions.md: $stray"
 

@@ -48,6 +48,7 @@ mod error_paths_test;
 mod es_test;
 mod export_roundtrip_test;
 mod function_schema_test;
+mod functions_docs_drift_test;
 mod http_retry_test;
 mod ingress_guards_test;
 mod jsonlogic_operators_test;
