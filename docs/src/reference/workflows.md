@@ -55,7 +55,7 @@ its `input`:
 
 | Field | Type | Required | Notes |
 |-------|------|:--------:|-------|
-| `name` | string | **yes** | One of the [16 built-in functions](./functions.md) |
+| `name` | string | **yes** | One of the [built-in functions](./functions.md) |
 | `input` | object | depends | Function-specific parameters. Connector functions are schema-validated on create |
 
 ```json

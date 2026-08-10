@@ -1,8 +1,8 @@
 # Prompt Pack (any LLM)
 
 The [MCP server](../tutorials/mcp-setup.md) is the richest way to give an AI
-assistant control of Orion: 46 tools, live schema discovery, no prompt
-engineering. But it needs an MCP-capable client.
+assistant control of Orion: tools covering the full admin API, live schema
+discovery, no prompt engineering. But it needs an MCP-capable client.
 
 This page is the zero-install alternative: **paste the block below into any
 LLM** (as a system prompt, a project instruction, or just the first message)

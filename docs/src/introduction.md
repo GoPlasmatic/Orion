@@ -11,7 +11,7 @@ Every piece of business logic tends to turn into its own microservice. You set u
 
 Everything you'd normally build around it is already running: rate limits, retries, caching, metrics, tracing, input validation, versioning, and rollback. Change the logic and the endpoint changes with it. No rebuild, no restart, no downtime.
 
-Orion is a single Rust binary. It stores your service definitions in an embedded database and runs them on Tokio and Axum at 6,000+ requests per second. There's nothing to containerize and nothing to provision.
+Orion is a single Rust binary. It stores your service definitions in an embedded database and runs them on Tokio and Axum at 5,000+ measured requests per second. There's nothing to containerize and nothing to provision.
 
 ### Why Orion?
 
@@ -20,7 +20,7 @@ Open a small internal microservice and count the lines. HTTP server setup, conne
 * **⚡ No service to build:** Idea to live REST or Kafka endpoint in seconds. No Dockerfile, no CI pipeline, no server code.
 * **🛡️ Production features included:** Rate limiting, circuit breakers, timeouts, caching, and payload validation on every endpoint. You configure them instead of writing them.
 * **🤖 Safe for AI-written logic:** Models generate JSON reliably. Validation, draft-before-activate, dry-run, percentage rollout, and one-call rollback mean AI output can't quietly break production.
-* **🦀 Rust speed:** Built on Tokio and Axum. **6,000+ requests/sec** per instance, single-digit millisecond latency, small memory footprint.
+* **🦀 Rust speed:** Built on Tokio and Axum. **5,100–5,700 requests/sec** per instance (measured, v1.0.0), single-digit millisecond latency, small memory footprint.
 * **🧩 Services that call services:** `channel_call` runs another workflow in-process, so there's no network hop and no serialization cost.
 
 This site is the deep reference and how-to guide. New here? [**Install Orion and ship your first service**](./tutorials/cli-setup.md) in a couple of minutes.

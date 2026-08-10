@@ -23,7 +23,7 @@ Orion works the other way around. You write the logic as JSON, either by hand or
 
 Everything you'd normally build around it is already running: rate limits, retries, caching, metrics, tracing, input validation, versioning, and rollback. Change the logic and the endpoint changes with it. No rebuild, no restart, no downtime.
 
-Orion is a single Rust binary. It stores your service definitions in an embedded database and runs them on Tokio and Axum at 6,000+ requests per second. There's nothing to containerize and nothing to provision.
+Orion is a single Rust binary. It stores your service definitions in an embedded database and runs them on Tokio and Axum at 5,000+ measured requests per second. There's nothing to containerize and nothing to provision.
 
 **Jump to:** [Quickstart](#your-first-service-in-2-minutes) · [Why Orion?](#why-orion) · [Is Orion right for you?](#is-orion-right-for-you) · [Three primitives](#three-primitives) · [The console](#the-console) · [What's built in](#whats-built-in) · [Connectors](#connect-to-anything) · [Functions](#built-in-task-functions) · [Performance](#performance) · [Install](#install) · [Docs](#documentation)
 
@@ -36,7 +36,7 @@ Open a small internal microservice and count the lines. HTTP server setup, conne
 * **⚡ No service to build:** Idea to live REST or Kafka endpoint in seconds. No Dockerfile, no CI pipeline, no server code.
 * **🛡️ Production features included:** Rate limiting, circuit breakers, timeouts, caching, and payload validation on every endpoint. You configure them instead of writing them.
 * **🤖 Safe for AI-written logic:** Models generate JSON reliably. Validation, draft-before-activate, dry-run, percentage rollout, and one-call rollback mean AI output can't quietly break production.
-* **🦀 Rust speed:** Built on Tokio and Axum. **6,000+ requests/sec** per instance, single-digit millisecond latency, small memory footprint.
+* **🦀 Rust speed:** Built on Tokio and Axum. **5,100–5,700 requests/sec** per instance (measured, v1.0.0), single-digit millisecond latency, small memory footprint.
 * **🧩 Services that call services:** `channel_call` runs another workflow in-process, so there's no network hop and no serialization cost.
 
 ---
@@ -221,7 +221,7 @@ Orion is API-first, and everything it does is also point-and-click. [Orion UI](h
 
 When AI generates a microservice, you still need to add health checks, metrics, retries, and error handling. When AI generates an Orion workflow, **all of that is already there**. The platform guarantees it.
 
-**Use the [Orion CLI's MCP server](crates/orion-cli)** to give your AI assistant full Orion context. No manual prompt engineering needed. The MCP server exposes 46 tools covering the full Orion API: workflow syntax, available functions, connector types, and API operations. One config block and you're done (Claude Code `.mcp.json`, Claude Desktop, or any MCP client):
+**Use the [Orion CLI's MCP server](crates/orion-cli)** to give your AI assistant full Orion context. No manual prompt engineering needed. The MCP server exposes tools covering the full Orion API: workflow syntax, available functions, connector types, and API operations. One config block and you're done (Claude Code `.mcp.json`, Claude Desktop, or any MCP client):
 
 ```json
 {
@@ -387,11 +387,6 @@ flowchart LR
         S["./orion-server"]
     end
 
-    subgraph Sidecar ["Sidecar Pattern"]
-        direction LR
-        App["App"] <--> O["Orion"]
-    end
-
     subgraph Container ["Docker / Kubernetes"]
         direction TB
         D["docker run ghcr.io/goplasmatic/orion:latest"]
@@ -404,12 +399,9 @@ flowchart LR
     end
 
     style Standalone fill:#21252b,stroke:#5c6370,color:#abb2bf
-    style Sidecar fill:#21252b,stroke:#5c6370,color:#abb2bf
     style Container fill:#21252b,stroke:#5c6370,color:#abb2bf
     style Cluster fill:#21252b,stroke:#5c6370,color:#abb2bf
     style S fill:#61afef,stroke:#61afef,color:#1e222b
-    style App fill:#4b5263,stroke:#5c6370,color:#abb2bf
-    style O fill:#61afef,stroke:#61afef,color:#1e222b
     style D fill:#61afef,stroke:#61afef,color:#1e222b
     style LB fill:#4b5263,stroke:#5c6370,color:#abb2bf
     style N fill:#61afef,stroke:#61afef,color:#1e222b
@@ -428,7 +420,7 @@ helm install orion oci://ghcr.io/goplasmatic/charts/orion
 docker compose -f docker-compose.ha.yml up
 ```
 
-**Same channel definitions work in any topology:** one instance, an HA cluster, sidecars — or dedicated capacity by splitting channels across instance pools with include/exclude filters. The definition doesn't change; only the deployment config does.
+**Same channel definitions work in any topology:** one instance, an HA cluster — or dedicated capacity by splitting channels across instance pools with include/exclude filters. The definition doesn't change; only the deployment config does.
 
 ## Performance
 
@@ -458,7 +450,6 @@ Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mo
 - **Event processing:** Kafka-to-workflow pipelines with transforms, enrichment, and routing
 - **API composition:** use `channel_call` to compose services from other services
 - **AI-managed business logic:** LLMs create and update workflows via the REST API
-- **Multi-agent orchestration:** route agent outputs to channels with coordinating workflows
 - **Protocol bridging:** REST-to-Kafka, Kafka-to-HTTP with transformation
 
 See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html) for complete, tested examples, or grab a ready-to-deploy example package from [`examples/packages/`](examples/packages/) and run `./examples/deploy.sh <name>` against a local instance.

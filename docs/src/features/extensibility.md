@@ -31,7 +31,7 @@ Task-level headers always win. This means a workflow developer can override `con
 
 ### Secret Masking
 
-Sensitive fields (`token`, `password`, `key`, `secret`, `api_key`, `connection_string`) are automatically masked as `"******"` in all API responses. Secrets are stored but never exposed through the API. Workflows reference connectors by name; they never see or embed actual credentials.
+Connector reads mask by **allowlist**: a field comes back readable only when its key is on the runtime's known-safe list (`type`, `url`, `username`, timeouts, operation gates, and similar). Every other value — including a secret stored under a key the list never anticipated — is returned as `"******"`. `env://` and `vault://` references pass through unmasked (they are pointers, not secrets); `connection_string` and all header values are always masked. Secrets are stored but never exposed through the API. Workflows reference connectors by name; they never see or embed actual credentials.
 
 ### Pulling Secrets from the Environment
 

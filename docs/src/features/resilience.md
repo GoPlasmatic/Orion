@@ -47,14 +47,12 @@ All HTTP connectors support automatic retries with exponential backoff, capped a
 
 Delay doubles on each retry: 500ms → 1s → 2s → 4s → ... → capped at 60s.
 
-Retries are configured per HTTP connector, so each external service can have its own retry policy. The mechanism automatically detects retryable errors (network failures, 5xx responses) and skips non-retryable ones (4xx client errors).
+Retries are configured per HTTP connector, so each external service can have its own retry policy. The mechanism retries only retryable failures — network errors, timeouts, 5xx responses, and 429/408 — and gives up immediately on any other 4xx client error.
 
 Only HTTP connectors have a `retry` block. Database, Elasticsearch, cache and
 Kafka calls are never re-driven: an operation that timed out may already have
 been applied, so a blind re-send duplicates it. Bound those with their own
 timeouts and let the circuit breaker below shed load from a failing dependency.
-
-All connector types (HTTP, DB, Cache, MongoDB, Storage) support the same retry configuration.
 
 ## Timeouts
 

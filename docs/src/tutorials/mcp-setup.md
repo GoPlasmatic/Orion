@@ -63,7 +63,7 @@ If admin authentication is enabled on your Orion instance, include the API key:
 
 ## Available Tools
 
-The MCP server exposes **46 tools** covering the full Orion API. Tool names follow a
+The MCP server exposes tools covering **the full Orion API**. Tool names follow a
 `<resource>_<action>` convention:
 
 | Category | Tools |

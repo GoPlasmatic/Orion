@@ -187,7 +187,7 @@ curl -s http://localhost:8080/api/v1/admin/traces/550e8400-e29b-41d4-a716-446655
   -H "x-trace-token: b1946ac92492d2347c6235b4d2611184"
 ```
 
-**Trace statuses:** `pending` → `completed` or `failed`.
+**Trace statuses:** `pending` → `running` → `completed` or `failed`.
 
 ## Trace Endpoints
 
@@ -249,4 +249,4 @@ message omits the submitter's request context (`context.metadata`).
 | GET | `/readyz` | Kubernetes readiness probe. 503 if DB, engine, startup, cluster Redis (cluster mode), or Kafka ingestion (when enabled) not ready |
 | GET | `/metrics` | Prometheus metrics (when enabled) |
 | GET | `/docs` | Swagger UI |
-| GET | `/api/v1/openapi.json` | OpenAPI 3.0 specification |
+| GET | `/api/v1/openapi.json` | OpenAPI 3.1 specification |

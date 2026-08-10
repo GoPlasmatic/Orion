@@ -528,9 +528,10 @@ fn mask_in_place(value: &mut Value, key: Option<&str>, force: bool) {
 /// secret-looking keys are replaced wholesale, and URL userinfo passwords are
 /// redacted at any depth.
 ///
-/// This is the exact policy `GET /api/v1/admin/connectors` applies, exposed
-/// so `validate-config` can dump the effective server config through the same
-/// single list of secret-key patterns rather than a drifting copy (O15) —
+/// Serves `validate-config`'s server-config dump only — `GET
+/// /api/v1/admin/connectors` uses the allowlist walk in
+/// [`mask_connector_secrets`] instead (H3), so the denylist here is kept as
+/// one list of secret-key patterns rather than a drifting copy (O15) —
 /// `kafka.auth.sasl_password` and `admin_auth.api_keys` mask by key,
 /// `storage.url` and `cluster.redis_url` by URL shape.
 pub fn mask_secrets(value: &mut Value) {

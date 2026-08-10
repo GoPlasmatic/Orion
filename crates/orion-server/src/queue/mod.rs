@@ -128,8 +128,8 @@ pub struct QueueMessage {
     pub trace_headers: std::collections::HashMap<String, String>,
     /// `true` when the original request asked for profile data (header or
     /// query). The worker creates a per-request `ProfileCollector` and
-    /// embeds the result under `metadata._orion_profile` before persisting
-    /// the trace's `result_json`.
+    /// embeds the result under the top-level `_orion.profile` key of the
+    /// trace's persisted `result_json` (see `serialize_result_with_profile`).
     pub profile_requested: bool,
     /// Per-channel backpressure permit acquired at submission time (S1).
     /// The worker holds it for the duration of processing so a channel's

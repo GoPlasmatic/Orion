@@ -46,7 +46,7 @@ Orion instance.
    ```
 
 4. **Verify:** start `claude` and run `/mcp` — you should see `orion` listed
-   with 46 tools.
+   with its tools available.
 
 ## Build a service by describing it
 
