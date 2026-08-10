@@ -7,10 +7,13 @@ FROM rust:1.93-slim@sha256:c0a38f5662afdb298898da1d70b909af4bda4e0acff2dc52aea63
 RUN cargo install cargo-chef --locked
 WORKDIR /app
 
-# Planner stage: generate a recipe for dependency caching
+# Planner stage: generate a recipe for dependency caching. The workspace
+# manifest set must be complete for cargo metadata to resolve, so the whole
+# crates/ tree rides in (the CLI crate is small; .dockerignore already trims
+# the context).
 FROM chef AS planner
 COPY Cargo.toml Cargo.lock* ./
-COPY src/ src/
+COPY crates/ crates/
 RUN cargo chef prepare --recipe-path recipe.json
 
 # Builder stage: cache dependencies, then build
@@ -31,9 +34,7 @@ RUN cargo chef cook --profile dist --locked --recipe-path recipe.json
 
 # Build application (only this layer rebuilds on source changes)
 COPY Cargo.toml Cargo.lock* ./
-COPY src/ src/
-COPY migrations/ migrations/
-COPY build.rs ./
+COPY crates/ crates/
 
 # .dockerignore excludes .git/, so build.rs cannot ask git for the commit;
 # CI passes it as a build-arg (--build-arg GIT_HASH=<sha>) and build.rs
@@ -41,7 +42,7 @@ COPY build.rs ./
 ARG GIT_HASH
 ENV GIT_HASH=${GIT_HASH}
 
-RUN cargo build --profile dist --locked
+RUN cargo build --profile dist --locked -p orion-server
 
 # Runtime stage. Named so `docker build --target` can address it, like the
 # stages above (T23).
@@ -71,7 +72,7 @@ WORKDIR /app
 RUN mkdir -p /app/data && chown -R orion:orion /app
 
 COPY --from=builder --chown=orion:orion /app/target/dist/orion-server /usr/local/bin/orion-server
-COPY --chown=orion:orion config.toml.example /app/config.toml.example
+COPY --chown=orion:orion crates/orion-server/config.toml.example /app/config.toml.example
 # The image redistributes the Apache-2.0 binary; ship the license with it (P16).
 COPY LICENSE /usr/share/doc/orion-server/LICENSE
 

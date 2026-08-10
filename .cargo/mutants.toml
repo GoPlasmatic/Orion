@@ -16,12 +16,12 @@
 # mutates only the code a PR touched; a full sweep is a local or scheduled
 # activity (`cargo mutants --shard i/N` to split it).
 examine_globs = [
-    "src/validation/**",         # SSRF allow/deny predicates
-    "src/server/admin_auth.rs",  # API-key comparison, guarded-path set
-    "src/connector/masking.rs",  # secret redaction before secrets reach the wire
-    "src/connector/circuit_breaker.rs",
-    "src/query/**",              # the portable data dialect: filter → SQL/Mongo/ES
-    "src/errors.rs",             # the public {code, message} envelope
+    "crates/orion-server/src/validation/**",         # SSRF allow/deny predicates
+    "crates/orion-server/src/server/admin_auth.rs",  # API-key comparison, guarded-path set
+    "crates/orion-server/src/connector/masking.rs",  # secret redaction before secrets reach the wire
+    "crates/orion-server/src/connector/circuit_breaker.rs",
+    "crates/orion-server/src/query/**",              # the portable data dialect: filter → SQL/Mongo/ES
+    "crates/orion-server/src/errors.rs",             # the public {code, message} envelope
 ]
 
 # The default `cargo test` already builds and runs the integration binary,

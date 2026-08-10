@@ -1,0 +1,184 @@
+[package]
+name = "orion-server"
+version = "1.0.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Turn business logic into live REST/Kafka services. Declare workflows as JSON and Orion runs them, with rate limiting, circuit breakers, versioning, and observability built in"
+license.workspace = true
+repository.workspace = true
+homepage = "https://goplasmatic.io/orion"
+documentation = "https://goplasmatic.github.io/Orion/"
+# The repo landing README doubles as the crate README; cargo copies a readme
+# from outside the package dir into the tarball root at package time.
+readme = "../../README.md"
+keywords = ["workflow", "runtime", "declarative", "microservices", "jsonlogic"]
+categories = ["web-programming", "web-programming::http-server"]
+# Allowlist: the crate tarball ships only what `cargo install` needs. Anything
+# not listed here (media/, docs/, tests/, deploy/, internal notes) stays out —
+# crates.io enforces a 10 MiB upload limit and media/ alone is ~15 MB.
+include = [
+    "/src/**",
+    "/migrations/**",
+    "/build.rs",
+    "/Cargo.toml",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/config.toml.example",
+]
+
+# P15: docs.rs must compile the crate — librdkafka's native configure plus
+# vendored OpenSSL — inside its sandbox (the crates-build-env image ships
+# perl and the C toolchain, so the build is expected to pass). One target
+# only: the extra tier-1 targets would repeat that native build for zero
+# documentation difference.
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
+[[bin]]
+name = "orion-server"
+path = "src/main.rs"
+
+[lib]
+name = "orion"
+path = "src/lib.rs"
+
+# The SQLite-backed integration tests are consolidated into a single binary so
+# the suite links once instead of ~43 times. New test files go in
+# tests/integration/ and are declared as modules in tests/integration/main.rs.
+# Five more test binaries exist: `cluster` below, plus the auto-discovered
+# tests/storage_postgres.rs, tests/storage_mysql.rs, tests/schema_parity.rs
+# and tests/metrics_exposition.rs (separate binaries because the storage
+# backend is pinned per process by a OnceLock — schema_parity sidesteps it
+# entirely via `migrator_for` — and the metrics recorder is process-global).
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+harness = true
+
+# Multi-node (cluster mode) tests: two AppStates over one Postgres + one
+# Redis testcontainer. A separate binary because the storage backend is
+# pinned per process (DB_BACKEND OnceLock) and the integration binary pins
+# SQLite. Run with: cargo test --test cluster -- --ignored
+[[test]]
+name = "cluster"
+path = "tests/cluster/main.rs"
+harness = true
+
+[dependencies]
+# `all-operators` turns on dataflow-rs's passthroughs to the datalogic-rs
+# feature gates: `datetime`, `ext-string`, `ext-array`, `ext-math`,
+# `ext-control` and `error-handling`. Without it datalogic compiles with only
+# the core opcode set, and a workflow cannot call `now`, format a date,
+# uppercase a string or measure a length — see
+# docs/src/reference/workflows.md#available-operators for the resulting
+# vocabulary. Orion cannot enable a datalogic feature directly (CLAUDE.md: the
+# engine is reached through dataflow-rs, never pinned alongside it), so this is
+# the only lever, and it arrived in dataflow-rs 3.2.
+dataflow-rs = { version = "3.2.0", features = ["all-operators"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "matched-path"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "migrate", "macros", "chrono", "any", "sqlite", "postgres", "mysql"] }
+sea-query = { version = "0.32", default-features = false, features = ["derive", "backend-sqlite", "backend-postgres", "backend-mysql", "with-chrono"] }
+sea-query-binder = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "with-chrono", "sqlx-any", "sqlx-sqlite", "sqlx-postgres", "sqlx-mysql"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "request-id", "catch-panic", "compression-gzip"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "display", "serde"] }
+clap = { version = "4", default-features = false, features = ["std", "derive", "env", "help", "usage", "error-context"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std", "ansi", "tracing-log", "env-filter", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "signal"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+thiserror = "2"
+async-trait = "0.1"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
+url = "2"
+ipnet = "2"
+sha2 = "0.10"
+# Optional encryption at rest for connectors.config_json (H3):
+# storage.connector_encryption_key turns it on. AES-256-GCM from RustCrypto —
+# pure Rust, no linkage to the system OpenSSL rdkafka vendors.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "getrandom"] }
+# Channel `auth.mode = "hmac"`: webhook signature verification over the raw
+# request body. Pinned to 0.12 to match `sha2` 0.10 — both track `digest` 0.10,
+# and hmac 0.13 would pull a second digest major into the tree.
+hmac = "0.12"
+hex = "0.4"
+# Webhook signatures are hex (Stripe, GitHub) or base64 (Shopify); both
+# encodings are accepted, so both decoders are needed.
+base64 = "0.22"
+rand = { version = "0.10", default-features = false, features = ["std", "std_rng", "thread_rng"] }
+governor = { version = "0.10", default-features = false, features = ["dashmap", "std"] }
+dashmap = "6"
+# Wait-free publication of the ChannelRegistry snapshot: every data-plane
+# request reads it, and the only writer stores a finished value (N17).
+arc-swap = "1"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+# ssl-vendored statically links OpenSSL into librdkafka so TLS / SASL_SSL /
+# SCRAM work without a system OpenSSL at runtime (kafka.auth support).
+#
+# Deliberately NOT cmake-build on unix: librdkafka 2.12's cmake packaging
+# generates `#define WITH_OAUTHBEARER_OIDC 0` behind an `#ifdef` guard, so
+# `curl/curl.h` is included even with curl disabled — fatal on any sysroot
+# without curl headers (musl; rust-rdkafka#827, librdkafka#5204, guard fixed
+# on librdkafka master). The native configure build defines only what is
+# enabled, so the guard behaves. cmake-build returns below for Windows only,
+# where the configure build cannot run; fold it back into one line once
+# rdkafka-sys bundles librdkafka >= 2.13.
+rdkafka = { version = "0.39", default-features = false, features = ["tokio", "ssl-vendored"] }
+utoipa = { version = "5", features = ["axum_extras", "chrono"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+
+# External DB connectors
+mongodb = { version = "3", default-features = false, features = ["compat-3-0-0", "rustls-tls", "dns-resolver"] }
+# connection-manager: reconnecting handle — a plain MultiplexedConnection is
+# dead for the process lifetime after one Redis restart (proposal D15).
+# `script`: EVALSHA-cached Lua for the shared rate-limit window, whose second
+# must come from Redis's own clock (N8).
+redis = { version = "1.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager", "script"] }
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+
+# TLS support. `rustls` is a direct dependency only so `server::tls` can install
+# a process-level CryptoProvider: the graph enables both `rustls/aws-lc-rs`
+# (axum-server, reqwest) and `rustls/ring` (mongodb, sqlx), which makes rustls
+# refuse to pick one on its own.
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std"] }
+
+# OpenTelemetry
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["rt-tokio", "trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "trace"] }
+tracing-opentelemetry = { version = "0.33", default-features = false }
+
+# TCP socket configuration
+socket2 = "0.6"
+
+# Windows cannot run librdkafka's configure build, so it keeps cmake-build —
+# features unify additively with the base rdkafka entry above, per target.
+# See that entry for why unix deliberately avoids cmake-build.
+[target.'cfg(windows)'.dependencies]
+rdkafka = { version = "0.39", default-features = false, features = ["cmake-build"] }
+
+[dev-dependencies]
+# test-util (paused clocks, time::advance) is test-only; feature unification
+# gives the in-crate #[cfg(test)] modules access without shipping it in release.
+tokio = { version = "1", features = ["test-util"] }
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["kafka", "postgres", "mysql", "mongo", "elastic_search", "redis"] }
+# Already a runtime dependency; listed here so integration tests can build a
+# connection for direct backend tests (RedisRateLimitBackend takes a
+# ConnectionManager). Same version req as the runtime dep, so no extra crate.
+redis = { version = "1.5", default-features = false, features = ["tokio-comp", "aio", "connection-manager"] }
+# In-process self-signed certificate generation for the TLS tests (no
+# external `openssl` CLI dependency).
+rcgen = "0.14"
+# Pre-main initializer: the one place `std::env::set_var` is sound in a
+# multi-threaded test binary (secret_references_test's env:// fixture).
+ctor = "0.4"
+# Property-based tests: the SQL renderer's value-independence invariant and
+# route-matching totality (in-crate #[cfg(test)] modules).
+proptest = "1"

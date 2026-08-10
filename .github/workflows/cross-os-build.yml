@@ -26,17 +26,19 @@ on:
   push:
     branches: [main, "release/**", "v[0-9]+.[0-9]+.[0-9]+"]
     paths:
-      - "src/**"
-      - "migrations/**"
-      - "build.rs"
+      - "crates/orion-server/src/**"
+      - "crates/orion-server/migrations/**"
+      - "crates/orion-server/build.rs"
+      - "crates/orion-server/Cargo.toml"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/cross-os-build.yml"
   pull_request:
     paths:
-      - "src/**"
-      - "migrations/**"
-      - "build.rs"
+      - "crates/orion-server/src/**"
+      - "crates/orion-server/migrations/**"
+      - "crates/orion-server/build.rs"
+      - "crates/orion-server/Cargo.toml"
       - "Cargo.toml"
       - "Cargo.lock"
       - ".github/workflows/cross-os-build.yml"

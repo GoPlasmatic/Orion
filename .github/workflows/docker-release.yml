@@ -79,7 +79,7 @@ jobs:
           # dispatch override) said onto image tags, OCI labels and the Helm
           # chart. One refusal for both release paths, so they cannot drift.
           if [ "${RELEASE}" = "1" ]; then
-            CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+            CARGO_VERSION=$(grep -m1 '^version = ' crates/orion-server/Cargo.toml | cut -d'"' -f2)
             if [ "${VERSION}" != "${CARGO_VERSION}" ]; then
               echo "::error::Release version says ${VERSION} but Cargo.toml says ${CARGO_VERSION} — the image would be labelled with a version the binary does not report. Release from a ref whose Cargo.toml agrees."
               exit 1

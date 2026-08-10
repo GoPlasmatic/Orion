@@ -263,8 +263,8 @@ jobs:
       - name: Install system dependencies
         uses: ./.github/actions/apt-build-deps
 
-      - name: Assemble and verify-build the publish tarball
-        run: cargo package --locked
+      - name: Assemble and verify-build the publish tarballs
+        run: cargo package --locked --workspace
 
   # docs.yml only fires on merges touching docs/**, so without this a PR
   # can break the book (dangling SUMMARY entry, bad include) and nobody

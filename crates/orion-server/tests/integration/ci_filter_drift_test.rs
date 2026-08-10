@@ -20,7 +20,11 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-const WORKFLOW: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/.github/workflows/ci.yml");
+// The manifest dir is crates/orion-server; the workflow lives at the repo root.
+const WORKFLOW: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../.github/workflows/ci.yml"
+);
 const INTEGRATION_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/integration");
 
 /// Module names (file stems) under `tests/integration/` that declare at least
