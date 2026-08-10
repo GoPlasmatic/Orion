@@ -59,8 +59,8 @@ channels police their own ingress.
 > declares an `auth` block (API key or HMAC signature). There is no built-in
 > JWT/OIDC verification and no mTLS termination. If your channels are reachable
 > by anything you do not control, front them with a gateway, service mesh, or
-> reverse proxy — see [Security](./features/security.md) for what to configure.
-> <!-- TODO(docs2): operate/security.md becomes the owner in Phase 3 (T3.5). -->
+> reverse proxy — see [Secure an Instance](./operate/security.md) for what to
+> configure.
 
 For a fleet, a gateway still earns its place — with Orion as an upstream that
 needs fewer of the gateway's compensating features.

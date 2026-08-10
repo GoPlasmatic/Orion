@@ -2647,7 +2647,7 @@ key_path  = "/etc/orion/tls/server.key"
 ## Getting help
 
 - [Config Reference](../reference/configuration.md) — every key, with defaults
-- [Observability](../features/observability.md) — the full metrics list
-- [Maintainability](../features/maintainability.md) — backup, restore, and audit logs
+- [Metrics Reference](../reference/metrics.md) — the full metrics list
+- [Back Up & Restore](./backup-restore.md) and [Audit Logs](./audit-logs.md)
 - [CHANGELOG](https://github.com/GoPlasmatic/Orion/blob/main/CHANGELOG.md)
 - [Open an issue](https://github.com/GoPlasmatic/Orion/issues)

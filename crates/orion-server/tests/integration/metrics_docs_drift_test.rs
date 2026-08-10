@@ -182,7 +182,7 @@ fn no_documented_metric_is_a_ghost() {
         .collect();
     assert!(
         ghosts.is_empty(),
-        "docs/src/features/observability.md documents metrics the binary does not emit \
+        "docs/src/reference/metrics.md documents metrics the binary does not emit \
          (a rename with a missed doc update looks exactly like this): {ghosts:?}"
     );
 }

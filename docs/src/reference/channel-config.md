@@ -65,7 +65,7 @@ These fields sit on the channel object itself, beside `config`. They decide how 
 | `consumer_group` | string | No | — | Kafka consumer group name. At most 255 characters. |
 | `priority` | number | No | `0` | Route-match precedence. Routes match by priority descending, then segment count descending, then channel name — deterministic on every node. |
 
-`rest` and `http` route identically: both must declare `methods` and `route_pattern`, both register in the route table, and both stay reachable by name at `/api/v1/data/{name}`. An async channel's pattern serves at `/{pattern}/async`, whatever its `channel_type`. A `kafka` channel registers its `topic` as a consumer at startup and on engine reload; config-file topic mappings take precedence over channel-declared ones (see [Kafka Consumer Configuration](../features/extensibility.md#kafka-consumer-configuration)).
+`rest` and `http` route identically: both must declare `methods` and `route_pattern`, both register in the route table, and both stay reachable by name at `/api/v1/data/{name}`. An async channel's pattern serves at `/{pattern}/async`, whatever its `channel_type`. A `kafka` channel registers its `topic` as a consumer at startup and on engine reload; config-file topic mappings take precedence over channel-declared ones (see [Kafka Consumer Configuration](./configuration.md#kafka)).
 
 **`route_pattern` grammar.** The pattern must start with `/`. It must not contain whitespace, `?`, `#`, or `%`. No segment may be empty (no `//`, no trailing `/`). A parameter is a whole segment written `{name}`; the name must match `[A-Za-z_][A-Za-z0-9_]*` and be unique within the pattern. Captured parameters reach the workflow as `metadata.params` — see the [Workflow Schema](./workflows.md).
 
@@ -133,7 +133,7 @@ Rules:
 - **`env://` references resolve at channel load.** An `auth` block that cannot be built — an unset `env://` secret, for example — quarantines the channel rather than serving it unauthenticated.
 - **`auth.keys` and `auth.secret` are masked** as `"******"` in every API read. A masked value sent back on update is restored from the stored config; a sentinel with nothing to restore from is refused.
 - **Kafka and `channel_call` are exempt by design.** A Kafka record carries no header and no signature; its authentication is the broker connection's (SASL/mTLS). A `channel_call` is a step inside a request that already authenticated at its own ingress and holds no credential to present.
-- There is no built-in JWT verification. For OIDC/JWT or mTLS, put a gateway or service mesh in front — see [Security](../features/security.md).
+- There is no built-in JWT verification. For OIDC/JWT or mTLS, put a gateway or service mesh in front — see [Secure an Instance](../operate/security.md).
 
 ## Rate limiting
 
@@ -176,7 +176,7 @@ The key is part of the control, not a hint:
 
 **Cross-ingress semantics.** A Kafka record refused by the limit is not dead-lettered: its offset stays uncommitted and the consumer's capped retry backoff becomes the throttle. The exception is a `key_logic` that cannot be evaluated against the record — that fails identically on every redelivery, so the record is dead-lettered instead of blocking its partition.
 
-**Cluster mode.** Per-channel limits enforce as a shared fixed window on the cluster Redis, so the configured rate holds across all replicas combined. Platform-level limits stay per node. See [Scalability](../features/scalability.md).
+**Cluster mode.** Per-channel limits enforce as a shared fixed window on the cluster Redis, so the configured rate holds across all replicas combined. Platform-level limits stay per node. See [Cluster Mode](../operate/cluster.md).
 
 Limiter state survives engine reloads: a channel whose `requests_per_second`, `burst`, and `key_logic` are unchanged keeps its limiter, and consumed burst is not refilled. Behind a proxy, set [`rate_limit.trusted_proxies`](./configuration.md#rate-limiting) in the server config — without it, every client behind the proxy keys on the proxy's address and collapses into one bucket.
 
@@ -222,7 +222,7 @@ The semaphore is per process, as the name states: N replicas admit up to N × `m
 Rules:
 
 - Keys are scoped per channel. A request that does not carry the header is not checked.
-- The key is claimed before the workflow runs and settled once the outcome is durable. A delivery that fails without settling is re-processed on retry, not refused as a duplicate of itself. The full claim/settle argument is in [Availability](../features/availability.md).
+- The key is claimed before the workflow runs and settled once the outcome is durable. A delivery that fails without settling is re-processed on retry, not refused as a duplicate of itself. The full claim/settle argument is in [Availability](../concepts/lifecycle.md).
 - `deny` on payment-style workloads trades availability for the guarantee that a duplicate can never slip through an outage.
 
 **Kafka.** Kafka ingest deduplicates too, and needs it most: at-least-once delivery replays records the workflow already ran. The key is the record header named by `header` when the producer sets one, else the record key. A recognized duplicate is skipped and its offset committed — nothing is dead-lettered, because nothing failed. Set the key per logical event, not per entity. Deduplication narrows at-least-once; it does not make Kafka exactly-once.

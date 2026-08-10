@@ -90,7 +90,7 @@ the storage and cluster suites against real PostgreSQL and MySQL servers.
 
 | Backend    | Notes |
 |------------|-------|
-| SQLite     | Default; embedded, zero-configuration. The reference backend. Not usable in [cluster mode](../features/scalability.md). |
+| SQLite     | Default; embedded, zero-configuration. The reference backend. Not usable in [cluster mode](../operate/cluster.md). |
 | PostgreSQL | Supports cluster mode. Project deployment artifacts and examples use PostgreSQL 16. |
 | MySQL      | MySQL 8+; supports cluster mode. New in 1.0.0 — no 0.x MySQL deployment can exist to upgrade ([why](../operate/upgrading-to-1.0.md#which-backend-were-you-actually-on)). |
 
@@ -102,7 +102,7 @@ the storage and cluster suites against real PostgreSQL and MySQL servers.
   installers and Homebrew) for `aarch64-apple-darwin`,
   `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and
   `x86_64-pc-windows-msvc`. The rationale for what is and is not on that
-  list lives on the [Deployability](../features/deployability.md) page.
+  list lives on the [Deploy with Docker](../operate/docker.md) page.
 - **From source** — any platform with a Rust 1.88+ toolchain; Linux and macOS
   are exercised routinely, and CI runs on Linux.
 

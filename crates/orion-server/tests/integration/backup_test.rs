@@ -2,7 +2,7 @@
 //!
 //! There is no restore endpoint to test: restore is the offline
 //! stop → replace the database file → start procedure documented in
-//! `docs/src/features/maintainability.md` (O5/C20). This file was named
+//! `docs/src/operate/backup-restore.md` (O5/C20). This file was named
 //! `backup_restore_test.rs` while covering only create/list/contains-data.
 
 use crate::common;

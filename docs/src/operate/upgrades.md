@@ -10,8 +10,7 @@ so nothing is redeployed and nothing is re-imported.
 ## The order that works
 
 1. **Back up the database.** Every later step is reversible if this one
-   happened. See [Maintainability](../features/maintainability.md).
-   <!-- TODO(docs2): repoint to operate/backup-restore.md in Phase 3. -->
+   happened. See [Back Up & Restore](./backup-restore.md).
 2. **Run `orion-server preflight` with the new binary against the old
    database.** It is read-only, needs only `storage.url`, and names every stored
    channel and workflow the new version would refuse. This is the step that

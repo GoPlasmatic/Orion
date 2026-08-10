@@ -47,7 +47,7 @@ On the synchronous HTTP path a channel's `timeout_ms` is honored as declared: no
 
 `timeout_ms` is channel configuration: mutable at runtime through the admin API, and not validated against either ceiling. The clamp is what keeps a config change from becoming an outage. The worst a channel can do is time out sooner than the operator's ceiling — never hold the poll loop or a worker past it. A channel that genuinely needs longer on those paths needs the transport setting raised, and that decision belongs to the operator who owns the consumer and the worker pool, not to the channel author.
 
-Stated normatively in: [Resilience](../features/resilience.md#timeouts), with both ceilings in [Configuration](./configuration.md).
+Stated normatively in: [Timeouts, Retries & Circuit Breakers](../operate/failure-handling.md#bound-how-long-anything-may-take), with both ceilings in [Configuration](./configuration.md).
 
 ## Why forwarded headers are ignored by default
 
@@ -97,7 +97,7 @@ The ordering around the swap is deliberate:
 
 A cluster resync — triggered when another node's mutation advances the shared config epoch — is this same reload plus a connector-registry refresh and eviction of all cached connector pools, because a remote node cannot know *which* connector changed; pools rebuild lazily on next use.
 
-Stated normatively in: [Availability](../features/availability.md#hot-reload).
+Stated normatively in: [The Entity Lifecycle](../concepts/lifecycle.md#what-moves-the-engine).
 
 ## The guard pipeline
 

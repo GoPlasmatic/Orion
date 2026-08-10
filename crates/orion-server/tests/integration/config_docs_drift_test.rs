@@ -319,11 +319,6 @@ const NOT_A_SERVER_SETTING: &[(&str, &str, &str)] = &[
          Service named `orion-server` produces",
     ),
     (
-        "ORION_ADMIN_AUTH__API_KEY",
-        "docs/src/features/deployability.md",
-        "the name this page shipped wrong until 1.0, now quoted as the mistake",
-    ),
-    (
         "ORION_CORS_ALLOWED_ORIGINS",
         "",
         "compose interpolation, resolved by `docker compose` in the operator's \

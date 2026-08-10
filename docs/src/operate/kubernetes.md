@@ -1,10 +1,14 @@
 # Kubernetes (Helm)
 
-Orion ships an official Helm chart that deploys the production topology from
-[Dev & Prod Environments](./environments.md) in one command: **N stateless
-replicas in cluster mode** behind a Service, sharing one **PostgreSQL/MySQL**
-and one **Redis**, with a **pre-upgrade migration Job**, graceful rolling
-deploys (`/readyz` drain), an optional HPA, and a PodDisruptionBudget.
+Orion ships an official Helm chart that deploys the
+[cluster topology](./cluster.md) in one command. What you get:
+
+- **N stateless replicas in cluster mode** behind a Service.
+- **One shared PostgreSQL or MySQL, and one shared Redis.**
+- **A pre-upgrade migration Job**, so replicas never migrate at boot.
+- **Graceful rolling deploys** that surge rather than dip, draining through
+  `/readyz`.
+- **An optional CPU-based HPA** and a PodDisruptionBudget.
 
 The chart is linted and rendered in CI, and every release publishes it to
 GHCR as an OCI artifact — no chart repository to add:
@@ -22,8 +26,8 @@ helm install orion deploy/helm/orion
 The chart installs with `ORION_ENVIRONMENT=production` by default, which
 enforces admin auth and refuses permissive CORS at boot — so a bare
 `helm install` **will not come up until you provide admin API keys** (or opt
-into the dev stack below). That's deliberate: the failure is loud at install
-time, not silent in production.
+into the dev stack below). The failure is loud at install time rather than
+silent in production.
 
 ## Quick Start (dev/demo)
 
@@ -162,8 +166,9 @@ seccomp. `/tmp` is an emptyDir and `persistence.mountPath` (default
 The metrics listener is dedicated and unauthenticated by design — on the main
 listener `/metrics` sits behind admin auth, and a scraper should not hold a
 credential that can also rewrite workflows. Keep it cluster-internal, or turn
-it off with `metrics.enabled=false` (the 1.0 operational alerts then have no
-scrape target).
+it off with `metrics.enabled=false` — the alerts in
+[Monitoring › What to alert on](./monitoring.md#what-to-alert-on) then have no
+scrape target.
 
 ## Upgrades
 
@@ -247,13 +252,14 @@ helm install orion oci://ghcr.io/goplasmatic/charts/orion --version 1.0.0 \
 The combination matters: a ReadWriteOnce claim cannot serve a surge replica
 (hence `Recreate` and one replica), and a hook Job cannot share the replica's
 volume (hence boot-time migration instead of the Job). Backups then land
-under `/app/data/backups` — see
-[Maintainability](../features/maintainability.md).
+under `/app/data/backups` — see [Back Up & Restore](./backup-restore.md).
 
-## See Also
+## Related
 
-- [Dev & Prod Environments](./environments.md) — the topology this chart deploys
-- [Deployability](../features/deployability.md) — all distribution channels
-- [Scalability](../features/scalability.md) and [Availability](../features/availability.md) — cluster-mode behavior
+- [Cluster Mode & High Availability](./cluster.md) — what this chart is
+  configuring, and why each piece is there
+- [Deploy with Docker](./docker.md) — the same shape without Kubernetes
+- [Production Checklist](./production-checklist.md) — before this serves real
+  traffic
 - [Config Reference](../reference/configuration.md) — every `ORION_*` key `extraEnv` can set
 - [Chart source](https://github.com/GoPlasmatic/Orion/tree/main/deploy/helm/orion) — templates, `values.yaml`, `values.schema.json`

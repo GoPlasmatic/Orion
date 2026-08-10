@@ -71,6 +71,6 @@ Orion serves metrics at `GET /metrics` in Prometheus text format. The route exis
 
 ## Related
 
-- [Observability](../features/observability.md) — enable metrics, structured logging, OTLP tracing, and the health endpoints.
+- [Monitoring & Alerts](../operate/monitoring.md) — enable metrics, structured logging, OTLP tracing, and the health endpoints.
 - [Configuration Reference](./configuration.md#logging-and-metrics) — the `[metrics]` and `[logging]` settings, including `bind_addr`.
 - [CLI Reference](./cli.md) — `orion-cli metrics` fetches this endpoint from the terminal.

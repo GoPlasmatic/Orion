@@ -21,7 +21,7 @@ to a repeatedly failing backend until a recovery timeout elapses. See
 
 **Closure (of a package)**: the selected channels, their workflows, and every
 connector those workflows reference — what `package export` computes and
-ships. See [Packages & Promotion](../topology/packages.md).
+ships. See [Promote Between Environments](../operate/promotion.md).
 
 **Config epoch**: a shared counter in the database, advanced by every mutation;
 cluster replicas poll it and resync when it moves.
@@ -65,7 +65,7 @@ response cache, backpressure, timeout — that run on every ingress before the
 workflow. See [Channel Configuration](./channel-config.md).
 
 **Modular monolith**: one Orion instance running many independently shipped
-services side by side. See [Packages & Promotion](../topology/packages.md).
+services side by side. See [Promote Between Environments](../operate/promotion.md).
 
 **Operation gates**: per-connector booleans under `operations` that permit or
 refuse each data operation (`read`, `insert`, `update`, `delete`, `upsert`,
@@ -73,17 +73,17 @@ refuse each data operation (`read`, `insert`, `update`, `delete`, `upsert`,
 
 **Package**: the channels, workflows, and connectors of one service, versioned
 as a unit and promoted between instances. See
-[Packages & Promotion](../topology/packages.md).
+[Promote Between Environments](../operate/promotion.md).
 
 **Promotion**: moving a package between instances through `export`, `plan`,
-and `apply`. See [Packages & Promotion](../topology/packages.md).
+and `apply`. See [Promote Between Environments](../operate/promotion.md).
 
 **Quarantine**: the state of a channel that failed to build during an engine
 reload; it is not served until the next successful reload.
 
 **Receipt (package receipt)**: the target instance's stored record of a package
 application; an applied version is content-immutable. See
-[Packages & Promotion](../topology/packages.md).
+[Promote Between Environments](../operate/promotion.md).
 
 **Rollout bucket**: the stable request hash that decides which workflow version
 serves a call during a percentage rollout. See

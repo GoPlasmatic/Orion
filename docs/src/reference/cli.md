@@ -99,7 +99,7 @@ Example: `orion-server dump-openapi > openapi.json`
 
 ### `package`
 
-Exports a package — selected channels, their workflows, and every connector those workflows reference — and promotes it between instances. The artifact is one JSON document. Every subcommand except `lint` calls an instance's admin API, authenticating with the `ORION_ADMIN_TOKEN` environment variable. The model is described in [Packages & Promotion](../topology/packages.md).
+Exports a package — selected channels, their workflows, and every connector those workflows reference — and promotes it between instances. The artifact is one JSON document. Every subcommand except `lint` calls an instance's admin API, authenticating with the `ORION_ADMIN_TOKEN` environment variable. The model is described in [Promote Between Environments](../operate/promotion.md).
 
 ```bash
 orion-server package <export|lint|plan|apply|diff> [flags]
@@ -372,5 +372,5 @@ Example: `orion-cli mcp serve --server http://localhost:8080 --http --bind 0.0.0
 
 - [Configuration Reference](./configuration.md) — every server setting and its `ORION_*` override.
 - [Admin API](./admin-api.md) — the HTTP endpoints `orion-cli` drives.
-- [Packages & Promotion](../topology/packages.md) — the promotion model behind `orion-server package`.
+- [Promote Between Environments](../operate/promotion.md) — the promotion model behind `orion-server package`.
 - [OpenAPI](./openapi.md) — the spec `dump-openapi` prints.

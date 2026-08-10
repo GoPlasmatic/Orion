@@ -37,7 +37,7 @@ You create a connector through the [Admin API](./admin-api.md#connectors):
 - **`name`**: required, at most 255 characters. Workflows and channel stores reference the connector by this name. Connectors are unversioned — an update replaces the stored config.
 - **`config`**: the per-type object documented below. Its `type` field selects the shape.
 - **`enabled`**: defaults to `true`. A disabled connector is never loaded; export → import preserves the flag ([endpoints](./admin-api.md#connectors)).
-- **`tags`**: selection labels for `?tag=` filtering and [package export](../topology/packages.md).
+- **`tags`**: selection labels for `?tag=` filtering and [package export](../operate/promotion.md).
 
 > [!NOTE]
 > Connector configs ignore unknown top-level fields, so rows written by older versions keep loading. The `operations`, `retry`, and `dialect` blocks are the exception: each refuses unknown keys, as its section states. A misspelled control would otherwise read as protection while providing none.

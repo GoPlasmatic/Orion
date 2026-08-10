@@ -57,7 +57,7 @@ Any value starting with `prod` (case-insensitive) is a production environment, w
 - **CORS may not be `["*"]`.** The wildcard is rejected; list explicit origins.
 - **A cluster may not migrate at boot.** `cluster.enabled = true` with `storage.auto_migrate = true` is refused — see [`auto_migrate` in a cluster](#storage).
 
-That is the whole mechanism — it does not change any other default. Everything else on this page is still yours to set, and the [Production Checklist](#production-checklist) is the list worth walking.
+That is the whole mechanism — it does not change any other default. Everything else on this page is still yours to set, and the [Production Checklist](../operate/production-checklist.md) is the list worth walking.
 
 The variable is `ORION_ENVIRONMENT`, derived from the field name like every other override. `ORION_ENV` was the pre-1.0 alias and is now refused at startup rather than silently ignored.
 
@@ -515,45 +515,10 @@ Orion's own per-request trace records — rows in the `traces` table, read via `
 
 `mode = "off"` applies to the **synchronous** endpoint, where the caller already holds the answer. It does not disable persistence for `POST /{channel}/async`: appending `/async` *is* a request for a result to be fetched later, so the trace row is written before the `202` is returned and `trace_id` is always present. `off` is safe to combine with async channels.
 
-## Built-in Capabilities
+## Related
 
-All capabilities are compiled into a single binary and controlled at runtime:
-
-| Capability | Configuration | Default |
-|-----------|--------------|---------|
-| Database backend | `storage.url` scheme | SQLite |
-| Multi-instance HA | `cluster.enabled` | Disabled |
-| Kafka | `kafka.enabled` | Disabled |
-| Kafka SASL/TLS | `kafka.auth.security_protocol` | Plaintext |
-| OpenTelemetry | `tracing.enabled` | Disabled |
-| Trace persistence | `trace_storage.mode` | `sync` |
-| TLS/HTTPS | `server.tls.enabled` | Disabled |
-| Response compression | `server.compression.enabled` | Disabled |
-| Swagger UI / OpenAPI spec | `server.docs.enabled` | Enabled outside production |
-| SQL connectors | `db_read`/`db_write` functions | Always available |
-| Redis cache | `cache_read`/`cache_write` with Redis backend | Always available |
-| MongoDB connector | `mongo_read` function | Always available |
-| Portable data dialect | `data_query`/`data_write` against SQL, MongoDB, or Elasticsearch | Always available |
-| Elasticsearch connector | `es` connector type | Always available |
-| Rate limiting | `rate_limit.enabled` | Disabled |
-| Metrics | `metrics.enabled` | Disabled |
-| Admin authentication | `admin_auth.enabled` | Disabled |
-
-## Production Checklist
-
-Everything here is off or permissive by default, because defaults serve a laptop. Setting `environment = "production"` makes the first two fatal rather than advisory; the rest are on you.
-
-| Area | Do this |
-|---|---|
-| **Environment** | `ORION_ENVIRONMENT=production` — makes missing admin auth and wildcard CORS startup errors. |
-| **Admin auth** | `admin_auth.enabled = true` with at least one strong key, ideally as `sha256:<digest>`. Plan rotation with a second key. |
-| **CORS** | Replace `["*"]` with explicit origins. |
-| **TLS** | Terminate TLS — `server.tls` here, or at a load balancer in front. |
-| **Database** | PostgreSQL or MySQL for anything multi-replica. Size `storage.max_connections` against the server's limit × replica count. |
-| **Cluster** | Running more than one replica? `cluster.enabled = true` with a shared `redis_url`, `auto_migrate = false`, `orion-server migrate` as a deploy step, and a stable `instance_id` per replica. Without it, config changes reach only the node that received them. |
-| **Rate limiting** | `rate_limit.enabled = true`, and set `trusted_proxies` if anything proxies traffic to Orion — otherwise every client shares one bucket. |
-| **Circuit breakers** | `engine.circuit_breaker.enabled = true` when workflows call external services. |
-| **Retention** | `trace_queue.retention_hours` and `audit.retention_days` both bounded — neither table is trimmed by anything else. |
-| **Observability** | `metrics.enabled = true`, `logging.format = "json"`, and `tracing.enabled = true` pointed at a collector. |
-| **Kafka** | Managed broker? `[kafka.auth]` with `sasl_ssl`, and `kafka.dlq.enabled = true` so a poison message cannot stall a partition. |
-| **Shutdown** | Keep `shutdown_drain_secs` + `shutdown_force_timeout_secs` under your orchestrator's termination grace period. |
+- [Production Checklist](../operate/production-checklist.md) — which of these
+  settings to change before an instance takes real traffic.
+- [Secure an Instance](../operate/security.md) — the security settings in
+  context, with the reasoning.
+- [CLI Reference](./cli.md) — `validate-config`, `migrate`, and the rest.

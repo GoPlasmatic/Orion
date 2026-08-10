@@ -31,25 +31,20 @@
 
 # Operate
 
+- [Production Checklist](./operate/production-checklist.md)
+- [Deploy with Docker](./operate/docker.md)
+- [Deploy on Kubernetes (Helm)](./operate/kubernetes.md)
+- [Cluster Mode & High Availability](./operate/cluster.md)
+- [Secure an Instance](./operate/security.md)
+- [Monitoring & Alerts](./operate/monitoring.md)
+- [Traces & Async Processing](./operate/traces.md)
+- [Timeouts, Retries & Circuit Breakers](./operate/failure-handling.md)
+- [Promote Between Environments](./operate/promotion.md)
+- [Back Up & Restore](./operate/backup-restore.md)
+- [Audit Logs](./operate/audit-logs.md)
 - [Upgrades](./operate/upgrades.md)
   - [Upgrading to 1.0.0](./operate/upgrading-to-1.0.md)
-
-# Deployment & Topology
-
-- [Dev & Prod Environments](./topology/environments.md)
-- [Packages & Promotion](./topology/packages.md)
-- [Kubernetes (Helm)](./topology/kubernetes.md)
-
-# Production Features
-
-- [Observability](./features/observability.md)
-- [Resilience](./features/resilience.md)
-- [Security](./features/security.md)
-- [Scalability](./features/scalability.md)
-- [Deployability](./features/deployability.md)
-- [Extensibility](./features/extensibility.md)
-- [Availability](./features/availability.md)
-- [Maintainability](./features/maintainability.md)
+- [Troubleshooting](./operate/troubleshooting.md)
 
 # Tutorials
 

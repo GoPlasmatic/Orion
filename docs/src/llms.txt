@@ -49,22 +49,20 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 
 ## Operations & deployment
 
+- [Production Checklist](https://goplasmatic.github.io/Orion/operate/production-checklist.html): every pre-go-live setting, with the page that owns each
+- [Deploy with Docker](https://goplasmatic.github.io/Orion/operate/docker.html): single container, SQLite volumes, the HA compose topology, upgrades
+- [Kubernetes (Helm)](https://goplasmatic.github.io/Orion/operate/kubernetes.html): chart, values, probes, migration Job, cluster mode
+- [Cluster Mode & High Availability](https://goplasmatic.github.io/Orion/operate/cluster.html): requirements, what is shared vs per-node, migrations as a deploy step, sizing
+- [Secure an Instance](https://goplasmatic.github.io/Orion/operate/security.html): admin auth, data-plane auth, TLS, trusted proxies, secrets, SSRF, origins
+- [Monitoring & Alerts](https://goplasmatic.github.io/Orion/operate/monitoring.html): logging, Prometheus, OTLP, health endpoints, what to alert on
+- [Traces & Async Processing](https://goplasmatic.github.io/Orion/operate/traces.html): trace storage modes, the async queue, the DLQ, retention
+- [Timeouts, Retries & Circuit Breakers](https://goplasmatic.github.io/Orion/operate/failure-handling.html): the four timeout levels, the HTTP-only retry rule, breakers, graceful shutdown
+- [Promote Between Environments](https://goplasmatic.github.io/Orion/operate/promotion.html): the five package verbs, receipts, secrets, mid-apply failure modes, rollback
+- [Back Up & Restore](https://goplasmatic.github.io/Orion/operate/backup-restore.html): per-backend backup, the offline restore procedure, package artifacts as estate backup
+- [Audit Logs](https://goplasmatic.github.io/Orion/operate/audit-logs.html): filtering, change context, retention, dropped-event alerting
 - [Upgrades](https://goplasmatic.github.io/Orion/operate/upgrades.html): the standing upgrade procedure, preflight first, how a renamed key fails by surface
 - [Upgrading to 1.0.0](https://goplasmatic.github.io/Orion/operate/upgrading-to-1.0.html): every 0.3.0 → 1.0.0 break, grouped by type, with the preflight scanner that finds them
-- [Dev & Prod Environments](https://goplasmatic.github.io/Orion/topology/environments.html): single node to HA topology
-- [Packages & Promotion](https://goplasmatic.github.io/Orion/topology/packages.html): exporting, planning, applying and diffing a package between instances; receipts, secrets, rollback
-- [Kubernetes (Helm)](https://goplasmatic.github.io/Orion/topology/kubernetes.html): chart, values, probes, cluster mode
-
-## Production features
-
-- [Observability](https://goplasmatic.github.io/Orion/features/observability.html): Prometheus metrics, health checks, tracing
-- [Resilience](https://goplasmatic.github.io/Orion/features/resilience.html): circuit breakers, retries, trace DLQ, backpressure
-- [Security](https://goplasmatic.github.io/Orion/features/security.html): admin/channel auth, secret references, masking, encryption at rest
-- [Scalability](https://goplasmatic.github.io/Orion/features/scalability.html): cluster mode, shared guards, sizing
-- [Deployability](https://goplasmatic.github.io/Orion/features/deployability.html): binaries, Docker, Helm, platform matrix
-- [Connectors & Extensibility](https://goplasmatic.github.io/Orion/features/extensibility.html): HTTP, DB, cache, MongoDB, Elasticsearch, Kafka connectors
-- [Availability](https://goplasmatic.github.io/Orion/features/availability.html): HA topology, failure modes, drills
-- [Maintainability](https://goplasmatic.github.io/Orion/features/maintainability.html): backups, migrations, audit logs, upgrades
+- [Troubleshooting](https://goplasmatic.github.io/Orion/operate/troubleshooting.html): symptom-indexed fixes — quarantine, degraded health, 429s behind a proxy, open breakers, DLQ, Kafka lag, empty context
 
 ## Optional
 

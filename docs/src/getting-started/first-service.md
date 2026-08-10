@@ -147,6 +147,6 @@ orion-cli send hello -d '{ "data": { "name": "World" } }'
   then ship it to a second instance as a versioned package.
 - [Build a Service with Claude Code](../ai/claude-code.md) — hand the four steps
   above to an AI assistant and describe what you want instead.
-- [Security](../features/security.md) — the data plane you just called does not
-  authenticate. Read this before anything you do not control can reach it.
-  <!-- TODO(docs2): repoint to ../operate/security.md in Phase 3 (T3.5). -->
+- [Secure an Instance](../operate/security.md) — the data plane you just called
+  does not authenticate. Read this before anything you do not control can reach
+  it.

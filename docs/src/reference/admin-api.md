@@ -205,47 +205,32 @@ log.
 
 Kafka brokers are covered by `orion-server test-connectivity`.
 
-<!-- TODO(docs2): the Export & Promotion walkthrough, the package CLI section,
-and Secrets in an exported bundle move to operate/promotion.md in Phase 3
-(docs-implementation-plan.md T3.2). The on_conflict matrix stays here. -->
-
 ## Export & Promotion
 
 All three primitives export and import, so an estate can live in git rather than
-only in the database: snapshot an environment, diff staging against production,
-review a change before it lands, recover after one. These per-kind endpoints
-are the primitive layer; the entities of one service promote together as a
-**package** — see [Packages & Promotion](../topology/packages.md) for that
-flow end to end.
+only in the database. Each `/export` emits the shape its `/import` accepts, so
+the round trip needs no reshaping in between.
 
-```bash
-# Snapshot an environment into version control
-for kind in workflows channels connectors; do
-  curl -s "$ORION/api/v1/admin/$kind/export" | jq '.data' > "estate/$kind.json"
-done
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/v1/admin/{workflows,channels,connectors}/export` | Export every entity of that kind. `?tag=` and `?status=` narrow the set |
+| POST | `/api/v1/admin/{workflows,channels,connectors}/import` | Bulk import. `?on_conflict=` selects the collision policy; `?dry_run=true` reports what would happen |
 
-# Validate the bundle before it goes anywhere (a CI runner needs no secrets)
-curl -s -X POST "$ORION/api/v1/admin/workflows/import?dry_run=true" \
-  -H 'Content-Type: application/json' --data @estate/workflows.json
+Each export reads inside **one repeatable-read transaction**, so the result is a
+consistent snapshot — rows mutated mid-export cannot be skipped or duplicated.
+(On MySQL this relies on InnoDB's default REPEATABLE READ isolation; lowering it
+session-wide weakens the guarantee.)
 
-# Promote
-curl -s -X POST "$ORION/api/v1/admin/workflows/import" \
-  -H 'Content-Type: application/json' --data @estate/workflows.json
-```
+Every entity response also carries `content_hash`: `sha256:…` over the canonical
+*importable content*, with the DB-owned fields (`version`, `status`, timestamps,
+`rollout_percentage`) excluded. Equal hashes mean "importing one over the other
+is a no-op", which is how drift is detected without comparing bodies. Hashes are
+computed over stored values, so only `env://`/`vault://`-authored entities hash
+identically to their masked exports.
 
-Each `/export` emits the shape its `/import` accepts, so the round trip needs no
-reshaping in between. Each export reads inside **one repeatable-read
-transaction**, so the result is a consistent snapshot — rows mutated
-mid-export cannot be skipped or duplicated. (On MySQL this relies on
-InnoDB's default REPEATABLE READ isolation; lowering it session-wide weakens
-the guarantee.)
-
-Every entity response also carries `content_hash`: `sha256:…` over the
-canonical *importable content* — the DB-owned fields (`version`, `status`,
-timestamps, `rollout_percentage`) excluded. Equal hashes mean "importing one
-over the other is a no-op", which is how drift is detected without comparing
-bodies. Hashes are computed over stored values, so only `env://`/`vault://`-
-authored entities hash identically to their masked exports.
+The operator's guide to using these — the `orion-server package` verbs, the
+receipt model, secrets handling, and mid-apply failure modes — is
+[Promote Between Environments](../operate/promotion.md).
 
 ### Promoting over an existing estate (`on_conflict`)
 
@@ -271,33 +256,6 @@ composes with every mode and reports the action the real import would take.
 The two upsert-ish modes refuse an id that appears twice in one batch — the
 second item would silently rewrite what the first just staged.
 
-### The `orion-server package` CLI
-
-The flows above are composed, end to end, by the packaging CLI — the
-recommended way to promote an estate. (Concepts and walkthrough:
-[Packages & Promotion](../topology/packages.md).)
-
-```bash
-export ORION_ADMIN_TOKEN=…   # sent as the admin bearer token
-
-# Capture a package from Dev: the tagged channels, their workflows, and every
-# connector those workflows reference (closure via /dependencies)
-orion-server package export -s https://dev.orion.internal \
-  --tag pkg:payments --name payments --version 1.4.0 -o payments-1.4.0.json
-
-orion-server package lint  -f payments-1.4.0.json          # offline, CI gate
-orion-server package plan  -s https://qa.orion.internal  -f payments-1.4.0.json
-orion-server package apply -s https://qa.orion.internal  -f payments-1.4.0.json
-orion-server package diff  -s https://prod.orion.internal -f payments-1.4.0.json
-```
-
-`apply` claims the package receipt as `staged`, stages every entity with
-`on_conflict=new_version` (connectors → workflows → channels), activates in
-dependency order with `reload=defer`, reloads the engine once, and flips the
-receipt to `applied`. Re-running an identical artifact is a no-op; a changed
-artifact reusing an applied version is refused — bump the package version.
-Every call is stamped with `X-Orion-Change-Context: package=<name>@<version>`.
-
 ### Grouping a multi-request operation (`X-Orion-Change-Context`)
 
 A promotion is many API calls. Send the same `X-Orion-Change-Context` header
@@ -309,19 +267,13 @@ the batch summary row.
 
 ### Secrets in an exported bundle
 
-A connector export is masked, which is what makes it safe to commit — and which
-decides how a connector must be authored if it is to survive the trip:
-
-| Authored as | Exports as | Re-imports? |
-|---|---|---|
-| `"token": "env://STRIPE_KEY"` | `"env://STRIPE_KEY"` | **Yes** — a reference names a variable; it is not itself a credential |
-| `"token": "sk_live_..."` | `"******"` | **No** — the import is refused |
-
-The refusal is deliberate. Importing `******` would store it as a real
-credential and fail at the first request instead of here, where the operator is
-looking at the file. **Author connectors with `env://` references** and bundles
-round-trip cleanly; the secret then lives in the deployment environment, which
-is where it belongs.
+A connector export is masked, which is what makes it safe to commit. Only a
+connector authored with an `env://` or `vault://` reference round-trips: a
+literal credential exports as `"******"` and is **refused** on import, rather
+than stored as a credential that fails at the first request. The rules are in
+[Connector Types › Secret masking](./connectors.md#secret-masking), and what
+they mean for promotion is in
+[Promote Between Environments](../operate/promotion.md#secrets-survive-the-trip--if-authored-as-references).
 
 `POST /{kind}/validate` runs the same validator `POST /{kind}` runs, so
 `valid: true` means create would accept the payload — it is never laxer. An
@@ -385,7 +337,7 @@ still recorded. Anything that does not make it is counted in
 
 An async trace whose persistence keeps failing lands in the dead-letter
 queue and is retried automatically with backoff (see
-[Resilience](../features/resilience.md)). These endpoints are the operator
+[Timeouts, Retries & Circuit Breakers](../operate/failure-handling.md)). These endpoints are the operator
 view of that queue — inspect what is stuck, put an entry back in line, or
 clear out entries that will never succeed.
 
@@ -407,7 +359,7 @@ clear out entries that will never succeed.
 
 A **package** is the channels, workflows, and connectors of one service,
 promoted between instances as a versioned unit
-([Packages & Promotion](../topology/packages.md)). This is the single
+([Promote Between Environments](../operate/promotion.md)). This is the single
 package-aware surface of the admin API. Packaging itself —
 computing an artifact's dependency closure, planning, staging, activating —
 lives in client tooling built on the per-kind endpoints above; what the server

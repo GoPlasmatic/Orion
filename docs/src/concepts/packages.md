@@ -90,7 +90,7 @@ procedural:
 
 - [Test & Promote a Service](../getting-started/test-and-promote.md) — export a
   package and apply it to a second instance, start to finish.
-- [Packages & Promotion](../topology/packages.md) — the five verbs, the secrets
+- [Promote Between Environments](../operate/promotion.md) — the five verbs, the secrets
   rules, and the `requires` boundary in detail.
 - [Run the Examples](../getting-started/examples.md) — six packages in source
   form, ready to deploy.

@@ -269,7 +269,7 @@ a `409` instead: content changes ride a version bump.
 
 - [Packages](../concepts/packages.md) — what a package is, and why the module
   boundary sits there.
-- [Packages & Promotion](../topology/packages.md) — receipts, rollback, secrets
+- [Promote Between Environments](../operate/promotion.md) — receipts, rollback, secrets
   that survive the trip, and the `requires` boundary.
 - [CLI Reference](../reference/cli.md) — every flag of `lint`, `dry-run`,
   `test`, and `package`.
