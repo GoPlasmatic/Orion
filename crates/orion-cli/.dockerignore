@@ -1,9 +1,0 @@
-target/
-.git/
-.github/
-.claude/
-tests/
-*.md
-LICENSE
-dist-workspace.toml
-docker-compose.yml

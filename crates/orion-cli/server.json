@@ -3,7 +3,7 @@
   "name": "io.github.GoPlasmatic/orion",
   "description": "Build and operate declarative REST/Kafka services on Orion: 46 tools over the full admin API.",
   "repository": {
-    "url": "https://github.com/GoPlasmatic/Orion-cli",
+    "url": "https://github.com/GoPlasmatic/Orion",
     "source": "github"
   },
   "version": "0.2.1",
