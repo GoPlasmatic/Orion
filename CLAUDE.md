@@ -6,10 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Orion is a declarative services runtime written in Rust. It exposes business logic management through channels (service endpoints) and workflows (task pipelines powered by dataflow-rs) via a REST API. Ships as a single binary with an embedded SQLite database.
 
+This repo is a cargo workspace (monorepo) with two crates: `crates/orion-server` (the runtime — everything below describes it) and `crates/orion-cli` (the CLI + MCP server, which has its own `CLAUDE.md`). `default-members` points bare cargo commands at the server; use `--workspace` or `-p orion-cli` to reach the CLI. Only the UI lives in a separate repo (Orion-ui).
+
 - **Rust Edition:** 2024. **MSRV: 1.88** (`rust-version` in Cargo.toml) — driven by let-chains (`if let Some(x) = a && let Some(y) = b`, stabilized in 1.88) and dependency requirements (`mongodb`, `serde_with`, `time`, `tonic`).
 - **Core dependencies:** `dataflow-rs` 3.1 (workflow engine), `axum` 0.8 (HTTP), `sqlx` 0.8 (database), `sea-query` 0.32 (portable SQL builder)
 - **`datalogic-rs` 5 (JSONLogic) and `datavalue` are reached through `dataflow-rs`**, not pinned directly. dataflow-rs's public API is written in terms of both — `TaskContext::datalogic()` returns `&Arc<datalogic_rs::Engine>`, the whole context/path surface is `datavalue::OwnedDataValue` — so a second pin would let their major versions skew from the ones dataflow-rs links. Add `use dataflow_rs::datalogic_rs;` (or `::datavalue`) to a module that needs them; a bare `datalogic_rs::` path will not resolve, and note that a file-level `use` does **not** reach an inner `#[cfg(test)] mod tests`. The trade-off: Orion cannot enable a datalogic feature on its own, so `ext-string` (`starts_with`, `upper`, `split`), `ext-array`, `ext-math` and the date operators are only available if dataflow-rs enables them.
-- **Single binary:** `orion-server` (server, `src/main.rs`)
+- **Binaries:** `orion-server` (`crates/orion-server/src/main.rs`) and `orion-cli` (`crates/orion-cli/src/main.rs`)
 
 ## Build & Development Commands
 
@@ -19,14 +21,17 @@ cargo build --release              # Release build
 
 cargo run -- --config ./config.toml  # Run with config file
 
-cargo test                         # Run all tests
+cargo test                         # Run the server suite (default-members)
+cargo test --workspace             # Server + CLI suites — what CI runs
 cargo test <test_name>             # Run a single test by name
 
-cargo clippy                       # Lint
-cargo fmt                          # Format code
+cargo clippy --workspace --all-targets  # Lint (matches CI)
+cargo fmt --all                    # Format code
+
+just e2e                           # CLI e2e suite against a real orion-server
 ```
 
-Docker: `docker build -t orion .` (multi-stage: rust:1.93-slim -> debian:trixie-slim).
+Docker: `docker build -t orion .` for the server; `docker build -f crates/orion-cli/Dockerfile -t orion-cli .` for the CLI (both multi-stage from the workspace-root context).
 
 ## Runtime Configuration
 
@@ -47,6 +52,8 @@ All capabilities are compiled into a single binary — no feature flags. Behavio
 ## Architecture
 
 ### Module Structure
+
+Paths below are relative to `crates/orion-server/`.
 
 ```
 src/
@@ -139,14 +146,15 @@ SQLite (default), PostgreSQL, or MySQL — selected at runtime from `storage.url
 
 ## Testing
 
-- **Integration tests** in `tests/integration/`: one binary — each file is a module declared in `tests/integration/main.rs`. Use `common::test_app()` which creates an in-memory SQLite DB, full `AppState`, and Axum router. Tests use `tower::ServiceExt::oneshot()` (no HTTP server needed).
+- **Integration tests** in `crates/orion-server/tests/integration/`: one binary — each file is a module declared in `tests/integration/main.rs`. Use `common::test_app()` which creates an in-memory SQLite DB, full `AppState`, and Axum router. Tests use `tower::ServiceExt::oneshot()` (no HTTP server needed).
 - **Test helpers** in `tests/integration/common/mod.rs`:
   - `test_app()` — returns a ready-to-use `Router` with in-memory DB
   - `json_request(method, uri, body)` — builds an HTTP `Request<Body>` with JSON content-type
   - `body_json(response)` — extracts and parses the response body as `serde_json::Value`
 - **Pattern for new integration tests:** Clone the app, call `.oneshot(json_request(...))`, assert status, parse body with `body_json()`. See `tests/integration/admin_workflows_test.rs` for examples. Declare the new module in `tests/integration/main.rs`.
 - **Other test binaries:** `tests/cluster/` (multi-node contracts), `tests/storage_postgres.rs`, `tests/storage_mysql.rs`, `tests/schema_parity.rs` (container-gated), `tests/metrics_exposition.rs` (isolated for its process-global metrics recorder), plus container-gated modules inside the integration binary listed in `.github/workflows/ci.yml` (kept in sync by `ci_filter_drift_test`).
-- **Benchmarks:** `tests/benchmark/bench.sh` — 6 scenarios using `hey` HTTP load generator.
+- **Benchmarks:** `crates/orion-server/tests/benchmark/bench.sh` — 6 scenarios using `hey` HTTP load generator.
+- **CLI e2e:** `crates/orion-cli/tests/e2e/run.sh` — shell-based suites driving a real server with the CLI binary (`just e2e` locally; the `cli-e2e` CI job).
 
 ## Configuration
 

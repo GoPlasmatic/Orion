@@ -183,7 +183,7 @@ curl -s -X POST http://localhost:8080/api/v1/data/hello \
 
 ## Orion CLI
 
-The [Orion CLI](https://github.com/GoPlasmatic/Orion-cli) provides a command-line interface and MCP server for managing Orion. No curl commands needed.
+The [Orion CLI](https://github.com/GoPlasmatic/Orion/tree/main/crates/orion-cli) provides a command-line interface and MCP server for managing Orion. No curl commands needed.
 
 **Homebrew** (macOS and Linux):
 
@@ -191,22 +191,15 @@ The [Orion CLI](https://github.com/GoPlasmatic/Orion-cli) provides a command-lin
 brew install GoPlasmatic/tap/orion-cli
 ```
 
-**Shell installer** (Linux/macOS):
-
-```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.sh | sh
-```
-
-**PowerShell** (Windows):
-
-```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.ps1 | iex"
-```
+**Shell / PowerShell installers**: attached to each `orion-cli-v*` release on the
+[releases page](https://github.com/GoPlasmatic/Orion/releases) — copy the
+`orion-cli-installer.sh` (Linux/macOS) or `orion-cli-installer.ps1` (Windows)
+one-liner from the release notes.
 
 **From source** (requires Rust 1.88+):
 
 ```bash
-cargo install --git https://github.com/GoPlasmatic/Orion-cli
+cargo install --git https://github.com/GoPlasmatic/Orion orion-cli
 ```
 
 **Usage:**
@@ -224,7 +217,7 @@ The full lifecycle — create, activate, dry-run, then send live data — in one
 <div class="asciinema-player" data-cast="casts/cli-lifecycle.cast"></div>
 <span class="asciinema-caption">▶ Click to play. Dry-run testing and live traffic flow through the same workflow.</span>
 
-See the [CLI reference](https://github.com/GoPlasmatic/Orion-cli) for the full command list, or set up the [MCP Server](./mcp-setup.md) for AI assistant integration.
+See the [CLI crate](https://github.com/GoPlasmatic/Orion/tree/main/crates/orion-cli) for the full command list, or set up the [MCP Server](./mcp-setup.md) for AI assistant integration.
 
 ## Testing Workflows Offline
 

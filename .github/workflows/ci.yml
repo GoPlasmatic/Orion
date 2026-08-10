@@ -50,7 +50,7 @@ jobs:
           components: rustfmt
 
       - name: Check formatting
-        run: cargo fmt --check
+        run: cargo fmt --all --check
 
   lint:
     name: Lint
@@ -73,7 +73,7 @@ jobs:
         uses: ./.github/actions/apt-build-deps
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       # docs.rs renders this crate whether or not the library is a supported
       # embedding API, and a broken intra-doc link ships as broken there. The
@@ -109,7 +109,7 @@ jobs:
       # contributor on 1.88 can build AND test, which also keeps
       # dev-dependencies honest about the MSRV.
       - name: Test on MSRV
-        run: cargo test --no-fail-fast
+        run: cargo test --workspace --no-fail-fast
 
   examples:
     name: Examples
@@ -203,12 +203,44 @@ jobs:
       # fails, so one broken unit test suppresses every integration result
       # and a red CI is diagnosed one round-trip at a time.
       - name: Run tests
-        run: cargo test --all-targets --no-fail-fast
+        run: cargo test --workspace --all-targets --no-fail-fast
 
       # --all-targets silently skips doctests; the config structs carry
       # heavily documented examples that would otherwise never compile.
       - name: Run doctests
         run: cargo test --doc
+
+  # The CLI's shell e2e suite drives a real orion-server over HTTP with the
+  # orion-cli binary — the one place the two crates' API contract is
+  # exercised end to end at the same commit. Before the monorepo merge this
+  # needed an out-of-band server binary and could not run per PR at all.
+  cli-e2e:
+    name: CLI E2E (orion-cli against orion-server)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master (toolchain from `with`)
+        with:
+          toolchain: "stable"
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install system dependencies
+        uses: ./.github/actions/apt-build-deps
+
+      - name: Build both binaries
+        run: cargo build -p orion-server -p orion-cli
+
+      # jq and curl are preinstalled on the GitHub ubuntu images.
+      - name: Run the e2e suite
+        run: |
+          E2E_SKIP_BUILD=1 ORION_BIN="$PWD/target/debug/orion-server" \
+            ./crates/orion-cli/tests/e2e/run.sh
 
   # Advisories AND license compatibility / bans / source policy over the
   # whole tree (proposal T12) — deny.toml is the policy, including the one

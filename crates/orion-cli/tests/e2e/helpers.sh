@@ -32,13 +32,14 @@ SUITE_START_TIME=0
 
 # ── Paths ───────────────────────────────────────────────────────
 E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$E2E_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd "$E2E_DIR/../.." && pwd)"          # crates/orion-cli
+WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"   # repo root (cargo target dir lives here)
 FIXTURES_DIR="$E2E_DIR/fixtures"
 
-# Orion server binary (from the main Orion repo)
+# Orion server binary (cargo build -p orion-server puts it in the workspace target/)
 ORION_BIN="${ORION_BIN:-}"
-# Orion CLI binary (built from this repo)
-ORION_CLI="${ORION_CLI:-$PROJECT_ROOT/target/debug/orion-cli}"
+# Orion CLI binary (built from this workspace)
+ORION_CLI="${ORION_CLI:-$WORKSPACE_ROOT/target/debug/orion-cli}"
 
 # ── Test Port & Server URL ──────────────────────────────────────
 E2E_PORT="${E2E_PORT:-0}"

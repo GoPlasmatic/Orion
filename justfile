@@ -2,13 +2,21 @@
 # Recipes mirror what CI actually runs (.github/workflows/ci.yml), so a green
 # `just check` locally means the PR gate will agree.
 
-# The full pre-PR gate in one command.
+# The full pre-PR gate in one command. --workspace matches CI: bare cargo
+# commands only cover the server (default-members), but the PR gate runs
+# both crates.
 check:
-    cargo fmt --check
-    cargo clippy --all-targets -- -D warnings
-    cargo test
+    cargo fmt --all --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo test --workspace
     cargo test --doc
     RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib
+
+# CLI end-to-end suite: builds both binaries from this tree, then drives a
+# real orion-server over HTTP with the orion-cli binary.
+e2e:
+    cargo build -p orion-server -p orion-cli
+    E2E_SKIP_BUILD=1 ORION_BIN=target/debug/orion-server ./crates/orion-cli/tests/e2e/run.sh
 
 # Regenerate the committed OpenAPI spec after changing routes or
 # request/response schemas (a test fails while it is stale).

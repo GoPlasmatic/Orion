@@ -13,4 +13,7 @@ ignore = [
     # the RSA path entirely. Full rationale in deny.toml. Revisit if `rsa`
     # ships a fix or sqlx swaps it out.
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0173 — proc-macro-error2 unmaintained; compile-time-only
+    # dep of tabled_derive (orion-cli). Full rationale in deny.toml.
+    "RUSTSEC-2026-0173",
 ]

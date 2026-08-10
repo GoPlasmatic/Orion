@@ -37,6 +37,16 @@ ignore = [
     # the RSA path entirely (the password rides inside TLS instead).
     # Revisit if `rsa` ships a fix or sqlx swaps it out.
     { id = "RUSTSEC-2023-0071", reason = "client-side RSA encrypt only (sqlx-mysql handshake); Marvin needs private-key ops" },
+
+    # RUSTSEC-2026-0173 — `proc-macro-error2` is unmaintained. Assessed
+    # 2026-08-10 when orion-cli joined the workspace (the advisory rode in
+    # with its `tabled` 0.20 table renderer: tabled_derive → proc-macro-error2).
+    # Compile-time-only derive-macro plumbing: nothing from the crate ships
+    # in either binary, so this is supply-chain hygiene, not a vulnerability.
+    # No tabled release without it exists yet — revisit on tabled releases,
+    # and drop the ignore when tabled_derive migrates (manyhow or
+    # proc-macro2-diagnostics are the advisory's suggested successors).
+    { id = "RUSTSEC-2026-0173", reason = "unmaintained proc-macro-only dep of tabled_derive; no runtime code ships" },
 ]
 
 [licenses]

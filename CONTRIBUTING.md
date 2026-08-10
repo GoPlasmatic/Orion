@@ -27,19 +27,25 @@ If all tests pass, you're ready to go.
 ```bash
 cargo build                        # Build (all capabilities compiled in — no feature flags)
 cargo build --release              # Release build
-cargo test                         # Run all tests
+cargo test                         # Run the server suite (default-members)
+cargo test --workspace             # Server + CLI suites — what CI runs
 cargo test <test_name>             # Run a single test by name
 cargo test --test integration      # Run the consolidated integration test binary
-cargo clippy                       # Lint
-cargo fmt                          # Format code
+cargo clippy --workspace --all-targets  # Lint (matches CI)
+cargo fmt --all                    # Format code
 ```
 
 Run `cargo clippy` and `cargo fmt` before committing — both must pass cleanly.
 
 ## Project Structure
 
+The repo is a cargo workspace: `crates/orion-server` (the runtime) and
+`crates/orion-cli` (the CLI + MCP server — see its own `CLAUDE.md` and
+`tests/e2e/`). Bare cargo commands target the server via `default-members`.
+
 ```
-src/
+crates/orion-server/
+ src/
   main.rs              # Binary entrypoint (thin wrapper over cli.rs)
   lib.rs               # Public module declarations
   bootstrap.rs         # Startup sequence: config -> pools -> repos -> engine -> server
@@ -59,7 +65,7 @@ src/
   server/              # Axum routes (routes/), middleware, AppState
   storage/             # Database abstraction, models, repositories (repositories/)
   validation/          # Input validation, SSRF protection
-tests/
+ tests/
   integration/         # Consolidated integration test binary (main.rs + *_test.rs modules)
   integration/common/  # Test helpers (test_app, json_request, body_json)
   cluster/             # Multi-node cluster suite (container-gated, #[ignore])
@@ -68,7 +74,11 @@ tests/
   storage_mysql.rs     # MySQL repository suite (container-gated)
   metrics_exposition.rs # Rendered /metrics assertions (own process — the recorder is global)
   benchmark/           # bench.sh + fixtures (hey-based performance scenarios)
-migrations/            # SQLite / Postgres / MySQL migrations (embedded at compile time)
+ migrations/           # SQLite / Postgres / MySQL migrations (embedded at compile time)
+crates/orion-cli/
+ src/commands/         # clap subcommands (one file per command group)
+ src/mcp/              # Built-in MCP server + tools
+ tests/e2e/            # Shell-based end-to-end suites (`just e2e`)
 deploy/                # Helm chart (helm/orion), HA compose drill (ha/)
 docs/                  # mdBook documentation (published to GitHub Pages)
 ```
@@ -175,7 +185,7 @@ Add unit tests inline in the relevant module using `#[cfg(test)]` blocks. See `s
 Tests that need a real backend (PostgreSQL, MySQL, MongoDB, Elasticsearch,
 Kafka, Redis, or a multi-node cluster) are `#[ignore]`d, so `cargo test` skips
 them locally. CI runs every one of them; run them yourself with Docker up
-([`tests/README.md`](tests/README.md) explains the six-binary layout, why the
+([`tests/README.md`](crates/orion-server/tests/README.md) explains the six-binary layout, why the
 backend is pinned per process, and how the CI filters are kept drift-free):
 
 ```bash

@@ -1,26 +1,28 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working on the orion-cli crate.
 
 ## Project Overview
 
-Orion CLI is a Rust CLI and MCP server for the [Orion services runtime](https://github.com/GoPlasmatic/Orion). It manages workflows, channels, connectors, data processing, engine health, and traces via HTTP against an Orion server. The binary also includes a built-in MCP server (`orion-cli mcp serve`) for AI tool integration (Claude Desktop, Cursor, etc.).
+Orion CLI is a Rust CLI and MCP server for the Orion services runtime — the `crates/orion-server` crate in this same workspace (the repo root `CLAUDE.md` covers the workspace layout; bare cargo commands there default to the server, so use `-p orion-cli` from the root or run cargo inside this crate directory). It manages workflows, channels, connectors, data processing, engine health, and traces via HTTP against an Orion server. The binary also includes a built-in MCP server (`orion-cli mcp serve`) for AI tool integration (Claude Desktop, Cursor, etc.).
 
 ## Build & Development Commands
 
 ```bash
-cargo build                    # Build
-cargo build --release          # Release build
-cargo test                     # Run unit tests
-cargo fmt --check              # Check formatting
-cargo clippy --all-targets -- -D warnings  # Lint (CI treats warnings as errors)
-cargo audit                    # Security audit
+cargo build -p orion-cli       # Build (from the workspace root)
+cargo test -p orion-cli        # Run unit tests
+cargo fmt --all --check        # Check formatting
+cargo clippy -p orion-cli --all-targets -- -D warnings  # Lint (CI treats warnings as errors)
+cargo deny check               # Dependency/licence policy (whole workspace)
 ```
 
 ### E2E Tests
 
 ```bash
-# Requires: orion-server binary, jq, curl
+# From the workspace root — builds both binaries from this tree (needs jq, curl):
+just e2e
+
+# Or directly, against any server binary:
 ORION_BIN=/path/to/orion-server ./tests/e2e/run.sh
 
 # Useful env vars:
@@ -42,7 +44,7 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 
 ## Architecture
 
-**Rust 1.85+, edition 2024, async with Tokio.**
+**Rust 1.88+ (workspace MSRV), edition 2024, async with Tokio.**
 
 ### Module Layout
 
@@ -89,6 +91,9 @@ Core: `clap` (derive) for CLI, `reqwest` (rustls-tls) for HTTP, `tokio` for asyn
 
 ### CI/CD
 
-- **CI** (`ci.yml`): fmt check → clippy → test → audit on ubuntu-22.04
-- **Release** (`release.yml`): Triggered by version tags, uses cargo-dist v0.31.0 for cross-platform builds (macOS Intel/ARM, Linux x86_64/ARM, Windows) with shell/powershell/homebrew installers
+Workflows live at the repo root (`.github/workflows/`), shared with the server:
+
+- **CI** (`ci.yml`): fmt/clippy/test run `--workspace`; the `cli-e2e` job builds both binaries and runs the e2e suite; `deny` covers the unified lockfile
+- **Release** (`release.yml`): an `orion-cli-vX.Y.Z` tag drives cargo-dist v0.31.0 cross-platform builds (macOS ARM, Linux x86_64/ARM, Windows) with shell/powershell/homebrew installers
+- **Docker + MCP registry** (`docker-release-cli.yml`): same tag builds the ghcr.io/goplasmatic/orion-cli image and republishes `server.json` to the MCP registry
 - **Homebrew tap:** GoPlasmatic/homebrew-tap

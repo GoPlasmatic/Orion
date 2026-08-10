@@ -221,7 +221,7 @@ Orion is API-first, and everything it does is also point-and-click. [Orion UI](h
 
 When AI generates a microservice, you still need to add health checks, metrics, retries, and error handling. When AI generates an Orion workflow, **all of that is already there**. The platform guarantees it.
 
-**Use the [Orion CLI's MCP server](https://github.com/GoPlasmatic/Orion-cli)** to give your AI assistant full Orion context. No manual prompt engineering needed. The MCP server exposes 46 tools covering the full Orion API: workflow syntax, available functions, connector types, and API operations. One config block and you're done (Claude Code `.mcp.json`, Claude Desktop, or any MCP client):
+**Use the [Orion CLI's MCP server](crates/orion-cli)** to give your AI assistant full Orion context. No manual prompt engineering needed. The MCP server exposes 46 tools covering the full Orion API: workflow syntax, available functions, connector types, and API operations. One config block and you're done (Claude Code `.mcp.json`, Claude Desktop, or any MCP client):
 
 ```json
 {
@@ -432,7 +432,7 @@ docker compose -f docker-compose.ha.yml up
 
 ## Performance
 
-**5K–5.7K workflow requests/sec** on a single instance, and a **58K req/s** health-check baseline, as measured on **v1.0.0** (Apple M2 Pro Mac Mini, release build, 30s per scenario, 50 concurrent connections — full raw record with run conditions in [`tests/benchmark/results/v1.0.0/`](tests/benchmark/results/v1.0.0/SUMMARY.md)):
+**5K–5.7K workflow requests/sec** on a single instance, and a **58K req/s** health-check baseline, as measured on **v1.0.0** (Apple M2 Pro Mac Mini, release build, 30s per scenario, 50 concurrent connections — full raw record with run conditions in [`tests/benchmark/results/v1.0.0/`](crates/orion-server/tests/benchmark/results/v1.0.0/SUMMARY.md)):
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="media/benchmark-dark.svg">
@@ -445,7 +445,7 @@ docker compose -f docker-compose.ha.yml up
 | Loaded estate (12 channels) | 5,167 | 9.6 ms | 18.9 ms |
 | Complex workflow (4 tasks) | 5,151 | 9.7 ms | 22.2 ms |
 
-Tail latency improved over the v0.2.0 record (simple-workflow P99 12.6 ms vs 16.7 ms) while straight-line throughput reads lower; the record's `SUMMARY.md` carries the honest comparison, including what changed on the hot path in 1.0 (always-on per-task Prometheus timing) and the capture conditions. Zero errors across every scenario, including 56 engine hot-reloads under sustained load. Run `./tests/benchmark/bench.sh` to reproduce the single-instance scenarios, and `./tests/benchmark/bench.sh cluster` to drive the HA compose stack through its load balancer (not part of this record — the capture host had no Docker).
+Tail latency improved over the v0.2.0 record (simple-workflow P99 12.6 ms vs 16.7 ms) while straight-line throughput reads lower; the record's `SUMMARY.md` carries the honest comparison, including what changed on the hot path in 1.0 (always-on per-task Prometheus timing) and the capture conditions. Zero errors across every scenario, including 56 engine hot-reloads under sustained load. Run `./crates/orion-server/tests/benchmark/bench.sh` to reproduce the single-instance scenarios, and `./crates/orion-server/tests/benchmark/bench.sh cluster` to drive the HA compose stack through its load balancer (not part of this record — the capture host had no Docker).
 
 Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mode, async-first on Tokio.
 
@@ -510,8 +510,9 @@ Manage workflows, channels, and connectors without writing curl commands:
 ```bash
 # Install
 brew install GoPlasmatic/tap/orion-cli                # Homebrew
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.sh | sh  # Shell installer
-cargo install --git https://github.com/GoPlasmatic/Orion-cli.git  # From source
+cargo install --git https://github.com/GoPlasmatic/Orion orion-cli  # From source
+# Shell/PowerShell installers are attached to each orion-cli-v* release:
+# https://github.com/GoPlasmatic/Orion/releases
 
 # Deploy a workflow from a JSON file
 orion-cli workflows create -f order-processing.json
@@ -520,7 +521,7 @@ orion-cli channels create -f orders-channel.json
 orion-cli --yes channels activate orders
 ```
 
-See [CLI Reference](https://github.com/GoPlasmatic/Orion-cli) for the full command list.
+See the [CLI guide](https://goplasmatic.github.io/Orion/tutorials/cli-setup.html) for the full command list — the CLI is developed in this repo at [crates/orion-cli](crates/orion-cli).
 
 ## Documentation
 
@@ -543,7 +544,7 @@ The full book lives at **[goplasmatic.github.io/Orion](https://goplasmatic.githu
 Orion ships with two companion projects:
 
 - **[Orion UI](https://github.com/GoPlasmatic/Orion-ui):** the admin dashboard. Manage workflows, channels, and connectors, visualize workflow pipelines, inspect audit trails, and monitor engine health from the browser.
-- **[Orion CLI](https://github.com/GoPlasmatic/Orion-cli):** the command-line interface and MCP server. Manage everything from your terminal or AI assistant.
+- **[Orion CLI](crates/orion-cli):** the command-line interface and MCP server, developed in this repo. Manage everything from your terminal or AI assistant.
 
 Under consideration: workflow marketplace (community templates), cron-based scheduling, WASM task functions, and language SDKs. Have an idea or want to push one of these forward? [Open an issue](https://github.com/GoPlasmatic/Orion/issues) or start a [discussion](https://github.com/GoPlasmatic/Orion/discussions).
 

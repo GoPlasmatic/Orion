@@ -2,7 +2,7 @@
 
 Every setting Orion has, with its real default and its environment variable. All settings have sensible defaults — `orion-server` with no config file at all starts and works. What follows is what you change when you want something other than a single-node development instance.
 
-Defaults on this page are checked against `src/config/*.rs` by an integration test, so they cannot drift from the code. A ready-to-edit file carrying the same values lives at [`config.toml.example`](https://github.com/GoPlasmatic/Orion/blob/main/config.toml.example) — it is also what the Docker image ships at `/app/config.toml`.
+Defaults on this page are checked against `src/config/*.rs` by an integration test, so they cannot drift from the code. A ready-to-edit file carrying the same values lives at [`config.toml.example`](https://github.com/GoPlasmatic/Orion/blob/main/crates/orion-server/config.toml.example) — it is also what the Docker image ships at `/app/config.toml`.
 
 ## CLI Commands
 

@@ -9,7 +9,7 @@
 
   [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
   [![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg)](https://www.rust-lang.org)
-  [![GitHub Release](https://img.shields.io/github/v/release/GoPlasmatic/Orion-cli)](https://github.com/GoPlasmatic/Orion-cli/releases)
+  [![GitHub Release](https://img.shields.io/github/v/release/GoPlasmatic/Orion?filter=orion-cli-v*)](https://github.com/GoPlasmatic/Orion/releases)
 </div>
 
 ---
@@ -453,17 +453,15 @@ docker run -p 8081:8081 ghcr.io/goplasmatic/orion-cli:latest mcp serve --http
 # macOS (Homebrew)
 brew install GoPlasmatic/tap/orion-cli
 
-# macOS / Linux (shell installer)
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.sh | sh
-
-# Windows (PowerShell)
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/GoPlasmatic/Orion-cli/releases/latest/download/orion-cli-installer.ps1 | iex"
+# macOS / Linux / Windows installers: shell and PowerShell one-liners are
+# attached to each orion-cli-v* release:
+# https://github.com/GoPlasmatic/Orion/releases
 
 # From source
-cargo install --git https://github.com/GoPlasmatic/Orion-cli.git
+cargo install --git https://github.com/GoPlasmatic/Orion orion-cli
 ```
 
-Verify with `orion-cli --version`. Requires Rust 1.85+ for source builds.
+Verify with `orion-cli --version`. Requires Rust 1.88+ for source builds.
 
 ---
 
@@ -478,7 +476,7 @@ Verify with `orion-cli --version`. Requires Rust 1.85+ for source builds.
 
 ## Contributing
 
-Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/GoPlasmatic/Orion-cli).
+Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/GoPlasmatic/Orion).
 
 ```bash
 cargo build          # Build
@@ -493,4 +491,4 @@ Apache-2.0 — see [LICENSE](LICENSE) for details.
 
 ---
 
-If Orion CLI is useful to you, a ⭐ on [GitHub](https://github.com/GoPlasmatic/Orion-cli) helps other developers find it.
+If Orion CLI is useful to you, a ⭐ on [GitHub](https://github.com/GoPlasmatic/Orion) helps other developers find it.
