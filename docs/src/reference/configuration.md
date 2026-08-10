@@ -151,6 +151,10 @@ Both endpoints are unauthenticated and the spec publishes the complete admin API
 | `storage.auto_migrate` | `true` | `ORION_STORAGE__AUTO_MIGRATE` | **Set `false` for multi-replica deployments** and run `orion-server migrate` as a deploy step — required in a production cluster. |
 | `storage.connect_retry_secs` | `60` | `ORION_STORAGE__CONNECT_RETRY_SECS` | How long startup keeps retrying an unreachable database before giving up (`0` = fail fast). Sized so a pod rides out a Postgres/MySQL failover instead of crash-looping through it. Ignored for SQLite, whose connect failures are not transient; the `auto_migrate = false` pending-migration check stays fail-fast regardless. |
 
+**Use SQLite for:** a single instance — a development or design-time node, an appliance install, anything where one process owns the database file. It is the default, provisions nothing, and creates the file on first boot. It is also the only backend with an [in-product backup](../operate/backup-restore.md#what-is-provided-per-backend).
+
+**Use PostgreSQL or MySQL for:** more than one replica, write-heavy estates, and every deployment that needs [cluster mode](../operate/cluster.md#requirements) — which refuses to start against a `sqlite:` URL, because a file is single-host. Backup and restore become your snapshot or PITR tooling's job; Orion provides neither for these backends.
+
 **Sizing the pool.** `max_connections` is per process. With N replicas, N × `max_connections` must stay below the server's own `max_connections` (PostgreSQL's default is 100, and superuser slots and other clients come out of that budget) or replicas will fail to connect under load. The default of 50 suits a single node against a dedicated database; three replicas against a stock Postgres want roughly 25 each, less whatever else connects.
 
 **`auto_migrate` in a cluster.** With `auto_migrate = true`, every replica tries to migrate at boot and they race. The intended shape is `auto_migrate = false` plus `orion-server migrate` as a pre-deploy job; startup then fails fast if migrations are still pending, instead of serving against a schema it does not understand.

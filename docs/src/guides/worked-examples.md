@@ -129,6 +129,15 @@ a webhook endpoint anyone can forge. Use `hmac` mode — see
 **What you want:** log everything, email anything above `low`, and text only the
 urgent ones.
 
+> [!IMPORTANT]
+> **Nothing is actually sent.** The `email` and `sms` tasks set flags with
+> `map`; no email leaves the process and no SMS is delivered. The example is
+> about the *routing decision*, which is the part worth version-controlling.
+>
+> To make it real, replace those `map` tasks with `http_call` tasks pointing at
+> an email and an SMS connector. The conditions do not change — see
+> [Connect Databases & APIs](../build/connectors.md).
+
 **The prompt:**
 
 ```
@@ -159,15 +168,6 @@ curl -s -X POST http://localhost:8080/api/v1/data/notifications \
 | medium | yes | yes | — |
 | high | yes | yes | yes |
 | critical | yes | yes | yes |
-
-> [!IMPORTANT]
-> **Nothing is actually sent.** The `email` and `sms` tasks set flags with
-> `map`; no email leaves the process and no SMS is delivered. The example is
-> about the *routing decision*, which is the part worth version-controlling.
->
-> To make it real, replace those `map` tasks with `http_call` tasks pointing at
-> an email and an SMS connector. The conditions do not change — see
-> [Connect Databases & APIs](../build/connectors.md).
 
 **What this shows:** the `in` operator for set membership, and a progressive
 pipeline where each task adds to the same object rather than branching away from

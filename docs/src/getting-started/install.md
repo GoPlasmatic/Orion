@@ -75,7 +75,9 @@ orion-server
 ```
 
 Nothing to provision: the database file is created on first boot and the
-migrations are embedded in the binary.
+migrations are embedded in the binary. SQLite is the right backend for one
+instance; see [which backend to
+use](../reference/configuration.md#storage) before you deploy more than one.
 
 ## Verify it
 
