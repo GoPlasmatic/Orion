@@ -567,6 +567,6 @@ the same schemas to AI assistants so generated workflows use correct field names
 - [Portable Data Dialect](./data-dialect.md) — the full envelope, operator
   vocabulary, and backend parity rules behind `data_query`/`data_write`.
 - [Connectors](./connectors.md) — per-type connector fields, retries, and
-  circuit-breaker behavior.
+  circuit-breaker behaviour.
 - [Admin API](./admin-api.md) — creating, validating, and activating the
   workflows these functions run in.

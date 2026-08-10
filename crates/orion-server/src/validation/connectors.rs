@@ -255,7 +255,7 @@ mod tests {
     // removed because constructing the typed `ConnectorType` enum directly
     // bypasses the wire-format check that the test was exercising. The
     // integration test `invalid_connector_type_emits_enum_mismatch_with_expected_got`
-    // in tests/error_envelope_test.rs covers the end-to-end behavior.
+    // in tests/error_envelope_test.rs covers the end-to-end behaviour.
 
     #[test]
     fn test_connector_config_http_valid() {

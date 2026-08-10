@@ -2,7 +2,7 @@
 //!
 //! Verifies that:
 //!   - the dry-run `/test` endpoint already returns per-step `message` snapshots
-//!     from `dataflow_rs::ExecutionTrace` (no code change — locks in the behavior)
+//!     from `dataflow_rs::ExecutionTrace` (no code change — locks in the behaviour)
 //!   - opting into `config.tracing.task_details = true` causes the engine to
 //!     capture an `ExecutionTrace` and persist it as `task_trace_json` on the
 //!     resulting trace row

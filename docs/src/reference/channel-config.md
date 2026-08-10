@@ -257,7 +257,7 @@ Rules:
 > [!WARNING]
 > Request headers are never part of the cache key. A cached entry is shared by every caller whose method, route, query, and payload agree, whatever headers they sent. If a response varies by anything a header carries, that value must appear in the payload and in `cache_key_fields` — or the channel must not cache.
 
-Behavior:
+Behaviour:
 
 - A hit is served without executing the workflow and without consuming a backpressure permit.
 - A replayed idempotency key answers `409` before the cache is consulted.

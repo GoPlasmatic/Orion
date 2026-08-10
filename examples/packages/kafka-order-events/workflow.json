@@ -1,0 +1,38 @@
+{
+  "workflow_id": "order-events",
+  "tags": ["pkg:kafka-order-events"],
+  "name": "Order Events",
+  "description": "Consumes order events from a Kafka topic: normalises the record and stamps it with the topic coordinates the ingress supplies.",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse the record body",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "event" } }
+    },
+    {
+      "id": "stamp",
+      "name": "Stamp the record's coordinates",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [
+          { "path": "data.event.source_topic", "logic": { "var": "metadata.kafka_topic" } },
+          { "path": "data.event.partition", "logic": { "var": "metadata.kafka_partition" } },
+          { "path": "data.event.offset", "logic": { "var": "metadata.kafka_offset" } }
+        ]}
+      }
+    },
+    {
+      "id": "classify",
+      "name": "Flag cancellations for review",
+      "condition": { "==": [{ "var": "data.event.status" }, "cancelled"] },
+      "function": {
+        "name": "map",
+        "input": { "mappings": [
+          { "path": "data.event.needs_review", "logic": true },
+          { "path": "data.event.reason", "logic": { "cat": ["Cancelled order ", { "var": "data.event.order_id" }] } }
+        ]}
+      }
+    }
+  ]
+}

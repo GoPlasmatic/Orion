@@ -232,7 +232,7 @@ The Admin API owns endpoint semantics: see
 When a channel resolves its workflows, Orion evaluates **active** workflows in
 descending `priority` and runs the first whose `condition` is truthy. Give a
 catch-all workflow a low priority and specific ones a higher priority to layer
-behavior.
+behaviour.
 
 ### Rollout
 

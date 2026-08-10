@@ -16,7 +16,7 @@
 - [ ] If HTTP routes or request/response schemas changed: regenerated the
       OpenAPI spec (`cargo run -- dump-openapi > docs/openapi.json` — a test
       fails if it's stale)
-- [ ] If behavior or configuration changed: docs updated (`docs/src/`, README,
+- [ ] If behaviour or configuration changed: docs updated (`docs/src/`, README,
       or `config.toml.example`)
 - [ ] If `examples/` changed: `./examples/deploy.sh <example>` still works
       against a fresh instance

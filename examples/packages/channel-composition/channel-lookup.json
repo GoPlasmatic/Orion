@@ -1,0 +1,10 @@
+{
+  "channel_id": "customer-lookup",
+  "tags": ["pkg:channel-composition"],
+  "name": "customer-lookup",
+  "channel_type": "sync",
+  "protocol": "rest",
+  "route_pattern": "/customer-lookup",
+  "methods": ["POST"],
+  "workflow_id": "customer-lookup"
+}

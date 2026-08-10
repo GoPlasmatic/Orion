@@ -332,7 +332,7 @@ fn build_request_metadata(
         json!({})
     };
     // F4: stamp the resolved channel name (overriding any caller-supplied
-    // value) so circuit-breaker keys and connector metrics are labeled
+    // value) so circuit-breaker keys and connector metrics are labelled
     // `channel:connector` instead of `unknown:connector`.
     metadata["channel"] = json!(channel);
     metadata["http_method"] = json!(method.as_str());

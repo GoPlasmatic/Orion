@@ -142,7 +142,7 @@ impl std::fmt::Display for ChannelProtocol {
     }
 }
 
-// Case-insensitive deserialize matching ChannelType's behavior.
+// Case-insensitive deserialize matching ChannelType's behaviour.
 impl<'de> Deserialize<'de> for ChannelProtocol {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;

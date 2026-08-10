@@ -1,8 +1,8 @@
 # Run the Examples
 
-The repository ships six ready-to-deploy services. Each is a **package** — the
-channel, workflow, and (when needed) connector that make up one service, grouped
-so they deploy and [promote](../concepts/packages.md) together.
+The repository ships eight ready-to-deploy services. Each is a **package** — the
+channels, workflows, and (when needed) connector that make up one service,
+grouped so they deploy and [promote](../concepts/packages.md) together.
 
 Most are self-contained: built-in functions and JSONLogic only, no database and
 no connector to set up. Every workflow here is linted and deployed end-to-end in
@@ -25,10 +25,13 @@ With a server on `http://localhost:8080`:
 ./deploy.sh high-value-order
 ```
 
-`deploy.sh` creates and activates the workflow, creates and activates the
-channel (creating the connector first, if the package has one), then POSTs
-`request.json` and prints the response. It needs `curl` and `python3`.
-Re-running is safe: objects that already exist are skipped.
+`deploy.sh` creates and activates every workflow the package ships, then every
+channel (creating the connector first, if it has one), then POSTs
+`request.json` to the primary channel and prints the response. It needs `curl`
+and `python3`. Re-running is safe: objects that already exist are skipped.
+
+A package with no HTTP route — `kafka-order-events` — deploys the same way, and
+the script prints the topic it now consumes instead of sending a request.
 
 ## The packages
 
@@ -40,13 +43,17 @@ Re-running is safe: objects that already exist are skipped.
 | [`webhook-transform`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/webhook-transform) | `POST /webhooks` | Normalize provider payloads with `var` mapping (null-safe) |
 | [`notification-routing`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/notification-routing) | `POST /notifications` | Progressive routing with the `in` set-membership operator |
 | [`postgres-orders`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/postgres-orders) | `POST /record-order` | **Connector-backed:** `data_write` insert + `data_query` with relations against PostgreSQL (ships `docker compose`) |
+| [`channel-composition`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/channel-composition) | `POST /order-enrichment` | **Two services:** one calls the other in-process with `channel_call` |
+| [`kafka-order-events`](https://github.com/GoPlasmatic/Orion/tree/main/examples/packages/kafka-order-events) | topic `orders.events` | **Kafka ingress:** consumes a topic, stamps the record's coordinates |
 
 ## What is in a package directory
 
 | File | Sent to | Purpose |
 |------|---------|---------|
 | `workflow.json` | `POST /api/v1/admin/workflows` | The task pipeline — the logic |
+| `workflow-<name>.json` *(optional)* | `POST /api/v1/admin/workflows` | Additional workflows, when the package is more than one service |
 | `channel.json` | `POST /api/v1/admin/channels` | The endpoint that routes to the workflow |
+| `channel-<name>.json` *(optional)* | `POST /api/v1/admin/channels` | Additional channels |
 | `request.json` | `POST /api/v1/data/<route>` | A sample request to try it |
 | `connector.json` *(optional)* | `POST /api/v1/admin/connectors` | A named connection to an external system, when the package needs one |
 

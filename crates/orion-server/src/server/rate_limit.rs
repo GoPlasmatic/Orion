@@ -67,7 +67,7 @@ impl RateLimitState {
 /// headers are honored only when the peer is inside `trusted_proxies` —
 /// otherwise any client could mint a fresh rate-limit bucket per request by
 /// spoofing `X-Forwarded-For`. When no `ConnectInfo` is present (e.g.
-/// `tower::oneshot` in tests), falls back to the header-only behavior.
+/// `tower::oneshot` in tests), falls back to the header-only behaviour.
 pub(crate) fn extract_client_ip(req: &Request, trusted_proxies: &[IpNet]) -> String {
     let peer = req
         .extensions()

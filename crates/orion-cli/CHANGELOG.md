@@ -56,7 +56,7 @@ lives at the repo root — `tests/e2e/`, with its data-driven use cases in
 
 ## [0.2.1]
 
-MCP registry and directory readiness release. No CLI behavior changes.
+MCP registry and directory readiness release. No CLI behaviour changes.
 
 ### Added
 

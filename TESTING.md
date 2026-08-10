@@ -109,7 +109,7 @@ the same tree — the one place the full contract chain (server ⇄ `orion-api`
 The last suite is data-driven, from two case directories with distinct
 roles: [`examples/use-cases/`](examples/use-cases/) deploys the shipped
 example packages (workflows referenced by file, never copied) and asserts
-their live responses, and `tests/e2e/cases/` holds runtime-behavior cases
+their live responses, and `tests/e2e/cases/` holds runtime-behaviour cases
 (archive quarantine, dry-run traces, secret masking, error paths). Adding a
 `.json` case to either extends the suite with no code changes.
 

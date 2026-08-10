@@ -38,7 +38,7 @@ tests/e2e/
 ├── run.sh          # entry point: prerequisites, build, server lifecycle, suite discovery
 ├── helpers.sh      # framework: assertions, CLI wrappers, server control, case runner
 ├── suites/         # 12 suites, sourced in filename order
-├── cases/          # data-driven runtime-behavior cases (run by suite 13)
+├── cases/          # data-driven runtime-behaviour cases (run by suite 13)
 └── fixtures/       # workflow / connector / request JSON used by the suites
 ```
 
@@ -55,7 +55,7 @@ tests/e2e/
 | `10_engine_control` | Engine status and hot reload |
 | `11_error_handling` | Error envelope rendering, failure exit codes |
 | `12_full_lifecycle` | A full create→activate→send→archive walk |
-| `13_use_cases` | Data-driven cases: scenarios from [`examples/use-cases/`](../../examples/use-cases/) (which deploy the shipped example packages) plus the runtime-behavior cases in `cases/` |
+| `13_use_cases` | Data-driven cases: scenarios from [`examples/use-cases/`](../../examples/use-cases/) (which deploy the shipped example packages) plus the runtime-behaviour cases in `cases/` |
 
 The suites speak the v1.0 API: every send goes through a channel bound to
 exactly one workflow (`create_channel` in `helpers.sh`), and reading a
@@ -69,5 +69,5 @@ A new test inside an existing suite is a bash function plus a
 (format: [`examples/use-cases/README.md`](../../examples/use-cases/README.md))
 are picked up by suite 13 automatically and split by role: a *scenario*
 showing off a shipped example package goes in `examples/use-cases/` with its
-workflow referenced by file; a *runtime-behavior* check (lifecycle,
+workflow referenced by file; a *runtime-behaviour* check (lifecycle,
 masking, error paths) goes in `cases/` here.

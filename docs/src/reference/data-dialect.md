@@ -41,9 +41,9 @@ at MongoDB and it renders a `find` filter document; at Elasticsearch and it
 renders a Query DSL search body. The results come back as the same JSON row
 array either way.
 
-A complete call also binds request values through `params` and declares the
-entities it touches in `schema` — without a schema, the call is refused (see
-[The schema registry](#the-schema-registry)):
+A complete call does two more things. It binds request values through `params`,
+and it declares the entities it touches in `schema`. A call with no schema is
+refused — see [The schema registry](#the-schema-registry):
 
 ```json
 {
@@ -240,7 +240,7 @@ fixture dataset through a table of envelopes and asserts an identical result —
 or an identical capability error — on SQLite, PostgreSQL, MySQL, MongoDB and
 Elasticsearch. The table below is the complete list of divergences.
 
-| Feature | Behavior |
+| Feature | Behaviour |
 |---------|----------|
 | `returning` | Native on PostgreSQL/SQLite. On MySQL it is rejected (`FeatureUnsupportedByTarget`); single-row inserts report `last_insert_id` instead. On MongoDB inserts report generated `ids`. On Elasticsearch it is rejected; inserts report `ids` |
 | `include` | SQL connectors only. Rejected on MongoDB and Elasticsearch (`FeatureUnsupportedByTarget`) rather than returning parents with silently empty children — fetch related documents with a second query, or model them embedded/nested and filter with `some`. On SQL it requires a `sort` and is bounded per parent (see [Relations](#relations-and-includes)) |
@@ -254,7 +254,7 @@ Elasticsearch. The table below is the complete list of divergences.
 
 <details><summary>Why case sensitivity is not normalized</summary>
 
-Case behavior is a property of the stored data rather than of the query — no
+Case behaviour is a property of the stored data rather than of the query — no
 query-time flag can make an analyzed Elasticsearch field case-sensitive again.
 The dialect states the divergence instead of half-normalizing it.
 
@@ -288,9 +288,9 @@ check works across all backends.
 
 ## Bulk writes
 
-A bulk `insert` (an array of `values`) reports through one shape on every
-backend, but the underlying guarantee differs and no envelope can make the
-three models the same:
+A bulk `insert` — an array of `values` — reports through one shape on every
+backend. The underlying guarantee differs, and no envelope can make the three
+models the same:
 
 | Backend | Model | On failure |
 |---|---|---|

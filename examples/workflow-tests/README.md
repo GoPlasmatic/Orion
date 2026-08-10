@@ -7,8 +7,10 @@ orion-server test examples/workflow-tests
 ```
 
 Every case runs the real workflow JSON through the real engine with no server,
-no database and no network. Connector-backed tasks would be answered from a
-`stubs` block; these examples are self-contained and need none.
+no database and no network. Connector-backed tasks are answered from a `stubs`
+block — `channel-composition-vip.case.json` stubs the `channel_call` its
+workflow makes, which is how a composed service is tested without deploying the
+service it calls.
 
 ## Writing a case
 

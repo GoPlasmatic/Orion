@@ -1,0 +1,6 @@
+{
+  "name": "a placed order event passes through unflagged",
+  "workflow": "../packages/kafka-order-events/workflow.json",
+  "input": { "order_id": "ORD-7782", "status": "placed", "total": 60 },
+  "expect": { "data.event.needs_review": null, "data.event.status": "placed" }
+}

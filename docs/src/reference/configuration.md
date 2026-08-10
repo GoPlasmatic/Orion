@@ -225,7 +225,7 @@ Three surfaces report this:
 ### Circuit Breaker
 
 Fields below configure the global breaker; trip conditions and per-instance
-behavior are specified in
+behaviour are specified in
 [Connector Types › Circuit breakers](./connectors.md#circuit-breakers).
 
 Sheds load to a failing dependency: after `failure_threshold` consecutive failures the breaker opens and calls return `503 CIRCUIT_OPEN` immediately, until `recovery_timeout_secs` elapses and a probe is admitted.

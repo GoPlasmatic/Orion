@@ -91,7 +91,7 @@ docs/                  # mdBook documentation (published to GitHub Pages)
 
 ## Your First Contribution
 
-Issues labeled [`good first issue`](https://github.com/GoPlasmatic/Orion/labels/good%20first%20issue)
+Issues labelled [`good first issue`](https://github.com/GoPlasmatic/Orion/labels/good%20first%20issue)
 are scoped to be finishable without knowing the whole codebase, and
 [`help wanted`](https://github.com/GoPlasmatic/Orion/labels/help%20wanted)
 marks work we'd love a hand with. Not sure where something lives? Ask in
@@ -214,7 +214,7 @@ from CI's name filters fails the build, in both directions.
 with the `orion-cli` binary — both built from your tree — through 12 shell
 suites. The last suite is data-driven: scenario cases in
 `examples/use-cases/` deploy the shipped example packages, and
-runtime-behavior cases live in `tests/e2e/cases/`. It needs `jq` and
+runtime-behaviour cases live in `tests/e2e/cases/`. It needs `jq` and
 `curl`; CI runs it on every PR (the `cli-e2e` job):
 
 ```bash

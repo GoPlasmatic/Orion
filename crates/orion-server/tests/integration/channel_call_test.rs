@@ -378,7 +378,7 @@ async fn call_depth_beyond_configured_max_is_refused() {
 }
 
 /// Entry-level cycle refusal: caller-supplied `metadata` is merged into the
-/// message (documented data-plane behavior), so a request arriving with the
+/// message (documented data-plane behaviour), so a request arriving with the
 /// target already in `_orion_call_chain` trips the guard on the first hop.
 /// There the task's Validation error reaches the client unwrapped — a 400
 /// whose message pins the "cycle detected" refusal text and chain rendering.

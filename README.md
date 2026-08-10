@@ -372,7 +372,7 @@ All functions are built into every binary. The dataflow-rs runtime contributes t
 
 ## When Things Go Wrong
 
-Production services fail, and Orion handles the standard failure modes without you writing retry loops or fallback logic: a downed external API trips its circuit breaker, slow workflows time out with a 504, traffic spikes hit the rate limiter (429) and backpressure (503), failed async tasks land in a dead-letter queue with automatic retry, and duplicate requests are caught by idempotency keys. Each behavior is configurable per channel or connector — the [Resilience Guide](https://goplasmatic.github.io/Orion/operate/failure-handling.html) covers every failure mode and its knobs.
+Production services fail, and Orion handles the standard failure modes without you writing retry loops or fallback logic: a downed external API trips its circuit breaker, slow workflows time out with a 504, traffic spikes hit the rate limiter (429) and backpressure (503), failed async tasks land in a dead-letter queue with automatic retry, and duplicate requests are caught by idempotency keys. Each behaviour is configurable per channel or connector — the [Resilience Guide](https://goplasmatic.github.io/Orion/operate/failure-handling.html) covers every failure mode and its knobs.
 
 **Debugging is built in.** Every request gets a `x-request-id` propagated through the entire pipeline, structured JSON logs show what each task received and produced, and OpenTelemetry traces `http_call`/`channel_call` chains end to end. Inspect circuit breakers, DLQ traces, and debug endpoints via the [API Reference](https://goplasmatic.github.io/Orion/reference/admin-api.html).
 

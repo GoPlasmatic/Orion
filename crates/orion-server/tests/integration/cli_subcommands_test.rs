@@ -118,7 +118,7 @@ fn write_temp_toml(content: &str, suffix: &str) -> String {
 /// The config layering rule stated in the docs — env override beats config
 /// file beats built-in default — asserted end to end through the real
 /// binary. This is how every containerized deployment is configured, and
-/// until this test the rule had no behavioral coverage
+/// until this test the rule had no behavioural coverage
 /// (`config_docs_drift_test` only proves the overrides are documented).
 #[test]
 fn validate_config_layering_env_beats_file_beats_default() {

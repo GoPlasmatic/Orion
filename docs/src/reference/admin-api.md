@@ -64,10 +64,12 @@ Both channels and workflows follow a **draft → active → archived** lifecycle
 
 A channel links to a workflow via `workflow_id`. Activating a channel makes it available for data processing; activating a workflow makes its logic available to the engine.
 
-Activation order is enforced, not merely conventional: a workflow
-refuses to activate while a connector its tasks reference is missing or of the
-wrong type, and a channel refuses to activate while its `workflow_id` is unset,
-names a workflow that does not exist, or names one with no active version. The
+Activation order is enforced, not merely conventional.
+
+A workflow refuses to activate while a connector its tasks reference is missing
+or of the wrong type. A channel refuses to activate while its `workflow_id` is
+unset, names a workflow that does not exist, or names one with no active
+version. The
 working order for a bundle is therefore connectors → workflows → channels —
 the same order `?dry_run=true` lets you verify before writing anything.
 

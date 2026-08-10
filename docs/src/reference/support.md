@@ -31,7 +31,7 @@ Orion follows [semantic versioning](https://semver.org):
 - **Patch** (`1.0.x`) — bug and security fixes. No config, API, or database
   schema changes beyond what the fix requires; always safe to roll forward.
 - **Minor** (`1.x.0`) — new capabilities, new configuration keys (with
-  defaults that preserve existing behavior), additive database migrations,
+  defaults that preserve existing behaviour), additive database migrations,
   and possibly an MSRV bump (see below).
 - **Major** (`2.0.0`) — reserved for breaking changes to the Admin/Data APIs,
   configuration semantics, or workflow/channel definitions.

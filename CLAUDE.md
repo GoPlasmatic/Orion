@@ -35,7 +35,7 @@ Docker: `docker build -t orion .` for the server; `docker build -f crates/orion-
 
 ## Runtime Configuration
 
-All capabilities are compiled into a single binary — no feature flags. Behavior is controlled at runtime:
+All capabilities are compiled into a single binary — no feature flags. Behaviour is controlled at runtime:
 
 | Capability | Configuration | Default |
 |-----------|--------------|---------|
@@ -154,7 +154,7 @@ SQLite (default), PostgreSQL, or MySQL — selected at runtime from `storage.url
 - **Pattern for new integration tests:** Clone the app, call `.oneshot(json_request(...))`, assert status, parse body with `body_json()`. See `tests/integration/admin_workflows_test.rs` for examples. Declare the new module in `tests/integration/main.rs`.
 - **Other test binaries:** `tests/cluster/` (multi-node contracts), `tests/storage_postgres.rs`, `tests/storage_mysql.rs`, `tests/schema_parity.rs` (container-gated), `tests/metrics_exposition.rs` (isolated for its process-global metrics recorder), plus container-gated modules inside the integration binary listed in `.github/workflows/ci.yml` (kept in sync by `ci_filter_drift_test`).
 - **Benchmarks:** `crates/orion-server/tests/benchmark/bench.sh` — 6 scenarios using `hey` HTTP load generator.
-- **End-to-end:** `tests/e2e/run.sh` at the repo root — shell suites driving a real server with the CLI binary (`just e2e` locally; the `cli-e2e` CI job). Its data-driven cases split by role: scenario cases in `examples/use-cases/` (deploying the example packages, workflows referenced by file), runtime-behavior cases in `tests/e2e/cases/`. The full suite-by-suite map of the test estate is `TESTING.md`.
+- **End-to-end:** `tests/e2e/run.sh` at the repo root — shell suites driving a real server with the CLI binary (`just e2e` locally; the `cli-e2e` CI job). Its data-driven cases split by role: scenario cases in `examples/use-cases/` (deploying the example packages, workflows referenced by file), runtime-behaviour cases in `tests/e2e/cases/`. The full suite-by-suite map of the test estate is `TESTING.md`.
 
 ## Configuration
 

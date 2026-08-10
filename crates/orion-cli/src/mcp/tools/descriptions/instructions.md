@@ -18,7 +18,7 @@ Orion MCP server — manage workflows, channels, connectors, data processing, ex
 4. `channels_create` — create channels (service endpoints) that link to workflows
 5. `workflows_activate` / `channels_activate` — activate the draft entities
 6. `engine_reload` — **required** after creating/updating workflows and channels to activate changes
-7. `workflows_test` — dry-run a workflow with sample data to verify behavior
+7. `workflows_test` — dry-run a workflow with sample data to verify behaviour
 8. `data_send_sync` / `data_send_async` — send real data for processing
 
 ## Important Notes

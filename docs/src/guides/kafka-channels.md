@@ -4,11 +4,8 @@ A Kafka channel runs a workflow for every record on a topic. The workflow is the
 same shape as an HTTP channel's — what changes is how records arrive, what
 happens when one fails, and what "processed once" does and does not mean.
 
-> [!NOTE]
-> The repository ships no runnable Kafka example package, so the configuration
-> below is documented from the settings surface rather than extracted from a
-> package CI deploys. The workflow half is covered by the shipped examples;
-> only the Kafka wiring is untested here.
+The repository ships a runnable example — `examples/packages/kafka-order-events`
+— and the JSON below is included from it.
 
 ## 1. Enable the consumer
 
@@ -42,19 +39,12 @@ Two ways, and they merge:
 ```toml
 # In the config file
 [[kafka.topics]]
-topic = "incoming-orders"
-channel = "orders"
+topic = "orders.events"
+channel = "order-events"
 ```
 
 ```json
-// Or on the channel itself, stored in the database
-{
-  "channel_id": "orders", "name": "orders",
-  "channel_type": "async", "protocol": "kafka",
-  "topic": "incoming-orders",
-  "consumer_group": "orion-prod",
-  "workflow_id": "order-processing"
-}
+{{#include ../../../examples/packages/kafka-order-events/channel.json}}
 ```
 
 Both sets are merged at startup, duplicates deduplicated with the config file
@@ -63,6 +53,13 @@ topic set changes, so adding a Kafka channel needs no restart.
 
 **Prefer the channel-declared form.** It travels with the channel through
 `package export`, which a config-file mapping does not.
+
+A Kafka channel is created and activated like any other, and it does not need a
+reachable broker to do so — the consumer registers on the next engine reload:
+
+```bash
+./examples/deploy.sh kafka-order-events
+```
 
 ## 3. Read the record in the workflow
 
@@ -77,8 +74,14 @@ as an HTTP one does. The record's coordinates arrive as metadata:
 | `metadata.kafka_offset` | Offset within the partition |
 
 ```json
-{ "path": "data.event.source_topic", "logic": { "var": "metadata.kafka_topic" } }
+{{#include ../../../examples/packages/kafka-order-events/workflow.json}}
 ```
+
+Nothing in that workflow is Kafka-specific except the metadata paths — which is
+the point. The same task pipeline would serve an HTTP channel; only the ingress
+changed. Its logic is covered offline by
+`examples/workflow-tests/kafka-order-events-*.case.json`, which run it through
+the real engine with no broker.
 
 ## 4. Give poison messages somewhere to go
 

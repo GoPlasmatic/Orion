@@ -95,37 +95,57 @@ grep -oE "goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+" \
 - [x] orion-cli clap help told operators to "run 'engine reload' after to
   apply" on activate/archive; the server auto-reloads on status changes. Fixed
   in six places — the four subcommand help strings plus both command-group
-  `long_about` lifecycle lines, which said `draft -> activate -> engine reload
-  -> live`. The `--defer` help is unchanged and still correct.
-- [ ] `crates/orion-server/src/query/error.rs` runtime string says
-  "behaviour" (quoted verbatim by data-dialect.md). **Not a defect — a
-  convention call.** British spelling is the codebase's majority (30 files vs
-  15), and only three runtime/test strings carry it. Leave it, or normalise the
-  whole codebase; a one-string change would make the inconsistency worse.
+  `long_about` lifecycle lines. The `--defer` help is unchanged and still
+  correct.
+- [x] Spelling: **British throughout**, settled. `behaviour` / `behaviours` /
+  `behavioural`, `defence`, `labelled` normalised across 38 files (docs, Rust
+  comments, SQL comments, shell, markdown). Deliberately untouched, because
+  they are identifiers or external vocabulary rather than prose: the `colored`
+  crate and `NO_COLOR`, CSS `color`/`center`, `<div align="center">`,
+  Elasticsearch's `analyzed`, PostgreSQL's system `catalog`, SPDX `license`,
+  and serde's `Serialize`. Oxford `-ize` is British and stays, so no
+  `serialise`/`normalise` churn against the surrounding identifiers.
 - [x] `engine/functions/schema.rs` comment claimed only `http_call.output`
-  carries the `response_path` alias. `channel_call.output` carries one too
-  (`channel_call.rs:50`). Comment corrected.
+  carries the `response_path` alias. `channel_call.output` carries one too.
+  Comment corrected.
 
 **One live doc bug found while closing the above.**
 `reference/workflows.md` claimed "`output` wins when both are present" for the
 `response_path` alias. A serde alias cannot express precedence: supplying both
 spellings is a duplicate-field refusal, which `reference/support.md` already
-stated correctly and `output_field_test.rs` asserts. workflows.md now says the
-same thing and links support.md as the owner.
+stated correctly and `output_field_test.rs` asserts.
 
-## Follow-ups worth funding later
+**A second, found by validating the Phase 4 examples against a live server.**
+`build/channels.md` showed the deduplication block as
+`{enabled, header, ttl_secs}`. The real shape is
+`{header, window_secs, connector, on_backend_error}` — the page was refused by
+the server. All eight `config` examples on that page are now validated against
+a running instance.
 
-- **A runnable Kafka example package** under `examples/packages/`, so
-  guides/kafka-channels.md can drop its documented-from-configuration scoping
-  note and `{{#include}}` real files (D2's deferred half).
-- **A runnable `channel_call` composition example**, same argument, for
-  guides/workflow-patterns.md (D3's deferred half). Both would also gain e2e
-  coverage automatically, since `examples/use-cases/` drives the shipped
-  packages through a real server.
-- **Sentence surgery in the deepest reference pages.** data-dialect.md,
-  admin-api.md and upgrading-to-1.0.md still carry sentences past the 25-word
-  budget where the content is genuinely dense. The structural rules (Related
-  blocks, H3 depth, no grab-bag headings, one owner per fact) hold everywhere.
+## Follow-ups: done
+
+- [x] **A runnable Kafka example package.**
+  `examples/packages/kafka-order-events` — a Kafka-protocol channel plus the
+  workflow that stamps a record's topic coordinates. It deploys with
+  `./examples/deploy.sh kafka-order-events` and needs no broker to create or
+  activate; two offline `*.case.json` cases cover the logic.
+  guides/kafka-channels.md drops its scoping note and `{{#include}}`s both
+  files.
+- [x] **A runnable `channel_call` composition example.**
+  `examples/packages/channel-composition` — two services, where
+  `order-enrichment` calls `customer-lookup` in-process. Covered three ways:
+  offline cases (including one that stubs the `channel_call`), a live e2e case
+  in `examples/use-cases/`, and `deploy.sh`. guides/workflow-patterns.md
+  `{{#include}}`s both workflows and documents the four things the shape gets
+  wrong easily.
+- [x] **Sentence surgery** on the flagged sentences in data-dialect.md,
+  admin-api.md and upgrading-to-1.0.md.
+
+Two pieces of machinery came with them, both backward compatible:
+`examples/deploy.sh` now deploys multi-entity packages (`workflow-*.json`,
+`channel-*.json`) and packages with no HTTP route, and the e2e case format
+takes an optional `channels` array binding each channel to a named workflow —
+without it, the previous first-workflow binding still applies.
 
 ## Risks that remain live
 

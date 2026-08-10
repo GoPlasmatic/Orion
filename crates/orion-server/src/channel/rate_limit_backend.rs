@@ -25,7 +25,7 @@ pub trait RateLimitBackend: Send + Sync {
     async fn check(&self, key: String) -> Result<bool, OrionError>;
 }
 
-/// In-process governor limiter (today's behavior; N replicas = N× the limit).
+/// In-process governor limiter (today's behaviour; N replicas = N× the limit).
 pub struct LocalRateLimitBackend {
     limiter: KeyedLimiter,
 }

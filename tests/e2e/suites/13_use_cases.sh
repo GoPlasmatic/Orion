@@ -5,7 +5,7 @@
 #   - examples/use-cases/ (CASES_DIR): scenario cases that deploy the shipped
 #     example packages (workflows referenced by file, never copied) and
 #     assert live responses — the examples proven against real traffic.
-#   - tests/e2e/cases/: runtime-behavior cases (archive quarantine, dry-run
+#   - tests/e2e/cases/: runtime-behaviour cases (archive quarantine, dry-run
 #     traces, secret masking, connector error handling) — contract tests,
 #     not examples.
 # Adding a case = adding a .json file to either directory, no code changes.

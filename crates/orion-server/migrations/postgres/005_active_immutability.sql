@@ -1,7 +1,7 @@
 -- Active-immutability parity with the sqlite backend (multi-instance-ha 0.8).
 -- sqlite/001 ships triggers that reject content changes to active workflow /
 -- channel versions; postgres had none. The repository layer already scopes
--- its UPDATEs by status, so these are defense-in-depth against raw SQL and
+-- its UPDATEs by status, so these are defence-in-depth against raw SQL and
 -- future code paths — the predicate mirrors sqlite's trigger WHEN clauses
 -- (IS DISTINCT FROM unifies sqlite's != / IS NOT split for nullable columns).
 

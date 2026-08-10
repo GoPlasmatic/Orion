@@ -15,7 +15,7 @@ engine offline (`orion-server test`), while these cases exercise the whole
 runtime — HTTP channel routing, activation lifecycle, engine reloads —
 through the `orion-cli` binary against a real `orion-server`.
 
-> Cases that test **runtime behavior** rather than a scenario (archive
+> Cases that test **runtime behaviour** rather than a scenario (archive
 > quarantine, dry-run traces, secret masking, connector error handling)
 > live with the suite itself, in `tests/e2e/cases/`, using this same format.
 
@@ -57,7 +57,7 @@ order.
 
 A `workflows` entry is either `{ "file": "<path>" }` — a workflow JSON file,
 relative to the case file; use this for anything that exists as a package —
-or an inline workflow create body, for throwaway workflows only a behavior
+or an inline workflow create body, for throwaway workflows only a behaviour
 test needs.
 
 Each test sends `input` to `channel` and checks every `expect` entry: the

@@ -28,7 +28,7 @@ impl OrionClient {
     }
 
     /// A client with an explicit request timeout — `None` means no timeout
-    /// (the server's package CLI keeps its historical no-timeout behavior
+    /// (the server's package CLI keeps its historical no-timeout behaviour
     /// for long-running bulk imports).
     pub fn with_timeout(base_url: &str, timeout: Option<Duration>) -> Result<Self, ClientError> {
         let mut builder = reqwest::Client::builder();

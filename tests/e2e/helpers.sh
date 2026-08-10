@@ -692,16 +692,34 @@ run_case_file() {
         cli_quiet workflows activate "$_rule_id"
     done
 
-    # v1.0: sends resolve to a channel bound to one workflow. Create a
-    # channel for every channel name the tests target, bound to the case's
-    # workflow (case files carry exactly one after the 1.0 conversion).
-    local case_channels
-    case_channels=$(jq -r '[.tests[].channel // empty] | unique | .[]' "$case_file")
-    if [[ -n "$case_channels" && ${#_CASE_RULE_IDS[@]} -gt 0 ]]; then
-        while IFS= read -r ch; do
-            [[ -z "$ch" ]] && continue
-            create_channel "$ch" "${_CASE_RULE_IDS[0]}"
-        done <<< "$case_channels"
+    # v1.0: sends resolve to a channel bound to one workflow.
+    #
+    # A case that needs channels bound to *different* workflows — a
+    # channel_call composition, where the caller and the callee are separate
+    # services — declares them explicitly:
+    #
+    #   "channels": [ { "name": "customer-lookup", "workflow_id": "customer-lookup" } ]
+    #
+    # Otherwise every channel the tests target is bound to the case's first
+    # workflow, which is what a single-workflow scenario wants.
+    local explicit_channels
+    explicit_channels=$(jq -r '.channels // [] | length' "$case_file")
+    if [[ "$explicit_channels" -gt 0 ]]; then
+        for ((i=0; i<explicit_channels; i++)); do
+            local ch_name ch_wf
+            ch_name=$(jq -r ".channels[$i].name" "$case_file")
+            ch_wf=$(jq -r ".channels[$i].workflow_id" "$case_file")
+            create_channel "$ch_name" "$ch_wf"
+        done
+    else
+        local case_channels
+        case_channels=$(jq -r '[.tests[].channel // empty] | unique | .[]' "$case_file")
+        if [[ -n "$case_channels" && ${#_CASE_RULE_IDS[@]} -gt 0 ]]; then
+            while IFS= read -r ch; do
+                [[ -z "$ch" ]] && continue
+                create_channel "$ch" "${_CASE_RULE_IDS[0]}"
+            done <<< "$case_channels"
+        fi
     fi
 
     # Reload engine if we created workflows or connectors

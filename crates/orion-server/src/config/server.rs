@@ -14,7 +14,7 @@ pub struct ServerConfig {
     pub shutdown_drain_secs: u64,
     /// Upper bound in seconds on waiting for in-flight requests *after* the
     /// drain window (readiness already withdrawn, accept stopped). 0 = wait
-    /// forever (pre-1.0 behavior of the plain-HTTP path).
+    /// forever (pre-1.0 behaviour of the plain-HTTP path).
     pub shutdown_force_timeout_secs: u64,
     /// TLS configuration for HTTPS support.
     pub tls: TlsConfig,

@@ -93,33 +93,54 @@ git history the whole time. See
 **Problem.** One service needs another service's answer, and an HTTP hop between
 them costs latency and adds a failure mode.
 
-**Pattern.** `channel_call` invokes another channel's workflow in-process:
+**Pattern.** `channel_call` invokes another channel's workflow in-process. The
+caller builds the sub-request, calls, and reads the result:
+
+```json
+{{#include ../../../examples/packages/channel-composition/workflow.json}}
+```
+
+The called channel is an ordinary service with its own workflow, channel, and
+versions — it just happens to also be reachable from inside another workflow:
+
+```json
+{{#include ../../../examples/packages/channel-composition/workflow-lookup.json}}
+```
+
+**Running the example:**
+
+```bash
+./examples/deploy.sh channel-composition
+
+curl -s -X POST http://localhost:8080/api/v1/data/order-enrichment \
+  -H 'Content-Type: application/json' \
+  --data @examples/packages/channel-composition/request.json
+```
 
 ```json
 {
-  "tasks": [
-    { "id": "parse", "function": { "name": "parse_json",
-        "input": { "source": "payload", "target": "order" } } },
-    { "id": "enrich", "function": { "name": "channel_call", "input": {
-        "channel": "customer-lookup",
-        "data_logic": { "var": "data.order.customer_id" },
-        "output": "data.customer"
-    }}},
-    { "id": "vip", "condition": { "==": [{ "var": "data.customer.tier" }, "vip"] },
-      "function": "..." }
-  ]
+  "status": "ok",
+  "data": {
+    "order": { "order_id": "ORD-5511", "customer_id": 42, "total": 800,
+               "tier": "vip", "discount_pct": 15 },
+    "customer": { "lookup": { "customer_id": 42, "tier": "vip", "discount_pct": 15 } }
+  },
+  "errors": []
 }
 ```
 
-The called channel keeps its own workflow, versions, and governance; the call is
-a function call, not a network hop. Cycles are detected and refused.
+Four things this shows that are easy to get wrong:
 
-> [!NOTE]
-> **This pattern has no runnable example in the repository yet.** The shape above
-> is documented from the configuration surface, not extracted from a package CI
-> deploys. Treat the field names as correct and the composition as untested —
-> dry-run it with a `channel_call` stub before you rely on it. See
-> [Test Workflows Offline](../build/testing.md#stub-the-calls-that-leave-the-process).
+- **The payload is built first.** `channel_call`'s `data_logic` is a single
+  expression, and JSONLogic has no object constructor — so the caller assembles
+  the sub-request in `temp_data` with `map`, then passes it by reference.
+- **`output` receives the callee's whole data context**, not its HTTP envelope.
+  The lookup workflow parses into `data.lookup`, so the caller reads
+  `data.customer.lookup.tier`.
+- **The callee is independently callable.** `POST /api/v1/data/customer-lookup`
+  works on its own, which is what makes it a service rather than a subroutine.
+- **The call is a function call.** No network hop, no serialization round-trip.
+  Cycles are detected and refused.
 
 Two things to know before composing: the called channel applies **its own**
 guards, minus the ones a `channel_call` cannot have (no `auth`, no origin check,

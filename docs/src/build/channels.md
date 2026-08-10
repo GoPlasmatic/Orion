@@ -99,7 +99,7 @@ to the workflow, where a trace records what happened.
 ## Deduplicate replays
 
 ```json
-{ "config": { "deduplication": { "enabled": true, "header": "Idempotency-Key", "ttl_secs": 300 } } }
+{ "config": { "deduplication": { "header": "Idempotency-Key", "window_secs": 300 } } }
 ```
 
 A repeat of a settled key inside the window answers `409` instead of running

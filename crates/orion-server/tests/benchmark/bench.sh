@@ -2,7 +2,7 @@
 # tests/benchmark/bench.sh — Performance benchmarking suite for Orion
 #
 # Uses `hey` HTTP load generator to measure throughput, latency, and
-# concurrency behavior across 7 scenarios.
+# concurrency behaviour across 7 scenarios.
 #
 # Usage:
 #   ./tests/benchmark/bench.sh                        # Run all local scenarios

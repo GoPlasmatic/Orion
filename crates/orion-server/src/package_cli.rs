@@ -112,7 +112,7 @@ fn artifact_content_hash(artifact: &PackageArtifact) -> Result<String, CliError>
 
 /// The shared `orion-client` transport, configured for promotion runs: no
 /// request timeout (bulk imports of a large package may run long — the
-/// historical behavior of this CLI), `ORION_ADMIN_TOKEN` as the bearer
+/// historical behaviour of this CLI), `ORION_ADMIN_TOKEN` as the bearer
 /// credential, and the operation's `X-Orion-Change-Context` on every call
 /// (K5) so the audit trail groups the whole promotion.
 ///

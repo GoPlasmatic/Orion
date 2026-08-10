@@ -1,7 +1,7 @@
 -- Active-immutability parity with the sqlite backend (multi-instance-ha 0.8).
 -- sqlite/001 ships triggers that reject content changes to active workflow /
 -- channel versions; mysql had none. The repository layer already scopes its
--- UPDATEs by status, so these are defense-in-depth against raw SQL and future
+-- UPDATEs by status, so these are defence-in-depth against raw SQL and future
 -- code paths. NOT (OLD.col <=> NEW.col) is MySQL's null-safe inequality,
 -- mirroring postgres's IS DISTINCT FROM.
 

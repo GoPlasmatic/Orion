@@ -1,0 +1,47 @@
+{
+  "workflow_id": "order-enrichment",
+  "tags": ["pkg:channel-composition"],
+  "name": "Order Enrichment",
+  "description": "Calls the customer-lookup channel in-process with channel_call, then prices the order from the tier it returns.",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "order" } }
+    },
+    {
+      "id": "build_lookup",
+      "name": "Build the lookup request",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [
+          { "path": "temp_data.lookup_request.customer_id", "logic": { "var": "data.order.customer_id" } }
+        ]}
+      }
+    },
+    {
+      "id": "lookup",
+      "name": "Call customer-lookup in-process",
+      "function": {
+        "name": "channel_call",
+        "input": {
+          "channel": "customer-lookup",
+          "data_logic": { "var": "temp_data.lookup_request" },
+          "output": "data.customer"
+        }
+      }
+    },
+    {
+      "id": "price",
+      "name": "Apply the tier discount",
+      "function": {
+        "name": "map",
+        "input": { "mappings": [
+          { "path": "data.order.tier", "logic": { "var": "data.customer.lookup.tier" } },
+          { "path": "data.order.discount_pct", "logic": { "var": "data.customer.lookup.discount_pct" } }
+        ]}
+      }
+    }
+  ]
+}

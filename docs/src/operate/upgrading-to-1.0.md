@@ -216,10 +216,12 @@ there:
 | `orion_trace_persistence_failures_total` | counter | The only signal that trace writes are being dropped |
 
 **Three metric families changed name or labels.** Rewrite these selectors
-before upgrading. The failure mode is the same silent one described above: a
-PromQL selector on a name or label that no longer exists returns an empty
-result rather than an error, so a panel renders blank and an alert built on it
-**stops firing** instead of erroring.
+before upgrading.
+
+The failure mode is the same silent one described above. A PromQL selector on a
+name or label that no longer exists returns an empty result, not an error. A
+panel renders blank, and an alert built on it **stops firing** rather than
+erroring.
 
 | Before | After |
 |---|---|

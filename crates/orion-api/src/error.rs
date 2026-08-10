@@ -82,7 +82,7 @@ impl FieldError {
 
 /// The object under the `error` key.
 ///
-/// Serialization matches the server's v1.0 behavior exactly: `details` is
+/// Serialization matches the server's v1.0 behaviour exactly: `details` is
 /// omitted when empty (clients expecting only the v0.1 `{code, message}`
 /// envelope still parse), `request_id` is omitted when the request had none.
 /// Deserialization defaults every field so a pre-1.0 body still reads.

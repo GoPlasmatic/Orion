@@ -497,7 +497,7 @@ pub(crate) async fn import_channels(
     OrionJson(items): OrionJson<Vec<Value>>,
 ) -> Result<Json<Value>, OrionError> {
     // Each create runs through the same validation + persistence as the
-    // singular POST endpoint, so behavior matches.
+    // singular POST endpoint, so behaviour matches.
     super::check_import_batch_size(items.len())?;
     let repo = state.repos.channels.clone();
     let probe = state.repos.channels.clone();

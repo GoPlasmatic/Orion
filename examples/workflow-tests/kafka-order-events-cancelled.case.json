@@ -1,0 +1,9 @@
+{
+  "name": "a cancelled order event is flagged for review",
+  "workflow": "../packages/kafka-order-events/workflow.json",
+  "input": { "order_id": "ORD-7781", "status": "cancelled", "total": 120 },
+  "expect": {
+    "data.event.needs_review": true,
+    "data.event.reason": "Cancelled order ORD-7781"
+  }
+}

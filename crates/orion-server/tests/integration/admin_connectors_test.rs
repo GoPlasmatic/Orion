@@ -958,7 +958,7 @@ async fn test_connector_url_password_round_trip() {
 
 /// S18 gave one URL two maskable positions (userinfo password + secret-named
 /// query parameter). Rotating one while round-tripping the other still
-/// masked must restore the masked one positionally — the pre-fix behavior
+/// masked must restore the masked one positionally — the pre-fix behaviour
 /// persisted the literal `"******"` as the live credential, because neither
 /// the whole-string restore nor the identity-based detection matched a
 /// partially-edited multi-secret URL.

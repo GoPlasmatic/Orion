@@ -65,7 +65,7 @@ filed it. This is the single largest structural failure in the docs.
 - Reference pages absorb guide content because no how-to layer exists: "Shaped
   Responses" (a feature guide) lives in api/data.md, the promotion walkthrough in
   api/admin.md, the Production Checklist in configuration/reference.md.
-- No shared endpoint or field-table template; api/admin.md packs four behaviors into
+- No shared endpoint or field-table template; api/admin.md packs four behaviours into
   single table cells and leaks internal review IDs — (K2), (K7), (R5, R7, K8) — that
   readers cannot resolve.
 - `docs/openapi.json` (OpenAPI 3.1, 44 paths) is complete but never surfaced; the
@@ -309,7 +309,7 @@ need redirects (§8).
 | tutorials/mcp-setup.md | **Move + revise** | ai/mcp-setup.md | Single owner of MCP client setup. State that Claude Code and Claude Desktop configs are identical (one block, one note). Replace the hand-maintained 46-tool table with grouped categories + pointer to the live tool listing; never hard-code the count. Delete the duplicated five-step usage example (claude-code.md owns it). Either add the Cursor/HTTP-transport configs claude-code.md promises, or fix that link text — verify first, do not invent. |
 | tutorials/claude-code.md | **Move** | ai/claude-code.md | Flagship of Build with AI. Collapse setup steps 1–3 into one `claude mcp add` + links. Remove "46 tools". Add "In this guide you will:" outcome bullets. |
 | getting-started/prompt-pack.md | **Move** | ai/prompt-pack.md | Content keeps — it is a good artifact. Add a provenance note (which release the block matches, how it is regenerated) so the hand-maintained function list has a drift story. Lifecycle rules stay self-contained but link concepts/lifecycle.md as the human-readable twin. |
-| getting-started/upgrading.md | **Move + restructure** | operate/upgrading-to-1.0.md (under new operate/upgrades.md) | Leaves Getting Started. Renumber so checklist rows and body sections agree (kill 3b/7b/14b/17b). Break the false-labeled "Smaller behaviour changes" heap (~40 h3s, half the page) into typed groups: renames / security / API shape / behavior. Keep the excellent what-changed → how-you'll-notice → what-to-do pattern and every detection command. The version-independent "how a rename fails, by surface" policy moves up to the standing operate/upgrades.md. |
+| getting-started/upgrading.md | **Move + restructure** | operate/upgrading-to-1.0.md (under new operate/upgrades.md) | Leaves Getting Started. Renumber so checklist rows and body sections agree (kill 3b/7b/14b/17b). Break the false-labelled "Smaller behaviour changes" heap (~40 h3s, half the page) into typed groups: renames / security / API shape / behaviour. Keep the excellent what-changed → how-you'll-notice → what-to-do pattern and every detection command. The version-independent "how a rename fails, by surface" policy moves up to the standing operate/upgrades.md. |
 
 ### Architecture & Production Features (today: 10 pages)
 
@@ -330,7 +330,7 @@ need redirects (§8).
 
 | Current | Action | New home(s) | What changes |
 |---|---|---|---|
-| api/admin.md | **Split** | reference/admin-api.md + operate/promotion.md + reference/errors.md | Authentication first (the page depends on it but files it last), lifecycle summary linking concepts/lifecycle.md, endpoint sections with unpacked table cells (the channel PATCH /status row's four behaviors become sub-bullets). **Strip all internal review IDs** — (K2)…(K14), (R5, R7, K8) — and pre-1.0 asides. The ~140-line export/promotion essay → operate/promotion.md. The error-code table → reference/errors.md (sole owner — no copy stays behind). The on_conflict matrix and secrets round-trip table survive intact. |
+| api/admin.md | **Split** | reference/admin-api.md + operate/promotion.md + reference/errors.md | Authentication first (the page depends on it but files it last), lifecycle summary linking concepts/lifecycle.md, endpoint sections with unpacked table cells (the channel PATCH /status row's four behaviours become sub-bullets). **Strip all internal review IDs** — (K2)…(K14), (R5, R7, K8) — and pre-1.0 asides. The ~140-line export/promotion essay → operate/promotion.md. The error-code table → reference/errors.md (sole owner — no copy stays behind). The on_conflict matrix and secrets round-trip table survive intact. |
 | api/data.md | **Move + revise** | reference/data-api.md | Route Resolution stays — it is a model section. Shaped Responses (~60 lines of channel-config teaching) → reference/channel-config.md. Add the missing trace-object field reference (statuses, task_trace_json entries) — currently never enumerated anywhere. Fix "OpenAPI 3.0" → 3.1. Strip history asides. |
 | reference/workflows.md | **Split** | reference/workflows.md + reference/expressions.md + build/versioning.md | Narrows to the workflow/task JSON schema, plus a completed data-context section specifying `metadata`'s exact shape (headers, query, path params, channel name) and the reserved `_orion` namespace — today reverse-engineered from one example. The ~110-line JSONLogic catalogue + sharp-edge callouts → expressions.md, sidebar-findable at last. Lifecycle/rollout operations → build/versioning.md. Fix the 16-vs-18 function count; state it in one generated place. |
 | reference/functions.md | Rewrite in place | reference/functions.md | The per-function template is the model for the estate — keep it. Repair the broken data_query table (a seven-line paragraph wedged between rows leaves a headerless fragment); restore full field rows to data_write instead of "as in data_query"; normalize the ad-hoc Required-column conventions into one legend; drop the duplicated data-context intro for a link. |
@@ -401,7 +401,7 @@ the example" → Related.
 |---|---|---|
 | guides/worked-examples.md | The prompt→JSON→deploy examples, made runnable (§4, use-cases row). | use-cases.md, examples/packages/ |
 | guides/workflow-patterns.md | The pattern catalog freed from the bottom of use-cases.md. ⚠ The channel_call composition pattern has **no currently-runnable example** — see §9. | use-cases.md patterns section |
-| guides/kafka-channels.md | The missing async on-ramp for a headline capability: enable `[kafka]`, create a Kafka channel, DLQ behavior, "dedup narrows at-least-once — it does not make Kafka exactly-once". ⚠ Needs a runnable example package first — see §9. | extensibility.md, resilience.md `[kafka.dlq]`, config `[kafka]`, scalability.md semantics |
+| guides/kafka-channels.md | The missing async on-ramp for a headline capability: enable `[kafka]`, create a Kafka channel, DLQ behaviour, "dedup narrows at-least-once — it does not make Kafka exactly-once". ⚠ Needs a runnable example package first — see §9. | extensibility.md, resilience.md `[kafka.dlq]`, config `[kafka]`, scalability.md semantics |
 | guides/ci-cd.md | The promotion pipeline that replaces the contradictory curl-loop example: export from dev → lint + plan as CI gates → apply to staging/prod → diff for drift, in a GitHub Actions workflow that actually fires. | packages.md verbs, maintainability.md CI section, use-cases.md CI (as the anti-pattern) |
 
 ### Operate
@@ -417,8 +417,8 @@ the example" → Related.
 | operate/failure-handling.md | Timeouts (ingress/ceiling table), retries (contradiction resolved), circuit breakers, shutdown, panic recovery — as tasks. | resilience.md, extensibility.md retry semantics reconciled |
 | operate/promotion.md | The package workflow end-to-end: five verbs with the Needs/Writes table, receipts and content-immutability, secrets round-trip, ORION_ADMIN_TOKEN requirement, two-server walkthrough, and the new failure-modes subsection. | packages.md, admin.md essay, examples/packages |
 | operate/backup-restore.md | The canonical runbook, promoted from behind the "Maintainability" heading (§4). | maintainability.md |
-| operate/audit-logs.md | Who changed what: listing/filtering, rejected-unknown-filter behavior, X-Orion-Change-Context, retention. | maintainability.md, admin.md |
-| operate/upgrades.md | The standing home 1.0 never had: how upgrades work, run preflight first, "how a rename fails, by surface" (moved from support.md), pointer to compatibility policy, per-version guides as children — a slot for 1.1. | upgrading.md framing, support.md policy, preflight behavior |
+| operate/audit-logs.md | Who changed what: listing/filtering, rejected-unknown-filter behaviour, X-Orion-Change-Context, retention. | maintainability.md, admin.md |
+| operate/upgrades.md | The standing home 1.0 never had: how upgrades work, run preflight first, "how a rename fails, by surface" (moved from support.md), pointer to compatibility policy, per-version guides as children — a slot for 1.1. | upgrading.md framing, support.md policy, preflight behaviour |
 | operate/troubleshooting.md | Symptom-indexed, in the upgrade guide's proven symptom→cause→fix voice: channel quarantine lifecycle (⚠ §7), degraded /health, stuck-open breakers, draining the trace DLQ, Kafka ingest degraded, mapping-yields-object/misspelled-operator, empty context without parse_json. | sharp-edge callouts across the estate |
 
 ### Reference
@@ -426,7 +426,7 @@ the example" → Related.
 | Page | Purpose | Sources |
 |---|---|---|
 | reference/channel-config.md | **The #1 gap.** Every config_json key in one normative page: route_pattern, protocol/channel_type, response.mode + allowed_headers, auth (api_key/HMAC, quarantine), rate_limit (per-caller default in a warning callout), backpressure, deduplication, cache, timeout_ms, validation_logic, origin_allow_list, per-channel tracing override — with defaults and cross-ingress semantics. | security.md, scalability.md, availability.md, resilience.md, data.md shaped-responses, extensibility.md |
-| reference/connectors.md | Per-type field tables (http, db, cache, mongo, es, kafka producer) in the single Field/Type/Required/Default/Description template; env:// resolution; operation gates (moved ahead of the per-type sections that reference them); the normative retry spec (resolved, §7); secret masking behavior (resolved, §7); circuit-breaker fields. | extensibility.md tables, security.md gates+masking, resilience.md retries, admin.md notes |
+| reference/connectors.md | Per-type field tables (http, db, cache, mongo, es, kafka producer) in the single Field/Type/Required/Default/Description template; env:// resolution; operation gates (moved ahead of the per-type sections that reference them); the normative retry spec (resolved, §7); secret masking behaviour (resolved, §7); circuit-breaker fields. | extensibility.md tables, security.md gates+masking, resilience.md retries, admin.md notes |
 | reference/expressions.md | The JSONLogic operator catalogue + sharp edges (misspelled operators become literals; exists takes segments; switch shape) as warning callouts; the datalogic feature boundary stated. | workflows.md catalogue |
 | reference/errors.md | The missing envelope reference, sole owner of all error codes: admin envelope + codes registry, data-plane sync envelope ({status, data, errors}), how failed tasks appear in errors[], verbose_errors sanitization, async failure semantics. | admin.md table, data.md, config verbose_errors note, orion-api codes registry |
 | reference/metrics.md | Terse table — name, type, labels, one-line meaning. Alerting guidance lives in operate/monitoring.md. | observability.md table |
@@ -500,7 +500,7 @@ failure modes quoted in §1.5. They apply to every page.
     to sync vs async, SQLite vs Postgres/MySQL, trace modes, db_read vs data_query,
     single-node vs cluster.
 17. Reference pages use normative language — "must", "is refused", "defaults to" — with
-    zero persuasion, zero history, zero internal review IDs. Pre-1.0 behavior appears
+    zero persuasion, zero history, zero internal review IDs. Pre-1.0 behaviour appears
     only in the upgrade guides. Field tables follow one template: Field / Type /
     Required / Default / Description, with a legend for special Required values.
 18. No hand-maintained magic numbers: no tool counts, no function counts stated in more

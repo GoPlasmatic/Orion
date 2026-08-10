@@ -1,0 +1,38 @@
+{
+  "workflow_id": "customer-lookup",
+  "tags": ["pkg:channel-composition"],
+  "name": "Customer Lookup",
+  "description": "Standalone service: resolves a customer id to a tier. Called in-process by order-enrichment through channel_call, and callable on its own.",
+  "condition": true,
+  "tasks": [
+    {
+      "id": "parse",
+      "name": "Parse payload",
+      "function": { "name": "parse_json", "input": { "source": "payload", "target": "lookup" } }
+    },
+    {
+      "id": "vip",
+      "name": "Known VIP customer",
+      "condition": { "in": [{ "var": "data.lookup.customer_id" }, [1, 7, 42]] },
+      "function": {
+        "name": "map",
+        "input": { "mappings": [
+          { "path": "data.lookup.tier", "logic": "vip" },
+          { "path": "data.lookup.discount_pct", "logic": 15 }
+        ]}
+      }
+    },
+    {
+      "id": "standard",
+      "name": "Everyone else",
+      "condition": { "!": { "in": [{ "var": "data.lookup.customer_id" }, [1, 7, 42]] } },
+      "function": {
+        "name": "map",
+        "input": { "mappings": [
+          { "path": "data.lookup.tier", "logic": "standard" },
+          { "path": "data.lookup.discount_pct", "logic": 0 }
+        ]}
+      }
+    }
+  ]
+}
