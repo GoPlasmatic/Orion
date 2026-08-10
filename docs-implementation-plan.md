@@ -25,7 +25,7 @@ are pruned; git history of this file carries the full record.
 >   `topology/` dissolved; the promotion essay left admin-api.md and the
 >   Production Checklist left configuration.md; `DOCS2_PHASE=3`.
 >
-> - Phase 4 `PENDING` — the five Build how-tos and four Guides;
+> - Phase 4 `433397e4` — the five Build how-tos and four Guides;
 >   tutorials/use-cases.md retired; SUMMARY at proposal §3's final shape;
 >   `DOCS2_PHASE=4`, so llms.txt now covers every chapter.
 >
