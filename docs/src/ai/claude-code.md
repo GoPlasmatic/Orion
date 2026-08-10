@@ -85,5 +85,5 @@ canary. If anything looks wrong:
   REST API, for assistants without MCP.
 - [The Entity Lifecycle](../concepts/lifecycle.md) — the draft/active/immutable
   rules that make delegating this safe.
-- [Use Cases & Patterns](../tutorials/use-cases.md) — ready-made prompts for
-  webhook transforms, enrichment, and routing.
+- [Worked Examples: Prompt to Service](../guides/worked-examples.md) — the
+  prompts behind four shipped services, with the JSON each produced.

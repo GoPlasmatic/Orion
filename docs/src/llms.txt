@@ -16,6 +16,7 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 
 ## Getting started
 
+- [Introduction](https://goplasmatic.github.io/Orion/introduction.html): what Orion is, why it exists, and where to start
 - [Is Orion Right for You?](https://goplasmatic.github.io/Orion/comparison.html): what Orion replaces, when not to use it
 - [Install & Run](https://goplasmatic.github.io/Orion/getting-started/install.html): install matrix for server and CLI, first run, health check
 - [Your First Service](https://goplasmatic.github.io/Orion/getting-started/first-service.html): workflow + channel end-to-end, in four API calls
@@ -23,9 +24,6 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 - [Test & Promote a Service](https://goplasmatic.github.io/Orion/getting-started/test-and-promote.html): lint, dry-run with stubs, regression cases, then export/plan/apply to a second instance
 - [Run the Examples](https://goplasmatic.github.io/Orion/getting-started/examples.html): six deployable example packages, with the step-by-step walkthrough
 - [The Console (Orion UI)](https://goplasmatic.github.io/Orion/getting-started/console.html): no-code UI over the admin API
-- [Prompt Pack](https://goplasmatic.github.io/Orion/ai/prompt-pack.html): self-contained context block for driving Orion from any LLM
-- [MCP Server Setup](https://goplasmatic.github.io/Orion/ai/mcp-setup.html): MCP tools covering the full admin API, via orion-cli
-- [Orion + Claude Code](https://goplasmatic.github.io/Orion/ai/claude-code.html): driving Orion from Claude Code with the MCP server
 
 ## Concepts
 
@@ -36,22 +34,32 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 - [Packages](https://goplasmatic.github.io/Orion/concepts/packages.html): the module boundary — tags, closure, artifacts, receipts, rollback
 - [The Entity Lifecycle](https://goplasmatic.github.io/Orion/concepts/lifecycle.html): draft/active/archived, immutability, what reloads the engine, quarantine
 
-## Reference
+## Build with AI
 
-- [Workflow Reference](https://goplasmatic.github.io/Orion/reference/workflows.html): workflow & task JSON schema, conditions, lifecycle, rollout
-- [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html): every task function's exact input schema
-- [Portable Data Dialect](https://goplasmatic.github.io/Orion/reference/data-dialect.html): backend-neutral query/write envelope (data_query / data_write) across SQL, MongoDB, Elasticsearch
-- [Admin API](https://goplasmatic.github.io/Orion/reference/admin-api.html): workflows, channels, connectors, packages, engine, audit, trace-DLQ, backup endpoints; every error code
-- [Data API](https://goplasmatic.github.io/Orion/reference/data-api.html): routing, sync/async processing, traces
-- [Configuration](https://goplasmatic.github.io/Orion/reference/configuration.html): config file, env overrides, database backends
-- [Support & Compatibility](https://goplasmatic.github.io/Orion/reference/support.html): versioning policy, what 1.0 freezes, accepted alternate spellings, platform matrix
-- [OpenAPI 3.1 spec](https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/openapi.json): machine-readable API description
+- [Build a Service with Claude Code](https://goplasmatic.github.io/Orion/ai/claude-code.html): driving Orion from Claude Code with the MCP server
+- [MCP Server Setup](https://goplasmatic.github.io/Orion/ai/mcp-setup.html): MCP tools covering the full admin API, via orion-cli; stdio and HTTP transports
+- [Prompt Pack (any LLM)](https://goplasmatic.github.io/Orion/ai/prompt-pack.html): self-contained context block for driving Orion from any LLM
+
+## Build
+
+- [Author Workflows](https://goplasmatic.github.io/Orion/build/workflows.html): parse-then-process, mapping, conditions, connector tasks, error handling
+- [Configure Channels](https://goplasmatic.github.io/Orion/build/channels.html): routes, async, auth, rate limits, validation, dedup, cache, backpressure, timeouts
+- [Connect Databases & APIs](https://goplasmatic.github.io/Orion/build/connectors.html): creating connectors, env:// secrets, operation gates, data_query vs db_read
+- [Test Workflows Offline](https://goplasmatic.github.io/Orion/build/testing.html): lint, dry-run, connector stubs, *.case.json suites, validate-config, preflight
+- [Version & Roll Out Changes](https://goplasmatic.github.io/Orion/build/versioning.html): new versions, dry_run activation, reload=defer, canary rollout, import/export
+
+## Guides
+
+- [Worked Examples: Prompt to Service](https://goplasmatic.github.io/Orion/guides/worked-examples.html): four services from prompt to deployed JSON, included from the tested example packages
+- [Common Workflow Patterns](https://goplasmatic.github.io/Orion/guides/workflow-patterns.html): parse-then-process, exclusive branches, enrichment, channel_call composition, error collection
+- [Consume from Kafka](https://goplasmatic.github.io/Orion/guides/kafka-channels.html): consumer config, topic-to-channel mapping, DLQ, at-least-once semantics, scaling
+- [CI/CD with Packages](https://goplasmatic.github.io/Orion/guides/ci-cd.html): offline PR gates, plan/apply pipelines, drift detection, rollback
 
 ## Operations & deployment
 
 - [Production Checklist](https://goplasmatic.github.io/Orion/operate/production-checklist.html): every pre-go-live setting, with the page that owns each
 - [Deploy with Docker](https://goplasmatic.github.io/Orion/operate/docker.html): single container, SQLite volumes, the HA compose topology, upgrades
-- [Kubernetes (Helm)](https://goplasmatic.github.io/Orion/operate/kubernetes.html): chart, values, probes, migration Job, cluster mode
+- [Deploy on Kubernetes (Helm)](https://goplasmatic.github.io/Orion/operate/kubernetes.html): chart, values, probes, migration Job, cluster mode
 - [Cluster Mode & High Availability](https://goplasmatic.github.io/Orion/operate/cluster.html): requirements, what is shared vs per-node, migrations as a deploy step, sizing
 - [Secure an Instance](https://goplasmatic.github.io/Orion/operate/security.html): admin auth, data-plane auth, TLS, trusted proxies, secrets, SSRF, origins
 - [Monitoring & Alerts](https://goplasmatic.github.io/Orion/operate/monitoring.html): logging, Prometheus, OTLP, health endpoints, what to alert on
@@ -64,7 +72,26 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 - [Upgrading to 1.0.0](https://goplasmatic.github.io/Orion/operate/upgrading-to-1.0.html): every 0.3.0 → 1.0.0 break, grouped by type, with the preflight scanner that finds them
 - [Troubleshooting](https://goplasmatic.github.io/Orion/operate/troubleshooting.html): symptom-indexed fixes — quarantine, degraded health, 429s behind a proxy, open breakers, DLQ, Kafka lag, empty context
 
+## Reference
+
+- [Admin API](https://goplasmatic.github.io/Orion/reference/admin-api.html): workflows, channels, connectors, packages, engine, audit, trace-DLQ, backup endpoints
+- [Data API](https://goplasmatic.github.io/Orion/reference/data-api.html): routing, sync/async processing, traces
+- [OpenAPI Specification](https://goplasmatic.github.io/Orion/reference/openapi.html): where the generated 3.1 spec lives and how it is gated
+- [Channel Configuration](https://goplasmatic.github.io/Orion/reference/channel-config.html): every config_json key — auth, rate limits, dedup, cache, validation, timeouts, origins, tracing
+- [Workflow Schema](https://goplasmatic.github.io/Orion/reference/workflows.html): workflow & task JSON schema, the data context, matching, rollout
+- [Expression Language (JSONLogic)](https://goplasmatic.github.io/Orion/reference/expressions.html): the operator catalogue and its silent-failure edges
+- [Task Functions](https://goplasmatic.github.io/Orion/reference/functions.html): every task function's exact input schema
+- [Connector Types](https://goplasmatic.github.io/Orion/reference/connectors.html): per-type field tables, secret references, operation gates, retries, masking, breakers
+- [Portable Data Dialect](https://goplasmatic.github.io/Orion/reference/data-dialect.html): backend-neutral query/write envelope across SQL, MongoDB, Elasticsearch
+- [Configuration Reference](https://goplasmatic.github.io/Orion/reference/configuration.html): every setting, default, and ORION_* environment variable
+- [Metrics Reference](https://goplasmatic.github.io/Orion/reference/metrics.html): every exported series, its type and labels
+- [Errors & Response Envelopes](https://goplasmatic.github.io/Orion/reference/errors.html): the admin and data envelopes, every error code, verbose_errors
+- [CLI Reference](https://goplasmatic.github.io/Orion/reference/cli.html): every orion-server and orion-cli subcommand
+- [Design Notes](https://goplasmatic.github.io/Orion/reference/design-notes.html): the reasoning behind dedup, cache keys, hot reload, the guard pipeline
+- [Support & Compatibility](https://goplasmatic.github.io/Orion/reference/support.html): versioning policy, what 1.0 freezes, MSRV, platform matrix
+- [Glossary](https://goplasmatic.github.io/Orion/reference/glossary.html): one-line definitions of the load-bearing vocabulary
+- [OpenAPI 3.1 spec (raw)](https://raw.githubusercontent.com/GoPlasmatic/Orion/main/docs/openapi.json): machine-readable API description
+
 ## Optional
 
-- [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html): worked examples, AI prompt templates, CI/CD
 - [GitHub repository](https://github.com/GoPlasmatic/Orion): source, examples/, issues

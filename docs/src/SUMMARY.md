@@ -29,6 +29,21 @@
 - [MCP Server Setup](./ai/mcp-setup.md)
 - [Prompt Pack (any LLM)](./ai/prompt-pack.md)
 
+# Build
+
+- [Author Workflows](./build/workflows.md)
+- [Configure Channels](./build/channels.md)
+- [Connect Databases & APIs](./build/connectors.md)
+- [Test Workflows Offline](./build/testing.md)
+- [Version & Roll Out Changes](./build/versioning.md)
+
+# Guides
+
+- [Worked Examples: Prompt to Service](./guides/worked-examples.md)
+- [Common Workflow Patterns](./guides/workflow-patterns.md)
+- [Consume from Kafka](./guides/kafka-channels.md)
+- [CI/CD with Packages](./guides/ci-cd.md)
+
 # Operate
 
 - [Production Checklist](./operate/production-checklist.md)
@@ -45,10 +60,6 @@
 - [Upgrades](./operate/upgrades.md)
   - [Upgrading to 1.0.0](./operate/upgrading-to-1.0.md)
 - [Troubleshooting](./operate/troubleshooting.md)
-
-# Tutorials
-
-- [Use Cases & Patterns](./tutorials/use-cases.md)
 
 # Reference
 

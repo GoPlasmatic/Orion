@@ -25,7 +25,11 @@ are pruned; git history of this file carries the full record.
 >   `topology/` dissolved; the promotion essay left admin-api.md and the
 >   Production Checklist left configuration.md; `DOCS2_PHASE=3`.
 >
-> **Next: Phase 4** — Build + Guides.
+> - Phase 4 `PENDING` — the five Build how-tos and four Guides;
+>   tutorials/use-cases.md retired; SUMMARY at proposal §3's final shape;
+>   `DOCS2_PHASE=4`, so llms.txt now covers every chapter.
+>
+> **Next: Phase 5** — the style sweep.
 
 Standing constraints (from the settled-facts pass; full text in git history):
 
@@ -49,24 +53,28 @@ Standing constraints (from the settled-facts pass; full text in git history):
 
 | # | Decision | Blocks | Default |
 |---|---|---|---|
-| D2 | Build a runnable Kafka example package under `examples/packages/`? | guides/kafka-channels.md (Phase 4) | Guide builds from the existing config surface only |
-| D3 | Add a runnable `channel_call` composition example? | guides/workflow-patterns.md (Phase 4) | Pattern marked config-documented-only |
-| D5 | Redirect targets for multi-destination splits | Phases 3–4 | §Redirects below, as written |
+*(None. D2, D3, D4 and D5 all settled by their defaults — see below.)*
+
+**D2 and D3 settled (Phase 4), by their defaults.** guides/kafka-channels.md is
+built from the configuration surface with a scoping note saying so, and
+guides/workflow-patterns.md marks the `channel_call` composition pattern as
+documented-from-config rather than extracted from a tested package. Both remain
+worth funding with a runnable example package later; neither blocks anything now.
+
+**D5 settled.** Every redirect shipped as written, plus five fragment redirects
+the sweep turned up (`#request-processing-flow`, `#health-monitoring`,
+`#what-to-alert-on`, `#production-checklist`, `#the-orion-server-package-cli`).
 
 **D4 settled (Phase 2b), by its default.** mcp-setup.md documents server-side
 `orion-cli mcp serve --http [--bind]` and names the endpoint
 (`http://host:8081/mcp`, verified against `mcp/mod.rs`), with no client-side
 JSON block and a warning that the transport carries no auth of its own.
 
-## Redirects still to ship (book.toml `[output.html.redirect]`)
+## Redirects
 
-The Phase 2b (architecture) and Phase 3 (features/, topology/, the two evicted
-reference sections) blocks are shipped. What remains:
-
-```toml
-# Phase 4 — guides
-"/tutorials/use-cases.html" = "../guides/worked-examples.html"
-```
+All shipped. `book.toml` carries the Phase 1, 2a, 2b, 3 and 4 blocks; every
+retired URL resolves, including the fragment redirects the link sweeps turned
+up.
 
 Before each phase merges, re-run the inbound-link sweep and cover any newly
 discovered fragment link:
@@ -77,22 +85,6 @@ grep -oE "goplasmatic\.github\.io/Orion/[A-Za-z0-9_./#-]+" \
 ```
 
 ---
-
-## Phase 4 — Build + Guides (PR 5)
-
-- [ ] **T4.1** Build how-tos: workflows, channels, connectors, testing (the
-  content parked in getting-started/test-and-promote.md, marked `TODO(docs2)`),
-  versioning (single owner of import/export; the lifecycle-ops content now
-  linked from concepts/lifecycle.md dissolves into it).
-- [ ] **T4.2** Guides: worked-examples (setup-first fix, `{{#include}}` from
-  examples/packages, honest simulated-effect notes), workflow-patterns (D3),
-  ci-cd (replaces the broken curl-loop example; workflow YAML actionlint-
-  checked), kafka-channels (D2; the parked Kafka-consumer block in
-  extensibility.md moves here + configuration.md). Tutorials part dissolves.
-- [ ] **T4.3** use-cases redirect; SUMMARY reaches proposal §3 final shape;
-  set `DOCS2_PHASE=4` (activates SUMMARY↔llms.txt parity — curate llms.txt to
-  cover every chapter).
-- [ ] **T4.4** Acceptance: all gates green; every `{{#include}}` resolves.
 
 ## Phase 5 — Style sweep (PR 6)
 

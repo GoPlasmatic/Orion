@@ -70,3 +70,8 @@ level = 0
 "/topology/kubernetes.html" = "../operate/kubernetes.html"
 "/reference/configuration.html#production-checklist" = "../operate/production-checklist.html"
 "/reference/admin-api.html#the-orion-server-package-cli" = "../operate/promotion.html"
+
+# Phase 4 — Build and Guides; the Tutorials part dissolves.
+"/tutorials/use-cases.html" = "../guides/worked-examples.html"
+"/tutorials/use-cases.html#common-workflow-patterns" = "../guides/workflow-patterns.html"
+"/tutorials/use-cases.html#ai-workflow--cicd" = "../guides/ci-cd.html"

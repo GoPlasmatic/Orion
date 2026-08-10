@@ -268,7 +268,7 @@ Every AI-generated workflow gets version history, draft-before-activate, dry-run
 
 The workflows, channels, and connectors of one service form a **package** — Orion's unit of shipping, and what makes one instance a modular monolith: many services side by side, each promoted and rolled back independently. `orion-server package` is the promotion story: `export` computes the dependency closure from a source instance into one JSON artifact (git is the registry), `lint` and `plan` check it with zero writes, `apply` stages and activates everything in dependency order with a single engine reload and a version-immutable package receipt, and `diff` reports drift. The bulk import endpoints (`POST /api/v1/admin/{workflows,channels,connectors}/import?dry_run=true`, then drop `dry_run` to commit) remain the low-level primitive when you need to script a single batch. See [Packages & Promotion](https://goplasmatic.github.io/Orion/operate/promotion.html).
 
-See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html#ai-workflow--cicd) for CI/CD integration and GitHub Actions examples.
+See [CI/CD with Packages](https://goplasmatic.github.io/Orion/guides/ci-cd.html) for CI/CD integration and GitHub Actions examples.
 
 ---
 
@@ -452,7 +452,7 @@ Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mo
 - **AI-managed business logic:** LLMs create and update workflows via the REST API
 - **Protocol bridging:** REST-to-Kafka, Kafka-to-HTTP with transformation
 
-See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html) for complete, tested examples, or grab a ready-to-deploy example package from [`examples/packages/`](examples/packages/) and run `./examples/deploy.sh <name>` against a local instance.
+See [Worked Examples](https://goplasmatic.github.io/Orion/guides/worked-examples.html) for complete, tested examples, or grab a ready-to-deploy example package from [`examples/packages/`](examples/packages/) and run `./examples/deploy.sh <name>` against a local instance.
 
 ## Install
 
@@ -524,7 +524,7 @@ The full book lives at **[goplasmatic.github.io/Orion](https://goplasmatic.githu
 | [Function Reference](https://goplasmatic.github.io/Orion/reference/functions.html) | Every built-in task function and its exact `input` schema |
 | [Admin API](https://goplasmatic.github.io/Orion/reference/admin-api.html) | Workflows, channels, connectors, packages, engine, audit, and backup endpoints |
 | [Configuration](https://goplasmatic.github.io/Orion/reference/configuration.html) | Config file, env vars, CLI subcommands, database backends, deployment |
-| [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html) | AI prompt templates, tested examples, validation workflows, CI/CD |
+| [Worked Examples](https://goplasmatic.github.io/Orion/guides/worked-examples.html) | AI prompt templates, tested examples, validation workflows, CI/CD |
 
 ## Built With
 

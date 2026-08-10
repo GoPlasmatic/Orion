@@ -6,7 +6,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-DOCS2_PHASE=3
+DOCS2_PHASE=4
 
 fail=0
 err() { printf 'docs-lint: %s\n' "$*" >&2; fail=1; }
