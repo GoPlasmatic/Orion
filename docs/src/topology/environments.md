@@ -84,7 +84,9 @@ activate → hot-reload* — no redeploy, no container rebuild.
   **hot-reload** (the new engine is published atomically; in-flight requests
   keep the one they started with).
 - **GitOps-friendly.** Workflows and channels are plain JSON: `export` → commit →
-  PR review → `validate` → `import as drafts` → `test` → `activate`.
+  PR review → `validate` → `import as drafts` → `test` → `activate`. The entities
+  of one service ship together as a [**package**](./packages.md) — one versioned
+  artifact, promoted between instances with a receipt on the target.
 - **Zero-dependency local.** The dev box runs the **single binary against embedded
   SQLite** — `./orion-server` and you have the full Admin API + Swagger UI at
   `/docs`.
@@ -293,7 +295,7 @@ environments** — only the configuration and the backends they point at.
     { "id": "D2", "label": "Admin API", "sublabel": "(CLI · MCP · Swagger)", "type": "accent", "group": "dev" },
     { "id": "D3", "label": "SQLite", "sublabel": "single file", "type": "datastore", "group": "dev" },
 
-    { "id": "ARTIFACTS", "label": "📦 Versioned JSON artifacts", "sublabel": "channels · workflows · connectors\n(export → git → import)", "type": "infra" },
+    { "id": "ARTIFACTS", "label": "📦 Package artifacts (versioned JSON)", "sublabel": "channels · workflows · connectors\n(export → git → apply)", "type": "infra" },
 
     { "id": "P1", "label": "API · Kafka traffic", "type": "service", "group": "prod" },
     { "id": "P2", "label": "Orion fleet", "sublabel": "(N replicas · cluster mode)", "type": "service", "group": "prod" },

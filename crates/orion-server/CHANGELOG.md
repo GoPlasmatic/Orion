@@ -1310,6 +1310,15 @@ follows.
   updated); an applied version never demotes; and re-putting an older
   applied version touches it current again — the rollback path. (K14)
 
+- **The examples are packages now.** Each example directory moved to
+  `examples/packages/<name>/` — the package in source form: the channel,
+  workflow, and (when needed) connector of one service, every entity tagged
+  `pkg:<name>` so a deployed example exports as a versioned artifact with
+  `orion-server package export --tag`. A new docs page,
+  [Packages & Promotion](https://goplasmatic.github.io/Orion/topology/packages.html),
+  walks the modular-monolith model and the export → lint → plan → apply →
+  diff flow between instances.
+
 - **Upsert import: `?on_conflict=fail|skip|new_version` on all three
   `/import` endpoints.** `new_version` replaces an existing draft in place,
   cuts a new draft version over an active entity, and reports

@@ -12,7 +12,7 @@ Full CRUD operations for all entities through a RESTful admin API:
 | **Channels** | Create, read, update, delete, status management (with `?dry_run=` pre-flight), versioning, import/export (with `?on_conflict=` upsert), validate |
 | **Connectors** | Create, read, update, delete, import/export, validate, connectivity test, circuit breaker inspection/reset |
 | **Engine** | Status, hot-reload |
-| **Packages** | Package-version receipts: list, get, put — the applied-version immutability gate the `orion-server package` CLI builds on |
+| **Packages** | Package-version receipts: list, get, put — the applied-version immutability gate the `orion-server package` CLI builds on (see [Packages & Promotion](../topology/packages.md)) |
 | **Audit logs** | List with filtering by action, resource type, resource ID, principal, and time range |
 | **Backup** | Create and list SQLite backups (no restore endpoint — see below) |
 

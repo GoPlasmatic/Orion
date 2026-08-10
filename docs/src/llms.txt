@@ -41,6 +41,7 @@ file is at https://goplasmatic.github.io/Orion/llms-full.txt
 - [Architecture Overview](https://goplasmatic.github.io/Orion/architecture/overview.html): request path, engine, registries, storage
 - [Architectural Characteristics](https://goplasmatic.github.io/Orion/architecture/characteristics.html): the -ilities, with the mechanisms behind each
 - [Dev & Prod Environments](https://goplasmatic.github.io/Orion/topology/environments.html): single node to HA topology
+- [Packages & Promotion](https://goplasmatic.github.io/Orion/topology/packages.html): the package (channels + workflows + connectors) as the unit of export/import between instances; tag selection, apply, receipts, rollback
 - [Kubernetes (Helm)](https://goplasmatic.github.io/Orion/topology/kubernetes.html): chart, values, probes, cluster mode
 
 ## Production features

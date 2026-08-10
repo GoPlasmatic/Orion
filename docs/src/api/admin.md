@@ -113,7 +113,10 @@ Kafka brokers are covered by `orion-server test-connectivity`.
 
 All three primitives export and import, so an estate can live in git rather than
 only in the database: snapshot an environment, diff staging against production,
-review a change before it lands, recover after one.
+review a change before it lands, recover after one. These per-kind endpoints
+are the primitive layer; the entities of one service promote together as a
+**package** — see [Packages & Promotion](../topology/packages.md) for that
+flow end to end.
 
 ```bash
 # Snapshot an environment into version control
@@ -194,7 +197,8 @@ simply omit the parameter.
 ### The `orion-server package` CLI
 
 The flows above are composed, end to end, by the packaging CLI — the
-recommended way to promote an estate:
+recommended way to promote an estate. (Concepts and walkthrough:
+[Packages & Promotion](../topology/packages.md).)
 
 ```bash
 export ORION_ADMIN_TOKEN=…   # sent as the admin bearer token
@@ -324,7 +328,10 @@ clear out entries that will never succeed.
 
 ## Packages
 
-The single package-aware surface of the admin API (K14). Packaging itself —
+A **package** is the channels, workflows, and connectors of one service,
+promoted between instances as a versioned unit
+([Packages & Promotion](../topology/packages.md)). This is the single
+package-aware surface of the admin API (K14). Packaging itself —
 computing an artifact's dependency closure, planning, staging, activating —
 lives in client tooling built on the per-kind endpoints above; what the server
 keeps is one **receipt** per package version, because the promotion rule

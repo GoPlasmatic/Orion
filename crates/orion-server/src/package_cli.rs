@@ -1,6 +1,11 @@
 //! `orion-server package` — the packaging half of the K-stream promotion
 //! design.
 //!
+//! A package is the channels, workflows, and connectors of one service,
+//! named and versioned so the service ships between instances as a unit —
+//! the module boundary of Orion's modular-monolith model. One instance runs
+//! many packages; each promotes and rolls back independently.
+//!
 //! Packaging lives here, in the CLI, not in the server: the server provides
 //! per-kind primitives (upsert import, activation pre-flight, deferred
 //! reload, package receipts) and this module composes them. Everything talks

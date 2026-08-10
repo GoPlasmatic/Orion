@@ -266,7 +266,7 @@ graph TD
 
 Every AI-generated workflow gets version history, draft-before-activate, dry-run testing, rollout control, structured `FieldError` validation feedback, and audit trails. It's the same governance hand-written workflows get. Roll back to any previous version instantly.
 
-Need to promote a bundle of workflows, channels, and connectors between environments? `orion-server package` is the promotion story: `export` computes the dependency closure from a source instance into one JSON artifact (git is the registry), `lint` and `plan` check it with zero writes, `apply` stages and activates everything in dependency order with a single engine reload and a version-immutable package receipt, and `diff` reports drift. The bulk import endpoints (`POST /api/v1/admin/{workflows,channels,connectors}/import?dry_run=true`, then drop `dry_run` to commit) remain the low-level primitive when you need to script a single batch. See [Admin API › Export & Promotion](https://goplasmatic.github.io/Orion/api/admin.html#export--promotion).
+The workflows, channels, and connectors of one service form a **package** — Orion's unit of shipping, and what makes one instance a modular monolith: many services side by side, each promoted and rolled back independently. `orion-server package` is the promotion story: `export` computes the dependency closure from a source instance into one JSON artifact (git is the registry), `lint` and `plan` check it with zero writes, `apply` stages and activates everything in dependency order with a single engine reload and a version-immutable package receipt, and `diff` reports drift. The bulk import endpoints (`POST /api/v1/admin/{workflows,channels,connectors}/import?dry_run=true`, then drop `dry_run` to commit) remain the low-level primitive when you need to script a single batch. See [Packages & Promotion](https://goplasmatic.github.io/Orion/topology/packages.html).
 
 See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html#ai-workflow--cicd) for CI/CD integration and GitHub Actions examples.
 
@@ -461,7 +461,7 @@ Pre-compiled JSONLogic, zero-downtime hot-reload, lock-free reads, SQLite WAL mo
 - **Multi-agent orchestration:** route agent outputs to channels with coordinating workflows
 - **Protocol bridging:** REST-to-Kafka, Kafka-to-HTTP with transformation
 
-See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html) for complete, tested examples, or grab ready-to-deploy JSON from [`examples/`](examples/) and run `./examples/deploy.sh <example>` against a local instance.
+See [Use Cases & Patterns](https://goplasmatic.github.io/Orion/tutorials/use-cases.html) for complete, tested examples, or grab a ready-to-deploy example package from [`examples/packages/`](examples/packages/) and run `./examples/deploy.sh <name>` against a local instance.
 
 ## Install
 

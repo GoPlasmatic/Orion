@@ -24,6 +24,7 @@
 # Deployment & Topology
 
 - [Dev & Prod Environments](./topology/environments.md)
+- [Packages & Promotion](./topology/packages.md)
 - [Kubernetes (Helm)](./topology/kubernetes.md)
 
 # Production Features

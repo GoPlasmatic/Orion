@@ -61,6 +61,8 @@ You build services in Orion with three things:
 
 **Design-time:** define channels, build workflows, configure connectors, test with dry-run, and manage versions, all through the admin API. **Runtime:** Orion routes traffic to channels, executes workflows, calls connectors, and handles observability automatically. See [**Dev & Prod Environments**](./topology/environments.md) for how the same binary serves both planes.
 
+The channels, workflows, and connectors that make up one service form a **package** — the unit that exports from one instance and imports into another, versioned and tracked. One Orion runs many packages side by side: a modular monolith, where each service ships independently without becoming its own deployment. See [**Packages & Promotion**](./topology/packages.md).
+
 ## Start here
 
 - [**CLI Setup**](./tutorials/cli-setup.md): install Orion and ship your first service in a couple of minutes.

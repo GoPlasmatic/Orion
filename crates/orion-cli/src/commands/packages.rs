@@ -10,8 +10,10 @@ use crate::utils;
 
 #[derive(Args)]
 #[command(long_about = "Inspect package promotion receipts (v1.0).\n\n\
-        Receipts record which package versions were staged or applied on this\n\
-        instance by 'orion-server package plan/apply'. Applied versions are\n\
+        A package is the channels, workflows, and connectors of one service,\n\
+        promoted between instances as a versioned unit. Receipts record which\n\
+        package versions were staged or applied on this instance by\n\
+        'orion-server package plan/apply'. Applied versions are\n\
         content-immutable: re-recording the same version with a different\n\
         content hash is refused by the server.")]
 pub struct PackagesCmd {

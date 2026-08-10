@@ -12,6 +12,8 @@ Services in Orion are composed from three building blocks:
 
 Channels receive traffic. Workflows process it. Connectors reach out to external systems. Everything else (rate limiting, metrics, circuit breakers, versioning) is handled by the platform.
 
+The primitives that make up one service group into a **package** — the named, versioned unit of export and import between instances. One Orion instance runs many packages side by side (a modular monolith); each ships independently via [Packages & Promotion](../topology/packages.md).
+
 ## Deployment Topology
 
 ### Before Orion

@@ -254,12 +254,14 @@ because it looks like a pass.
 ### Promoting between environments
 
 When a service outgrows one instance — dev to staging to production —
-`orion-server package` ships the whole thing as one artifact: `export`
-computes the closure (selected channels, their workflows, every connector
-those workflows reference), `lint` and `plan` check it offline / with zero
-writes, `apply` stages and activates in dependency order with a single engine
-reload, and `diff` reports drift afterwards. See
-[Admin API › the `orion-server package` CLI](../api/admin.md#the-orion-server-package-cli).
+`orion-server package` ships the whole thing as one artifact — a **package**,
+the unit of promotion: `export` computes the closure (selected channels, their
+workflows, every connector those workflows reference), `lint` and `plan` check
+it offline / with zero writes, `apply` stages and activates in dependency
+order with a single engine reload, and `diff` reports drift afterwards. See
+[Packages & Promotion](../topology/packages.md) for the full flow, and
+[Admin API › the `orion-server package` CLI](../api/admin.md#the-orion-server-package-cli)
+for the API detail.
 
 ### A regression suite
 
