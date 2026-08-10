@@ -6,7 +6,9 @@ begin_suite "Synchronous Data Processing"
 test_sync_process_data() {
     reset_server_state
     cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
-    cli_quiet workflows activate "$CLI_OUTPUT"
+    local wf="$CLI_OUTPUT"
+    cli_quiet workflows activate "$wf"
+    create_channel orders "$wf"
     cli_quiet engine reload
 
     cli send orders -d '{"order_id":"ORD-001","amount":150}'
@@ -19,7 +21,9 @@ test_sync_process_data() {
 test_sync_process_with_transform() {
     reset_server_state
     cli_quiet workflows create -f "$FIXTURES_DIR/workflows/conditional.json"
-    cli_quiet workflows activate "$CLI_OUTPUT"
+    local wf="$CLI_OUTPUT"
+    cli_quiet workflows activate "$wf"
+    create_channel orders "$wf"
     cli_quiet engine reload
 
     cli send orders -d '{"amount":250,"product":"Widget Pro"}'
@@ -34,15 +38,18 @@ test_sync_no_matching_rules() {
     reset_server_state
     cli_quiet engine reload
 
+    # v1.0: sends resolve to a channel; an unknown name is refused, not
+    # silently accepted.
     cli send nonexistent-channel -d '{"key":"value"}'
-    assert_exit_code 0 "$CLI_EXIT"
-    assert_json_eq "$CLI_OUTPUT" '.status' 'ok'
+    assert_ne "$CLI_EXIT" 0 "sending to an unknown channel must fail"
 }
 
 test_sync_from_file() {
     reset_server_state
     cli_quiet workflows create -f "$FIXTURES_DIR/workflows/simple_log.json"
-    cli_quiet workflows activate "$CLI_OUTPUT"
+    local wf="$CLI_OUTPUT"
+    cli_quiet workflows activate "$wf"
+    create_channel orders "$wf"
     cli_quiet engine reload
 
     cli send orders -f "$FIXTURES_DIR/data/order_high.json"
@@ -52,7 +59,7 @@ test_sync_from_file() {
 
 run_test "sync process data"                test_sync_process_data
 run_test "sync process with transform rule" test_sync_process_with_transform
-run_test "sync process no matching workflows" test_sync_no_matching_rules
+run_test "sync send to unknown channel fails" test_sync_no_matching_rules
 run_test "sync process from file"           test_sync_from_file
 
 end_suite

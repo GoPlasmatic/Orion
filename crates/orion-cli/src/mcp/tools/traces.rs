@@ -27,6 +27,10 @@ pub struct TracesListParams {
 pub struct TracesGetParams {
     #[schemars(description = "The trace ID to retrieve")]
     pub id: String,
+    #[schemars(
+        description = "Trace access token from the async submit — required to read a trace without an admin credential (v1.0)"
+    )]
+    pub token: Option<String>,
 }
 
 pub async fn list(client: &OrionClient, params: TracesListParams) -> Result<String, String> {
@@ -47,8 +51,9 @@ pub async fn list(client: &OrionClient, params: TracesListParams) -> Result<Stri
 }
 
 pub async fn get(client: &OrionClient, params: TracesGetParams) -> Result<String, String> {
+    let qs = utils::build_query_string(&[("token", params.token)]);
     let resp: Value = client
-        .get(&format!("/api/v1/admin/traces/{}", params.id))
+        .get(&format!("/api/v1/admin/traces/{}{qs}", params.id))
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&resp).map_err(|e| e.to_string())

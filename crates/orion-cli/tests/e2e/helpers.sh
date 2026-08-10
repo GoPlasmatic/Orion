@@ -479,6 +479,17 @@ clean_all_connectors() {
 }
 
 # reset_server_state — clean everything and reload engine
+# create_channel <name> <workflow_id> [channel_type]
+# v1.0: every send resolves to a channel, and an active channel names exactly
+# one active workflow. Creates and activates the channel; the caller reloads.
+create_channel() {
+    local name="$1"
+    local workflow_id="$2"
+    local channel_type="${3:-sync}"
+    cli_quiet channels create -d "{\"name\":\"$name\",\"channel_type\":\"$channel_type\",\"protocol\":\"http\",\"workflow_id\":\"$workflow_id\",\"methods\":[\"POST\"],\"route_pattern\":\"/$name\"}"
+    cli_quiet channels activate "$CLI_OUTPUT"
+}
+
 reset_server_state() {
     clean_all_workflows
     clean_all_channels
@@ -583,6 +594,19 @@ _run_case_test() {
         response="$CLI_OUTPUT"
     fi
 
+    # v1.0 failure-path tests: expect_error asserts the command failed
+    # (e.g. a send to a channel quarantined by archiving its workflow).
+    local expect_error
+    expect_error=$(jq -r ".tests[$test_idx].expect_error // false" "$case_file")
+    if [[ "$expect_error" == "true" ]]; then
+        if [[ "$CLI_EXIT" -eq 0 ]]; then
+            echo "ASSERTION FAILED: expected the command to fail, got exit 0" >&2
+            echo "  response: $response" >&2
+            return 1
+        fi
+        return 0
+    fi
+
     # Assert expectations
     local expect_keys
     expect_keys=$(jq -r ".tests[$test_idx].expect | keys[]" "$case_file")
@@ -655,6 +679,18 @@ run_case_file() {
         _CASE_RULE_IDS+=("$_rule_id")
         cli_quiet workflows activate "$_rule_id"
     done
+
+    # v1.0: sends resolve to a channel bound to one workflow. Create a
+    # channel for every channel name the tests target, bound to the case's
+    # workflow (case files carry exactly one after the 1.0 conversion).
+    local case_channels
+    case_channels=$(jq -r '[.tests[].channel // empty] | unique | .[]' "$case_file")
+    if [[ -n "$case_channels" && ${#_CASE_RULE_IDS[@]} -gt 0 ]]; then
+        while IFS= read -r ch; do
+            [[ -z "$ch" ]] && continue
+            create_channel "$ch" "${_CASE_RULE_IDS[0]}"
+        done <<< "$case_channels"
+    fi
 
     # Reload engine if we created workflows or connectors
     if [[ $rule_count -gt 0 ]] || [[ $conn_count -gt 0 ]]; then

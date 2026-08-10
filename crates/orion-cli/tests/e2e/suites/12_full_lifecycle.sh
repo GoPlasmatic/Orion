@@ -27,10 +27,12 @@ test_complete_workflow() {
         cli_quiet workflows activate "$wid"
     done <<< "$workflow_ids"
 
-    # 5. Add a conditional workflow and activate it
+    # 5. Add a conditional workflow, activate it, and give it a channel
+    #    (v1.0: sends resolve to a channel bound to one workflow)
     cli_quiet workflows create -f "$FIXTURES_DIR/workflows/conditional.json"
     local cond_workflow_id="$CLI_OUTPUT"
     cli_quiet workflows activate "$cond_workflow_id"
+    create_channel orders "$cond_workflow_id"
 
     # 6. Dry-run test the conditional workflow
     cli workflows test "$cond_workflow_id" -d '{"amount": 500}'
@@ -40,9 +42,11 @@ test_complete_workflow() {
     # 7. Archive one of the imported workflows, verify it's archived
     local first_workflow_id
     first_workflow_id=$(echo "$CLI_OUTPUT" | jq -r '.data[0].workflow_id' 2>/dev/null || true)
-    # Re-list to get a workflow id
+    # Re-list to get a workflow id — one of the IMPORTED ones, never the
+    # conditional workflow the orders channel is bound to (archiving that
+    # would quarantine the channel and fail the sends below).
     cli workflows list
-    first_workflow_id=$(echo "$CLI_OUTPUT" | jq -r '.data[0].workflow_id')
+    first_workflow_id=$(echo "$CLI_OUTPUT" | jq -r --arg c "$cond_workflow_id" '[.data[].workflow_id | select(. != $c)][0]')
     cli_quiet workflows archive "$first_workflow_id"
 
     cli workflows get "$first_workflow_id"
@@ -58,7 +62,8 @@ test_complete_workflow() {
     cli send orders --async-mode --wait --timeout 15 -d '{"amount":150}'
     assert_exit_code 0 "$CLI_EXIT"
 
-    # 10. Clean up: delete all workflows
+    # 10. Clean up: channels first (they reference workflows), then workflows
+    clean_all_channels
     clean_all_workflows
 
     cli workflows list

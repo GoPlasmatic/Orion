@@ -17,7 +17,7 @@ test_import_dry_run() {
     reset_server_state
     cli_raw workflows import -f "$FIXTURES_DIR/workflows/import_batch.json" --dry-run
     assert_exit_code 0 "$CLI_EXIT"
-    assert_contains "$CLI_OUTPUT" "Would import 3"
+    assert_contains "$CLI_OUTPUT" "Would import: 3"
 
     # Verify nothing was actually imported
     cli workflows list

@@ -189,11 +189,17 @@ impl SendCmd {
         if quiet {
             println!("{trace_id}");
         } else if !self.wait {
-            println!(
-                "{} Trace submitted: {}",
-                "OK".green().bold(),
-                trace_id.cyan()
-            );
+            if matches!(format, OutputFormat::Json | OutputFormat::Yaml) {
+                // The full AsyncSubmitResponse — callers need trace_token to
+                // read the trace back (v1.0).
+                output::print_value(format, &resp)?;
+            } else {
+                println!(
+                    "{} Trace submitted: {}",
+                    "OK".green().bold(),
+                    trace_id.cyan()
+                );
+            }
         }
 
         if self.wait {

@@ -40,7 +40,7 @@ orion-cli mcp serve --http                    # HTTP transport (remote clients),
 orion-cli mcp serve --http --bind 0.0.0.0:9090  # HTTP on custom address
 ```
 
-E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suites/`, fixtures in `tests/e2e/fixtures/`, test case definitions in `tests/e2e/cases/`.
+E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suites/`, fixtures in `tests/e2e/fixtures/`, test case definitions in `tests/e2e/cases/`. The suites speak the v1.0 API: every send goes through a channel bound to exactly one workflow (`create_channel` in helpers.sh), and reading a trace needs the `trace_token` from the async submit.
 
 ## Architecture
 
@@ -72,6 +72,8 @@ E2E tests are shell-based (not `cargo test`). 13 test suites in `tests/e2e/suite
 | `metrics.rs` | Raw Prometheus metrics retrieval |
 | `audit_logs.rs` | List audit log entries of admin actions |
 | `backups.rs` | Create and list database backups (SQLite) |
+| `packages.rs` | Package promotion receipts: list, get (v1.0) |
+| `dlq.rs` | Trace dead-letter queue: list, get, requeue, purge (v1.0) |
 | `config.rs` | CLI config management (set-server, show, set key-value) |
 | `completions.rs` | Shell completion generation (bash/zsh/fish/powershell) |
 | `mcp.rs` | MCP server subcommand (`orion-cli mcp serve`) |

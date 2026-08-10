@@ -59,6 +59,10 @@ enum TracesSubcommand {
     Get {
         /// Trace ID
         id: String,
+        /// Trace access token from the async submit (v1.0: reading a trace
+        /// requires its token or an admin credential)
+        #[arg(long)]
+        token: Option<String>,
     },
     /// Wait for a trace to complete (polls until done or timeout)
     #[command(
@@ -67,6 +71,10 @@ enum TracesSubcommand {
     Wait {
         /// Trace ID
         id: String,
+        /// Trace access token from the async submit (v1.0: reading a trace
+        /// requires its token or an admin credential)
+        #[arg(long)]
+        token: Option<String>,
         /// Poll interval in seconds
         #[arg(long, default_value = "1")]
         interval: u64,
@@ -127,12 +135,26 @@ impl TracesCmd {
                 )
                 .await
             }
-            TracesSubcommand::Get { id } => get(client, format, quiet, id).await,
+            TracesSubcommand::Get { id, token } => {
+                get(client, format, quiet, id, token.as_deref()).await
+            }
             TracesSubcommand::Wait {
                 id,
+                token,
                 interval,
                 timeout,
-            } => wait(client, format, quiet, id, *interval, *timeout).await,
+            } => {
+                wait(
+                    client,
+                    format,
+                    quiet,
+                    id,
+                    token.as_deref(),
+                    *interval,
+                    *timeout,
+                )
+                .await
+            }
         }
     }
 }
@@ -213,8 +235,17 @@ async fn list(
     Ok(0)
 }
 
-async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str) -> Result<i32> {
-    let resp: Value = client.get(&format!("/api/v1/admin/traces/{id}")).await?;
+async fn get(
+    client: &OrionClient,
+    format: &OutputFormat,
+    quiet: bool,
+    id: &str,
+    token: Option<&str>,
+) -> Result<i32> {
+    let qs = utils::build_query_string(&[("token", token.map(str::to_string))]);
+    let resp: Value = client
+        .get(&format!("/api/v1/admin/traces/{id}{qs}"))
+        .await?;
     // v1.0 wraps the TraceDetail in the {"data": …} admin envelope.
     let resp = resp.get("data").cloned().unwrap_or(resp);
 
@@ -286,14 +317,17 @@ async fn get(client: &OrionClient, format: &OutputFormat, quiet: bool, id: &str)
     Ok(status_exit_code(status))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn wait(
     client: &OrionClient,
     format: &OutputFormat,
     quiet: bool,
     id: &str,
+    token: Option<&str>,
     interval: u64,
     timeout: u64,
 ) -> Result<i32> {
+    let qs = utils::build_query_string(&[("token", token.map(str::to_string))]);
     let start = std::time::Instant::now();
     let timeout_dur = std::time::Duration::from_secs(timeout);
     let interval_dur = std::time::Duration::from_secs(interval);
@@ -303,7 +337,9 @@ async fn wait(
     }
 
     loop {
-        let resp: Value = client.get(&format!("/api/v1/admin/traces/{id}")).await?;
+        let resp: Value = client
+            .get(&format!("/api/v1/admin/traces/{id}{qs}"))
+            .await?;
         let resp = resp.get("data").cloned().unwrap_or(resp);
 
         let status = resp["status"].as_str().unwrap_or("unknown");

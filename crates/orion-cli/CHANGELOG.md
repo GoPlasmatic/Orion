@@ -5,6 +5,46 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+Orion server v1.0 compatibility release, developed in the Orion monorepo
+(the CLI moved from GoPlasmatic/Orion-cli to GoPlasmatic/Orion as
+`crates/orion-cli`; its e2e suite now runs against the in-tree server on
+every PR).
+
+### Added
+
+- **`packages list|get`** — package promotion receipts (staged/applied
+  versions with content hashes), plus `packages_list`/`packages_get` MCP tools.
+- **`dlq list|get|requeue|purge`** — the trace dead-letter queue, plus
+  `trace_dlq_list`/`trace_dlq_get`/`trace_dlq_requeue` MCP tools.
+- **`workflows dependencies <id>`** (alias `deps`) — connector references and
+  `channel_call` targets, plus a `workflows_dependencies` MCP tool.
+- **`connectors test <id>`** — reachability probe with the stored config,
+  plus a `connectors_test` MCP tool; `channels|connectors validate` and
+  `channels|connectors export`, completing parity with workflows.
+- **`--on-conflict fail|skip|new_version`** on all three bulk imports;
+  **`--dry-run`** and **`--defer-reload`** on activate/archive;
+  **`--tag`** filters on list commands; **`--cursor`/`--include-total`**
+  keyset pagination on `traces list`; **`--token`** on `traces get|wait`.
+
+### Changed
+
+- **v1.0 response envelope** — every admin 2xx wraps its payload in
+  `{"data": …}`; engine status/reload, workflow test/validate, import
+  results, and trace reads unwrap it (older bare responses still parse).
+- **Import summaries** read the v1.0 `imported`/`unchanged`/`skipped`/
+  `failed` counts (dry-run included) instead of `would_create`/`would_fail`.
+- **Traces moved to `/api/v1/admin/traces`** — `/api/v1/data/traces` is a
+  channel route in v1.0. Reading a trace requires its `trace_token` or an
+  admin credential; `send --async --wait` threads the token automatically,
+  and `send --async-mode --output json` now prints the full submit response
+  (`trace_id` + `trace_token`) instead of a human-format line.
+- **E2E suites speak v1.0**: sends go through channels bound to exactly one
+  workflow, unknown channels are refused, archiving a channel's workflow
+  quarantines it, and the server config template uses `storage.url` /
+  `[trace_queue]`.
+
 ## [0.2.1]
 
 MCP registry and directory readiness release. No CLI behavior changes.
