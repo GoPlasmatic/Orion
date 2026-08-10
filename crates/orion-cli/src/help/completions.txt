@@ -1,0 +1,7 @@
+Supported Shells: bash, zsh, fish, powershell, elvish
+
+Installation:
+  Bash:        orion-cli completions bash >> ~/.bashrc
+  Zsh:         orion-cli completions zsh > "${fpath[1]}/_orion-cli"
+  Fish:        orion-cli completions fish > ~/.config/fish/completions/orion-cli.fish
+  PowerShell:  orion-cli completions powershell >> $PROFILE

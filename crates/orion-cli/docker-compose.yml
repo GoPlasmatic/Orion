@@ -1,0 +1,32 @@
+services:
+  orion-cli-mcp:
+    image: ghcr.io/goplasmatic/orion-cli:latest
+    command: ["mcp", "serve", "--http", "--bind", "0.0.0.0:8081"]
+    ports:
+      - "8081:8081"
+    environment:
+      ORION_SERVER_URL: "http://orion:8080"
+    depends_on:
+      orion:
+        condition: service_healthy
+    restart: unless-stopped
+
+  orion:
+    image: ghcr.io/goplasmatic/orion:latest
+    ports:
+      - "8080:8080"
+    environment:
+      ORION_STORAGE__URL: "sqlite:/app/data/orion.db"
+      ORION_LOGGING__FORMAT: "pretty"
+    volumes:
+      - orion-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  orion-data:
